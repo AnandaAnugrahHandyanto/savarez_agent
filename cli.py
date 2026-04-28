@@ -19,7 +19,6 @@ import re
 import shutil
 import sys
 import json
-import re
 import concurrent.futures
 import base64
 import atexit
@@ -2345,6 +2344,7 @@ class HermesCLI:
             "session_total_tokens": 0,
             "session_api_calls": 0,
             "compressions": 0,
+            "lean_ctx": None,
         }
 
         if not agent:
@@ -2369,7 +2369,28 @@ class HermesCLI:
             if context_length:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
 
+        try:
+            from tools.lean_ctx_router import get_session_savings, is_runtime_active
+
+            lean_ctx = get_session_savings()
+            if lean_ctx.get("tokens_saved", 0) > 0 or is_runtime_active():
+                lean_ctx = {**lean_ctx, "active": True}
+                snapshot["lean_ctx"] = lean_ctx
+        except Exception:
+            pass
+
         return snapshot
+
+    @staticmethod
+    def _format_lean_ctx_status(lean_ctx: dict[str, Any] | None) -> str:
+        """Format compact lean-ctx savings for the status bar."""
+        if not lean_ctx:
+            return ""
+        saved = int(lean_ctx.get("tokens_saved") or 0)
+        rate = int(lean_ctx.get("compression_rate") or 0)
+        if saved <= 0:
+            return "lctx: 0%" if lean_ctx.get("active") else ""
+        return f"lctx: {rate}%"
 
     @staticmethod
     def _status_bar_display_width(text: str) -> int:
@@ -2526,6 +2547,9 @@ class HermesCLI:
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
                 parts.append(prompt_elapsed)
+            lean_ctx_label = self._format_lean_ctx_status(snapshot.get("lean_ctx"))
+            if lean_ctx_label:
+                parts.append(lean_ctx_label)
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
@@ -2590,6 +2614,10 @@ class HermesCLI:
                     if prompt_elapsed:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-dim", prompt_elapsed))
+                    lean_ctx_label = self._format_lean_ctx_status(snapshot.get("lean_ctx"))
+                    if lean_ctx_label:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-good", lean_ctx_label))
                     frags.append(("class:status-bar", " "))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
@@ -4414,6 +4442,34 @@ class HermesCLI:
             f"Agent Running: {'Yes' if is_running else 'No'}",
         ])
         self._console_print("\n".join(lines), highlight=False, markup=False)
+
+    def _handle_leanctx_command(self, cmd_original: str) -> None:
+        """Show diagnostics for Hermes' native lean-ctx routing layer."""
+        parts = cmd_original.split(maxsplit=1)
+        subcommand = parts[1].strip() if len(parts) > 1 else "help"
+        try:
+            from tools.lean_ctx_router import run_diagnostic_command
+
+            result = run_diagnostic_command(subcommand, cwd=Path(os.getcwd()))
+        except Exception as exc:
+            self._console_print(f"lean-ctx diagnostic failed: {exc}", highlight=False, markup=False)
+            return
+
+        if not result.get("ok"):
+            allowed = result.get("allowed")
+            suffix = f" Allowed: {', '.join(allowed)}" if allowed else ""
+            self._console_print(
+                f"lean-ctx: {result.get('error', 'unknown error')}.{suffix}",
+                highlight=False,
+                markup=False,
+            )
+            return
+
+        data = result.get("data")
+        if isinstance(data, dict):
+            self._console_print(json.dumps(data, indent=2, sort_keys=True), highlight=False, markup=False)
+        else:
+            self._console_print(str(data), highlight=False, markup=False)
     
     def _fast_command_available(self) -> bool:
         try:
@@ -4833,6 +4889,12 @@ class HermesCLI:
         self.conversation_history = []
         self._pending_title = None
         self._resumed = False
+        try:
+            from tools.lean_ctx_router import reset_session_savings
+
+            reset_session_savings()
+        except Exception:
+            pass
 
         if self.agent:
             self.agent.session_id = self.session_id
@@ -6230,6 +6292,8 @@ class HermesCLI:
             self._show_gateway_status()
         elif canonical == "status":
             self._show_session_status()
+        elif canonical == "leanctx":
+            self._handle_leanctx_command(cmd_original)
         elif canonical == "statusbar":
             self._status_bar_visible = not self._status_bar_visible
             state = "visible" if self._status_bar_visible else "hidden"
@@ -6725,7 +6789,7 @@ class HermesCLI:
                             f' --user-data-dir="{_data_dir}"'
                             f" --no-first-run --no-default-browser-check"
                         )
-                    print(f"     Launch Chrome manually:")
+                    print("     Launch Chrome manually:")
                     print(f"     {chrome_cmd}")
             else:
                 print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")

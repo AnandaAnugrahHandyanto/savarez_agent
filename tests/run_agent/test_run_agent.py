@@ -52,6 +52,35 @@ def test_is_destructive_command_treats_install_as_mutating():
     assert run_agent._is_destructive_command("install template.env .env") is True
 
 
+def test_dispatch_delegate_task_forwards_persona_transport_fields(agent):
+    function_args = {
+        "goal": "Review the patch",
+        "context": "Use the current worktree.",
+        "toolsets": ["terminal", "file"],
+        "tasks": [{"goal": "Task A", "persona": "verifier"}],
+        "max_iterations": 7,
+        "acp_command": "cursor-agent",
+        "acp_args": ["-p", "--mode", "plan"],
+        "unsafe_allow_writes": True,
+        "transport": "bridge",
+        "bridge_initial_wait_seconds": 3,
+        "role": "orchestrator",
+        "persona": "security-reviewer",
+        "persona_provider": "cursor-agent",
+        "persona_model": "gpt-5.5-extra-high",
+        "workdir": "/tmp/project",
+        "compress_persona": "always",
+    }
+
+    with patch("tools.delegate_tool.delegate_task", return_value='{"results": []}') as mock_delegate:
+        assert agent._dispatch_delegate_task(function_args) == '{"results": []}'
+
+    _, kwargs = mock_delegate.call_args
+    for key, value in function_args.items():
+        assert kwargs[key] == value
+    assert kwargs["parent_agent"] is agent
+
+
 @pytest.fixture()
 def agent():
     """Minimal AIAgent with mocked OpenAI client and tool loading."""
@@ -3922,6 +3951,56 @@ def test_aiagent_uses_copilot_acp_client():
     assert mock_acp_client.call_args.kwargs["api_key"] == "copilot-acp"
     assert mock_acp_client.call_args.kwargs["command"] == "/usr/local/bin/copilot"
     assert mock_acp_client.call_args.kwargs["args"] == ["--acp", "--stdio"]
+
+
+def test_copilot_acp_agent_disables_streaming_api_call():
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("agent.copilot_acp_client.CopilotACPClient") as mock_acp_client,
+    ):
+        mock_acp_client.return_value = MagicMock()
+
+        agent = AIAgent(
+            api_key="copilot-acp",
+            base_url="acp://copilot",
+            provider="copilot-acp",
+            acp_command="/usr/local/bin/copilot",
+            acp_args=["--acp", "--stdio"],
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent._supports_streaming_api_call() is False
+
+
+def test_aiagent_passes_acp_allow_writes_to_copilot_client():
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("agent.copilot_acp_client.CopilotACPClient") as mock_acp_client,
+    ):
+        agent = AIAgent(
+            api_key="copilot-acp",
+            base_url="acp://copilot",
+            provider="copilot-acp",
+            acp_command="claude",
+            acp_args=["-p", "--permission-mode", "acceptEdits"],
+            acp_allow_writes=True,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent.acp_allow_writes is True
+    assert mock_acp_client.call_args.kwargs["allow_writes"] is True
+
+
+def test_regular_agent_supports_streaming_api_call(agent):
+    assert agent._supports_streaming_api_call() is True
 
 
 def test_quiet_spinner_allowed_with_explicit_print_fn(agent):

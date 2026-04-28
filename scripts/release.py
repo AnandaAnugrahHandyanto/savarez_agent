@@ -78,6 +78,7 @@ AUTHOR_MAP = {
     "itonov@proton.me": "Ito-69",
     "glesstech@gmail.com": "georgeglessner",
     "maxim.smetanin@gmail.com": "maxims-oss",
+    "noizo@me.com": "noizo",
     "nazirulhafiy@gmail.com": "nazirulhafiy",
     "CREWorx@users.noreply.github.com": "BadTechBandit",
     "yoimexex@gmail.com": "Yoimex",

@@ -181,13 +181,15 @@ Auto-seeded entries are updated on each pool load — if you remove an env var, 
 
 ## Delegation & Subagent Sharing
 
-When the agent spawns subagents via `delegate_task`, the parent's credential pool is automatically shared with children:
+When the agent spawns embedded API subagents via `delegate_task`, the parent's credential pool is automatically shared with children:
 
 - **Same provider** — the child receives the parent's full pool, enabling key rotation on rate limits
 - **Different provider** — the child loads that provider's own pool (if configured)
 - **No pool configured** — the child falls back to the inherited single API key
 
-This means subagents benefit from the same rate-limit resilience as the parent, with no extra configuration needed. Per-task credential leasing ensures children don't conflict with each other when rotating keys concurrently.
+This means embedded API subagents benefit from the same rate-limit resilience as the parent, with no extra configuration needed. Per-task credential leasing ensures children don't conflict with each other when rotating keys concurrently.
+
+Bridge workers are different: local Claude Code and Cursor Agent children resolve auth through their own CLI installations. Hermes does not pass the parent credential pool into bridge workers.
 
 ## Thread Safety
 

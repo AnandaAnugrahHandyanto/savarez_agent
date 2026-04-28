@@ -154,6 +154,14 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("connect", "disconnect", "status")),
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
+    CommandDef("leanctx", "Show lean-ctx savings and diagnostics",
+               "Tools & Skills", cli_only=True,
+               args_hint="[help|savings|status|tools|router|session|memory|agent|task|graph|gain|cache|doctor]",
+               subcommands=(
+                   "help", "savings", "status", "tools", "router", "session",
+                   "memory", "agent", "task", "graph", "token-report", "gain",
+                   "cache", "doctor",
+               )),
 
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",

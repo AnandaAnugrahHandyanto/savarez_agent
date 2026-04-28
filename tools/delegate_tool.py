@@ -19,8 +19,6 @@ never the child's intermediate tool calls or reasoning.
 import enum
 import json
 import logging
-
-logger = logging.getLogger(__name__)
 import os
 import threading
 import time
@@ -28,12 +26,42 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
 )
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
 from tools import file_state
+from tools.delegate_bridge_transport import (
+    SUPPORTED_BRIDGE_COMMANDS,
+    bridge_result,
+    bridge_runtime_info,
+    bridge_status,
+    reply_bridge_session,
+    spawn_bridge_session,
+    terminate_bridge_session,
+)
+from tools.delegate_personas import apply_persona_to_task
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
+
+_LEAN_CTX_BRIDGE_TOOL_NAMES = (
+    "ctx_read",
+    "ctx_search",
+    "ctx_tree",
+    "ctx_shell",
+    "ctx_knowledge",
+    "ctx_session",
+    "ctx_task",
+    "ctx_overview",
+    "ctx_preload",
+    "ctx_intent",
+    "ctx_graph",
+    "ctx_symbol",
+    "ctx_callers",
+    "ctx_handoff",
+)
+
+logger = logging.getLogger(__name__)
 
 
 # Tools that children must never have access to
@@ -441,6 +469,24 @@ def _get_orchestrator_enabled() -> bool:
     return True
 
 
+def _get_allow_unsafe_acp_writes(cfg: Optional[dict] = None) -> bool:
+    """Operator gate for write-capable external CLI delegation modes."""
+    if os.getenv("HERMES_DELEGATION_ALLOW_UNSAFE_ACP_WRITES", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return True
+    cfg = cfg if cfg is not None else _load_config()
+    val = cfg.get("allow_unsafe_acp_writes", False)
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() in ("1", "true", "yes", "on")
+    return False
+
+
 def _get_inherit_mcp_toolsets() -> bool:
     """Whether narrowed child toolsets should keep the parent's MCP toolsets."""
     cfg = _load_config()
@@ -631,6 +677,53 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
         if os.path.isabs(text) and os.path.isdir(text):
             return text
     return None
+
+
+def _augment_task_context_with_bootstrap(
+    parent_agent,
+    *,
+    goal: str,
+    context: Optional[str],
+    workspace_hint: Optional[str],
+) -> Optional[str]:
+    """Append configured bootstrap context to a delegated child task."""
+    try:
+        manager = vars(parent_agent).get("_context_bootstrap_manager")
+    except TypeError:
+        manager = getattr(parent_agent, "_context_bootstrap_manager", None)
+    if manager is None:
+        return context
+    context_for_delegation = getattr(manager, "context_for_delegation", None)
+    if not callable(context_for_delegation):
+        return context
+
+    workspace_root = Path.cwd()
+    if workspace_hint:
+        try:
+            candidate = Path(workspace_hint).expanduser()
+            if candidate.is_dir():
+                workspace_root = candidate.resolve()
+        except Exception:
+            workspace_root = Path.cwd()
+
+    try:
+        bootstrap_context = context_for_delegation(
+            goal=goal,
+            context=context or "",
+            workspace_root=workspace_root,
+        )
+    except Exception as exc:
+        logger.warning("context bootstrap failed for delegated task: %s", exc)
+        return context
+    if not bootstrap_context or not bootstrap_context.strip():
+        return context
+
+    parts = [
+        part.strip()
+        for part in (context or "", bootstrap_context)
+        if part and part.strip()
+    ]
+    return "\n\n".join(parts)
 
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
@@ -848,6 +941,7 @@ def _build_child_agent(
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    unsafe_allow_writes: bool = False,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -929,6 +1023,12 @@ def _build_child_agent(
         child_toolsets.append("delegation")
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
+    context = _augment_task_context_with_bootstrap(
+        parent_agent,
+        goal=goal,
+        context=context,
+        workspace_hint=workspace_hint,
+    )
     child_prompt = _build_child_system_prompt(
         goal,
         context,
@@ -942,8 +1042,42 @@ def _build_child_agent(
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
         parent_api_key = parent_agent._client_kwargs.get("api_key")
 
+    # Resolve effective credentials: config override > parent inherit
+    effective_model = model or parent_agent.model
+    effective_provider = override_provider or getattr(parent_agent, "provider", None)
+    effective_base_url = override_base_url or parent_agent.base_url
+    effective_api_key = override_api_key or parent_api_key
+    effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
+    effective_acp_command = override_acp_command or getattr(
+        parent_agent, "acp_command", None
+    )
+    effective_acp_args = list(
+        override_acp_args
+        if override_acp_args is not None
+        else (getattr(parent_agent, "acp_args", []) or [])
+    )
+
+    # When override_provider is set (e.g. delegation.provider: minimax-cn),
+    # the subagent must use direct API calls rather than inheriting the
+    # parent's ACP transport and bypassing the override credentials.
+    if override_provider and not override_acp_command:
+        effective_acp_command = None
+        effective_acp_args = []
+
+    if override_acp_command:
+        # If explicitly forcing an ACP transport override, the provider MUST be copilot-acp
+        # so run_agent.py initializes the CopilotACPClient.
+        effective_provider = "copilot-acp"
+        effective_api_mode = "chat_completions"
+        command_base = os.path.basename(str(override_acp_command)).lower()
+        if command_base in {"claude", "cursor-agent", "copilot"}:
+            effective_base_url = f"acp://{command_base}"
+        acp_model_hint = _extract_model_from_acp_args(effective_acp_args)
+        if acp_model_hint:
+            effective_model = acp_model_hint
+
     # Resolve the child's effective model early so it can ride on every event.
-    effective_model_for_cb = model or getattr(parent_agent, "model", None)
+    effective_model_for_cb = effective_model or getattr(parent_agent, "model", None)
 
     # Build progress callback to relay tool calls to parent display.
     # Identity kwargs thread the subagent_id through every emitted event so the
@@ -978,35 +1112,6 @@ def _build_child_agent(
 
         child_thinking_cb = _child_thinking
 
-    # Resolve effective credentials: config override > parent inherit
-    effective_model = model or parent_agent.model
-    effective_provider = override_provider or getattr(parent_agent, "provider", None)
-    effective_base_url = override_base_url or parent_agent.base_url
-    effective_api_key = override_api_key or parent_api_key
-    effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
-    effective_acp_command = override_acp_command or getattr(
-        parent_agent, "acp_command", None
-    )
-    effective_acp_args = list(
-        override_acp_args
-        if override_acp_args is not None
-        else (getattr(parent_agent, "acp_args", []) or [])
-    )
-
-    # When override_provider is set (e.g. delegation.provider: minimax-cn),
-    # the subagent must use direct API calls — not the parent's ACP transport.
-    # Inheriting acp_command unconditionally causes run_agent.py to initialize
-    # CopilotACPClient, bypassing override credentials entirely (issue #16816).
-    if override_provider and not override_acp_command:
-        effective_acp_command = None
-        effective_acp_args = []
-
-    if override_acp_command:
-        # If explicitly forcing an ACP transport override, the provider MUST be copilot-acp
-        # so run_agent.py initializes the CopilotACPClient.
-        effective_provider = "copilot-acp"
-        effective_api_mode = "chat_completions"
-
     # Resolve reasoning config: delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
@@ -1034,6 +1139,7 @@ def _build_child_agent(
         api_mode=effective_api_mode,
         acp_command=effective_acp_command,
         acp_args=effective_acp_args,
+        acp_allow_writes=bool(unsafe_allow_writes),
         max_iterations=max_iterations,
         max_tokens=getattr(parent_agent, "max_tokens", None),
         reasoning_config=child_reasoning,
@@ -1067,6 +1173,10 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+    child._delegate_transport = "acp" if effective_acp_command else "embedded"
+    child._delegate_acp_command = effective_acp_command
+    child._delegate_acp_args = list(effective_acp_args)
+    child._delegate_unsafe_allow_writes = bool(unsafe_allow_writes)
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
@@ -1136,7 +1246,7 @@ def _dump_subagent_timeout_diagnostic(
         def _w(line: str = "") -> None:
             lines.append(line)
 
-        _w(f"# Subagent timeout diagnostic — issue #14726")
+        _w("# Subagent timeout diagnostic — issue #14726")
         _w(f"# Generated: {_dt.datetime.now().isoformat()}")
         _w("")
         _w("## Timeout")
@@ -1380,6 +1490,11 @@ def _run_single_child(
                     if isinstance(getattr(child, "model", None), str)
                     else None
                 ),
+                "transport": _safe_optional_str(getattr(child, "_delegate_transport", None)),
+                "acp_command": _safe_optional_str(getattr(child, "_delegate_acp_command", None)),
+                "unsafe_allow_writes": bool(
+                    getattr(child, "_delegate_unsafe_allow_writes", False)
+                ),
                 "started_at": time.time(),
                 "status": "running",
                 "tool_count": 0,
@@ -1522,6 +1637,16 @@ def _run_single_child(
                 "api_calls": child_api_calls,
                 "duration_seconds": duration,
                 "_child_role": getattr(child, "_delegate_role", None),
+                "model": (
+                    getattr(child, "model", None)
+                    if isinstance(getattr(child, "model", None), str)
+                    else None
+                ),
+                "transport": _safe_optional_str(getattr(child, "_delegate_transport", None)),
+                "acp_command": _safe_optional_str(getattr(child, "_delegate_acp_command", None)),
+                "unsafe_allow_writes": bool(
+                    getattr(child, "_delegate_unsafe_allow_writes", False)
+                ),
                 "diagnostic_path": diagnostic_path,
             }
         finally:
@@ -1609,6 +1734,11 @@ def _run_single_child(
             "api_calls": api_calls,
             "duration_seconds": duration,
             "model": _model if isinstance(_model, str) else None,
+            "transport": _safe_optional_str(getattr(child, "_delegate_transport", None)),
+            "acp_command": _safe_optional_str(getattr(child, "_delegate_acp_command", None)),
+            "unsafe_allow_writes": bool(
+                getattr(child, "_delegate_unsafe_allow_writes", False)
+            ),
             "exit_reason": exit_reason,
             "tokens": {
                 "input": (
@@ -1817,7 +1947,15 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
+    unsafe_allow_writes: bool = False,
+    transport: Optional[str] = None,
+    bridge_initial_wait_seconds: Optional[int] = None,
     role: Optional[str] = None,
+    persona: Optional[str] = None,
+    persona_provider: Optional[str] = None,
+    persona_model: Optional[str] = None,
+    workdir: Optional[str] = None,
+    compress_persona: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -1867,6 +2005,7 @@ def delegate_task(
 
     # Load config
     cfg = _load_config()
+    default_transport = _configured_default_transport(cfg)
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     # Model-supplied max_iterations is ignored — the config value is authoritative
     # so users get predictable budgets. The kwarg is retained for internal callers
@@ -1881,16 +2020,6 @@ def delegate_task(
         )
     effective_max_iter = default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
-
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     if tasks and isinstance(tasks, list):
@@ -1902,10 +2031,20 @@ def delegate_task(
                 f"delegate_task calls, or increase "
                 f"delegation.max_concurrent_children in config.yaml."
             )
-        task_list = tasks
+        task_list = [dict(t) for t in tasks]
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal,
+                "context": context,
+                "toolsets": toolsets,
+                "role": top_role,
+                "persona": persona,
+                "persona_provider": persona_provider,
+                "persona_model": persona_model,
+                "workdir": workdir,
+                "compress_persona": compress_persona,
+            }
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -1917,6 +2056,90 @@ def delegate_task(
     for i, task in enumerate(task_list):
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+
+    # Optional native persona support.  This is intentionally additive:
+    # without persona=... the task is unchanged, preserving all existing
+    # embedded, simple-pipe, bridge, role, SOUL.md, and /personality behavior.
+    try:
+        task_list = [
+            apply_persona_to_task(
+                task,
+                cfg=cfg,
+                top_level_persona=persona,
+                top_level_provider=persona_provider,
+                top_level_model=persona_model,
+                top_level_workdir=workdir,
+                top_level_compress=compress_persona or "auto",
+                top_level_transport=transport or default_transport,
+                top_level_acp_command=acp_command,
+                top_level_acp_args=acp_args,
+            )
+            for task in task_list
+        ]
+    except ValueError as exc:
+        return tool_error(str(exc))
+
+    task_transports = [
+        _infer_delegate_transport(
+            task=task,
+            top_level_transport=transport,
+            top_level_acp_command=acp_command,
+            default_transport=default_transport,
+        )
+        for task in task_list
+    ]
+    if any(t == "bridge" for t in task_transports):
+        if not all(t == "bridge" for t in task_transports):
+            return tool_error(
+                "Cannot mix bridge transport tasks with embedded/simple-pipe tasks "
+                "in one delegate_task call. Split them into separate calls."
+            )
+        return _delegate_bridge_tasks(
+            task_list=task_list,
+            top_level_acp_command=acp_command,
+            top_level_acp_args=acp_args,
+            top_level_unsafe_allow_writes=unsafe_allow_writes,
+            cfg=cfg,
+            operator_allows_unsafe_writes=_get_allow_unsafe_acp_writes(cfg),
+            initial_wait_seconds=bridge_initial_wait_seconds,
+        )
+
+    # Resolve delegation credentials (provider:model pair) unless every task is
+    # explicitly using an ACP child transport.  Mixed batches need credentials
+    # for the non-ACP tasks while ACP children authenticate through their local
+    # CLI and must not be blocked by delegation.base_url/provider API-key
+    # validation.
+    api_backed_transports = {"embedded-api", "experimental-oauth"}
+    all_tasks_use_explicit_acp = (
+        not any(t in api_backed_transports for t in task_transports)
+        and (
+            bool(acp_command)
+            or all(
+                bool(task.get("acp_command"))
+                for task in task_list
+                if isinstance(task, dict)
+            )
+        )
+    )
+    if all_tasks_use_explicit_acp:
+        creds = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+    else:
+        # When delegation.provider is configured, this resolves the full
+        # credential bundle (base_url, api_key, api_mode) via the same runtime
+        # provider system used by CLI/gateway startup.  When unconfigured,
+        # returns None values so children inherit from the parent.
+        try:
+            creds = _resolve_delegation_credentials(cfg, parent_agent)
+        except ValueError as exc:
+            return tool_error(str(exc))
+
+    operator_allows_unsafe_writes = _get_allow_unsafe_acp_writes(cfg)
 
     overall_start = time.monotonic()
     results = []
@@ -1938,7 +2161,32 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
-            task_acp_args = t.get("acp_args") if "acp_args" in t else None
+            if task_transports[i] in api_backed_transports:
+                selected_acp_command = None
+                selected_acp_args = None
+            else:
+                task_acp_args = t.get("acp_args") if "acp_args" in t else None
+                selected_acp_command = t.get("acp_command") or acp_command or creds.get("command")
+                selected_acp_args = (
+                    task_acp_args
+                    if task_acp_args is not None
+                    else (acp_args if acp_args is not None else creds.get("args"))
+                )
+            selected_unsafe_allow_writes = bool(
+                t.get("unsafe_allow_writes")
+                if "unsafe_allow_writes" in t
+                else unsafe_allow_writes
+            )
+            if selected_unsafe_allow_writes and not operator_allows_unsafe_writes:
+                return tool_error(
+                    "unsafe_allow_writes requires operator approval. Set "
+                    "delegation.allow_unsafe_acp_writes: true in config.yaml "
+                    "or HERMES_DELEGATION_ALLOW_UNSAFE_ACP_WRITES=1 before "
+                    "launching write-capable external CLI children."
+                )
+            child_model = creds["model"]
+            if selected_acp_command:
+                child_model = _extract_model_from_acp_args(selected_acp_args) or child_model
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
@@ -1947,7 +2195,7 @@ def delegate_task(
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=child_model,
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
@@ -1955,14 +2203,9 @@ def delegate_task(
                 override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
-                override_acp_command=t.get("acp_command")
-                or acp_command
-                or creds.get("command"),
-                override_acp_args=(
-                    task_acp_args
-                    if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
-                ),
+                override_acp_command=selected_acp_command,
+                override_acp_args=selected_acp_args,
+                unsafe_allow_writes=selected_unsafe_allow_writes,
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -2226,6 +2469,24 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
     return None
 
 
+def _extract_model_from_acp_args(acp_args: Optional[List[str]]) -> Optional[str]:
+    """Best-effort model hint for external CLI worker observability."""
+    if not acp_args:
+        return None
+    for idx, arg in enumerate(acp_args):
+        if arg == "--model" and idx + 1 < len(acp_args):
+            model = str(acp_args[idx + 1]).strip()
+            return model or None
+        if arg.startswith("--model="):
+            model = arg.split("=", 1)[1].strip()
+            return model or None
+    return None
+
+
+def _safe_optional_str(value: Any) -> Optional[str]:
+    return value if isinstance(value, str) else None
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
@@ -2319,6 +2580,205 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     }
 
 
+def _normalize_delegate_transport(value: Optional[str]) -> str:
+    transport = (value or "auto").strip().lower()
+    if transport in {"agent-orchestrator", "agent_orchestrator", "orchestrator"}:
+        return "bridge"
+    if transport in {"simple_pipe", "simple-pipe", "legacy"}:
+        return "simple-pipe"
+    if transport in {"embedded", "embedded_api", "embedded-api", "api"}:
+        return "embedded-api"
+    if transport in {
+        "experimental_oauth",
+        "experimental-oauth",
+        "oauth",
+        "oauth-proxy",
+        "proxy-oauth",
+        "subscription-oauth",
+    }:
+        return "experimental-oauth"
+    if transport in {"auto", "bridge", "simple-pipe", "embedded-api", "experimental-oauth"}:
+        return transport
+    return "auto"
+
+
+def _configured_default_transport(cfg: Optional[Dict[str, Any]]) -> str:
+    """Operator-level default for delegate_task transport/auth policy.
+
+    Per-call ``transport`` remains the highest-priority override.  The config
+    default is intentionally explicit: experimental OAuth/proxy paths are never
+    selected by plain auto inference unless the operator configured them here.
+    """
+
+    cfg = cfg or {}
+    return _normalize_delegate_transport(
+        cfg.get("default_transport")
+        or cfg.get("mode")
+        or cfg.get("transport")
+        or "auto"
+    )
+
+
+def _augment_bridge_config_with_lean_ctx(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Expose enabled lean-ctx MCP tools to bridge workers via bridge config."""
+
+    try:
+        from hermes_cli.config import load_config
+        from tools.lean_ctx_client import (
+            bridge_mcp_server_config,
+            load_config_from_mapping,
+        )
+
+        lean_cfg = load_config_from_mapping(load_config())
+        server = bridge_mcp_server_config(lean_cfg)
+    except Exception:
+        return cfg
+    if not server:
+        return cfg
+
+    server_name, server_config = server
+    augmented = dict(cfg or {})
+    extra_servers = dict(augmented.get("bridge_extra_mcp_servers") or {})
+    extra_servers.setdefault(server_name, server_config)
+    augmented["bridge_extra_mcp_servers"] = extra_servers
+
+    allowed_tools = list(augmented.get("bridge_extra_allowed_tools") or [])
+    for tool_name in _LEAN_CTX_BRIDGE_TOOL_NAMES:
+        allowed = f"mcp__{server_name}__{tool_name}"
+        if allowed not in allowed_tools:
+            allowed_tools.append(allowed)
+    augmented["bridge_extra_allowed_tools"] = allowed_tools
+    return augmented
+
+
+def _infer_delegate_transport(
+    *,
+    task: Dict[str, Any],
+    top_level_transport: Optional[str],
+    top_level_acp_command: Optional[str],
+    default_transport: str = "auto",
+) -> str:
+    explicit = (
+        task.get("transport")
+        if isinstance(task, dict) and "transport" in task
+        else top_level_transport
+    )
+    transport = _normalize_delegate_transport(explicit)
+    if transport != "auto":
+        return transport
+
+    configured = _normalize_delegate_transport(default_transport)
+    if configured in {"embedded-api", "experimental-oauth", "simple-pipe"}:
+        return configured
+
+    command = task.get("acp_command") if isinstance(task, dict) else None
+    command_base = os.path.basename(str(command or top_level_acp_command or "")).lower()
+    if command_base in SUPPORTED_BRIDGE_COMMANDS:
+        return "bridge"
+    return "auto"
+
+
+def _delegate_bridge_tasks(
+    *,
+    task_list: List[Dict[str, Any]],
+    top_level_acp_command: Optional[str],
+    top_level_acp_args: Optional[List[str]],
+    top_level_unsafe_allow_writes: bool,
+    cfg: Dict[str, Any],
+    operator_allows_unsafe_writes: bool,
+    initial_wait_seconds: Optional[int],
+) -> str:
+    results: List[Dict[str, Any]] = []
+    start = time.monotonic()
+    wait_seconds = float(initial_wait_seconds or cfg.get("bridge_initial_wait_seconds") or 10)
+    bridge_cfg = _augment_bridge_config_with_lean_ctx(cfg)
+
+    for i, task in enumerate(task_list):
+        selected_acp_command = task.get("acp_command") or top_level_acp_command
+        selected_acp_args = (
+            task.get("acp_args")
+            if "acp_args" in task
+            else (top_level_acp_args if top_level_acp_args is not None else None)
+        )
+        selected_unsafe_allow_writes = bool(
+            task.get("unsafe_allow_writes")
+            if "unsafe_allow_writes" in task
+            else top_level_unsafe_allow_writes
+        )
+
+        command_base = os.path.basename(str(selected_acp_command or "")).lower()
+        if command_base not in SUPPORTED_BRIDGE_COMMANDS:
+            return tool_error(
+                "bridge transport currently supports only acp_command='claude' "
+                "or acp_command='cursor-agent'. Copilot/Codex are out of scope "
+                "for this phase."
+            )
+        if selected_unsafe_allow_writes and not operator_allows_unsafe_writes:
+            return tool_error(
+                "unsafe_allow_writes requires operator approval. Set "
+                "delegation.allow_unsafe_acp_writes: true in config.yaml "
+                "or HERMES_DELEGATION_ALLOW_UNSAFE_ACP_WRITES=1 before "
+                "launching write-capable external CLI children."
+            )
+
+        try:
+            spawned = spawn_bridge_session(
+                goal=task["goal"],
+                context=task.get("context"),
+                acp_command=selected_acp_command,
+                acp_args=list(selected_acp_args or []),
+                unsafe_allow_writes=selected_unsafe_allow_writes,
+                cfg=bridge_cfg,
+                initial_wait_seconds=wait_seconds,
+            )
+            results.append(
+                {
+                    "task_index": i,
+                    "status": spawned.get("status"),
+                    "summary": None,
+                    "transport": "bridge",
+                    "fallback_used": False,
+                    "interactive_supported": True,
+                    "bridge_session_id": spawned.get("session_id"),
+                    "worker_type": spawned.get("worker_type"),
+                    "model": spawned.get("model"),
+                    "pid": spawned.get("pid"),
+                    "bridge_ready": spawned.get("bridge_ready"),
+                    "pending": spawned.get("pending"),
+                    "unsafe_allow_writes": selected_unsafe_allow_writes,
+                }
+            )
+        except Exception as exc:
+            results.append(
+                {
+                    "task_index": i,
+                    "status": "error",
+                    "summary": None,
+                    "error": str(exc),
+                    "transport": "bridge",
+                    "fallback_used": False,
+                    "interactive_supported": True,
+                    "acp_command": selected_acp_command,
+                    "unsafe_allow_writes": selected_unsafe_allow_writes,
+                }
+            )
+
+    return json.dumps(
+        {
+            "results": results,
+            "total_duration_seconds": round(time.monotonic() - start, 2),
+            "transport": "bridge",
+            "fallback_used": False,
+            "interactive_supported": True,
+            "next_steps": (
+                "Use delegate_bridge_check, delegate_bridge_reply, "
+                "delegate_bridge_result, and delegate_bridge_kill with the "
+                "bridge_session_id values returned here."
+            ),
+        }
+    )
+
+
 def _load_config() -> dict:
     """Load delegation config from CLI_CONFIG or persistent config.
 
@@ -2398,7 +2858,12 @@ DELEGATE_TASK_SCHEMA = {
         "(default 2) and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
-        "- Results are always returned as an array, one entry per task."
+        "- Results are always returned as an array, one entry per task.\n"
+        "- For Claude/Cursor bridge workers, use delegate_list_personas before choosing "
+        "a persona and delegate_delegation_info when you need native bridge/MCP wiring facts. "
+        "Bridge workers report back through delegate_bridge_check/reply/result/kill. "
+        "Claude receives a per-session MCP config and allowed-tools list; Cursor uses "
+        "project Cursor MCP config plus --approve-mcps."
     ),
     "parameters": {
         "type": "object",
@@ -2453,12 +2918,50 @@ DELEGATE_TASK_SCHEMA = {
                         "acp_args": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Per-task ACP args override.",
+                            "description": "Per-task ACP args override. Unrestricted write flags require unsafe_allow_writes=true.",
+                        },
+                        "unsafe_allow_writes": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Request explicit write-capable CLI modes for this task, such as Claude acceptEdits or Cursor --yolo. Requires operator config delegation.allow_unsafe_acp_writes=true or HERMES_DELEGATION_ALLOW_UNSAFE_ACP_WRITES=1.",
+                        },
+                        "transport": {
+                            "type": "string",
+                            "enum": [
+                                "auto",
+                                "simple-pipe",
+                                "bridge",
+                                "embedded-api",
+                                "experimental-oauth",
+                            ],
+                            "description": "Per-task transport override. Use 'bridge' for native Agent Orchestrator-style Claude/Cursor interactive sessions; use embedded-api or experimental-oauth only when deliberately selecting API/proxy-backed child auth.",
                         },
                         "role": {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
+                        },
+                        "persona": {
+                            "type": "string",
+                            "description": "Optional native delegation persona for this child. This is per-child identity/context and does not modify SOUL.md or /personality.",
+                        },
+                        "persona_provider": {
+                            "type": "string",
+                            "enum": ["claude", "cursor-agent"],
+                            "description": "Canonical provider for a persona-backed external CLI child. If omitted, Hermes uses delegation.persona_provider when configured; otherwise persona-backed bridge routing is not inferred.",
+                        },
+                        "persona_model": {
+                            "type": "string",
+                            "description": "Optional model override for this persona-backed child.",
+                        },
+                        "workdir": {
+                            "type": "string",
+                            "description": "Working directory for a persona-backed external CLI child.",
+                        },
+                        "compress_persona": {
+                            "type": "string",
+                            "enum": ["auto", "always", "never"],
+                            "description": "Whether to compress large persona files before injecting them into child context.",
                         },
                     },
                     "required": ["goal"],
@@ -2488,19 +2991,81 @@ DELEGATE_TASK_SCHEMA = {
             "acp_command": {
                 "type": "string",
                 "description": (
-                    "Override ACP command for child agents (e.g. 'claude', 'copilot'). "
-                    "When set, children use ACP subprocess transport instead of inheriting "
-                    "the parent's transport. Enables spawning Claude Code (claude --acp --stdio) "
-                    "or other ACP-capable agents from any parent, including Discord/Telegram/CLI."
+                    "Override child subprocess command (e.g. 'claude', 'cursor-agent', "
+                    "'copilot'). For named delegation personas, prefer the native "
+                    "'persona' field so Hermes can fill the command and acp_args safely."
                 ),
             },
             "acp_args": {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Arguments for the ACP command (default: ['--acp', '--stdio']). "
-                    "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
+                    "Arguments for the child subprocess command. Only used when "
+                    "acp_command is set. For named delegation personas, prefer "
+                    "the native 'persona' field so Hermes can fill acp_args safely. "
+                    "Unrestricted write flags require unsafe_allow_writes=true."
                 ),
+            },
+            "unsafe_allow_writes": {
+                "type": "boolean",
+                "default": False,
+                "description": (
+                    "Request explicit write-capable CLI modes, such as Claude "
+                    "acceptEdits or Cursor --yolo. Defaults to false and is "
+                    "honored only when operator config allows unsafe ACP writes."
+                ),
+            },
+            "transport": {
+                "type": "string",
+                "enum": [
+                    "auto",
+                    "simple-pipe",
+                    "bridge",
+                    "embedded-api",
+                    "experimental-oauth",
+                ],
+                "description": (
+                    "Transport/auth selection. 'auto' prefers the local bridge "
+                    "for bridge-capable Claude/Cursor CLI commands or personas. "
+                    "'bridge' starts a native interactive session and returns a "
+                    "bridge_session_id for delegate_bridge_* follow-up tools. "
+                    "'embedded-api' uses Hermes' child AIAgent/API-key path. "
+                    "'experimental-oauth' is explicit opt-in for local OAuth/proxy "
+                    "experiments and is never selected implicitly by auto."
+                ),
+            },
+            "bridge_initial_wait_seconds": {
+                "type": "integer",
+                "description": (
+                    "When transport='bridge', seconds to wait for the worker's "
+                    "first report_to_orchestrator message before returning."
+                ),
+            },
+            "persona": {
+                "type": "string",
+                "description": (
+                    "Optional native delegation persona for the child. This is "
+                    "per-child context/model/CLI routing and does not modify "
+                    "SOUL.md, /personality, or role='leaf|orchestrator'."
+                ),
+            },
+            "persona_provider": {
+                "type": "string",
+                "enum": ["claude", "cursor-agent"],
+                "description": "Canonical provider for a persona-backed external CLI child. If omitted, Hermes uses delegation.persona_provider when configured; otherwise persona-backed bridge routing is not inferred.",
+            },
+            "persona_model": {
+                "type": "string",
+                "description": "Optional model override for a persona-backed external CLI child.",
+            },
+            "workdir": {
+                "type": "string",
+                "description": "Working directory for a persona-backed external CLI child.",
+            },
+            "compress_persona": {
+                "type": "string",
+                "enum": ["auto", "always", "never"],
+                "description": "Whether to compress large persona files before injecting them into child context.",
             },
         },
         "required": [],
@@ -2509,7 +3074,7 @@ DELEGATE_TASK_SCHEMA = {
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
+from tools.registry import registry, tool_error  # noqa: E402
 
 registry.register(
     name="delegate_task",
@@ -2523,8 +3088,170 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
+        unsafe_allow_writes=bool(args.get("unsafe_allow_writes", False)),
+        transport=args.get("transport"),
+        bridge_initial_wait_seconds=args.get("bridge_initial_wait_seconds"),
         role=args.get("role"),
+        persona=args.get("persona"),
+        persona_provider=args.get("persona_provider"),
+        persona_model=args.get("persona_model"),
+        workdir=args.get("workdir"),
+        compress_persona=args.get("compress_persona"),
         parent_agent=kw.get("parent_agent"),
+    ),
+    check_fn=check_delegate_requirements,
+    emoji="🔀",
+)
+
+
+def _bridge_tool_response(fn, *args, **kwargs) -> str:
+    try:
+        return json.dumps(fn(*args, **kwargs))
+    except Exception as exc:
+        return tool_error(str(exc))
+
+
+DELEGATE_BRIDGE_CHECK_SCHEMA = {
+    "name": "delegate_bridge_check",
+    "description": "Check status and pending parent question/progress message for a native delegate_task bridge session.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "bridge_session_id returned by delegate_task transport='bridge'."},
+        },
+        "required": ["session_id"],
+    },
+}
+
+
+DELEGATE_BRIDGE_REPLY_SCHEMA = {
+    "name": "delegate_bridge_reply",
+    "description": "Reply to a pending native delegate_task bridge worker message so the worker can continue.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "bridge_session_id returned by delegate_task transport='bridge'."},
+            "message": {"type": "string", "description": "Reply text to send to the waiting worker."},
+        },
+        "required": ["session_id", "message"],
+    },
+}
+
+
+DELEGATE_BRIDGE_RESULT_SCHEMA = {
+    "name": "delegate_bridge_result",
+    "description": "Read final stdout/stderr diagnostics and current status for a native delegate_task bridge session.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "bridge_session_id returned by delegate_task transport='bridge'."},
+        },
+        "required": ["session_id"],
+    },
+}
+
+
+DELEGATE_BRIDGE_KILL_SCHEMA = {
+    "name": "delegate_bridge_kill",
+    "description": "Terminate a native delegate_task bridge worker process.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "bridge_session_id returned by delegate_task transport='bridge'."},
+            "force": {"type": "boolean", "default": False, "description": "Use SIGKILL instead of SIGTERM when supported."},
+        },
+        "required": ["session_id"],
+    },
+}
+
+
+DELEGATE_DELEGATION_INFO_SCHEMA = {
+    "name": "delegate_delegation_info",
+    "description": (
+        "Return native delegation capabilities and bridge/MCP wiring facts so agents "
+        "do not need a separate skill to know how Claude/Cursor subagents are configured."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
+
+def _delegate_delegation_info_handler(args, **kwargs) -> str:
+    cfg = _load_config()
+    return json.dumps(
+        {
+            "default_transport": cfg.get("default_transport") or "auto",
+            "persona_provider": cfg.get("persona_provider"),
+            "persona_dirs": cfg.get("persona_dirs") or {},
+            "max_concurrent_children": _get_max_concurrent_children(),
+            "max_spawn_depth": _get_max_spawn_depth(),
+            "orchestrator_enabled": cfg.get("orchestrator_enabled", True),
+            "bridge": bridge_runtime_info(cfg),
+            "follow_up_tools": [
+                "delegate_bridge_check",
+                "delegate_bridge_reply",
+                "delegate_bridge_result",
+                "delegate_bridge_kill",
+            ],
+            "persona_tools": ["delegate_list_personas"],
+        }
+    )
+
+
+registry.register(
+    name="delegate_delegation_info",
+    toolset="delegation",
+    schema=DELEGATE_DELEGATION_INFO_SCHEMA,
+    handler=_delegate_delegation_info_handler,
+    check_fn=check_delegate_requirements,
+    emoji="🔀",
+)
+
+
+registry.register(
+    name="delegate_bridge_check",
+    toolset="delegation",
+    schema=DELEGATE_BRIDGE_CHECK_SCHEMA,
+    handler=lambda args, **kw: _bridge_tool_response(bridge_status, args.get("session_id"), cfg=_load_config()),
+    check_fn=check_delegate_requirements,
+    emoji="🔀",
+)
+
+registry.register(
+    name="delegate_bridge_reply",
+    toolset="delegation",
+    schema=DELEGATE_BRIDGE_REPLY_SCHEMA,
+    handler=lambda args, **kw: _bridge_tool_response(
+        reply_bridge_session,
+        args.get("session_id"),
+        args.get("message") or "",
+        cfg=_load_config(),
+    ),
+    check_fn=check_delegate_requirements,
+    emoji="🔀",
+)
+
+registry.register(
+    name="delegate_bridge_result",
+    toolset="delegation",
+    schema=DELEGATE_BRIDGE_RESULT_SCHEMA,
+    handler=lambda args, **kw: _bridge_tool_response(bridge_result, args.get("session_id"), cfg=_load_config()),
+    check_fn=check_delegate_requirements,
+    emoji="🔀",
+)
+
+registry.register(
+    name="delegate_bridge_kill",
+    toolset="delegation",
+    schema=DELEGATE_BRIDGE_KILL_SCHEMA,
+    handler=lambda args, **kw: _bridge_tool_response(
+        terminate_bridge_session,
+        args.get("session_id"),
+        cfg=_load_config(),
+        force=bool(args.get("force", False)),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

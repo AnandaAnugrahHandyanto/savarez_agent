@@ -817,6 +817,32 @@ DEFAULT_CONFIG = {
         "engine": "compressor",
     },
 
+    # Native lean-ctx integration. "auto" activates routing/bootstrap when the
+    # configured command is available on PATH.
+    "lean_ctx": {
+        "enabled": "auto",
+        "command": "lean-ctx",
+        "env": {},
+        "timeout_seconds": 30,
+        "route_file_tools": True,
+        "route_terminal": True,
+        "first_turn_only": True,
+        "code_task_only": False,
+        "include_session": True,
+        "include_knowledge": True,
+        "include_intent": True,
+        "include_overview": True,
+        "include_preload": True,
+        "include_graph_status": True,
+        "include_handoff": True,
+        "include_symbols": True,
+        "include_callers": True,
+        "max_chars": 12000,
+        "delegation_max_chars": 6000,
+        "max_task_chars": 4000,
+        "packet_timeout_seconds": 25,
+    },
+
     # Persistent memory -- bounded curated memory injected into system prompt
     "memory": {
         "memory_enabled": True,
@@ -2542,7 +2568,7 @@ def check_config_version() -> Tuple[int, int]:
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
-    "agent", "terminal", "display", "compression", "delegation",
+    "agent", "terminal", "display", "compression", "delegation", "lean_ctx",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
     "sessions",
 }

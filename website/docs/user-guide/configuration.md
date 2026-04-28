@@ -81,6 +81,43 @@ You can also set `providers.<id>.stale_timeout_seconds` for the non-streaming st
 
 Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=300`s, native Anthropic 900s). Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
 
+## Context Bootstrap
+
+Context bootstrap providers add ephemeral project context to the next user message. They run alongside the context compressor and the configured memory provider.
+
+Lean-ctx activates from the native `lean_ctx` config section. With `enabled: auto`, Hermes uses `which lean-ctx` semantics through `PATH` and activates the layer when the configured command is available. Hermes follows the lean-ctx author workflow at session start: load the local `ctx_session`, wake and summarize `ctx_knowledge`, classify intent with `ctx_intent`, collect `ctx_overview`/`ctx_preload`, check `ctx_graph` status, and add bounded symbol/caller probes when the task names symbols. The resulting packet is appended to the current API request as ephemeral project context for first-turn parent sessions and delegated child tasks. When tool routing is enabled, the visible `read_file`, `search_files`, and eligible foreground local `terminal` commands can also use lean-ctx internally with native fallback after Hermes' normal safety checks. Set `code_task_only: true` for heuristic gating to obvious code tasks.
+
+```yaml
+lean_ctx:
+  enabled: auto
+  command: lean-ctx
+  env:
+    LEAN_CTX_DATA_DIR: ~/.lean-ctx
+  timeout_seconds: 30
+  route_file_tools: true
+  route_terminal: true
+  first_turn_only: true
+  code_task_only: false
+  include_session: true
+  include_knowledge: true
+  include_intent: true
+  include_overview: true
+  include_preload: true
+  include_graph_status: true
+  expose_to_bridge_workers: true
+  bridge_mcp_server_name: lean-ctx
+  max_chars: 12000
+  delegation_max_chars: 6000
+  max_task_chars: 4000
+  packet_timeout_seconds: 25
+```
+
+Hermes keeps a small process-local savings counter for routed lean-ctx calls and shows it in the CLI status bar when non-zero, for example `lc 12.4k saved · 74%`. Use `/leanctx help` to see the native command surface. The most common diagnostics are `/leanctx savings`, `/leanctx status`, `/leanctx tools`, `/leanctx router`, `/leanctx session status`, `/leanctx memory status`, `/leanctx gain`, `/leanctx cache`, and `/leanctx doctor`. `ctx_dashboard` is a lean-ctx dashboard/server control; Hermes' TUI uses the compact status-bar metric.
+
+`max_chars` and `delegation_max_chars` cap only the lean-ctx context packet appended by Hermes. They do not truncate the user's instruction or the persona/task prompt. `max_task_chars` caps the task text sent to lean-ctx for retrieval so large instructions do not turn into oversized retrieval queries.
+
+With `expose_to_bridge_workers: true`, Hermes also adds lean-ctx to the native bridge worker MCP surface. Claude workers receive it through the generated per-session MCP config plus `bridge_extra_allowed_tools`; Cursor workers receive it through the project Cursor MCP config alongside `worker-bridge`. This is separate from the text context packet, so smoke tests should verify both the parent-routed lean-ctx context and the worker-visible lean-ctx MCP tools.
+
 ## Terminal Backend Configuration
 
 Hermes supports six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox, a Daytona workspace, or a Singularity/Apptainer container.
@@ -1420,6 +1457,7 @@ Configure subagent behavior for the delegate tool:
 
 ```yaml
 delegation:
+  # default_transport: "auto"               # auto, bridge, embedded-api, simple-pipe, experimental-oauth
   # model: "google/gemini-3-flash-preview"  # Override model (empty = inherit parent)
   # provider: "openrouter"                  # Override provider (empty = inherit parent)
   # base_url: "http://localhost:1234/v1"    # Direct OpenAI-compatible endpoint (takes precedence over provider)
@@ -1427,9 +1465,28 @@ delegation:
   max_concurrent_children: 3                # Parallel children per batch (floor 1, no ceiling). Also via DELEGATION_MAX_CONCURRENT_CHILDREN env var.
   max_spawn_depth: 1                        # Delegation tree depth cap (1-3, clamped). 1 = flat (default): parent spawns leaves that cannot delegate. 2 = orchestrator children can spawn leaf grandchildren. 3 = three levels.
   orchestrator_enabled: true                # Global kill switch. When false, role="orchestrator" is ignored and every child is forced to leaf regardless of max_spawn_depth.
+  # persona_dirs:                           # Optional native delegate_task persona pools
+  #   project: "~/.hermes/personas/project"
+  # persona_provider: "cursor-agent"        # Optional canonical provider for persona-backed local CLI children
+                                            # Valid: "claude" or "cursor-agent". If unset, plain
+                                            # delegate_task keeps embedded API behavior unless a
+                                            # call explicitly supplies persona_provider/acp_command.
+  # persona_workdir: "~/code/project"       # Optional default workdir for persona-backed bridge workers
+  # bridge_extra_mcp_servers:               # Extra MCPs for bridge workers
+  #   hindsight-memory:                     # Example: Hindsight or another memory MCP
+  #     type: http
+  #     url: "https://memory.example.com/mcp/"
+  # bridge_extra_allowed_tools:
+  #   - "mcp__hindsight-memory__recall"
 ```
 
-**Subagent provider:model override:** By default, subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
+**Transport selection:** `delegation.default_transport: "auto"` prefers `bridge` for bridge-capable Claude/Cursor personas or commands. Use `embedded-api` for native API-key child agents, `simple-pipe` only for legacy one-shot CLI compatibility, and `experimental-oauth` only for explicit local proxy/OAuth experiments.
+
+**Bridge personas:** `persona`, `persona_provider`, `persona_model`, and `persona_workdir` route a delegated child to a named local Claude Code or Cursor Agent persona without changing the parent `SOUL.md` or `/personality`. `persona_provider` uses canonical names only: `claude` or `cursor-agent`. If omitted, Hermes uses `delegation.persona_provider` when configured; if neither is set, plain delegation keeps embedded API behavior. Bridge workers own their local CLI auth; Hermes does not inspect, copy, refresh, migrate, or inject OAuth tokens.
+
+**Worker MCPs:** Claude bridge workers receive a strict generated MCP config. Add shared worker memory MCPs with `bridge_extra_mcp_servers` and expose only the needed Claude tools with `bridge_extra_allowed_tools`. Cursor bridge workers use project Cursor MCP config plus `--approve-mcps`; Hermes writes `worker-bridge` and merges configured `bridge_extra_mcp_servers` into `.cursor/mcp.json`, but Cursor does not use Claude Code's `--mcp-config` or `--allowedTools` flags.
+
+**Embedded provider:model override:** By default, embedded API subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route embedded API subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
 
 **Direct endpoint override:** If you want the obvious custom-endpoint path, set `delegation.base_url`, `delegation.api_key`, and `delegation.model`. That sends subagents directly to that OpenAI-compatible endpoint and takes precedence over `delegation.provider`. If `delegation.api_key` is omitted, Hermes falls back to `OPENAI_API_KEY` only.
 

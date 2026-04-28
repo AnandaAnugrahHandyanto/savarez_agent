@@ -1756,6 +1756,23 @@ def terminal_tool(
                 "EOF."
             )
 
+        if env_type == "local" and not background and not effective_pty:
+            try:
+                from tools.lean_ctx_router import route_terminal_command
+
+                route_cwd = Path(workdir or cwd).expanduser()
+                if not route_cwd.is_absolute():
+                    route_cwd = Path(cwd).expanduser() / route_cwd
+                lean_ctx_result = route_terminal_command(
+                    command=command,
+                    cwd=route_cwd.resolve(),
+                    timeout=effective_timeout,
+                )
+                if lean_ctx_result is not None:
+                    return lean_ctx_result
+            except Exception:
+                logger.debug("lean-ctx terminal routing failed; falling back to native terminal", exc_info=True)
+
         if background:
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.

@@ -326,6 +326,51 @@ compression:
   # auxiliary section below (auxiliary.compression.provider / model).
 
 # =============================================================================
+# Context Bootstrap (Ephemeral repo context)
+# =============================================================================
+# lean-ctx bootstrap is config-driven. With `enabled: auto`, Hermes activates
+# this layer when the configured `lean-ctx` command is available on PATH. Hermes
+# follows the lean-ctx author workflow: ctx_session load/task, ctx_knowledge
+# wakeup/status, ctx_intent, ctx_overview, ctx_preload, ctx_graph status,
+# ctx_handoff, and bounded symbol/caller probes. It appends the result to the
+# current user message as ephemeral request context. When route_* is enabled, the
+# visible read_file/search_files/terminal tools can route eligible local
+# foreground operations through lean-ctx with native fallback. Routed commands
+# keep Hermes' normal safety checks and expose compact current-session savings
+# in the CLI status bar (`lc 12.4k saved · 74%`) plus `/leanctx` diagnostics.
+# `ctx_dashboard` is a lean-ctx dashboard/server control; Hermes' TUI uses the
+# status-bar metric.
+#
+# lean_ctx:
+#   enabled: auto
+#   command: lean-ctx
+#   timeout_seconds: 30
+#   route_file_tools: true
+#   route_terminal: true
+#   first_turn_only: true
+#   code_task_only: false
+#   include_session: true
+#   include_knowledge: true
+#   include_intent: true
+#   include_overview: true
+#   include_preload: true
+#   include_graph_status: true
+#   include_handoff: true
+#   include_symbols: true
+#   include_callers: true
+#   # Also expose lean-ctx as an extra bridge MCP server for Claude/Cursor
+#   # delegate_task workers when the native bridge transport is active.
+#   expose_to_bridge_workers: true
+#   bridge_mcp_server_name: lean-ctx
+#   max_chars: 12000
+#   # Caps only the lean-ctx packet added to delegated child tasks.
+#   delegation_max_chars: 6000
+#   # Caps task text sent to lean-ctx for retrieval; does not truncate user prompts.
+#   max_task_chars: 4000
+#   # Optional wall-clock cap for the entire bootstrap packet.
+#   packet_timeout_seconds: 25
+
+# =============================================================================
 # Anthropic prompt caching TTL
 # =============================================================================
 # When prompt caching is active (Claude via OpenRouter or native Anthropic),
@@ -790,6 +835,14 @@ code_execution:
 # Supports single tasks and batch mode (default 3 parallel, configurable).
 delegation:
   max_iterations: 50                          # Max tool-calling turns per child (default: 50)
+  # default_transport: "auto"                 # Transport/auth policy: auto, bridge, embedded-api,
+                                              # simple-pipe, or experimental-oauth.
+                                              # auto prefers the local Claude/Cursor bridge when a
+                                              # bridge-capable persona or acp_command is selected.
+                                              # embedded-api uses delegation.provider/base_url/api_key.
+                                              # simple-pipe is the legacy one-shot CLI compatibility path.
+                                              # experimental-oauth is explicit opt-in for local
+                                              # OAuth/proxy experiments; Hermes never selects it from auto.
   # max_concurrent_children: 3                # Max parallel child agents per batch (default: 3, floor: 1, no ceiling).
                                               # WARNING: values above 10 multiply API cost linearly.
   # max_spawn_depth: 1                        # Delegation tree depth cap (range: 1-3, default: 1 = flat).
@@ -805,6 +858,49 @@ delegation:
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  # persona_dirs:                             # Optional native delegate_task persona pools.
+  #   project: "~/.hermes/personas/project"   # Defaults stay under HERMES_HOME; add external collections explicitly.
+  #   shared:
+  #     - "~/.hermes/personas/shared"
+  # persona_provider: "cursor-agent"          # Optional canonical provider for persona-backed local CLI children.
+                                              # Valid: "claude" or "cursor-agent". If unset, plain
+                                              # delegate_task keeps embedded API behavior unless a
+                                              # call explicitly supplies persona_provider/acp_command.
+  # persona_workdir: "~/code/project"         # Optional default workdir for persona-backed bridge workers.
+  # agent_orchestrator_dir: "~/.hermes/cache/agent-orchestrator"
+                                              # Private IPC/cache root for bridge workers.
+  # bridge_extra_mcp_servers:                 # Optional extra MCPs for bridge workers.
+  #   hindsight-memory:                       # Example: Hindsight or another memory MCP.
+  #     type: http
+  #     url: "https://memory.example.com/mcp/"
+  # bridge_extra_allowed_tools:
+  #   - "mcp__hindsight-memory__recall"
+  #   - "mcp__hindsight-memory__reflect"
+
+  # Bridge-first local CLI setup:
+  # default_transport: "auto"
+  # persona_provider: "cursor-agent"
+  # persona_routing:
+  #   defaults:
+  #     cursor-agent: "gpt-5.5-extra-high"
+  # persona_workdir: "~/code/project"
+  #
+  # Embedded API-key setup:
+  # default_transport: "embedded-api"
+  # model: "google/gemini-3-flash-preview"
+  # provider: "openrouter"
+  #
+  # Simple-pipe compatibility:
+  # default_transport: "simple-pipe"
+  # Use only with explicit acp_command/acp_args delegate_task calls.
+  #
+  # Experimental OAuth/proxy setup:
+  # default_transport: "experimental-oauth"
+  # provider: "custom"
+  # base_url: "http://127.0.0.1:1234/v1"
+  # api_key: "local-proxy-key"
+  # WARNING: this is deliberate local experimentation. Bridge mode does not
+  # inspect, copy, refresh, migrate, or inject OAuth tokens; local CLIs own auth.
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)
