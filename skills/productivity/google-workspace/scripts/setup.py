@@ -184,10 +184,15 @@ def check_auth(required_scopes: list[str] | None = None):
     if creds.valid:
         missing_scopes = _missing_scopes_from_payload(payload, required_scopes)
         if missing_scopes:
-            print(f"NOT_AUTHENTICATED: Token valid but missing {len(missing_scopes)} required scopes:")
-            for s in missing_scopes:
-                print(f"  - {s}")
-            return False
+            if required_scopes is None:
+                print(f"AUTHENTICATED (partial): Token valid but missing {len(missing_scopes)} scopes:")
+                for s in missing_scopes:
+                    print(f"  - {s}")
+            else:
+                print(f"NOT_AUTHENTICATED: Token valid but missing {len(missing_scopes)} required scopes:")
+                for s in missing_scopes:
+                    print(f"  - {s}")
+                return False
         print(f"AUTHENTICATED: Token valid at {TOKEN_PATH}")
         return True
 
@@ -202,10 +207,15 @@ def check_auth(required_scopes: list[str] | None = None):
             )
             missing_scopes = _missing_scopes_from_payload(_load_token_payload(TOKEN_PATH), required_scopes)
             if missing_scopes:
-                print(f"NOT_AUTHENTICATED: Token refreshed but missing {len(missing_scopes)} required scopes:")
-                for s in missing_scopes:
-                    print(f"  - {s}")
-                return False
+                if required_scopes is None:
+                    print(f"AUTHENTICATED (partial): Token refreshed but missing {len(missing_scopes)} scopes:")
+                    for s in missing_scopes:
+                        print(f"  - {s}")
+                else:
+                    print(f"NOT_AUTHENTICATED: Token refreshed but missing {len(missing_scopes)} required scopes:")
+                    for s in missing_scopes:
+                        print(f"  - {s}")
+                    return False
             print(f"AUTHENTICATED: Token refreshed at {TOKEN_PATH}")
             return True
         except Exception as e:
@@ -430,7 +440,7 @@ def main():
     group.add_argument("--install-deps", action="store_true", help="Install Python dependencies")
     parser.add_argument(
         "--services",
-        default="all",
+        default=None,
         help="Comma-separated services for OAuth/check: all,email,calendar,drive,contacts,sheets,docs",
     )
     parser.add_argument(
@@ -443,7 +453,8 @@ def main():
 
     scopes = _resolve_scopes(args.services)
     if args.check:
-        sys.exit(0 if check_auth(scopes) else 1)
+        required_scopes = None if args.services is None else scopes
+        sys.exit(0 if check_auth(required_scopes) else 1)
     elif args.client_secret:
         store_client_secret(args.client_secret)
     elif args.auth_url:

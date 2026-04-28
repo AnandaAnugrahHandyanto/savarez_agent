@@ -563,11 +563,25 @@ def calendar_delete(args):
 
 
 def calendar_list_calendars(args):
+    params = {}
+    if args.max:
+        params["maxResults"] = args.max
+    if args.min_access_role:
+        params["minAccessRole"] = args.min_access_role
+    if args.show_deleted:
+        params["showDeleted"] = True
+    if args.show_hidden:
+        params["showHidden"] = True
+    if args.page_token:
+        params["pageToken"] = args.page_token
+    if args.sync_token:
+        params["syncToken"] = args.sync_token
+
     if _gws_binary():
-        results = _run_gws(["calendar", "calendarList", "list"])
+        results = _run_gws(["calendar", "calendarList", "list"], params=params or None)
     else:
         service = build_service("calendar", "v3")
-        results = service.calendarList().list().execute()
+        results = service.calendarList().list(**params).execute()
 
     calendars = []
     for calendar in results.get("items", []):
@@ -854,6 +868,17 @@ def main():
     p.set_defaults(func=calendar_delete)
 
     p = cal_sub.add_parser("list-calendars", help="List calendars available to the account")
+    p.add_argument("--max", type=int, default=0, help="Maximum calendars to return")
+    p.add_argument(
+        "--min-access-role",
+        default="",
+        choices=["", "freeBusyReader", "owner", "reader", "writer"],
+        help="Filter by minimum access role",
+    )
+    p.add_argument("--show-deleted", action="store_true", help="Include deleted calendar list entries")
+    p.add_argument("--show-hidden", action="store_true", help="Include hidden calendars")
+    p.add_argument("--page-token", default="", help="Page token for pagination")
+    p.add_argument("--sync-token", default="", help="Sync token for incremental calendar list sync")
     p.set_defaults(func=calendar_list_calendars)
 
     p = cal_sub.add_parser("create-calendar", help="Create a new calendar")

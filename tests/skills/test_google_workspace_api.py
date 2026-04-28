@@ -54,6 +54,7 @@ def api_module(monkeypatch, tmp_path):
     module._ensure_authenticated = lambda: None
     return module
 
+
 def _write_token(path: Path, *, token="ya29.test", expiry=None, **extra):
     data = {
         "token": token,
@@ -67,6 +68,7 @@ def _write_token(path: Path, *, token="ya29.test", expiry=None, **extra):
         data["expiry"] = expiry
     path.write_text(json.dumps(data))
 
+
 def test_bridge_returns_valid_token(bridge_module, tmp_path):
     """Non-expired token is returned without refresh."""
     future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
@@ -75,6 +77,7 @@ def test_bridge_returns_valid_token(bridge_module, tmp_path):
 
     result = bridge_module.get_valid_token()
     assert result == "ya29.valid"
+
 
 def test_bridge_refreshes_expired_token(bridge_module, tmp_path):
     """Expired token triggers a refresh via token_uri."""
@@ -99,10 +102,12 @@ def test_bridge_refreshes_expired_token(bridge_module, tmp_path):
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
 
+
 def test_bridge_exits_on_missing_token(bridge_module):
     """Missing token file causes exit with code 1."""
     with pytest.raises(SystemExit):
         bridge_module.get_valid_token()
+
 
 def test_bridge_main_injects_token_env(bridge_module, tmp_path):
     """main() sets GOOGLE_WORKSPACE_CLI_TOKEN in subprocess env."""
@@ -124,6 +129,7 @@ def test_bridge_main_injects_token_env(bridge_module, tmp_path):
 
     assert captured["env"]["GOOGLE_WORKSPACE_CLI_TOKEN"] == "ya29.injected"
     assert captured["cmd"] == ["gws", "gmail", "+triage"]
+
 
 def test_api_calendar_list_uses_events_list(api_module):
     """calendar_list calls _run_gws with events list + params."""
@@ -152,6 +158,7 @@ def test_api_calendar_list_uses_events_list(api_module):
     assert "timeMax" in params
     assert params["calendarId"] == "primary"
 
+
 def test_api_calendar_list_respects_date_range(api_module):
     """calendar list with --start/--end passes correct time bounds."""
     captured = {}
@@ -177,6 +184,7 @@ def test_api_calendar_list_respects_date_range(api_module):
     assert params["timeMin"] == "2026-04-01T00:00:00Z"
     assert params["timeMax"] == "2026-04-07T23:59:59Z"
 
+
 def test_api_calendar_list_calendars_uses_calendar_list(api_module, capsys):
     """calendar list-calendars calls calendarList.list and normalizes output."""
     captured = {}
@@ -199,12 +207,21 @@ def test_api_calendar_list_calendars_uses_calendar_list(api_module, capsys):
             stderr="",
         )
 
-    args = api_module.argparse.Namespace(func=api_module.calendar_list_calendars)
+    args = api_module.argparse.Namespace(
+        max=0,
+        min_access_role="",
+        show_deleted=False,
+        show_hidden=False,
+        page_token="",
+        sync_token="",
+        func=api_module.calendar_list_calendars,
+    )
 
     with patch.object(api_module.subprocess, "run", side_effect=capture_run):
         api_module.calendar_list_calendars(args)
 
     assert captured["cmd"][:4] == ["/usr/bin/gws", "calendar", "calendarList", "list"]
+    assert "--params" not in captured["cmd"]
     out = json.loads(capsys.readouterr().out)
     assert out == [
         {
@@ -217,6 +234,39 @@ def test_api_calendar_list_calendars_uses_calendar_list(api_module, capsys):
             "selected": False,
         }
     ]
+
+
+def test_api_calendar_list_calendars_passes_optional_params(api_module):
+    """calendar list-calendars exposes CalendarList.list filter/paging options."""
+    captured = {}
+
+    def capture_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return MagicMock(returncode=0, stdout="{}", stderr="")
+
+    args = api_module.argparse.Namespace(
+        max=10,
+        min_access_role="writer",
+        show_deleted=True,
+        show_hidden=True,
+        page_token="page-1",
+        sync_token="sync-1",
+        func=api_module.calendar_list_calendars,
+    )
+
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.calendar_list_calendars(args)
+
+    params = json.loads(captured["cmd"][captured["cmd"].index("--params") + 1])
+    assert params == {
+        "maxResults": 10,
+        "minAccessRole": "writer",
+        "showDeleted": True,
+        "showHidden": True,
+        "pageToken": "page-1",
+        "syncToken": "sync-1",
+    }
+
 
 def test_api_calendar_create_calendar_uses_calendars_insert(api_module, capsys):
     """calendar create-calendar calls calendars.insert with optional fields."""

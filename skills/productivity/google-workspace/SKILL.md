@@ -208,6 +208,7 @@ $GAPI gmail modify MESSAGE_ID --remove-labels UNREAD
 ```bash
 # List calendars
 $GAPI calendar list-calendars
+$GAPI calendar list-calendars --max 50 --min-access-role writer --show-hidden
 
 # Create a calendar
 $GAPI calendar create-calendar --summary "Concerts" --timezone America/Toronto

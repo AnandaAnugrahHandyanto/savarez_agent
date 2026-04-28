@@ -191,6 +191,19 @@ class TestCheckAuth:
         out = capsys.readouterr().out
         assert "AUTHENTICATED" in out
 
+    def test_check_auth_without_required_scopes_preserves_partial_success(
+        self, setup_module, monkeypatch, capsys
+    ):
+        setup_module.TOKEN_PATH.write_text(
+            json.dumps({"token": "***", "scopes": ["https://www.googleapis.com/auth/drive.readonly"]})
+        )
+        self._install_fake_credentials(monkeypatch)
+
+        assert setup_module.check_auth() is True
+
+        out = capsys.readouterr().out
+        assert "AUTHENTICATED (partial)" in out
+
     def test_check_auth_rejects_token_missing_requested_service(
         self, setup_module, monkeypatch, capsys
     ):
