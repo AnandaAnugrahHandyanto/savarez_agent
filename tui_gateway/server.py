@@ -3186,9 +3186,12 @@ def _(rid, params: dict) -> dict:
 
     if key == "indicator":
         raw = str(value or "").strip().lower()
-        allowed = {"ascii", "emoji", "kaomoji", "unicode"}
+        # Keep this list aligned with `INDICATOR_STYLES` in
+        # `ui-tui/src/app/interfaces.ts` — adding a style requires
+        # touching both ends.
+        allowed = ("ascii", "emoji", "kaomoji", "unicode")
         if raw not in allowed:
-            return _err(rid, 4002, f"unknown indicator: {value}; pick one of {sorted(allowed)}")
+            return _err(rid, 4002, f"unknown indicator: {raw}; pick one of {'|'.join(allowed)}")
         _write_config_key("display.tui_status_indicator", raw)
         return _ok(rid, {"key": key, "value": raw})
 

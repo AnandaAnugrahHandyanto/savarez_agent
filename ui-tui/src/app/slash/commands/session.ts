@@ -12,7 +12,7 @@ import type {
 } from '../../../gatewayTypes.js'
 import { fmtK } from '../../../lib/text.js'
 import type { PanelSection } from '../../../types.js'
-import type { IndicatorStyle } from '../../interfaces.js'
+import { INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
@@ -272,10 +272,9 @@ export const sessionCommands: SlashCommand[] = [
   {
     help: 'pick the busy indicator: kaomoji (default), emoji, unicode (braille), or ascii',
     name: 'indicator',
-    usage: '/indicator [kaomoji|emoji|unicode|ascii]',
+    usage: `/indicator [${INDICATOR_STYLES.join('|')}]`,
     run: (arg, ctx) => {
       const value = arg.trim().toLowerCase()
-      const allowed: ReadonlyArray<IndicatorStyle> = ['ascii', 'emoji', 'kaomoji', 'unicode']
 
       if (!value) {
         return ctx.gateway
@@ -285,8 +284,8 @@ export const sessionCommands: SlashCommand[] = [
           )
       }
 
-      if (!(allowed as readonly string[]).includes(value)) {
-        return ctx.transcript.sys(`usage: /indicator [${allowed.join('|')}]`)
+      if (!(INDICATOR_STYLES as readonly string[]).includes(value)) {
+        return ctx.transcript.sys(`usage: /indicator [${INDICATOR_STYLES.join('|')}]`)
       }
 
       ctx.gateway

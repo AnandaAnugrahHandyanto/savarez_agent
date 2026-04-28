@@ -10,7 +10,7 @@ import type {
 } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 
-import type { BusyInputMode, IndicatorStyle, StatusBarMode } from './interfaces.js'
+import { INDICATOR_STYLES, type BusyInputMode, type IndicatorStyle, type StatusBarMode } from './interfaces.js'
 import { turnController } from './turnController.js'
 import { patchUiState } from './uiStore.js'
 
@@ -45,7 +45,7 @@ export const normalizeBusyInputMode = (raw: unknown): BusyInputMode => {
   return BUSY_MODES.has(v) ? v : TUI_BUSY_DEFAULT
 }
 
-const INDICATOR_STYLES = new Set<IndicatorStyle>(['ascii', 'emoji', 'kaomoji', 'unicode'])
+const INDICATOR_STYLE_SET: ReadonlySet<IndicatorStyle> = new Set(INDICATOR_STYLES)
 
 export const normalizeIndicatorStyle = (raw: unknown): IndicatorStyle => {
   if (typeof raw !== 'string') {
@@ -54,7 +54,7 @@ export const normalizeIndicatorStyle = (raw: unknown): IndicatorStyle => {
 
   const v = raw.trim().toLowerCase() as IndicatorStyle
 
-  return INDICATOR_STYLES.has(v) ? v : 'kaomoji'
+  return INDICATOR_STYLE_SET.has(v) ? v : 'kaomoji'
 }
 
 const MTIME_POLL_MS = 5000

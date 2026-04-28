@@ -27,11 +27,14 @@ export interface StateSetter<T> {
 
 export type StatusBarMode = 'bottom' | 'off' | 'top'
 
-<<<<<<< HEAD
 export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
-=======
-export type IndicatorStyle = 'ascii' | 'emoji' | 'kaomoji' | 'unicode'
->>>>>>> e202ca5db (feat(tui): pluggable busy-indicator styles (kaomoji/emoji/unicode/ascii))
+
+// Single source of truth for indicator style names.  Union type is
+// derived from this tuple so adding/removing a style only touches one
+// line — `useConfigSync` (validation) and `session.ts` (slash arg
+// validation + usage hint) both import it.
+export const INDICATOR_STYLES = ['ascii', 'emoji', 'kaomoji', 'unicode'] as const
+export type IndicatorStyle = (typeof INDICATOR_STYLES)[number]
 
 export interface SelectionApi {
   captureScrolledRows: (firstRow: number, lastRow: number, side: 'above' | 'below') => void
