@@ -217,6 +217,8 @@ class ChatCompletionsTransport(ProviderTransport):
                     _e = (reasoning_config.get("effort") or "").strip().lower()
                     if _e in ("low", "medium", "high"):
                         _kimi_effort = _e
+                    elif _e == "xhigh":
+                        _kimi_effort = "high"
                 api_kwargs["reasoning_effort"] = _kimi_effort
 
         # extra_body assembly

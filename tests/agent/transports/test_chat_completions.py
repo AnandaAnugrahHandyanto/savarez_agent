@@ -214,6 +214,16 @@ class TestChatCompletionsKimi:
         # Kimi requires reasoning_effort as a top-level parameter
         assert kw["reasoning_effort"] == "high"
 
+    def test_kimi_reasoning_effort_xhigh_maps_to_high(self, transport):
+        kw = transport.build_kwargs(
+            model="kimi-k2", messages=[{"role": "user", "content": "Hi"}],
+            is_kimi=True,
+            reasoning_config={"effort": "xhigh"},
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        # xhigh is a Hermes-internal level; Kimi only accepts low/medium/high
+        assert kw["reasoning_effort"] == "high"
+
     def test_kimi_reasoning_effort_omitted_when_thinking_disabled(self, transport):
         kw = transport.build_kwargs(
             model="kimi-k2", messages=[{"role": "user", "content": "Hi"}],
