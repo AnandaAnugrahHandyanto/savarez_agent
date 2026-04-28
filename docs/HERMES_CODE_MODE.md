@@ -1,7 +1,7 @@
 # Hermes Code Mode
 
-Hermes Code Mode now includes the base console plus the P0 Engineering Control
-Plane foundation, adapted to the current main-compatible architecture.
+Hermes Code Mode now includes the base console, P0 Engineering Control Plane,
+and P1 GitHub integration foundation, adapted to the current architecture.
 
 ## Included Capabilities
 
@@ -12,6 +12,7 @@ Plane foundation, adapted to the current main-compatible architecture.
   - `/session`
   - `/approvals`
   - `/skills-code`
+  - `/github`
 - Code Mode state and events in `state.db`.
 - P0 services:
   - `ExecutionPolicyEngine`
@@ -21,6 +22,11 @@ Plane foundation, adapted to the current main-compatible architecture.
   - `SkillDiscoveryService` (`SKILL.md` + `scripts/` + `resources/`)
   - `RepoKnowledgeService` (`AGENTS.md` + docs guidance detection)
 - Normalized Code Mode event envelope persisted to `code_events`.
+- GitHub integration services:
+  - `github_integration`
+  - `github_webhooks`
+  - `github_sync`
+  - `github_chatops`
 
 ## Execution Policy Risk Classes
 
@@ -98,9 +104,23 @@ P0 endpoints:
 - `GET /api/code/workspaces/{workspace_id}/repo-knowledge`
 - `POST /api/code/workspaces/{workspace_id}/repo-knowledge/bootstrap`
 
+P1 GitHub endpoints:
+
+- `GET /api/code/github/status`
+- `GET /api/code/github/installations`
+- `GET /api/code/github/repositories`
+- `POST /api/code/github/repositories/sync`
+- `GET /api/code/github/repositories/{owner}/{repo}`
+- `GET /api/code/github/repositories/{owner}/{repo}/issues`
+- `GET /api/code/github/repositories/{owner}/{repo}/pulls`
+- `POST /api/code/github/webhooks`
+- `POST /api/code/github/chatops/{command_id}/run`
+- `POST /api/code/github/comments`
+- `POST /api/code/github/pull-requests/prepare`
+
 ## State / Schema
 
-Code Mode state lives in `state.db`, schema version `13`.
+Code Mode state lives in `state.db`, schema version `14`.
 
 Code Mode + P0 tables:
 
@@ -111,6 +131,14 @@ Code Mode + P0 tables:
 - `code_orchestrated_runs`
 - `code_run_transitions`
 - `code_checkpoints`
+- `github_app_installations`
+- `github_repositories`
+- `github_branches`
+- `github_issues`
+- `github_pull_requests`
+- `github_webhook_deliveries`
+- `github_chatops_commands`
+- `github_status_reports`
 
 No separate SQLite database is used for P0.
 
@@ -137,12 +165,13 @@ python -m hermes_cli.main dashboard --port 9119
 
 Then use `/code` or `/web` in the CLI.
 
-## Deferred (Not in P0)
+## Deferred
 
-- P1 GitHub integration (GitHub App auth, webhooks, ChatOps, sync).
 - SSH/VPS automation.
 - Desktop app behavior.
 - `hermesWeb/` UI integration.
+- Autonomous coding loop from GitHub events.
+- Auto-merge / force-push / destructive GitHub write flows.
 
 `hermesWeb/` is absent in this checkout, and no large frontend work was added
 under deprecated `web/`.

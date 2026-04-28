@@ -1319,16 +1319,24 @@ class TestSchemaInit:
         assert "code_orchestrated_runs" in tables
         assert "code_run_transitions" in tables
         assert "code_checkpoints" in tables
+        assert "github_app_installations" in tables
+        assert "github_repositories" in tables
+        assert "github_branches" in tables
+        assert "github_issues" in tables
+        assert "github_pull_requests" in tables
+        assert "github_webhook_deliveries" in tables
+        assert "github_chatops_commands" in tables
+        assert "github_status_reports" in tables
 
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 13
+        assert version == 14
 
     def test_code_mode_status(self, db):
         status = db.code_mode_status()
         assert status["mode"] == "enabled"
-        assert status["schema_version"] == 13
+        assert status["schema_version"] == 14
         assert status["workspace_count"] == 0
         assert status["session_count"] == 0
         assert status["event_count"] == 0
@@ -1392,7 +1400,7 @@ class TestSchemaInit:
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 13
+        assert cursor.fetchone()[0] == 14
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -2551,6 +2559,6 @@ class TestFTS5ToolCallMigration:
                 "SELECT version FROM schema_version LIMIT 1"
             ).fetchone()
             version = row["version"] if hasattr(row, "keys") else row[0]
-            assert version == 13
+            assert version == 14
         finally:
             session_db.close()

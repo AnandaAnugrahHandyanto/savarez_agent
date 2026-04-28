@@ -338,7 +338,7 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         data = resp.json()
         assert data["mode"] == "code_mode"
-        assert data["schema_version"] == 13
+        assert data["schema_version"] == 14
         assert "state" in data
 
     def test_code_workspaces_requires_auth(self):

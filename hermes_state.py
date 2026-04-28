@@ -34,7 +34,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -222,6 +222,167 @@ CREATE TABLE IF NOT EXISTS code_checkpoints (
 
 CREATE INDEX IF NOT EXISTS idx_code_checkpoints_workspace
     ON code_checkpoints(workspace_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS github_app_installations (
+    id TEXT PRIMARY KEY,
+    installation_id INTEGER NOT NULL UNIQUE,
+    account_login TEXT,
+    account_type TEXT,
+    app_id TEXT,
+    permissions_json TEXT DEFAULT '{}',
+    events_json TEXT DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    last_synced_at REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_github_installations_account
+    ON github_app_installations(account_login);
+
+CREATE TABLE IF NOT EXISTS github_repositories (
+    id TEXT PRIMARY KEY,
+    installation_id INTEGER,
+    github_repo_id INTEGER,
+    owner TEXT NOT NULL,
+    name TEXT NOT NULL,
+    full_name TEXT NOT NULL UNIQUE,
+    default_branch TEXT,
+    private INTEGER DEFAULT 0,
+    html_url TEXT,
+    clone_url TEXT,
+    ssh_url TEXT,
+    archived INTEGER DEFAULT 0,
+    disabled INTEGER DEFAULT 0,
+    pushed_at TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    last_synced_at REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_github_repositories_owner
+    ON github_repositories(owner);
+
+CREATE INDEX IF NOT EXISTS idx_github_repositories_installation
+    ON github_repositories(installation_id);
+
+CREATE TABLE IF NOT EXISTS github_branches (
+    id TEXT PRIMARY KEY,
+    repo_full_name TEXT NOT NULL,
+    name TEXT NOT NULL,
+    sha TEXT,
+    protected INTEGER DEFAULT 0,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    last_synced_at REAL,
+    UNIQUE(repo_full_name, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_github_branches_repo
+    ON github_branches(repo_full_name);
+
+CREATE TABLE IF NOT EXISTS github_issues (
+    id TEXT PRIMARY KEY,
+    repo_full_name TEXT NOT NULL,
+    github_issue_id INTEGER,
+    number INTEGER NOT NULL,
+    title TEXT,
+    state TEXT,
+    author_login TEXT,
+    labels_json TEXT DEFAULT '[]',
+    assignees_json TEXT DEFAULT '[]',
+    milestone_json TEXT DEFAULT '{}',
+    html_url TEXT,
+    created_at TEXT,
+    updated_at TEXT,
+    closed_at TEXT,
+    last_synced_at REAL,
+    UNIQUE(repo_full_name, number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_github_issues_repo
+    ON github_issues(repo_full_name);
+
+CREATE TABLE IF NOT EXISTS github_pull_requests (
+    id TEXT PRIMARY KEY,
+    repo_full_name TEXT NOT NULL,
+    github_pr_id INTEGER,
+    number INTEGER NOT NULL,
+    title TEXT,
+    state TEXT,
+    author_login TEXT,
+    base_branch TEXT,
+    head_branch TEXT,
+    head_sha TEXT,
+    mergeable INTEGER,
+    draft INTEGER DEFAULT 0,
+    html_url TEXT,
+    created_at TEXT,
+    updated_at TEXT,
+    closed_at TEXT,
+    merged_at TEXT,
+    last_synced_at REAL,
+    UNIQUE(repo_full_name, number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_github_pull_requests_repo
+    ON github_pull_requests(repo_full_name);
+
+CREATE TABLE IF NOT EXISTS github_webhook_deliveries (
+    id TEXT PRIMARY KEY,
+    delivery_id TEXT NOT NULL UNIQUE,
+    event TEXT NOT NULL,
+    action TEXT,
+    repo_full_name TEXT,
+    sender_login TEXT,
+    payload_hash TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error TEXT,
+    received_at REAL NOT NULL,
+    processed_at REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_github_webhooks_repo
+    ON github_webhook_deliveries(repo_full_name);
+
+CREATE TABLE IF NOT EXISTS github_chatops_commands (
+    id TEXT PRIMARY KEY,
+    delivery_id TEXT,
+    repo_full_name TEXT NOT NULL,
+    issue_number INTEGER,
+    pr_number INTEGER,
+    comment_id INTEGER,
+    sender_login TEXT,
+    command TEXT NOT NULL,
+    args TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    orchestrated_run_id TEXT,
+    code_session_id TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_github_chatops_status
+    ON github_chatops_commands(status);
+
+CREATE INDEX IF NOT EXISTS idx_github_chatops_repo
+    ON github_chatops_commands(repo_full_name);
+
+CREATE TABLE IF NOT EXISTS github_status_reports (
+    id TEXT PRIMARY KEY,
+    repo_full_name TEXT NOT NULL,
+    sha TEXT,
+    context TEXT,
+    status TEXT,
+    conclusion TEXT,
+    details_url TEXT,
+    external_id TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_github_status_reports_repo_sha
+    ON github_status_reports(repo_full_name, sha);
 
 CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
@@ -766,6 +927,176 @@ class SessionDB:
 
                         CREATE INDEX IF NOT EXISTS idx_code_checkpoints_workspace
                             ON code_checkpoints(workspace_id, created_at DESC);
+                        """
+                    )
+                except Exception:
+                    pass
+
+            if current_version < 14:
+                # v14: add GitHub P1 integration metadata tables.
+                try:
+                    cursor.executescript(
+                        """
+                        CREATE TABLE IF NOT EXISTS github_app_installations (
+                            id TEXT PRIMARY KEY,
+                            installation_id INTEGER NOT NULL UNIQUE,
+                            account_login TEXT,
+                            account_type TEXT,
+                            app_id TEXT,
+                            permissions_json TEXT DEFAULT '{}',
+                            events_json TEXT DEFAULT '[]',
+                            status TEXT NOT NULL DEFAULT 'active',
+                            created_at REAL NOT NULL,
+                            updated_at REAL NOT NULL,
+                            last_synced_at REAL
+                        );
+
+                        CREATE INDEX IF NOT EXISTS idx_github_installations_account
+                            ON github_app_installations(account_login);
+
+                        CREATE TABLE IF NOT EXISTS github_repositories (
+                            id TEXT PRIMARY KEY,
+                            installation_id INTEGER,
+                            github_repo_id INTEGER,
+                            owner TEXT NOT NULL,
+                            name TEXT NOT NULL,
+                            full_name TEXT NOT NULL UNIQUE,
+                            default_branch TEXT,
+                            private INTEGER DEFAULT 0,
+                            html_url TEXT,
+                            clone_url TEXT,
+                            ssh_url TEXT,
+                            archived INTEGER DEFAULT 0,
+                            disabled INTEGER DEFAULT 0,
+                            pushed_at TEXT,
+                            created_at REAL NOT NULL,
+                            updated_at REAL NOT NULL,
+                            last_synced_at REAL
+                        );
+
+                        CREATE INDEX IF NOT EXISTS idx_github_repositories_owner
+                            ON github_repositories(owner);
+
+                        CREATE INDEX IF NOT EXISTS idx_github_repositories_installation
+                            ON github_repositories(installation_id);
+
+                        CREATE TABLE IF NOT EXISTS github_branches (
+                            id TEXT PRIMARY KEY,
+                            repo_full_name TEXT NOT NULL,
+                            name TEXT NOT NULL,
+                            sha TEXT,
+                            protected INTEGER DEFAULT 0,
+                            created_at REAL NOT NULL,
+                            updated_at REAL NOT NULL,
+                            last_synced_at REAL,
+                            UNIQUE(repo_full_name, name)
+                        );
+
+                        CREATE INDEX IF NOT EXISTS idx_github_branches_repo
+                            ON github_branches(repo_full_name);
+
+                        CREATE TABLE IF NOT EXISTS github_issues (
+                            id TEXT PRIMARY KEY,
+                            repo_full_name TEXT NOT NULL,
+                            github_issue_id INTEGER,
+                            number INTEGER NOT NULL,
+                            title TEXT,
+                            state TEXT,
+                            author_login TEXT,
+                            labels_json TEXT DEFAULT '[]',
+                            assignees_json TEXT DEFAULT '[]',
+                            milestone_json TEXT DEFAULT '{}',
+                            html_url TEXT,
+                            created_at TEXT,
+                            updated_at TEXT,
+                            closed_at TEXT,
+                            last_synced_at REAL,
+                            UNIQUE(repo_full_name, number)
+                        );
+
+                        CREATE INDEX IF NOT EXISTS idx_github_issues_repo
+                            ON github_issues(repo_full_name);
+
+                        CREATE TABLE IF NOT EXISTS github_pull_requests (
+                            id TEXT PRIMARY KEY,
+                            repo_full_name TEXT NOT NULL,
+                            github_pr_id INTEGER,
+                            number INTEGER NOT NULL,
+                            title TEXT,
+                            state TEXT,
+                            author_login TEXT,
+                            base_branch TEXT,
+                            head_branch TEXT,
+                            head_sha TEXT,
+                            mergeable INTEGER,
+                            draft INTEGER DEFAULT 0,
+                            html_url TEXT,
+                            created_at TEXT,
+                            updated_at TEXT,
+                            closed_at TEXT,
+                            merged_at TEXT,
+                            last_synced_at REAL,
+                            UNIQUE(repo_full_name, number)
+                        );
+
+                        CREATE INDEX IF NOT EXISTS idx_github_pull_requests_repo
+                            ON github_pull_requests(repo_full_name);
+
+                        CREATE TABLE IF NOT EXISTS github_webhook_deliveries (
+                            id TEXT PRIMARY KEY,
+                            delivery_id TEXT NOT NULL UNIQUE,
+                            event TEXT NOT NULL,
+                            action TEXT,
+                            repo_full_name TEXT,
+                            sender_login TEXT,
+                            payload_hash TEXT NOT NULL,
+                            status TEXT NOT NULL,
+                            error TEXT,
+                            received_at REAL NOT NULL,
+                            processed_at REAL
+                        );
+
+                        CREATE INDEX IF NOT EXISTS idx_github_webhooks_repo
+                            ON github_webhook_deliveries(repo_full_name);
+
+                        CREATE TABLE IF NOT EXISTS github_chatops_commands (
+                            id TEXT PRIMARY KEY,
+                            delivery_id TEXT,
+                            repo_full_name TEXT NOT NULL,
+                            issue_number INTEGER,
+                            pr_number INTEGER,
+                            comment_id INTEGER,
+                            sender_login TEXT,
+                            command TEXT NOT NULL,
+                            args TEXT DEFAULT '',
+                            status TEXT NOT NULL DEFAULT 'pending',
+                            orchestrated_run_id TEXT,
+                            code_session_id TEXT,
+                            created_at REAL NOT NULL,
+                            updated_at REAL NOT NULL
+                        );
+
+                        CREATE INDEX IF NOT EXISTS idx_github_chatops_status
+                            ON github_chatops_commands(status);
+
+                        CREATE INDEX IF NOT EXISTS idx_github_chatops_repo
+                            ON github_chatops_commands(repo_full_name);
+
+                        CREATE TABLE IF NOT EXISTS github_status_reports (
+                            id TEXT PRIMARY KEY,
+                            repo_full_name TEXT NOT NULL,
+                            sha TEXT,
+                            context TEXT,
+                            status TEXT,
+                            conclusion TEXT,
+                            details_url TEXT,
+                            external_id TEXT,
+                            created_at REAL NOT NULL,
+                            updated_at REAL NOT NULL
+                        );
+
+                        CREATE INDEX IF NOT EXISTS idx_github_status_reports_repo_sha
+                            ON github_status_reports(repo_full_name, sha);
                         """
                     )
                 except Exception:

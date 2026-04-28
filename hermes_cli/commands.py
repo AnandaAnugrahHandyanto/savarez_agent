@@ -165,6 +165,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Code Mode", cli_only=True),
     CommandDef("skills-code", "Show Code Mode skill integration status",
                "Code Mode", cli_only=True, aliases=("skillscode",)),
+    CommandDef("github", "Show GitHub integration status, repositories, or trigger sync",
+               "Code Mode", cli_only=True, args_hint="[status|repos|sync [--dry-run]]"),
 
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",

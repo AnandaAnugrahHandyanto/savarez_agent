@@ -4483,7 +4483,7 @@ class HermesCLI:
                 f"{counts.get('code_events', 0)} event(s)"
             ),
             "",
-            "Commands: /workspace, /session, /web, /approvals, /skills-code",
+            "Commands: /workspace, /session, /web, /approvals, /skills-code, /github",
         ]
         if state_status.get("error"):
             lines.insert(-2, f"State Note: {state_status['error']}")
@@ -4608,6 +4608,93 @@ class HermesCLI:
             "Skill folders supported: SKILL.md, scripts/, resources/",
         ]
         self._console_print("\n".join(lines), highlight=False, markup=False)
+
+    def _handle_github_command(self, cmd: str):
+        parts = [p for p in cmd.strip().split() if p]
+        action = parts[1].lower() if len(parts) > 1 else "status"
+        try:
+            if action == "status":
+                from hermes_cli.code.github_integration import GitHubIntegrationService
+
+                status = GitHubIntegrationService().status()
+                lines = [
+                    "GitHub Integration",
+                    "",
+                    f"Mode: {status.get('mode')}",
+                    f"Configured: {'yes' if status.get('configured') else 'no'}",
+                    f"App ID configured: {'yes' if status.get('app_id_configured') else 'no'}",
+                    f"Private key configured: {'yes' if status.get('private_key_configured') else 'no'}",
+                    f"Webhook secret configured: {'yes' if status.get('webhook_secret_configured') else 'no'}",
+                    f"PAT dev enabled: {'yes' if status.get('pat_dev_configured') else 'no'}",
+                    f"Installations: {status.get('installations', 0)}",
+                    f"Repositories: {status.get('repositories', 0)}",
+                    "",
+                    "Usage: /github repos | /github sync [--dry-run]",
+                ]
+                self._console_print("\n".join(lines), highlight=False, markup=False)
+                return
+
+            if action == "repos":
+                from hermes_cli.code.github_integration import GitHubIntegrationStore
+
+                query = ""
+                if len(parts) > 2:
+                    query = " ".join(parts[2:])
+                store = GitHubIntegrationStore()
+                try:
+                    repos = store.list_repositories(q=query or None, limit=50)
+                finally:
+                    store.close()
+                if not repos:
+                    self._console_print(
+                        "GitHub Repositories\n\nNo synced repositories found.",
+                        highlight=False,
+                        markup=False,
+                    )
+                    return
+                lines = ["GitHub Repositories", ""]
+                for repo in repos:
+                    lines.append(f"- {repo.get('full_name')}")
+                    lines.append(f"  default: {repo.get('default_branch') or '(unknown)'}")
+                    lines.append(f"  private: {'yes' if repo.get('private') else 'no'}")
+                self._console_print("\n".join(lines), highlight=False, markup=False)
+                return
+
+            if action == "sync":
+                from hermes_cli.code.github_sync import GitHubSyncService
+
+                dry_run = "--dry-run" in parts
+                result = GitHubSyncService().sync_repositories(dry_run=dry_run, limit=100)
+                lines = [
+                    "GitHub Sync",
+                    "",
+                    f"Dry run: {'yes' if dry_run else 'no'}",
+                    f"Synced: {result.get('synced', 0)}",
+                    f"Returned: {len(result.get('repositories') or [])}",
+                ]
+                self._console_print("\n".join(lines), highlight=False, markup=False)
+                return
+
+            self._console_print(
+                "\n".join(
+                    [
+                        "GitHub Command",
+                        "",
+                        "Usage:",
+                        "/github status",
+                        "/github repos [query]",
+                        "/github sync [--dry-run]",
+                    ]
+                ),
+                highlight=False,
+                markup=False,
+            )
+        except Exception as exc:
+            self._console_print(
+                f"GitHub command unavailable: {exc}",
+                highlight=False,
+                markup=False,
+            )
     
     def _fast_command_available(self) -> bool:
         try:
@@ -6434,6 +6521,8 @@ class HermesCLI:
             self._handle_code_approvals_command(cmd_original)
         elif canonical == "skills-code":
             self._handle_skills_code_command(cmd_original)
+        elif canonical == "github":
+            self._handle_github_command(cmd_original)
         elif canonical == "statusbar":
             self._status_bar_visible = not self._status_bar_visible
             state = "visible" if self._status_bar_visible else "hidden"

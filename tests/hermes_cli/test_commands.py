@@ -71,10 +71,11 @@ class TestCommandRegistry:
             assert cmd.category in valid_categories, f"{cmd.name} has invalid category '{cmd.category}'"
 
     def test_code_mode_commands_registered(self):
-        expected = {"code", "web", "workspace", "session", "approvals", "skills-code"}
+        expected = {"code", "web", "workspace", "session", "approvals", "skills-code", "github"}
         names = {cmd.name for cmd in COMMAND_REGISTRY}
         assert expected <= names
         assert resolve_command("skillscode").name == "skills-code"
+        assert resolve_command("github").name == "github"
 
     def test_reasoning_subcommands_are_in_logical_order(self):
         reasoning = next(cmd for cmd in COMMAND_REGISTRY if cmd.name == "reasoning")
