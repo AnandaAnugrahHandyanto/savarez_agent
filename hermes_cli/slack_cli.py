@@ -38,8 +38,7 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
 
     return {
         "_metadata": {
-            "major_version": 1,
-            "minor_version": 1,
+            "version": "2.0.0",
         },
         "display_information": {
             "name": bot_name[:35],

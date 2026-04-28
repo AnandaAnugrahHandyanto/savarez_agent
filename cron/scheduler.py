@@ -198,7 +198,9 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
             if resolved:
                 parsed_chat_id, parsed_thread_id, resolved_is_explicit = _parse_target_ref(platform_key, resolved)
                 if resolved_is_explicit:
-                    chat_id, thread_id = parsed_chat_id, parsed_thread_id
+                    chat_id = parsed_chat_id
+                    if parsed_thread_id is not None:
+                        thread_id = parsed_thread_id
                 else:
                     chat_id = resolved
         except Exception:
@@ -236,7 +238,11 @@ def _resolve_delivery_targets(job: dict) -> List[dict]:
     deliver = job.get("deliver", "local")
     if deliver == "local":
         return []
-    parts = [p.strip() for p in str(deliver).split(",") if p.strip()]
+    # Handle deliver as both string ("telegram,discord") and list (["telegram", "discord"])
+    if isinstance(deliver, list):
+        parts = [p.strip() for p in deliver if p.strip()]
+    else:
+        parts = [p.strip() for p in str(deliver).split(",") if p.strip()]
     seen = set()
     targets = []
     for part in parts:
@@ -877,8 +883,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set(delivery_target["platform"])
             _VAR_MAP["HERMES_CRON_AUTO_DELIVER_CHAT_ID"].set(str(delivery_target["chat_id"]))
             if delivery_target.get("thread_id") is not None:
-                _VAR_MAP["HERMES_CRON_AUTO_DELIVER_THREAD_ID"].set(str(delivery_target["thread_id"]))    model_raw = job.get("model") or os.getenv("HERMES_MODEL") or ""
-    model = os.path.expandvars(model_raw)
+                _VAR_MAP["HERMES_CRON_AUTO_DELIVER_THREAD_ID"].set(str(delivery_target["thread_id"]))
+
+        model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
@@ -942,9 +949,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         try:
             runtime_kwargs = {
                 "requested": job.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER"),
-            }    if job.get("base_url"):
-        base_url_raw = job.get("base_url")
-        runtime_kwargs["explicit_base_url"] = os.path.expandvars(base_url_raw)
+            }
+            if job.get("base_url"):
+                runtime_kwargs["explicit_base_url"] = job.get("base_url")
             runtime = resolve_runtime_provider(**runtime_kwargs)
         except AuthError as auth_exc:
             # Primary provider auth failed — try fallback chain before giving up.

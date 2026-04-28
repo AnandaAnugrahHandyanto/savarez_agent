@@ -203,11 +203,16 @@ async def discover_fallback_ips() -> list[str]:
         if isinstance(r, list):
             doh_ips.extend(r)
 
-    # Deduplicate preserving order, exclude system-DNS IPs
+    # Deduplicate preserving order.  Do NOT exclude system-DNS IPs — when
+    # DoH and system DNS agree on an IP it is a confirmation of validity,
+    # not a reason to discard it.  TelegramFallbackTransport tries the
+    # primary path (system DNS) first and falls through to explicit IPs
+    # only on connect failure, so including the same IP in both lanes lets
+    # a transient primary failure recover via the explicit IP route.
     seen: set[str] = set()
     candidates: list[str] = []
     for ip in doh_ips:
-        if ip not in seen and ip not in system_ips:
+        if ip not in seen:
             seen.add(ip)
             candidates.append(ip)
 
