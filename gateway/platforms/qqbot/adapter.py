@@ -1192,26 +1192,36 @@ class QQAdapter(BasePlatformAdapter):
                 # agent must always learn that *something* was sent, even when
                 # the QQ file CDN download fails — otherwise the file is
                 # silently dropped and the user sees no acknowledgement.
-                label = filename or ct or "file"
+                #
+                # Strip whitespace from filename so a name like "   " doesn't
+                # produce "[Attachment:  (download failed)]".  The QQ file CDN
+                # URLs carry signed query parameters (``sign=`` / ``sig=``);
+                # log only the hostname + path so signed tokens don't leak
+                # into production logs.
+                stripped_name = (filename or "").strip()
+                label = stripped_name or (ct or "").strip() or "file"
+                _parsed = urlparse(url or "")
+                _safe_url = f"{_parsed.hostname or '?'}{_parsed.path or ''}"
                 try:
                     cached_path = await self._download_and_cache(url, ct)
                     if cached_path:
                         other_attachments.append(f"[Attachment: {label}]")
                     else:
                         logger.warning(
-                            "[%s] Attachment download returned no payload: %s (%s)",
+                            "[%s] Attachment download failed (no cached path): %s (%s)",
                             self._log_tag,
                             label,
-                            url[:80],
+                            _safe_url,
                         )
                         other_attachments.append(
                             f"[Attachment: {label} (download failed)]"
                         )
                 except Exception as exc:
                     logger.warning(
-                        "[%s] Failed to cache attachment %s: %s",
+                        "[%s] Failed to cache attachment %s (%s): %s",
                         self._log_tag,
                         label,
+                        _safe_url,
                         exc,
                     )
                     other_attachments.append(
