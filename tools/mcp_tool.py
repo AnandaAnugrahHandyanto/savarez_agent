@@ -988,14 +988,49 @@ class MCPServerTask:
                         with a fresh signal.
 
         Shutdown takes precedence if both events are set simultaneously.
+
+        Periodically sends a keepalive probe (list_tools) to prevent idle
+        HTTP connections from going stale after extended periods with no
+        tool calls (~12h+ can cause TCP keepalives to expire at the OS/LB
+        level, making the next tool call fail silently).
         """
+        KEEPALIVE_INTERVAL = 180  # 3 minutes
+
         shutdown_task = asyncio.create_task(self._shutdown_event.wait())
         reconnect_task = asyncio.create_task(self._reconnect_event.wait())
         try:
-            await asyncio.wait(
-                {shutdown_task, reconnect_task},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            while True:
+                done, pending = await asyncio.wait(
+                    {shutdown_task, reconnect_task},
+                    timeout=KEEPALIVE_INTERVAL,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                if done:
+                    break
+
+                # Keepalive: exercise the connection to prevent TCP staleness.
+                # During long idle periods the OS/LB TCP keepalive (~2h default)
+                # may expire, killing the socket without Hermes noticing.
+                if self.session:
+                    try:
+                        await asyncio.wait_for(
+                            self.session.list_tools(),
+                            timeout=30.0,
+                        )
+                        logger.debug(
+                            "MCP server '%s': keepalive probe succeeded",
+                            self.name,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "MCP server '%s' keepalive failed, triggering reconnect: %s",
+                            self.name,
+                            exc,
+                        )
+                        self._reconnect_event.set()
+                        return "reconnect"
+
         finally:
             for t in (shutdown_task, reconnect_task):
                 if not t.done():
