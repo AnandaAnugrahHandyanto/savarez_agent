@@ -369,6 +369,7 @@ platforms:
 2. The `thread_id` is saved back to `config.yaml` automatically — subsequent restarts skip the API call
 3. Each topic maps to an isolated session key: `agent:main:telegram:dm:{chat_id}:{thread_id}`
 4. Messages in each topic have their own conversation history, memory flush, and context window
+5. Immediately after a topic is created or discovered, Hermes posts a short `📌 <name>` seed message into the new thread — this forces all Telegram clients (Desktop / iOS / Android / Web) to sync the topic into their UI tree. Without it, mobile and desktop clients often fail to render newly-created DM topics for several minutes
 
 ### Skill binding
 
@@ -377,8 +378,28 @@ Topics with a `skill` field automatically load that skill when a new session sta
 For example, a topic with `skill: arxiv` will have the arxiv skill pre-loaded whenever its session resets (due to idle timeout, daily reset, or manual `/reset`).
 
 :::tip
-Topics created outside of the config (e.g., by manually calling the Telegram API) are discovered automatically when a `forum_topic_created` service message arrives. You can also add topics to the config while the gateway is running — they'll be picked up on the next cache miss.
+Topics created outside of the config (e.g., manually in the Telegram client UI, or by calling the Telegram API) are discovered automatically. Hermes registers a handler for `forum_topic_created` service messages — these were silently dropped by earlier Hermes versions because the default text/command/media filters do not match service updates. You can also add topics to the config while the gateway is running — they'll be picked up on the next cache miss.
 :::
+
+### Auto-rename via LLM (opt-in)
+
+Telegram clients auto-name DM topics from the verbatim first user message — typing `想討論下下個禮拜同 ABC 公司開會嘅 agenda?` produces a long sentence-shaped topic name instead of a short label.
+
+Enable `auto_rename_dm_topics` to have Hermes generate a clean 3-7 word title via the auxiliary title-generation LLM and apply it via `editForumTopic`:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      auto_rename_dm_topics: true
+```
+
+| Setting | Default | Effect |
+|---------|---------|--------|
+| `auto_rename_dm_topics: false` | ✓ | Topic name is whatever the Telegram client created; Hermes still seeds and caches it |
+| `auto_rename_dm_topics: true` |   | After caching, Hermes calls the auxiliary title model and renames via `editForumTopic` |
+
+The rename runs in the background after the topic is discovered, so it never delays the user's first reply. Reasoning models (DeepSeek-R1, MiniMax-M2, etc.) are supported — `<think>...</think>` traces are stripped from the output, and unterminated reasoning blocks are rejected to prevent garbage names. Each rename costs one auxiliary-model call.
 
 ## Group Forum Topic Skill Binding
 
