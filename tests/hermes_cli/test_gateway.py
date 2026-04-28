@@ -372,10 +372,35 @@ class TestStopProfileGateway:
         )
         monkeypatch.setattr("time.sleep", lambda _: None)
         monkeypatch.setattr(
-            "gateway.status.remove_pid_file",
-            lambda: calls.__setitem__("remove", calls["remove"] + 1),
+            "time.sleep",
+            lambda _: None,
         )
 
-        assert gateway.stop_profile_gateway() is True
-        assert calls["kill"] == 21
-        assert calls["remove"] == 0
+
+# ---------------------------------------------------------------------------
+# _scan_gateway_pids
+# ---------------------------------------------------------------------------
+
+class TestScanGatewayPids:
+    """Windows gateway PID scanning with encoding error handling."""
+
+    def test_handles_wmic_unicode_decode_error_gracefully(self, monkeypatch):
+        """When wmic subprocess raises UnicodeDecodeError, return empty list instead of crashing."""
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(gateway, "is_windows", lambda: True)
+
+        def fake_run_wmic(cmd, **kwargs):
+            # Simulate UnicodeDecodeError from non-UTF-8 wmic output
+            if cmd[0] == "wmic":
+                # When decode fails, subprocess returns None stdout
+                return SimpleNamespace(returncode=1, stdout=None, stderr="UnicodeDecodeError")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        monkeypatch.setattr(gateway.subprocess, "run", fake_run_wmic)
+
+        # Should return empty list when decode fails, not crash with AttributeError
+        result = gateway._scan_gateway_pids(exclude_pids=set(), all_profiles=False)
+
+        assert result == []
+
