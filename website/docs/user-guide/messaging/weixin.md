@@ -150,6 +150,17 @@ WEIXIN_GROUP_ALLOWED_USERS=group_id_1,group_id_2
 The default group policy is `disabled` for Weixin (unlike WeCom where it defaults to `open`). This is intentional since personal WeChat accounts may be in many groups.
 :::
 
+:::warning Ordinary WeChat groups may not be delivered for QR-login bots
+QR login connects Hermes to an **iLink bot identity** (e.g. `<hex>@im.bot`), not to a fully automated personal WeChat account. The iLink bot identity cannot be invited into ordinary WeChat groups the way a normal contact can, and `getUpdates` typically returns zero messages for ordinary group chats — even when `WEIXIN_GROUP_POLICY` is `open` or `allowlist`.
+
+In practice, this means:
+
+- **Bot DMs work** — messages sent to the iLink bot's DM entry reach the gateway.
+- **Ordinary WeChat group messages may not arrive at all**, and `@`-mentioning the personal WeChat account used for QR login is **not** the same as `@`-mentioning the iLink bot.
+
+Set a non-`disabled` group policy only if you have confirmed (e.g. via gateway logs) that iLink is forwarding group events for your bot type.
+:::
+
 ## Media Support
 
 ### Inbound (receiving)
@@ -290,7 +301,7 @@ Only one Weixin gateway instance can use a given token at a time. The adapter ac
 | Session expired (`errcode=-14`) | Your login session has expired. Re-run `hermes gateway setup` to scan a new QR code |
 | QR code expired during setup | The QR auto-refreshes up to 3 times. If it keeps expiring, check your network connection |
 | Bot doesn't respond to DMs | Check `WEIXIN_DM_POLICY` — if set to `allowlist`, the sender must be in `WEIXIN_ALLOWED_USERS` |
-| Bot ignores group messages | Group policy defaults to `disabled`. Set `WEIXIN_GROUP_POLICY=open` or `allowlist` |
+| Bot ignores group messages | Group policy defaults to `disabled`. Set `WEIXIN_GROUP_POLICY=open` or `allowlist`. Note: QR-login iLink bots may not receive ordinary WeChat group events at all — see [Group Policy](#group-policy) |
 | Media download/upload fails | Ensure `cryptography` is installed. Check network access to `novac2c.cdn.weixin.qq.com` |
 | `Blocked unsafe URL (SSRF protection)` | The outbound media URL points to a private/internal address. Only public URLs are allowed |
 | Voice messages show as text | If WeChat provides a transcription, the adapter uses the text. This is expected behavior |
