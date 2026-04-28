@@ -14,6 +14,11 @@ on:
         description: 'PR number to fix (leave empty to run on the selected branch)'
         required: false
         type: string
+      test_auto_fix:
+        description: '[TEMP] Test auto-fix-main app token flow on this branch'
+        required: false
+        type: boolean
+        default: false
   issue_comment:
     types: [edited]
 
@@ -34,13 +39,22 @@ jobs:
   # The fix commit only touches nix/*.nix files, which are NOT in the
   # paths filter above, so this cannot re-trigger itself.
   auto-fix-main:
-    if: github.event_name == 'push'
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.test_auto_fix == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@7bfa3a4717ef143a604ee0a99d859b8886a96d00  # v1.9.3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - uses: ./.github/actions/nix-setup
 
@@ -49,7 +63,7 @@ jobs:
         run: nix run .#fix-lockfiles -- --apply
 
       - name: Commit & push
-        if: steps.apply.outputs.changed == 'true'
+        if: steps.apply.outputs.changed == 'true' && github.event_name == 'push'
         shell: bash
         run: |
           set -euo pipefail
@@ -59,12 +73,20 @@ jobs:
           git commit -m "fix(nix): auto-refresh npm lockfile hashes"
           git push
 
+      - name: '[TEMP] Dry-run summary'
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "✅ App token minted successfully"
+          echo "✅ Checkout with app token succeeded"
+          echo "✅ fix-lockfiles ran (changed=${{ steps.apply.outputs.changed }})"
+          echo "⏭️  Skipped push (dry-run mode)"
+
   # ── PR fix (manual / checkbox) ─────────────────────────────────────
   # Existing behavior: run on manual dispatch OR when a task-list
   # checkbox in the sticky lockfile-check comment flips from [ ] to [x].
   fix:
     if: |
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.test_auto_fix != 'true') ||
       (github.event_name == 'issue_comment'
        && github.event.issue.pull_request != null
        && contains(github.event.comment.body, '[x] **Apply lockfile fix**')
