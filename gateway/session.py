@@ -435,6 +435,7 @@ class SessionEntry:
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    reasoning_tokens: int = 0
     total_tokens: int = 0
     estimated_cost_usd: float = 0.0
     cost_status: str = "unknown"
@@ -484,6 +485,7 @@ class SessionEntry:
             "output_tokens": self.output_tokens,
             "cache_read_tokens": self.cache_read_tokens,
             "cache_write_tokens": self.cache_write_tokens,
+            "reasoning_tokens": self.reasoning_tokens,
             "total_tokens": self.total_tokens,
             "last_prompt_tokens": self.last_prompt_tokens,
             "estimated_cost_usd": self.estimated_cost_usd,
@@ -536,6 +538,7 @@ class SessionEntry:
             output_tokens=data.get("output_tokens", 0),
             cache_read_tokens=data.get("cache_read_tokens", 0),
             cache_write_tokens=data.get("cache_write_tokens", 0),
+            reasoning_tokens=data.get("reasoning_tokens", 0),
             total_tokens=data.get("total_tokens", 0),
             last_prompt_tokens=data.get("last_prompt_tokens", 0),
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
@@ -941,6 +944,74 @@ class SessionStore:
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
                 self._save()
+
+    def update_token_counts(
+        self,
+        session_id: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        reasoning_tokens: int = 0,
+        estimated_cost_usd: float = None,
+        cost_status: str = None,
+        cost_source: str = None,
+        api_call_count: int = 0,
+        absolute: bool = False,
+    ) -> None:
+        """Update token counts for a session.
+
+        When *absolute* is False (default), values are **incremented** —
+        use this for per-API-call deltas.
+
+        When *absolute* is True, values are **set directly** — use this when
+        the caller already holds cumulative totals (gateway path).
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+
+            # Find the session entry by session_id
+            entry = None
+            for e in self._entries.values():
+                if e.session_id == session_id:
+                    entry = e
+                    break
+
+            if entry is None:
+                return  # Session not found in memory
+
+            if absolute:
+                # Set absolute values
+                entry.input_tokens = input_tokens
+                entry.output_tokens = output_tokens
+                entry.cache_read_tokens = cache_read_tokens
+                entry.cache_write_tokens = cache_write_tokens
+                entry.reasoning_tokens = reasoning_tokens
+                entry.total_tokens = (
+                    input_tokens + output_tokens + 
+                    cache_read_tokens + cache_write_tokens + reasoning_tokens
+                )
+                if estimated_cost_usd is not None:
+                    entry.estimated_cost_usd = estimated_cost_usd
+                if cost_status is not None:
+                    entry.cost_status = cost_status
+            else:
+                # Increment values
+                entry.input_tokens += input_tokens
+                entry.output_tokens += output_tokens
+                entry.cache_read_tokens += cache_read_tokens
+                entry.cache_write_tokens += cache_write_tokens
+                entry.reasoning_tokens += reasoning_tokens
+                entry.total_tokens = (
+                    entry.input_tokens + entry.output_tokens + 
+                    entry.cache_read_tokens + entry.cache_write_tokens + entry.reasoning_tokens
+                )
+                if estimated_cost_usd is not None:
+                    entry.estimated_cost_usd = estimated_cost_usd
+                if cost_status is not None:
+                    entry.cost_status = cost_status
+
+            self._save()
 
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.

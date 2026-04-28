@@ -5412,6 +5412,25 @@ class GatewayRunner:
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
+            
+            # Update token counts in session store for /status display.
+            # Calculate total from components since agent_result may not have total_tokens.
+            input_t = agent_result.get("input_tokens", 0) or 0
+            output_t = agent_result.get("output_tokens", 0) or 0
+            cache_read_t = agent_result.get("cache_read_tokens", 0) or 0
+            cache_write_t = agent_result.get("cache_write_tokens", 0) or 0
+            reasoning_t = agent_result.get("reasoning_tokens", 0) or 0
+            total = input_t + output_t + cache_read_t + cache_write_t + reasoning_t
+            if total > 0:
+                self.session_store.update_token_counts(
+                    session_entry.session_id,
+                    input_tokens=input_t,
+                    output_tokens=output_t,
+                    cache_read_tokens=cache_read_t,
+                    cache_write_tokens=cache_write_t,
+                    reasoning_tokens=reasoning_t,
+                    absolute=True,  # agent_result contains cumulative totals
+                )
 
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
