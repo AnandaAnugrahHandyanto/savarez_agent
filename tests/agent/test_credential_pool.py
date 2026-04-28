@@ -1370,3 +1370,76 @@ def test_nous_exhausted_entry_recovers_via_auth_store_sync(tmp_path, monkeypatch
     assert len(available) == 1
     assert available[0].refresh_token == "refresh-FRESH"
     assert available[0].last_status is None
+
+
+def test_opencode_go_env_seed_survives_missing_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("OPENCODE_GO_API_KEY", raising=False)
+
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "opencode-go": [
+                    {
+                        "id": "cred-opencode",
+                        "label": "OPENCODE_GO_API_KEY",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "env:OPENCODE_GO_API_KEY",
+                        "access_token": "***",
+                        "base_url": "https://opencode.ai/zen/go/v1",
+                        "request_count": 0,
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("opencode-go")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.source == "env:OPENCODE_GO_API_KEY"
+    assert entry.label == "OPENCODE_GO_API_KEY"
+
+    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert persisted["credential_pool"]["opencode-go"]
+
+
+def test_env_oauth_seed_is_pruned_when_env_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-anthropic",
+                        "label": "CLAUDE_CODE_OAUTH_TOKEN",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "env:CLAUDE_CODE_OAUTH_TOKEN",
+                        "access_token": "***",
+                        "base_url": "https://api.anthropic.com",
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    assert pool.select() is None
+
+    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert persisted["credential_pool"]["anthropic"] == []
