@@ -341,8 +341,9 @@ class TestBusySessionAck:
         await runner._handle_active_session_busy_message(event, sk)
         assert adapter._send_with_retry.call_count == 1
 
-        # Fake that cooldown expired
-        runner._busy_ack_ts[sk] = time.time() - 31
+        # Fake that cooldown expired (key now includes user_id, see
+        # gateway.run debounce note).
+        runner._busy_ack_ts[(sk, event.source.user_id or "_anon")] = time.time() - 31
 
         # Second ack should go through
         await runner._handle_active_session_busy_message(event, sk)

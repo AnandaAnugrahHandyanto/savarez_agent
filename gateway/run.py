@@ -455,6 +455,88 @@ def _is_control_interrupt_message(message: Optional[str]) -> bool:
     return normalized in _CONTROL_INTERRUPT_MESSAGES
 
 
+# Pre-compiled patterns for stripping noise out of topic previews. We strip:
+#   - leading ``[Replying to message ... at HH:MM: "..."]\n\n`` blocks (and the
+#     legacy ``[Replying to: "..."]`` form), because these reflect the *quoted*
+#     message, not the user's new intent.
+#   - leading shared-session sender markers ``[<name>] `` so the preview
+#     focuses on what the user said, not who they are.
+_REPLY_PREFIX_RE = re.compile(
+    r'^\[Replying to[^\]]*\](?:\n+)?',
+    flags=re.DOTALL,
+)
+_SENDER_MARKER_RE = re.compile(r'^\[[^\]\n]{1,40}\]\s+')
+
+
+def topic_preview_for_progress(message: Optional[str], *, max_chars: int = 30) -> str:
+    """Return a short topic preview suitable for a progress-message header.
+
+    Strips leading ``[Replying to ...]`` blocks and ``[name] `` shared-session
+    markers, collapses whitespace, and truncates to ``max_chars`` codepoints
+    (with a trailing ellipsis when truncation actually drops content).
+
+    Designed to give 玉子燒-style shared-session groups a clear "the agent is
+    currently thinking about *this*" header so participants can see which
+    queued question the bot is working on, even when their own message hasn't
+    been picked up yet.
+    """
+    if not message:
+        return ""
+    text = str(message)
+    # Strip leading Replying-to block(s).
+    while True:
+        m = _REPLY_PREFIX_RE.match(text)
+        if not m:
+            break
+        text = text[m.end():]
+    # Strip leading sender marker.
+    text = _SENDER_MARKER_RE.sub("", text, count=1)
+    # Collapse whitespace and trim.
+    text = " ".join(text.split())
+    if not text:
+        return ""
+    if len(text) > max_chars:
+        return text[:max_chars] + "…"
+    return text
+
+
+def _build_progress_header(
+    source: "SessionSource",
+    message: Optional[str],
+    *,
+    group_sessions_per_user: bool = True,
+    thread_sessions_per_user: bool = False,
+) -> Optional[str]:
+    """Return a one-line topic header for the progress message, or None.
+
+    Only emitted when the session is shared across multiple participants
+    (``is_shared_multi_user_session(source) is True``). In DMs and per-user
+    isolated groups every progress message is unambiguously about the only
+    participant who can see it, so a header would just be noise.
+
+    Format::
+
+        ⏳ 玉青：米粉跟醬包各2
+
+    The ⏳ icon makes it visually distinct from regular progress lines (which
+    start with tool emoji like 🔍 / 📑). The sender name + topic snippet
+    answer "who's question is being processed?" at a glance.
+    """
+    if not is_shared_multi_user_session(
+        source,
+        group_sessions_per_user=group_sessions_per_user,
+        thread_sessions_per_user=thread_sessions_per_user,
+    ):
+        return None
+    name = (getattr(source, "user_name", None) or "").strip()
+    if not name:
+        return None
+    topic = topic_preview_for_progress(message, max_chars=30)
+    if topic:
+        return f"⏳ {name}：{topic}"
+    return f"⏳ {name}"
+
+
 def _check_unavailable_skill(command_name: str) -> str | None:
     """Check if a command matches a known-but-inactive skill.
 
@@ -1720,15 +1802,21 @@ class GatewayRunner:
             except Exception:
                 pass  # don't let interrupt failure block the ack
 
-        # Debounce: only send an acknowledgment once every 30 seconds per session
-        # to avoid spamming the user when they send multiple messages quickly
+        # Debounce: only send an acknowledgment once every 30 seconds per
+        # (session, sender) pair to avoid spamming a single user when they
+        # send several follow-ups in a row, while still letting a *different*
+        # participant in a shared-session group get their own ack within the
+        # window — silence on a second sender's first message looks like the
+        # bot ignored them entirely.
         _BUSY_ACK_COOLDOWN = 30
         now = time.time()
-        last_ack = self._busy_ack_ts.get(session_key, 0)
+        _ack_user_id = getattr(event.source, "user_id", None) or "_anon"
+        ack_key = (session_key, _ack_user_id)
+        last_ack = self._busy_ack_ts.get(ack_key, 0)
         if now - last_ack < _BUSY_ACK_COOLDOWN:
             return True  # interrupt sent (if not queue), ack already delivered recently
 
-        self._busy_ack_ts[session_key] = now
+        self._busy_ack_ts[ack_key] = now
 
         # Build a status-rich acknowledgment
         status_parts = []
@@ -9941,11 +10029,35 @@ class GatewayRunner:
                         break
                 return
 
+            # Shared-session header: in groups where multiple participants
+            # share one session, prefix the progress message with a one-line
+            # "⏳ <sender>：<topic>" so the chat at large can see *whose*
+            # question the agent is currently working on.  Always None in
+            # DMs and per-user-isolated groups.
+            _progress_header = _build_progress_header(
+                source,
+                message,
+                group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+                thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            )
+            # When we have a header (multi-user shared session), reply the
+            # progress message to the originating user message so Telegram
+            # draws a connecting line — even better attribution than the
+            # header alone.  In DMs and per-user groups we leave reply_to
+            # off so the progress doesn't pile up references.
+            _progress_reply_to = event_message_id if _progress_header else None
+
             progress_lines = []      # Accumulated tool lines
             progress_msg_id = None   # ID of the progress message to edit
             can_edit = True          # False once an edit fails (platform doesn't support it)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
+
+            def _render_progress_text() -> str:
+                lines = list(progress_lines)
+                if _progress_header:
+                    lines.insert(0, _progress_header)
+                return "\n".join(lines)
 
             while True:
                 try:
@@ -10003,7 +10115,7 @@ class GatewayRunner:
 
                     if can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
-                        full_text = "\n".join(progress_lines)
+                        full_text = _render_progress_text()
                         result = await adapter.edit_message(
                             chat_id=source.chat_id,
                             message_id=progress_msg_id,
@@ -10024,8 +10136,13 @@ class GatewayRunner:
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
-                            full_text = "\n".join(progress_lines)
-                            result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata=_progress_metadata)
+                            full_text = _render_progress_text()
+                            result = await adapter.send(
+                                chat_id=source.chat_id,
+                                content=full_text,
+                                reply_to=_progress_reply_to,
+                                metadata=_progress_metadata,
+                            )
                         else:
                             # Editing unsupported: send just this line
                             result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
@@ -10056,7 +10173,7 @@ class GatewayRunner:
                             break
                     # Final edit with all remaining tools (only if editing works)
                     if can_edit and progress_lines and progress_msg_id:
-                        full_text = "\n".join(progress_lines)
+                        full_text = _render_progress_text()
                         try:
                             await adapter.edit_message(
                                 chat_id=source.chat_id,
