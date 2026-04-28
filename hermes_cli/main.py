@@ -1117,6 +1117,22 @@ def _launch_tui(
     env.setdefault("HERMES_PYTHON", sys.executable)
     env.setdefault("HERMES_CWD", os.getcwd())
     env.setdefault("NODE_ENV", "development" if tui_dev else "production")
+
+    # The TUI is a subprocess tree (Python CLI → Node Ink app → Python
+    # tui_gateway → slash_worker).  HERMES_HOME is already profile-scoped by
+    # _apply_profile_override(), but HOME can be inherited from the launching
+    # shell or even from another Hermes profile's terminal sandbox.  If the
+    # selected profile has its own {HERMES_HOME}/home directory, pass that HOME
+    # to the TUI subprocess tree so Path.home()/~ fallbacks cannot bleed across
+    # profiles.
+    try:
+        from hermes_constants import get_subprocess_home
+
+        subprocess_home = get_subprocess_home()
+        if subprocess_home:
+            env["HOME"] = subprocess_home
+    except Exception:
+        pass
     if model:
         env["HERMES_MODEL"] = model
         env["HERMES_INFERENCE_MODEL"] = model

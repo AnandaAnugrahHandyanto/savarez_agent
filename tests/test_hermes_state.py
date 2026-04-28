@@ -17,6 +17,33 @@ def db(tmp_path):
 
 
 # =========================================================================
+# Profile/path isolation
+# =========================================================================
+
+
+def test_default_db_path_resolves_hermes_home_at_construction_time(monkeypatch, tmp_path):
+    """SessionDB() must follow the current profile even if the module was imported earlier."""
+    first_home = tmp_path / "profiles" / "seojongho"
+    second_home = tmp_path / "profiles" / "ai-news-team"
+    first_home.mkdir(parents=True)
+    second_home.mkdir(parents=True)
+
+    monkeypatch.setenv("HERMES_HOME", str(first_home))
+    first = SessionDB()
+    try:
+        assert first.db_path == first_home / "state.db"
+    finally:
+        first.close()
+
+    monkeypatch.setenv("HERMES_HOME", str(second_home))
+    second = SessionDB()
+    try:
+        assert second.db_path == second_home / "state.db"
+    finally:
+        second.close()
+
+
+# =========================================================================
 # Session lifecycle
 # =========================================================================
 

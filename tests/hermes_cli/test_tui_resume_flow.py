@@ -159,6 +159,33 @@ def test_launch_tui_exports_model_and_provider(monkeypatch, main_mod):
     assert env["NODE_ENV"] == "production"
 
 
+def test_launch_tui_uses_profile_subprocess_home(monkeypatch, tmp_path, main_mod):
+    captured = {}
+    profile_home = tmp_path / "profiles" / "ai-news-team"
+    subprocess_home = profile_home / "home"
+    subprocess_home.mkdir(parents=True)
+
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setenv("HOME", str(tmp_path / "profiles" / "seojongho" / "home"))
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+
+    def fake_call(argv, cwd=None, env=None):
+        captured.update({"argv": argv, "cwd": cwd, "env": env})
+        return 1
+
+    monkeypatch.setattr(main_mod.subprocess, "call", fake_call)
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    assert captured["env"]["HERMES_HOME"] == str(profile_home)
+    assert captured["env"]["HOME"] == str(subprocess_home)
+
+
 def test_print_tui_exit_summary_includes_resume_and_token_totals(monkeypatch, capsys):
     import hermes_cli.main as main_mod
 
