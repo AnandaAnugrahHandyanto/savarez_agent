@@ -328,6 +328,23 @@ class TestWebServerEndpoints:
         resp = unauth_client.get("/api/status")
         assert resp.status_code == 200
 
+    def test_session_header_case_insensitive(self):
+        """Session token lookup must work regardless of header casing (#16726)."""
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import app, _SESSION_TOKEN
+
+        for header_name in (
+            "X-Hermes-Session-Token",
+            "x-hermes-session-token",
+            "X-HERMES-SESSION-TOKEN",
+        ):
+            client = TestClient(app)
+            client.headers[header_name] = _SESSION_TOKEN
+            resp = client.get("/api/env")
+            assert resp.status_code == 200, (
+                f"Header {header_name!r} should authenticate but got {resp.status_code}"
+            )
+
     def test_path_traversal_blocked(self):
         """Verify URL-encoded path traversal is blocked."""
         # %2e%2e = ..
