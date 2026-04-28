@@ -205,6 +205,79 @@ class TestSend:
         assert mock_client.post.call_args[0][0] == "https://cached.example/webhook"
 
     @pytest.mark.asyncio
+    async def test_send_prefers_robot_group_message_api_when_message_context_present(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._message_contexts["chat-123"] = SimpleNamespace(
+            conversation_id="cid123",
+            conversation_type="2",
+            robot_code="robot-123",
+        )
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.content = b'{"processQueryKey":"msg-key"}'
+        mock_response.json.return_value = {"processQueryKey": "msg-key"}
+        mock_response.text = '{"processQueryKey":"msg-key"}'
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+        adapter._stream_client = object()
+        adapter._get_access_token = AsyncMock(return_value="token123")
+
+        result = await adapter.send("chat-123", "Hello!")
+
+        assert result.success is True
+        call_args = mock_client.post.call_args
+        assert call_args.args[0] == "https://api.dingtalk.com/v1.0/robot/groupMessages/send"
+        payload = call_args.kwargs["json"]
+        assert payload["robotCode"] == "robot-123"
+        assert payload["openConversationId"] == "cid123"
+        assert payload["msgKey"] == "sampleMarkdown"
+        assert json.loads(payload["msgParam"]) == {"title": "Hermes", "text": "Hello!"}
+
+    @pytest.mark.asyncio
+    async def test_send_robot_api_falls_back_to_webhook(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._message_contexts["chat-123"] = SimpleNamespace(
+            conversation_id="cid123",
+            conversation_type="2",
+            robot_code="robot-123",
+        )
+
+        robot_response = MagicMock()
+        robot_response.status_code = 400
+        robot_response.content = b'{"code":"invalidParameter.msgKey.invalid"}'
+        robot_response.json.return_value = {"code": "invalidParameter.msgKey.invalid"}
+        robot_response.text = '{"code":"invalidParameter.msgKey.invalid"}'
+
+        webhook_response = MagicMock()
+        webhook_response.status_code = 200
+        webhook_response.text = "OK"
+        webhook_response.content = b""
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(
+            side_effect=[robot_response, robot_response, webhook_response]
+        )
+        adapter._http_client = mock_client
+        adapter._stream_client = object()
+        adapter._get_access_token = AsyncMock(return_value="token123")
+
+        result = await adapter.send(
+            "chat-123",
+            "Hello!",
+            metadata={"session_webhook": "https://dingtalk.example/webhook"},
+        )
+
+        assert result.success is True
+        assert mock_client.post.call_args_list[-1].args[0] == "https://dingtalk.example/webhook"
+
+    @pytest.mark.asyncio
     async def test_send_handles_http_error(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))

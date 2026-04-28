@@ -27,10 +27,12 @@ Configuration in config.yaml:
 """
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
 import re
+import socket
 import traceback
 import uuid
 from datetime import datetime, timezone
@@ -95,6 +97,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    resolve_proxy_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -109,6 +112,125 @@ DINGTALK_TYPE_MAPPING = {
     "picture": "image",
     "voice": "audio",
 }
+
+_DINGTALK_HTTP_HOSTS = {"api.dingtalk.com", "oapi.dingtalk.com"}
+_DINGTALK_SEED_FALLBACK_IPS = ["120.77.134.54"]
+
+
+class DingTalkFallbackTransport(httpx.AsyncBaseTransport):
+    """Retry DingTalk HTTP API requests via fallback IPv4s preserving TLS/SNI.
+
+    On this host, curl can reach api.dingtalk.com while httpx/httpcore sometimes
+    fails with a bare ConnectError on the hostname path. Rewriting the TCP
+    target to a known-good IPv4 while preserving Host and SNI works around that
+    without changing the logical request URL.
+    """
+
+    def __init__(self, fallback_ips: List[str], **transport_kwargs):
+        self._fallback_ips = [
+            ip for ip in dict.fromkeys(_normalize_dingtalk_fallback_ips(fallback_ips))
+        ]
+        self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
+        self._fallbacks = {
+            ip: httpx.AsyncHTTPTransport(**transport_kwargs) for ip in self._fallback_ips
+        }
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        host = request.url.host or ""
+        if host not in _DINGTALK_HTTP_HOSTS or not self._fallback_ips:
+            return await self._primary.handle_async_request(request)
+
+        last_error: Exception | None = None
+        try:
+            return await self._primary.handle_async_request(request)
+        except Exception as exc:
+            last_error = exc
+            if not _is_dingtalk_retryable_connect_error(exc):
+                raise
+            logger.warning(
+                "[Dingtalk] Primary %s connection failed (%r); trying fallback IPv4s %s",
+                host,
+                exc,
+                ", ".join(self._fallback_ips),
+            )
+
+        for ip in self._fallback_ips:
+            try:
+                candidate = _rewrite_request_for_ip(request, ip)
+                return await self._fallbacks[ip].handle_async_request(candidate)
+            except Exception as exc:
+                last_error = exc
+                logger.warning("[Dingtalk] Fallback IP %s failed for %s: %r", ip, host, exc)
+
+        if last_error is None:
+            raise RuntimeError("All DingTalk fallback IPs exhausted but no error was recorded")
+        raise last_error
+
+    async def aclose(self) -> None:
+        await self._primary.aclose()
+        for transport in self._fallbacks.values():
+            await transport.aclose()
+
+
+def _normalize_dingtalk_fallback_ips(values: List[str]) -> List[str]:
+    normalized: List[str] = []
+    for value in values:
+        raw = str(value).strip()
+        if not raw:
+            continue
+        try:
+            addr = ipaddress.ip_address(raw)
+        except ValueError:
+            logger.warning("Ignoring invalid DingTalk fallback IP: %r", raw)
+            continue
+        if addr.version != 4:
+            logger.warning("Ignoring non-IPv4 DingTalk fallback IP: %s", raw)
+            continue
+        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_unspecified:
+            logger.warning("Ignoring private/internal DingTalk fallback IP: %s", raw)
+            continue
+        normalized.append(str(addr))
+    return normalized
+
+
+def _resolve_dingtalk_ipv4_hosts() -> List[str]:
+    resolved: List[str] = []
+    for host in _DINGTALK_HTTP_HOSTS:
+        try:
+            for family, _type, _proto, _canonname, sockaddr in socket.getaddrinfo(
+                host, 443, socket.AF_INET, socket.SOCK_STREAM,
+            ):
+                if family != socket.AF_INET:
+                    continue
+                ip = str(sockaddr[0]).strip()
+                if ip:
+                    resolved.append(ip)
+        except Exception as exc:
+            logger.debug("[Dingtalk] IPv4 resolution failed for %s: %s", host, exc)
+    resolved.extend(_DINGTALK_SEED_FALLBACK_IPS)
+    return _normalize_dingtalk_fallback_ips(resolved)
+
+
+def _rewrite_request_for_ip(request: httpx.Request, ip: str) -> httpx.Request:
+    original_host = request.url.host or ""
+    url = request.url.copy_with(host=ip)
+    headers = request.headers.copy()
+    if original_host:
+        headers["host"] = original_host
+    extensions = dict(request.extensions)
+    if original_host:
+        extensions["sni_hostname"] = original_host
+    return httpx.Request(
+        method=request.method,
+        url=url,
+        headers=headers,
+        stream=request.stream,
+        extensions=extensions,
+    )
+
+
+def _is_dingtalk_retryable_connect_error(exc: Exception) -> bool:
+    return isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError))
 
 
 def check_dingtalk_requirements() -> bool:
@@ -231,7 +353,25 @@ class DingTalkAdapter(BasePlatformAdapter):
             return False
 
         try:
-            self._http_client = httpx.AsyncClient(timeout=30.0)
+            client_kwargs: Dict[str, Any] = {
+                "timeout": 30.0,
+                "follow_redirects": True,
+            }
+            proxy_url = resolve_proxy_url("DINGTALK_PROXY")
+            if proxy_url:
+                logger.info("[%s] Proxy detected for DingTalk HTTP client: %s", self.name, proxy_url)
+                client_kwargs["proxy"] = proxy_url
+            else:
+                fallback_ips = _resolve_dingtalk_ipv4_hosts()
+                if fallback_ips:
+                    logger.info(
+                        "[%s] DingTalk fallback IPv4 transport active: %s",
+                        self.name,
+                        ", ".join(fallback_ips),
+                    )
+                    client_kwargs["transport"] = DingTalkFallbackTransport(fallback_ips)
+
+            self._http_client = httpx.AsyncClient(**client_kwargs)
 
             credential = dingtalk_stream.Credential(
                 self._client_id, self._client_secret
@@ -785,21 +925,6 @@ class DingTalkAdapter(BasePlatformAdapter):
             bool(self._card_template_id and self._card_sdk),
         )
 
-        # Check metadata first (for direct webhook sends)
-        session_webhook = metadata.get("session_webhook")
-        if not session_webhook:
-            webhook_info = self._get_valid_webhook(chat_id)
-            if not webhook_info:
-                logger.warning(
-                    "[%s] No valid session_webhook for chat_id=%s",
-                    self.name, chat_id,
-                )
-                return SendResult(
-                    success=False,
-                    error="No valid session_webhook available. Reply must follow an incoming message.",
-                )
-            session_webhook, _ = webhook_info
-
         if not self._http_client:
             return SendResult(success=False, error="HTTP client not initialized")
 
@@ -843,9 +968,51 @@ class DingTalkAdapter(BasePlatformAdapter):
 
             logger.warning("[%s] AI Card send failed, falling back to webhook", self.name)
 
-        logger.debug("[%s] Sending via webhook", self.name)
-        # Normalize markdown for DingTalk
         normalized = self._normalize_markdown(content[: self.MAX_MESSAGE_LENGTH])
+        robot_target = self._resolve_send_target(chat_id)
+
+        # Prefer the official robot send APIs when we have enough context from
+        # the inbound callback. The legacy session webhook path still exists as
+        # a fallback because it can work in some environments, but recent
+        # DingTalk setups appear to reject or silently drop these webhook
+        # replies for normal text responses.
+        if robot_target:
+            robot_result = await self._send_robot_text_payload(
+                target=robot_target,
+                text=normalized,
+                title="Hermes",
+            )
+            if robot_result.success:
+                if is_final_reply:
+                    self._fire_done_reaction(chat_id)
+                return robot_result
+            logger.warning(
+                "[%s] Robot text send failed for chat_id=%s, falling back to session webhook: %s",
+                self.name,
+                chat_id,
+                robot_result.error,
+            )
+
+        # Check metadata first (for direct webhook sends)
+        session_webhook = metadata.get("session_webhook")
+        if not session_webhook:
+            webhook_info = self._get_valid_webhook(chat_id)
+            if not webhook_info:
+                logger.warning(
+                    "[%s] No valid session_webhook for chat_id=%s",
+                    self.name, chat_id,
+                )
+                return SendResult(
+                    success=False,
+                    error=(
+                        robot_result.error
+                        if robot_target and 'robot_result' in locals() and robot_result.error
+                        else "No valid session_webhook available. Reply must follow an incoming message."
+                    ),
+                )
+            session_webhook, _ = webhook_info
+
+        logger.debug("[%s] Sending via webhook", self.name)
 
         payload = {
             "msgtype": "markdown",
@@ -874,7 +1041,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                 success=False, error="Timeout sending message to DingTalk"
             )
         except Exception as e:
-            logger.error("[%s] Send error: %s", self.name, e)
+            logger.error("[%s] Send error: %r", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
@@ -1357,6 +1524,88 @@ class DingTalkAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             return SendResult(success=False, error=str(e))
+
+    async def _send_robot_text_payload(
+        self,
+        *,
+        target: Dict[str, Any],
+        text: str,
+        title: str = "Hermes",
+    ) -> SendResult:
+        if not self._http_client:
+            return SendResult(success=False, error="HTTP client not initialized")
+
+        token = await self._get_access_token()
+        if not token:
+            return SendResult(success=False, error="No access token")
+
+        attempts = [
+            (
+                "sampleMarkdown",
+                {
+                    "title": title,
+                    "text": text,
+                },
+            ),
+            (
+                "sampleText",
+                {
+                    "content": text,
+                },
+            ),
+        ]
+
+        last_error = ""
+        last_raw_response: Any = None
+        for msg_key, msg_param in attempts:
+            body = dict(target["body"])
+            body["msgKey"] = msg_key
+            body["msgParam"] = json.dumps(msg_param, ensure_ascii=False)
+            try:
+                resp = await self._http_client.post(
+                    target["endpoint"],
+                    json=body,
+                    headers={
+                        "x-acs-dingtalk-access-token": token,
+                        "Content-Type": "application/json",
+                    },
+                    timeout=20.0,
+                )
+                data = resp.json() if resp.content else {}
+                if resp.status_code < 300:
+                    message_id = (
+                        data.get("processQueryKey") or
+                        data.get("messageId") or
+                        uuid.uuid4().hex[:12]
+                    )
+                    return SendResult(
+                        success=True,
+                        message_id=str(message_id),
+                        raw_response=data,
+                    )
+                last_raw_response = data
+                last_error = f"HTTP {resp.status_code}: {(resp.text or '')[:200]}"
+                logger.warning(
+                    "[%s] Robot text send failed via %s: %s",
+                    self.name,
+                    msg_key,
+                    last_error,
+                )
+            except Exception as exc:
+                last_error = str(exc)
+                logger.warning(
+                    "[%s] Robot text send exception via %s: %r",
+                    self.name,
+                    msg_key,
+                    exc,
+                    exc_info=True,
+                )
+
+        return SendResult(
+            success=False,
+            error=last_error or "Robot text send failed",
+            raw_response=last_raw_response,
+        )
 
     async def _upload_image_file(self, file_path: Path) -> str:
         """Upload a local image to DingTalk media storage and return raw media_id."""
