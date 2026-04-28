@@ -1274,6 +1274,26 @@ def convert_messages_to_anthropic(
             effective = blocks or content
             if not effective or effective == "":
                 effective = [{"type": "text", "text": "(empty)"}]
+
+            # ── DO NOT REMOVE — Anthropic API hard requirement (Guard 1: first-pass) ─
+            # Anthropic rejects assistant messages where the only blocks are
+            # thinking blocks (HTTP 400: "The final block in an assistant message
+            # cannot be `thinking`."). Inject a companion "." text block when the
+            # assembled content contains thinking but no text/tool_use block.
+            # This guard has been silently removed 3x in Apr 2026 (issue #16823).
+            # ────────────────────────────────────────────────────────────────────────
+            if isinstance(effective, list):
+                _has_thinking = any(
+                    isinstance(b, dict) and b.get("type") in _THINKING_TYPES
+                    for b in effective
+                )
+                _has_non_thinking = any(
+                    isinstance(b, dict) and b.get("type") not in _THINKING_TYPES
+                    for b in effective
+                )
+                if _has_thinking and not _has_non_thinking:
+                    effective = list(effective) + [{"type": "text", "text": "."}]
+
             result.append({"role": "assistant", "content": effective})
             continue
 
@@ -1493,6 +1513,47 @@ def convert_messages_to_anthropic(
         for b in m["content"]:
             if isinstance(b, dict) and b.get("type") in _THINKING_TYPES:
                 b.pop("cache_control", None)
+
+    # ── DO NOT REMOVE — Anthropic API hard requirement (Guard 2: final-pass) ──
+    # Anthropic rejects assistant messages where the final content block is a
+    # thinking block (HTTP 400: "The final block in an assistant message cannot
+    # be `thinking`."). This guard has been silently removed by merges 3x in
+    # Apr 2026 and causes fleet-wide 400s every time. The companion "." text
+    # block is the minimal safe value — empty string and whitespace-only are
+    # also rejected. See issue #16823.
+    # ──────────────────────────────────────────────────────────────────────────
+    for m in result:
+        if m.get("role") != "assistant":
+            continue
+        content_blocks = m.get("content")
+        if not isinstance(content_blocks, list):
+            continue
+        _has_thinking_final = any(
+            isinstance(b, dict) and b.get("type") in _THINKING_TYPES
+            for b in content_blocks
+        )
+        _has_non_thinking_final = any(
+            isinstance(b, dict) and b.get("type") not in _THINKING_TYPES
+            for b in content_blocks
+        )
+        if _has_thinking_final and not _has_non_thinking_final:
+            content_blocks.append({"type": "text", "text": "."})
+
+    # ── DO NOT REMOVE — Anthropic API hard requirement (Guard 3: trailing ws) ─
+    # Anthropic also rejects text blocks whose content ends with whitespace
+    # (HTTP 400: "messages: final assistant content cannot end with trailing
+    # whitespace"). rstrip() every text block; replace with "." if empty.
+    # ──────────────────────────────────────────────────────────────────────────
+    for m in result:
+        if m.get("role") != "assistant":
+            continue
+        content_blocks = m.get("content")
+        if not isinstance(content_blocks, list):
+            continue
+        for b in content_blocks:
+            if isinstance(b, dict) and b.get("type") == "text":
+                stripped = b["text"].rstrip()
+                b["text"] = stripped if stripped else "."
 
     return system, result
 
