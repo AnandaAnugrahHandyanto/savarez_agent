@@ -7989,6 +7989,7 @@ class AIAgent:
             "x-ai/",
             "google/gemini-2",
             "qwen/qwen3",
+            "tencent/hy3-preview",
         )
         return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)
 
