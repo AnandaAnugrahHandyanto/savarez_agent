@@ -3081,6 +3081,7 @@ class HermesCLI:
             except Exception:
                 label = "⚕ Hermes"
                 _text_hex = "#FFF8DC"
+            label = f"{label} {time.strftime('%H:%M:%S')}"
             # Build a true-color ANSI escape for the response text color
             # so streamed content matches the Rich Panel appearance.
             try:
@@ -3126,7 +3127,16 @@ class HermesCLI:
         # Close the response box
         if self._stream_box_opened:
             w = shutil.get_terminal_size().columns
-            _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
+            _end = time.strftime("%H:%M:%S")
+            _pstart = getattr(self, "_prompt_start_time", None)
+            if _pstart:
+                _secs = time.time() - _pstart
+                _elapsed = f"{int(_secs // 60)}m{_secs % 60:.0f}s" if _secs >= 60 else f"{_secs:.1f}s"
+            else:
+                _elapsed = ""
+            _suffix = f" {_end} {_elapsed}"
+            _dash_count = max(w - 2 - len(_suffix), 0)
+            _cprint(f"{_ACCENT}╰{'─' * _dash_count}{_suffix}╯{_RST}")
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
