@@ -1,3 +1,4 @@
+from decimal import Decimal
 from types import SimpleNamespace
 
 from agent.usage_pricing import (
@@ -5,6 +6,7 @@ from agent.usage_pricing import (
     estimate_usage_cost,
     get_pricing_entry,
     normalize_usage,
+    resolve_billing_route,
 )
 
 
@@ -123,3 +125,19 @@ def test_custom_endpoint_models_api_pricing_is_supported(monkeypatch):
 
     assert float(entry.input_cost_per_million) == 0.5
     assert float(entry.output_cost_per_million) == 2.0
+
+
+def test_minimax_cn_route_resolves_to_subscription_included():
+    route = resolve_billing_route("MiniMax-M2.7", provider="minimax-cn",
+                                  base_url="https://api.minimaxi.com/anthropic")
+    assert route.provider == "minimax-cn"
+    assert route.billing_mode == "subscription_included"
+
+
+def test_minimax_cn_cost_result_is_included_not_unknown():
+    result = estimate_usage_cost("MiniMax-M2.7",
+                                 CanonicalUsage(input_tokens=10000, output_tokens=500),
+                                 provider="minimax-cn",
+                                 base_url="https://api.minimaxi.com/anthropic")
+    assert result.status == "included"
+    assert result.amount_usd == Decimal("0")
