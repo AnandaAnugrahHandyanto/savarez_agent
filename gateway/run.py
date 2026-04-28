@@ -3962,7 +3962,7 @@ class GatewayRunner:
         #     enabled: true           # default: false
         #     format: "%m-%d %H:%M"   # strftime format (default shown)
         # Uses the `timezone` from config.yaml / HERMES_TIMEZONE env var.
-        _ts_cfg = (self.config or {}).get("message_timestamp", {})
+        _ts_cfg = getattr(self.config, "message_timestamp", {}) if self.config else {}
         if isinstance(_ts_cfg, dict) and _ts_cfg.get("enabled", False):
             try:
                 from datetime import datetime as _dt, timezone as _tz
