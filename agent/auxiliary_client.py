@@ -180,6 +180,11 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
 _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "xiaomi": "mimo-v2.5",
     "zai": "glm-5v-turbo",
+    # kimi-coding does not advertise a vision model in its inference_base_url
+    # chat completions surface, but the platform does serve a multimodal
+    # endpoint. Map to the known vision-capable variant so auto vision detect
+    # lands on the right model instead of the 404 text-only endpoint (#17076).
+    "kimi-coding": "kimi-k2.6",
 }
 
 # OpenRouter app attribution headers
@@ -2000,6 +2005,37 @@ def resolve_provider_client(
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         if explicit_base_url:
+            # anthropic_messages: route through Anthropic Messages API directly.
+            # Do NOT rewrite the URL — unlike OpenAI-wire paths, the /anthropic
+            # surface must be preserved or the proxy returns 404 (#17086).
+            if api_mode == "anthropic_messages":
+                explicit_base_stripped = explicit_base_url.strip().rstrip("/")
+                custom_key = (
+                    (explicit_api_key or "").strip()
+                    or os.getenv("OPENAI_API_KEY", "").strip()
+                    or "no-key-required"
+                )
+                final_model = _normalize_resolved_model(
+                    model or (main_runtime.get("model") if main_runtime else None) or "claude-haiku",
+                    provider,
+                )
+                try:
+                    from agent.anthropic_adapter import build_anthropic_client
+                    real_client = build_anthropic_client(custom_key, explicit_base_stripped)
+                except ImportError:
+                    logger.warning(
+                        "resolve_provider_client: api_mode=anthropic_messages "
+                        "but the anthropic SDK is not installed"
+                    )
+                    return None, None
+                sync_anthropic = AnthropicAuxiliaryClient(
+                    real_client, final_model, custom_key, explicit_base_stripped, is_oauth=False,
+                )
+                if async_mode:
+                    return AsyncAnthropicAuxiliaryClient(sync_anthropic), final_model
+                return sync_anthropic, final_model
+
+            # OpenAI-wire path: rewrite /anthropic → /v1 as normal
             custom_base = _to_openai_base_url(explicit_base_url).strip()
             custom_key = (
                 (explicit_api_key or "").strip()
