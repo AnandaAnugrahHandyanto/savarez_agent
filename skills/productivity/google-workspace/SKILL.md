@@ -64,7 +64,7 @@ Calendar/Drive/Sheets/Docs?"**
   Load the himalaya skill and follow its setup instructions.
 
 - **Email + Calendar** → Continue with this skill, but use
-  `--services email,calendar` during auth so the consent screen only asks for
+  `--services gmail,calendar` during auth so the consent screen only asks for
   the scopes they actually need.
 
 - **Calendar/Drive/Sheets/Docs only** → Continue with this skill and use a
@@ -123,7 +123,7 @@ explicit (for example `~/Downloads/hermes-google-client-secret.json`), then run
 Use the service set chosen in Step 1. Examples:
 
 ```bash
-$GSETUP --auth-url --services email,calendar --format json
+$GSETUP --auth-url --services gmail,calendar --format json
 $GSETUP --auth-url --services calendar,drive,sheets,docs --format json
 $GSETUP --auth-url --services all --format json
 ```

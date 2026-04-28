@@ -43,7 +43,7 @@ CLIENT_SECRET_PATH = HERMES_HOME / "google_client_secret.json"
 PENDING_AUTH_PATH = HERMES_HOME / "google_oauth_pending.json"
 
 SCOPE_SETS = {
-    "email": [
+    "gmail": [
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.send",
         "https://www.googleapis.com/auth/gmail.modify",
@@ -84,7 +84,7 @@ def _missing_scopes_from_payload(
 ) -> list[str]:
     raw = payload.get("scopes") or payload.get("scope")
     if not raw:
-        return []
+        return sorted(required_scopes or [])
     granted = {s.strip() for s in (raw.split() if isinstance(raw, str) else raw) if s.strip()}
     required = required_scopes or SCOPES
     return sorted(scope for scope in required if scope not in granted)
@@ -92,6 +92,7 @@ def _missing_scopes_from_payload(
 
 def _resolve_scopes(services: str | None) -> list[str]:
     """Resolve comma-separated service names into OAuth scopes."""
+    services = services.strip().lower() if services else services
     if not services or services == "all":
         return list(SCOPES)
 
@@ -322,7 +323,6 @@ def get_auth_url(services: str | None = None, output_format: str = "text"):
         prompt="consent",
     )
     _save_pending_auth(state=state, code_verifier=flow.code_verifier, scopes=scopes)
-    (HERMES_HOME / "google_oauth_last_url.txt").write_text(auth_url)
     if output_format == "json":
         print(json.dumps({"auth_url": auth_url, "scopes": scopes}, indent=2))
     else:
@@ -441,7 +441,7 @@ def main():
     parser.add_argument(
         "--services",
         default=None,
-        help="Comma-separated services for OAuth/check: all,email,calendar,drive,contacts,sheets,docs",
+        help="Comma-separated services for OAuth/check: all,gmail,calendar,drive,contacts,sheets,docs",
     )
     parser.add_argument(
         "--format",
@@ -451,8 +451,8 @@ def main():
     )
     args = parser.parse_args()
 
-    scopes = _resolve_scopes(args.services)
     if args.check:
+        scopes = _resolve_scopes(args.services)
         required_scopes = None if args.services is None else scopes
         sys.exit(0 if check_auth(required_scopes) else 1)
     elif args.client_secret:

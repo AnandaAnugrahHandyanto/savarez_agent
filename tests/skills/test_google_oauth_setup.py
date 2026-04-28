@@ -136,7 +136,7 @@ class TestResolveScopes:
         ]
 
     def test_resolves_multiple_services_in_request_order(self, setup_module):
-        assert setup_module._resolve_scopes("calendar,email") == [
+        assert setup_module._resolve_scopes("calendar,gmail") == [
             "https://www.googleapis.com/auth/calendar",
             "https://www.googleapis.com/auth/gmail.readonly",
             "https://www.googleapis.com/auth/gmail.send",
@@ -203,6 +203,19 @@ class TestCheckAuth:
 
         out = capsys.readouterr().out
         assert "AUTHENTICATED (partial)" in out
+
+    def test_check_auth_rejects_token_without_scope_metadata_for_requested_service(
+        self, setup_module, monkeypatch, capsys
+    ):
+        calendar_scope = "https://www.googleapis.com/auth/calendar"
+        setup_module.TOKEN_PATH.write_text(json.dumps({"token": "***"}))
+        self._install_fake_credentials(monkeypatch)
+
+        assert setup_module.check_auth([calendar_scope]) is False
+
+        out = capsys.readouterr().out
+        assert "NOT_AUTHENTICATED" in out
+        assert calendar_scope in out
 
     def test_check_auth_rejects_token_missing_requested_service(
         self, setup_module, monkeypatch, capsys
