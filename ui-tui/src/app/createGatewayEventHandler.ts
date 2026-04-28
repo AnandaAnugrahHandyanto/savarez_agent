@@ -321,11 +321,26 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'gateway.start_timeout': {
-        const { cwd, python } = ev.payload ?? {}
+        const { cwd, python, stderr_tail: stderrTail } = ev.payload ?? {}
         const trace = python || cwd ? ` · ${String(python || '')} ${String(cwd || '')}`.trim() : ''
 
         setStatus('gateway startup timeout')
         turnController.pushActivity(`gateway startup timed out${trace} · /logs to inspect`, 'error')
+
+        // Surface the most useful stderr lines inline so users can tell
+        // "wrong python", "missing dep", and "config parse failure"
+        // apart without leaving the TUI.
+        const tail = (stderrTail ?? '').trim()
+
+        if (tail) {
+          for (const line of tail.split('\n').slice(-8)) {
+            const trimmed = line.trim()
+
+            if (trimmed) {
+              turnController.pushActivity(trimmed, 'error')
+            }
+          }
+        }
 
         return
       }
