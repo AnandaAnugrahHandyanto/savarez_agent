@@ -1,0 +1,7 @@
+name: wavespeed
+version: 1.0.0
+description: "WaveSpeed image generation backend. Native text-to-image via WaveSpeed's REST API."
+author: WaveSpeed
+kind: backend
+requires_env:
+  - WAVESPEED_API_KEY

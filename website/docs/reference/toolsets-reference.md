@@ -61,7 +61,7 @@ Or in-session:
 | `feishu_drive` | `feishu_drive_add_comment`, `feishu_drive_list_comments`, `feishu_drive_list_comment_replies`, `feishu_drive_reply_comment` | Feishu/Lark drive comment operations. Scoped to the comment agent; not exposed on `hermes-cli` or other messaging toolsets. |
 | `file` | `patch`, `read_file`, `search_files`, `write_file` | File reading, writing, searching, and editing. |
 | `homeassistant` | `ha_call_service`, `ha_get_state`, `ha_list_entities`, `ha_list_services` | Smart home control via Home Assistant. Only available when `HASS_TOKEN` is set. |
-| `image_gen` | `image_generate` | Text-to-image generation via FAL.ai. |
+| `image_gen` | `image_generate` | Text-to-image generation via the configured backend, now including WaveSpeed. |
 | `memory` | `memory` | Persistent cross-session memory management. |
 | `messaging` | `send_message` | Send messages to other platforms (Telegram, Discord, etc.) from within a session. |
 | `moa` | `mixture_of_agents` | Multi-model consensus via Mixture of Agents. |

@@ -14,6 +14,17 @@ def test_show_status_includes_tavily_key(monkeypatch, capsys, tmp_path):
     assert "tvly...cdef" in output
 
 
+def test_show_status_includes_wavespeed_key(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("WAVESPEED_API_KEY", "ws-1234567890abcdef")
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "WaveSpeed" in output
+    assert "ws-1...cdef" in output
+
+
 def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys, tmp_path):
     from hermes_cli import status as status_mod
     import hermes_cli.auth as auth_mod
