@@ -3685,10 +3685,14 @@ def load_env() -> Dict[str, str]:
 def _sanitize_env_lines(lines: list) -> list:
     """Fix corrupted .env lines before reading or writing.
 
-    Handles two known corruption patterns:
-    1. Concatenated KEY=VALUE pairs on a single line (missing newline between
-       entries, e.g. ``ANTHROPIC_API_KEY=sk-...OPENAI_BASE_URL=https://...``).
-    2. Stale ``KEY=***`` placeholder entries left by incomplete setup runs.
+    Handles three known corruption patterns:
+    1. Split key names — a bare uppercase fragment on one line followed
+       by the rest of the KEY=VALUE on the next (e.g. ``G`` + newline +
+       ``LM_API_KEY=***`` from input method corruption).
+    2. Concatenated KEY=VALUE pairs on a single line (missing newline
+       between entries, e.g. ``ANTHROPIC_API_KEY=sk-***OPENAI_BASE_URL=...``).
+    3. Stale ``KEY=***`` placeholder entries left by incomplete setup
+       runs.
 
     Uses a known-keys set (OPTIONAL_ENV_VARS + _EXTRA_ENV_KEYS) so we only
     split on real Hermes env var names, avoiding false positives from values
@@ -3698,8 +3702,40 @@ def _sanitize_env_lines(lines: list) -> list:
     # Done inside the function so OPTIONAL_ENV_VARS is guaranteed to be defined.
     known_keys = set(OPTIONAL_ENV_VARS.keys()) | _EXTRA_ENV_KEYS
 
+    # ── Pass 0: merge split key names ──
+    # Input methods (fcitx5, ibus, etc.) can insert newlines in the
+    # middle of env var names.  Detect bare uppercase fragments and
+    # merge them with the next line when the result is a known key.
+    _ENV_VAR_FRAGMENT = re.compile(r'^[A-Z_][A-Z0-9_]*$')
+    merged: list[str] = []
+    i = 0
+    while i < len(lines):
+        raw = lines[i].rstrip("\r\n")
+        stripped = raw.strip()
+        did_merge = False
+        if stripped and "=" not in stripped and _ENV_VAR_FRAGMENT.match(stripped):
+            # Find next non-blank, non-comment line
+            j = i + 1
+            while j < len(lines):
+                nxt = lines[j].rstrip("\r\n").strip()
+                if not nxt or nxt.startswith("#"):
+                    j += 1
+                    continue
+                # Check if combining this fragment with the next line
+                # produces a known KEY=VALUE entry
+                combined_key = (stripped + nxt).partition("=")[0]
+                if "=" in nxt and combined_key in known_keys:
+                    merged.append((stripped + nxt) + "\n")
+                    i = j + 1
+                    did_merge = True
+                break
+        if not did_merge:
+            merged.append(raw + "\n")
+            i += 1
+
+    # ── Pass 1: split concatenated KEY=VALUE pairs ──
     sanitized: list[str] = []
-    for line in lines:
+    for line in merged:
         raw = line.rstrip("\r\n")
         stripped = raw.strip()
 
@@ -3709,24 +3745,39 @@ def _sanitize_env_lines(lines: list) -> list:
             continue
 
         # Detect concatenated KEY=VALUE pairs on one line.
-        # Search for known KEY= patterns at any position in the line.
-        split_positions = []
+        # Collect all known KEY= matches with their key-name lengths,
+        # then filter out matches that fall inside another key's name
+        # (e.g., LM_API_KEY matching inside GLM_API_KEY).
+        matches = []  # (position, key_name_length)
         for key_name in known_keys:
             needle = key_name + "="
             idx = stripped.find(needle)
             while idx >= 0:
-                split_positions.append(idx)
+                matches.append((idx, len(key_name)))
                 idx = stripped.find(needle, idx + len(needle))
 
-        if len(split_positions) > 1:
-            split_positions.sort()
-            # Deduplicate (shouldn't happen, but be safe)
-            split_positions = sorted(set(split_positions))
-            for i, pos in enumerate(split_positions):
-                end = split_positions[i + 1] if i + 1 < len(split_positions) else len(stripped)
-                part = stripped[pos:end].strip()
-                if part:
-                    sanitized.append(part + "\n")
+        if matches:
+            matches.sort()
+            # Filter: discard matches embedded inside another known
+            # key's name (LM_API_KEY in GLM_API_KEY, etc.).
+            valid = []
+            for i, (pos, key_len) in enumerate(matches):
+                embedded = False
+                for j, (other_pos, other_len) in enumerate(matches):
+                    if i != j and other_pos < pos < other_pos + other_len:
+                        embedded = True
+                        break
+                if not embedded:
+                    valid.append(pos)
+
+            if len(valid) > 1:
+                for i, pos in enumerate(valid):
+                    end = valid[i + 1] if i + 1 < len(valid) else len(stripped)
+                    part = stripped[pos:end].strip()
+                    if part:
+                        sanitized.append(part + "\n")
+            else:
+                sanitized.append(stripped + "\n")
         else:
             sanitized.append(stripped + "\n")
 
