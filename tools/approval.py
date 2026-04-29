@@ -732,15 +732,17 @@ def check_all_command_guards(command: str, env_type: str,
     if env_type in ("docker", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
 
-    # --yolo or approvals.mode=off: bypass all approval prompts.
-    # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
-    approval_mode = _get_approval_mode()
-    if os.getenv("HERMES_YOLO_MODE") or is_current_session_yolo_enabled() or approval_mode == "off":
-        return {"approved": True, "message": None}
-
     is_cli = os.getenv("HERMES_INTERACTIVE")
     is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
     is_ask = os.getenv("HERMES_EXEC_ASK")
+
+    # --yolo or approvals.mode=off: bypass all approval prompts.
+    # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
+    # Explicit ask mode is used by gateway approval tests and forced approval
+    # flows; it must not be bypassed by a profile-wide mode=off default.
+    approval_mode = _get_approval_mode()
+    if os.getenv("HERMES_YOLO_MODE") or is_current_session_yolo_enabled() or (approval_mode == "off" and not is_ask):
+        return {"approved": True, "message": None}
 
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
@@ -765,17 +767,24 @@ def check_all_command_guards(command: str, env_type: str,
 
     # --- Phase 1: Gather findings from both checks ---
 
-    # Tirith check — wrapper guarantees no raise for expected failures.
-    # Only catch ImportError (module not installed).
-    tirith_result = {"action": "allow", "findings": [], "summary": ""}
-    try:
-        from tools.tirith_security import check_command_security
-        tirith_result = check_command_security(command)
-    except ImportError:
-        pass  # tirith module not installed — allow
-
-    # Dangerous command check (detection only, no approval)
+    # Dangerous command check (detection only, no approval). Do this before
+    # Tirith so explicit gateway ask flows for already-known dangerous shell
+    # patterns cannot hang behind an auxiliary scanner before notifying the
+    # user/test harness.
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
+
+    # Tirith check — wrapper guarantees no raise for expected failures.
+    # Only catch ImportError (module not installed). When HERMES_EXEC_ASK is
+    # explicitly set and the built-in detector already found a dangerous
+    # pattern, proceed directly to the blocking gateway approval prompt;
+    # Tirith remains active for commands not covered by the built-in detector.
+    tirith_result = {"action": "allow", "findings": [], "summary": ""}
+    if not (is_ask and is_dangerous):
+        try:
+            from tools.tirith_security import check_command_security
+            tirith_result = check_command_security(command)
+        except ImportError:
+            pass  # tirith module not installed — allow
 
     # --- Phase 2: Decide ---
 

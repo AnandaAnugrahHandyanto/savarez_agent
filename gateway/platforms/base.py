@@ -1430,6 +1430,28 @@ class BasePlatformAdapter(ABC):
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
 
+    async def send_file(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Route a local file to the most appropriate native send method."""
+        suffix = os.path.splitext(str(file_path))[1].lower()
+        image_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+        video_exts = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+        audio_exts = {".ogg", ".opus", ".mp3", ".wav", ".m4a"}
+        if suffix in image_exts:
+            return await self.send_image_file(chat_id, file_path, caption=caption, reply_to=reply_to, **kwargs)
+        if suffix in video_exts:
+            return await self.send_video(chat_id, file_path, caption=caption, reply_to=reply_to, **kwargs)
+        if suffix in audio_exts:
+            return await self.send_voice(chat_id, file_path, caption=caption, reply_to=reply_to, **kwargs)
+        return await self.send_document(chat_id, file_path, caption=caption, file_name=file_name, reply_to=reply_to, **kwargs)
+
     @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """
@@ -1467,10 +1489,7 @@ class BasePlatformAdapter(ABC):
             if not path:
                 continue
             expanded = os.path.expanduser(path)
-            if os.path.isfile(expanded):
-                media.append((expanded, has_voice_tag))
-            else:
-                logger.debug("Ignoring non-existent MEDIA path in response: %s", path)
+            media.append((expanded, has_voice_tag))
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
         # even when the referenced file is invalid, so placeholder examples don't

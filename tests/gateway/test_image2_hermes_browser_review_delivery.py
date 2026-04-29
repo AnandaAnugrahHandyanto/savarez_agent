@@ -117,7 +117,7 @@ def test_delivery_contract_requires_review_pass_and_exact_thread_target(tmp_path
     assert "review_gate_not_pass" in review_rejected["reasons"]
 
 
-def test_worker_reaches_delivery_contract_after_browser_and_review_gate_and_still_does_not_send(tmp_path):
+def test_worker_reaches_delivery_contract_but_fails_closed_without_feishu_credentials(tmp_path):
     runtime = tmp_path / "runtime"
     db_path = runtime / "image2_jobs.sqlite"
     job = _enqueue(
@@ -154,11 +154,11 @@ def test_worker_reaches_delivery_contract_after_browser_and_review_gate_and_stil
     )
 
     assert result["status"] == "failed_final"
-    assert result["reason"] == "delivery_contract_ready_send_not_implemented"
+    assert result["reason"] == "delivery_preflight_missing"
     assert result["browser_preflight"]["status"] == "pass"
     assert result["candidate_gate"]["status"] == "pass"
     assert result["review_gate"]["status"] == "pass"
     assert result["delivery_contract"]["status"] == "ready_to_send"
     assert result["delivery_contract"]["sent"] is False
-    assert not (job_dir / "delivery_result.json").exists()
+    assert not (job_dir / "delivery_readback.json").exists()
     assert json.loads((job_dir / "delivery_plan.json").read_text(encoding="utf-8"))["sent"] is False

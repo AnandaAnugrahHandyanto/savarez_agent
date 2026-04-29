@@ -25,10 +25,13 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import logging
 import mimetypes
 import os
 import re
+import secrets
 import time
 from html import escape as _html_escape
 from pathlib import Path
@@ -118,6 +121,50 @@ _STARTUP_GRACE_SECONDS = 5
 _E2EE_INSTALL_HINT = (
     "Install with: pip install 'mautrix[encryption]'  (requires libolm C library)"
 )
+
+
+class _FallbackEncryptedFile:
+    """Small Matrix encrypted-file payload compatible with mautrix serialize()."""
+
+    def __init__(self, *, key: bytes, iv: bytes, sha256_digest: bytes):
+        self._key = key
+        self._iv = iv
+        self._sha256_digest = sha256_digest
+
+    @staticmethod
+    def _b64(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+
+    def serialize(self) -> Dict[str, Any]:
+        return {
+            "v": "v2",
+            "key": {
+                "alg": "A256CTR",
+                "ext": True,
+                "k": self._b64(self._key),
+                "key_ops": ["encrypt", "decrypt"],
+                "kty": "oct",
+            },
+            "iv": self._b64(self._iv),
+            "hashes": {"sha256": self._b64(self._sha256_digest)},
+        }
+
+
+def _encrypt_attachment_fallback(data: bytes) -> tuple[bytes, _FallbackEncryptedFile]:
+    """Encrypt Matrix attachments when mautrix's helper is unavailable.
+
+    This mirrors Matrix's encrypted attachment payload shape closely enough for
+    clients and keeps tests/profiles without the optional mautrix helper from
+    falling back to plaintext or failing before upload.
+    """
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    key = secrets.token_bytes(32)
+    iv = secrets.token_bytes(16)
+    encryptor = Cipher(algorithms.AES(key), modes.CTR(iv)).encryptor()
+    ciphertext = encryptor.update(data) + encryptor.finalize()
+    digest = hashlib.sha256(ciphertext).digest()
+    return ciphertext, _FallbackEncryptedFile(key=key, iv=iv, sha256_digest=digest)
 
 
 def _check_e2ee_deps() -> bool:
@@ -1007,6 +1054,11 @@ class MatrixAdapter(BasePlatformAdapter):
                     try:
                         from mautrix.crypto.attachments import encrypt_attachment
                         upload_data, encrypted_file = encrypt_attachment(data)
+                    except ModuleNotFoundError:
+                        logger.warning(
+                            "Matrix: mautrix attachment helper missing; using local AES-CTR fallback"
+                        )
+                        upload_data, encrypted_file = _encrypt_attachment_fallback(data)
                     except Exception as exc:
                         logger.error("Matrix: attachment encryption failed: %s", exc)
                         return SendResult(success=False, error=str(exc))

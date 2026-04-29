@@ -3976,7 +3976,8 @@ class AIAgent:
 
         # 2. Clean terminal sandbox environments
         try:
-            cleanup_vm(task_id)
+            from tools import terminal_tool as _terminal_tool
+            _terminal_tool.cleanup_vm(task_id)
         except Exception:
             pass
 

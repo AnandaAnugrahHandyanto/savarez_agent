@@ -1,12 +1,4 @@
-"""Hermes-owned Feishu Image2 worker entrypoint.
-
-The legacy live worker was ``marketing-hub/scripts/image2_browser_worker.py``.
-This module deliberately stays inside Hermes: it claims the exact task launched
-by ingress, reads the Hermes-owned prompt artifacts, and fails closed before any
-browser/OpenCLI/ChatGPT/Gemini work unless the later live-generation gate is
-explicitly implemented and enabled.
-"""
-
+"""Hermes-owned Feishu Image2 worker entrypoint."""
 from __future__ import annotations
 
 import argparse
@@ -15,18 +7,24 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
-from gateway.image2_browser_preflight import evaluate_browser_preflight
+from gateway.image2_browser_preflight import BROWSER_STATE_ENV, evaluate_browser_preflight
 from gateway.image2_candidate_gate import evaluate_candidate_gate
 from gateway.image2_delivery_contract import evaluate_delivery_contract
+from gateway.image2_feishu_delivery import send_feishu_image_from_contract
+from gateway.image2_generation import probe_opencli_browser_state, run_opencli_generation
 from gateway.image2_review_gate import evaluate_review_gate
 from gateway.image2_store import Image2JobStore
-
+from gateway.image2_visual_reviewer import review_candidate_image
 
 LIVE_ENABLE_ENV = "IMAGE2_WORKER_LIVE_ENABLED"
-BROWSER_ENV_OPTIONS = ("OPENCLI_CDP_URL", "CHATGPT_BROWSER_CDP_URL")
+BROWSER_ENV_OPTIONS = ("OPENCLI_CDP_URL", "CHATGPT_BROWSER_CDP_URL", "OPENCLI_CHROME_CDP_GUIDANCE", BROWSER_STATE_ENV)
 REVIEWER_ENV_OPTIONS = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "IMAGE2_REVIEWER_PROVIDER")
+
+Generator = Callable[..., dict[str, Any]]
+Reviewer = Callable[..., dict[str, Any]]
+DeliverySender = Callable[..., dict[str, Any]]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -42,7 +40,7 @@ def _enabled(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _has_any(environ: Mapping[str, str], keys: tuple[str, ...]) -> bool:
+def _has_any(environ: Mapping[str, str], keys: Sequence[str]) -> bool:
     return any(str(environ.get(key) or "").strip() for key in keys)
 
 
@@ -72,16 +70,12 @@ def _load_json(path: Path) -> dict[str, Any]:
 def _prompt_artifacts(job: Mapping[str, Any], runtime_root: Path) -> dict[str, Any]:
     task_id = str(job.get("task_id") or "")
     job_dir = Path(str(job.get("job_dir") or runtime_root / task_id)).expanduser()
-    prompt_path = job_dir / "prompt.txt"
-    compiled_path = job_dir / "compiled_prompt.json"
-    brief_path = job_dir / "brief.json"
-    message_path = job_dir / "message.json"
     return {
         "job_dir": job_dir,
-        "prompt_txt": prompt_path,
-        "compiled_prompt_json": compiled_path,
-        "brief_json": brief_path,
-        "message_json": message_path,
+        "prompt_txt": job_dir / "prompt.txt",
+        "compiled_prompt_json": job_dir / "compiled_prompt.json",
+        "brief_json": job_dir / "brief.json",
+        "message_json": job_dir / "message.json",
     }
 
 
@@ -93,15 +87,24 @@ def _read_artifacts(job: Mapping[str, Any], runtime_root: Path) -> dict[str, Any
     prompt_text = prompt_path.read_text(encoding="utf-8")
     if not prompt_text.strip():
         raise ValueError(f"empty prompt artifact: {prompt_path}")
-    compiled_path: Path = artifacts["compiled_prompt_json"]
-    compiled = _load_json(compiled_path)
+    compiled = _load_json(artifacts["compiled_prompt_json"])
+    message = _load_json(artifacts["message_json"])
     return {
         "job_dir": str(artifacts["job_dir"]),
         "prompt_text": prompt_text,
         "prompt_sha256": hashlib.sha256(prompt_text.encode("utf-8")).hexdigest(),
         "compiled_prompt": compiled,
+        "message": message,
         "prompt_artifacts": {key: str(value) for key, value in artifacts.items() if key != "job_dir"},
     }
+
+
+def _source_files(job_dir: Path) -> list[Any]:
+    path = job_dir / "source_manifest.json"
+    if not path.is_file():
+        return []
+    value = json.loads(path.read_text(encoding="utf-8"))
+    return value if isinstance(value, list) else [value]
 
 
 def _write_worker_result(job_dir: Path, payload: Mapping[str, Any]) -> None:
@@ -118,6 +121,7 @@ def _terminal_failure(
     reason: str,
     last_error: str,
     extra: Mapping[str, Any] | None = None,
+    exit_code: int = 3,
 ) -> dict[str, Any]:
     row = store.mark_failed_final(task_id=task_id, worker_id=worker_id, last_error=last_error) or {}
     result = {
@@ -126,13 +130,50 @@ def _terminal_failure(
         "status": "failed_final",
         "reason": reason,
         "last_error": last_error,
-        "exit_code": 3,
+        "exit_code": exit_code,
         "db_status": row.get("status"),
     }
     if extra:
         result.update(dict(extra))
     _write_worker_result(job_dir, result)
     return result
+
+
+def _terminal_success(
+    *,
+    store: Image2JobStore,
+    task_id: str,
+    worker_id: str,
+    job_dir: Path,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    row = store.mark_readback_verified(task_id=task_id, worker_id=worker_id) or {}
+    result = {
+        "task_id": task_id,
+        "worker_id": worker_id,
+        "status": "readback_verified",
+        "reason": "Feishu native image read-back verified",
+        "exit_code": 0,
+        "db_status": row.get("status"),
+    }
+    result.update(dict(payload))
+    _write_worker_result(job_dir, result)
+    return result
+
+
+def _ensure_browser_state(job_dir: Path, env: Mapping[str, str]) -> None:
+    if any((job_dir / name).is_file() for name in ("browser_state.json", "browser_preflight_input.json")):
+        return
+    env_path = str(env.get(BROWSER_STATE_ENV) or "").strip()
+    if env_path and Path(env_path).expanduser().is_file():
+        return
+    if _enabled(env.get("IMAGE2_SKIP_OPENCLI_BROWSER_PROBE")):
+        return
+    probe_opencli_browser_state(job_dir=job_dir, environ=env, timeout=int(env.get("IMAGE2_BROWSER_PROBE_TIMEOUT") or 60))
+
+
+def _run_candidate_gate(job_dir: Path, claimed: Mapping[str, Any]) -> dict[str, Any]:
+    return evaluate_candidate_gate(job_dir=job_dir, generated_after=claimed.get("claimed_at") or claimed.get("created_at"))
 
 
 def run_worker(
@@ -142,27 +183,17 @@ def run_worker(
     task_id: str,
     worker_id: str,
     environ: Mapping[str, str] | None = None,
+    generator: Generator | None = None,
+    reviewer: Reviewer | None = None,
+    delivery_sender: DeliverySender | None = None,
 ) -> dict[str, Any]:
-    """Claim and preflight exactly one Image2 task.
-
-    This first worker slice intentionally performs no browser, OpenCLI, ChatGPT,
-    Gemini, candidate-review, or Feishu delivery side effects.  It makes the
-    durable queue safer by proving that a launched worker only touches the task
-    ingress launched it for, reads compiled Hermes prompt artifacts, and records
-    a terminal fail-closed result when live-generation prerequisites are missing.
-    """
+    """Claim, generate, gate, review, deliver, and read-back exactly one Image2 task."""
     env = dict(environ if environ is not None else os.environ)
     runtime = Path(runtime_root)
     store = Image2JobStore(db_path=Path(db_path), runtime_root=runtime)
     claimed = store.claim_task(task_id=str(task_id), worker_id=str(worker_id))
     if not claimed:
-        return {
-            "task_id": str(task_id),
-            "worker_id": str(worker_id),
-            "status": "not_claimed",
-            "reason": "task_not_claimable",
-            "exit_code": 1,
-        }
+        return {"task_id": str(task_id), "worker_id": str(worker_id), "status": "not_claimed", "reason": "task_not_claimable", "exit_code": 1}
 
     fallback_job_dir = runtime / str(task_id)
     try:
@@ -175,10 +206,17 @@ def run_worker(
             job_dir=Path(str(claimed.get("job_dir") or fallback_job_dir)),
             reason="missing_prompt_artifact",
             last_error=f"missing_prompt_artifact: {exc}",
-            extra={"exit_code": 2},
+            exit_code=2,
         )
 
     job_dir = Path(str(artifact_info["job_dir"]))
+    prompt_text = str(artifact_info["prompt_text"])
+    prompt_common = {
+        "prompt_sha256": artifact_info["prompt_sha256"],
+        "prompt_excerpt": prompt_text[:240],
+        "prompt_artifacts": artifact_info["prompt_artifacts"],
+    }
+
     missing = missing_live_preflight(env)
     if missing:
         return _terminal_failure(
@@ -188,15 +226,11 @@ def run_worker(
             job_dir=job_dir,
             reason="fail_closed_missing_generation_preflight",
             last_error="fail_closed_missing_generation_preflight: " + ", ".join(missing),
-            extra={
-                "missing_preflight": missing,
-                "prompt_sha256": artifact_info["prompt_sha256"],
-                "prompt_excerpt": str(artifact_info["prompt_text"])[0:240],
-                "prompt_artifacts": artifact_info["prompt_artifacts"],
-                "exit_code": 3,
-            },
+            extra={"missing_preflight": missing, **prompt_common},
+            exit_code=3,
         )
 
+    _ensure_browser_state(job_dir, env)
     browser_preflight = evaluate_browser_preflight(job_dir=job_dir, environ=env)
     if browser_preflight.get("status") != "pass":
         reasons = ", ".join(str(reason) for reason in browser_preflight.get("reasons", []))
@@ -207,41 +241,49 @@ def run_worker(
             job_dir=job_dir,
             reason="browser_preflight_failed",
             last_error="browser_preflight_failed: " + reasons,
-            extra={
-                "browser_preflight": browser_preflight,
-                "prompt_sha256": artifact_info["prompt_sha256"],
-                "prompt_excerpt": str(artifact_info["prompt_text"])[0:240],
-                "prompt_artifacts": artifact_info["prompt_artifacts"],
-                "exit_code": 4,
-            },
+            extra={"browser_preflight": browser_preflight, **prompt_common},
+            exit_code=4,
         )
 
-    try:
-        candidate_gate = evaluate_candidate_gate(
+    candidate_gate = _run_candidate_gate(job_dir, claimed)
+    generation_result: dict[str, Any] | None = None
+    if candidate_gate.get("status") == "no_candidates":
+        if not env.get("FEISHU_APP_ID") or not env.get("FEISHU_APP_SECRET"):
+            return _terminal_failure(
+                store=store,
+                task_id=str(task_id),
+                worker_id=str(worker_id),
+                job_dir=job_dir,
+                reason="delivery_preflight_missing",
+                last_error="delivery_preflight_missing: FEISHU_APP_ID / FEISHU_APP_SECRET are required before generation",
+                extra={"browser_preflight": browser_preflight, "candidate_gate": candidate_gate, "delivery_preflight": {"status": "fail", "missing": ["FEISHU_APP_ID", "FEISHU_APP_SECRET"]}, **prompt_common},
+                exit_code=6,
+            )
+        store.mark_status(task_id=str(task_id), status="generating", worker_id=str(worker_id), last_error=None)
+        generation_runner = generator or run_opencli_generation
+        generation_result = generation_runner(
             job_dir=job_dir,
-            generated_after=claimed.get("claimed_at") or claimed.get("created_at"),
+            prompt_text=prompt_text,
+            environ=env,
+            source_files=_source_files(job_dir),
         )
-    except Exception as exc:
+        if not (job_dir / "generation_result.json").is_file():
+            (job_dir / "generation_result.json").write_text(_safe_json(generation_result), encoding="utf-8")
+        candidate_gate = _run_candidate_gate(job_dir, claimed)
+
+    if candidate_gate.get("status") == "no_candidates":
         return _terminal_failure(
             store=store,
             task_id=str(task_id),
             worker_id=str(worker_id),
             job_dir=job_dir,
-            reason="candidate_gate_error",
-            last_error=f"candidate_gate_error: {exc}",
-            extra={
-                "prompt_sha256": artifact_info["prompt_sha256"],
-                "prompt_excerpt": str(artifact_info["prompt_text"])[0:240],
-                "prompt_artifacts": artifact_info["prompt_artifacts"],
-                "exit_code": 5,
-            },
+            reason="candidate_gate_no_candidates",
+            last_error="candidate_gate_no_candidates: generation produced no fresh candidate image",
+            extra={"browser_preflight": browser_preflight, "generation_result": generation_result or {}, "candidate_gate": candidate_gate, **prompt_common},
+            exit_code=5,
         )
     if candidate_gate.get("status") == "rejected":
-        rejected_reasons = sorted({
-            reason
-            for decision in candidate_gate.get("decisions", [])
-            for reason in decision.get("reasons", [])
-        })
+        rejected_reasons = sorted({reason for decision in candidate_gate.get("decisions", []) for reason in decision.get("reasons", [])})
         return _terminal_failure(
             store=store,
             task_id=str(task_id),
@@ -249,95 +291,115 @@ def run_worker(
             job_dir=job_dir,
             reason="candidate_gate_rejected",
             last_error="candidate_gate_rejected: " + ", ".join(rejected_reasons),
-            extra={
-                "candidate_gate": candidate_gate,
-                "prompt_sha256": artifact_info["prompt_sha256"],
-                "prompt_excerpt": str(artifact_info["prompt_text"])[0:240],
-                "prompt_artifacts": artifact_info["prompt_artifacts"],
-                "exit_code": 5,
-            },
+            extra={"browser_preflight": browser_preflight, "generation_result": generation_result or {}, "candidate_gate": candidate_gate, **prompt_common},
+            exit_code=5,
         )
-    if candidate_gate.get("status") == "pass":
-        review_gate = evaluate_review_gate(job_dir=job_dir, candidate=candidate_gate.get("accepted"))
-        if review_gate.get("status") != "pass":
-            reasons = ", ".join(str(reason) for reason in review_gate.get("reasons", []))
-            return _terminal_failure(
-                store=store,
-                task_id=str(task_id),
-                worker_id=str(worker_id),
-                job_dir=job_dir,
-                reason="review_gate_rejected",
-                last_error="review_gate_rejected: " + reasons,
-                extra={
-                    "browser_preflight": browser_preflight,
-                    "candidate_gate": candidate_gate,
-                    "review_gate": review_gate,
-                    "prompt_sha256": artifact_info["prompt_sha256"],
-                    "prompt_excerpt": str(artifact_info["prompt_text"])[0:240],
-                    "prompt_artifacts": artifact_info["prompt_artifacts"],
-                    "exit_code": 5,
-                },
-            )
-
-        message = _load_json(job_dir / "message.json")
-        delivery_contract = evaluate_delivery_contract(
-            job_dir=job_dir,
-            message=message,
-            candidate_gate=candidate_gate,
-            review_gate=review_gate,
-        )
-        if delivery_contract.get("status") != "ready_to_send":
-            reasons = ", ".join(str(reason) for reason in delivery_contract.get("reasons", []))
-            return _terminal_failure(
-                store=store,
-                task_id=str(task_id),
-                worker_id=str(worker_id),
-                job_dir=job_dir,
-                reason="delivery_contract_rejected",
-                last_error="delivery_contract_rejected: " + reasons,
-                extra={
-                    "browser_preflight": browser_preflight,
-                    "candidate_gate": candidate_gate,
-                    "review_gate": review_gate,
-                    "delivery_contract": delivery_contract,
-                    "prompt_sha256": artifact_info["prompt_sha256"],
-                    "prompt_excerpt": str(artifact_info["prompt_text"])[0:240],
-                    "prompt_artifacts": artifact_info["prompt_artifacts"],
-                    "exit_code": 5,
-                },
-            )
-
+    if candidate_gate.get("status") != "pass":
         return _terminal_failure(
             store=store,
             task_id=str(task_id),
             worker_id=str(worker_id),
             job_dir=job_dir,
-            reason="delivery_contract_ready_send_not_implemented",
-            last_error="delivery_contract_ready_send_not_implemented: native Feishu send/read-back implementation is pending",
-            extra={
-                "browser_preflight": browser_preflight,
-                "candidate_gate": candidate_gate,
-                "review_gate": review_gate,
-                "delivery_contract": delivery_contract,
-                "prompt_sha256": artifact_info["prompt_sha256"],
-                "prompt_excerpt": str(artifact_info["prompt_text"])[0:240],
-                "prompt_artifacts": artifact_info["prompt_artifacts"],
-                "exit_code": 5,
-            },
+            reason="candidate_gate_error",
+            last_error=f"candidate_gate_error: unexpected status {candidate_gate.get('status')}",
+            extra={"browser_preflight": browser_preflight, "candidate_gate": candidate_gate, **prompt_common},
+            exit_code=5,
         )
 
-    return _terminal_failure(
+    accepted = candidate_gate.get("accepted")
+    review_runner = reviewer or review_candidate_image
+    review_result = review_runner(job_dir=job_dir, candidate=accepted, prompt_text=prompt_text, environ=env)
+    if not (job_dir / "review_result.json").is_file():
+        (job_dir / "review_result.json").write_text(_safe_json(review_result), encoding="utf-8")
+    review_gate = evaluate_review_gate(job_dir=job_dir, candidate=accepted, review_result=review_result)
+    if review_gate.get("status") != "pass":
+        reasons = ", ".join(str(reason) for reason in review_gate.get("reasons", []))
+        return _terminal_failure(
+            store=store,
+            task_id=str(task_id),
+            worker_id=str(worker_id),
+            job_dir=job_dir,
+            reason="review_gate_rejected",
+            last_error="review_gate_rejected: " + reasons,
+            extra={"browser_preflight": browser_preflight, "generation_result": generation_result or {}, "candidate_gate": candidate_gate, "review_gate": review_gate, **prompt_common},
+            exit_code=5,
+        )
+
+    message = dict(artifact_info.get("message") or _load_json(job_dir / "message.json"))
+    delivery_contract = evaluate_delivery_contract(job_dir=job_dir, message=message, candidate_gate=candidate_gate, review_gate=review_gate)
+    if delivery_contract.get("status") != "ready_to_send":
+        reasons = ", ".join(str(reason) for reason in delivery_contract.get("reasons", []))
+        return _terminal_failure(
+            store=store,
+            task_id=str(task_id),
+            worker_id=str(worker_id),
+            job_dir=job_dir,
+            reason="delivery_contract_rejected",
+            last_error="delivery_contract_rejected: " + reasons,
+            extra={"browser_preflight": browser_preflight, "generation_result": generation_result or {}, "candidate_gate": candidate_gate, "review_gate": review_gate, "delivery_contract": delivery_contract, **prompt_common},
+            exit_code=5,
+        )
+
+    if not env.get("FEISHU_APP_ID") or not env.get("FEISHU_APP_SECRET"):
+        return _terminal_failure(
+            store=store,
+            task_id=str(task_id),
+            worker_id=str(worker_id),
+            job_dir=job_dir,
+            reason="delivery_preflight_missing",
+            last_error="delivery_preflight_missing: FEISHU_APP_ID / FEISHU_APP_SECRET are required",
+            extra={"browser_preflight": browser_preflight, "generation_result": generation_result or {}, "candidate_gate": candidate_gate, "review_gate": review_gate, "delivery_contract": delivery_contract, **prompt_common},
+            exit_code=6,
+        )
+
+    store.mark_status(task_id=str(task_id), status="uploading_to_feishu", worker_id=str(worker_id), last_error=None)
+    try:
+        delivery_runner = delivery_sender or send_feishu_image_from_contract
+        delivery_readback = delivery_runner(
+            image_path=Path(str(delivery_contract.get("image_path") or "")),
+            chat_id=str(delivery_contract.get("chat_id") or ""),
+            reply_to=str(delivery_contract.get("reply_to") or ""),
+            candidate_sha256=str(delivery_contract.get("image_sha256") or ""),
+            environ=env,
+        )
+    except Exception as exc:  # noqa: BLE001 - convert to terminal safe error
+        return _terminal_failure(
+            store=store,
+            task_id=str(task_id),
+            worker_id=str(worker_id),
+            job_dir=job_dir,
+            reason="delivery_failed",
+            last_error=f"delivery_failed: {exc.__class__.__name__}: {exc}",
+            extra={"browser_preflight": browser_preflight, "generation_result": generation_result or {}, "candidate_gate": candidate_gate, "review_gate": review_gate, "delivery_contract": delivery_contract, **prompt_common},
+            exit_code=6,
+        )
+
+    (job_dir / "delivery_readback.json").write_text(_safe_json(delivery_readback), encoding="utf-8")
+    if delivery_readback.get("verified") is not True or delivery_readback.get("readback_msg_type") != "image":
+        return _terminal_failure(
+            store=store,
+            task_id=str(task_id),
+            worker_id=str(worker_id),
+            job_dir=job_dir,
+            reason="delivery_readback_failed",
+            last_error="delivery_readback_failed: expected verified image read-back",
+            extra={"delivery_readback": delivery_readback, "browser_preflight": browser_preflight, "generation_result": generation_result or {}, "candidate_gate": candidate_gate, "review_gate": review_gate, "delivery_contract": delivery_contract, **prompt_common},
+            exit_code=6,
+        )
+
+    return _terminal_success(
         store=store,
         task_id=str(task_id),
         worker_id=str(worker_id),
         job_dir=job_dir,
-        reason="live_generation_not_implemented",
-        last_error="live_generation_not_implemented: browser/candidate gate/native delivery slices are pending",
-        extra={
-            "prompt_sha256": artifact_info["prompt_sha256"],
-            "prompt_excerpt": str(artifact_info["prompt_text"])[0:240],
-            "prompt_artifacts": artifact_info["prompt_artifacts"],
-            "exit_code": 4,
+        payload={
+            "browser_preflight": browser_preflight,
+            "generation_result": generation_result or {},
+            "candidate_gate": candidate_gate,
+            "review_gate": review_gate,
+            "delivery_contract": delivery_contract,
+            "delivery_readback": delivery_readback,
+            **prompt_common,
         },
     )
 

@@ -211,6 +211,15 @@ class Image2JobStore:
             completed=True,
         )
 
+    def mark_readback_verified(self, *, task_id: str, worker_id: str | None) -> dict[str, Any] | None:
+        return self.mark_status(
+            task_id=task_id,
+            status="readback_verified",
+            worker_id=worker_id,
+            last_error="",
+            completed=True,
+        )
+
     def _ensure_schema(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(str(self.db_path)) as conn:

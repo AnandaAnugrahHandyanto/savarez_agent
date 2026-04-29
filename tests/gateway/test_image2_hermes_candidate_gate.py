@@ -136,7 +136,7 @@ def test_candidate_gate_rejects_stale_mtime_and_accepts_fresh_non_matching_candi
     assert decisions["fresh.png"]["reasons"] == []
 
 
-def test_worker_runs_candidate_gate_before_delivery_and_still_fails_closed(tmp_path):
+def test_worker_runs_candidate_gate_before_delivery_and_fails_closed_without_feishu_credentials(tmp_path):
     runtime = tmp_path / "runtime"
     db_path = runtime / "image2_jobs.sqlite"
     job = _enqueue(
@@ -172,7 +172,7 @@ def test_worker_runs_candidate_gate_before_delivery_and_still_fails_closed(tmp_p
     )
 
     assert result["status"] == "failed_final"
-    assert result["reason"] == "delivery_contract_ready_send_not_implemented"
+    assert result["reason"] == "delivery_preflight_missing"
     assert result["browser_preflight"]["status"] == "pass"
     assert result["candidate_gate"]["status"] == "pass"
     assert result["candidate_gate"]["accepted"]["path"] == str(candidate)
@@ -182,7 +182,7 @@ def test_worker_runs_candidate_gate_before_delivery_and_still_fails_closed(tmp_p
     gate_result = json.loads((job_dir / "candidate_gate_result.json").read_text(encoding="utf-8"))
     assert gate_result["accepted"]["sha256"] == sha256_file(candidate)
     worker_result = json.loads((job_dir / "worker_result.json").read_text(encoding="utf-8"))
-    assert worker_result["reason"] == "delivery_contract_ready_send_not_implemented"
+    assert worker_result["reason"] == "delivery_preflight_missing"
     assert worker_result["candidate_gate"]["status"] == "pass"
 
 

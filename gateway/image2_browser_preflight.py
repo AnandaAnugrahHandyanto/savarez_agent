@@ -61,6 +61,8 @@ def _has_cdp_url(environ: Mapping[str, str], state: Mapping[str, Any] | None) ->
         return True
     if state and str(state.get("cdp_url") or state.get("browser_ws_endpoint") or "").strip():
         return True
+    if state and state.get("cdp_reachable") is True:
+        return True
     return False
 
 

@@ -970,6 +970,10 @@ def _worker_env(settings: Image2IngressSettings) -> Dict[str, str]:
     env["PYTHONPATH"] = f"{project_root}:{existing_pythonpath}" if existing_pythonpath else str(project_root)
     env["IMAGE2_OPENCLI_TIMEOUT"] = str(settings.opencli_timeout_seconds)
     env["IMAGE2_SUBPROCESS_TIMEOUT"] = str(settings.subprocess_timeout_seconds)
+    if settings.launch_worker:
+        env.setdefault("IMAGE2_WORKER_LIVE_ENABLED", "1")
+        env.setdefault("OPENCLI_CHROME_CDP_GUIDANCE", "0")
+        env.setdefault("IMAGE2_REVIEWER_PROVIDER", "heuristic-fast-preview")
     return env
 
 
