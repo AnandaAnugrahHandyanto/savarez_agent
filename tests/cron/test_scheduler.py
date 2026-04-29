@@ -935,6 +935,18 @@ class TestRunJobSkillBacked:
 class TestSilentDelivery:
     """Verify that [SILENT] responses suppress delivery while still saving output."""
 
+    @pytest.fixture(autouse=True)
+    def _stub_advance_next_run(self):
+        """Stub advance_next_run so tests don't hit the real jobs.json file.
+
+        Without this, tick() raises when it can't find 'monitor-job' in the
+        on-disk job store, the exception is swallowed by the per-job except
+        block, and delivery never happens — making these tests racy under
+        xdist (file I/O contention causes intermittent failures).
+        """
+        with patch("cron.scheduler.advance_next_run"):
+            yield
+
     def _make_job(self):
         return {
             "id": "monitor-job",
