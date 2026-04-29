@@ -371,6 +371,12 @@ class TestBuildSchemaFromConfig:
             assert entry["type"] == "select"
             assert "options" in entry
             assert "local" in entry["options"]
+            assert "vercel_sandbox" in entry["options"]
+        runtime_entry = CONFIG_SCHEMA["terminal.vercel_runtime"]
+        assert runtime_entry["type"] == "select"
+        assert "node24" in runtime_entry["options"]
+        assert "python3.13" in runtime_entry["options"]
+        assert len(runtime_entry["options"]) >= 3
 
     def test_empty_prefix_produces_correct_keys(self):
         from hermes_cli.web_server import _build_schema_from_config
@@ -1677,6 +1683,45 @@ class TestDashboardPluginManifestExtensions:
         plugins = web_server._get_dashboard_plugins(force_rescan=True)
         entry = next(p for p in plugins if p["name"] == "mixed-slots")
         assert entry["slots"] == ["sidebar", "header-right"]
+
+    def test_page_scoped_slots_preserved(self, tmp_path, monkeypatch):
+        """Page-scoped slot names (e.g. ``sessions:top``) round-trip through
+        the manifest loader untouched.  The backend has no allowlist — the
+        frontend ``<PluginSlot name="...">`` placements decide what actually
+        renders — but the loader must not mangle colons in slot names."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "page-slots", {
+            "name": "page-slots",
+            "label": "Page Slots",
+            "tab": {"path": "/page-slots", "hidden": True},
+            "slots": [
+                "sessions:top",
+                "analytics:bottom",
+                "logs:top",
+                "skills:bottom",
+                "config:top",
+                "env:bottom",
+                "docs:top",
+                "cron:bottom",
+                "chat:top",
+            ],
+            "entry": "dist/index.js",
+        })
+        from hermes_cli import web_server
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        entry = next(p for p in plugins if p["name"] == "page-slots")
+        assert entry["slots"] == [
+            "sessions:top",
+            "analytics:bottom",
+            "logs:top",
+            "skills:bottom",
+            "config:top",
+            "env:bottom",
+            "docs:top",
+            "cron:bottom",
+            "chat:top",
+        ]
 
 
 # ---------------------------------------------------------------------------
