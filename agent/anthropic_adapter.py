@@ -479,6 +479,17 @@ def _common_betas_for_base_url(base_url: str | None) -> list[str]:
     return _COMMON_BETAS
 
 
+def _common_betas_for_oauth(base_url: str | None) -> list[str]:
+    """Return common beta headers safe for native Anthropic OAuth.
+
+    Some OAuth subscriptions reject ``context-1m-2025-08-07`` before the
+    request reaches model/tool execution, even though 1M context is GA on
+    native Anthropic for newer Claude models. Keep Bedrock/Azure behavior in
+    ``_COMMON_BETAS`` unchanged while omitting this beta from OAuth traffic.
+    """
+    return [b for b in _common_betas_for_base_url(base_url) if b != _CONTEXT_1M_BETA]
+
+
 def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = None):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -550,7 +561,8 @@ def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = 
         # OAuth access token / setup-token → Bearer auth + Claude Code identity.
         # Anthropic routes OAuth requests based on user-agent and headers;
         # without Claude Code's fingerprint, requests get intermittent 500s.
-        all_betas = common_betas + _OAUTH_ONLY_BETAS
+        # Some subscriptions reject the 1M context beta before a request can run.
+        all_betas = _common_betas_for_oauth(normalized_base_url) + _OAUTH_ONLY_BETAS
         kwargs["auth_token"] = api_key
         kwargs["default_headers"] = {
             "anthropic-beta": ",".join(all_betas),
@@ -1877,7 +1889,11 @@ def build_anthropic_kwargs(
         kwargs.setdefault("extra_body", {})["speed"] = "fast"
         # Build extra_headers with ALL applicable betas (the per-request
         # extra_headers override the client-level anthropic-beta header).
-        betas = list(_common_betas_for_base_url(base_url))
+        betas = list(
+            _common_betas_for_oauth(base_url)
+            if is_oauth
+            else _common_betas_for_base_url(base_url)
+        )
         if is_oauth:
             betas.extend(_OAUTH_ONLY_BETAS)
         betas.append(_FAST_MODE_BETA)

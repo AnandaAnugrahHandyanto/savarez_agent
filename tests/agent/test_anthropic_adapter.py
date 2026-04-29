@@ -58,7 +58,7 @@ class TestIsOAuthToken:
 class TestBuildAnthropicClient:
     def test_setup_token_uses_auth_token(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
-            build_anthropic_client("sk-ant-oat01-" + "x" * 60)
+            build_anthropic_client("cc-test-token")
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert "auth_token" in kwargs
             betas = kwargs["default_headers"]["anthropic-beta"]
@@ -66,6 +66,7 @@ class TestBuildAnthropicClient:
             assert "claude-code-20250219" in betas
             assert "interleaved-thinking-2025-05-14" in betas
             assert "fine-grained-tool-streaming-2025-05-14" in betas
+            assert "context-1m-2025-08-07" not in betas
             assert "api_key" not in kwargs
 
     def test_api_key_uses_api_key(self):
@@ -77,6 +78,7 @@ class TestBuildAnthropicClient:
             # API key auth should still get common betas
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "interleaved-thinking-2025-05-14" in betas
+            assert "context-1m-2025-08-07" in betas
             assert "oauth-2025-04-20" not in betas  # OAuth-only beta NOT present
             assert "claude-code-20250219" not in betas  # OAuth-only beta NOT present
 
@@ -952,6 +954,24 @@ class TestBuildAnthropicKwargs:
         assert kwargs["system"] == "Be helpful."
         assert kwargs["max_tokens"] == 4096
         assert "tools" not in kwargs
+
+    def test_oauth_fast_mode_extra_headers_omit_context_1m_beta(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            fast_mode=True,
+        )
+        betas = kwargs["extra_headers"]["anthropic-beta"]
+        assert "fast-mode-2026-02-01" in betas
+        assert "oauth-2025-04-20" in betas
+        assert "claude-code-20250219" in betas
+        assert "interleaved-thinking-2025-05-14" in betas
+        assert "context-1m-2025-08-07" not in betas
+
 
     def test_strips_anthropic_prefix(self):
         kwargs = build_anthropic_kwargs(
