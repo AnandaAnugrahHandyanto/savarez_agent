@@ -353,6 +353,81 @@ class TestSanitizeEnvLines:
             assert "OPENROUTER_API_KEY=val\n" in content
             assert "FIRECRAWL_API_KEY=val2\n" in content
 
+    def test_glm_api_key_intact_line_preserved(self):
+        """Intact GLM_API_KEY= line should remain GLM_API_KEY, not become LM_API_KEY."""
+        lines = ["GLM_API_KEY=zai-xxx123\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == ["GLM_API_KEY=zai-xxx123\n"]
+
+    def test_glm_base_url_intact_line_preserved(self):
+        """Intact GLM_BASE_URL= line should remain GLM_BASE_URL, not become LM_BASE_URL."""
+        lines = ["GLM_BASE_URL=https://api.example.com\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == ["GLM_BASE_URL=https://api.example.com\n"]
+
+    def test_split_g_lm_api_key_repaired(self):
+        """Split 'G' + 'LM_API_KEY=...' corruption repairs to GLM_API_KEY."""
+        lines = ["G\n", "LM_API_KEY=zai-xxx123\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == ["GLM_API_KEY=zai-xxx123\n"]
+
+    def test_split_g_lm_base_url_repaired(self):
+        """Split 'G' + 'LM_BASE_URL=...' corruption repairs to GLM_BASE_URL."""
+        lines = ["G\n", "LM_BASE_URL=https://api.example.com\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == ["GLM_BASE_URL=https://api.example.com\n"]
+
+    def test_glm_and_lm_concatenated_splits_correctly(self):
+        """GLM_API_KEY=... followed by LM_BASE_URL=... should split correctly."""
+        lines = ["GLM_API_KEY=zai-xxxLM_BASE_URL=https://example.com\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == [
+            "GLM_API_KEY=zai-xxx\n",
+            "LM_BASE_URL=https://example.com\n",
+        ]
+
+    def test_lm_studio_key_preserved(self):
+        """Intact LM_API_KEY= line should remain LM_API_KEY."""
+        lines = ["LM_API_KEY=lm-studio-token\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == ["LM_API_KEY=lm-studio-token\n"]
+
+    def test_lm_studio_base_url_preserved(self):
+        """Intact LM_BASE_URL= line should remain LM_BASE_URL."""
+        lines = ["LM_BASE_URL=http://localhost:1234\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == ["LM_BASE_URL=http://localhost:1234\n"]
+
+    def test_load_env_returns_glm_not_lm(self, tmp_path):
+        """load_env() should return GLM_* for valid GLM_* entries."""
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "GLM_API_KEY=zai-xxx123\n"
+            "GLM_BASE_URL=https://api.example.com\n"
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            result = load_env()
+            assert result["GLM_API_KEY"] == "zai-xxx123"
+            assert result["GLM_BASE_URL"] == "https://api.example.com"
+            assert "LM_API_KEY" not in result
+            assert "LM_BASE_URL" not in result
+
+    def test_load_env_repairs_split_glm_keys(self, tmp_path):
+        """load_env() should repair split GLM keys and not surface LM_* aliases."""
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "G\n"
+            "LM_API_KEY=zai-xxx123\n"
+            "G\n"
+            "LM_BASE_URL=https://api.example.com\n"
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            result = load_env()
+            assert result["GLM_API_KEY"] == "zai-xxx123"
+            assert result["GLM_BASE_URL"] == "https://api.example.com"
+            assert "LM_API_KEY" not in result
+            assert "LM_BASE_URL" not in result
+
     def test_sanitize_env_file_noop_on_clean_file(self, tmp_path):
         """No changes when file is already clean."""
         env_file = tmp_path / ".env"

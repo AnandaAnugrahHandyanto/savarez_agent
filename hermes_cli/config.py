@@ -3678,59 +3678,102 @@ def load_env() -> Dict[str, str]:
             if line and not line.startswith('#') and '=' in line:
                 key, _, value = line.partition('=')
                 env_vars[key.strip()] = value.strip().strip('"\'')
-    
+
+        env_vars = _sanitize_loaded_env_vars(env_vars)
+
     return env_vars
 
 
 def _sanitize_env_lines(lines: list) -> list:
     """Fix corrupted .env lines before reading or writing.
 
-    Handles two known corruption patterns:
+    Handles three known corruption patterns:
     1. Concatenated KEY=VALUE pairs on a single line (missing newline between
-       entries, e.g. ``ANTHROPIC_API_KEY=sk-...OPENAI_BASE_URL=https://...``).
-    2. Stale ``KEY=***`` placeholder entries left by incomplete setup runs.
+       entries, e.g. ``ANTHROPIC_API_KEY=sk-...OPENAI_BASE_URL=...``).
+    2. Split GLM keys across lines (``G`` on one line followed by ``LM_*`` on the next).
+    3. Stale ``KEY=***`` placeholder entries left by incomplete setup runs.
 
     Uses a known-keys set (OPTIONAL_ENV_VARS + _EXTRA_ENV_KEYS) so we only
     split on real Hermes env var names, avoiding false positives from values
     that happen to contain uppercase text with ``=``.
     """
-    # Build the known keys set lazily from OPTIONAL_ENV_VARS + extras.
-    # Done inside the function so OPTIONAL_ENV_VARS is guaranteed to be defined.
     known_keys = set(OPTIONAL_ENV_VARS.keys()) | _EXTRA_ENV_KEYS
 
     sanitized: list[str] = []
-    for line in lines:
-        raw = line.rstrip("\r\n")
+    i = 0
+    while i < len(lines):
+        raw = lines[i].rstrip("\r\n")
         stripped = raw.strip()
+
+        # Repair split GLM keys: previous line is literal 'G', next line starts with LM_...
+        if stripped == "G" and i + 1 < len(lines):
+            next_raw = lines[i + 1].rstrip("\r\n")
+            next_stripped = next_raw.strip()
+            if next_stripped.startswith("LM_API_KEY="):
+                sanitized.append("GLM_API_KEY=" + next_stripped[len("LM_API_KEY="):] + "\n")
+                i += 2
+                continue
+            if next_stripped.startswith("LM_BASE_URL="):
+                sanitized.append("GLM_BASE_URL=" + next_stripped[len("LM_BASE_URL="):] + "\n")
+                i += 2
+                continue
 
         # Preserve blank lines and comments
         if not stripped or stripped.startswith("#"):
             sanitized.append(raw + "\n")
+            i += 1
             continue
 
-        # Detect concatenated KEY=VALUE pairs on one line.
-        # Search for known KEY= patterns at any position in the line.
-        split_positions = []
+        matches: list[tuple[int, str]] = []
         for key_name in known_keys:
             needle = key_name + "="
             idx = stripped.find(needle)
             while idx >= 0:
-                split_positions.append(idx)
-                idx = stripped.find(needle, idx + len(needle))
+                matches.append((idx, needle))
+                idx = stripped.find(needle, idx + 1)
 
-        if len(split_positions) > 1:
-            split_positions.sort()
-            # Deduplicate (shouldn't happen, but be safe)
-            split_positions = sorted(set(split_positions))
-            for i, pos in enumerate(split_positions):
-                end = split_positions[i + 1] if i + 1 < len(split_positions) else len(stripped)
-                part = stripped[pos:end].strip()
-                if part:
-                    sanitized.append(part + "\n")
+        if matches:
+            # Prefer longest key at each position, then drop overlapping substring matches
+            best_by_pos: dict[int, str] = {}
+            for pos, needle in matches:
+                if pos not in best_by_pos or len(needle) > len(best_by_pos[pos]):
+                    best_by_pos[pos] = needle
+
+            ordered = sorted(best_by_pos.items(), key=lambda x: x[0])
+            final_positions: list[int] = []
+            covered_until = -1
+            for pos, needle in ordered:
+                if pos < covered_until:
+                    continue
+                final_positions.append(pos)
+                covered_until = pos + len(needle)
+
+            if len(final_positions) > 1:
+                for idx, pos in enumerate(final_positions):
+                    end = final_positions[idx + 1] if idx + 1 < len(final_positions) else len(stripped)
+                    part = stripped[pos:end].strip()
+                    if part:
+                        sanitized.append(part + "\n")
+            else:
+                sanitized.append(stripped + "\n")
         else:
             sanitized.append(stripped + "\n")
 
+        i += 1
+
     return sanitized
+
+
+def _sanitize_loaded_env_vars(env_vars: Dict[str, str]) -> Dict[str, str]:
+    """Normalize env vars after line parsing for known split-key corruption cases."""
+    normalized = dict(env_vars)
+    if "GLM_API_KEY" not in normalized and "LM_API_KEY" in normalized:
+        normalized["GLM_API_KEY"] = normalized.pop("LM_API_KEY")
+    if "GLM_BASE_URL" not in normalized and "LM_BASE_URL" in normalized:
+        normalized["GLM_BASE_URL"] = normalized.pop("LM_BASE_URL")
+    return normalized
+
+
 
 
 def sanitize_env_file() -> int:
