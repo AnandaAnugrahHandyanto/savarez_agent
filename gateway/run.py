@@ -67,6 +67,104 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 # is still classified fresh.  Override via
 # ``config.yaml`` ``agent.gateway_auto_continue_freshness``.
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
+_GATEWAY_USAGE_LINE_RE = re.compile(r"^`usage:t=[^`\n]+ i=[^`\n]+ o=[^`\n]+(?: \([^)]+\))*`[ \t]*$", re.MULTILINE)
+
+
+def _format_usage_int(value: Any) -> str:
+    try:
+        return f"{max(0, int(value)):,}"
+    except (TypeError, ValueError):
+        return "0"
+
+
+def _snapshot_agent_token_usage(agent: Any) -> Dict[str, int]:
+    """Return cumulative token counters from an AIAgent instance."""
+    if agent is None:
+        return {}
+
+    keys = (
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "reasoning_tokens",
+        "prompt_tokens",
+        "completion_tokens",
+    )
+    attr_map = {
+        "input_tokens": "session_input_tokens",
+        "output_tokens": "session_output_tokens",
+        "total_tokens": "session_total_tokens",
+        "cache_read_tokens": "session_cache_read_tokens",
+        "cache_write_tokens": "session_cache_write_tokens",
+        "reasoning_tokens": "session_reasoning_tokens",
+        "prompt_tokens": "session_prompt_tokens",
+        "completion_tokens": "session_completion_tokens",
+    }
+    snapshot: Dict[str, int] = {}
+    for key in keys:
+        try:
+            snapshot[key] = int(getattr(agent, attr_map[key], 0) or 0)
+        except (TypeError, ValueError):
+            snapshot[key] = 0
+    return snapshot
+
+
+def _diff_agent_token_usage(before: Dict[str, int], after: Dict[str, int]) -> Dict[str, int]:
+    """Return non-negative per-turn token usage deltas."""
+    keys = set(before or {}) | set(after or {})
+    return {key: max(0, int((after or {}).get(key, 0)) - int((before or {}).get(key, 0))) for key in keys}
+
+
+def _build_gateway_usage_line(usage: Optional[Dict[str, Any]]) -> str:
+    """Build the user-requested inline-code token usage footer."""
+    usage = usage or {}
+    input_tokens = usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0
+    output_tokens = usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0
+    # Display total is the non-cached visible token total.  Provider/runtime
+    # ``total_tokens`` may include prompt-cache hits (for billing/accounting),
+    # but the compact user-facing footer shows cache reads separately as
+    # ``(+ N c)`` and must not double-count them in ``t=``.
+    try:
+        display_total_tokens = int(input_tokens or 0) + int(output_tokens or 0)
+    except (TypeError, ValueError):
+        display_total_tokens = 0
+
+    parts = [
+        f"usage:t={_format_usage_int(display_total_tokens)}",
+        f"i={_format_usage_int(input_tokens)}",
+    ]
+    cached = usage.get("cache_read_tokens")
+    try:
+        cached_int = int(cached or 0)
+    except (TypeError, ValueError):
+        cached_int = 0
+    if cached_int > 0:
+        parts[-1] = f"{parts[-1]} (+ {_format_usage_int(cached_int)} c)"
+
+    output_part = f"o={_format_usage_int(output_tokens)}"
+    reasoning = usage.get("reasoning_tokens")
+    try:
+        reasoning_int = int(reasoning or 0)
+    except (TypeError, ValueError):
+        reasoning_int = 0
+    if reasoning_int > 0:
+        output_part = f"{output_part} (r {_format_usage_int(reasoning_int)})"
+    parts.append(output_part)
+    return "`" + " ".join(parts) + "`"
+
+
+def _append_gateway_usage_line(text: str, usage: Optional[Dict[str, Any]]) -> str:
+    """Ensure exactly one trailing token usage line on a gateway response.
+
+    Preserve a single blank-line separation from the preceding body/footer so
+    the compact usage line reads like a footer instead of attaching to the
+    final content paragraph.
+    """
+    base = _GATEWAY_USAGE_LINE_RE.sub("", text or "").rstrip()
+    line = _build_gateway_usage_line(usage)
+    return f"{base}\n\n{line}" if base else line
 
 
 def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
@@ -267,7 +365,6 @@ if _config_path.exists():
                 "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
                 "modal_image": "TERMINAL_MODAL_IMAGE",
                 "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-                "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
                 "ssh_host": "TERMINAL_SSH_HOST",
                 "ssh_user": "TERMINAL_SSH_USER",
                 "ssh_port": "TERMINAL_SSH_PORT",
@@ -5450,6 +5547,18 @@ class GatewayRunner:
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
 
+            # Append token usage as the final user-visible line.  Do this after
+            # runtime footers and late session-reset notices so the usage line
+            # remains last, and replace any model-generated placeholder footer.
+            if response:
+                response = _append_gateway_usage_line(
+                    response,
+                    agent_result.get("token_usage") or {
+                        "input_tokens": agent_result.get("input_tokens", 0) or 0,
+                        "output_tokens": agent_result.get("output_tokens", 0) or 0,
+                    },
+                )
+
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
@@ -5473,15 +5582,22 @@ class GatewayRunner:
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
                         )
-                # Streaming already delivered the body text, but the footer was
-                # intentionally held back (see the `not already_sent` gate above).
-                # Send it now as a small trailing message so Telegram/Discord/etc.
+                # Streaming already delivered the body text, but the footer/usage
+                # line was intentionally held back from the streamed text.  Send
+                # it now as a small trailing message so Telegram/Discord/etc.
                 # still surface the runtime metadata on the final reply.
-                if _footer_line:
+                _trailing_line = _append_gateway_usage_line(
+                    _footer_line or "",
+                    agent_result.get("token_usage") or {
+                        "input_tokens": agent_result.get("input_tokens", 0) or 0,
+                        "output_tokens": agent_result.get("output_tokens", 0) or 0,
+                    },
+                )
+                if _trailing_line:
                     try:
                         _foot_adapter = self.adapters.get(source.platform)
                         if _foot_adapter:
-                            await _foot_adapter.send(source.chat_id, _footer_line)
+                            await _foot_adapter.send(source.chat_id, _trailing_line)
                     except Exception as _e:
                         logger.debug("trailing footer send failed: %s", _e)
                 return None
@@ -11003,11 +11119,14 @@ class GatewayRunner:
                 else:
                     _run_message = message
 
+                _usage_before = _snapshot_agent_token_usage(agent)
                 result = agent.run_conversation(_run_message, conversation_history=agent_history, task_id=session_id)
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
+            _usage_after = _snapshot_agent_token_usage(agent)
+            _turn_usage = _diff_agent_token_usage(_usage_before, _usage_after)
 
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:
@@ -11044,6 +11163,7 @@ class GatewayRunner:
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
                     "context_length": _context_length,
+                    "token_usage": _turn_usage,
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -11151,6 +11271,7 @@ class GatewayRunner:
                 "context_length": _context_length,
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),
+                "token_usage": _turn_usage,
             }
         
         # Start progress message sender if enabled
