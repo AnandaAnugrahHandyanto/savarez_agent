@@ -445,6 +445,30 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    def register_tts_provider(self, provider) -> None:
+        """Register a text-to-speech backend.
+
+        ``provider`` must be an instance of
+        :class:`agent.tts_provider.TtsProvider`. The ``provider.name``
+        attribute is what ``tts.provider`` in ``config.yaml`` matches
+        against when routing ``text_to_speech`` tool calls.
+        """
+        from agent.tts_provider import TtsProvider
+        from agent.tts_registry import register_provider
+
+        if not isinstance(provider, TtsProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a tts provider that does not "
+                "inherit from TtsProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        register_provider(provider)
+        logger.info(
+            "Plugin '%s' registered tts provider: %s",
+            self.manifest.name, provider.name,
+        )
+
     # -- hook registration --------------------------------------------------
 
     def register_hook(self, hook_name: str, callback: Callable) -> None:
