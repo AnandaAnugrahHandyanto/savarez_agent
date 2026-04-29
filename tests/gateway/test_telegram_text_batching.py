@@ -147,6 +147,19 @@ class TestTextBatching:
         assert adapter._pending_text_batch_tasks == {}
 
     @pytest.mark.asyncio
+    async def test_disconnected_adapter_drops_late_text_batch_enqueue(self):
+        """Late update handlers should not schedule batches after teardown starts."""
+        adapter = _make_adapter()
+        adapter._mark_disconnected()
+
+        adapter._enqueue_text_event(_make_event("late text"))
+        await asyncio.sleep(0.2)
+
+        adapter.handle_message.assert_not_called()
+        assert adapter._pending_text_batches == {}
+        assert adapter._pending_text_batch_tasks == {}
+
+    @pytest.mark.asyncio
     async def test_cancel_pending_delivery_tasks_skips_current_polling_error_task(self):
         """The teardown helper must not cancel the coroutine doing cleanup."""
         adapter = _make_adapter()

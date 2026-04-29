@@ -953,6 +953,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending delayed deliveries, and disconnect."""
+        self._mark_disconnected()
         await self._cancel_pending_delivery_tasks()
 
         if self._app:
@@ -2538,6 +2539,10 @@ class TelegramAdapter(BasePlatformAdapter):
         concatenates them and waits for a short quiet period before
         dispatching the combined message.
         """
+        if not self.is_connected:
+            logger.debug("[Telegram] Dropping text batch enqueue after disconnect started")
+            return
+
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
         chunk_len = len(event.text or "")
@@ -2624,6 +2629,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _enqueue_photo_event(self, batch_key: str, event: MessageEvent) -> None:
         """Merge photo events into a pending batch and schedule flush."""
+        if not self.is_connected:
+            logger.debug("[Telegram] Dropping photo batch enqueue after disconnect started")
+            return
+
         existing = self._pending_photo_batches.get(batch_key)
         if existing is None:
             self._pending_photo_batches[batch_key] = event
@@ -2846,6 +2855,10 @@ class TelegramAdapter(BasePlatformAdapter):
         new user message and interrupts the first. We debounce briefly and merge the
         attachments into a single MessageEvent.
         """
+        if not self.is_connected:
+            logger.debug("[Telegram] Dropping media group enqueue after disconnect started")
+            return
+
         existing = self._media_group_events.get(media_group_id)
         if existing is None:
             self._media_group_events[media_group_id] = event
