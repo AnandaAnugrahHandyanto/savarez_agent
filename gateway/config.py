@@ -980,6 +980,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "account": signal_account,
             "ignore_stories": os.getenv("SIGNAL_IGNORE_STORIES", "true").lower() in ("true", "1", "yes"),
         })
+        signal_notify_self = os.getenv("SIGNAL_NOTIFY_SELF", "").lower()
+        if signal_notify_self in ("true", "1", "yes"):
+            config.platforms[Platform.SIGNAL].extra["notify_self"] = True
     signal_home = os.getenv("SIGNAL_HOME_CHANNEL")
     if signal_home and Platform.SIGNAL in config.platforms:
         config.platforms[Platform.SIGNAL].home_channel = HomeChannel(

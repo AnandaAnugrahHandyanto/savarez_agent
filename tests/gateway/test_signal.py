@@ -57,6 +57,30 @@ class TestSignalConfigLoading:
         assert sc.extra["http_url"] == "http://localhost:9090"
         assert sc.extra["account"] == "+15551234567"
 
+    def test_apply_env_overrides_signal_notify_self(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:9090")
+        monkeypatch.setenv("SIGNAL_ACCOUNT", "+15551234567")
+        monkeypatch.setenv("SIGNAL_NOTIFY_SELF", "true")
+
+        from gateway.config import GatewayConfig, _apply_env_overrides
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+
+        sc = config.platforms[Platform.SIGNAL]
+        assert sc.extra.get("notify_self") is True
+
+    def test_apply_env_overrides_signal_notify_self_disabled(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:9090")
+        monkeypatch.setenv("SIGNAL_ACCOUNT", "+15551234567")
+        monkeypatch.setenv("SIGNAL_NOTIFY_SELF", "false")
+
+        from gateway.config import GatewayConfig, _apply_env_overrides
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+
+        sc = config.platforms[Platform.SIGNAL]
+        assert "notify_self" not in sc.extra
+
     def test_signal_not_loaded_without_both_vars(self, monkeypatch):
         monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:9090")
         # No SIGNAL_ACCOUNT
@@ -997,3 +1021,93 @@ class TestSignalTypingBackoff:
 
         assert "+155****4567" not in adapter._typing_failures
         assert "+155****4567" not in adapter._typing_skip_until
+
+
+# ---------------------------------------------------------------------------
+# notifySelf toggle for Note-to-Self bubble-side fix
+# ---------------------------------------------------------------------------
+
+class TestSignalNotifySelf:
+    """Verify that notify_self=True adds notifySelf param for self-messages
+    in text, image, and attachment sends, while leaving other chats untouched."""
+
+    @pytest.mark.asyncio
+    async def test_send_to_self_adds_notifySelf_when_enabled(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, notify_self=True)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1234567890})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send(chat_id="+15551234567", content="hello self")
+        assert result.success is True
+        send_call = [c for c in captured if c["method"] == "send"][0]
+        assert send_call["params"].get("notifySelf") is True
+
+    @pytest.mark.asyncio
+    async def test_send_to_self_omits_notifySelf_when_disabled(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, notify_self=False)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1234567890})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send(chat_id="+15551234567", content="hello self")
+        assert result.success is True
+        send_call = [c for c in captured if c["method"] == "send"][0]
+        assert "notifySelf" not in send_call["params"]
+
+    @pytest.mark.asyncio
+    async def test_send_to_other_omits_notifySelf_even_when_enabled(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, notify_self=True)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1234567890})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send(chat_id="+15559999999", content="hello other")
+        assert result.success is True
+        send_call = [c for c in captured if c["method"] == "send"][0]
+        assert "notifySelf" not in send_call["params"]
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_to_self_adds_notifySelf(self, monkeypatch, tmp_path):
+        adapter = _make_signal_adapter(monkeypatch, notify_self=True)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1234567890})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        img_path = tmp_path / "chart.png"
+        img_path.write_bytes(b"\x89PNG" + b"\x00" * 100)
+
+        result = await adapter.send_image_file(chat_id="+15551234567", image_path=str(img_path))
+        assert result.success is True
+        send_call = [c for c in captured if c["method"] == "send"][0]
+        assert send_call["params"].get("notifySelf") is True
+
+    @pytest.mark.asyncio
+    async def test_send_voice_to_self_adds_notifySelf(self, monkeypatch, tmp_path):
+        adapter = _make_signal_adapter(monkeypatch, notify_self=True)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1234567890})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        audio_path = tmp_path / "note.ogg"
+        audio_path.write_bytes(b"OggS" + b"\x00" * 100)
+
+        result = await adapter.send_voice(chat_id="+15551234567", audio_path=str(audio_path))
+        assert result.success is True
+        send_call = [c for c in captured if c["method"] == "send"][0]
+        assert send_call["params"].get("notifySelf") is True
+
+    @pytest.mark.asyncio
+    async def test_group_send_omits_notifySelf(self, monkeypatch, tmp_path):
+        adapter = _make_signal_adapter(monkeypatch, notify_self=True)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1234567890})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        img_path = tmp_path / "chart.png"
+        img_path.write_bytes(b"\x89PNG" + b"\x00" * 100)
+
+        result = await adapter.send_image_file(chat_id="group:abc123==", image_path=str(img_path))
+        assert result.success is True
+        send_call = [c for c in captured if c["method"] == "send"][0]
+        assert "notifySelf" not in send_call["params"]
