@@ -28,6 +28,10 @@ from pathlib import Path
 from typing import Dict, Optional, Any
 
 from hermes_constants import get_hermes_dir
+from gateway.whatsapp_identity import (
+    normalize_whatsapp_identifier,
+    expand_whatsapp_aliases,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -208,61 +212,18 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if raw is None:
             return set()
         if isinstance(raw, list):
-            return {WhatsAppAdapter._normalize_jid(str(part)) for part in raw if str(part).strip()}
-        return {WhatsAppAdapter._normalize_jid(part) for part in str(raw).split(",") if part.strip()}
-
-    @staticmethod
-    def _normalize_jid(jid: str) -> str:
-        """Strip WhatsApp JID suffixes so bare phone numbers match JID-formatted senders.
-
-        The Node.js bridge delivers ``senderId`` as a full JID such as
-        ``85296456787@s.whatsapp.net`` or ``85296456787:33@s.whatsapp.net``,
-        while ``allow_from`` in *config.yaml* is typically configured with bare
-        phone numbers like ``85296456787``.  Without normalisation the
-        ``allowlist`` dm_policy silently drops every DM.
-        """
-        return (
-            str(jid)
-            .strip()
-            .split(":")[0]   # remove device-index suffix  e.g. "85296456787:33@…"
-            .split("@")[0]   # remove @s.whatsapp.net / @lid / etc.
-            .lstrip("+")     # normalise leading +
-        )
-
-    def _resolve_lid_to_phone(self, lid_identifier: str) -> str:
-        """Resolve a WhatsApp LID (Linked Identity Device) to a phone number.
-
-        When the WhatsApp account uses linked devices, incoming DM ``senderId``
-        values may arrive as a LID such as ``125619388076125`` rather than the
-        human-readable phone number ``85296456787``.  The bridge writes
-        ``lid-mapping-{lid}_reverse.json`` files in the session directory that
-        map LID → phone number.  This method consults those files so the
-        Python-level allowlist can match against phone numbers regardless of
-        whether the sender was identified by LID or phone.
-        """
-        import json as _json
-        mapping_file = self._session_path / f"lid-mapping-{lid_identifier}_reverse.json"
-        try:
-            if mapping_file.exists():
-                phone = _json.loads(mapping_file.read_text()).strip().lstrip("+")
-                if phone:
-                    return phone
-        except Exception:
-            pass
-        return lid_identifier
+            return {normalize_whatsapp_identifier(str(part)) for part in raw if str(part).strip()}
+        return {normalize_whatsapp_identifier(part) for part in str(raw).split(",") if part.strip()}
 
     def _is_dm_allowed(self, sender_id: str) -> bool:
         """Check whether a DM from the given sender should be processed."""
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            normalized = self._normalize_jid(sender_id)
-            if normalized in self._allow_from:
-                return True
-            # LID format: sender may arrive as a LID (e.g. "125619388076125@lid").
-            # Try resolving LID → phone via session mapping files.
-            phone = self._resolve_lid_to_phone(normalized)
-            return phone in self._allow_from
+            # Expand phone↔LID aliases so allowlist matches regardless of which
+            # identifier format the bridge delivers (bare phone, @s.whatsapp.net
+            # JID, or @lid LID).  Mirrors the logic in gateway.run._is_user_authorized.
+            return bool(expand_whatsapp_aliases(sender_id) & self._allow_from)
         # "open" — all DMs allowed
         return True
 
@@ -271,7 +232,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if self._group_policy == "disabled":
             return False
         if self._group_policy == "allowlist":
-            return self._normalize_jid(chat_id) in self._group_allow_from
+            return normalize_whatsapp_identifier(chat_id) in self._group_allow_from
         # "open" — all groups allowed
         return True
 
