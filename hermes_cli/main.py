@@ -863,9 +863,21 @@ def _npm_install_in_sync(root: Path) -> bool:
         return False
 
     try:
-        wanted = json.loads(lock.read_text(encoding="utf-8")).get("packages") or {}
-        installed = json.loads(marker.read_text(encoding="utf-8")).get("packages") or {}
+        lock_doc = json.loads(lock.read_text(encoding="utf-8"))
+        marker_doc = json.loads(marker.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return marker.stat().st_mtime >= lock.stat().st_mtime
+
+    # `json.loads` may return any JSON value; npm lockfiles are always a top-
+    # level object with a dict-shaped `packages` map. Anything else is a
+    # corrupted lockfile — treat it like an unparseable file rather than
+    # crashing `hermes update` with an AttributeError when we call `.get` /
+    # `.items` below.
+    if not isinstance(lock_doc, dict) or not isinstance(marker_doc, dict):
+        return marker.stat().st_mtime >= lock.stat().st_mtime
+    wanted = lock_doc.get("packages") or {}
+    installed = marker_doc.get("packages") or {}
+    if not isinstance(wanted, dict) or not isinstance(installed, dict):
         return marker.stat().st_mtime >= lock.stat().st_mtime
 
     def comparable(pkg: dict) -> dict:

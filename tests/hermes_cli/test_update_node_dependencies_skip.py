@@ -109,6 +109,36 @@ def test_falls_back_to_mtime_when_unparseable(tmp_path: Path, main_mod) -> None:
     assert main_mod._npm_install_in_sync(tmp_path) is False
 
 
+def test_falls_back_to_mtime_when_packages_is_not_a_dict(tmp_path: Path, main_mod) -> None:
+    """Corrupted lockfile where `packages` is a list/string must not crash.
+
+    `json.loads(...).get("packages")` returns whatever happens to be there.
+    A real npm lockfile always pins it to a dict, but a hand-edited or
+    truncated file can leave it as a list — and we must not blow up
+    `hermes update` with `AttributeError: 'list' object has no attribute 'items'`.
+    """
+    nm = tmp_path / "node_modules"
+    nm.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "package-lock.json").write_text(json.dumps({"packages": ["not", "a", "dict"]}))
+    (nm / ".package-lock.json").write_text(json.dumps({"packages": {"node_modules/foo": {"version": "1.0.0"}}}))
+    os.utime(tmp_path / "package-lock.json", (100, 100))
+    os.utime(nm / ".package-lock.json", (200, 200))
+    # Falls back to mtime: marker newer than lock → in sync.
+    assert main_mod._npm_install_in_sync(tmp_path) is True
+
+
+def test_falls_back_to_mtime_when_top_level_is_not_an_object(tmp_path: Path, main_mod) -> None:
+    """Top-level JSON value is a list/string instead of an object → no crash."""
+    nm = tmp_path / "node_modules"
+    nm.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "package-lock.json").write_text(json.dumps(["unexpected", "shape"]))
+    (nm / ".package-lock.json").write_text(json.dumps({"packages": {}}))
+    os.utime(tmp_path / "package-lock.json", (300, 300))
+    os.utime(nm / ".package-lock.json", (200, 200))
+    # Falls back to mtime: lock newer than marker → out of sync.
+    assert main_mod._npm_install_in_sync(tmp_path) is False
+
+
 # ---------------------------------------------------------------------------
 # _update_node_dependencies — does not call npm when in sync (#17268)
 # ---------------------------------------------------------------------------
