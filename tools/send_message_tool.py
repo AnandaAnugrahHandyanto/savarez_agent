@@ -595,7 +595,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     last_result = None
     for chunk in chunks:
         if platform == Platform.SLACK:
-            result = await _send_slack(pconfig.token, chat_id, chunk)
+            result = await _send_slack(pconfig.token, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
@@ -1008,6 +1008,23 @@ async def _send_slack(token, chat_id, message, media_files=None, thread_id=None)
             return {"error": "slack_sdk not installed. Run: pip install 'hermes-agent[slack]'"}
 
         client = AsyncWebClient(token=token)
+        # Apply the same proxy that SlackAdapter uses (NO_PROXY-aware,
+        # http(s)-only). Without this, media uploads fail in proxied
+        # environments even though text-only chat.postMessage works
+        # because the aiohttp path goes through resolve_proxy_url().
+        try:
+            from gateway.platforms.slack import (
+                _apply_slack_proxy,
+                _resolve_slack_proxy_url,
+            )
+            _slack_proxy = _resolve_slack_proxy_url()
+            if _slack_proxy:
+                _apply_slack_proxy(client, _slack_proxy)
+        except ImportError:
+            # SlackAdapter unavailable (no slack_bolt) is fine — we already
+            # have slack_sdk; just skip proxy configuration in that case.
+            pass
+
         last_result = None
         text_consumed = False
         try:

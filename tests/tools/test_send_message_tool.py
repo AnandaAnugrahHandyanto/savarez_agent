@@ -382,6 +382,7 @@ class TestSendToPlatformChunking:
             "***",
             "C123",
             "*hello* from <https://example.com|Hermes>",
+            thread_id=None,
         )
 
     def test_slack_bold_italic_formatted_before_send(self, monkeypatch):
@@ -1773,6 +1774,90 @@ class TestSendSlackMedia:
         assert "error" in result
         assert "channel_not_found" in result["error"]
 
+    def test_proxy_resolved_via_slack_helpers_is_applied_to_client(self, monkeypatch, tmp_path):
+        """Media path must apply SlackAdapter._resolve_slack_proxy_url to the
+        AsyncWebClient (regression for Copilot finding on the original PR —
+        without this, uploads fail in proxied environments while text-only
+        chat.postMessage works because aiohttp uses resolve_proxy_url())."""
+        from tools.send_message_tool import _send_slack
+
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"x")
+
+        # Capture the AsyncWebClient instance so we can inspect proxy state.
+        captured_clients = []
+        upload = AsyncMock(return_value={"ok": True, "files": [{"id": "F1"}]})
+
+        class FakeAsyncWebClient:
+            def __init__(self, token=None):
+                self.token = token
+                self.proxy = None  # SlackAdapter sets via .proxy attribute
+                self.files_upload_v2 = upload
+                captured_clients.append(self)
+
+        slack_sdk = MagicMock()
+        slack_sdk.web.async_client.AsyncWebClient = FakeAsyncWebClient
+
+        class FakeSlackApiError(Exception):
+            def __init__(self, message="", response=None):
+                super().__init__(message)
+                self.response = response
+
+        slack_sdk.errors.SlackApiError = FakeSlackApiError
+        monkeypatch.setitem(sys.modules, "slack_sdk", slack_sdk)
+        monkeypatch.setitem(sys.modules, "slack_sdk.web", slack_sdk.web)
+        monkeypatch.setitem(sys.modules, "slack_sdk.web.async_client", slack_sdk.web.async_client)
+        monkeypatch.setitem(sys.modules, "slack_sdk.errors", slack_sdk.errors)
+
+        # Force the SlackAdapter helpers to surface a proxy URL.
+        with patch("gateway.platforms.slack._resolve_slack_proxy_url", return_value="http://proxy.example:8080"):
+            result = asyncio.run(
+                _send_slack("xoxb", "C1", "hi", media_files=[(str(img), False)])
+            )
+
+        assert result["success"] is True
+        assert len(captured_clients) == 1
+        assert captured_clients[0].proxy == "http://proxy.example:8080"
+
+    def test_no_proxy_resolved_does_not_set_client_proxy(self, monkeypatch, tmp_path):
+        """When _resolve_slack_proxy_url returns None (no proxy / NO_PROXY hit),
+        the client's .proxy attribute must be left untouched (None), not coerced."""
+        from tools.send_message_tool import _send_slack
+
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"x")
+
+        captured_clients = []
+        upload = AsyncMock(return_value={"ok": True, "files": [{"id": "F1"}]})
+
+        class FakeAsyncWebClient:
+            def __init__(self, token=None):
+                self.token = token
+                self.proxy = "preset_sentinel"
+                self.files_upload_v2 = upload
+                captured_clients.append(self)
+
+        slack_sdk = MagicMock()
+        slack_sdk.web.async_client.AsyncWebClient = FakeAsyncWebClient
+
+        class FakeSlackApiError(Exception):
+            pass
+
+        slack_sdk.errors.SlackApiError = FakeSlackApiError
+        monkeypatch.setitem(sys.modules, "slack_sdk", slack_sdk)
+        monkeypatch.setitem(sys.modules, "slack_sdk.web", slack_sdk.web)
+        monkeypatch.setitem(sys.modules, "slack_sdk.web.async_client", slack_sdk.web.async_client)
+        monkeypatch.setitem(sys.modules, "slack_sdk.errors", slack_sdk.errors)
+
+        with patch("gateway.platforms.slack._resolve_slack_proxy_url", return_value=None):
+            result = asyncio.run(
+                _send_slack("xoxb", "C1", "hi", media_files=[(str(img), False)])
+            )
+
+        assert result["success"] is True
+        # Sentinel must remain untouched — _apply_slack_proxy was not called.
+        assert captured_clients[0].proxy == "preset_sentinel"
+
     def test_text_only_path_does_not_import_slack_sdk(self, monkeypatch):
         """Regression: text-only sends must continue to use aiohttp + chat.postMessage,
         NOT touch slack_sdk. This guards against the new media branch leaking into
@@ -1904,8 +1989,36 @@ class TestSendToPlatformSlackMedia:
 
         assert result["success"] is True
         send_mock.assert_awaited_once()
-        # Old text-only branch passes positional args only — no media_files kwarg.
-        assert send_mock.await_args.kwargs == {}
+        # Text-only branch should not carry a media_files kwarg (that's the
+        # signal that distinguishes it from the new media branch). thread_id
+        # is allowed (it just defaults to None when not provided by caller).
+        called_kwargs = send_mock.await_args.kwargs
+        assert "media_files" not in called_kwargs
+
+    def test_text_only_slack_forwards_thread_id(self, monkeypatch):
+        """Text-only Slack sends must forward thread_id (regression for Copilot
+        finding on the original PR — without this, _send_to_platform's thread_id
+        is silently dropped for Slack unless media is present)."""
+        _ensure_slack_mock(monkeypatch)
+        import gateway.platforms.slack as slack_mod
+        monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
+
+        send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
+
+        with patch("tools.send_message_tool._send_slack", send_mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.SLACK,
+                    SimpleNamespace(enabled=True, token="xoxb", extra={}),
+                    "C1",
+                    "thread reply",
+                    thread_id="1700000000.000999",
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once()
+        assert send_mock.await_args.kwargs.get("thread_id") == "1700000000.000999"
 
     def test_warning_message_lists_slack_as_supported(self, monkeypatch):
         """When media is dropped on a non-supporting platform, the warning text
