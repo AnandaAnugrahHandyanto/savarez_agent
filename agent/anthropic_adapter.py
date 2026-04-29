@@ -468,7 +468,16 @@ def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = 
         # OAuth access token / setup-token → Bearer auth + Claude Code identity.
         # Anthropic routes OAuth requests based on user-agent and headers;
         # without Claude Code's fingerprint, requests get intermittent 500s.
-        all_betas = common_betas + _OAUTH_ONLY_BETAS
+        # The context-1m-2025-08-07 beta is also stripped from OAuth requests:
+        # consumer Claude subscriptions (Pro/Max via OAuth) reject the beta with
+        # HTTP 400 ("long context beta is not yet available for this
+        # subscription") even on models that don't use 1M context (e.g. Haiku).
+        # The header is rejected pre-routing, so requests fail before reaching
+        # the model at all. Strip it on OAuth — direct API-key callers (line
+        # below) keep full _COMMON_BETAS since console.anthropic.com keys are
+        # under a different gating policy and accept the header as a no-op.
+        oauth_common_betas = [b for b in common_betas if b != _CONTEXT_1M_BETA]
+        all_betas = oauth_common_betas + _OAUTH_ONLY_BETAS
         kwargs["auth_token"] = api_key
         kwargs["default_headers"] = {
             "anthropic-beta": ",".join(all_betas),

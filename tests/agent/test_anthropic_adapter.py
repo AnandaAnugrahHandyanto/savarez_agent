@@ -68,6 +68,23 @@ class TestBuildAnthropicClient:
             assert "fine-grained-tool-streaming-2025-05-14" in betas
             assert "api_key" not in kwargs
 
+    def test_oauth_strips_context_1m_beta(self):
+        # Consumer Claude subscriptions (Pro/Max via OAuth) reject the
+        # context-1m-2025-08-07 beta with HTTP 400 ("long context beta
+        # is not yet available for this subscription") even on models
+        # that don't use 1M context. The header is rejected pre-routing
+        # so the request never reaches the model. Strip it on OAuth so
+        # consumer-tier requests aren't blanket 400'd.
+        # API-key callers (console.anthropic.com) are unaffected — see
+        # test_api_key_uses_api_key for that path keeping the beta.
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-oat01-" + "x" * 60)
+            betas = mock_sdk.Anthropic.call_args[1]["default_headers"]["anthropic-beta"]
+            assert "context-1m-2025-08-07" not in betas
+            # OAuth-only betas still present (regression guard for the strip)
+            assert "oauth-2025-04-20" in betas
+            assert "claude-code-20250219" in betas
+
     def test_api_key_uses_api_key(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client("sk-ant-api03-something")
