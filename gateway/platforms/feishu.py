@@ -367,6 +367,8 @@ class FeishuAdapterSettings:
     encrypt_key: str
     verification_token: str
     group_policy: str
+    require_mention: bool
+    mention_policy: str
     allowed_group_users: frozenset[str]
     # Bot's own open_id (app-scoped) — returned by /bot/v3/info.  Used only for
     # @mention matching: Feishu puts this value in mentions[].id.open_id when
@@ -528,6 +530,24 @@ def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -
 def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
     parsed = _coerce_int(value, default=default, min_value=min_value)
     return default if parsed is None else parsed
+
+
+def _coerce_bool_env(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in {"false", "0", "no", "off"}:
+        return False
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+    return default
+
+
+def _normalize_mention_policy(raw_policy: Any, require_mention: bool) -> str:
+    policy = str(raw_policy or "").strip().lower()
+    if policy in {"required", "optional", "bot_or_none"}:
+        return policy
+    return "required" if require_mention else "optional"
 
 
 # ---------------------------------------------------------------------------
@@ -1420,6 +1440,13 @@ class FeishuAdapter(BasePlatformAdapter):
         # Default group policy (for groups not in group_rules)
         default_group_policy = str(extra.get("default_group_policy", "")).strip().lower()
 
+        raw_require_mention = extra.get("require_mention")
+        if raw_require_mention is None:
+            raw_require_mention = os.getenv("FEISHU_REQUIRE_MENTION")
+        require_mention = _coerce_bool_env(raw_require_mention, default=True)
+        raw_mention_policy = extra.get("mention_policy") or os.getenv("FEISHU_MENTION_POLICY", "")
+        mention_policy = _normalize_mention_policy(raw_mention_policy, require_mention)
+
         return FeishuAdapterSettings(
             app_id=str(extra.get("app_id") or os.getenv("FEISHU_APP_ID", "")).strip(),
             app_secret=str(extra.get("app_secret") or os.getenv("FEISHU_APP_SECRET", "")).strip(),
@@ -1430,6 +1457,8 @@ class FeishuAdapter(BasePlatformAdapter):
             encrypt_key=os.getenv("FEISHU_ENCRYPT_KEY", "").strip(),
             verification_token=os.getenv("FEISHU_VERIFICATION_TOKEN", "").strip(),
             group_policy=os.getenv("FEISHU_GROUP_POLICY", "allowlist").strip().lower(),
+            require_mention=require_mention,
+            mention_policy=mention_policy,
             allowed_group_users=frozenset(
                 item.strip()
                 for item in os.getenv("FEISHU_ALLOWED_USERS", "").split(",")
@@ -1486,6 +1515,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._encrypt_key = settings.encrypt_key
         self._verification_token = settings.verification_token
         self._group_policy = settings.group_policy
+        self._require_mention = settings.require_mention
+        self._mention_policy = settings.mention_policy
         self._allowed_group_users = set(settings.allowed_group_users)
         self._admins = set(settings.admins)
         self._default_group_policy = settings.default_group_policy or settings.group_policy
@@ -3692,14 +3723,26 @@ class FeishuAdapter(BasePlatformAdapter):
         return bool(sender_ids and (sender_ids & self._allowed_group_users))
 
     def _should_accept_group_message(self, message: Any, sender_id: Any, chat_id: str = "") -> bool:
-        """Require an explicit @mention before group messages enter the agent."""
+        """Apply sender policy and the configured group mention gate."""
         if not self._allow_group_message(sender_id, chat_id):
             return False
+
+        mention_policy = _normalize_mention_policy(
+            getattr(self, "_mention_policy", ""),
+            getattr(self, "_require_mention", True),
+        )
+        if mention_policy == "optional":
+            return True
+
         # @_all is Feishu's @everyone placeholder — always route to the bot.
         raw_content = getattr(message, "content", "") or ""
         if "@_all" in raw_content:
             return True
+
         mentions = getattr(message, "mentions", None) or []
+        if mention_policy == "bot_or_none" and not mentions:
+            return True
+
         if mentions:
             return self._message_mentions_bot(mentions)
         normalized = normalize_feishu_message(
@@ -3708,6 +3751,8 @@ class FeishuAdapter(BasePlatformAdapter):
             mentions=getattr(message, "mentions", None),
             bot=self._bot_identity(),
         )
+        if mention_policy == "bot_or_none" and not normalized.mentions:
+            return True
         return self._post_mentions_bot(normalized.mentions)
 
     def _is_self_sent_bot_message(self, event: Any) -> bool:

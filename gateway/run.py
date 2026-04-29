@@ -1619,12 +1619,35 @@ class GatewayRunner:
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
+        adapter = self.adapters.get(event.source.platform)
+        if not adapter:
+            return False
+
+        # Explicit Feishu Image2 requests must bypass the ordinary active-session
+        # follow-up queue.  Otherwise a split send (image-only message starts a
+        # normal media turn, then /image2 text follows) gets replayed into the
+        # normal chat agent instead of the durable Image2 fast-lane.
+        try:
+            from gateway.image2_feishu_ingress import handle_image2_feishu_ingress_event
+            _image2_ack = handle_image2_feishu_ingress_event(event)
+        except Exception as exc:
+            logger.exception("Image2 Feishu busy-session interception failed: %s", exc)
+            _image2_ack = None
+        if _image2_ack:
+            thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            try:
+                await adapter._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=_image2_ack,
+                    reply_to=event.message_id,
+                    metadata=thread_meta,
+                )
+            except Exception as e:
+                logger.debug("Failed to send Image2 busy-session ack: %s", e)
+            return True
+
         # --- Draining case (gateway restarting/stopping) ---
         if self._draining:
-            adapter = self.adapters.get(event.source.platform)
-            if not adapter:
-                return True
-
             thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
             if self._queue_during_drain_enabled():
                 self._queue_or_replace_pending_event(session_key, event)
@@ -3322,6 +3345,19 @@ class GatewayRunner:
                 _update_prompts.pop(_quick_key, None)
                 label = response_text if len(response_text) <= 20 else response_text[:20] + "…"
                 return f"✓ Sent `{label}` to the update process."
+
+        # Marketing visual requests are handled by a durable Image 2 job queue:
+        # ack immediately, then let the detached browser worker generate/review/send
+        # the native Feishu image.  This must run before the busy-session guard so
+        # image tasks don't get stuck behind an unrelated long agent turn.
+        try:
+            from gateway.image2_feishu_ingress import handle_image2_feishu_ingress_event
+            _image2_ack = handle_image2_feishu_ingress_event(event)
+        except Exception as exc:
+            logger.exception("Image2 Feishu ingress interception failed: %s", exc)
+            _image2_ack = None
+        if _image2_ack:
+            return _image2_ack
 
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
