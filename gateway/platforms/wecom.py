@@ -382,6 +382,9 @@ class WeComAdapter(BasePlatformAdapter):
         req_id = self._payload_req_id(payload)
         cmd = str(payload.get("cmd") or "")
 
+        # Debug: log all inbound payloads to detect missing message types
+        logger.debug("[%s] Inbound payload cmd=%s body_keys=%s", self.name, cmd, list(payload.get("body", {}).keys()) if isinstance(payload.get("body"), dict) else "none")
+
         if req_id and req_id in self._pending_responses and cmd not in NON_RESPONSE_COMMANDS:
             future = self._pending_responses.get(req_id)
             if future and not future.done():
@@ -493,6 +496,7 @@ class WeComAdapter(BasePlatformAdapter):
             logger.debug("[%s] Missing chat id, skipping message", self.name)
             return
 
+        msgtype = str(body.get("msgtype") or "").lower()
         is_group = str(body.get("chattype") or "").lower() == "group"
         if is_group:
             if not self._is_group_allowed(chat_id, sender_id):
@@ -642,6 +646,15 @@ class WeComAdapter(BasePlatformAdapter):
                     content = str(text_block.get("content") or "").strip()
                     if content:
                         text_parts.append(content)
+                # Extract appmsg title (filename) from mixed items
+                # Skip if appmsg contains an image — we don't want the filename
+                # in the text when the user sent a pure image (fixes display issue)
+                if str(item.get("msgtype") or "").lower() == "appmsg":
+                    appmsg = item.get("appmsg") if isinstance(item.get("appmsg"), dict) else {}
+                    if not isinstance(appmsg.get("image"), dict):
+                        title = str(appmsg.get("title") or "").strip()
+                        if title:
+                            text_parts.append(title)
         else:
             text_block = body.get("text") if isinstance(body.get("text"), dict) else {}
             content = str(text_block.get("content") or "").strip()
@@ -655,11 +668,14 @@ class WeComAdapter(BasePlatformAdapter):
                     text_parts.append(voice_text)
 
             # Extract appmsg title (filename) for WeCom AI Bot attachments
+            # Skip if appmsg contains an image — we don't want the filename
+            # in the text when the user sent a pure image (fixes display issue)
             if msgtype == "appmsg":
                 appmsg = body.get("appmsg") if isinstance(body.get("appmsg"), dict) else {}
-                title = str(appmsg.get("title") or "").strip()
-                if title:
-                    text_parts.append(title)
+                if not isinstance(appmsg.get("image"), dict):
+                    title = str(appmsg.get("title") or "").strip()
+                    if title:
+                        text_parts.append(title)
 
         quote = body.get("quote") if isinstance(body.get("quote"), dict) else {}
         quote_type = str(quote.get("msgtype") or "").lower()
@@ -669,6 +685,15 @@ class WeComAdapter(BasePlatformAdapter):
         elif quote_type == "voice":
             quote_voice = quote.get("voice") if isinstance(quote.get("voice"), dict) else {}
             reply_text = str(quote_voice.get("content") or "").strip() or None
+        elif quote_type == "appmsg":
+            # Extract appmsg title from quote as reply text
+            # Skip if appmsg contains an image — we don't want the filename
+            # in the reply text when the user quoted an image
+            quote_appmsg = quote.get("appmsg") if isinstance(quote.get("appmsg"), dict) else {}
+            if isinstance(quote_appmsg.get("image"), dict):
+                reply_text = None  # Image quote — no text
+            else:
+                reply_text = str(quote_appmsg.get("title") or "").strip() or None
 
         return "\n".join(part for part in text_parts if part).strip(), reply_text
 
@@ -690,6 +715,14 @@ class WeComAdapter(BasePlatformAdapter):
                 item_type = str(item.get("msgtype") or "").lower()
                 if item_type == "image" and isinstance(item.get("image"), dict):
                     refs.append(("image", item["image"]))
+                elif item_type == "file" and isinstance(item.get("file"), dict):
+                    refs.append(("file", item["file"]))
+                elif item_type == "appmsg" and isinstance(item.get("appmsg"), dict):
+                    appmsg = item["appmsg"]
+                    if isinstance(appmsg.get("file"), dict):
+                        refs.append(("file", appmsg["file"]))
+                    elif isinstance(appmsg.get("image"), dict):
+                        refs.append(("image", appmsg["image"]))
         else:
             if isinstance(body.get("image"), dict):
                 refs.append(("image", body["image"]))
@@ -709,6 +742,12 @@ class WeComAdapter(BasePlatformAdapter):
             refs.append(("image", quote["image"]))
         elif quote_type == "file" and isinstance(quote.get("file"), dict):
             refs.append(("file", quote["file"]))
+        elif quote_type == "appmsg" and isinstance(quote.get("appmsg"), dict):
+            quote_appmsg = quote["appmsg"]
+            if isinstance(quote_appmsg.get("file"), dict):
+                refs.append(("file", quote_appmsg["file"]))
+            elif isinstance(quote_appmsg.get("image"), dict):
+                refs.append(("image", quote_appmsg["image"]))
 
         for kind, ref in refs:
             cached = await self._cache_media(kind, ref)
@@ -716,11 +755,23 @@ class WeComAdapter(BasePlatformAdapter):
                 path, content_type = cached
                 media_paths.append(path)
                 media_types.append(content_type)
+                logger.info(
+                    "[%s] _extract_media cached: kind=%s path=%s content_type=%s",
+                    self.name, kind, path, content_type,
+                )
+            else:
+                logger.warning("[%s] _extract_media failed to cache: kind=%s", self.name, kind)
+
+        logger.info(
+            "[%s] _extract_media result: msgtype=%s refs=%d media_paths=%d media_types=%s",
+            self.name, msgtype, len(refs), len(media_paths), media_types,
+        )
 
         return media_paths, media_types
 
     async def _cache_media(self, kind: str, media: Dict[str, Any]) -> Optional[Tuple[str, str]]:
         """Cache an inbound image/file/media reference to local storage."""
+        logger.info("[%s] _cache_media called: kind=%s, media_keys=%s", self.name, kind, list(media.keys()))
         if "base64" in media and media.get("base64"):
             try:
                 raw = self._decode_base64(media["base64"])
@@ -731,40 +782,68 @@ class WeComAdapter(BasePlatformAdapter):
             if kind == "image":
                 ext = self._detect_image_ext(raw)
                 try:
-                    return cache_image_from_bytes(raw, ext), self._mime_for_ext(ext, fallback="image/jpeg")
+                    path, mime = cache_image_from_bytes(raw, ext), self._mime_for_ext(ext, fallback="image/jpeg")
+                    logger.info("[%s] _cache_media base64 image: ext=%s, mime=%s, path=%s", self.name, ext, mime, path)
+                    return path, mime
                 except ValueError as exc:
                     logger.warning("[%s] Rejected non-image bytes: %s", self.name, exc)
                     return None
+
+            # For kind="file", check if base64 content is actually an image
+            if kind == "file":
+                try:
+                    ext = self._detect_image_ext(raw)
+                    path, mime = cache_image_from_bytes(raw, ext), self._mime_for_ext(ext, fallback="application/octet-stream")
+                    logger.info("[%s] _cache_media base64 file->image: ext=%s, mime=%s, path=%s", self.name, ext, mime, path)
+                    return path, mime
+                except (ValueError, Exception):
+                    pass  # Not an image, proceed as document
 
             filename = str(media.get("filename") or media.get("name") or "wecom_file")
             return cache_document_from_bytes(raw, filename), mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
         url = str(media.get("url") or "").strip()
         if not url:
+            logger.debug("[%s] _cache_media: no url for %s", self.name, kind)
             return None
 
         try:
             raw, headers = await self._download_remote_bytes(url, max_bytes=ABSOLUTE_MAX_BYTES)
+            logger.debug("[%s] _cache_media: downloaded %d bytes from %s", self.name, len(raw), url[:80])
         except Exception as exc:
-            logger.debug("[%s] Failed to download %s from %s: %s", self.name, kind, url, exc)
+            logger.warning("[%s] Failed to download %s from %s: %s", self.name, kind, url[:80], exc)
             return None
 
         aes_key = str(media.get("aeskey") or "").strip()
         if aes_key:
             try:
                 raw = self._decrypt_file_bytes(raw, aes_key)
+                logger.debug("[%s] _cache_media: decrypted %d bytes", self.name, len(raw))
             except Exception as exc:
-                logger.debug("[%s] Failed to decrypt %s from %s: %s", self.name, kind, url, exc)
+                logger.warning("[%s] Failed to decrypt %s from %s: %s", self.name, kind, url[:80], exc)
                 return None
 
         content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip() or "application/octet-stream"
         if kind == "image":
             ext = self._guess_extension(url, content_type, fallback=self._detect_image_ext(raw))
             try:
-                return cache_image_from_bytes(raw, ext), content_type or self._mime_for_ext(ext, fallback="image/jpeg")
+                path, mime = cache_image_from_bytes(raw, ext), content_type or self._mime_for_ext(ext, fallback="image/jpeg")
+                logger.info("[%s] _cache_media url image: ext=%s, mime=%s, path=%s", self.name, ext, mime, path)
+                return path, mime
             except ValueError as exc:
                 logger.warning("[%s] Rejected non-image bytes from %s: %s", self.name, url, exc)
                 return None
+
+        # For kind="file", check if content is actually an image (WeCom sends quoted images as "file")
+        if kind == "file":
+            try:
+                ext = self._detect_image_ext(raw)
+                # Verify it's truly an image by trying to cache it
+                path, mime = cache_image_from_bytes(raw, ext), self._mime_for_ext(ext, fallback="application/octet-stream")
+                logger.info("[%s] _cache_media url file->image: ext=%s, mime=%s, path=%s", self.name, ext, mime, path)
+                return path, mime
+            except (ValueError, Exception):
+                pass  # Not an image, proceed as document
 
         filename = self._guess_filename(url, headers.get("content-disposition"), content_type)
         return cache_document_from_bytes(raw, filename), content_type
@@ -1010,7 +1089,9 @@ class WeComAdapter(BasePlatformAdapter):
         if not aes_key:
             raise ValueError("aes_key is required")
 
-        key = base64.b64decode(aes_key)
+        # Add padding if missing — WeCom AI Bot aeskey may omit trailing '='
+        padded = aes_key + "=" * (-len(aes_key) % 4)
+        key = base64.b64decode(padded)
         if len(key) != 32:
             raise ValueError(f"Invalid WeCom AES key length: expected 32 bytes, got {len(key)}")
 
