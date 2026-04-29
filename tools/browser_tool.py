@@ -1522,9 +1522,16 @@ def _run_browser_command(
 
         # Fallback: strip any remaining ANSI escape sequences if NO_COLOR
         # didn't fully suppress them (belt-and-suspenders approach).
-        # Handles sequences like \x1b[A, \x1b[0m, \x1b[32m, etc.
+        # Handles standard CSI sequences (\x1b[...), OSC sequences (\x1b]...\x07),
+        # and any other ESC-prefixed output that agent-browser may produce.
         import re as _re_ansi
-        stdout_text = _re_ansi.sub(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07', '', stdout_text)
+        # Pattern: CSI (ESC [ ... letter), OSC (ESC ] ... BEL), and any ESC + non-space chars
+        # The third branch catches non-standard sequences like \x1b/tabs
+        stdout_text = _re_ansi.sub(
+            '\x1b\\[[0-9;?]*[a-zA-Z]|\x1b\\][^\x07]*\\x07|\x1b[A-Za-z]|\x1b/',
+            '',
+            stdout_text
+        )
 
         # Empty output with rc=0 is a broken state — treat as failure rather
         # than silently returning {"success": True, "data": {}}.
