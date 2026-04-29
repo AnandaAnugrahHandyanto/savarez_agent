@@ -72,6 +72,27 @@ def test_load_enabled_toolsets_filters_invalid_tui_env(monkeypatch, capsys):
     assert "nope" in capsys.readouterr().err
 
 
+def test_load_enabled_toolsets_accepts_plugin_env_after_discovery(monkeypatch):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "plugin_demo")
+
+    import toolsets
+
+    discovered = {"ready": False}
+    original_validate = toolsets.validate_toolset
+
+    def fake_validate(name):
+        return name == "plugin_demo" and discovered["ready"] or original_validate(name)
+
+    monkeypatch.setattr(toolsets, "validate_toolset", fake_validate)
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: discovered.update({"ready": True})),
+    )
+
+    assert server._load_enabled_toolsets() == ["plugin_demo"]
+
+
 def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "nope")
 

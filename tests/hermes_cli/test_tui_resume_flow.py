@@ -230,6 +230,30 @@ def test_oneshot_all_toolsets_warns_about_ignored_extra_entries(capsys):
     assert "ignoring additional entries: nope" in capsys.readouterr().err
 
 
+def test_oneshot_accepts_plugin_toolset_after_discovery(monkeypatch):
+    import toolsets
+
+    from hermes_cli.oneshot import _validate_explicit_toolsets
+
+    discovered = {"ready": False}
+    original_validate = toolsets.validate_toolset
+
+    def fake_validate(name):
+        return name == "plugin_demo" and discovered["ready"] or original_validate(name)
+
+    monkeypatch.setattr(toolsets, "validate_toolset", fake_validate)
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: discovered.update({"ready": True})),
+    )
+
+    valid, error = _validate_explicit_toolsets("plugin_demo")
+
+    assert valid == ["plugin_demo"]
+    assert error is None
+
+
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     captured = {}
     active_path_during_call = None

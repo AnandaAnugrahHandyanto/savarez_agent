@@ -876,6 +876,19 @@ def _load_enabled_toolsets() -> list[str] | None:
         built_in = [name for name in explicit if validate_toolset(name)]
         unresolved = [name for name in explicit if name not in built_in]
 
+        if unresolved:
+            try:
+                from hermes_cli.plugins import discover_plugins
+
+                discover_plugins()
+                plugin_valid = [name for name in unresolved if validate_toolset(name)]
+            except Exception:
+                plugin_valid = []
+
+            if plugin_valid:
+                built_in.extend(plugin_valid)
+                unresolved = [name for name in unresolved if name not in plugin_valid]
+
         if any(name in {"all", "*"} for name in built_in):
             ignored = [name for name in explicit if name not in {"all", "*"}]
             if ignored:
@@ -891,13 +904,12 @@ def _load_enabled_toolsets() -> list[str] | None:
             return built_in
 
         try:
-            from hermes_cli.config import load_config
+            from hermes_cli.config import read_raw_config
 
-            cfg = load_config()
-            mcp_servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
+            raw_cfg = read_raw_config()
+            mcp_servers = raw_cfg.get("mcp_servers") if isinstance(raw_cfg.get("mcp_servers"), dict) else {}
             mcp_names = set(mcp_servers)
         except Exception:
-            cfg = None
             mcp_names = set()
 
         mcp_valid = [name for name in unresolved if name in mcp_names]
