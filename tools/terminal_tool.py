@@ -145,8 +145,14 @@ def _check_disk_usage_warning():
         return False
 
 
-# Session-cached sudo password (persists until CLI exits)
-_cached_sudo_password: str = ""
+# Interactive sudo password cache.
+#
+# Scope the cache to the active session when a session key is available, then
+# fall back to callback identity (ACP / CLI interactive callbacks), then the
+# current thread. This prevents one interactive session from reusing another
+# session's cached sudo password inside the same long-lived process.
+_sudo_password_cache: dict[str, str] = {}
+_sudo_password_cache_lock = threading.Lock()
 
 # Optional UI callbacks for interactive prompts. When set, these are called
 # instead of the default /dev/tty or input() readers. The CLI registers these
@@ -189,6 +195,54 @@ def set_approval_callback(cb):
     GHSA-qg5c-hvr5-hjgr.
     """
     _callback_tls.approval = cb
+
+
+def _get_sudo_password_cache_scope() -> str:
+    """Return the cache scope for interactive sudo passwords."""
+    try:
+        from gateway.session_context import get_session_env
+
+        session_key = get_session_env("HERMES_SESSION_KEY", "")
+    except Exception:
+        session_key = os.getenv("HERMES_SESSION_KEY", "")
+    if session_key:
+        return f"session:{session_key}"
+
+    callback = _get_sudo_password_callback()
+    if callback is not None:
+        owner = getattr(callback, "__self__", None)
+        func = getattr(callback, "__func__", None)
+        if owner is not None and func is not None:
+            return f"callback-owner:{id(owner)}:{id(func)}"
+        return f"callback:{id(callback)}"
+
+    return f"thread:{threading.get_ident()}"
+
+
+def _get_cached_sudo_password() -> str:
+    """Return the cached sudo password for the current scope."""
+    scope = _get_sudo_password_cache_scope()
+    with _sudo_password_cache_lock:
+        return _sudo_password_cache.get(scope, "")
+
+
+def _set_cached_sudo_password(password: str) -> None:
+    """Persist a sudo password for the current scope."""
+    scope = _get_sudo_password_cache_scope()
+    with _sudo_password_cache_lock:
+        if password:
+            _sudo_password_cache[scope] = password
+        else:
+            _sudo_password_cache.pop(scope, None)
+
+
+def _reset_cached_sudo_passwords() -> None:
+    """Clear all cached sudo passwords.
+
+    Internal helper for tests and process teardown paths.
+    """
+    with _sudo_password_cache_lock:
+        _sudo_password_cache.clear()
 
 # =============================================================================
 # Dangerous Command Approval System
@@ -700,8 +754,6 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     If SUDO_PASSWORD is not set and NOT interactive:
       Command runs as-is (fails gracefully with "sudo: a password is required").
     """
-    global _cached_sudo_password
-
     if command is None:
         return None, None
     transformed, has_real_sudo = _rewrite_real_sudo_invocations(command)
@@ -709,12 +761,16 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
         return command, None
 
     has_configured_password = "SUDO_PASSWORD" in os.environ
-    sudo_password = os.environ.get("SUDO_PASSWORD", "") if has_configured_password else _cached_sudo_password
+    sudo_password = (
+        os.environ.get("SUDO_PASSWORD", "")
+        if has_configured_password
+        else _get_cached_sudo_password()
+    )
 
     if not has_configured_password and not sudo_password and os.getenv("HERMES_INTERACTIVE"):
         sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
         if sudo_password:
-            _cached_sudo_password = sudo_password
+            _set_cached_sudo_password(sudo_password)
 
     if has_configured_password or sudo_password:
         # Trailing newline is required: sudo -S reads one line for the password.
@@ -803,6 +859,31 @@ def clear_task_env_overrides(task_id: str):
     """
     _task_env_overrides.pop(task_id, None)
 
+
+def _resolve_container_task_id(task_id: Optional[str]) -> str:
+    """
+    Map a tool-call ``task_id`` to the container/sandbox key used by
+    ``_active_environments``.
+
+    The top-level agent passes ``task_id=None`` and lands on ``"default"``.
+    ``delegate_task`` children pass their own subagent ID so that
+    file-state tracking, the active-subagents registry, and TUI events stay
+    distinct per child -- but we deliberately collapse that ID back to
+    ``"default"`` here so subagents share the parent's long-lived container
+    (one bash, one /workspace, one set of installed packages).
+
+    Exception: RL / benchmark environments (TerminalBench2, HermesSweEnv, ...)
+    call ``register_task_env_overrides(task_id, {...})`` to request a
+    per-task Docker/Modal image. When an override is registered for a
+    task_id, we honour it by returning the task_id unchanged -- those
+    rollouts need their own isolated sandbox, which is the whole point of
+    the override.
+    """
+    if task_id and task_id in _task_env_overrides:
+        return task_id
+    return "default"
+
+
 # Configuration from environment variables
 
 def _parse_env_var(name: str, default: str, converter=int, type_label: str = "integer"):
@@ -844,6 +925,8 @@ def _get_env_config() -> Dict[str, Any]:
     # /workspace and track the original host path separately. Otherwise keep the
     # normal sandbox behavior and discard host paths.
     cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    if cwd:
+        cwd = os.path.expanduser(cwd)
     host_cwd = None
     host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
     if env_type == "docker" and mount_docker_cwd:
@@ -897,6 +980,7 @@ def _get_env_config() -> Dict[str, Any]:
         "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("true", "1", "yes"),
         "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
+        "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in ("true", "1", "yes"),
     }
 
 
@@ -952,6 +1036,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             auto_mount_cwd=cc.get("docker_mount_cwd_to_workspace", False),
             forward_env=docker_forward_env,
             env=docker_env,
+            run_as_host_user=cc.get("docker_run_as_host_user", False),
         )
     
     elif env_type == "singularity":
@@ -1139,8 +1224,9 @@ def _stop_cleanup_thread():
 
 def get_active_env(task_id: str):
     """Return the active BaseEnvironment for *task_id*, or None."""
+    lookup = _resolve_container_task_id(task_id)
     with _env_lock:
-        return _active_environments.get(task_id)
+        return _active_environments.get(lookup) or _active_environments.get(task_id)
 
 
 def is_persistent_env(task_id: str) -> bool:
@@ -1473,8 +1559,11 @@ def terminal_tool(
         config = _get_env_config()
         env_type = config["env_type"]
 
-        # Use task_id for environment isolation
-        effective_task_id = task_id or "default"
+        # Use task_id for environment isolation. By default all subagent
+        # task_ids collapse back to "default" so the top-level agent and
+        # every delegate_task child share one container; only task_ids with
+        # a registered env override (RL benchmarks) get isolated sandboxes.
+        effective_task_id = _resolve_container_task_id(task_id)
 
         # Check per-task overrides (set by environments like TerminalBench2Env)
         # before falling back to global env var config
@@ -1576,6 +1665,7 @@ def terminal_tool(
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                                 "docker_forward_env": config.get("docker_forward_env", []),
                                 "docker_env": config.get("docker_env", {}),
+                                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                             }
 
                         local_config = None
@@ -1822,7 +1912,7 @@ def terminal_tool(
             # Extract output
             output = result.get("output", "")
             returncode = result.get("returncode", 0)
-            
+
             # Add helpful message for sudo failures in messaging context
             output = _handle_sudo_failure(output, env_type)
 
