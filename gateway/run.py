@@ -2453,7 +2453,9 @@ class GatewayRunner:
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             
-            # Try to connect
+            # Try to connect — wrap in a per-platform timeout so one
+            # slow/hanging platform cannot block initialization of others
+            # (e.g., Telegram retrying 8×15s blocks Feishu startup).
             logger.info("Connecting to %s...", platform.value)
             self._update_platform_runtime_status(
                 platform.value,
@@ -2461,8 +2463,12 @@ class GatewayRunner:
                 error_code=None,
                 error_message=None,
             )
+            _platform_connect_timeout = 90  # seconds — generous for slow networks
             try:
-                success = await adapter.connect()
+                success = await asyncio.wait_for(
+                    adapter.connect(),
+                    timeout=_platform_connect_timeout,
+                )
                 if success:
                     self.adapters[platform] = adapter
                     self._sync_voice_mode_state_to_adapter(adapter)
@@ -2523,6 +2529,26 @@ class GatewayRunner:
                             "attempts": 1,
                             "next_retry": time.monotonic() + 30,
                         }
+            except asyncio.TimeoutError:
+                logger.error(
+                    "✗ %s connect timed out after %ds",
+                    platform.value, _platform_connect_timeout,
+                )
+                await self._safe_adapter_disconnect(adapter, platform)
+                self._update_platform_runtime_status(
+                    platform.value,
+                    platform_state="retrying",
+                    error_code="TIMEOUT",
+                    error_message=f"connect timed out after {_platform_connect_timeout}s",
+                )
+                startup_retryable_errors.append(
+                    f"{platform.value}: connect timed out after {_platform_connect_timeout}s"
+                )
+                self._failed_platforms[platform] = {
+                    "config": platform_config,
+                    "attempts": 1,
+                    "next_retry": time.monotonic() + 30,
+                }
             except Exception as e:
                 logger.error("✗ %s error: %s", platform.value, e)
                 # Same defensive cleanup path for exceptions — an adapter
