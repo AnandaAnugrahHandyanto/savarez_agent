@@ -184,6 +184,13 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, aliases=("exit",)),
 ]
 
+# Extend with receipt system commands (opt-in feature)
+try:
+    from hermes_cli.receipt_commands import RECEIPT_COMMANDS
+    COMMAND_REGISTRY.extend(RECEIPT_COMMANDS)
+except ImportError:
+    pass
+
 
 # ---------------------------------------------------------------------------
 # Derived lookups -- rebuilt once at import time, refreshed by rebuild_lookups()
