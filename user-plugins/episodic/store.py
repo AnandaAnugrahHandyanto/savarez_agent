@@ -112,6 +112,29 @@ CREATE TABLE IF NOT EXISTS fact_history (
 
 CREATE INDEX IF NOT EXISTS idx_fact_entity ON fact_history(entity_id, observed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_fact_field ON fact_history(entity_id, field_path);
+
+CREATE TABLE IF NOT EXISTS skill_candidates (
+    id TEXT PRIMARY KEY,
+    fingerprint TEXT NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'detected',
+    pattern_type TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0,
+    occurrence_count INTEGER NOT NULL DEFAULT 0,
+    first_seen_at REAL NOT NULL,
+    last_seen_at REAL NOT NULL,
+    source_sessions_json TEXT NOT NULL DEFAULT '[]',
+    evidence_json TEXT NOT NULL DEFAULT '[]',
+    draft_markdown TEXT,
+    draft_generated_at REAL,
+    published_skill_name TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_candidates_fingerprint
+ON skill_candidates(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_skill_candidates_status
+ON skill_candidates(status, last_seen_at DESC);
 """
 
 FTS_SQL = """
@@ -885,6 +908,150 @@ class EpisodicStore:
             "center": entity_id,
             "depth": depth,
         }
+
+    # ── Skill candidate operations ─────────────────────────────────────────
+
+    def upsert_skill_candidate(self, candidate: dict) -> dict:
+        """Insert or update a skill candidate keyed by fingerprint."""
+        now = time.time()
+        fingerprint = candidate["fingerprint"]
+        candidate_id = candidate.get("id") or f"cand-{abs(hash(fingerprint))}"
+        source_sessions = list(dict.fromkeys(candidate.get("source_sessions") or []))
+        evidence = candidate.get("evidence") or []
+        metadata = candidate.get("metadata") or {}
+        title = candidate.get("title") or fingerprint
+        pattern_type = candidate.get("pattern_type") or "workflow"
+        status = candidate.get("status") or "detected"
+        confidence = float(candidate.get("confidence") or 0.0)
+        occurrence_count = int(candidate.get("occurrence_count") or len(source_sessions) or 0)
+        draft_markdown = candidate.get("draft_markdown")
+        draft_generated_at = candidate.get("draft_generated_at")
+        published_skill_name = candidate.get("published_skill_name")
+
+        def _do(conn: sqlite3.Connection):
+            existing = conn.execute(
+                "SELECT * FROM skill_candidates WHERE fingerprint = ?",
+                (fingerprint,),
+            ).fetchone()
+            if existing:
+                merged_sessions = list(dict.fromkeys(json.loads(existing["source_sessions_json"]) + source_sessions))
+                merged_evidence = json.loads(existing["evidence_json"]) + evidence
+                merged_occurrences = max(int(existing["occurrence_count"]), occurrence_count, len(merged_sessions))
+                merged_confidence = max(float(existing["confidence"]), confidence)
+                merged_metadata = _merge_profiles(json.loads(existing["metadata_json"] or "{}"), metadata)
+                existing_status = str(existing["status"] or "detected")
+                merged_status = status
+                if existing_status != "detected" and status == "detected":
+                    merged_status = existing_status
+                conn.execute(
+                    "UPDATE skill_candidates SET title = ?, status = ?, pattern_type = ?, confidence = ?, "
+                    "occurrence_count = ?, last_seen_at = ?, source_sessions_json = ?, evidence_json = ?, "
+                    "draft_markdown = COALESCE(?, draft_markdown), draft_generated_at = COALESCE(?, draft_generated_at), "
+                    "published_skill_name = COALESCE(?, published_skill_name), metadata_json = ? WHERE fingerprint = ?",
+                    (
+                        title,
+                        merged_status,
+                        pattern_type,
+                        merged_confidence,
+                        merged_occurrences,
+                        now,
+                        json.dumps(merged_sessions, ensure_ascii=False),
+                        json.dumps(merged_evidence, ensure_ascii=False),
+                        draft_markdown,
+                        draft_generated_at,
+                        published_skill_name,
+                        json.dumps(merged_metadata, ensure_ascii=False),
+                        fingerprint,
+                    ),
+                )
+                row_id = existing["id"]
+            else:
+                conn.execute(
+                    "INSERT INTO skill_candidates (id, fingerprint, title, status, pattern_type, confidence, occurrence_count, "
+                    "first_seen_at, last_seen_at, source_sessions_json, evidence_json, draft_markdown, draft_generated_at, "
+                    "published_skill_name, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        candidate_id,
+                        fingerprint,
+                        title,
+                        status,
+                        pattern_type,
+                        confidence,
+                        occurrence_count,
+                        now,
+                        now,
+                        json.dumps(source_sessions, ensure_ascii=False),
+                        json.dumps(evidence, ensure_ascii=False),
+                        draft_markdown,
+                        draft_generated_at,
+                        published_skill_name,
+                        json.dumps(metadata, ensure_ascii=False),
+                    ),
+                )
+                row_id = candidate_id
+            return row_id
+
+        row_id = self._execute_write(_do)
+        return self.get_skill_candidate(row_id) or {}
+
+    def get_skill_candidate(self, candidate_id: str) -> Optional[dict]:
+        row = self._execute_read_one(
+            "SELECT * FROM skill_candidates WHERE id = ?",
+            (candidate_id,),
+        )
+        if not row:
+            return None
+        data = dict(row)
+        data["source_sessions_json"] = json.loads(data["source_sessions_json"] or "[]")
+        data["evidence_json"] = json.loads(data["evidence_json"] or "[]")
+        data["metadata_json"] = json.loads(data["metadata_json"] or "{}")
+        return data
+
+    def list_skill_candidates(self, status: Optional[str] = None, limit: int = 20) -> List[dict]:
+        if status:
+            rows = self._execute_read(
+                "SELECT * FROM skill_candidates WHERE status = ? ORDER BY last_seen_at DESC LIMIT ?",
+                (status, limit),
+            )
+        else:
+            rows = self._execute_read(
+                "SELECT * FROM skill_candidates ORDER BY last_seen_at DESC LIMIT ?",
+                (limit,),
+            )
+        results = []
+        for row in rows:
+            data = dict(row)
+            data["source_sessions_json"] = json.loads(data["source_sessions_json"] or "[]")
+            data["evidence_json"] = json.loads(data["evidence_json"] or "[]")
+            data["metadata_json"] = json.loads(data["metadata_json"] or "{}")
+            results.append(data)
+        return results
+
+    def update_skill_candidate_status(self, candidate_id: str, status: str, **fields) -> Optional[dict]:
+        allowed_fields = {
+            "draft_markdown",
+            "draft_generated_at",
+            "published_skill_name",
+            "title",
+            "confidence",
+            "occurrence_count",
+        }
+        updates = {k: v for k, v in fields.items() if k in allowed_fields}
+
+        def _do(conn: sqlite3.Connection):
+            assignments = ["status = ?", "last_seen_at = ?"]
+            params: list[Any] = [status, time.time()]
+            for key, value in updates.items():
+                assignments.append(f"{key} = ?")
+                params.append(value)
+            params.append(candidate_id)
+            conn.execute(
+                f"UPDATE skill_candidates SET {', '.join(assignments)} WHERE id = ?",
+                tuple(params),
+            )
+
+        self._execute_write(_do)
+        return self.get_skill_candidate(candidate_id)
 
     # ── Health check ──────────────────────────────────────────────────────
 

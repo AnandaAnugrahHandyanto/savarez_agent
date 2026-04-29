@@ -31,6 +31,15 @@ ENABLE_LLM_EXTRACTION = False  # disabled — using lightweight journal instead
 JOURNAL_DIR = Path.home() / "wiki" / "session-recordings"
 ENABLE_SESSION_JOURNAL = True
 
+# ── Skill candidate settings ────────────────────────────────────────────────
+ENABLE_SKILL_CANDIDATES = True
+SKILL_CANDIDATE_MODE = "detect-only"
+SKILL_CANDIDATE_AUTO_PUBLISH = False
+SKILL_CANDIDATE_MIN_OCCURRENCES = 3
+SKILL_CANDIDATE_REVIEW_LIMIT = 10
+SKILL_CANDIDATE_SCAN_SOURCE = "jsonl"
+SKILL_CANDIDATE_DRAFT_MODEL = ""
+
 # ── Merge settings ──────────────────────────────────────────────────────────
 MERGE_TIMEOUT = 60
 MERGE_MODEL = "gpt-5.4"
@@ -91,6 +100,59 @@ def get_memory_model_settings(stage: str) -> tuple[str, str]:
     if stage in {"merge", "compress", "wiki"}:
         return main_provider, main_model
     return default_provider, default_model
+
+
+def get_skill_candidate_settings() -> dict:
+    """Resolve user-facing feature flags for optional skill-candidate mining."""
+
+    def _coerce_bool(value, default: bool) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off", ""}:
+                return False
+        return default
+
+    def _coerce_int(value, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    try:
+        cfg = load_config() or {}
+    except Exception:
+        cfg = {}
+
+    mem_cfg = cfg.get("memory") if isinstance(cfg, dict) else {}
+    if not isinstance(mem_cfg, dict):
+        mem_cfg = {}
+    episodic_cfg = mem_cfg.get("episodic")
+    if not isinstance(episodic_cfg, dict):
+        episodic_cfg = {}
+
+    mode = str(episodic_cfg.get("skill_candidate_mode", SKILL_CANDIDATE_MODE)).strip().lower()
+    if mode not in {"off", "detect-only", "draft"}:
+        mode = SKILL_CANDIDATE_MODE
+
+    scan_source = str(episodic_cfg.get("skill_candidate_scan_source", SKILL_CANDIDATE_SCAN_SOURCE)).strip().lower()
+    if scan_source not in {"jsonl", "journal", "both"}:
+        scan_source = SKILL_CANDIDATE_SCAN_SOURCE
+
+    return {
+        "enabled": _coerce_bool(episodic_cfg.get("skill_candidates_enabled", ENABLE_SKILL_CANDIDATES), ENABLE_SKILL_CANDIDATES),
+        "mode": mode,
+        "auto_publish": _coerce_bool(episodic_cfg.get("skill_candidate_auto_publish", SKILL_CANDIDATE_AUTO_PUBLISH), SKILL_CANDIDATE_AUTO_PUBLISH),
+        "min_occurrences": _coerce_int(episodic_cfg.get("skill_candidate_min_occurrences", SKILL_CANDIDATE_MIN_OCCURRENCES), SKILL_CANDIDATE_MIN_OCCURRENCES),
+        "review_limit": _coerce_int(episodic_cfg.get("skill_candidate_review_limit", SKILL_CANDIDATE_REVIEW_LIMIT), SKILL_CANDIDATE_REVIEW_LIMIT),
+        "scan_source": scan_source,
+        "draft_model": str(episodic_cfg.get("skill_candidate_draft_model", SKILL_CANDIDATE_DRAFT_MODEL)).strip(),
+    }
 
 # ── Context injection budget ────────────────────────────────────────────────
 MAX_MEMORY_INJECTION_TOKENS = 2000

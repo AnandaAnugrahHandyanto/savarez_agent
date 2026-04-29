@@ -31,8 +31,9 @@ from .config import (
     JOURNAL_DIR,
     MAX_MEMORY_INJECTION_TOKENS,
     SESSIONS_DIR,
-    TOP_EPISODES,
     TOP_ENTITIES,
+    TOP_EPISODES,
+    get_skill_candidate_settings,
 )
 from .context_injector import assemble_context, assemble_recent_context
 from .extraction import extract_from_turns
@@ -609,6 +610,107 @@ class EpisodicMemoryProvider(MemoryProvider):
                     "required": ["entity_id"],
                 },
             },
+            {
+                "name": "memory_list_skill_candidates",
+                "description": "List detected episodic-memory skill candidates for human review.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "status": {
+                            "type": "string",
+                            "description": "Optional status filter (detected, drafted, approved, rejected, published, snoozed).",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max candidates to return. Default: 10.",
+                            "default": 10,
+                        },
+                    },
+                },
+            },
+            {
+                "name": "memory_get_skill_candidate",
+                "description": "Fetch one skill candidate by candidate ID.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "candidate_id": {
+                            "type": "string",
+                            "description": "Skill candidate ID.",
+                        },
+                    },
+                    "required": ["candidate_id"],
+                },
+            },
+            {
+                "name": "memory_update_skill_candidate",
+                "description": "Update review status for a skill candidate (approve, reject, snooze, reset-to-detected).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "candidate_id": {
+                            "type": "string",
+                            "description": "Skill candidate ID.",
+                        },
+                        "action": {
+                            "type": "string",
+                            "enum": ["approve", "reject", "snooze", "reset"],
+                            "description": "Review action to apply.",
+                        },
+                    },
+                    "required": ["candidate_id", "action"],
+                },
+            },
+            {
+                "name": "memory_draft_skill_candidate",
+                "description": "Generate or refresh the stored draft markdown for a skill candidate.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "candidate_id": {
+                            "type": "string",
+                            "description": "Skill candidate ID.",
+                        },
+                    },
+                    "required": ["candidate_id"],
+                },
+            },
+            {
+                "name": "memory_promote_skill_candidate",
+                "description": "Mark a drafted/approved candidate as published after creating the real skill via skill_manage.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "candidate_id": {
+                            "type": "string",
+                            "description": "Skill candidate ID.",
+                        },
+                        "skill_name": {
+                            "type": "string",
+                            "description": "Actual skill name created or chosen for publication.",
+                        },
+                    },
+                    "required": ["candidate_id", "skill_name"],
+                },
+            },
+            {
+                "name": "memory_prepare_skill_candidate_for_creation",
+                "description": "Prepare a drafted skill candidate into a skill_manage-ready payload without publishing it.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "candidate_id": {
+                            "type": "string",
+                            "description": "Skill candidate ID.",
+                        },
+                        "skill_name": {
+                            "type": "string",
+                            "description": "Desired skill name to use when creating the real skill.",
+                        },
+                    },
+                    "required": ["candidate_id", "skill_name"],
+                },
+            },
         ]
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
@@ -639,6 +741,18 @@ class EpisodicMemoryProvider(MemoryProvider):
                 return self._tool_contradictions(args)
             elif tool_name == "memory_relationships":
                 return self._tool_relationships(args)
+            elif tool_name == "memory_list_skill_candidates":
+                return self._tool_list_skill_candidates(args)
+            elif tool_name == "memory_get_skill_candidate":
+                return self._tool_get_skill_candidate(args)
+            elif tool_name == "memory_update_skill_candidate":
+                return self._tool_update_skill_candidate(args)
+            elif tool_name == "memory_draft_skill_candidate":
+                return self._tool_draft_skill_candidate(args)
+            elif tool_name == "memory_promote_skill_candidate":
+                return self._tool_promote_skill_candidate(args)
+            elif tool_name == "memory_prepare_skill_candidate_for_creation":
+                return self._tool_prepare_skill_candidate_for_creation(args)
             else:
                 return json.dumps({"error": f"Unknown memory tool: {tool_name}"})
         except Exception as e:
@@ -859,6 +973,108 @@ class EpisodicMemoryProvider(MemoryProvider):
         graph = self._store.get_entity_relationships_graph(entity_id, depth=depth)
         return json.dumps(graph, ensure_ascii=False, default=str)
 
+    def _tool_list_skill_candidates(self, args: Dict[str, Any]) -> str:
+        status = args.get("status")
+        limit = int(args.get("limit", 10) or 10)
+        candidates = self._store.list_skill_candidates(status=status, limit=limit)
+        return json.dumps(
+            {"count": len(candidates), "candidates": candidates},
+            ensure_ascii=False,
+            default=str,
+        )
+
+    def _tool_get_skill_candidate(self, args: Dict[str, Any]) -> str:
+        candidate_id = args.get("candidate_id", "")
+        if not candidate_id:
+            return json.dumps({"error": "candidate_id is required"})
+        candidate = self._store.get_skill_candidate(candidate_id)
+        if not candidate:
+            return json.dumps({"error": f"Skill candidate not found: {candidate_id}"})
+        return json.dumps(candidate, ensure_ascii=False, default=str)
+
+    def _tool_update_skill_candidate(self, args: Dict[str, Any]) -> str:
+        candidate_id = args.get("candidate_id", "")
+        action = str(args.get("action", "")).strip().lower()
+        if not candidate_id:
+            return json.dumps({"error": "candidate_id is required"})
+
+        action_to_status = {
+            "approve": "approved",
+            "reject": "rejected",
+            "snooze": "snoozed",
+            "reset": "detected",
+        }
+        status = action_to_status.get(action)
+        if not status:
+            return json.dumps({"error": f"Unsupported action: {action}"})
+
+        updated = self._store.update_skill_candidate_status(candidate_id, status)
+        if not updated:
+            return json.dumps({"error": f"Skill candidate not found: {candidate_id}"})
+        return json.dumps(updated, ensure_ascii=False, default=str)
+
+    def _tool_draft_skill_candidate(self, args: Dict[str, Any]) -> str:
+        from .skill_candidates import draft_skill_candidate
+
+        candidate_id = args.get("candidate_id", "")
+        if not candidate_id:
+            return json.dumps({"error": "candidate_id is required"})
+        drafted = draft_skill_candidate(self._store, candidate_id)
+        return json.dumps(drafted, ensure_ascii=False, default=str)
+
+    def _tool_promote_skill_candidate(self, args: Dict[str, Any]) -> str:
+        candidate_id = args.get("candidate_id", "")
+        skill_name = str(args.get("skill_name", "")).strip()
+        if not candidate_id:
+            return json.dumps({"error": "candidate_id is required"})
+        if not skill_name:
+            return json.dumps({"error": "skill_name is required"})
+
+        candidate = self._store.get_skill_candidate(candidate_id)
+        if not candidate:
+            return json.dumps({"error": f"Skill candidate not found: {candidate_id}"})
+        if not candidate.get("draft_markdown"):
+            return json.dumps({"error": "Skill candidate must be drafted before promotion"})
+
+        updated = self._store.update_skill_candidate_status(
+            candidate_id,
+            "published",
+            published_skill_name=skill_name,
+        )
+        if not updated:
+            return json.dumps({"error": f"Skill candidate not found: {candidate_id}"})
+        return json.dumps(updated, ensure_ascii=False, default=str)
+
+    def _tool_prepare_skill_candidate_for_creation(self, args: Dict[str, Any]) -> str:
+        candidate_id = args.get("candidate_id", "")
+        skill_name = str(args.get("skill_name", "")).strip()
+        if not candidate_id:
+            return json.dumps({"error": "candidate_id is required"})
+        if not skill_name:
+            return json.dumps({"error": "skill_name is required"})
+
+        candidate = self._store.get_skill_candidate(candidate_id)
+        if not candidate:
+            return json.dumps({"error": f"Skill candidate not found: {candidate_id}"})
+        if not candidate.get("draft_markdown"):
+            return json.dumps({"error": "Skill candidate must be drafted before preparation"})
+
+        return json.dumps(
+            {
+                "candidate": candidate,
+                "skill_name": skill_name,
+                "content": candidate.get("draft_markdown", ""),
+                "recommended_action": {
+                    "tool": "skill_manage",
+                    "action": "create",
+                    "name": skill_name,
+                    "content": candidate.get("draft_markdown", ""),
+                },
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+
     # ── Session lifecycle ─────────────────────────────────────────────────
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
@@ -891,6 +1107,37 @@ class EpisodicMemoryProvider(MemoryProvider):
                     alert_key="journal-failure",
                     session_id=sid,
                     failure_type="journal_write_failed",
+                    message=str(e),
+                    details={"traceback": traceback.format_exc()},
+                )
+
+        # ── Skill candidate detection (optional, post-journal) ─────────────────
+        candidate_settings = get_skill_candidate_settings()
+        if candidate_settings.get("enabled") and candidate_settings.get("mode") in {"detect-only", "draft"}:
+            try:
+                from .skill_candidates import detect_skill_candidates_for_session, draft_skill_candidate
+
+                detected = detect_skill_candidates_for_session(
+                    self._store,
+                    sid,
+                    candidate_settings,
+                )
+                logger.info(
+                    "Session %s skill-candidate detection found %d candidates",
+                    sid,
+                    len(detected),
+                )
+                if candidate_settings.get("mode") == "draft":
+                    for candidate in detected[:1]:
+                        candidate_id = candidate.get("id")
+                        if candidate_id:
+                            draft_skill_candidate(self._store, candidate_id, candidate_settings)
+            except Exception as e:
+                logger.error("Skill candidate detection failed: %s", e)
+                self._emit_failure_alert(
+                    alert_key="skill-candidate-failure",
+                    session_id=sid,
+                    failure_type="skill_candidate_detection_failed",
                     message=str(e),
                     details={"traceback": traceback.format_exc()},
                 )

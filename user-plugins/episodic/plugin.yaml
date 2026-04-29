@@ -1,6 +1,6 @@
 name: episodic
-version: 0.20.0
-description: "Episodic Memory — persistent self-hosted memory with SQLite FTS5, session journal, entity tracking, and loud failure alerting."
+version: 0.30.0
+description: "Episodic Memory — persistent self-hosted memory with SQLite FTS5, session journal, entity tracking, loud failure alerting, and optional skill-candidate review workflows."
 author: "Kronos / Jefe"
 provides_tools:
   - memory_search
@@ -14,6 +14,12 @@ provides_tools:
   - memory_stale_facts
   - memory_contradictions
   - memory_relationships
+  - memory_list_skill_candidates
+  - memory_get_skill_candidate
+  - memory_update_skill_candidate
+  - memory_draft_skill_candidate
+  - memory_prepare_skill_candidate_for_creation
+  - memory_promote_skill_candidate
 hooks:
   - on_turn_start
   - on_session_end

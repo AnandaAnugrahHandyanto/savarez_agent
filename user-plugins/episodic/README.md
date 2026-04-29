@@ -1,30 +1,50 @@
 # Episodic Memory Plugin
 
-**Runtime status:** v0.20.0 active candidate validated on 2026-04-28
+**Runtime status:** v0.30.0 active candidate with optional skill-candidate workflow
 
 This directory is the live operational runtime for the episodic memory plugin used by Hermes.
 
-## v0.20.0 release summary
+## v0.30.0 release summary
 
-v0.20 promotes the journal pipeline from a repaired candidate to a validated release.
+v0.30 introduces the staged optional skill-candidate pipeline discussed for episodic memory.
 
-### Included in v0.20.0
-- repaired `journal.py` import/write path
-- successful real-session smoke generation from JSONL
-- loud-failure artifacts for journal-write exceptions
-- best-effort Telegram alerting for journal failures
-- reconciliation scan for orphaned JSONL sessions with no matching journal artifact
-- successful organic session-finalization validation
+### Included in v0.30.0
+- optional skill-candidate config flags and resolver
+- SQLite-backed `skill_candidates` persistence
+- deterministic JSONL-based recurring-workflow detection
+- post-session candidate scan from `on_session_end()`
+- candidate review tools:
+  - `memory_list_skill_candidates`
+  - `memory_get_skill_candidate`
+  - `memory_update_skill_candidate`
+- candidate drafting and preparation tools:
+  - `memory_draft_skill_candidate`
+  - `memory_prepare_skill_candidate_for_creation`
+- explicit publication marker:
+  - `memory_promote_skill_candidate`
+- hardened config coercion and status-preserving re-detection
 
-### Live validation
-- previous organically closed session JSONL: `~/.hermes/memory/sessions/20260428_064238_57eb8dc7.jsonl`
-- matching live journal artifact: `~/wiki/session-recordings/2026-W18/2026-04-28_20260428_064238_57eb8dc7.md`
-- verified summary fidelity: `10 user turns, 10 assistant turns, 11 tool calls, ~59 min duration`
+### Workflow shape
+1. session ends
+2. detector may create/update candidate rows
+3. user/agent reviews via list/get/update tools
+4. draft is generated explicitly
+5. provider can prepare a `skill_manage`-ready payload
+6. real skill creation remains intentional and external
+7. candidate can then be marked published
 
-### Tests
-- `python -m pytest tests/test_journal_alerting.py -q` → `2 passed`
-- `python -c "import episodic.provider, episodic.journal; print('ok')"` → `ok`
+### Important boundaries
+- no auto-publishing by default
+- no implicit real skill creation inside the episodic provider
+- `memory_prepare_skill_candidate_for_creation` prepares payload only
+- actual skill creation should still go through `skill_manage`
+
+### Validation
+- runtime tests:
+  - `python -m pytest tests/test_skill_candidates.py -q` → `8 passed`
+  - `python -m pytest tests/test_journal_alerting.py tests/test_skill_candidates.py -q` → `10 passed`
+- independent re-audit after blocker fixes: **PASS**
 
 ## Source-control note
 
-The operational plugin currently lives in `~/.hermes/plugins/episodic/`, outside the `~/.hermes/hermes-agent` git worktree. For v0.20, the hermes-agent repo records the release ledger entry, while this directory remains the runtime source of truth.
+The operational plugin currently lives in `~/.hermes/plugins/episodic/`, outside the `~/.hermes/hermes-agent` git worktree. The mirror under `~/.hermes/hermes-agent/user-plugins/episodic/` should stay aligned with runtime changes.
