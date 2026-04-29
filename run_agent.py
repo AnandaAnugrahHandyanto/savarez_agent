@@ -13189,8 +13189,8 @@ class AIAgent:
         # Extract reasoning from the last assistant message (if any)
         last_reasoning = None
         for msg in reversed(messages):
-            if msg.get("role") == "assistant" and msg.get("reasoning"):
-                last_reasoning = msg["reasoning"]
+            if msg.get("role") == "assistant":
+                last_reasoning = msg.get("reasoning")  # None when current turn has no reasoning
                 break
 
         # Build result with interrupt info if applicable
