@@ -211,6 +211,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "kimi-coding-cn": "kimi-k2-turbo-preview",
     "gmi": "google/gemini-3.1-flash-lite-preview",
     "minimax": "MiniMax-M2.7",
+    "minimax-oauth": "MiniMax-M2.7-highspeed",
     "minimax-cn": "MiniMax-M2.7",
     "anthropic": "claude-haiku-4-5-20251001",
     "ai-gateway": "google/gemini-3-flash",
@@ -229,6 +230,21 @@ _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "xiaomi": "mimo-v2.5",
     "zai": "glm-5v-turbo",
 }
+
+# Providers whose endpoint does not accept image input, even though the
+# provider's broader ecosystem has vision models available elsewhere.  When
+# `auxiliary.vision.provider: auto` sees one of these as the main provider,
+# it must skip straight to the aggregator chain instead of returning a client
+# that will 404 on every vision request.
+#
+# kimi-coding / kimi-coding-cn: the Kimi Coding Plan routes through
+# api.kimi.com/coding (Anthropic Messages wire) which Kimi's own docs
+# describe as having no image_in capability. Vision lives on the separate
+# Kimi Platform (api.moonshot.ai, OpenAI-wire, pay-as-you-go).  See #17076.
+_PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
+    "kimi-coding",
+    "kimi-coding-cn",
+})
 
 # OpenRouter app attribution headers
 _OR_HEADERS = {
@@ -714,7 +730,9 @@ class _AnthropicCompletionsAdapter:
 
         response = self._client.messages.create(**anthropic_kwargs)
         _transport = get_transport("anthropic_messages")
-        _nr = _transport.normalize_response(response)
+        _nr = _transport.normalize_response(
+            response, strip_tool_prefix=self._is_oauth
+        )
 
         # ToolCall already duck-types as OpenAI shape (.type, .function.name,
         # .function.arguments) via properties, so no wrapping needed.
@@ -2533,6 +2551,19 @@ def resolve_vision_provider_client(
                         main_provider, default_model or resolved_model or main_model,
                     )
                     return _finalize(main_provider, sync_client, default_model)
+            elif main_provider in _PROVIDERS_WITHOUT_VISION:
+                # Kimi Coding Plan's /coding endpoint (Anthropic Messages wire)
+                # does not accept image input — Kimi's own docs say "Current
+                # model does not support image input, switch to a model with
+                # image_in capability" and vision lives on the separate Kimi
+                # Platform (api.moonshot.ai). Skip the main provider and fall
+                # through to the aggregator chain instead of returning a
+                # client that will 404 on every vision request (#17076).
+                logger.debug(
+                    "Vision auto-detect: skipping main provider %s (no "
+                    "vision support) — falling through to aggregator chain",
+                    main_provider,
+                )
             else:
                 rpc_client, rpc_model = resolve_provider_client(
                     main_provider, vision_model,
@@ -3014,7 +3045,7 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
 
 # Providers that use Anthropic-compatible endpoints (via OpenAI SDK wrapper).
 # Their image content blocks must use Anthropic format, not OpenAI format.
-_ANTHROPIC_COMPAT_PROVIDERS = frozenset({"minimax", "minimax-cn"})
+_ANTHROPIC_COMPAT_PROVIDERS = frozenset({"minimax", "minimax-oauth", "minimax-cn"})
 
 
 def _is_anthropic_compat_endpoint(provider: str, base_url: str) -> bool:
