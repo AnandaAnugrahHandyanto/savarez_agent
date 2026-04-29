@@ -864,12 +864,36 @@ def _load_enabled_toolsets() -> list[str] | None:
         for item in os.environ.get("HERMES_TUI_TOOLSETS", "").split(",")
         if item.strip()
     ]
-    if explicit:
-        return explicit
 
     try:
         from hermes_cli.config import load_config
         from hermes_cli.tools_config import _get_platform_tools
+
+        cfg = load_config()
+
+        if explicit:
+            from toolsets import validate_toolset
+
+            mcp_servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
+            mcp_names = set(mcp_servers)
+            valid = [name for name in explicit if validate_toolset(name) or name in mcp_names]
+            invalid = [name for name in explicit if name not in valid]
+
+            if invalid:
+                print(
+                    f"[tui] ignoring unknown HERMES_TUI_TOOLSETS entries: {', '.join(invalid)}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+            if valid:
+                return valid
+
+            print(
+                "[tui] no valid HERMES_TUI_TOOLSETS entries; falling back to configured CLI toolsets",
+                file=sys.stderr,
+                flush=True,
+            )
 
         # Runtime toolset resolution must include default MCP servers so the
         # agent can actually call them. Passing ``False`` here is the
@@ -878,7 +902,7 @@ def _load_enabled_toolsets() -> list[str] | None:
         # variant at agent creation time makes MCP tools silently missing
         # from the TUI. See PR #3252 for the original design split.
         enabled = sorted(
-            _get_platform_tools(load_config(), "cli", include_default_mcp_servers=True)
+            _get_platform_tools(cfg, "cli", include_default_mcp_servers=True)
         )
         return enabled or None
     except Exception:

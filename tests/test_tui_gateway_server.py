@@ -65,6 +65,25 @@ def test_load_enabled_toolsets_prefers_tui_env(monkeypatch):
     assert server._load_enabled_toolsets() == ["web", "terminal", "memory"]
 
 
+def test_load_enabled_toolsets_filters_invalid_tui_env(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web, nope")
+
+    assert server._load_enabled_toolsets() == ["web"]
+    assert "nope" in capsys.readouterr().err
+
+
+def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "nope")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"platform_toolsets": {"cli": ["memory"]}})
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}})
+
+    assert server._load_enabled_toolsets() == ["memory"]
+    assert "falling back" in capsys.readouterr().err
+
+
 def test_history_to_messages_preserves_tool_calls_for_resume_display():
     history = [
         {"role": "user", "content": "first prompt"},
