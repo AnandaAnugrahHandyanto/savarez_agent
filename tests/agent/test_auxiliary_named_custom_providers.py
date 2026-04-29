@@ -66,6 +66,10 @@ class TestNormalizeVisionProvider:
         from agent.auxiliary_client import _normalize_vision_provider
         assert _normalize_vision_provider("codex") == "openai-codex"
 
+    def test_explicit_custom_codex_is_preserved(self):
+        from agent.auxiliary_client import _normalize_vision_provider
+        assert _normalize_vision_provider("custom:codex") == "custom:codex"
+
     def test_auto_unchanged(self):
         from agent.auxiliary_client import _normalize_vision_provider
         assert _normalize_vision_provider("auto") == "auto"
@@ -173,6 +177,19 @@ class TestResolveProviderClientNamedCustom:
         # "coffee" doesn't exist in custom_providers
         client, model = resolve_provider_client("coffee", "test")
         assert client is None
+
+    def test_custom_prefixed_codex_named_provider(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "test"},
+            "custom_providers": [
+                {"name": "codex", "base_url": "http://codex.local/v1", "api_key": "k"},
+            ],
+        })
+        from agent.auxiliary_client import resolve_provider_client
+        client, model = resolve_provider_client("custom:codex", "my-model")
+        assert client is not None
+        assert model == "my-model"
+        assert "codex.local" in str(client.base_url)
 
 
 class TestResolveProviderClientModelNormalization:

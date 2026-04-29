@@ -155,6 +155,11 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
         if not suffix:
             return "custom"
         normalized = suffix
+        # Keep explicit custom routing for colliding names like "codex".
+        # Without this, "custom:codex" is rewritten to the built-in
+        # "openai-codex" provider and cannot resolve the user-defined endpoint.
+        if normalized == "codex":
+            return "custom:codex"
     if normalized == "codex":
         return "openai-codex"
     if normalized == "main":
