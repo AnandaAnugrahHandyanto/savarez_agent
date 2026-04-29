@@ -710,6 +710,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        reasoning_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
@@ -750,6 +751,7 @@ class APIServerAdapter(BasePlatformAdapter):
             session_id=session_id,
             platform="api_server",
             stream_delta_callback=stream_delta_callback,
+            reasoning_callback=reasoning_callback,
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
@@ -932,6 +934,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 if delta is not None:
                     _stream_q.put(delta)
 
+            def _on_reasoning(delta):
+                if delta:
+                    _stream_q.put(("__reasoning__", delta))
+
             def _on_tool_progress(event_type, name, preview, args, **kwargs):
                 """Send tool progress as a separate SSE event.
 
@@ -972,6 +978,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
+                reasoning_callback=_on_reasoning,
                 tool_progress_callback=_on_tool_progress,
                 agent_ref=agent_ref,
             ))
@@ -1084,6 +1091,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 """Write a single queue item to the SSE stream.
 
                 Plain strings are sent as normal ``delta.content`` chunks.
+                Tagged tuples ``("__reasoning__", text)`` are sent as normal
+                OpenAI-compatible chunks with ``delta.reasoning_content`` so
+                clients can display model reasoning separately from the final
+                assistant text.
                 Tagged tuples ``("__tool_progress__", payload)`` are sent
                 as a custom ``event: hermes.tool.progress`` SSE event so
                 frontends can display them without storing the markers in
@@ -1094,6 +1105,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
                     )
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__reasoning__":
+                    reasoning_chunk = {
+                        "id": completion_id, "object": "chat.completion.chunk",
+                        "created": created, "model": model,
+                        "choices": [{"index": 0, "delta": {"reasoning_content": item[1]}, "finish_reason": None}],
+                    }
+                    await response.write(f"data: {json.dumps(reasoning_chunk)}\n\n".encode())
                 else:
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",
@@ -2248,6 +2266,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        reasoning_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
@@ -2271,6 +2290,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
                 stream_delta_callback=stream_delta_callback,
+                reasoning_callback=reasoning_callback,
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
