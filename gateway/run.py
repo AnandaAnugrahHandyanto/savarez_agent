@@ -11013,6 +11013,7 @@ class GatewayRunner:
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
+            _usage_before = _snapshot_agent_token_usage(agent)
             try:
                 # If _prepare_inbound_message_text buffered image paths for native
                 # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -11051,10 +11052,10 @@ class GatewayRunner:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
-            _turn_usage = {
-                "input_tokens": result.get("input_tokens", 0) or 0,
-                "output_tokens": result.get("output_tokens", 0) or 0,
-            }
+            _turn_usage = _diff_agent_token_usage(
+                _usage_before,
+                _snapshot_agent_token_usage(agent),
+            )
 
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:
