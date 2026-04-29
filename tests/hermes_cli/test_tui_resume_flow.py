@@ -142,6 +142,28 @@ def test_cmd_chat_tui_passes_toolsets(monkeypatch, main_mod):
     assert captured["toolsets"] == "web,terminal"
 
 
+def test_main_top_level_tui_accepts_toolsets(monkeypatch, main_mod):
+    captured = {}
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(sys, "argv", ["hermes", "--tui", "--toolsets", "web,terminal"])
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", types.SimpleNamespace(discover_plugins=lambda: None))
+    monkeypatch.setitem(sys.modules, "tools.mcp_tool", types.SimpleNamespace(discover_mcp_tools=lambda: None))
+    monkeypatch.setattr(config_mod, "load_config", lambda: {})
+    monkeypatch.setattr(config_mod, "get_container_exec_info", lambda: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(register_from_config=lambda _cfg, accept_hooks=False: None),
+    )
+    monkeypatch.setattr(main_mod, "cmd_chat", lambda args: captured.update({"toolsets": args.toolsets, "tui": args.tui}))
+
+    main_mod.main()
+
+    assert captured == {"toolsets": "web,terminal", "tui": True}
+
+
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     captured = {}
     active_path_during_call = None

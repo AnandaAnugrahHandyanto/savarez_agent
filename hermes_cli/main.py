@@ -7912,6 +7912,12 @@ For more help on a command:
         ),
     )
     parser.add_argument(
+        "-t",
+        "--toolsets",
+        default=None,
+        help="Comma-separated toolsets to enable for the implicit chat session",
+    )
+    parser.add_argument(
         "--resume",
         "-r",
         metavar="SESSION",
