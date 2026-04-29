@@ -9,7 +9,6 @@ from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
 
-@pytest.mark.long_running
 @pytest.mark.asyncio
 async def test_cancel_background_tasks_cancels_inflight_message_processing():
     _runner, adapter = make_restart_runner()

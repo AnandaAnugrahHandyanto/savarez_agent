@@ -513,7 +513,7 @@ def _enforce_test_timeout(request):
     # Async tests are more sensitive to short SIGALRM budgets under xdist;
     # keep a larger cap instead of disabling timeouts entirely (which can let
     # one hung coroutine stall the whole CI job until workflow timeout).
-    timeout_s = 120 if request.node.get_closest_marker("asyncio") is not None else 30
+    timeout_s = 240 if request.node.get_closest_marker("asyncio") is not None else 30
     old = signal.signal(signal.SIGALRM, _timeout_handler)
     signal.alarm(timeout_s)
     yield
