@@ -436,6 +436,24 @@ class WebhookAdapter(BasePlatformAdapter):
             )
         self._seen_deliveries[delivery_id] = now
 
+        # ── Content-based dedup ───────────────────────────────────
+        # Some services (e.g. Zentao) send separate webhook events for
+        # operations done at the same time (edit + assign) with different
+        # delivery IDs but identical or near-identical payloads.  Dedup
+        # by route + payload hash within a short window.
+        content_hash = hashlib.sha256(raw_body).hexdigest()[:16]
+        content_key = f"{route_name}:{content_hash}"
+        if content_key in self._seen_deliveries and (now - self._seen_deliveries[content_key]) < 15:
+            logger.info(
+                "[webhook] Skipping content-duplicate for route %s (hash=%s, %.1fs ago)",
+                route_name, content_hash, now - self._seen_deliveries[content_key],
+            )
+            return web.json_response(
+                {"status": "content_duplicate", "delivery_id": delivery_id},
+                status=200,
+            )
+        self._seen_deliveries[content_key] = now
+
         # ── Direct delivery mode (deliver_only) ─────────────────
         # Skip the agent entirely — the rendered prompt IS the message we
         # deliver.  Use case: external services (Supabase, monitoring,
@@ -536,6 +554,17 @@ class WebhookAdapter(BasePlatformAdapter):
             len(prompt),
             delivery_id,
         )
+
+        # Webhook-triggered sessions run autonomously with no user present
+        # to approve dangerous commands.  Auto-enable YOLO for the session.
+        try:
+            from gateway.session import build_session_key
+            _wh_session_key = build_session_key(source)
+            from tools.approval import enable_session_yolo
+            enable_session_yolo(_wh_session_key)
+            logger.info("[webhook] Auto-enabled YOLO for session %s", _wh_session_key)
+        except Exception as _yolo_err:
+            logger.warning("[webhook] Failed to enable YOLO: %s", _yolo_err)
 
         # Non-blocking — return 202 Accepted immediately
         task = asyncio.create_task(self.handle_message(event))

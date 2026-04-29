@@ -328,6 +328,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
             # expect E.164 format for direct recipients.
             return target_ref.strip(), None, True
+
+    # WeCom external chat IDs (group chats start with "wr", user IDs are numeric)
+    if platform_name == "wecom" and (target_ref.startswith("wr") or target_ref.startswith("wm") or target_ref.startswith("wk")):
+        return target_ref, None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit
@@ -1314,7 +1318,30 @@ async def _send_dingtalk(extra, chat_id, message):
 
 
 async def _send_wecom(extra, chat_id, message):
-    """Send via WeCom using the adapter's WebSocket send pipeline."""
+    """Send via WeCom, reusing the gateway's live adapter if available.
+
+    Creating a new WeComAdapter per call is destructive: WeCom only allows
+    one active WebSocket per bot_id, so the new connection kicks the main
+    gateway connection offline (errcode 846609).  We now try the live
+    adapter first and only fall back to a throwaway connection when the
+    gateway isn't running (e.g. CLI mode).
+    """
+    # --- Try the live gateway adapter first (no new WebSocket) ---
+    try:
+        from gateway.run import get_active_gateway_runner
+        from gateway.config import Platform
+        runner = get_active_gateway_runner()
+        if runner:
+            adapter = runner.adapters.get(Platform.WECOM)
+            if adapter and adapter.is_connected:
+                result = await adapter.send(chat_id, message)
+                if result.success:
+                    return {"success": True, "platform": "wecom", "chat_id": chat_id, "message_id": result.message_id}
+                return _error(f"WeCom send failed: {result.error}")
+    except Exception as e:
+        logger.debug("WeCom live-adapter lookup failed, falling back: %s", e)
+
+    # --- Fallback: create a throwaway adapter (CLI mode, no gateway) ---
     try:
         from gateway.platforms.wecom import WeComAdapter, check_wecom_requirements
         if not check_wecom_requirements():
