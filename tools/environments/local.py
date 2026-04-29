@@ -2,6 +2,7 @@
 
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -10,6 +11,64 @@ import tempfile
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 
 _IS_WINDOWS = platform.system() == "Windows"
+
+
+_POSIX_DRIVE_MOUNT = re.compile(r"^/(?:mnt/)?([a-zA-Z])(/|$)")
+
+
+def _posix_to_win_path(path: str) -> str:
+    """Convert a POSIX-form path captured from Git Bash / WSL / MSYS to a
+    native Windows path so it can be passed to ``subprocess.Popen(cwd=...)``.
+
+    Fast path: drive-mount regex (``/c/...``, ``/mnt/c/...``).
+    Slow path: ``cygpath -w`` for MSYS virtual mounts (``/tmp``, ``/home``,
+    ``/usr``, etc).  Git Bash's ``pwd -P`` returns these forms when the cwd
+    sits under a path that's mounted via fstab — for example, the user's
+    ``%LOCALAPPDATA%\\Temp`` is exposed as ``/tmp`` by default.
+
+    Returns the input unchanged if it doesn't look like a POSIX path or if
+    cygpath isn't available / fails.
+    """
+    if not path or not path.startswith("/"):
+        return path
+    m = _POSIX_DRIVE_MOUNT.match(path)
+    if m:
+        drive = m.group(1).upper()
+        rest = path[m.end():]
+        return f"{drive}:\\" + rest.replace("/", "\\") if rest else f"{drive}:\\"
+
+    converted = _cygpath_to_windows(path)
+    return converted if converted else path
+
+
+def _cygpath_to_windows(posix_path: str) -> str | None:
+    """Return cygpath's Windows form of ``posix_path``, or None if cygpath
+    isn't reachable or returns nothing usable.
+
+    Looked up next to whatever bash ``_find_bash`` would return (Git Bash
+    ships ``cygpath.exe`` in the same ``bin`` directory).  Falls back to
+    ``shutil.which`` so a system-installed cygwin still works.
+    """
+    try:
+        bash_path = _find_bash()
+    except RuntimeError:
+        return None
+    cygpath = os.path.join(os.path.dirname(bash_path), "cygpath.exe")
+    if not os.path.isfile(cygpath):
+        cygpath = shutil.which("cygpath")
+        if not cygpath:
+            return None
+    try:
+        result = subprocess.run(
+            [cygpath, "-w", posix_path],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    out = result.stdout.strip()
+    return out or None
 
 
 # Hermes-internal env vars that should NOT leak into terminal subprocesses.
@@ -153,10 +212,12 @@ def _find_bash() -> str:
     if custom and os.path.isfile(custom):
         return custom
 
-    found = shutil.which("bash")
-    if found:
-        return found
-
+    # Check Git Bash locations FIRST — `shutil.which("bash")` on Windows
+    # often resolves to ``C:\WINDOWS\system32\bash.exe`` which is the WSL
+    # launcher.  WSL bash exposes Windows drives at ``/mnt/c/...``, breaks
+    # Hermes' POSIX-path bookkeeping, and routes commands through a Linux
+    # VM (so localhost services on the Windows host appear as ``connection
+    # refused``).  Always prefer Git Bash when it's installed.
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
@@ -165,11 +226,25 @@ def _find_bash() -> str:
         if candidate and os.path.isfile(candidate):
             return candidate
 
+    found = shutil.which("bash")
+    if found and not _is_wsl_bash_launcher(found):
+        return found
+
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
         "Install it from: https://git-scm.com/download/win\n"
         "Or set HERMES_GIT_BASH_PATH to your bash.exe location."
     )
+
+
+def _is_wsl_bash_launcher(path: str) -> bool:
+    """Detect ``C:\\Windows\\System32\\bash.exe`` (WSL launcher)."""
+    if not path:
+        return False
+    norm = os.path.normcase(os.path.normpath(path))
+    sysroot = os.environ.get("SystemRoot", r"C:\Windows")
+    wsl_path = os.path.normcase(os.path.normpath(os.path.join(sysroot, "System32", "bash.exe")))
+    return norm == wsl_path
 
 
 # Backward compat — process_registry.py imports this name
@@ -313,15 +388,27 @@ class LocalEnvironment(BaseEnvironment):
     def get_temp_dir(self) -> str:
         """Return a shell-safe writable temp dir for local execution.
 
-        Termux does not provide /tmp by default, but exposes a POSIX TMPDIR.
-        Prefer POSIX-style env vars when available, keep using /tmp on regular
-        Unix systems, and only fall back to tempfile.gettempdir() when it also
-        resolves to a POSIX path.
+        On Windows, return ``tempfile.gettempdir()`` — a native Windows path
+        that Git Bash handles for file ops AND that native Python can open
+        directly with ``open()``.  Using ``/tmp`` (the MSYS virtual mount)
+        works for bash but not for native Python, breaking ``_update_cwd``.
 
-        Check the environment configured for this backend first so callers can
-        override the temp root explicitly (for example via terminal.env or a
-        custom TMPDIR), then fall back to the host process environment.
+        On POSIX, Termux does not provide /tmp by default but exposes a
+        POSIX TMPDIR.  Prefer POSIX-style env vars when available, keep
+        using /tmp on regular Unix systems, and only fall back to
+        tempfile.gettempdir() when it also resolves to a POSIX path.
+
+        Check the environment configured for this backend first so callers
+        can override the temp root explicitly (for example via terminal.env
+        or a custom TMPDIR), then fall back to the host process environment.
         """
+        if _IS_WINDOWS:
+            # Forward-slash form is accepted by both Python's open() on
+            # Windows AND by Git Bash for file ops (without backslashes
+            # being chewed up as escape sequences inside f-stringed bash
+            # commands).
+            return tempfile.gettempdir().replace("\\", "/").rstrip("/")
+
         for env_var in ("TMPDIR", "TMP", "TEMP"):
             candidate = self.env.get(env_var) or os.environ.get(env_var)
             if candidate and candidate.startswith("/"):
@@ -394,12 +481,19 @@ class LocalEnvironment(BaseEnvironment):
         try:
             cwd_path = open(self._cwd_file).read().strip()
             if cwd_path:
-                self.cwd = cwd_path
+                # Git Bash `pwd -P` returns POSIX-form paths like
+                # "/c/Users/me" which subprocess.Popen(cwd=...) on Windows
+                # rejects with WinError 267.  Convert before storing.
+                self.cwd = _posix_to_win_path(cwd_path) if _IS_WINDOWS else cwd_path
         except (OSError, FileNotFoundError):
             pass
 
         # Still strip the marker from output so it's not visible
         self._extract_cwd_from_output(result)
+        # _extract_cwd_from_output may re-set self.cwd from the in-band
+        # marker (POSIX form on Windows); convert that too.
+        if _IS_WINDOWS:
+            self.cwd = _posix_to_win_path(self.cwd)
 
     def cleanup(self):
         """Clean up temp files."""

@@ -13,6 +13,7 @@ import os
 import select
 import shlex
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -24,6 +25,8 @@ from hermes_constants import get_hermes_home
 from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
+
+_IS_WINDOWS = sys.platform == "win32"
 
 # Opt-in debug tracing for the interrupt/activity/poll machinery.  Set
 # HERMES_DEBUG_INTERRUPT=1 to log loop entry/exit, periodic heartbeats, and
@@ -486,7 +489,83 @@ class BaseEnvironment(ABC):
         # U+FFFD substitution rather than clobbering the whole buffer.
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
-        def _drain():
+        def _drain_windows():
+            # Windows: select.select doesn't work on pipe fds (raises OSError
+            # 10038 "not a socket"), so the posix drain breaks out on its
+            # first iteration and discards all output (issue #14638).
+            #
+            # Use PeekNamedPipe via ctypes to check available bytes without
+            # blocking, then read only what's there.  This preserves the
+            # posix behaviour of bailing out shortly after bash exits even
+            # when a backgrounded grandchild still holds the write end of
+            # the pipe open (issue #8340), without losing output.
+            import ctypes
+            from ctypes import wintypes
+
+            try:
+                import msvcrt
+                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                PeekNamedPipe = kernel32.PeekNamedPipe
+                PeekNamedPipe.argtypes = [
+                    wintypes.HANDLE,
+                    ctypes.c_void_p,
+                    wintypes.DWORD,
+                    ctypes.POINTER(wintypes.DWORD),
+                    ctypes.POINTER(wintypes.DWORD),
+                    ctypes.POINTER(wintypes.DWORD),
+                ]
+                PeekNamedPipe.restype = wintypes.BOOL
+
+                fd = proc.stdout.fileno()
+                handle = msvcrt.get_osfhandle(fd)
+            except (ValueError, OSError, AttributeError):
+                # Closed pipe / bad fd / non-file-like mock (test paths).
+                try:
+                    tail = decoder.decode(b"", final=True)
+                    if tail:
+                        output_chunks.append(tail)
+                except Exception:
+                    pass
+                return
+
+            avail = wintypes.DWORD(0)
+            idle_after_exit = 0
+            try:
+                while True:
+                    ok = PeekNamedPipe(
+                        handle, None, 0, None,
+                        ctypes.byref(avail), None,
+                    )
+                    if not ok:
+                        break  # pipe broken/closed — done
+                    if avail.value:
+                        try:
+                            chunk = os.read(fd, 4096)
+                        except (ValueError, OSError):
+                            break
+                        if not chunk:
+                            break
+                        output_chunks.append(decoder.decode(chunk))
+                        idle_after_exit = 0
+                    elif proc.poll() is not None:
+                        # bash is gone and the pipe was idle.  Give it two
+                        # more cycles to catch any buffered tail, then stop —
+                        # otherwise we wait forever on a grandchild-held pipe.
+                        idle_after_exit += 1
+                        if idle_after_exit >= 3:
+                            break
+                        time.sleep(0.1)
+                    else:
+                        time.sleep(0.05)
+            finally:
+                try:
+                    tail = decoder.decode(b"", final=True)
+                    if tail:
+                        output_chunks.append(tail)
+                except Exception:
+                    pass
+
+        def _drain_posix():
             fd = proc.stdout.fileno()
             idle_after_exit = 0
             try:
@@ -521,6 +600,8 @@ class BaseEnvironment(ABC):
                         output_chunks.append(tail)
                 except Exception:
                     pass
+
+        _drain = _drain_windows if _IS_WINDOWS else _drain_posix
 
         drain_thread = threading.Thread(target=_drain, daemon=True)
         drain_thread.start()
