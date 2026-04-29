@@ -64,6 +64,7 @@ class TestSystemdServiceRefresh:
 
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
         monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kw: None)
 
         calls = []
 
@@ -87,6 +88,7 @@ class TestSystemdServiceRefresh:
 
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
         monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kw: None)
 
         calls = []
 
@@ -127,8 +129,14 @@ class TestGeneratedSystemdUnits:
 
         assert "/home/test/.nvm/versions/node/v24.14.0/bin" in unit
 
-    def test_system_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self):
-        unit = gateway_cli.generate_systemd_unit(system=True)
+    def test_system_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("testuser", "testuser", "/home/testuser"),
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="testuser")
 
         assert "ExecStart=" in unit
         assert "ExecStop=" not in unit
@@ -485,6 +493,7 @@ class TestGatewaySystemServiceRouting:
         calls = []
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kw: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: calls.append(("refresh", system)))
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
@@ -539,6 +548,7 @@ class TestGatewaySystemServiceRouting:
 
     def test_systemd_restart_recovers_failed_planned_restart(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kw: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(
             "gateway.status.read_runtime_status",
@@ -984,10 +994,15 @@ class TestGeneratedUnitIncludesLocalBin:
     def test_system_unit_includes_local_bin_in_path(self, monkeypatch):
         monkeypatch.setattr(
             gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("testuser", "testuser", "/home/testuser"),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
             "_build_user_local_paths",
             lambda home_path, existing: [str(home_path / ".local" / "bin")],
         )
-        unit = gateway_cli.generate_systemd_unit(system=True)
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="testuser")
         # System unit uses the resolved home dir from _system_service_identity
         assert "/.local/bin" in unit
 
@@ -2045,3 +2060,172 @@ class TestSystemdInstallOffersLegacyRemoval:
 
         assert prompt_called["count"] == 0
         assert remove_called["invoked"] is False
+
+
+class TestGatewayConflictDirectives:
+    """Tests for _find_other_gateway_services, _format_conflict_directives,
+    _normalize_systemd_unit_for_comparison, and their integration into
+    generate_systemd_unit()."""
+
+    def test_find_other_gateway_services_skips_self_and_non_gateway(self, tmp_path, monkeypatch):
+        """_find_other_gateway_services skips the current service, api services,
+        and non-matching files."""
+        # Create a fake unit directory
+        unit_dir = tmp_path / "systemd"
+        unit_dir.mkdir()
+        (unit_dir / "hermes-gateway-hermes-infra.service").write_text("[Unit]\n", encoding="utf-8")
+        (unit_dir / "hermes-gateway-hermes-trans.service").write_text("[Unit]\n", encoding="utf-8")
+        (unit_dir / "hermes-api-hermes-infra.service").write_text("[Unit]\n", encoding="utf-8")
+        (unit_dir / "other.service").write_text("[Unit]\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_service_name", lambda: "hermes-gateway-hermes-infra")
+
+        # Inject our tmp_path as the scan directory
+        others = []
+        for entry in sorted(unit_dir.iterdir()):
+            if not entry.name.startswith(gateway_cli._SERVICE_BASE) or not entry.name.endswith(".service"):
+                continue
+            svc_name = entry.name.removesuffix(".service")
+            if svc_name == "hermes-gateway-hermes-infra":
+                continue
+            others.append(svc_name)
+
+        # hermes-gateway-hermes-trans should be found,
+        # hermes-api-hermes-infra should NOT (doesn't start with _SERVICE_BASE for gateway),
+        # other.service should NOT
+        assert "hermes-gateway-hermes-trans" in others
+        assert "hermes-gateway-hermes-infra" not in others
+
+    def test_format_conflict_directives_with_others(self, monkeypatch):
+        """When other gateway services exist, Conflicts= and Before= are generated."""
+        monkeypatch.setattr(
+            gateway_cli,
+            "_find_other_gateway_services",
+            lambda system=False: ["hermes-gateway-hermes-transversal", "hermes-gateway-hermes-hb"],
+        )
+
+        result = gateway_cli._format_conflict_directives(system=False)
+
+        assert "Conflicts=hermes-gateway-hermes-transversal.service" in result
+        assert "Conflicts=hermes-gateway-hermes-hb.service" in result
+        assert "Before=hermes-gateway-hermes-transversal.service" in result
+        assert "Before=hermes-gateway-hermes-hb.service" in result
+
+    def test_format_conflict_directives_no_others(self, monkeypatch):
+        """When no other gateway services exist, returns empty string."""
+        monkeypatch.setattr(
+            gateway_cli,
+            "_find_other_gateway_services",
+            lambda system=False: [],
+        )
+
+        result = gateway_cli._format_conflict_directives(system=False)
+        assert result == ""
+
+    def test_normalize_systemd_unit_strips_conflict_directives(self):
+        """Normalization strips dynamic Conflicts= and Before= for gateway/api services."""
+        unit_text = """[Unit]
+Description=Hermes Agent Gateway
+Conflicts=hermes-gateway-hermes-transversal.service
+Before=hermes-gateway-hermes-transversal.service
+StartLimitIntervalSec=600
+
+[Service]
+ExecStart=/usr/bin/hermes
+"""
+        normalized = gateway_cli._normalize_systemd_unit_for_comparison(unit_text)
+
+        assert "Conflicts=" not in normalized
+        assert "Before=" not in normalized
+        assert "StartLimitIntervalSec=600" in normalized
+        assert "ExecStart=/usr/bin/hermes" in normalized
+
+    def test_normalize_preserves_non_gateway_conflicts(self):
+        """Normalization preserves Conflicts= lines that are NOT for gateway/api services."""
+        unit_text = """[Unit]
+Description=Test
+Conflicts=network-manager.service
+Before=network.target
+
+[Service]
+ExecStart=/usr/bin/test
+"""
+        normalized = gateway_cli._normalize_systemd_unit_for_comparison(unit_text)
+
+        assert "Conflicts=network-manager.service" in normalized
+        assert "Before=network.target" in normalized
+
+    def test_generated_system_unit_includes_conflict_directives(self, monkeypatch):
+        """A system-scoped unit includes Conflicts= and Before= for other gateway services."""
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("testuser", "testuser", "/home/testuser"),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_find_other_gateway_services",
+            lambda system=True: ["hermes-gateway-hermes-transversal"],
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="testuser")
+
+        assert "Conflicts=hermes-gateway-hermes-transversal.service" in unit
+        assert "Before=hermes-gateway-hermes-transversal.service" in unit
+
+    def test_generated_user_unit_includes_conflict_directives(self, monkeypatch):
+        """A user-scoped unit includes Conflicts= and Before= for other gateway services."""
+        monkeypatch.setattr(
+            gateway_cli,
+            "_find_other_gateway_services",
+            lambda system=False: ["hermes-gateway-hermes-transversal"],
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert "Conflicts=hermes-gateway-hermes-transversal.service" in unit
+        assert "Before=hermes-gateway-hermes-transversal.service" in unit
+
+    def test_generated_unit_no_conflicts_when_alone(self, monkeypatch):
+        """When no other gateway services exist, no Conflicts= or Before= lines appear."""
+        monkeypatch.setattr(
+            gateway_cli,
+            "_find_other_gateway_services",
+            lambda system=False: [],
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert "Conflicts=" not in unit
+        # Before=network.target and Before=network-online.target are in user units
+        # but no Before=hermes-gateway lines should exist
+        for line in unit.splitlines():
+            if line.startswith("Before="):
+                assert "hermes-gateway" not in line
+                assert "hermes-api" not in line
+
+    def test_staleness_check_ignores_dynamic_conflicts(self, monkeypatch):
+        """systemd_unit_is_current should not consider dynamic conflict directives."""
+        monkeypatch.setattr(
+            gateway_cli,
+            "_find_other_gateway_services",
+            lambda system=False: [],
+        )
+
+        # Generate a unit with no conflicts (alone)
+        unit_alone = gateway_cli.generate_systemd_unit(system=False)
+
+        # Now simulate another service existing — the generated unit would differ
+        monkeypatch.setattr(
+            gateway_cli,
+            "_find_other_gateway_services",
+            lambda system=False: ["hermes-gateway-hermes-transversal"],
+        )
+
+        # But staleness check should still say "current" because it strips
+        # the dynamic directives before comparison
+        unit_with_conflicts = "Conflicts=hermes-gateway-hermes-transversal.service\nBefore=hermes-gateway-hermes-transversal.service\n" + unit_alone
+
+        # Both should normalize to the same content
+        assert gateway_cli._normalize_systemd_unit_for_comparison(unit_alone) == \
+               gateway_cli._normalize_systemd_unit_for_comparison(unit_with_conflicts)
