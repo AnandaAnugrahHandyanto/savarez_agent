@@ -762,3 +762,9 @@ not the specific names.
 
 Reviewers should reject new change-detector tests; authors should convert
 them into invariants before re-requesting review.
+
+---
+
+## Methodology overlay
+
+This fork carries an overlay adding session-level governance, mode-switching, output-routing rules, and operator-only boundaries. See [AGENTS-OVERLAY.md](AGENTS-OVERLAY.md). Both files apply.
