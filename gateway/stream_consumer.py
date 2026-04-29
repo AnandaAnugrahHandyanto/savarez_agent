@@ -435,6 +435,8 @@ class GatewayStreamConsumer:
                         # on the Telegram client.  Without this the draft text
                         # vanishes the instant a real message is posted.
                         await self._send_new_chunk(self._accumulated, None)
+                        self._accumulated = ""
+                        self._last_sent_text = ""
                         current_update_visible = True
                     elif self._draft_mode and got_done:
                         # Stream finished in draft mode: send one final draft
