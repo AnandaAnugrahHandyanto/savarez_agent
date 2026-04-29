@@ -9797,6 +9797,7 @@ class GatewayRunner:
                         chat_id=source.chat_id,
                         config=_consumer_cfg,
                         metadata=_thread_metadata,
+                        run_still_current=_run_still_current,
                     )
             except Exception as _sc_err:
                 logger.debug("Proxy: could not set up stream consumer: %s", _sc_err)
@@ -10495,6 +10496,7 @@ class GatewayRunner:
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
                             metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
+                            run_still_current=_run_still_current,
                         )
                         if _want_stream_deltas:
                             def _stream_delta_cb(text: str) -> None:
