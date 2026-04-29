@@ -690,6 +690,21 @@ def _coerce_statusbar(raw) -> str:
     return "top"
 
 
+def _display_mouse_tracking(display: dict) -> bool:
+    """Return canonical display.mouse_tracking with legacy tui_mouse fallback."""
+    if not isinstance(display, dict):
+        return True
+    if "mouse_tracking" in display:
+        raw = display.get("mouse_tracking")
+    else:
+        raw = display.get("tui_mouse", True)
+    if raw is False:
+        return False
+    if isinstance(raw, str):
+        return raw.strip().lower() not in {"0", "false", "no", "off"}
+    return True
+
+
 def _load_reasoning_config() -> dict | None:
     from hermes_constants import parse_reasoning_effort
 
@@ -3177,7 +3192,7 @@ def _(rid, params: dict) -> dict:
             if isinstance(_load_cfg().get("display"), dict)
             else {}
         )
-        current = bool(display.get("tui_mouse", True))
+        current = _display_mouse_tracking(display)
 
         if raw in ("", "toggle"):
             nv = not current
@@ -3188,7 +3203,7 @@ def _(rid, params: dict) -> dict:
         else:
             return _err(rid, 4002, f"unknown mouse value: {value}")
 
-        _write_config_key("display.tui_mouse", nv)
+        _write_config_key("display.mouse_tracking", nv)
         return _ok(rid, {"key": key, "value": "on" if nv else "off"})
 
     if key == "indicator":
@@ -3361,7 +3376,7 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"value": _coerce_statusbar(raw)})
     if key == "mouse":
         display = _load_cfg().get("display")
-        on = display.get("tui_mouse", True) if isinstance(display, dict) else True
+        on = _display_mouse_tracking(display)
         return _ok(rid, {"value": "on" if on else "off"})
     if key == "mtime":
         cfg_path = _hermes_home / "config.yaml"
