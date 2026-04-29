@@ -7805,14 +7805,14 @@ class GatewayRunner:
                         "Use `/title My Session` to name your current session, "
                         "then `/resume My Session` to return to it later."
                     )
-                lines = ["📋 **Recent Sessions**\\n"]
+                lines = ["📋 **Recent Sessions**\n"]
                 for i, s in enumerate(sessions, start=1):
                     title = s.get("title") or "—"
                     preview = (s.get("preview") or "")[:40]
                     preview_part = f" — _{preview}_" if preview else ""
                     lines.append(f"`{i}.` **{title}**{preview_part}")
-                lines.append("\\nUsage: `/resume <number>` or `/resume <session name>`")
-                return "\\n".join(lines)
+                lines.append("\nUsage: `/resume <number>` or `/resume <session name>`")
+                return "\n".join(lines)
             except Exception as e:
                 logger.debug("Failed to list sessions: %s", e)
                 return f"Could not list sessions: {e}"
@@ -7842,7 +7842,7 @@ class GatewayRunner:
             target_id = self._session_db.resolve_session_by_title(name)
             if not target_id:
                 return (
-                    f"No session found matching '**{name}**'.\\n"
+                    f"No session found matching '**{name}**'.\n"
                     "Use `/resume` with no arguments to see available sessions."
                 )
 
