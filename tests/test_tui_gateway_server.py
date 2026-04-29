@@ -84,6 +84,22 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
     assert "falling back" in capsys.readouterr().err
 
 
+def test_load_enabled_toolsets_honors_builtin_env_if_config_fails(monkeypatch):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web")
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    assert server._load_enabled_toolsets() == ["web"]
+
+
+def test_load_enabled_toolsets_all_env_means_all(monkeypatch):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "all")
+
+    assert server._load_enabled_toolsets() is None
+
+
 def test_history_to_messages_preserves_tool_calls_for_resume_display():
     history = [
         {"role": "user", "content": "first prompt"},

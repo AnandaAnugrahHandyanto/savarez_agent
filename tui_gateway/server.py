@@ -866,34 +866,55 @@ def _load_enabled_toolsets() -> list[str] | None:
     ]
 
     try:
-        from hermes_cli.config import load_config
-        from hermes_cli.tools_config import _get_platform_tools
+        from toolsets import validate_toolset
+    except Exception:
+        validate_toolset = None
 
-        cfg = load_config()
+    if explicit and validate_toolset is not None:
+        built_in = [name for name in explicit if validate_toolset(name)]
+        unresolved = [name for name in explicit if name not in built_in]
 
-        if explicit:
-            from toolsets import validate_toolset
+        if any(name in {"all", "*"} for name in built_in):
+            return None
 
+        if not unresolved:
+            return built_in
+
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
             mcp_servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
             mcp_names = set(mcp_servers)
-            valid = [name for name in explicit if validate_toolset(name) or name in mcp_names]
-            invalid = [name for name in explicit if name not in valid]
+        except Exception:
+            cfg = None
+            mcp_names = set()
 
-            if invalid:
-                print(
-                    f"[tui] ignoring unknown HERMES_TUI_TOOLSETS entries: {', '.join(invalid)}",
-                    file=sys.stderr,
-                    flush=True,
-                )
+        mcp_valid = [name for name in unresolved if name in mcp_names]
+        invalid = [name for name in unresolved if name not in mcp_names]
+        valid = built_in + mcp_valid
 
-            if valid:
-                return valid
-
+        if invalid:
             print(
-                "[tui] no valid HERMES_TUI_TOOLSETS entries; falling back to configured CLI toolsets",
+                f"[tui] ignoring unknown HERMES_TUI_TOOLSETS entries: {', '.join(invalid)}",
                 file=sys.stderr,
                 flush=True,
             )
+
+        if valid:
+            return valid
+
+        print(
+            "[tui] no valid HERMES_TUI_TOOLSETS entries; falling back to configured CLI toolsets",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+
+        cfg = cfg if "cfg" in locals() and cfg is not None else load_config()
 
         # Runtime toolset resolution must include default MCP servers so the
         # agent can actually call them. Passing ``False`` here is the
