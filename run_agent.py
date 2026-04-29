@@ -140,6 +140,9 @@ from agent.model_metadata import (
 )
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
+from agent.tool_failure_tracker import ToolFailureTracker
+from agent.session_lessons import extract_lessons_from_sessions, format_lessons_for_prompt
+from agent.scope_guard import ScopeGuard
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
@@ -2008,6 +2011,8 @@ class AIAgent:
         self._subdirectory_hints = SubdirectoryHintTracker(
             working_dir=os.getenv("TERMINAL_CWD") or None,
         )
+        self._tool_failure_tracker = ToolFailureTracker()
+        self._scope_guard = ScopeGuard()
         self._user_turn_count = 0
 
         # Cumulative token usage for the session
@@ -4805,6 +4810,18 @@ class AIAgent:
                     prompt_parts.append(_ext_mem_block)
             except Exception:
                 pass
+        # Auto-inject lessons from recent session failures
+        if self._session_db:
+            try:
+                _lessons = extract_lessons_from_sessions(
+                    self._session_db,
+                    current_session_id=self.session_id,
+                )
+                _lessons_block = format_lessons_for_prompt(_lessons)
+                if _lessons_block:
+                    prompt_parts.append(_lessons_block)
+            except Exception as _lesson_err:
+                logger.debug("Session lessons extraction failed: %s", _lesson_err)
 
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
         if has_skills_tools:
@@ -9408,6 +9425,16 @@ class AIAgent:
             if subdir_hints:
                 function_result += subdir_hints
 
+            # Inject adaptive pivot hint on repeated failures
+            failure_hint = self._tool_failure_tracker.record_result(name, function_result, is_error)
+            if failure_hint:
+                function_result += failure_hint
+
+            # Inject scope guard (runaway detection + progress checkpoints)
+            scope_hint = self._scope_guard.record_tool_call(name, args, is_error)
+            if scope_hint:
+                function_result += scope_hint
+
             tool_msg = {
                 "role": "tool",
                 "content": function_result,
@@ -9771,6 +9798,17 @@ class AIAgent:
             subdir_hints = self._subdirectory_hints.check_tool_call(function_name, function_args)
             if subdir_hints:
                 function_result += subdir_hints
+
+            # Inject adaptive pivot hint on repeated failures
+            _is_err_for_tracker, _ = _detect_tool_failure(function_name, function_result)
+            failure_hint = self._tool_failure_tracker.record_result(function_name, function_result, _is_err_for_tracker)
+            if failure_hint:
+                function_result += failure_hint
+
+            # Inject scope guard (runaway detection + progress checkpoints)
+            _scope_hint = self._scope_guard.record_tool_call(function_name, function_args, _is_err_for_tracker)
+            if _scope_hint:
+                function_result += _scope_hint
 
             tool_msg = {
                 "role": "tool",
