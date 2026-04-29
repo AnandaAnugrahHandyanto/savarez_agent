@@ -27,6 +27,13 @@ describe('cursorLayout — word-wrap parity with wrap-ansi', () => {
     expect(cursorLayout('hello world', 11, 8)).toEqual({ column: 5, line: 1 })
   })
 
+  it('wraps the next word instead of splitting it at the right edge', () => {
+    const text = 'hello world baby chickens are so cool its really rainy outside but wish'
+
+    expect(cursorLayout(text, text.length, 70)).toEqual({ column: 4, line: 1 })
+    expect(inputVisualHeight(text, 70)).toBe(2)
+  })
+
   it('honours explicit newlines', () => {
     expect(cursorLayout('one\ntwo', 5, 40)).toEqual({ column: 1, line: 1 })
     expect(cursorLayout('one\ntwo', 4, 40)).toEqual({ column: 0, line: 1 })
@@ -79,6 +86,13 @@ describe('offsetFromPosition — word-wrap inverse of cursorLayout', () => {
     // "hello world" at cols=8 wraps to "hello \nworld".
     expect(offsetFromPosition('hello world', 1, 0, 8)).toBe(6)
     expect(offsetFromPosition('hello world', 1, 3, 8)).toBe(9)
+  })
+
+  it('maps clicks on the moved final word', () => {
+    const text = 'hello world baby chickens are so cool its really rainy outside but wish'
+
+    expect(offsetFromPosition(text, 1, 0, 70)).toBe(text.indexOf('wish'))
+    expect(offsetFromPosition(text, 1, 3, 70)).toBe(text.indexOf('wish') + 3)
   })
 
   it('maps clicks past a \\n into the target line', () => {
