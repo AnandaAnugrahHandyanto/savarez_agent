@@ -119,6 +119,40 @@ def _apply_doctor_tool_availability_overrides(available: list[str], unavailable:
     return updated_available, updated_unavailable
 
 
+def _get_delegation_readiness_diagnosis() -> dict:
+    """Return a delegation readiness diagnosis for the doctor command."""
+    try:
+        from tools.delegate_tool import get_delegate_readiness_status
+        return get_delegate_readiness_status()
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": f"could not inspect delegation readiness: {exc}",
+            "fix": "Check tools.delegate_tool import health and delegation config.",
+        }
+
+
+
+def _print_delegation_readiness_section(issues: list[str]) -> None:
+    """Surface one canonical delegation readiness call + fix path."""
+    diagnosis = _get_delegation_readiness_diagnosis()
+
+    print()
+    print(color("◆ Delegation Readiness", Colors.CYAN, Colors.BOLD))
+
+    reason = str(diagnosis.get("reason") or "").strip()
+    fix = str(diagnosis.get("fix") or "").strip()
+    if diagnosis.get("available"):
+        check_ok("Delegation ready", f"({reason})" if reason else "")
+        return
+
+    check_warn("Delegation blocked", f"({reason})" if reason else "")
+    if fix:
+        check_info(fix)
+        issues.append(f"Delegation readiness: {fix}")
+
+
+
 def check_ok(text: str, detail: str = ""):
     print(f"  {color('✓', Colors.GREEN)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
 
@@ -1036,7 +1070,7 @@ def run_doctor(args):
                 if not _base and _key.startswith("sk-kimi-"):
                     _base = "https://api.kimi.com/coding/v1"
                 # Anthropic-compat endpoints (/anthropic, api.kimi.com/coding
-                # with no /v1) don't support /models.  Rewrite to the OpenAI-compat
+                # with no /v1) don't support /models. Rewrite to the OpenAI-compat
                 # /v1 surface for health checks.
                 if _base and _base.rstrip("/").endswith("/anthropic"):
                     from agent.auxiliary_client import _to_openai_base_url
@@ -1144,6 +1178,8 @@ def run_doctor(args):
             issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
     except Exception as e:
         check_warn("Could not check tool availability", f"({e})")
+
+    _print_delegation_readiness_section(issues)
     
     # =========================================================================
     # Check: Skills Hub
