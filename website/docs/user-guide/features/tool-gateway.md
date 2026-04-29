@@ -1,6 +1,6 @@
 ---
 title: "Nous Tool Gateway"
-description: "Route web search, image generation, text-to-speech, browser automation, and Skyvern MCP through your Nous subscription — no extra API keys needed"
+description: "Route web search, image generation, text-to-speech, and browser automation through your Nous subscription — no extra API keys needed"
 sidebar_label: "Tool Gateway"
 sidebar_position: 2
 ---
@@ -11,7 +11,7 @@ sidebar_position: 2
 The Tool Gateway is included with paid Nous Portal subscriptions. **[Manage your subscription →](https://portal.nousresearch.com/manage-subscription)**
 :::
 
-The **Tool Gateway** lets paid [Nous Portal](https://portal.nousresearch.com) subscribers use web search, image generation, text-to-speech, browser automation, and Skyvern MCP browser automation through their existing subscription — no need to sign up for separate API keys from Firecrawl, FAL, OpenAI, Browser Use, or Skyvern.
+The **Tool Gateway** lets paid [Nous Portal](https://portal.nousresearch.com) subscribers use web search, image generation, text-to-speech, and browser automation through their existing subscription — no need to sign up for separate API keys from Firecrawl, FAL, OpenAI, Browser Use, or Skyvern.
 
 ## What's Included
 
@@ -20,10 +20,9 @@ The **Tool Gateway** lets paid [Nous Portal](https://portal.nousresearch.com) su
 | **Web search & extract** | Search the web and extract page content via Firecrawl | `FIRECRAWL_API_KEY`, `EXA_API_KEY`, `PARALLEL_API_KEY`, `TAVILY_API_KEY` |
 | **Image generation** | Generate images via FAL (8 models: FLUX 2 Klein/Pro, GPT-Image, Nano Banana Pro, Ideogram, Recraft V4 Pro, Qwen, Z-Image) | `FAL_KEY` |
 | **Text-to-speech** | Convert text to speech via OpenAI TTS | `VOICE_TOOLS_OPENAI_KEY`, `ELEVENLABS_API_KEY` |
-| **Browser automation** | Control cloud browsers via Browser Use | `BROWSER_USE_API_KEY`, `BROWSERBASE_API_KEY` |
-| **Skyvern MCP browser automation** | Use Skyvern's remote MCP browser automation tools | Direct Skyvern MCP with `SKYVERN_API_KEY` |
+| **Browser automation** | Control cloud browsers via Browser Use or Skyvern | `BROWSER_USE_API_KEY`, `BROWSERBASE_API_KEY`, direct Skyvern MCP with `SKYVERN_API_KEY` |
 
-All five tools bill to your Nous subscription. You can enable any combination — for example, use the gateway for web and Skyvern MCP while keeping your own ElevenLabs key for TTS.
+All four tool categories bill to your Nous subscription. You can enable any combination — for example, use the gateway for web and browser automation while keeping your own ElevenLabs key for TTS.
 
 ## Eligibility
 
@@ -47,15 +46,13 @@ When you run `hermes model` and select Nous Portal as your provider, Hermes auto
 Your Nous subscription includes the Tool Gateway.
 
   The Tool Gateway gives you access to web search, image generation,
-  text-to-speech, browser automation, and Skyvern MCP automation
-  through your Nous subscription.
+  text-to-speech, and browser automation through your Nous subscription.
   No need to sign up for separate API keys — just pick the tools you want.
 
   ○ Web search & extract (Firecrawl) — not configured
   ○ Image generation (FAL) — not configured
   ○ Text-to-speech (OpenAI TTS) — not configured
-  ○ Browser automation (Browser Use) — not configured
-  ○ Skyvern browser automation (MCP) — not configured
+  ○ Browser automation (Browser Use / Skyvern) — not configured
 
   ● Enable Tool Gateway
   ○ Skip
@@ -75,11 +72,9 @@ hermes tools
 
 Select a tool category (Web, Browser, Image Generation, or TTS), then choose **Nous Subscription** as the provider. This sets `use_gateway: true` for that tool in your config.
 
-Skyvern MCP is configured through the Tool Gateway prompt or manual config.
-
 ### Manual configuration
 
-Set the `use_gateway` flag directly in `~/.hermes/config.yaml`:
+Set the gateway flags directly in `~/.hermes/config.yaml`:
 
 ```yaml
 web:
@@ -109,8 +104,7 @@ When `use_gateway: true` is set for a tool, the runtime routes API calls through
 1. **Web tools** — `web_search` and `web_extract` use the gateway's Firecrawl endpoint
 2. **Image generation** — `image_generate` uses the gateway's FAL endpoint
 3. **TTS** — `text_to_speech` uses the gateway's OpenAI Audio endpoint
-4. **Browser** — `browser_navigate` and other browser tools use the gateway's Browser Use endpoint
-5. **Skyvern MCP** — `mcp_skyvern_*` tools use the managed Skyvern MCP gateway
+4. **Browser** — browser tools use the gateway's Browser Use endpoint, and Skyvern MCP tools use the managed Skyvern MCP gateway
 
 The gateway authenticates using your Nous Portal credentials (stored in `~/.hermes/auth.json` after `hermes model`).
 
@@ -122,8 +116,6 @@ Each tool checks `use_gateway` first:
 - **`use_gateway: false`** (or absent) → use direct API keys if available, fall back to gateway only when no direct keys exist
 
 This means you can switch between gateway and direct keys at any time without deleting your `.env` credentials.
-
-For Skyvern MCP, `mcp_servers.skyvern.managed_gateway: skyvern` uses Nous passthrough billing. A direct `mcp_servers.skyvern.url` entry that points at `https://api.skyvern.com/mcp/` with a Skyvern API key remains direct Skyvern billing.
 
 ## Switching Back to Direct Keys
 

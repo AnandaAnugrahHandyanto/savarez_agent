@@ -566,7 +566,7 @@ _GATEWAY_TOOL_LABELS = {
     "image_gen": "Image generation (FAL)",
     "tts": "Text-to-speech (OpenAI TTS)",
     "browser": "Browser automation (Browser Use)",
-    "skyvern": "Skyvern browser automation (MCP)",
+    "skyvern": "Browser automation (Skyvern)",
 }
 
 
@@ -745,8 +745,7 @@ def prompt_enable_tool_gateway(config: Dict[str, object]) -> set[str]:
     desc_parts: list[str] = [
         "",
         "  The Tool Gateway gives you access to web search, image generation,",
-        "  text-to-speech, browser automation, and Skyvern MCP automation",
-        "  through your Nous subscription.",
+        "  text-to-speech, and browser automation through your Nous subscription.",
         "  No need to sign up for separate API keys — just pick the tools you want.",
         "",
     ]
