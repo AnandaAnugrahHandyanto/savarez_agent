@@ -178,8 +178,10 @@ class TestLastReasoningInResult(unittest.TestCase):
         messages = self._build_messages(reasoning="Let me think...")
         last_reasoning = None
         for msg in reversed(messages):
-            if msg.get("role") == "assistant" and msg.get("reasoning"):
-                last_reasoning = msg["reasoning"]
+            if msg.get("role") == "assistant":
+                reasoning = msg.get("reasoning")
+                if reasoning:
+                    last_reasoning = reasoning
                 break
         self.assertEqual(last_reasoning, "Let me think...")
 
@@ -187,8 +189,10 @@ class TestLastReasoningInResult(unittest.TestCase):
         messages = self._build_messages(reasoning=None)
         last_reasoning = None
         for msg in reversed(messages):
-            if msg.get("role") == "assistant" and msg.get("reasoning"):
-                last_reasoning = msg["reasoning"]
+            if msg.get("role") == "assistant":
+                reasoning = msg.get("reasoning")
+                if reasoning:
+                    last_reasoning = reasoning
                 break
         self.assertIsNone(last_reasoning)
 
@@ -201,17 +205,37 @@ class TestLastReasoningInResult(unittest.TestCase):
         ]
         last_reasoning = None
         for msg in reversed(messages):
-            if msg.get("role") == "assistant" and msg.get("reasoning"):
-                last_reasoning = msg["reasoning"]
+            if msg.get("role") == "assistant":
+                reasoning = msg.get("reasoning")
+                if reasoning:
+                    last_reasoning = reasoning
                 break
         self.assertEqual(last_reasoning, "final thought")
+
+    def test_does_not_reuse_previous_reasoning_when_latest_assistant_has_none(self):
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "...", "reasoning": "previous thought"},
+            {"role": "tool", "content": "result"},
+            {"role": "assistant", "content": "done!", "reasoning": None},
+        ]
+        last_reasoning = None
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant":
+                reasoning = msg.get("reasoning")
+                if reasoning:
+                    last_reasoning = reasoning
+                break
+        self.assertIsNone(last_reasoning)
 
     def test_empty_reasoning_treated_as_none(self):
         messages = self._build_messages(reasoning="")
         last_reasoning = None
         for msg in reversed(messages):
-            if msg.get("role") == "assistant" and msg.get("reasoning"):
-                last_reasoning = msg["reasoning"]
+            if msg.get("role") == "assistant":
+                reasoning = msg.get("reasoning")
+                if reasoning:
+                    last_reasoning = reasoning
                 break
         self.assertIsNone(last_reasoning)
 
@@ -584,8 +608,10 @@ class TestEndToEndPipeline(unittest.TestCase):
 
         last_reasoning = None
         for msg in reversed(messages):
-            if msg.get("role") == "assistant" and msg.get("reasoning"):
-                last_reasoning = msg["reasoning"]
+            if msg.get("role") == "assistant":
+                reasoning = msg.get("reasoning")
+                if reasoning:
+                    last_reasoning = reasoning
                 break
 
         result = {

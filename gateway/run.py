@@ -5273,11 +5273,18 @@ class GatewayRunner:
             if _show_reasoning_effective and response:
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
-                    # Collapse long reasoning to keep messages readable
+                    # Collapse long reasoning to keep messages readable while
+                    # still surfacing whether later steps changed. Showing
+                    # only the first N lines made distinct Gemini thought
+                    # traces look identical when they shared the same preamble.
                     lines = last_reasoning.strip().splitlines()
                     if len(lines) > 15:
-                        display_reasoning = "\n".join(lines[:15])
-                        display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
+                        head = lines[:8]
+                        tail = lines[-7:]
+                        omitted = len(lines) - len(head) - len(tail)
+                        display_reasoning = "\n".join(head)
+                        display_reasoning += f"\n... ({omitted} lines omitted) ...\n"
+                        display_reasoning += "\n".join(tail)
                     else:
                         display_reasoning = last_reasoning.strip()
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"

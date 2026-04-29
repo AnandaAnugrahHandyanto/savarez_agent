@@ -8259,6 +8259,7 @@ class AIAgent:
             model=self.model,
             messages=_msgs_for_chat,
             tools=self.tools,
+            base_url=self.base_url,
             timeout=self._resolved_api_call_timeout(),
             max_tokens=self.max_tokens,
             ephemeral_max_output_tokens=_ephemeral_out,
@@ -13401,11 +13402,16 @@ class AIAgent:
             except Exception as exc:
                 logger.warning("post_llm_call hook failed: %s", exc)
 
-        # Extract reasoning from the last assistant message (if any)
+        # Extract reasoning from the latest assistant message only. Falling
+        # back to an older assistant with reasoning can make the gateway
+        # display a stale reasoning block when the current assistant turn has
+        # no reasoning payload.
         last_reasoning = None
         for msg in reversed(messages):
-            if msg.get("role") == "assistant" and msg.get("reasoning"):
-                last_reasoning = msg["reasoning"]
+            if msg.get("role") == "assistant":
+                reasoning = msg.get("reasoning")
+                if reasoning:
+                    last_reasoning = reasoning
                 break
 
         # Build result with interrupt info if applicable
