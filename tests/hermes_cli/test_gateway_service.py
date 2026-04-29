@@ -1108,10 +1108,32 @@ class TestPreflightUserSystemd:
         # Should not raise, no subprocess calls needed.
         gateway_cli._preflight_user_systemd()
 
+    def test_noop_when_systemd_private_socket_exists(self, monkeypatch):
+        """Debian 13 scenario: D-Bus socket missing but systemd private socket present.
+
+        Covers issue #17243: systemctl --user works by connecting to the per-user
+        systemd private socket at /run/user/{uid}/systemd/private when the D-Bus
+        socket at /run/user/{uid}/bus is absent.
+        """
+        monkeypatch.setattr(
+            gateway_cli, "_user_dbus_socket_path",
+            lambda: type("P", (), {"exists": lambda self: False})(),
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_user_systemd_private_socket_path",
+            lambda: type("P", (), {"exists": lambda self: True})(),
+        )
+        # Should not raise, no subprocess calls needed.
+        gateway_cli._preflight_user_systemd()
+
     def test_raises_when_linger_disabled_and_loginctl_denied(self, monkeypatch):
         """Rick's scenario: no D-Bus, no linger, non-root SSH → clear error."""
         monkeypatch.setattr(
             gateway_cli, "_user_dbus_socket_path",
+            lambda: type("P", (), {"exists": lambda self: False})(),
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_user_systemd_private_socket_path",
             lambda: type("P", (), {"exists": lambda self: False})(),
         )
         monkeypatch.setattr(
@@ -1143,6 +1165,10 @@ class TestPreflightUserSystemd:
             lambda: type("P", (), {"exists": lambda self: False})(),
         )
         monkeypatch.setattr(
+            gateway_cli, "_user_systemd_private_socket_path",
+            lambda: type("P", (), {"exists": lambda self: False})(),
+        )
+        monkeypatch.setattr(
             gateway_cli, "get_systemd_linger_status",
             lambda: (None, "loginctl not found"),
         )
@@ -1157,6 +1183,10 @@ class TestPreflightUserSystemd:
         """Edge case: linger says yes but the bus socket never came up."""
         monkeypatch.setattr(
             gateway_cli, "_user_dbus_socket_path",
+            lambda: type("P", (), {"exists": lambda self: False})(),
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_user_systemd_private_socket_path",
             lambda: type("P", (), {"exists": lambda self: False})(),
         )
         monkeypatch.setattr(
@@ -1175,6 +1205,10 @@ class TestPreflightUserSystemd:
         """Happy remediation path: polkit allows enable-linger, socket spawns."""
         monkeypatch.setattr(
             gateway_cli, "_user_dbus_socket_path",
+            lambda: type("P", (), {"exists": lambda self: False})(),
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_user_systemd_private_socket_path",
             lambda: type("P", (), {"exists": lambda self: False})(),
         )
         monkeypatch.setattr(

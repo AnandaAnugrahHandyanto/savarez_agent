@@ -829,6 +829,10 @@ def _user_dbus_socket_path() -> Path:
     xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
     return Path(xdg) / "bus"
 
+def _user_systemd_private_socket_path() -> Path:
+    """Return the expected per-user systemd private socket path (regardless of existence)."""
+    xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return Path(xdg) / "systemd" / "private"
 
 def _ensure_user_systemd_env() -> None:
     """Ensure DBUS_SESSION_BUS_ADDRESS and XDG_RUNTIME_DIR are set for systemctl --user.
@@ -870,7 +874,8 @@ def _wait_for_user_dbus_socket(timeout: float = 3.0) -> bool:
 
 
 def _preflight_user_systemd(*, auto_enable_linger: bool = True) -> None:
-    """Ensure ``systemctl --user`` will reach the user D-Bus session bus.
+    """Ensure ``systemctl --user`` will reach the user D-Bus session bus
+    or the user systemd private socket.
 
     No-op when the bus socket is already there (the common case on desktops
     and linger-enabled servers).  On fresh SSH sessions where the socket is
@@ -890,6 +895,9 @@ def _preflight_user_systemd(*, auto_enable_linger: bool = True) -> None:
     _ensure_user_systemd_env()
     bus_path = _user_dbus_socket_path()
     if bus_path.exists():
+        return
+    systemd_private_path = _user_systemd_private_socket_path()
+    if systemd_private_path.exists():
         return
 
     import getpass
