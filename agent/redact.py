@@ -260,7 +260,7 @@ def redact_sensitive_text(text: str) -> str:
     Disabled when security.redact_secrets is false in config.yaml.
     """
     if text is None:
-        return None
+        return ""
     if not isinstance(text, str):
         text = str(text)
     if not text:
