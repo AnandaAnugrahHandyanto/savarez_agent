@@ -28,6 +28,15 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent) | Complete guide to using and extending Hermes Agent — CLI usage, setup, configuration, spawning additional agents, gateway platforms, skills, voice, tools, profiles, and a concise contributor reference. Load this skill when helping users... | `autonomous-ai-agents/hermes-agent` |
 | [`opencode`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode) | Delegate coding tasks to OpenCode CLI agent for feature implementation, refactoring, PR review, and long-running autonomous sessions. Requires the opencode CLI installed and authenticated. | `autonomous-ai-agents/opencode` |
 
+## data-science
+
+Skills for data science workflows — interactive exploration, Jupyter notebooks, data analysis, and visualization.
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| [`jupyter-live-kernel`](/docs/user-guide/skills/bundled/data-science/data-science-jupyter-live-kernel) | Use a live Jupyter kernel for stateful, iterative Python execution via hamelnb. Load this skill when the task involves exploration, iteration, or inspecting intermediate results — data science, ML experimentation, API exploration, or bui... | `data-science/jupyter-live-kernel` |
+| [`polars-lazyframes`](/docs/user-guide/skills/bundled/data-science/data-science-polars-lazyframes) | Polars (Rust-backed) dataframes — lazy schema inspect, bounded head previews, and CSV/Parquet/NDJSON conversion via a JSON CLI. Use for columnar ETL and large-file scans without SQL or a live Jupyter kernel. Optional: `uv run --with polars`. | `data-science/polars-lazyframes` |
+
 ## creative
 
 | Skill | Description | Path |
@@ -46,12 +55,6 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`popular-web-designs`](/docs/user-guide/skills/bundled/creative/creative-popular-web-designs) | 54 production-quality design systems extracted from real websites. Load a template to generate HTML/CSS that matches the visual identity of sites like Stripe, Linear, Vercel, Notion, Airbnb, and more. Each template includes colors, typog... | `creative/popular-web-designs` |
 | [`songwriting-and-ai-music`](/docs/user-guide/skills/bundled/creative/creative-songwriting-and-ai-music) | Songwriting craft, AI music generation prompts (Suno focus), parody/adaptation techniques, phonetic tricks, and lessons learned. These are tools and ideas, not rules. Break any of them when the art calls for it. | `creative/songwriting-and-ai-music` |
 | [`touchdesigner-mcp`](/docs/user-guide/skills/bundled/creative/creative-touchdesigner-mcp) | Control a running TouchDesigner instance via twozero MCP — create operators, set parameters, wire connections, execute Python, build real-time visuals. 36 native tools. | `creative/touchdesigner-mcp` |
-
-## data-science
-
-| Skill | Description | Path |
-|-------|-------------|------|
-| [`jupyter-live-kernel`](/docs/user-guide/skills/bundled/data-science/data-science-jupyter-live-kernel) | Use a live Jupyter kernel for stateful, iterative Python execution via hamelnb. Load this skill when the task involves exploration, iteration, or inspecting intermediate results — data science, ML experimentation, API exploration, or bui... | `data-science/jupyter-live-kernel` |
 
 ## devops
 
