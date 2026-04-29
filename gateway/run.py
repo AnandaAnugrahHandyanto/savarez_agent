@@ -11794,28 +11794,15 @@ class GatewayRunner:
         except Exception:
             pass
 
-        # Tool progress mode — resolved per-platform with env var fallback
-        _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
+        # Tool progress mode — explicit env override wins over built-in
+        # platform defaults so tests/debug sessions can force progress on even
+        # for quiet-by-default chat platforms such as Slack.
         _env_tp = os.getenv("HERMES_TOOL_PROGRESS_MODE")
-        _display_cfg = display_config if isinstance(display_config, dict) else {}
-        _platforms_cfg = _display_cfg.get("platforms") or {}
-        _platform_cfg = _platforms_cfg.get(platform_key) or {}
-        _legacy_tp_overrides = _display_cfg.get("tool_progress_overrides") or {}
-        _tool_progress_configured = (
-            "tool_progress" in _display_cfg
-            or (
-                isinstance(_platform_cfg, dict)
-                and "tool_progress" in _platform_cfg
-            )
-            or (
-                isinstance(_legacy_tp_overrides, dict)
-                and platform_key in _legacy_tp_overrides
-            )
-        )
+        _resolved_tp = None if _env_tp else resolve_display_setting(user_config, platform_key, "tool_progress")
         progress_mode = (
             _env_tp
-            if _env_tp and not _tool_progress_configured
-            else (_resolved_tp or _env_tp or "all")
+            or _resolved_tp
+            or "all"
         )
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
