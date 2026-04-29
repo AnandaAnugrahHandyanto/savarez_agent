@@ -898,7 +898,10 @@ def run_doctor(args):
             print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color(f'({e})', Colors.DIM)}                ")
             issues.append("Check network connectivity")
     else:
-        check_warn("OpenRouter API", "(not configured)")
+        check_warn(
+            "OpenRouter API",
+            f"(not configured — set OPENROUTER_API_KEY or OPENAI_API_KEY in {_DHH}/.env, or run hermes setup)",
+        )
     
     from hermes_cli.auth import get_anthropic_key
     anthropic_key = get_anthropic_key()

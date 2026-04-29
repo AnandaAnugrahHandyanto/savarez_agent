@@ -721,6 +721,42 @@ def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):
     assert resolved["model"] == "acme-large"
 
 
+def test_named_custom_provider_providers_dict_model_key_without_default_model(monkeypatch):
+    """``providers:`` dict entries may use ``model:`` without ``default_model``."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "litellm-local": {
+                    "base_url": "http://127.0.0.1:4000/v1",
+                    "model": "deepseek-chat",
+                    "name": "LiteLLM",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    cp = rp._get_named_custom_provider("litellm-local")
+    assert cp is not None
+    assert cp["model"] == "deepseek-chat"
+
+    resolved = rp.resolve_runtime_provider(requested="litellm-local")
+    assert resolved["provider"] == "custom"
+    assert resolved["model"] == "deepseek-chat"
+
+
 def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "env-openai-key")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)

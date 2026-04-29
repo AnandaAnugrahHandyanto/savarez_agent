@@ -5,7 +5,6 @@ are properly resolved for model switching and that their full ``models:`` lists
 are exposed in the model picker.
 """
 
-import pytest
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli import runtime_provider as rp
 
@@ -247,6 +246,72 @@ def test_list_authenticated_providers_user_openai_official_url_fallback(monkeypa
     row = next((p for p in providers if p.get("slug") == "openai-direct"), None)
     assert row is not None
     assert row["total_models"] > 0
+
+
+def test_list_authenticated_providers_user_litellm_style_probes_openai_models(
+    monkeypatch,
+):
+    """OpenAI-compatible ``/v1`` user provider with no listed models uses GET /models."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        "hermes_cli.model_switch._probe_openai_compatible_model_ids",
+        lambda _base, _token, timeout_seconds=5.0: ["deepseek-chat", "qwen-max"],
+    )
+
+    user_providers = {
+        "litellm-bridge": {
+            "name": "LiteLLM Local",
+            "base_url": "http://127.0.0.1:4000/v1",
+            "api_key": "sk-litellm-master-key",
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+    row = next((p for p in providers if p.get("slug") == "litellm-bridge"), None)
+
+    assert row is not None
+    assert row["models"] == ["deepseek-chat", "qwen-max"]
+    assert row["total_models"] == 2
+
+
+def test_list_authenticated_providers_custom_providers_litellm_probes_empty_models_dict(
+    monkeypatch,
+):
+    """custom_providers group with endpoint but empty models uses GET /models."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        "hermes_cli.model_switch._probe_openai_compatible_model_ids",
+        lambda _base, _token, timeout_seconds=5.0: ["claude-haiku-3-5"],
+    )
+
+    custom_providers = [
+        {
+            "name": "LiteLLM Proxy",
+            "base_url": "http://127.0.0.1:4000/v1",
+            "api_key": "mk",
+        },
+    ]
+
+    providers = list_authenticated_providers(
+        user_providers={},
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+    row = next(
+        (p for p in providers if p.get("api_url") == "http://127.0.0.1:4000/v1"),
+        None,
+    )
+
+    assert row is not None
+    assert row["models"] == ["claude-haiku-3-5"]
+    assert row["total_models"] == 1
 
 
 def test_list_authenticated_providers_fallback_to_default_only(monkeypatch):

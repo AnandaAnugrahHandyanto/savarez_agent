@@ -2464,6 +2464,41 @@ def test_model_options_propagates_list_exception(monkeypatch):
     assert "catalog blew up" in resp["error"]["message"]
 
 
+def test_model_options_includes_probed_litellm_user_provider(monkeypatch):
+    """model.options must return non-empty models for LiteLLM-style user providers."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "providers": {
+                "llm": {
+                    "name": "LiteLLM",
+                    "base_url": "http://127.0.0.1:4000/v1",
+                    "api_key": "k",
+                },
+            },
+            "custom_providers": [],
+        },
+    )
+
+    with patch(
+        "hermes_cli.model_switch._probe_openai_compatible_model_ids",
+        return_value=["m1", "m2"],
+    ):
+        resp = server._methods["model.options"](101, {"session_id": ""})
+
+    assert "result" in resp
+    row = next(
+        (p for p in resp["result"]["providers"] if p.get("slug") == "llm"),
+        None,
+    )
+    assert row is not None
+    assert row["models"] == ["m1", "m2"]
+
+
 # ---------------------------------------------------------------------------
 # prompt.submit — auto-title
 # ---------------------------------------------------------------------------

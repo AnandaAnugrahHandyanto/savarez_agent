@@ -1,8 +1,9 @@
 """Lightweight skill metadata utilities shared by prompt_builder and skills_tool.
 
-This module intentionally avoids importing the tool registry, CLI config, or any
-heavy dependency chain.  It is safe to import at module level without triggering
-tool registration or provider resolution.
+This module intentionally avoids importing the tool registry or heavy CLI stacks
+at import time.  ``get_external_skills_dirs()`` lazy-imports
+``hermes_cli.config.load_config`` so merged defaults (including
+``~/.agents/skills``) apply without a dedicated raw-YAML read path.
 """
 
 import logging
@@ -172,23 +173,18 @@ def _normalize_string_set(values) -> Set[str]:
 
 
 def get_external_skills_dirs() -> List[Path]:
-    """Read ``skills.external_dirs`` from config.yaml and return validated paths.
+    """Read ``skills.external_dirs`` from merged Hermes config and return paths.
+
+    Uses ``load_config()`` (defaults + ``~/.hermes/config.yaml``) so the default
+    ``~/.agents/skills`` entry applies even when the user omits ``external_dirs``.
 
     Each entry is expanded (``~`` and ``${VAR}``) and resolved to an absolute
     path.  Only directories that actually exist are returned.  Duplicates and
     paths that resolve to the local ``~/.hermes/skills/`` are silently skipped.
     """
-    config_path = get_config_path()
-    if not config_path.exists():
-        return []
-    try:
-        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    if not isinstance(parsed, dict):
-        return []
+    from hermes_cli.config import load_config
 
-    skills_cfg = parsed.get("skills")
+    skills_cfg = load_config().get("skills") or {}
     if not isinstance(skills_cfg, dict):
         return []
 

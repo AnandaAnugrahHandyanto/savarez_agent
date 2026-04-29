@@ -330,7 +330,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
 
     try:
         runtime = resolve_runtime_provider(
-            requested=os.getenv("HERMES_INFERENCE_PROVIDER"),
+            requested=_gateway_requested_inference_provider(),
         )
     except AuthError as auth_exc:
         # Primary provider auth failed (expired token, revoked key, etc.).
@@ -535,6 +535,29 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     elif isinstance(model_cfg, dict):
         return model_cfg.get("default") or model_cfg.get("model") or ""
     return ""
+
+
+def _gateway_requested_inference_provider() -> Optional[str]:
+    """Provider slug for :func:`resolve_runtime_provider` from gateway config.
+
+    When ``HERMES_INFERENCE_PROVIDER`` is set non-empty, it wins. Otherwise use
+    ``model.provider`` from the same ``config.yaml`` as :func:`_resolve_gateway_model`
+    so gateway runtime routing matches the on-disk model section (e.g. a named
+    ``providers:`` entry like ``litellm-local``).
+
+    Session-level ``/model`` overrides with bundled credentials still short-circuit
+    in :meth:`GatewayRunner._resolve_session_agent_runtime` before this runs.
+    """
+    env_raw = os.getenv("HERMES_INFERENCE_PROVIDER")
+    if env_raw is not None and str(env_raw).strip():
+        return str(env_raw).strip().lower()
+    cfg = _load_gateway_config()
+    model_cfg = cfg.get("model") or {}
+    if isinstance(model_cfg, dict):
+        p = model_cfg.get("provider")
+        if isinstance(p, str) and p.strip():
+            return p.strip().lower()
+    return None
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:

@@ -787,6 +787,23 @@ class APIServerAdapter(BasePlatformAdapter):
             "pid": os.getpid(),
         })
 
+    async def _handle_root(self, request: "web.Request") -> "web.Response":
+        """GET / — avoid bare 404 when operators open the bind URL in a browser.
+
+        This process is an API server, not a website; the JSON points at real routes.
+        """
+        return web.json_response({
+            "service": "hermes-agent-api",
+            "note": "OpenAI-compatible HTTP API; there is no HTML index.",
+            "endpoints": {
+                "health": "/health",
+                "health_detailed": "/health/detailed",
+                "models": "GET /v1/models",
+                "chat_completions": "POST /v1/chat/completions",
+                "responses": "POST /v1/responses",
+            },
+        })
+
     async def _handle_models(self, request: "web.Request") -> "web.Response":
         """GET /v1/models — return hermes-agent as an available model."""
         auth_err = self._check_auth(request)
@@ -2617,6 +2634,7 @@ class APIServerAdapter(BasePlatformAdapter):
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws)
             self._app["api_server_adapter"] = self
+            self._app.router.add_get("/", self._handle_root)
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
             self._app.router.add_get("/v1/health", self._handle_health)

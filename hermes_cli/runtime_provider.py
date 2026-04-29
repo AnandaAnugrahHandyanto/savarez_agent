@@ -380,11 +380,17 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 # Found match by provider key
                 base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                 if base_url:
+                    _entry_model = entry.get("model") or entry.get("default_model")
+                    _model_str = (
+                        _entry_model.strip()
+                        if isinstance(_entry_model, str) and _entry_model.strip()
+                        else ""
+                    )
                     result = {
                         "name": entry.get("name", ep_name),
                         "base_url": base_url.strip(),
                         "api_key": resolved_api_key,
-                        "model": entry.get("default_model", ""),
+                        "model": _model_str,
                     }
                     api_mode = _parse_api_mode(entry.get("api_mode"))
                     if api_mode:
@@ -398,11 +404,17 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     # Found match by display name
                     base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                     if base_url:
+                        _entry_model = entry.get("model") or entry.get("default_model")
+                        _model_str = (
+                            _entry_model.strip()
+                            if isinstance(_entry_model, str) and _entry_model.strip()
+                            else ""
+                        )
                         result = {
                             "name": display_name,
                             "base_url": base_url.strip(),
                             "api_key": resolved_api_key,
-                            "model": entry.get("default_model", ""),
+                            "model": _model_str,
                         }
                         api_mode = _parse_api_mode(entry.get("api_mode"))
                         if api_mode:

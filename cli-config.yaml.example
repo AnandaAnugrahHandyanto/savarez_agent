@@ -54,6 +54,24 @@ model:
   #   Set manually only when auto-detection is wrong (e.g. a local server with
   #   a custom num_ctx, or a proxy that doesn't expose /v1/models).
   #
+  # -------------------------------------------------------------------------
+  # LiteLLM proxy — OpenAI-compatible gateway (see LiteLLM docs). Use the same
+  # string ids as ``model_name`` in LiteLLM ``config.yaml``. The API key must
+  # match LiteLLM ``general_settings.master_key`` (e.g. ``LITELLM_MASTER_KEY``).
+  # The dashboard model picker probes ``GET {base_url}/models`` when the list
+  # below is omitted; listing ``models`` explicitly avoids any network hop.
+  # -------------------------------------------------------------------------
+  # providers:
+  #   litellm-local:
+  #     name: "LiteLLM Local"
+  #     base_url: "http://127.0.0.1:4000/v1"
+  #     key_env: "LITELLM_MASTER_KEY"
+  #     model: "deepseek-chat"
+  #     models:
+  #       deepseek-chat: {}
+  #       deepseek-reasoner: {}
+  #       claude-sonnet-4: {}
+  #
   # context_length: 131072
   #
   # max_tokens: OUTPUT cap — maximum tokens the model may generate per response.
@@ -488,10 +506,12 @@ skills:
   # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
   # and resolved to an absolute path.  External dirs are read-only: skill
   # creation always writes to ~/.hermes/skills/.  Local skills take precedence
-  # when names collide.
-  # external_dirs:
-  #   - ~/.agents/skills
-  #   - /home/shared/team-skills
+  # when names collide.  ~/.agents/skills is included by default; use
+  # external_dirs: [] to disable extra dirs, or list every path you want if you
+  # override this block.
+  external_dirs:
+    - ~/.agents/skills
+    # - /home/shared/team-skills
 
 # =============================================================================
 # Agent Behavior

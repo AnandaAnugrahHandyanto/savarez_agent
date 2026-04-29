@@ -20,7 +20,9 @@ OpenRouter variant suffixes (``:free``, ``:extended``, ``:fast``).
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from typing import List, NamedTuple, Optional
@@ -44,6 +46,56 @@ from agent.models_dev import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _resolved_api_key_from_custom_entry(entry: dict) -> str:
+    """Prefer inline ``api_key``, else ``key_env`` lookup in the process environment."""
+    k = str(entry.get("api_key") or "").strip()
+    if k:
+        return k
+    ke = str(entry.get("key_env") or "").strip()
+    if ke:
+        return str(os.getenv(ke) or "").strip()
+    return ""
+
+
+def _probe_openai_compatible_model_ids(
+    api_base_url: str,
+    bearer_token: str,
+    *,
+    timeout_seconds: float = 5.0,
+) -> list[str]:
+    """GET ``{base}/models`` (OpenAI wire). Returns ``data[].id`` or [] on any failure.
+
+    Used to populate the model picker for user-defined OpenAI-compatible
+    endpoints (e.g. LiteLLM proxy) when the config does not list ``models:``.
+    """
+    from urllib.request import Request, urlopen
+
+    base = str(api_base_url).strip().rstrip("/")
+    if not base:
+        return []
+    url = f"{base}/models"
+    try:
+        req = Request(url, method="GET")
+        req.add_header("Accept", "application/json")
+        if bearer_token:
+            req.add_header("Authorization", f"Bearer {bearer_token}")
+        with urlopen(req, timeout=timeout_seconds) as resp:
+            body = resp.read().decode()
+        data = json.loads(body)
+    except Exception:
+        logger.debug("OpenAI-compatible GET /models probe failed for %s", url, exc_info=True)
+        return []
+
+    items = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+    out: list[str] = []
+    for item in items:
+        if isinstance(item, dict) and item.get("id"):
+            out.append(str(item["id"]))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -997,7 +1049,6 @@ def list_authenticated_providers(
 
     Only includes providers that have API keys set or are user-defined endpoints.
     """
-    import os
     from agent.models_dev import (
         PROVIDER_TO_MODELS_DEV,
         fetch_models_dev,
@@ -1311,9 +1362,15 @@ def list_authenticated_providers(
                     fb = curated.get("openai") or []
                     if fb:
                         models_list = list(fb)
+                elif "/v1" in url_lower:
+                    auth = _resolved_api_key_from_custom_entry(ep_cfg)
+                    probed = _probe_openai_compatible_model_ids(
+                        str(api_url).strip().rstrip("/"),
+                        auth,
+                    )
+                    if probed:
+                        models_list = probed[: max(max_models, 1)]
 
-            # Try to probe /v1/models if URL is set (but don't block on it)
-            # For now just show what we know from config
             results.append({
                 "slug": ep_name,
                 "name": display_name,
@@ -1397,6 +1454,7 @@ def list_authenticated_providers(
                     "name": display_name,
                     "api_url": api_url,
                     "models": [],
+                    "_probe_auth": "",
                 }
 
             # The singular ``model:`` field only holds the currently
@@ -1417,6 +1475,10 @@ def list_authenticated_providers(
                 for m in cfg_models:
                     if m and m not in groups[group_key]["models"]:
                         groups[group_key]["models"].append(m)
+
+            na = _resolved_api_key_from_custom_entry(entry)
+            if na and not groups[group_key].get("_probe_auth"):
+                groups[group_key]["_probe_auth"] = na
 
         _section4_emitted_slugs: set = set()
         for grp in groups.values():
@@ -1448,13 +1510,19 @@ def list_authenticated_providers(
             )
             if _pair_key[0] and _pair_key[1] and _pair_key in _section3_emitted_pairs:
                 continue
+            models_fin = list(grp["models"])
+            if not models_fin:
+                auth = str(grp.get("_probe_auth") or "").strip()
+                probed = _probe_openai_compatible_model_ids(grp["api_url"], auth)
+                if probed:
+                    models_fin = probed[: max(max_models, 1)]
             results.append({
                 "slug": slug,
                 "name": grp["name"],
                 "is_current": slug == current_provider,
                 "is_user_defined": True,
-                "models": grp["models"],
-                "total_models": len(grp["models"]),
+                "models": models_fin,
+                "total_models": len(models_fin),
                 "source": "user-config",
                 "api_url": grp["api_url"],
             })

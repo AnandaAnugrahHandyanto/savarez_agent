@@ -54,6 +54,39 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
         # Should have been called at least twice (primary + fallback)
         assert call_count["n"] >= 2
 
+    def test_passes_config_provider_when_inference_env_unset(self, tmp_path, monkeypatch):
+        """model.provider from gateway config.yaml is passed when HERMES_INFERENCE_PROVIDER is unset."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "model:\n  provider: litellm-local\n  default: deepseek-chat\n"
+        )
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+
+        captured: dict = {}
+
+        def _mock_resolve(**kwargs):
+            captured["requested"] = kwargs.get("requested")
+            return {
+                "api_key": "k",
+                "base_url": "http://127.0.0.1:4000/v1",
+                "provider": "custom",
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": None,
+                "credential_pool": None,
+            }
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            side_effect=_mock_resolve,
+        ):
+            from gateway.run import _resolve_runtime_agent_kwargs
+
+            _resolve_runtime_agent_kwargs()
+
+        assert captured.get("requested") == "litellm-local"
+
     def test_auth_error_no_fallback_raises(self, tmp_path, monkeypatch):
         """When primary fails and no fallback configured, RuntimeError is raised."""
         from hermes_cli.auth import AuthError

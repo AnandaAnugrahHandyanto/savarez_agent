@@ -5,7 +5,8 @@ session search, web extraction, vision analysis, browser vision) picks up
 the best available backend without duplicating fallback logic.
 
 Resolution order for text tasks (auto mode):
-  1. OpenRouter  (OPENROUTER_API_KEY)
+  1. OpenRouter (OPENROUTER_API_KEY; falls back to OPENAI_API_KEY,
+     mirroring ``runtime_provider._resolve_openrouter_runtime``)
   2. Nous Portal (~/.hermes/auth.json active provider)
   3. Custom endpoint (config.yaml model.base_url + OPENAI_API_KEY)
   4. Codex OAuth (Responses API via chatgpt.com with gpt-5.3-codex,
@@ -47,8 +48,9 @@ from urllib.parse import urlparse, parse_qs, urlunparse
 from openai import OpenAI
 
 from agent.credential_pool import load_pool
+from hermes_cli.auth import has_usable_secret
 from hermes_cli.config import get_hermes_home
-from hermes_constants import OPENROUTER_BASE_URL
+from hermes_constants import OPENROUTER_BASE_URL, display_hermes_home
 from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
@@ -94,6 +96,16 @@ _PROVIDER_ALIASES = {
     "github-models": "copilot",
     "github-copilot-acp": "copilot-acp",
     "copilot-acp-agent": "copilot-acp",
+    # Local server aliases — match hermes_cli/auth.normalize_provider()
+    "lmstudio": "custom",
+    "lm-studio": "custom",
+    "lm_studio": "custom",
+    "ollama": "custom",
+    "ollama_cloud": "ollama-cloud",
+    "vllm": "custom",
+    "llamacpp": "custom",
+    "llama.cpp": "custom",
+    "llama-cpp": "custom",
 }
 
 
@@ -930,8 +942,10 @@ def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
         return OpenAI(api_key=or_key, base_url=base_url,
                        default_headers=_OR_HEADERS), _OPENROUTER_MODEL
 
-    or_key = os.getenv("OPENROUTER_API_KEY")
-    if not or_key:
+    or_key = str(os.getenv("OPENROUTER_API_KEY") or "").strip()
+    if not has_usable_secret(or_key):
+        or_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
+    if not has_usable_secret(or_key):
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
@@ -946,8 +960,10 @@ def _describe_openrouter_unavailable() -> str:
             return "OpenRouter credential pool has no usable entries (credentials may be exhausted)"
         if not _pool_runtime_api_key(entry):
             return "OpenRouter credential pool entry is missing a runtime API key"
-    if not str(os.getenv("OPENROUTER_API_KEY") or "").strip():
-        return "OPENROUTER_API_KEY not set"
+    if not has_usable_secret(os.getenv("OPENROUTER_API_KEY")) and not has_usable_secret(
+        os.getenv("OPENAI_API_KEY")
+    ):
+        return "OPENROUTER_API_KEY and OPENAI_API_KEY not set (or empty)"
     return "no usable OpenRouter credentials found"
 
 
@@ -1602,10 +1618,14 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
                 logger.info("Auxiliary auto-detect: using %s (%s)", label, model or "default")
             return client, model
         tried.append(label)
-    logger.warning("Auxiliary auto-detect: no provider available (tried: %s). "
-                   "Compression, summarization, and memory flush will not work. "
-                   "Set OPENROUTER_API_KEY or configure a local model in config.yaml.",
-                   ", ".join(tried))
+    logger.warning(
+        "Auxiliary auto-detect: no provider available (tried: %s). "
+        "Compression, summarization, and memory flush will not work. "
+        "Set OPENROUTER_API_KEY or OPENAI_API_KEY in %s/.env (or run hermes setup), "
+        "or configure a local model in config.yaml.",
+        ", ".join(tried),
+        display_hermes_home(),
+    )
     return None, None
 
 

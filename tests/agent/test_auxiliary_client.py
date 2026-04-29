@@ -65,7 +65,11 @@ class TestNormalizeAuxProvider:
         assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
 
-
+    def test_maps_local_server_aliases_match_auth_module(self):
+        assert _normalize_aux_provider("ollama") == "custom"
+        assert _normalize_aux_provider("lmstudio") == "custom"
+        assert _normalize_aux_provider("vllm") == "custom"
+        assert _normalize_aux_provider("ollama_cloud") == "ollama-cloud"
 class TestReadCodexAccessToken:
     def test_valid_auth_store(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
@@ -477,17 +481,30 @@ class TestExplicitProviderRouting:
 
     def test_explicit_openrouter_missing_env_keeps_not_set_warning(self, monkeypatch, caplog):
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
                 client, model = resolve_provider_client("openrouter")
         assert client is None
         assert model is None
         assert any(
-            "OPENROUTER_API_KEY not set" in record.message
+            "OPENROUTER_API_KEY and OPENAI_API_KEY not set" in record.message
             for record in caplog.records
         )
 
-class TestGetTextAuxiliaryClient:
+    def test_try_openrouter_falls_back_to_openai_api_key(self, monkeypatch):
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-fallback-key-for-or")
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("agent.auxiliary_client.OpenAI") as m_openai:
+            m_openai.return_value = MagicMock()
+            from agent.auxiliary_client import _try_openrouter
+            client, model = _try_openrouter()
+        assert client is not None
+        assert model is not None
+        assert m_openai.call_args.kwargs["api_key"] == "sk-openai-fallback-key-for-or"
+
+
     """Test the full resolution chain for get_text_auxiliary_client."""
 
     def test_codex_pool_entry_takes_priority_over_auth_store(self):

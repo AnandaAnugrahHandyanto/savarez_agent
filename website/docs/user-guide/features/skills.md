@@ -191,9 +191,9 @@ See [Skill Settings](/docs/user-guide/configuration#skill-settings) and [Creatin
 
 ## External Skill Directories
 
-If you maintain skills outside of Hermes — for example, a shared `~/.agents/skills/` directory used by multiple AI tools — you can tell Hermes to scan those directories too.
+Hermes **defaults** to scanning `~/.agents/skills/` (e.g. skills shared with Cursor or other agents). Missing directories are skipped silently.
 
-Add `external_dirs` under the `skills` section in `~/.hermes/config.yaml`:
+To add more locations, or to replace the default list entirely, set `external_dirs` under the `skills` section in `~/.hermes/config.yaml`:
 
 ```yaml
 skills:
@@ -202,6 +202,8 @@ skills:
     - /home/shared/team-skills
     - ${SKILLS_REPO}/skills
 ```
+
+Set `external_dirs: []` to disable all extra directories (only `~/.hermes/skills/` is used). If you override `external_dirs` with a custom list, include `~/.agents/skills` in that list when you still want it scanned.
 
 Paths support `~` expansion and `${VAR}` environment variable substitution.
 
