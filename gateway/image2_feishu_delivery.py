@@ -228,36 +228,53 @@ class FeishuImageClient:
         return str(message_id)
 
     @staticmethod
-    def _readback_file_key(readback: Mapping[str, Any]) -> str:
+    def _readback_file_info(readback: Mapping[str, Any]) -> dict[str, str]:
         content = (readback.get("body") or {}).get("content") if isinstance(readback.get("body"), Mapping) else None
         content = content or readback.get("content")
         if not content:
-            return ""
+            return {}
         try:
             parsed = json.loads(content) if isinstance(content, str) else content
         except json.JSONDecodeError:
-            return ""
-        return str(parsed.get("file_key") or "") if isinstance(parsed, Mapping) else ""
+            return {}
+        if not isinstance(parsed, Mapping):
+            return {}
+        return {"file_key": str(parsed.get("file_key") or ""), "file_name": str(parsed.get("file_name") or "")}
+
+    @staticmethod
+    def _readback_file_key(readback: Mapping[str, Any]) -> str:
+        return FeishuImageClient._readback_file_info(readback).get("file_key", "")
 
     def send_file_and_verify(self, file_path: Path, *, chat_id: str, reply_to: str = "", file_name: str = "") -> dict[str, Any]:
         file_path = Path(file_path)
+        display_name = file_name or file_path.name
         file_sha256 = hashlib.sha256(file_path.read_bytes()).hexdigest()
         token = self.tenant_access_token()
-        file_key = self.upload_file(file_path, token=token, file_name=file_name)
+        file_key = self.upload_file(file_path, token=token, file_name=display_name)
         message_id = self.send_file_message(chat_id=chat_id, reply_to=reply_to, file_key=file_key, token=token)
         readback = self.read_message(message_id=message_id, token=token)
         msg_type = readback.get("msg_type")
         if msg_type != "file":
             raise FeishuDeliveryError(f"read-back msg_type mismatch: expected file, got {msg_type!r}")
-        readback_key = self._readback_file_key(readback)
+        readback_info = self._readback_file_info(readback)
+        readback_key = readback_info.get("file_key", "")
+        readback_name = readback_info.get("file_name", "")
         if not readback_key:
             raise FeishuDeliveryError("read-back file_key missing")
+        # Feishu can return a message-resource file_key that differs from the upload key.
+        # Treat exact message GET + msg_type=file + matching file_name as verified delivery.
         if readback_key != file_key:
-            raise FeishuDeliveryError("read-back file_key mismatch")
+            if not readback_name:
+                raise FeishuDeliveryError("read-back file_name missing for transformed file_key")
+            if readback_name != display_name:
+                raise FeishuDeliveryError("read-back file_name mismatch")
         return {
             "verified": True,
             "message_id": message_id,
             "file_key": file_key,
+            "readback_file_key": readback_key,
+            "file_key_matches": readback_key == file_key,
+            "readback_file_name": readback_name,
             "readback_msg_type": msg_type,
             "file_path": str(file_path),
             "file_sha256": file_sha256,

@@ -4,11 +4,12 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import pytest
 from pathlib import Path
 from types import SimpleNamespace
 
 from gateway.image2_feishu_ingress import Image2IngressSettings, handle_image2_feishu_ingress_event
-from gateway.image2_feishu_delivery import FeishuImageClient
+from gateway.image2_feishu_delivery import FeishuDeliveryError, FeishuImageClient
 from gateway.image2_print import parse_print_spec, should_handle_print_request
 from gateway.image2_store import Image2JobStore
 from gateway.image2_worker import run_worker
@@ -274,3 +275,154 @@ def test_feishu_file_client_sends_document_file_and_exact_readback(tmp_path):
     assert result["message_id"] == "om_file_reply"
     assert result["readback_msg_type"] == "file"
     assert result["file_key"] == "file_unit_key"
+
+
+
+def test_feishu_file_client_accepts_feishu_transformed_file_key_when_file_name_matches(tmp_path):
+    doc = tmp_path / "final_flat.psd"
+    doc.write_bytes(b"fake psd bytes")
+
+    def fake_post(url: str, **kwargs):
+        if url.endswith("/auth/v3/tenant_access_token/internal"):
+            return _Response({"code": 0, "tenant_access_token": "token-redacted"})
+        if url.endswith("/im/v1/files"):
+            return _Response({"code": 0, "data": {"file_key": "file_upload_key"}})
+        if url.endswith("/im/v1/messages/om_root/reply"):
+            return _Response({"code": 0, "data": {"message_id": "om_file_reply"}})
+        raise AssertionError(url)
+
+    def fake_get(url: str, **kwargs):
+        assert url.endswith("/im/v1/messages/om_file_reply")
+        # Live Feishu may return a message-resource file_key that differs from the upload file_key.
+        return _Response({"code": 0, "data": {"item": {"message_id": "om_file_reply", "msg_type": "file", "body": {"content": json.dumps({"file_key": "file_readback_key", "file_name": "final_flat.psd"})}}}})
+
+    client = FeishuImageClient(app_id="app", app_secret="secret", http_post=fake_post, http_get=fake_get)
+    result = client.send_file_and_verify(doc, chat_id="oc_chat", reply_to="om_root", file_name="final_flat.psd")
+
+    assert result["verified"] is True
+    assert result["message_id"] == "om_file_reply"
+    assert result["file_key"] == "file_upload_key"
+    assert result["readback_file_key"] == "file_readback_key"
+    assert result["file_key_matches"] is False
+    assert result["readback_file_name"] == "final_flat.psd"
+
+
+def test_print_delivery_files_uses_transfer_psd_when_flat_psd_exceeds_feishu_limit(tmp_path):
+    from gateway.image2_worker import _build_print_delivery_files
+
+    approved = tmp_path / "approved.png"
+    approved.write_bytes(b"approved")
+    job_dir = tmp_path / "job"
+    original_psd = job_dir / "print" / "psd" / "original_150dpi.psd"
+    pdf = job_dir / "print" / "proof" / "proof.pdf"
+    highres = job_dir / "print" / "highres" / "highres.png"
+    for path, payload in [(original_psd, b"x" * 150), (pdf, b"pdf"), (highres, b"y" * 150)]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+    package_result = {
+        "status": "pass",
+        "psd_path": str(original_psd),
+        "pdf_path": str(pdf),
+        "highres_path": str(highres),
+        "approved_sha256": hashlib.sha256(approved.read_bytes()).hexdigest(),
+        "width_mm": 800,
+        "height_mm": 1200,
+        "dpi": 150,
+    }
+    calls: list[int] = []
+
+    def fake_packager(*, job_dir: Path, approved_image_path: Path, spec: dict[str, object], environ: dict[str, str]):
+        dpi = int(spec["dpi"])
+        assert "target_width_px" not in spec
+        assert "target_height_px" not in spec
+        calls.append(dpi)
+        fallback_psd = job_dir / "print" / "psd" / f"transfer_{dpi}dpi.psd"
+        fallback_pdf = job_dir / "print" / "proof" / "proof.pdf"
+        fallback_highres = job_dir / "print" / "highres" / "highres.png"
+        for path, payload in [(fallback_psd, b"p" * (90 if dpi == 90 else 130)), (fallback_pdf, b"pdf"), (fallback_highres, b"png")]:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payload)
+        return {"status": "pass", "psd_path": str(fallback_psd), "pdf_path": str(fallback_pdf), "highres_path": str(fallback_highres), "approved_sha256": package_result["approved_sha256"], "dpi": dpi}
+
+    files, meta = _build_print_delivery_files(
+        package_result=package_result,
+        job_dir=job_dir,
+        approved_path=approved,
+        print_request={"spec": {"width_mm": 800, "height_mm": 1200, "dpi": 150, "output_psd_type": "flat_single_layer"}},
+        environ={"FEISHU_IM_FILE_UPLOAD_MAX_BYTES": "100", "IMAGE2_PRINT_FEISHU_TRANSFER_DPI_CANDIDATES": "100,90"},
+        packager=fake_packager,
+    )
+
+    file_paths = [Path(str(item["path"])) for item in files]
+    assert pdf in file_paths
+    assert highres not in file_paths
+    assert original_psd not in file_paths
+    assert any(path.name == "transfer_90dpi.psd" for path in file_paths)
+    assert any(path.name == "highres.png" and "print_transfer_90dpi" in str(path) for path in file_paths)
+    assert calls == [100, 90]
+    assert meta["psd_delivery_mode"] == "transfer_fallback"
+    assert meta["original_psd_size"] == 150
+    assert meta["transfer_psd_dpi"] == 90
+
+
+
+def test_feishu_file_client_rejects_transformed_file_key_without_file_name(tmp_path):
+    doc = tmp_path / "final_flat.psd"
+    doc.write_bytes(b"fake psd bytes")
+
+    def fake_post(url: str, **kwargs):
+        if url.endswith("/auth/v3/tenant_access_token/internal"):
+            return _Response({"code": 0, "tenant_access_token": "token-redacted"})
+        if url.endswith("/im/v1/files"):
+            return _Response({"code": 0, "data": {"file_key": "file_upload_key"}})
+        if url.endswith("/im/v1/messages/om_root/reply"):
+            return _Response({"code": 0, "data": {"message_id": "om_file_reply"}})
+        raise AssertionError(url)
+
+    def fake_get(url: str, **kwargs):
+        return _Response({"code": 0, "data": {"item": {"message_id": "om_file_reply", "msg_type": "file", "body": {"content": json.dumps({"file_key": "file_readback_key"})}}}})
+
+    client = FeishuImageClient(app_id="app", app_secret="secret", http_post=fake_post, http_get=fake_get)
+    with pytest.raises(FeishuDeliveryError, match="read-back file_name missing"):
+        client.send_file_and_verify(doc, chat_id="oc_chat", reply_to="om_root", file_name="final_flat.psd")
+
+
+def test_worker_print_lane_fails_closed_when_no_deliverable_psd(tmp_path):
+    runtime = tmp_path / "runtime"
+    db_path = runtime / "image2_jobs.sqlite"
+    approved = tmp_path / "approved.png"
+    approved.write_bytes(b"approved")
+    approved_sha = hashlib.sha256(approved.read_bytes()).hexdigest()
+    spec = parse_print_spec("定稿，出印刷版，尺寸 100×150cm")
+    job = Image2JobStore(db_path=db_path, runtime_root=runtime).enqueue_feishu({
+        "feishu_message_id": "om_print",
+        "chat_id": "oc_chat",
+        "root_id": "om_root",
+        "thread_id": "om_thread",
+        "text": "定稿，出印刷版，尺寸 100×150cm",
+        "print_request": {"approved_task_id": "img2_preview", "approved_image_path": str(approved), "approved_image_sha256": approved_sha, "spec": spec},
+    })
+
+    def fake_print_packager(*, job_dir: Path, approved_image_path: Path, spec: dict[str, object], environ: dict[str, str]):
+        pdf = job_dir / "print" / "proof" / "unit_proof.pdf"
+        highres = job_dir / "print" / "highres" / "unit.png"
+        for path, payload in [(pdf, b"pdf"), (highres, b"png")]:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payload)
+        return {"status": "pass", "pdf_path": str(pdf), "highres_path": str(highres), "approved_sha256": approved_sha, "dpi": 150}
+
+    def should_not_send(**kwargs):
+        raise AssertionError("sender must not be called without a deliverable PSD")
+
+    result = run_worker(
+        db_path=db_path,
+        runtime_root=runtime,
+        task_id=str(job["task_id"]),
+        worker_id="print-worker",
+        environ={"IMAGE2_WORKER_LIVE_ENABLED": "1", "FEISHU_APP_ID": "present", "FEISHU_APP_SECRET": "present"},
+        print_packager=fake_print_packager,
+        file_delivery_sender=should_not_send,
+    )
+
+    assert result["status"] == "failed_final"
+    assert result["reason"] == "print_delivery_file_missing"

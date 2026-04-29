@@ -30,6 +30,98 @@ PrintPackager = Callable[..., dict[str, Any]]
 FileDeliverySender = Callable[..., dict[str, Any]]
 
 
+FEISHU_IM_FILE_UPLOAD_MAX_BYTES_DEFAULT = 30_000_000
+
+
+def _int_env(environ: Mapping[str, str], key: str, default: int) -> int:
+    try:
+        return int(str(environ.get(key, "")).strip() or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _candidate_transfer_dpis(environ: Mapping[str, str], original_dpi: int) -> list[int]:
+    raw = str(environ.get("IMAGE2_PRINT_FEISHU_TRANSFER_DPI_CANDIDATES") or "120,100,96,90,80,72")
+    dpis: list[int] = []
+    for part in raw.split(","):
+        try:
+            dpi = int(part.strip())
+        except ValueError:
+            continue
+        if dpi > 0 and dpi < original_dpi and dpi not in dpis:
+            dpis.append(dpi)
+    return dpis
+
+
+def _build_print_delivery_files(
+    *,
+    package_result: Mapping[str, Any],
+    job_dir: Path,
+    approved_path: Path,
+    print_request: Mapping[str, Any],
+    environ: Mapping[str, str],
+    packager: PrintPackager,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Choose Feishu-deliverable print files, falling back when flat PSD exceeds upload limits."""
+    max_bytes = _int_env(environ, "FEISHU_IM_FILE_UPLOAD_MAX_BYTES", FEISHU_IM_FILE_UPLOAD_MAX_BYTES_DEFAULT)
+    files: list[dict[str, str]] = []
+    meta: dict[str, Any] = {"max_file_upload_bytes": max_bytes, "psd_delivery_mode": "original"}
+
+    skipped_oversize: list[dict[str, Any]] = []
+    base_pdf = Path(str(package_result.get("pdf_path") or ""))
+    if base_pdf.is_file():
+        if base_pdf.stat().st_size <= max_bytes:
+            files.append({"path": str(base_pdf), "file_name": base_pdf.name})
+        else:
+            skipped_oversize.append({"kind": "pdf", "path": str(base_pdf), "size": base_pdf.stat().st_size})
+
+    base_highres = Path(str(package_result.get("highres_path") or ""))
+    if base_highres.is_file() and base_highres.stat().st_size <= max_bytes:
+        files.append({"path": str(base_highres), "file_name": base_highres.name})
+    elif base_highres.is_file():
+        skipped_oversize.append({"kind": "highres", "path": str(base_highres), "size": base_highres.stat().st_size})
+
+    psd_path = Path(str(package_result.get("psd_path") or ""))
+    if not psd_path.is_file():
+        meta["psd_delivery_mode"] = "missing"
+        meta["skipped_oversize"] = skipped_oversize
+        return files, meta
+
+    psd_size = psd_path.stat().st_size
+    meta["original_psd_path"] = str(psd_path)
+    meta["original_psd_size"] = psd_size
+    meta["skipped_oversize"] = skipped_oversize
+    if psd_size <= max_bytes:
+        files.append({"path": str(psd_path), "file_name": psd_path.name})
+        return files, meta
+
+    spec = dict(print_request.get("spec") or {})
+    original_dpi = int(spec.get("dpi") or package_result.get("dpi") or 150)
+    meta["psd_delivery_mode"] = "oversize_no_fallback"
+    for dpi in _candidate_transfer_dpis(environ, original_dpi):
+        fallback_spec = dict(spec)
+        fallback_spec.pop("target_width_px", None)
+        fallback_spec.pop("target_height_px", None)
+        fallback_spec["dpi"] = dpi
+        fallback_dir = job_dir / f"print_transfer_{dpi}dpi"
+        fallback = packager(job_dir=fallback_dir, approved_image_path=approved_path, spec=fallback_spec, environ=dict(environ))
+        fallback_psd = Path(str(fallback.get("psd_path") or ""))
+        if fallback.get("status") == "pass" and fallback_psd.is_file() and fallback_psd.stat().st_size <= max_bytes:
+            if base_highres.is_file() and base_highres.stat().st_size > max_bytes:
+                fallback_highres = Path(str(fallback.get("highres_path") or ""))
+                if fallback_highres.is_file() and fallback_highres.stat().st_size <= max_bytes:
+                    files.append({"path": str(fallback_highres), "file_name": fallback_highres.name})
+            files.append({"path": str(fallback_psd), "file_name": fallback_psd.name})
+            meta.update({
+                "psd_delivery_mode": "transfer_fallback",
+                "transfer_psd_path": str(fallback_psd),
+                "transfer_psd_size": fallback_psd.stat().st_size,
+                "transfer_psd_dpi": dpi,
+            })
+            return files, meta
+    return files, meta
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Hermes-owned Image2 worker")
     parser.add_argument("--db", required=True)
@@ -306,14 +398,30 @@ def run_worker(
                 extra={"print_request": print_request, "print_package": package_result, **prompt_common},
                 exit_code=6,
             )
-        files = [
-            {"path": str(package_result.get("psd_path") or ""), "file_name": Path(str(package_result.get("psd_path") or "")).name},
-            {"path": str(package_result.get("pdf_path") or ""), "file_name": Path(str(package_result.get("pdf_path") or "")).name},
-        ]
+        files, print_delivery_meta = _build_print_delivery_files(
+            package_result=package_result,
+            job_dir=job_dir,
+            approved_path=approved_path,
+            print_request=print_request,
+            environ=env,
+            packager=packager,
+        )
+        if not files or print_delivery_meta.get("psd_delivery_mode") in {"oversize_no_fallback", "missing"}:
+            return _terminal_failure(
+                store=store,
+                task_id=str(task_id),
+                worker_id=str(worker_id),
+                job_dir=job_dir,
+                reason="print_delivery_file_missing" if print_delivery_meta.get("psd_delivery_mode") == "missing" else "print_delivery_file_too_large",
+                last_error="print_delivery_file_missing: no flat PSD was generated" if print_delivery_meta.get("psd_delivery_mode") == "missing" else "print_delivery_file_too_large: flat PSD exceeds Feishu upload limit and no transfer fallback fits",
+                extra={"print_request": print_request, "print_package": package_result, "print_delivery": print_delivery_meta, **prompt_common},
+                exit_code=6,
+            )
         try:
             sender = file_delivery_sender or send_feishu_files_from_print_package
             reply_to = str(message_for_print.get("thread_id") or message_for_print.get("root_id") or message_for_print.get("parent_id") or message_for_print.get("upper_message_id") or message_for_print.get("feishu_message_id") or "")
             delivery_report = sender(files=files, chat_id=str(message_for_print.get("chat_id") or ""), reply_to=reply_to, environ=env)
+            delivery_report.setdefault("print_delivery", print_delivery_meta)
         except Exception as exc:  # noqa: BLE001
             return _terminal_failure(
                 store=store,
