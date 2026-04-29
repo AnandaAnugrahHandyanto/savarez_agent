@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "hermes-cli", "runtimeExecutable": "./hermes", "runtimeArgs": [], "port": 0 },
+    { "name": "dashboard-backend", "runtimeExecutable": "python", "runtimeArgs": ["-m", "hermes_cli.main", "web", "--no-open"], "port": 9119 },
+    { "name": "dashboard-frontend", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev"], "cwd": "web", "port": 5173 },
+    { "name": "gateway", "runtimeExecutable": "./hermes", "runtimeArgs": ["gateway", "start"], "port": 0 },
+    { "name": "tests", "runtimeExecutable": "scripts/run_tests.sh", "runtimeArgs": [], "port": 0 },
+    { "name": "tests-fast", "runtimeExecutable": "pytest", "runtimeArgs": ["-x", "tests/"], "port": 0 },
+    { "name": "codex", "runtimeExecutable": "codex", "runtimeArgs": [], "port": 0 }
+  ]
+}
