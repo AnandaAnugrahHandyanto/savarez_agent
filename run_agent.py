@@ -10325,6 +10325,7 @@ class AIAgent:
         # Main conversation loop
         api_call_count = 0
         final_response = None
+        assistant_msg = None  # Guard against UnboundLocalError in retry paths
         interrupted = False
         codex_ack_continuations = 0
         length_continue_retries = 0

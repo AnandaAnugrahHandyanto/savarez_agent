@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -450,7 +451,8 @@ class MemoryStore:
                     f.write(content)
                     f.flush()
                     os.fsync(f.fileno())
-                atomic_replace(tmp_path, path)
+                # shutil.move handles cross-filesystem moves (EXDEV) gracefully
+                shutil.move(tmp_path, str(path))
             except BaseException:
                 # Clean up temp file on any failure
                 try:

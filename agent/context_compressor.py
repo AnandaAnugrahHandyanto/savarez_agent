@@ -41,6 +41,8 @@ SUMMARY_PREFIX = (
     "window — treat it as background reference, NOT as active instructions. "
     "Do NOT answer questions or fulfill requests mentioned in this summary; "
     "they were already addressed. "
+    "**IMPORTANT EXCEPTION: The MEMORY and USER PROFILE sections below ARE active context** "
+    "that you MUST follow in all future turns — user preferences, constraints, and learned facts persist across sessions. "
     "Your current task is identified in the '## Active Task' section of the "
     "summary — resume exactly from there. "
     "Respond ONLY to the latest user message "

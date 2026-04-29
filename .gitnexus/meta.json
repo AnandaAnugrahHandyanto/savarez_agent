@@ -1,0 +1,14 @@
+{
+  "repoPath": "/home/xuan3195/hermes-agent",
+  "lastCommit": "432772dbdf63eae379b76b3811c51284c36bb817",
+  "indexedAt": "2026-04-25T13:19:32.949Z",
+  "remoteUrl": "https://github.com/NousResearch/hermes-agent",
+  "stats": {
+    "files": 2128,
+    "nodes": 86089,
+    "edges": 124443,
+    "communities": 1050,
+    "processes": 300,
+    "embeddings": 0
+  }
+}

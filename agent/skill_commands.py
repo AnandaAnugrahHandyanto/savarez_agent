@@ -325,7 +325,16 @@ def build_skill_invocation_message(
 
     loaded = _load_skill_payload(skill_info["skill_dir"], task_id=task_id)
     if not loaded:
-        return f"[Failed to load skill: {skill_info['name']}]"
+        # Return None instead of a stub string to prevent silent message drop.
+        # The caller checks `if msg:` and will skip sending when None is returned.
+        # Log the failure so it's visible in gateway logs.
+        import logging
+        logging.getLogger(__name__).warning(
+            "[SkillCommands] Failed to load skill '%s' for command '%s' — returning None",
+            skill_info.get("name", "unknown"),
+            cmd_key,
+        )
+        return None
 
     loaded_skill, skill_dir, skill_name = loaded
     activation_note = (

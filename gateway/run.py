@@ -2462,7 +2462,10 @@ class GatewayRunner:
                 error_message=None,
             )
             try:
-                success = await adapter.connect()
+                # Add timeout to prevent one slow platform from blocking others
+                # Default 30s timeout; override via GATEWAY_PLATFORM_CONNECT_TIMEOUT_SECONDS
+                _connect_timeout = int(os.getenv("GATEWAY_PLATFORM_CONNECT_TIMEOUT_SECONDS", "30"))
+                success = await asyncio.wait_for(adapter.connect(), timeout=_connect_timeout)
                 if success:
                     self.adapters[platform] = adapter
                     self._sync_voice_mode_state_to_adapter(adapter)
@@ -2523,6 +2526,21 @@ class GatewayRunner:
                             "attempts": 1,
                             "next_retry": time.monotonic() + 30,
                         }
+            except asyncio.TimeoutError:
+                logger.error("✗ %s connection timed out after %ds", platform.value, _connect_timeout)
+                await self._safe_adapter_disconnect(adapter, platform)
+                self._update_platform_runtime_status(
+                    platform.value,
+                    platform_state="retrying",
+                    error_code="connection_timeout",
+                    error_message=f"Connection timed out after {_connect_timeout}s",
+                )
+                startup_retryable_errors.append(f"{platform.value}: connection timeout")
+                self._failed_platforms[platform] = {
+                    "config": platform_config,
+                    "attempts": 1,
+                    "next_retry": time.monotonic() + 30,
+                }
             except Exception as e:
                 logger.error("✗ %s error: %s", platform.value, e)
                 # Same defensive cleanup path for exceptions — an adapter

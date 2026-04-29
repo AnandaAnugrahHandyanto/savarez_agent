@@ -2785,6 +2785,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
 
         elif msg.video:
+            # Check file size before attempting download (Telegram Bot API limit: 20 MB)
+            MAX_VIDEO_BYTES = 20 * 1024 * 1024
+            video_size = getattr(msg.video, 'file_size', None)
+            if video_size and video_size > MAX_VIDEO_BYTES:
+                event.text = (
+                    "The video file is too large to process. "
+                    "Maximum size is 20 MB. Please compress the video or send a smaller file."
+                )
+                logger.info("[Telegram] Video too large: %s bytes, skipping download", video_size)
+                await self.handle_message(event)
+                return
+
             try:
                 file_obj = await msg.video.get_file()
                 video_bytes = await file_obj.download_as_bytearray()
@@ -2799,6 +2811,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.media_types = [SUPPORTED_VIDEO_TYPES.get(ext, "video/mp4")]
                 logger.info("[Telegram] Cached user video at %s", cached_path)
             except Exception as e:
+                # Check for "file is too big" error from Telegram API
+                err_str = str(e).lower()
+                if "too big" in err_str or "file is too" in err_str or "file too large" in err_str:
+                    event.text = (
+                        "The video file is too large to process. "
+                        "Maximum size is 20 MB. Please compress the video or send a smaller file."
+                    )
+                    logger.warning("[Telegram] Video download failed (too large): %s", e)
+                    await self.handle_message(event)
+                    return
                 logger.warning("[Telegram] Failed to cache video: %s", e, exc_info=True)
 
         # Download document files to cache for agent processing
