@@ -61,6 +61,12 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
     unresolved = [name for name in normalized if name not in built_in]
 
     if any(name in {"all", "*"} for name in built_in):
+        ignored = [name for name in normalized if name not in {"all", "*"}]
+        if ignored:
+            sys.stderr.write(
+                "hermes -z: --toolsets all enables every toolset; "
+                f"ignoring additional entries: {', '.join(ignored)}\n"
+            )
         return None, None
 
     mcp_names: set[str] = set()

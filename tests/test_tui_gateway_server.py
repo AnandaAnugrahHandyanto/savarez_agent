@@ -110,6 +110,13 @@ def test_load_enabled_toolsets_all_env_means_all(monkeypatch):
     assert server._load_enabled_toolsets() is None
 
 
+def test_load_enabled_toolsets_all_env_warns_about_ignored_extra_entries(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "all,nope")
+
+    assert server._load_enabled_toolsets() is None
+    assert "ignoring additional entries: nope" in capsys.readouterr().err
+
+
 def test_history_to_messages_preserves_tool_calls_for_resume_display():
     history = [
         {"role": "user", "content": "first prompt"},

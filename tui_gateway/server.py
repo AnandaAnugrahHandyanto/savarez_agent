@@ -877,6 +877,14 @@ def _load_enabled_toolsets() -> list[str] | None:
         unresolved = [name for name in explicit if name not in built_in]
 
         if any(name in {"all", "*"} for name in built_in):
+            ignored = [name for name in explicit if name not in {"all", "*"}]
+            if ignored:
+                print(
+                    "[tui] HERMES_TUI_TOOLSETS=all enables every toolset; "
+                    f"ignoring additional entries: {', '.join(ignored)}",
+                    file=sys.stderr,
+                    flush=True,
+                )
             return None
 
         if not unresolved:

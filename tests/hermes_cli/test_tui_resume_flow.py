@@ -220,6 +220,16 @@ def test_oneshot_all_toolsets_means_all_not_configured_cli():
     assert error is None
 
 
+def test_oneshot_all_toolsets_warns_about_ignored_extra_entries(capsys):
+    from hermes_cli.oneshot import _validate_explicit_toolsets
+
+    valid, error = _validate_explicit_toolsets("all,nope")
+
+    assert valid is None
+    assert error is None
+    assert "ignoring additional entries: nope" in capsys.readouterr().err
+
+
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     captured = {}
     active_path_during_call = None
