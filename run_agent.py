@@ -105,6 +105,7 @@ from agent.model_metadata import (
 )
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
+from agent.tool_failure_tracker import ToolFailureTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
@@ -1969,6 +1970,7 @@ class AIAgent:
         self._subdirectory_hints = SubdirectoryHintTracker(
             working_dir=os.getenv("TERMINAL_CWD") or None,
         )
+        self._tool_failure_tracker = ToolFailureTracker()
         self._user_turn_count = 0
 
         # Cumulative token usage for the session
@@ -9046,6 +9048,11 @@ class AIAgent:
             if subdir_hints:
                 function_result += subdir_hints
 
+            # Inject adaptive pivot hint on repeated failures
+            failure_hint = self._tool_failure_tracker.record_result(name, function_result, is_error)
+            if failure_hint:
+                function_result += failure_hint
+
             tool_msg = {
                 "role": "tool",
                 "content": function_result,
@@ -9409,6 +9416,12 @@ class AIAgent:
             subdir_hints = self._subdirectory_hints.check_tool_call(function_name, function_args)
             if subdir_hints:
                 function_result += subdir_hints
+
+            # Inject adaptive pivot hint on repeated failures
+            _is_err_for_tracker, _ = _detect_tool_failure(function_name, function_result)
+            failure_hint = self._tool_failure_tracker.record_result(function_name, function_result, _is_err_for_tracker)
+            if failure_hint:
+                function_result += failure_hint
 
             tool_msg = {
                 "role": "tool",
