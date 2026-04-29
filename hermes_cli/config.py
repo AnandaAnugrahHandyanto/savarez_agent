@@ -812,6 +812,7 @@ DEFAULT_CONFIG = {
     },
 
     "voice": {
+        "enabled": False,             # Start CLI sessions with voice mode on
         "record_key": "ctrl+b",
         "max_recording_seconds": 120,
         "auto_tts": False,
