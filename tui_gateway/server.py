@@ -864,6 +864,8 @@ def _load_enabled_toolsets() -> list[str] | None:
         for item in os.environ.get("HERMES_TUI_TOOLSETS", "").split(",")
         if item.strip()
     ]
+    cfg = None
+    fallback_notice = None
 
     try:
         from toolsets import validate_toolset
@@ -904,15 +906,13 @@ def _load_enabled_toolsets() -> list[str] | None:
         if valid:
             return valid
 
-        fallback_notice = (
-            "[tui] no valid HERMES_TUI_TOOLSETS entries; using configured CLI toolsets"
-        )
+        fallback_notice = "[tui] no valid HERMES_TUI_TOOLSETS entries; using configured CLI toolsets"
 
     try:
         from hermes_cli.config import load_config
         from hermes_cli.tools_config import _get_platform_tools
 
-        cfg = cfg if "cfg" in locals() and cfg is not None else load_config()
+        cfg = cfg if cfg is not None else load_config()
 
         # Runtime toolset resolution must include default MCP servers so the
         # agent can actually call them. Passing ``False`` here is the
@@ -923,11 +923,11 @@ def _load_enabled_toolsets() -> list[str] | None:
         enabled = sorted(
             _get_platform_tools(cfg, "cli", include_default_mcp_servers=True)
         )
-        if "fallback_notice" in locals():
+        if fallback_notice is not None:
             print(fallback_notice, file=sys.stderr, flush=True)
         return enabled or None
     except Exception:
-        if "fallback_notice" in locals():
+        if fallback_notice is not None:
             print(
                 "[tui] no valid HERMES_TUI_TOOLSETS entries and configured CLI toolsets could not be loaded; enabling all toolsets",
                 file=sys.stderr,

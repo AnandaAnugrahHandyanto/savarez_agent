@@ -211,6 +211,15 @@ def test_oneshot_filters_invalid_toolsets_before_redirect(capsys):
     assert "nope" in capsys.readouterr().err
 
 
+def test_oneshot_all_toolsets_means_all_not_configured_cli():
+    from hermes_cli.oneshot import _validate_explicit_toolsets
+
+    valid, error = _validate_explicit_toolsets("all")
+
+    assert valid is None
+    assert error is None
+
+
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     captured = {}
     active_path_during_call = None

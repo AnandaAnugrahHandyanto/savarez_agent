@@ -60,6 +60,9 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
     built_in = [name for name in normalized if validate_toolset(name)]
     unresolved = [name for name in normalized if name not in built_in]
 
+    if any(name in {"all", "*"} for name in built_in):
+        return None, None
+
     mcp_names: set[str] = set()
     if unresolved:
         try:
@@ -127,6 +130,7 @@ def run_oneshot(
     if toolsets_error:
         sys.stderr.write(toolsets_error)
         return 2
+    use_config_toolsets = _normalize_toolsets(toolsets) is None
 
     # Auto-approve any shell / tool approvals.  Non-interactive by
     # definition — a prompt would hang forever.
@@ -140,7 +144,13 @@ def run_oneshot(
 
     try:
         with redirect_stdout(devnull), redirect_stderr(devnull):
-            response = _run_agent(prompt, model=model, provider=provider, toolsets=explicit_toolsets)
+            response = _run_agent(
+                prompt,
+                model=model,
+                provider=provider,
+                toolsets=explicit_toolsets,
+                use_config_toolsets=use_config_toolsets,
+            )
     finally:
         try:
             devnull.close()
@@ -160,6 +170,7 @@ def _run_agent(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
+    use_config_toolsets: bool = True,
 ) -> str:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns the final response string."""
@@ -236,7 +247,7 @@ def _run_agent(
     # has enabled for "cli". sorted() gives stable ordering for config-derived
     # sets; explicit values preserve user order.
     toolsets_list = _normalize_toolsets(toolsets)
-    if toolsets_list is None:
+    if toolsets_list is None and use_config_toolsets:
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
     agent = AIAgent(
