@@ -224,7 +224,7 @@ async def host_header_middleware(request: Request, call_next):
 async def auth_middleware(request: Request, call_next):
     """Require the session token on all /api/ routes except the public list."""
     path = request.url.path
-    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS and not path.startswith("/api/plugins/"):
+    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
         if not _has_valid_session_token(request):
             return JSONResponse(
                 status_code=401,
@@ -3084,6 +3084,26 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     return FileResponse(target, media_type=media_type)
 
 
+def _resolve_plugin_api_path(plugin: Dict[str, Any]) -> Optional[Path]:
+    """Return a plugin API path only when it stays inside the plugin directory."""
+    api_file_name = plugin.get("_api_file")
+    if not api_file_name:
+        return None
+    try:
+        base = Path(plugin["_dir"]).resolve()
+        api_path = (base / str(api_file_name)).resolve()
+    except Exception:
+        return None
+    if not api_path.is_relative_to(base):
+        _log.warning(
+            "Plugin %s declares api=%s outside plugin directory; ignoring",
+            plugin.get("name", "<unknown>"),
+            api_file_name,
+        )
+        return None
+    return api_path
+
+
 def _mount_plugin_api_routes():
     """Import and mount backend API routes from plugins that declare them.
 
@@ -3093,9 +3113,9 @@ def _mount_plugin_api_routes():
     """
     for plugin in _get_dashboard_plugins():
         api_file_name = plugin.get("_api_file")
-        if not api_file_name:
+        api_path = _resolve_plugin_api_path(plugin)
+        if not api_path:
             continue
-        api_path = Path(plugin["_dir"]) / api_file_name
         if not api_path.exists():
             _log.warning("Plugin %s declares api=%s but file not found", plugin["name"], api_file_name)
             continue

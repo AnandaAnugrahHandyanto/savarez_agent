@@ -2280,7 +2280,7 @@ class APIServerAdapter(BasePlatformAdapter):
             result = agent.run_conversation(
                 user_message=user_message,
                 conversation_history=conversation_history,
-                task_id="default",
+                task_id=session_id or f"api_{uuid.uuid4().hex}",
             )
             usage = {
                 "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
@@ -2297,6 +2297,28 @@ class APIServerAdapter(BasePlatformAdapter):
 
     _MAX_CONCURRENT_RUNS = 10  # Prevent unbounded resource allocation
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
+    _RUN_STREAM_QUEUE_MAX = 1000  # Bound queued SSE events for slow/non-consuming clients
+
+    @staticmethod
+    def _put_run_event_nowait(q: "asyncio.Queue[Optional[Dict]]", event: Optional[Dict]) -> None:
+        """Put an event into a bounded run queue, dropping oldest queued events if full."""
+        try:
+            q.put_nowait(event)
+            return
+        except asyncio.QueueFull:
+            pass
+        try:
+            q.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            pass
+
+    def _schedule_run_event(self, loop: "asyncio.AbstractEventLoop", q: "asyncio.Queue[Optional[Dict]]", event: Optional[Dict]) -> None:
+        """Thread-safe wrapper around _put_run_event_nowait for run SSE queues."""
+        loop.call_soon_threadsafe(self._put_run_event_nowait, q, event)
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
@@ -2305,7 +2327,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if q is None:
                 return
             try:
-                loop.call_soon_threadsafe(q.put_nowait, event)
+                self._schedule_run_event(loop, q, event)
             except Exception:
                 pass
 
@@ -2367,7 +2389,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = f"run_{uuid.uuid4().hex}"
         loop = asyncio.get_running_loop()
-        q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
+        q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue(maxsize=self._RUN_STREAM_QUEUE_MAX)
         self._run_streams[run_id] = q
         self._run_streams_created[run_id] = time.time()
 
@@ -2378,7 +2400,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if delta is None:
                 return
             try:
-                loop.call_soon_threadsafe(q.put_nowait, {
+                self._schedule_run_event(loop, q, {
                     "event": "message.delta",
                     "run_id": run_id,
                     "timestamp": time.time(),
@@ -2450,7 +2472,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     r = agent.run_conversation(
                         user_message=user_message,
                         conversation_history=conversation_history,
-                        task_id="default",
+                        task_id=session_id or run_id,
                     )
                     u = {
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
@@ -2461,7 +2483,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
                 final_response = result.get("final_response", "") if isinstance(result, dict) else ""
-                q.put_nowait({
+                self._put_run_event_nowait(q, {
                     "event": "run.completed",
                     "run_id": run_id,
                     "timestamp": time.time(),
@@ -2471,7 +2493,7 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.exception("[api_server] run %s failed", run_id)
                 try:
-                    q.put_nowait({
+                    self._put_run_event_nowait(q, {
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -2482,7 +2504,7 @@ class APIServerAdapter(BasePlatformAdapter):
             finally:
                 # Sentinel: signal SSE stream to close
                 try:
-                    q.put_nowait(None)
+                    self._put_run_event_nowait(q, None)
                 except Exception:
                     pass
                 self._active_run_agents.pop(run_id, None)
@@ -2526,6 +2548,9 @@ class APIServerAdapter(BasePlatformAdapter):
             },
         )
         await response.prepare(request)
+        # A connected SSE client is consuming this run, so it is no longer an
+        # orphan candidate.  Keep _run_streams itself until the stream closes.
+        self._run_streams_created.pop(run_id, None)
 
         try:
             while True:
@@ -2598,10 +2623,22 @@ class APIServerAdapter(BasePlatformAdapter):
             ]
             for run_id in stale:
                 logger.debug("[api_server] sweeping orphaned run %s", run_id)
-                self._run_streams.pop(run_id, None)
+                agent = self._active_run_agents.pop(run_id, None)
+                if agent is not None:
+                    try:
+                        agent.interrupt("Run event stream was not consumed")
+                    except Exception:
+                        pass
+                task = self._active_run_tasks.pop(run_id, None)
+                if task is not None and not task.done():
+                    task.cancel()
+                q = self._run_streams.pop(run_id, None)
+                if q is not None:
+                    try:
+                        self._put_run_event_nowait(q, None)
+                    except Exception:
+                        pass
                 self._run_streams_created.pop(run_id, None)
-                self._active_run_agents.pop(run_id, None)
-                self._active_run_tasks.pop(run_id, None)
 
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface
