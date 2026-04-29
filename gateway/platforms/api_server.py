@@ -41,6 +41,7 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
 
+from agent.redact import redact_sensitive_text
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -898,7 +899,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 if db is not None:
                     history = db.get_messages_as_conversation(session_id)
             except Exception as e:
-                logger.warning("Failed to load session history for %s: %s", session_id, e)
+                logger.warning("Failed to load session history for %s: %s", session_id, redact_sensitive_text(str(e)))
                 history = []
         else:
             # Derive a stable session ID from the conversation fingerprint so
@@ -996,24 +997,25 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
-                logger.error("Error running agent for chat completions: %s", e, exc_info=True)
+                logger.error("Error running agent for chat completions: %s", redact_sensitive_text(str(e)), exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error("Internal server error", err_type="server_error"),
                     status=500,
                 )
         else:
             try:
                 result, usage = await _compute_completion()
             except Exception as e:
-                logger.error("Error running agent for chat completions: %s", e, exc_info=True)
+                logger.error("Error running agent for chat completions: %s", redact_sensitive_text(str(e)), exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error("Internal server error", err_type="server_error"),
                     status=500,
                 )
 
         final_response = result.get("final_response", "")
         if not final_response:
-            final_response = result.get("error", "(No response generated)")
+            raw_error = result.get("error", "")
+            final_response = redact_sensitive_text(raw_error) if raw_error else "(No response generated)"
 
         response_data = {
             "id": completion_id,
@@ -1542,10 +1544,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 if agent_final and not final_response_text:
                     final_response_text = agent_final
                 if isinstance(result, dict) and result.get("error") and not final_response_text:
-                    agent_error = result["error"]
+                    agent_error = redact_sensitive_text(str(result["error"]))
             except Exception as e:  # noqa: BLE001
-                logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
-                agent_error = str(e)
+                logger.error("Error running agent for streaming responses: %s", redact_sensitive_text(str(e)), exc_info=True)
+                agent_error = "Internal server error"
 
             # Close the message item if it was opened
             final_response_text = "".join(final_text_parts) or final_response_text
@@ -1867,24 +1869,25 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
             except Exception as e:
-                logger.error("Error running agent for responses: %s", e, exc_info=True)
+                logger.error("Error running agent for responses: %s", redact_sensitive_text(str(e)), exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error("Internal server error", err_type="server_error"),
                     status=500,
                 )
         else:
             try:
                 result, usage = await _compute_response()
             except Exception as e:
-                logger.error("Error running agent for responses: %s", e, exc_info=True)
+                logger.error("Error running agent for responses: %s", redact_sensitive_text(str(e)), exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error("Internal server error", err_type="server_error"),
                     status=500,
                 )
 
         final_response = result.get("final_response", "")
         if not final_response:
-            final_response = result.get("error", "(No response generated)")
+            raw_error = result.get("error", "")
+            final_response = redact_sensitive_text(raw_error) if raw_error else "(No response generated)"
 
         response_id = f"resp_{uuid.uuid4().hex[:28]}"
         created_at = int(time.time())
@@ -2007,7 +2010,8 @@ class APIServerAdapter(BasePlatformAdapter):
             jobs = _cron_list(include_disabled=include_disabled)
             return web.json_response({"jobs": jobs})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logger.error("API handler error: %s", redact_sensitive_text(str(e)), exc_info=True)
+            return web.json_response({"error": "Internal server error"}, status=500)
 
     async def _handle_create_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs — create a new cron job."""
@@ -2055,7 +2059,8 @@ class APIServerAdapter(BasePlatformAdapter):
             job = _cron_create(**kwargs)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logger.error("API handler error: %s", redact_sensitive_text(str(e)), exc_info=True)
+            return web.json_response({"error": "Internal server error"}, status=500)
 
     async def _handle_get_job(self, request: "web.Request") -> "web.Response":
         """GET /api/jobs/{job_id} — get a single cron job."""
@@ -2074,7 +2079,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logger.error("API handler error: %s", redact_sensitive_text(str(e)), exc_info=True)
+            return web.json_response({"error": "Internal server error"}, status=500)
 
     async def _handle_update_job(self, request: "web.Request") -> "web.Response":
         """PATCH /api/jobs/{job_id} — update a cron job."""
@@ -2107,7 +2113,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logger.error("API handler error: %s", redact_sensitive_text(str(e)), exc_info=True)
+            return web.json_response({"error": "Internal server error"}, status=500)
 
     async def _handle_delete_job(self, request: "web.Request") -> "web.Response":
         """DELETE /api/jobs/{job_id} — delete a cron job."""
@@ -2126,7 +2133,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"ok": True})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logger.error("API handler error: %s", redact_sensitive_text(str(e)), exc_info=True)
+            return web.json_response({"error": "Internal server error"}, status=500)
 
     async def _handle_pause_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/pause — pause a cron job."""
@@ -2145,7 +2153,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logger.error("API handler error: %s", redact_sensitive_text(str(e)), exc_info=True)
+            return web.json_response({"error": "Internal server error"}, status=500)
 
     async def _handle_resume_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/resume — resume a paused cron job."""
@@ -2164,7 +2173,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logger.error("API handler error: %s", redact_sensitive_text(str(e)), exc_info=True)
+            return web.json_response({"error": "Internal server error"}, status=500)
 
     async def _handle_run_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/run — trigger immediate execution."""
@@ -2183,7 +2193,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logger.error("API handler error: %s", redact_sensitive_text(str(e)), exc_info=True)
+            return web.json_response({"error": "Internal server error"}, status=500)
 
     # ------------------------------------------------------------------
     # Output extraction helper
@@ -2469,13 +2480,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     "usage": usage,
                 })
             except Exception as exc:
-                logger.exception("[api_server] run %s failed", run_id)
+                logger.error("[api_server] run %s failed: %s", run_id, redact_sensitive_text(str(exc)), exc_info=True)
                 try:
                     q.put_nowait({
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
-                        "error": str(exc),
+                        "error": "Internal server error",
                     })
                 except Exception:
                     pass
