@@ -1918,6 +1918,14 @@ def _reconfigure_provider(provider: dict, config: dict):
         config.setdefault("tts", {})["provider"] = provider["tts_provider"]
         _print_success(f"  TTS provider set to: {provider['tts_provider']}")
 
+    # Plugin-registered TTS provider: write tts.provider on reconfigure too.
+    tts_plugin_name = provider.get("tts_plugin_name")
+    if tts_plugin_name:
+        tts_cfg = config.setdefault("tts", {})
+        tts_cfg["provider"] = tts_plugin_name
+        tts_cfg["use_gateway"] = False
+        _print_success(f"  TTS provider set to: {tts_plugin_name}")
+
     if "browser_provider" in provider:
         bp = provider["browser_provider"]
         if bp == "local":

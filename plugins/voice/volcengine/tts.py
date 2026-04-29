@@ -149,10 +149,20 @@ class VolcengineTtsProvider(TtsProvider):
         except (TypeError, ValueError):
             emotion_scale = None
 
+        # Derive correct output path based on audio_format to avoid writing
+        # e.g. Ogg/Opus bytes into a .mp3 file.
+        actual_path = output_path
+        if audio_format == "ogg_opus":
+            if not actual_path.endswith(".ogg"):
+                actual_path = str(Path(actual_path).with_suffix(".ogg"))
+        elif audio_format == "wav":
+            if not actual_path.endswith(".wav"):
+                actual_path = str(Path(actual_path).with_suffix(".wav"))
+
         try:
             _run(tts_to_file(
                 text,
-                Path(output_path),
+                Path(actual_path),
                 speaker=speaker,
                 audio_format=audio_format,
                 sample_rate=sample_rate,
@@ -191,7 +201,7 @@ class VolcengineTtsProvider(TtsProvider):
 
         return {
             "success": True,
-            "file_path": str(output_path),
+            "file_path": str(actual_path),
             "format": "ogg" if native_opus else audio_format,
             "native_opus": native_opus,
             "voice_compatible": voice_compatible,

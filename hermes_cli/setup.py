@@ -495,7 +495,12 @@ def _print_setup_summary(config: dict, hermes_home):
         except Exception:
             pass
         if not _tts_plugin_found:
-            tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
+            # If provider is unset/default (edge), show Edge TTS. Otherwise
+            # a non-legacy name is configured but no plugin is registered.
+            if tts_provider in ("edge", ""):
+                tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
+            else:
+                tool_status.append((f"Text-to-Speech ({tts_provider} — plugin not registered)", False, "run 'hermes plugins list'"))
 
     if subscription_features.modal.managed_by_nous:
         tool_status.append(("Modal Execution (Nous subscription)", True, None))
