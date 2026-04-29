@@ -224,3 +224,7 @@ Execute the GREP checks (1, 3, 4, 6) and skip the GRAPH checks (2b, 5a, 7, 8).
 - The P0 protocol-violation check runs on 100% of changed files every time, no exceptions.
 
 Update your sub-agent memory as you discover new codepaths, patterns, and violation types. Write concise notes about what you found and where.
+
+## Output routing (binding)
+
+All outputs route per [.claude/rules/output-routing.md](../rules/output-routing.md). Code edits go to repo branches; audit findings go to `audits/<class>/`; ratification requests go to `OPERATOR-INBOX/`; lessons go to `LEARNINGS.md`; out-of-scope items go to `BACKLOG.md`. Forbidden output patterns are blocked at write-time by the PreToolUse hook in `.claude/settings.json`. The first 48 hours after install are an observation period; narrow exceptions land in `.claude/settings.local.json`.

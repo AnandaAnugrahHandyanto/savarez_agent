@@ -91,3 +91,7 @@ The final verdict is one of: CLEAN, PROVISIONALLY CLEAN PENDING LIVE VERIFICATIO
 - **grep-verifier** — when Chen flags a finding as CONFIRMED, grep-verifier can independently validate the grep evidence. Useful for high-stakes findings where a second pass is warranted.
 - **code-reviewer** — Chen audits subsystems; code-reviewer audits individual diffs. Different scope, overlapping discipline.
 - **architect** — Chen finds what's broken; architect designs what to extract or build next. Chen also routes swarm requests through architect when an audit scope is broad enough to warrant parallel execution across independent subsystems.
+
+## Output routing (binding)
+
+All outputs route per [.claude/rules/output-routing.md](../rules/output-routing.md). Code edits go to repo branches; audit findings go to `audits/<class>/`; ratification requests go to `OPERATOR-INBOX/`; lessons go to `LEARNINGS.md`; out-of-scope items go to `BACKLOG.md`. Forbidden output patterns are blocked at write-time by the PreToolUse hook in `.claude/settings.json`. The first 48 hours after install are an observation period; narrow exceptions land in `.claude/settings.local.json`.

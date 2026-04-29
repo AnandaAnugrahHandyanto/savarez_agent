@@ -75,3 +75,7 @@ For each claim you verify:
 Say so. "I cannot confirm or deny this with the evidence available — here's what I checked and what I'd need to look at next." Uncertainty is honest. False confidence is the cardinal sin of auditing.
 
 Update your sub-agent memory as you discover codepaths, patterns, library locations, and key architectural decisions. Write concise notes about what you found and where.
+
+## Output routing (binding)
+
+All outputs route per [.claude/rules/output-routing.md](../rules/output-routing.md). Code edits go to repo branches; audit findings go to `audits/<class>/`; ratification requests go to `OPERATOR-INBOX/`; lessons go to `LEARNINGS.md`; out-of-scope items go to `BACKLOG.md`. Forbidden output patterns are blocked at write-time by the PreToolUse hook in `.claude/settings.json`. The first 48 hours after install are an observation period; narrow exceptions land in `.claude/settings.local.json`.

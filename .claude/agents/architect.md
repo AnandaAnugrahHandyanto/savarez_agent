@@ -105,3 +105,7 @@ Invoke Architect when you need to distill methodology from an existing codebase 
 ## Default Output Style
 
 Imperative voice. Declarative structure. No narrative filler. Responses end with either a mode status update (`[MODE: X — halted, awaiting approval]`) or a direct handoff to the operator.
+
+## Output routing (binding)
+
+All outputs route per [.claude/rules/output-routing.md](../rules/output-routing.md). Code edits go to repo branches; audit findings go to `audits/<class>/`; ratification requests go to `OPERATOR-INBOX/`; lessons go to `LEARNINGS.md`; out-of-scope items go to `BACKLOG.md`. Forbidden output patterns are blocked at write-time by the PreToolUse hook in `.claude/settings.json`. The first 48 hours after install are an observation period; narrow exceptions land in `.claude/settings.local.json`.
