@@ -755,11 +755,23 @@ class WeComAdapter(BasePlatformAdapter):
                 path, content_type = cached
                 media_paths.append(path)
                 media_types.append(content_type)
+                logger.info(
+                    "[%s] _extract_media cached: kind=%s path=%s content_type=%s",
+                    self.name, kind, path, content_type,
+                )
+            else:
+                logger.warning("[%s] _extract_media failed to cache: kind=%s", self.name, kind)
+
+        logger.info(
+            "[%s] _extract_media result: msgtype=%s refs=%d media_paths=%d media_types=%s",
+            self.name, msgtype, len(refs), len(media_paths), media_types,
+        )
 
         return media_paths, media_types
 
     async def _cache_media(self, kind: str, media: Dict[str, Any]) -> Optional[Tuple[str, str]]:
         """Cache an inbound image/file/media reference to local storage."""
+        logger.info("[%s] _cache_media called: kind=%s, media_keys=%s", self.name, kind, list(media.keys()))
         if "base64" in media and media.get("base64"):
             try:
                 raw = self._decode_base64(media["base64"])
@@ -770,7 +782,9 @@ class WeComAdapter(BasePlatformAdapter):
             if kind == "image":
                 ext = self._detect_image_ext(raw)
                 try:
-                    return cache_image_from_bytes(raw, ext), self._mime_for_ext(ext, fallback="image/jpeg")
+                    path, mime = cache_image_from_bytes(raw, ext), self._mime_for_ext(ext, fallback="image/jpeg")
+                    logger.info("[%s] _cache_media base64 image: ext=%s, mime=%s, path=%s", self.name, ext, mime, path)
+                    return path, mime
                 except ValueError as exc:
                     logger.warning("[%s] Rejected non-image bytes: %s", self.name, exc)
                     return None
@@ -779,7 +793,9 @@ class WeComAdapter(BasePlatformAdapter):
             if kind == "file":
                 try:
                     ext = self._detect_image_ext(raw)
-                    return cache_image_from_bytes(raw, ext), self._mime_for_ext(ext, fallback="application/octet-stream")
+                    path, mime = cache_image_from_bytes(raw, ext), self._mime_for_ext(ext, fallback="application/octet-stream")
+                    logger.info("[%s] _cache_media base64 file->image: ext=%s, mime=%s, path=%s", self.name, ext, mime, path)
+                    return path, mime
                 except (ValueError, Exception):
                     pass  # Not an image, proceed as document
 
@@ -811,7 +827,9 @@ class WeComAdapter(BasePlatformAdapter):
         if kind == "image":
             ext = self._guess_extension(url, content_type, fallback=self._detect_image_ext(raw))
             try:
-                return cache_image_from_bytes(raw, ext), content_type or self._mime_for_ext(ext, fallback="image/jpeg")
+                path, mime = cache_image_from_bytes(raw, ext), content_type or self._mime_for_ext(ext, fallback="image/jpeg")
+                logger.info("[%s] _cache_media url image: ext=%s, mime=%s, path=%s", self.name, ext, mime, path)
+                return path, mime
             except ValueError as exc:
                 logger.warning("[%s] Rejected non-image bytes from %s: %s", self.name, url, exc)
                 return None
@@ -821,7 +839,9 @@ class WeComAdapter(BasePlatformAdapter):
             try:
                 ext = self._detect_image_ext(raw)
                 # Verify it's truly an image by trying to cache it
-                return cache_image_from_bytes(raw, ext), self._mime_for_ext(ext, fallback="application/octet-stream")
+                path, mime = cache_image_from_bytes(raw, ext), self._mime_for_ext(ext, fallback="application/octet-stream")
+                logger.info("[%s] _cache_media url file->image: ext=%s, mime=%s, path=%s", self.name, ext, mime, path)
+                return path, mime
             except (ValueError, Exception):
                 pass  # Not an image, proceed as document
 
