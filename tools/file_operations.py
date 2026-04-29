@@ -262,6 +262,7 @@ LINTERS = {
     '.py': 'python -m py_compile {file} 2>&1',
     '.js': 'node --check {file} 2>&1',
     '.ts': 'npx tsc --noEmit {file} 2>&1',
+    '.tsx': 'npx tsc --noEmit --jsx preserve {file} 2>&1',
     '.go': 'go vet {file} 2>&1',
     '.rs': 'rustfmt --check {file} 2>&1',
 }
@@ -864,7 +865,30 @@ class ShellFileOperations(FileOperations):
         
         if ext not in LINTERS:
             return LintResult(skipped=True, message=f"No linter for {ext} files")
-        
+
+        # TypeScript: `tsc --noEmit <file>` ignores the nearest tsconfig.json
+        # entirely, which produces a wall of bogus errors for any file that
+        # relies on path aliases, ambient types, JSX, decorators, lib settings,
+        # etc. Single-file type-checking just isn't meaningful in a project.
+        # If we detect an ancestor tsconfig.json, skip auto-lint and let the
+        # caller run the project's own type-check. (Orphan .ts files with no
+        # tsconfig still get the single-file check below.)
+        if ext in ('.ts', '.tsx'):
+            dir_arg = self._escape_shell_arg(os.path.dirname(os.path.abspath(path)) or '.')
+            tsconfig_check = self._exec(
+                f"d={dir_arg}; "
+                f"while [ \"$d\" != \"/\" ] && [ -n \"$d\" ]; do "
+                f"  if [ -f \"$d/tsconfig.json\" ]; then echo \"$d/tsconfig.json\"; break; fi; "
+                f"  d=$(dirname \"$d\"); "
+                f"done"
+            )
+            tsconfig_path = tsconfig_check.stdout.strip() if tsconfig_check.exit_code == 0 else ""
+            if tsconfig_path:
+                return LintResult(
+                    skipped=True,
+                    message=f"project-managed (found {tsconfig_path}); skipped single-file tsc"
+                )
+
         # Check if linter command is available
         linter_cmd = LINTERS[ext]
         # Extract the base command (first word)

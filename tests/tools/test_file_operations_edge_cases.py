@@ -147,6 +147,54 @@ class TestCheckLintBracePaths:
         assert result.success is False
         assert "SyntaxError" in result.output
 
+    def test_typescript_with_tsconfig_skipped(self, ops):
+        """TS file with an ancestor tsconfig.json should be skipped (single-file
+        tsc ignores tsconfig and produces noise)."""
+        with patch.object(ops, "_exec") as mock_exec, \
+             patch.object(ops, "_has_command", return_value=True):
+            # Ancestor walk returns a tsconfig path
+            mock_exec.return_value = MagicMock(
+                exit_code=0, stdout="/repo/tsconfig.json\n"
+            )
+            result = ops._check_lint("/repo/src/foo.ts")
+
+        assert result.skipped is True
+        assert "tsconfig.json" in result.message
+        # Should not have invoked tsc — the only _exec call is the ancestor walk
+        assert mock_exec.call_count == 1
+        assert "npx tsc" not in mock_exec.call_args_list[0].args[0]
+
+    def test_typescript_without_tsconfig_runs_lint(self, ops):
+        """Orphan .ts file (no ancestor tsconfig) still gets a syntax check."""
+        calls = []
+
+        def fake_exec(command, *args, **kwargs):
+            calls.append(command)
+            if "tsconfig.json" in command:
+                # No tsconfig found
+                return MagicMock(exit_code=0, stdout="")
+            # tsc invocation
+            return MagicMock(exit_code=0, stdout="")
+
+        with patch.object(ops, "_exec", side_effect=fake_exec), \
+             patch.object(ops, "_has_command", return_value=True):
+            result = ops._check_lint("/tmp/orphan.ts")
+
+        assert result.success is True
+        assert any("tsc" in c for c in calls)
+
+    def test_tsx_with_tsconfig_skipped(self, ops):
+        """Same as .ts: .tsx files should also be skipped when tsconfig exists."""
+        with patch.object(ops, "_exec") as mock_exec, \
+             patch.object(ops, "_has_command", return_value=True):
+            mock_exec.return_value = MagicMock(
+                exit_code=0, stdout="/repo/tsconfig.json\n"
+            )
+            result = ops._check_lint("/repo/src/Component.tsx")
+
+        assert result.skipped is True
+        assert "tsconfig.json" in result.message
+
 
 # =========================================================================
 # Pagination bounds
