@@ -220,6 +220,12 @@ class TestIsWsl:
         hermes_constants._wsl_detected = None
         _is_wsl.__globals__["_wsl_detected"] = None
 
+    def teardown_method(self):
+        # Reset again after the test so we don't leak a cached value
+        # (True/False) into whichever test the xdist worker runs next.
+        import hermes_constants
+        hermes_constants._wsl_detected = None
+
     def test_wsl2_detected(self):
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
         with patch.dict(_is_wsl.__globals__, {"open": mock_open(read_data=content)}):

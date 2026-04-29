@@ -3589,6 +3589,7 @@ class BasePlatformAdapter(ABC):
             for task in tasks:
                 self._expected_cancelled_tasks.add(task)
                 task.cancel()
+            await asyncio.sleep(0)
             try:
                 await asyncio.wait_for(
                     asyncio.gather(

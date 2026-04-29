@@ -3108,6 +3108,12 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     # never exercise the orphan-cleanup path.
     assert build_started.wait(timeout=2.0), "build thread never entered _make_agent"
 
+    # Wait until the (deferred) build thread has actually entered
+    # _make_agent — otherwise session.close pops _sessions[sid] before
+    # _build ever runs, _start_agent_build never calls _build, and we
+    # never exercise the orphan-cleanup path.
+    assert build_started.wait(timeout=2.0), "build thread never entered _make_agent"
+
     # Build thread is blocked in _slow_make_agent.  Close the session
     # NOW — this pops _sessions[sid] before _build can install the
     # worker/notify.
