@@ -2189,6 +2189,8 @@ class BasePlatformAdapter(ABC):
         command_guard = asyncio.Event()
         self._active_sessions[session_key] = command_guard
         thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        if thread_meta is not None and event.source.platform == Platform.SLACK and event.message_id:
+            thread_meta["message_id"] = event.message_id
 
         try:
             response = await self._message_handler(event)
@@ -2369,6 +2371,8 @@ class BasePlatformAdapter(ABC):
         
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        if _thread_metadata is not None and event.source.platform == Platform.SLACK and event.message_id:
+            _thread_metadata["message_id"] = event.message_id
         _keep_typing_kwargs = {"metadata": _thread_metadata}
         try:
             _keep_typing_sig = inspect.signature(self._keep_typing)

@@ -9760,8 +9760,12 @@ class GatewayRunner:
             else bool(_plat_streaming)
         )
 
+        from gateway.config import Platform
+
         if source.thread_id:
             _thread_metadata: Optional[Dict[str, Any]] = {"thread_id": source.thread_id}
+            if source.platform == Platform.SLACK and event_message_id:
+                _thread_metadata["message_id"] = event_message_id
         else:
             _thread_metadata = None
 
@@ -10161,6 +10165,8 @@ class GatewayRunner:
         else:
             _progress_thread_id = source.thread_id
         _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        if _progress_metadata is not None and source.platform == Platform.SLACK and event_message_id:
+            _progress_metadata["message_id"] = event_message_id
 
         async def send_progress_messages():
             if not progress_queue:
@@ -10351,6 +10357,8 @@ class GatewayRunner:
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
         _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        if _status_thread_metadata is not None and source.platform == Platform.SLACK and event_message_id:
+            _status_thread_metadata["message_id"] = event_message_id
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
@@ -10494,7 +10502,7 @@ class GatewayRunner:
                             adapter=_adapter,
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
-                            metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
+                            metadata=_status_thread_metadata,
                         )
                         if _want_stream_deltas:
                             def _stream_delta_cb(text: str) -> None:
