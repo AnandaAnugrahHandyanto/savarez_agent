@@ -52,11 +52,12 @@ class StreamConsumerConfig:
     # openclaw/openclaw#72038.  Default 0 = always edit in place (legacy
     # behavior).  The gateway enables this selectively per-platform.
     fresh_final_after_seconds: float = 0.0
-    # Use Telegram's sendMessageDraft API for streaming (Bot API 9.3+).
-    # Draft mode avoids flood-control limits on edit_message_text and
-    # provides smoother animations.  Only works in private chats (int chat_id).
-    # The adapter must expose send_draft_message() for this to take effect.
-    draft_transport: bool = False
+    # Transport mode: "auto", "draft", "edit", or "off".
+    # "auto" → draft if adapter supports it and chat_type is "dm", else edit.
+    # "draft" → force draft, fallback to edit if unsupported.
+    # "edit" → always use edit_message_text (legacy).
+    # "off" → no streaming.
+    transport: str = "auto"
 
 
 class GatewayStreamConsumer:
@@ -129,12 +130,8 @@ class GatewayStreamConsumer:
         )
 
         # Draft transport: use sendMessageDraft instead of edit_message_text.
-        # Only activated when config.draft_transport is True AND the adapter
-        # exposes a send_draft_message() method.
-        self._draft_mode = (
-            self.cfg.draft_transport
-            and callable(getattr(adapter, "send_draft_message", None))
-        )
+        # Resolved from config.transport + adapter capability + chat_type.
+        self._draft_mode = self._resolve_draft_mode()
         # draft_id for the current streaming segment (must be non-zero int).
         self._draft_id: int = 0
 
@@ -160,6 +157,30 @@ class GatewayStreamConsumer:
         """Queue a completed interim assistant commentary message."""
         if text:
             self._queue.put((_COMMENTARY, text))
+
+    def _resolve_draft_mode(self) -> bool:
+        """Determine whether to use draft transport for this session.
+
+        Respects config.transport setting combined with adapter capability
+        and chat_type from metadata.
+        """
+        requested = (getattr(self.cfg, "transport", "auto") or "auto").lower()
+        chat_type = (self.metadata or {}).get("chat_type", "")
+        draft_supported = callable(
+            getattr(self.adapter, "send_draft_message", None)
+        )
+
+        if requested == "off" or requested == "edit":
+            return False
+        if requested == "draft":
+            if draft_supported:
+                return True
+            logger.info("Draft transport requested but adapter doesn't support it; falling back to edit")
+            return False
+        # "auto" — use draft for DMs if adapter supports it
+        if chat_type == "dm" and draft_supported:
+            return True
+        return False
 
     def _reset_segment_state(self, *, preserve_no_edit: bool = False) -> None:
         if preserve_no_edit and self._message_id == "__no_edit__":

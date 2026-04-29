@@ -9785,28 +9785,22 @@ class GatewayRunner:
                         if source.platform == Platform.TELEGRAM
                         else 0.0
                     )
-                    # Draft transport: use sendMessageDraft for DM streaming.
-                    # Only works in private chats (positive int chat_id).
-                    _draft_transport = False
-                    if source.platform == Platform.TELEGRAM:
-                        try:
-                            _chat_int = int(str(source.chat_id))
-                            _draft_transport = _chat_int > 0
-                        except (ValueError, TypeError):
-                            pass
                     _consumer_cfg = StreamConsumerConfig(
                         edit_interval=_scfg.edit_interval,
                         buffer_threshold=_scfg.buffer_threshold,
                         cursor=_effective_cursor,
                         buffer_only=_buffer_only,
                         fresh_final_after_seconds=_fresh_final_secs,
-                        draft_transport=_draft_transport,
+                        transport=_scfg.transport,
                     )
+                    _stream_metadata = {"chat_type": getattr(source, "chat_type", "dm")}
+                    if _progress_thread_id:
+                        _stream_metadata["thread_id"] = _progress_thread_id
                     _stream_consumer = GatewayStreamConsumer(
                         adapter=_adapter,
                         chat_id=source.chat_id,
                         config=_consumer_cfg,
-                        metadata=_thread_metadata,
+                        metadata=_stream_metadata,
                     )
             except Exception as _sc_err:
                 logger.debug("Proxy: could not set up stream consumer: %s", _sc_err)
@@ -10493,28 +10487,22 @@ class GatewayRunner:
                             if source.platform == Platform.TELEGRAM
                             else 0.0
                         )
-                        # Draft transport: use sendMessageDraft for DM streaming.
-                        # Only works in private chats (positive int chat_id).
-                        _draft_transport = False
-                        if source.platform == Platform.TELEGRAM:
-                            try:
-                                _chat_int = int(str(source.chat_id))
-                                _draft_transport = _chat_int > 0
-                            except (ValueError, TypeError):
-                                pass
                         _consumer_cfg = StreamConsumerConfig(
                             edit_interval=_scfg.edit_interval,
                             buffer_threshold=_scfg.buffer_threshold,
                             cursor=_effective_cursor,
                             buffer_only=_buffer_only,
                             fresh_final_after_seconds=_fresh_final_secs,
-                            draft_transport=_draft_transport,
+                            transport=_scfg.transport,
                         )
+                        _stream_metadata = {"chat_type": getattr(source, "chat_type", "dm")}
+                        if _progress_thread_id:
+                            _stream_metadata["thread_id"] = _progress_thread_id
                         _stream_consumer = GatewayStreamConsumer(
                             adapter=_adapter,
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
-                            metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
+                            metadata=_stream_metadata,
                         )
                         if _want_stream_deltas:
                             def _stream_delta_cb(text: str) -> None:
