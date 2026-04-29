@@ -917,6 +917,62 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
 
 
 # ===========================================================================
+# Response finalization helper
+# ===========================================================================
+# Hardcoded lists used by the legacy finalization path.  Plugin providers
+# carry their own output-format metadata in the result dict returned by
+# synthesize(); see _finalize_tts_response_from_plugin below.
+_LEGACY_NEEDS_OPUS_CONVERSION = frozenset({"edge", "neutts", "minimax", "xai", "kittentts"})
+_LEGACY_NATIVE_OGG = frozenset({"elevenlabs", "openai", "mistral", "gemini"})
+
+
+def _finalize_tts_response(provider: str, file_str: str) -> str:
+    """Finalize a legacy-path TTS synthesis: validate file, optional Opus
+    conversion for Telegram voice bubbles, and build the MEDIA tag response.
+
+    Extracted from ``text_to_speech_tool`` to share the final-stage logic
+    with the plugin dispatch path and keep behavior for all in-tree
+    providers identical.
+    """
+    # Check the file was actually created
+    if not os.path.exists(file_str) or os.path.getsize(file_str) == 0:
+        return json.dumps({
+            "success": False,
+            "error": f"TTS generation produced no output (provider: {provider})",
+        }, ensure_ascii=False)
+
+    # Try Opus conversion for Telegram compatibility
+    # Edge TTS outputs MP3, NeuTTS/KittenTTS output WAV — all need ffmpeg conversion
+    voice_compatible = False
+    if provider in _LEGACY_NEEDS_OPUS_CONVERSION and not file_str.endswith(".ogg"):
+        opus_path = _convert_to_opus(file_str)
+        if opus_path:
+            file_str = opus_path
+            voice_compatible = True
+    elif provider in _LEGACY_NATIVE_OGG:
+        voice_compatible = file_str.endswith(".ogg")
+
+    file_size = os.path.getsize(file_str)
+    logger.info(
+        "TTS audio saved: %s (%s bytes, provider: %s)",
+        file_str, f"{file_size:,}", provider,
+    )
+
+    # Build response with MEDIA tag for platform delivery
+    media_tag = f"MEDIA:{file_str}"
+    if voice_compatible:
+        media_tag = f"[[audio_as_voice]]\n{media_tag}"
+
+    return json.dumps({
+        "success": True,
+        "file_path": file_str,
+        "media_tag": media_tag,
+        "provider": provider,
+        "voice_compatible": voice_compatible,
+    }, ensure_ascii=False)
+
+
+# ===========================================================================
 # Main tool function
 # ===========================================================================
 def text_to_speech_tool(
@@ -1082,39 +1138,8 @@ def text_to_speech_tool(
                              "or set up NeuTTS for local synthesis."
                 }, ensure_ascii=False)
 
-        # Check the file was actually created
-        if not os.path.exists(file_str) or os.path.getsize(file_str) == 0:
-            return json.dumps({
-                "success": False,
-                "error": f"TTS generation produced no output (provider: {provider})"
-            }, ensure_ascii=False)
-
-        # Try Opus conversion for Telegram compatibility
-        # Edge TTS outputs MP3, NeuTTS/KittenTTS output WAV — all need ffmpeg conversion
-        voice_compatible = False
-        if provider in ("edge", "neutts", "minimax", "xai", "kittentts") and not file_str.endswith(".ogg"):
-            opus_path = _convert_to_opus(file_str)
-            if opus_path:
-                file_str = opus_path
-                voice_compatible = True
-        elif provider in ("elevenlabs", "openai", "mistral", "gemini"):
-            voice_compatible = file_str.endswith(".ogg")
-
-        file_size = os.path.getsize(file_str)
-        logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{file_size:,}", provider)
-
-        # Build response with MEDIA tag for platform delivery
-        media_tag = f"MEDIA:{file_str}"
-        if voice_compatible:
-            media_tag = f"[[audio_as_voice]]\n{media_tag}"
-
-        return json.dumps({
-            "success": True,
-            "file_path": file_str,
-            "media_tag": media_tag,
-            "provider": provider,
-            "voice_compatible": voice_compatible,
-        }, ensure_ascii=False)
+        # Finalize: check file, optional Opus conversion, build MEDIA tag, return JSON.
+        return _finalize_tts_response(provider, file_str)
 
     except ValueError as e:
         # Configuration errors (missing API keys, etc.)
