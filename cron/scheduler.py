@@ -238,11 +238,7 @@ def _resolve_delivery_targets(job: dict) -> List[dict]:
     deliver = job.get("deliver", "local")
     if deliver == "local":
         return []
-    if isinstance(deliver, (list, tuple)):
-        raw_parts = deliver
-    else:
-        raw_parts = str(deliver).split(",")
-    parts = [str(p).strip() for p in raw_parts if str(p).strip()]
+    parts = [p.strip() for p in str(deliver).split(",") if p.strip()]
     seen = set()
     targets = []
     for part in parts:
