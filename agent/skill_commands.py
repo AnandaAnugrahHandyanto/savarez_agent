@@ -46,9 +46,11 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
             skill_view(normalized, task_id=task_id, preprocess=False)
         )
     except Exception:
+        logger.warning("Failed to load skill '%s': import or parse error", raw_identifier, exc_info=True)
         return None
 
     if not loaded_skill.get("success"):
+        logger.warning("Skill '%s' returned success=false", raw_identifier)
         return None
 
     skill_name = str(loaded_skill.get("name") or normalized)
@@ -325,7 +327,8 @@ def build_skill_invocation_message(
 
     loaded = _load_skill_payload(skill_info["skill_dir"], task_id=task_id)
     if not loaded:
-        return f"[Failed to load skill: {skill_info['name']}]"
+        logger.warning("Skill '%s' could not be loaded — returning None to caller", skill_info.get("name", cmd_key))
+        return None
 
     loaded_skill, skill_dir, skill_name = loaded
     activation_note = (

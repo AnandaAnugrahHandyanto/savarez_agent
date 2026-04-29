@@ -283,6 +283,25 @@ Generate some audio.
             msg = build_skill_invocation_message("/nonexistent")
         assert msg is None
 
+    def test_returns_none_not_stub_when_payload_fails(self, tmp_path):
+        """Regression test for #17283: build_skill_invocation_message must
+        return None — not a truthy stub string — when _load_skill_payload
+        fails.  Returning a stub causes webhook callers to overwrite the
+        user's prompt with '[Failed to load skill: ...]'.
+        """
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "my-skill")
+            scan_skill_commands()
+
+            # Patch _load_skill_payload to simulate a load failure
+            with patch(
+                "agent.skill_commands._load_skill_payload", return_value=None
+            ):
+                msg = build_skill_invocation_message("/my-skill", "user prompt")
+
+        # Must be None so callers can distinguish load failure from success
+        assert msg is None
+
     def test_uses_shared_skill_loader_for_secure_setup(self, tmp_path, monkeypatch):
         monkeypatch.delenv("TENOR_API_KEY", raising=False)
         calls = []
