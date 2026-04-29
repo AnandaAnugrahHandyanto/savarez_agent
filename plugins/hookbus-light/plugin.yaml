@@ -1,0 +1,22 @@
+name: hookbus-light
+version: 0.3.0
+description: Publish hermes-agent lifecycle events to HookBus Light. Subscribers can observe or gate pre-prompt, pre-LLM-call, and pre-tool-call events.
+author: Agentic Thinking Ltd <contact@agenticthinking.uk>
+requires_env:
+  - name: HOOKBUS_URL
+    description: "HookBus Light HTTP endpoint, e.g. http://localhost:18800/event"
+    required: false
+  - name: HOOKBUS_TOKEN
+    description: "Bearer token shared with the bus. Read via: docker exec hookbus cat /root/.hookbus/.token. Required for authenticated buses (default since HookBus 0.1)."
+    required: true
+  - name: HOOKBUS_FAIL_MODE
+    description: "Behaviour when bus is unreachable: 'open' (allow) or 'closed' (deny). Default 'closed'."
+    required: false
+provides_hooks:
+  - pre_gateway_dispatch
+  - pre_api_request
+  - post_api_request
+  - pre_llm_call
+  - post_llm_call
+  - pre_tool_call
+  - post_tool_call
