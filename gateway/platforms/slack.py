@@ -656,7 +656,15 @@ class SlackAdapter(BasePlatformAdapter):
 
         thread_ts = None
         if metadata:
-            thread_ts = metadata.get("thread_id") or metadata.get("thread_ts")
+            # Reuse the same synthetic-thread guard as message sending. When
+            # reply_in_thread=false, top-level channel events carry their own
+            # message ts as metadata.thread_id for session keying. Calling
+            # assistant_threads_setStatus on that ts activates a Slack assistant
+            # thread before the actual response is sent.
+            thread_ts = self._resolve_thread_ts(
+                reply_to=metadata.get("message_id"),
+                metadata=metadata,
+            )
 
         if not thread_ts:
             return  # Can only set status in a thread context
@@ -1799,6 +1807,7 @@ class SlackAdapter(BasePlatformAdapter):
             user_id=user_id,
             user_name=user_name,
             thread_id=thread_ts,
+            message_id=ts,
         )
 
         # Per-channel ephemeral prompt
