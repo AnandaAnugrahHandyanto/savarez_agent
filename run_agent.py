@@ -8372,9 +8372,9 @@ class AIAgent:
             elif msg.get("tool_calls") and self._needs_deepseek_tool_reasoning():
                 # DeepSeek thinking mode requires reasoning_content on every
                 # assistant tool-call message. Without it, replaying the
-                # persisted message causes HTTP 400. Include empty string
-                # as a defensive compatibility fallback (refs #15250).
-                msg["reasoning_content"] = ""
+                # persisted message causes HTTP 400. Use non-empty placeholder
+                # — empty string is rejected by DeepSeek V4 Pro (refs #15250).
+                msg["reasoning_content"] = " "
 
         # Additive fallback (refs #16844, #16884). Streaming-only providers
         # (glm, MiniMax, gpt-5.x via aigw, Anthropic via openai-compat shims)
@@ -8558,12 +8558,12 @@ class AIAgent:
             return
 
         # 4. DeepSeek / Kimi thinking mode: all assistant messages need
-        # reasoning_content. Inject "" to satisfy the provider's requirement
-        # when no explicit reasoning content is present. Covers both
-        # tool-call turns (already-poisoned history with no reasoning at all)
-        # and plain text turns.
+        # reasoning_content. Inject a non-empty placeholder to satisfy the
+        # provider's requirement when no explicit reasoning content is present.
+        # DeepSeek V4 Pro rejects empty string with HTTP 400:
+        # "The reasoning content in the thinking mode must be passed back to the API."
         if needs_thinking_pad:
-            api_msg["reasoning_content"] = ""
+            api_msg["reasoning_content"] = " "
             return
 
         # 5. reasoning_content was present but not a string (e.g. None after
