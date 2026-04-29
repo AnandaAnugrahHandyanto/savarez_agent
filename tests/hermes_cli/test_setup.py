@@ -527,6 +527,11 @@ def test_vercel_setup_configures_access_token_auth(tmp_path, monkeypatch):
 
 def test_vercel_setup_prefills_project_and_team_from_link_file(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # Sibling test (test_vercel_setup_configures_access_token_auth) calls
+    # save_env_value which mutates os.environ directly and never restores
+    # it. CI environments may also define Vercel defaults. This regression
+    # test verifies .vercel/project.json fallback behavior, so isolate all
+    # Vercel credential/project env vars before load.
     _clear_vercel_env(monkeypatch)
     project_root = tmp_path / "project"
     nested = project_root / "app" / "src"
