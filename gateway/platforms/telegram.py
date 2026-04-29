@@ -239,6 +239,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._text_batch_split_delay_seconds = float(os.getenv("HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        self._drop_delayed_deliveries = False
         self._polling_error_task: Optional[asyncio.Task] = None
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
@@ -251,6 +252,21 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+
+    def _mark_connected(self) -> None:
+        self._drop_delayed_deliveries = False
+        super()._mark_connected()
+
+    def _mark_disconnected(self) -> None:
+        self._drop_delayed_deliveries = True
+        super()._mark_disconnected()
+
+    def _set_fatal_error(self, code: str, message: str, *, retryable: bool) -> None:
+        self._drop_delayed_deliveries = True
+        super()._set_fatal_error(code, message, retryable=retryable)
+
+    def _should_drop_delayed_delivery(self) -> bool:
+        return bool(getattr(self, "_drop_delayed_deliveries", False))
 
     @staticmethod
     def _is_callback_user_authorized(user_id: str) -> bool:
@@ -918,6 +934,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Cancel delayed Telegram delivery tasks before disconnect completes."""
         current_task = asyncio.current_task()
         pending_tasks: list[asyncio.Task] = []
+        awaitable_tasks: list[asyncio.Task] = []
         seen: set[int] = set()
 
         def collect(task: Optional[asyncio.Task]) -> None:
@@ -928,6 +945,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
             seen.add(marker)
             pending_tasks.append(task)
+            if asyncio.isfuture(task) or asyncio.iscoroutine(task):
+                awaitable_tasks.append(task)
 
         for task in list(self._media_group_tasks.values()):
             collect(task)
@@ -939,8 +958,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
         for task in pending_tasks:
             task.cancel()
-        if pending_tasks:
-            await asyncio.gather(*pending_tasks, return_exceptions=True)
+        if awaitable_tasks:
+            await asyncio.gather(*awaitable_tasks, return_exceptions=True)
 
         self._media_group_tasks.clear()
         self._media_group_events.clear()
@@ -2539,7 +2558,7 @@ class TelegramAdapter(BasePlatformAdapter):
         concatenates them and waits for a short quiet period before
         dispatching the combined message.
         """
-        if not self.is_connected:
+        if self._should_drop_delayed_delivery():
             logger.debug("[Telegram] Dropping text batch enqueue after disconnect started")
             return
 
@@ -2587,7 +2606,7 @@ class TelegramAdapter(BasePlatformAdapter):
             event = self._pending_text_batches.pop(key, None)
             if not event:
                 return
-            if not self.is_connected:
+            if self._should_drop_delayed_delivery():
                 logger.debug("[Telegram] Dropping text batch flush after disconnect started")
                 return
             logger.info(
@@ -2624,7 +2643,7 @@ class TelegramAdapter(BasePlatformAdapter):
             event = self._pending_photo_batches.pop(batch_key, None)
             if not event:
                 return
-            if not self.is_connected:
+            if self._should_drop_delayed_delivery():
                 logger.debug("[Telegram] Dropping photo batch flush after disconnect started")
                 return
             logger.info("[Telegram] Flushing photo batch %s with %d image(s)", batch_key, len(event.media_urls))
@@ -2635,7 +2654,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _enqueue_photo_event(self, batch_key: str, event: MessageEvent) -> None:
         """Merge photo events into a pending batch and schedule flush."""
-        if not self.is_connected:
+        if self._should_drop_delayed_delivery():
             logger.debug("[Telegram] Dropping photo batch enqueue after disconnect started")
             return
 
@@ -2861,7 +2880,7 @@ class TelegramAdapter(BasePlatformAdapter):
         new user message and interrupts the first. We debounce briefly and merge the
         attachments into a single MessageEvent.
         """
-        if not self.is_connected:
+        if self._should_drop_delayed_delivery():
             logger.debug("[Telegram] Dropping media group enqueue after disconnect started")
             return
 
@@ -2883,18 +2902,20 @@ class TelegramAdapter(BasePlatformAdapter):
         )
 
     async def _flush_media_group_event(self, media_group_id: str) -> None:
+        current_task = asyncio.current_task()
         try:
             await asyncio.sleep(self.MEDIA_GROUP_WAIT_SECONDS)
             event = self._media_group_events.pop(media_group_id, None)
             if event is not None:
-                if not self.is_connected:
+                if self._should_drop_delayed_delivery():
                     logger.debug("[Telegram] Dropping media group flush after disconnect started")
                     return
                 await self.handle_message(event)
         except asyncio.CancelledError:
             return
         finally:
-            self._media_group_tasks.pop(media_group_id, None)
+            if self._media_group_tasks.get(media_group_id) is current_task:
+                self._media_group_tasks.pop(media_group_id, None)
 
     async def _handle_sticker(self, msg: Message, event: "MessageEvent") -> None:
         """

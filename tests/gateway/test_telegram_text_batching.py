@@ -209,6 +209,34 @@ class TestTextBatching:
         assert adapter._media_group_tasks == {}
 
     @pytest.mark.asyncio
+    async def test_stale_media_group_flush_does_not_clear_newer_task(self):
+        """A cancelled album flush must not erase the replacement task handle."""
+        from gateway.platforms.telegram import TelegramAdapter
+
+        adapter = _make_adapter()
+        first = _make_event("first album caption")
+        first.media_urls = ["/tmp/first.jpg"]
+        first.media_types = ["image/jpeg"]
+        second = _make_event("second album caption")
+        second.media_urls = ["/tmp/second.jpg"]
+        second.media_types = ["image/jpeg"]
+
+        with patch.object(TelegramAdapter, "MEDIA_GROUP_WAIT_SECONDS", 1.0):
+            await adapter._queue_media_group_event("album-race", first)
+            first_task = adapter._media_group_tasks["album-race"]
+            await asyncio.sleep(0)
+
+            await adapter._queue_media_group_event("album-race", second)
+            replacement_task = adapter._media_group_tasks["album-race"]
+            assert replacement_task is not first_task
+
+            await asyncio.sleep(0)
+            assert adapter._media_group_tasks.get("album-race") is replacement_task
+
+            replacement_task.cancel()
+            await asyncio.gather(replacement_task, return_exceptions=True)
+
+    @pytest.mark.asyncio
     async def test_cancel_pending_delivery_tasks_skips_current_polling_error_task(self):
         """The teardown helper must not cancel the coroutine doing cleanup."""
         adapter = _make_adapter()
