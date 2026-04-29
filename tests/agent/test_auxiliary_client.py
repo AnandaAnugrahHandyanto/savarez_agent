@@ -1320,6 +1320,13 @@ class _AuxAuth401(Exception):
         super().__init__(message)
 
 
+class _AuxRateLimit429(Exception):
+    status_code = 429
+
+    def __init__(self, message="RESOURCE_EXHAUSTED: rate limit exceeded"):
+        super().__init__(message)
+
+
 class _DummyResponse:
     def __init__(self, text="ok"):
         self.choices = [MagicMock(message=MagicMock(content=text))]
@@ -1345,6 +1352,128 @@ class _AsyncFailingThenSuccessCompletions:
         if self.calls == 1:
             raise _AuxAuth401()
         return _DummyResponse("async-ok")
+
+
+class TestAuxiliarySameProviderModelFallback:
+    def test_call_llm_retries_configured_fallback_model_on_429(self):
+        primary_client = MagicMock()
+        primary_client.base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+        primary_client.chat.completions.create.side_effect = _AuxRateLimit429()
+
+        fallback_client = MagicMock()
+        fallback_client.base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+        fallback_client.chat.completions.create.return_value = _DummyResponse("fallback-ok")
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("google", "gemini-2.5-flash", None, None, None)),
+            patch("agent.auxiliary_client._get_task_fallback_models", return_value=["gemini-2.5-flash-lite"]),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[
+                (primary_client, "gemini-2.5-flash"),
+                (fallback_client, "gemini-2.5-flash-lite"),
+            ]),
+        ):
+            resp = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "fallback-ok"
+        assert primary_client.chat.completions.create.call_count == 1
+        assert fallback_client.chat.completions.create.call_count == 1
+        assert fallback_client.chat.completions.create.call_args.kwargs["model"] == "gemini-2.5-flash-lite"
+
+    def test_call_llm_walks_full_ordered_fallback_model_chain(self):
+        primary_client = MagicMock()
+        primary_client.base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+        primary_client.chat.completions.create.side_effect = _AuxRateLimit429("primary exhausted")
+
+        first_fallback_client = MagicMock()
+        first_fallback_client.base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+        first_fallback_client.chat.completions.create.side_effect = _AuxRateLimit429("fallback one exhausted")
+
+        second_fallback_client = MagicMock()
+        second_fallback_client.base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+        second_fallback_client.chat.completions.create.return_value = _DummyResponse("second-fallback-ok")
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("google", "gemini-2.5-flash", None, None, None)),
+            patch("agent.auxiliary_client._get_task_fallback_models", return_value=[
+                "gemini-2.5-flash-lite",
+                "gemini-3-flash-preview",
+            ]),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[
+                (primary_client, "gemini-2.5-flash"),
+                (first_fallback_client, "gemini-2.5-flash-lite"),
+                (second_fallback_client, "gemini-3-flash-preview"),
+            ]),
+        ):
+            resp = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "second-fallback-ok"
+        assert primary_client.chat.completions.create.call_count == 1
+        assert first_fallback_client.chat.completions.create.call_count == 1
+        assert second_fallback_client.chat.completions.create.call_count == 1
+        assert first_fallback_client.chat.completions.create.call_args.kwargs["model"] == "gemini-2.5-flash-lite"
+        assert second_fallback_client.chat.completions.create.call_args.kwargs["model"] == "gemini-3-flash-preview"
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_walks_full_ordered_fallback_model_chain(self):
+        primary_client = MagicMock()
+        primary_client.base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+        primary_client.chat.completions.create = AsyncMock(side_effect=_AuxRateLimit429("primary exhausted"))
+
+        first_fallback_client = MagicMock()
+        first_fallback_client.base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+        first_fallback_client.chat.completions.create = AsyncMock(side_effect=_AuxRateLimit429("fallback one exhausted"))
+
+        second_fallback_client = MagicMock()
+        second_fallback_client.base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+        second_fallback_client.chat.completions.create = AsyncMock(return_value=_DummyResponse("async-second-fallback-ok"))
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("google", "gemini-2.5-flash", None, None, None)),
+            patch("agent.auxiliary_client._get_task_fallback_models", return_value=[
+                "gemini-2.5-flash-lite",
+                "gemini-3-flash-preview",
+            ]),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[
+                (primary_client, "gemini-2.5-flash"),
+                (first_fallback_client, "gemini-2.5-flash-lite"),
+                (second_fallback_client, "gemini-3-flash-preview"),
+            ]),
+        ):
+            resp = await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "async-second-fallback-ok"
+        assert primary_client.chat.completions.create.await_count == 1
+        assert first_fallback_client.chat.completions.create.await_count == 1
+        assert second_fallback_client.chat.completions.create.await_count == 1
+        assert first_fallback_client.chat.completions.create.call_args.kwargs["model"] == "gemini-2.5-flash-lite"
+        assert second_fallback_client.chat.completions.create.call_args.kwargs["model"] == "gemini-3-flash-preview"
+
+    def test_call_llm_does_not_retry_fallback_model_on_non_retryable_error(self):
+        primary_client = MagicMock()
+        primary_client.base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+        primary_client.chat.completions.create.side_effect = ValueError("bad request")
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("google", "gemini-2.5-flash", None, None, None)),
+            patch("agent.auxiliary_client._get_task_fallback_models", return_value=["gemini-2.5-flash-lite"]),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(primary_client, "gemini-2.5-flash")),
+        ):
+            with pytest.raises(ValueError):
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+
+        assert primary_client.chat.completions.create.call_count == 1
 
 
 class TestAuxiliaryAuthRefreshRetry:

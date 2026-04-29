@@ -1331,6 +1331,24 @@ def _is_payment_error(exc: Exception) -> bool:
     return False
 
 
+def _is_aux_model_fallback_error(exc: Exception) -> bool:
+    """Return True when retrying the same provider with another model may help."""
+    status = getattr(exc, "status_code", None)
+    err_lower = str(exc).lower()
+    if status in (429, 503):
+        return True
+    return any(kw in err_lower for kw in (
+        "resource_exhausted",
+        "rate limit",
+        "rate_limit",
+        "quota",
+        "too many requests",
+        "capacity",
+        "overloaded",
+        "temporarily unavailable",
+    ))
+
+
 def _is_connection_error(exc: Exception) -> bool:
     """Detect connection/network errors that warrant provider fallback.
 
@@ -2767,6 +2785,26 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     return task_config if isinstance(task_config, dict) else {}
 
 
+def _get_task_fallback_models(task: str) -> List[str]:
+    """Read ordered same-provider fallback models from auxiliary.{task}.fallback_models."""
+    if not task:
+        return []
+    raw = _get_auxiliary_task_config(task).get("fallback_models")
+    if not isinstance(raw, list):
+        return []
+    seen = set()
+    models: List[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        model = item.strip()
+        if not model or model in seen:
+            continue
+        seen.add(model)
+        models.append(model)
+    return models
+
+
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
     """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*."""
     if not task:
@@ -3194,6 +3232,59 @@ def call_llm(
                     return _validate_llm_response(
                         retry_client.chat.completions.create(**retry_kwargs), task)
 
+        # ── Same-provider model fallback ──────────────────────────────
+        # Explicit auxiliary providers are hard constraints, but a task may
+        # declare fallback_models to rotate within that same provider on
+        # model-specific quota/rate-limit/capacity failures.
+        if _is_aux_model_fallback_error(first_err):
+            attempted_models = {str(final_model or resolved_model or "").strip()}
+            for fallback_model in _get_task_fallback_models(task):
+                if fallback_model in attempted_models:
+                    continue
+                attempted_models.add(fallback_model)
+                logger.info(
+                    "Auxiliary %s: model fallback after %s on %s/%s, retrying %s/%s",
+                    task or "call", type(first_err).__name__,
+                    resolved_provider or "auto", final_model or resolved_model or "default",
+                    resolved_provider or "auto", fallback_model,
+                )
+                if task == "vision":
+                    _, fb_model_client, fb_model_final = resolve_vision_provider_client(
+                        provider=resolved_provider if resolved_provider != "auto" else provider,
+                        model=fallback_model,
+                        base_url=resolved_base_url or base_url,
+                        api_key=resolved_api_key or api_key,
+                        async_mode=False,
+                    )
+                else:
+                    fb_model_client, fb_model_final = _get_cached_client(
+                        resolved_provider,
+                        fallback_model,
+                        base_url=resolved_base_url,
+                        api_key=resolved_api_key,
+                        api_mode=resolved_api_mode,
+                        main_runtime=main_runtime,
+                    )
+                if fb_model_client is None:
+                    continue
+                fb_model_kwargs = _build_call_kwargs(
+                    resolved_provider, fb_model_final or fallback_model, messages,
+                    temperature=temperature, max_tokens=max_tokens,
+                    tools=tools, timeout=effective_timeout,
+                    extra_body=effective_extra_body,
+                    base_url=str(getattr(fb_model_client, "base_url", "") or resolved_base_url or ""),
+                )
+                _fb_model_base = str(getattr(fb_model_client, "base_url", "") or "")
+                if _is_anthropic_compat_endpoint(resolved_provider, _fb_model_base):
+                    fb_model_kwargs["messages"] = _convert_openai_images_to_anthropic(fb_model_kwargs["messages"])
+                try:
+                    return _validate_llm_response(
+                        fb_model_client.chat.completions.create(**fb_model_kwargs), task)
+                except Exception as model_err:
+                    first_err = model_err
+                    if not _is_aux_model_fallback_error(model_err):
+                        raise
+
         # ── Payment / credit exhaustion fallback ──────────────────────
         # When the resolved provider returns 402 or a credit-related error,
         # try alternative providers instead of giving up.  This handles the
@@ -3483,6 +3574,58 @@ async def async_call_llm(
                         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
                     return _validate_llm_response(
                         await retry_client.chat.completions.create(**retry_kwargs), task)
+
+        # ── Same-provider model fallback (mirrors sync call_llm) ──────
+        if _is_aux_model_fallback_error(first_err):
+            attempted_models = {str(final_model or resolved_model or "").strip()}
+            for fallback_model in _get_task_fallback_models(task):
+                if fallback_model in attempted_models:
+                    continue
+                attempted_models.add(fallback_model)
+                logger.info(
+                    "Auxiliary %s (async): model fallback after %s on %s/%s, retrying %s/%s",
+                    task or "call", type(first_err).__name__,
+                    resolved_provider or "auto", final_model or resolved_model or "default",
+                    resolved_provider or "auto", fallback_model,
+                )
+                if task == "vision":
+                    _, sync_fb_client, fb_model_final = resolve_vision_provider_client(
+                        provider=resolved_provider if resolved_provider != "auto" else provider,
+                        model=fallback_model,
+                        base_url=resolved_base_url or base_url,
+                        api_key=resolved_api_key or api_key,
+                        async_mode=False,
+                    )
+                    fb_model_client, fb_model_final = _to_async_client(
+                        sync_fb_client, fb_model_final or fallback_model, is_vision=True) if sync_fb_client is not None else (None, None)
+                else:
+                    fb_model_client, fb_model_final = _get_cached_client(
+                        resolved_provider,
+                        fallback_model,
+                        async_mode=True,
+                        base_url=resolved_base_url,
+                        api_key=resolved_api_key,
+                        api_mode=resolved_api_mode,
+                    )
+                if fb_model_client is None:
+                    continue
+                fb_model_kwargs = _build_call_kwargs(
+                    resolved_provider, fb_model_final or fallback_model, messages,
+                    temperature=temperature, max_tokens=max_tokens,
+                    tools=tools, timeout=effective_timeout,
+                    extra_body=effective_extra_body,
+                    base_url=str(getattr(fb_model_client, "base_url", "") or resolved_base_url or ""),
+                )
+                _fb_model_base = str(getattr(fb_model_client, "base_url", "") or "")
+                if _is_anthropic_compat_endpoint(resolved_provider, _fb_model_base):
+                    fb_model_kwargs["messages"] = _convert_openai_images_to_anthropic(fb_model_kwargs["messages"])
+                try:
+                    return _validate_llm_response(
+                        await fb_model_client.chat.completions.create(**fb_model_kwargs), task)
+                except Exception as model_err:
+                    first_err = model_err
+                    if not _is_aux_model_fallback_error(model_err):
+                        raise
 
         # ── Payment / connection fallback (mirrors sync call_llm) ─────
         should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
