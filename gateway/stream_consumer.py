@@ -436,6 +436,15 @@ class GatewayStreamConsumer:
                         # vanishes the instant a real message is posted.
                         await self._send_new_chunk(self._accumulated, None)
                         current_update_visible = True
+                    elif self._draft_mode and got_done:
+                        # Stream finished in draft mode: skip the final draft
+                        # update to avoid a visible delay on the client.
+                        # Sending a draft refresh right before the real message
+                        # forces the client to animate the draft content first,
+                        # then switch to the real message — causing the "draft
+                        # lingers after send" race.  The real message is sent
+                        # in the got_done block below.
+                        current_update_visible = False
                     else:
                         current_update_visible = await self._send_or_edit(
                             display_text,
@@ -452,12 +461,12 @@ class GatewayStreamConsumer:
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
                         elif self._draft_mode:
-                            # Draft mode: don't claim final delivery.
-                            # The gateway must send a real message to
-                            # dismiss the ephemeral draft on the Telegram
-                            # client.  The real message also gets proper
-                            # MarkdownV2 formatting (draft was plain text).
-                            pass
+                            # Draft mode: send a real message immediately to
+                            # dismiss the ephemeral draft without delay.
+                            # The real message gets proper MarkdownV2
+                            # formatting (draft was plain text).
+                            await self._send_new_chunk(self._accumulated, None)
+                            self._final_response_sent = True
                         elif (
                             current_update_visible
                             and not self._adapter_requires_finalize

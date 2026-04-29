@@ -122,8 +122,8 @@ class TestDraftStreamingEndToEnd:
         assert len(adapter.drafts) >= 1
         # Final text should be "Hello" (cursor stripped)
         assert adapter.drafts[-1][2] == "Hello"
-        # final_response_sent should remain False — gateway sends the real final message
-        assert consumer.final_response_sent is False
+        # Consumer sends real message to dismiss draft immediately
+        assert consumer.final_response_sent is True
 
     @pytest.mark.asyncio
     async def test_edit_transport_used_for_group(self):
@@ -160,5 +160,5 @@ class TestDraftStreamingEndToEnd:
 
         # Draft was attempted but failed (returned success=False)
         assert len(adapter.drafts) >= 1
-        # Consumer should not claim final delivery — draft mode stays on failure
-        assert consumer.final_response_sent is False
+        # Consumer still sends real message to dismiss draft (best-effort)
+        assert consumer.final_response_sent is True
