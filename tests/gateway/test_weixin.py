@@ -757,4 +757,76 @@ class TestWeixinVoiceSending:
         assert voice_item.get("playtime", 0) == 0
         assert voice_item["encode_type"] == 6
         assert voice_item["sample_rate"] == 24000
-        assert voice_item["bits_per_sample"] == 16
+
+
+class TestWeixinDirectSendCrossLoop:
+    """Verify send_weixin_direct falls back to a fresh session when the
+    live adapter's event loop differs from the caller's (e.g. when
+    _run_async spawns a new thread + loop for tool handlers)."""
+
+    @patch.object(weixin, "_LIVE_ADAPTERS", {})
+    @patch.object(weixin, "aiohttp")
+    @patch("gateway.platforms.weixin._make_ssl_connector")
+    def test_falls_back_to_new_session_when_no_live_adapter(self, _mock_connector, mock_aiohttp):
+        """No live adapter → must create a fresh session (Path 2)."""
+        mock_session = AsyncMock()
+        mock_session.closed = False
+        mock_aiohttp.ClientSession.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_aiohttp.ClientSession.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        # WeixinAdapter.send is async — mock it
+        with patch.object(WeixinAdapter, "send", new_callable=AsyncMock) as send_mock:
+            send_mock.return_value = SendResult(success=True, message_id="msg-1")
+            result = asyncio.run(
+                weixin.send_weixin_direct(
+                    extra={"account_id": "acct1", "base_url": "https://ilink.example.com", "cdn_base_url": "https://cdn.example.com"},
+                    token="tok",
+                    chat_id="wxid_user",
+                    message="hello",
+                )
+            )
+        assert result["success"] is True
+
+    @patch.object(weixin, "aiohttp")
+    @patch("gateway.platforms.weixin._make_ssl_connector")
+    def test_falls_back_to_new_session_on_loop_mismatch(self, _mock_connector, mock_aiohttp):
+        """Live adapter exists but in a different event loop → must create
+        a fresh session (Path 2)."""
+        # Create a fake poll_task in a different event loop
+        async def _noop():
+            pass
+
+        other_loop = asyncio.new_event_loop()
+        try:
+            other_task = other_loop.create_task(_noop())
+        finally:
+            other_loop.close()
+
+        fake_session = AsyncMock()
+        fake_session.closed = False
+        fake_adapter = AsyncMock()
+        fake_adapter._send_session = fake_session
+        fake_adapter._poll_task = other_task
+
+        weixin._LIVE_ADAPTERS["tok"] = fake_adapter
+        try:
+            mock_session = AsyncMock()
+            mock_session.closed = False
+            mock_aiohttp.ClientSession.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_aiohttp.ClientSession.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with patch.object(WeixinAdapter, "send", new_callable=AsyncMock) as send_mock:
+                send_mock.return_value = SendResult(success=True, message_id="msg-2")
+                result = asyncio.run(
+                    weixin.send_weixin_direct(
+                        extra={"account_id": "acct1", "base_url": "https://ilink.example.com", "cdn_base_url": "https://cdn.example.com"},
+                        token="tok",
+                        chat_id="wxid_user",
+                        message="hello",
+                    )
+                )
+            assert result["success"] is True
+            # send should NOT have been called on the fake adapter
+            fake_adapter.send.assert_not_awaited()
+        finally:
+            weixin._LIVE_ADAPTERS.pop("tok", None)

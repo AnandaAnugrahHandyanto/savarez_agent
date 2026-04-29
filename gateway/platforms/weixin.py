@@ -2005,7 +2005,23 @@ async def send_weixin_direct(
 
     live_adapter = _LIVE_ADAPTERS.get(resolved_token)
     send_session = getattr(live_adapter, '_send_session', None)
-    if live_adapter is not None and send_session is not None and not send_session.closed:
+    can_reuse = (
+        live_adapter is not None
+        and send_session is not None
+        and not send_session.closed
+    )
+    # When called from a tool handler via _run_async (gateway context),
+    # the coroutine runs in a fresh thread with its own event loop.
+    # aiohttp sessions cannot be used across loops, so detect the
+    # mismatch and fall through to the standalone path.
+    if can_reuse and live_adapter._poll_task is not None:
+        try:
+            task_loop = live_adapter._poll_task.get_loop()
+        except AttributeError:
+            task_loop = None  # Python <3.9 — fall through to safe path
+        if task_loop is not asyncio.get_running_loop():
+            can_reuse = False
+    if can_reuse:
         last_result: Optional[SendResult] = None
         cleaned = live_adapter.format_message(message)
         if cleaned:
