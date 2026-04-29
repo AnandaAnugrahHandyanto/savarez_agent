@@ -191,4 +191,43 @@ def test_get_gateway_eligible_tools_ignores_quoted_false_opt_in(monkeypatch):
 
     assert "web" in has_direct
     assert "web" not in already_managed
-    assert set(unconfigured) == {"image_gen", "tts", "browser"}
+    assert set(unconfigured) == {"image_gen", "tts", "browser", "skyvern"}
+
+
+def test_get_gateway_eligible_tools_includes_skyvern(monkeypatch):
+    monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr(
+        ns,
+        "_get_gateway_direct_credentials",
+        lambda: {"web": True, "image_gen": True, "tts": True, "browser": True},
+    )
+
+    unconfigured, has_direct, already_managed = ns.get_gateway_eligible_tools(
+        {"model": {"provider": "nous"}}
+    )
+
+    assert unconfigured == ["skyvern"]
+    assert "skyvern" not in has_direct
+    assert "skyvern" not in already_managed
+
+
+def test_apply_gateway_defaults_stores_managed_skyvern_mcp_intent():
+    config = {}
+
+    changed = ns.apply_gateway_defaults(config, ["skyvern"])
+
+    assert changed == {"skyvern"}
+    assert config["mcp_servers"]["skyvern"] == {"managed_gateway": "skyvern"}
+
+
+def test_apply_gateway_defaults_preserves_direct_skyvern_mcp_config():
+    direct_skyvern = {
+        "url": "https://api.skyvern.com/mcp/",
+        "headers": {"x-api-key": "${SKYVERN_API_KEY}"},
+    }
+    config = {"mcp_servers": {"skyvern": dict(direct_skyvern)}}
+
+    changed = ns.apply_gateway_defaults(config, ["skyvern"])
+
+    assert changed == set()
+    assert config["mcp_servers"]["skyvern"] == direct_skyvern
