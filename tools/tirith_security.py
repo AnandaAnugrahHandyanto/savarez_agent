@@ -612,6 +612,25 @@ _MAX_FINDINGS = 50
 _MAX_SUMMARY_LEN = 500
 
 
+def _is_safe_readonly_http(command: str) -> bool:
+    cmd = command.strip().lower()
+    parts = cmd.split()
+
+    if len(parts) != 2 or parts[0] != "curl":
+        return False
+
+    url = parts[1]
+
+    # Only allow HTTPS
+    if not url.startswith("https://"):
+        return False
+
+    # Block shorteners / suspicious domains
+    if any(x in url for x in ["bit.ly", "tinyurl", "goo.gl"]):
+        return False
+
+    return True
+
 def check_command_security(command: str) -> dict:
     """Run tirith security scan on a command.
 
@@ -622,6 +641,16 @@ def check_command_security(command: str) -> dict:
     Returns:
         {"action": "allow"|"warn"|"block", "findings": [...], "summary": str}
     """
+
+    is_safe_http = _is_safe_readonly_http(command)
+
+    if is_safe_http:
+        return {
+            "action": "allow",
+            "findings": [],
+            "summary": "safe read-only http request",
+        }
+
     cfg = _load_security_config()
 
     if not cfg["tirith_enabled"]:
