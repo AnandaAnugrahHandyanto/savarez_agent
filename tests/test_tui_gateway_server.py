@@ -59,6 +59,12 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     assert server.write_json({"ok": True}) is False
 
 
+def test_load_enabled_toolsets_prefers_tui_env(monkeypatch):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web, terminal, ,memory")
+
+    assert server._load_enabled_toolsets() == ["web", "terminal", "memory"]
+
+
 def test_history_to_messages_preserves_tool_calls_for_resume_display():
     history = [
         {"role": "user", "content": "first prompt"},

@@ -859,6 +859,14 @@ def _load_tool_progress_mode() -> str:
 
 
 def _load_enabled_toolsets() -> list[str] | None:
+    explicit = [
+        item.strip()
+        for item in os.environ.get("HERMES_TUI_TOOLSETS", "").split(",")
+        if item.strip()
+    ]
+    if explicit:
+        return explicit
+
     try:
         from hermes_cli.config import load_config
         from hermes_cli.tools_config import _get_platform_tools
