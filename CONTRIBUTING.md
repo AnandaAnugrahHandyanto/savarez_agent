@@ -1,660 +1,254 @@
-# Contributing to Hermes Agent
+# Contributing
 
-Thank you for contributing to Hermes Agent! This guide covers everything you need: setting up your dev environment, understanding the architecture, deciding what to build, and getting your PR merged.
+This file codifies how work happens in the Motion Granted Citation Database repo. It is written for agents (Claude Code instances) first and human contributors second. Read it together with:
 
----
+- **`binding/v7.2.md`** — the ratified architectural authority.
+- **`AGENT-DISCIPLINE.md`** — the operational doctrine. Contains the Zero-Inference rules (§1), the A-L high-hallucination-risk category table (§3), the scope-rules block (§5), and the self-audit protocol (§7).
+- **`.claude/rules/`** — per-subsystem DO-NOT lists with explicit v7.2 cites (`producer-boundary.md`, `reports-readonly.md`, `scaffold-boundary.md`, plus the `example-rule.md` template).
+- **`BACKLOG.md`** — ratified open items, Tier B carry-overs, §29 gap list with tier tags.
 
-## Contribution Priorities
-
-We value contributions in this order:
-
-1. **Bug fixes** — crashes, incorrect behavior, data loss. Always top priority.
-2. **Cross-platform compatibility** — macOS, different Linux distros, and WSL2 on Windows. We want Hermes to work everywhere.
-3. **Security hardening** — shell injection, prompt injection, path traversal, privilege escalation. See [Security](#security-considerations).
-4. **Performance and robustness** — retry logic, error handling, graceful degradation.
-5. **New skills** — but only broadly useful ones. See [Should it be a Skill or a Tool?](#should-it-be-a-skill-or-a-tool)
-6. **New tools** — rarely needed. Most capabilities should be skills. See below.
-7. **Documentation** — fixes, clarifications, new examples.
+Every load-bearing schema / invariant / taxonomy / role / tier claim must cite a `v7.2 §N line M` or point at the `AGENT-DISCIPLINE.md` / `.claude/rules/` file that binds it.
 
 ---
 
-## Should it be a Skill or a Tool?
+## 1. The operator-only boundary
 
-This is the most common question for new contributors. The answer is almost always **skill**.
+Agents never do the following; the operator does:
 
-### Make it a Skill when:
+- **No `git push`** to `main` or any protected branch.
+- **No `gh pr merge`**, no force-push, no tag creation, no release cut.
+- **No direct commits to `main`** from a session. Feature branches only: `overnight/<task>-<date>`, worktree branches, or short-lived topic branches.
+- **No Clay-binding rulings.** If an item requires Clay's signature (R-1, R-3, the §26 retention numbers, anything in v7.2 §24's "Clay ruling → Porter" lane), draft the recommendation and tag `<X>_PENDING_CLAY_RULING`. Emit the reverse option commented adjacent for a one-line flip on ruling.
+- **No DB apply** (no `psql` against staging or production, no Supabase `apply_migration`, no `drafts/scaffold/*.sql` execution) unless the session mission explicitly authorizes staging-DB write.
+- **No live S-5 audit** against MG CIV / Tannerize / Porter working trees. Archive-scope S-5 was covered in `reports/TAX-15to16-DELTA.md`; the live sweep is operator-owned (v7.2 §24 L1643-1660).
+- **No counsel-gated decisions.** §26 retention numbers, legal-disclaimer wording, or anything requiring counsel ratification is off-limits.
+- **No modifications under `archive/`.** Stale content in `archive/` stands as provenance. Corrections go in new files outside `archive/`.
 
-- The capability can be expressed as instructions + shell commands + existing tools
-- It wraps an external CLI or API that the agent can call via `terminal` or `web_extract`
-- It doesn't need custom Python integration or API key management baked into the agent
-- Examples: arXiv search, git workflows, Docker management, PDF processing, email via CLI tools
-
-### Make it a Tool when:
-
-- It requires end-to-end integration with API keys, auth flows, or multi-component configuration managed by the agent harness
-- It needs custom processing logic that must execute precisely every time (not "best effort" from LLM interpretation)
-- It handles binary data, streaming, or real-time events that can't go through the terminal
-- Examples: browser automation (Browserbase session management), TTS (audio encoding + platform delivery), vision analysis (base64 image handling)
-
-### Should the Skill be bundled?
-
-Bundled skills (in `skills/`) ship with every Hermes install. They should be **broadly useful to most users**:
-
-- Document handling, web research, common dev workflows, system administration
-- Used regularly by a wide range of people
-
-If your skill is official and useful but not universally needed (e.g., a paid service integration, a heavyweight dependency), put it in **`optional-skills/`** — it ships with the repo but isn't activated by default. Users can discover it via `hermes skills browse` (labeled "official") and install it with `hermes skills install` (no third-party warning, builtin trust).
-
-If your skill is specialized, community-contributed, or niche, it's better suited for a **Skills Hub** — upload it to a skills registry and share it in the [Nous Research Discord](https://discord.gg/NousResearch). Users can install it with `hermes skills install`.
+Scope rules full text: `AGENT-DISCIPLINE.md §5` (lines 82-90). Any path outside the declared workspace triggers a `SCOPE_CREEP_INFERRED` quarantine tripwire.
 
 ---
 
-## Development Setup
+## 2. Session shape
 
-### Prerequisites
+Long-horizon work is overnight-session-shaped:
 
-| Requirement | Notes |
-|-------------|-------|
-| **Git** | With `--recurse-submodules` support, and the `git-lfs` extension installed |
-| **Python 3.11+** | uv will install it if missing |
-| **uv** | Fast Python package manager ([install](https://docs.astral.sh/uv/)) |
-| **Node.js 20+** | Optional — needed for browser tools and WhatsApp bridge (matches root `package.json` engines) |
+1. **Pre-flight.** Mission brief is read; branch is cut; tooling inventory is taken; path-sanity checks run. Output: a `PRE-FLIGHT-*.md` under `worktree-session/`.
+2. **Proceed signal.** Operator replies `proceed` (or equivalent). No execution before the proceed signal.
+3. **Phased execution.** `PHASE-1` (probe / inventory) → `PHASE-2-WAVE-N` (architect-dispatched parallel swarm, 2-3 parallel typical, 5 max) → `PHASE-3` synthesis on the main thread → `PHASE-4+` commit.
+4. **No push, no PR.** The session commits to its feature branch and stops. The operator pushes and opens the PR.
 
-### Clone and install
-
-```bash
-git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
-
-# Create venv with Python 3.11
-uv venv venv --python 3.11
-export VIRTUAL_ENV="$(pwd)/venv"
-
-# Install with all extras (messaging, cron, CLI menus, dev tools)
-uv pip install -e ".[all,dev]"
-
-# Optional: RL training submodule
-# git submodule update --init tinker-atropos && uv pip install -e "./tinker-atropos"
-
-# Optional: browser tools
-npm install
-```
-
-### Configure for development
-
-```bash
-mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills}
-cp cli-config.yaml.example ~/.hermes/config.yaml
-touch ~/.hermes/.env
-
-# Add at minimum an LLM provider key:
-echo "OPENROUTER_API_KEY=***" >> ~/.hermes/.env
-```
-
-### Run
-
-```bash
-# Symlink for global access
-mkdir -p ~/.local/bin
-ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
-
-# Verify
-hermes doctor
-hermes chat -q "Hello"
-```
-
-### Run tests
-
-```bash
-pytest tests/ -v
-```
+Each phase appends to `worktree-session/SESSION-LOG-*.md`. Wave outputs land under `worktree-session/swarm-raw/`. Empirical example: `SESSION-LOG-REBUILD.md` (six phases, two waves, six swarm outputs).
 
 ---
 
-## Project Structure
+## 3. Plan-mode + revise rounds
 
-```
-hermes-agent/
-├── run_agent.py              # AIAgent class — core conversation loop, tool dispatch, session persistence
-├── cli.py                    # HermesCLI class — interactive TUI, prompt_toolkit integration
-├── model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
-├── toolsets.py               # Tool groupings and presets (hermes-cli, hermes-telegram, etc.)
-├── hermes_state.py           # SQLite session database with FTS5 full-text search, session titles
-├── batch_runner.py           # Parallel batch processing for trajectory generation
-│
-├── agent/                    # Agent internals (extracted modules)
-│   ├── prompt_builder.py         # System prompt assembly (identity, skills, context files, memory)
-│   ├── context_compressor.py     # Auto-summarization when approaching context limits
-│   ├── auxiliary_client.py       # Resolves auxiliary OpenAI clients (summarization, vision)
-│   ├── display.py                # KawaiiSpinner, tool progress formatting
-│   ├── model_metadata.py         # Model context lengths, token estimation
-│   └── trajectory.py             # Trajectory saving helpers
-│
-├── hermes_cli/               # CLI command implementations
-│   ├── main.py                   # Entry point, argument parsing, command dispatch
-│   ├── config.py                 # Config management, migration, env var definitions
-│   ├── setup.py                  # Interactive setup wizard
-│   ├── auth.py                   # Provider resolution, OAuth, Nous Portal
-│   ├── models.py                 # OpenRouter model selection lists
-│   ├── banner.py                 # Welcome banner, ASCII art
-│   ├── commands.py               # Central slash command registry (CommandDef), autocomplete, gateway helpers
-│   ├── callbacks.py              # Interactive callbacks (clarify, sudo, approval)
-│   ├── doctor.py                 # Diagnostics
-│   ├── skills_hub.py             # Skills Hub CLI + /skills slash command
-│   └── skin_engine.py            # Skin/theme engine — data-driven CLI visual customization
-│
-├── tools/                    # Tool implementations (self-registering)
-│   ├── registry.py               # Central tool registry (schemas, handlers, dispatch)
-│   ├── approval.py               # Dangerous command detection + per-session approval
-│   ├── terminal_tool.py          # Terminal orchestration (sudo, env lifecycle, backends)
-│   ├── file_operations.py        # read_file, write_file, search, patch, etc.
-│   ├── web_tools.py              # web_search, web_extract (Parallel/Firecrawl + Gemini summarization)
-│   ├── vision_tools.py           # Image analysis via multimodal models
-│   ├── delegate_tool.py          # Subagent spawning and parallel task execution
-│   ├── code_execution_tool.py    # Sandboxed Python with RPC tool access
-│   ├── session_search_tool.py    # Search past conversations with FTS5 + summarization
-│   ├── cronjob_tools.py          # Scheduled task management
-│   ├── skill_tools.py            # Skill search, load, manage
-│   └── environments/             # Terminal execution backends
-│       ├── base.py                   # BaseEnvironment ABC
-│       ├── local.py, docker.py, ssh.py, singularity.py, modal.py, daytona.py
-│
-├── gateway/                  # Messaging gateway
-│   ├── run.py                    # GatewayRunner — platform lifecycle, message routing, cron
-│   ├── config.py                 # Platform configuration resolution
-│   ├── session.py                # Session store, context prompts, reset policies
-│   └── platforms/                # Platform adapters
-│       ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
-│
-├── scripts/                  # Installer and bridge scripts
-│   ├── install.sh                # Linux/macOS installer
-│   ├── install.ps1               # Windows PowerShell installer
-│   └── whatsapp-bridge/          # Node.js WhatsApp bridge (Baileys)
-│
-├── skills/                   # Bundled skills (copied to ~/.hermes/skills/ on install)
-├── optional-skills/          # Official optional skills (discoverable via hub, not activated by default)
-├── environments/             # RL training environments (Atropos integration)
-├── tests/                    # Test suite
-├── website/                  # Documentation site (hermes-agent.nousresearch.com)
-│
-├── cli-config.yaml.example   # Example configuration (copied to ~/.hermes/config.yaml)
-└── AGENTS.md                 # Development guide for AI coding assistants
-```
+Architect operates in `DISCOVER → EXTRACT → VERIFY` modes with halt-and-await-approval gates between each (`.claude/agents/architect.md` lines 25-42). Apply the same discipline at session level: the operator reviews the plan before the architect executes. Tighten via **revise rounds** — the operator names specific constraints the architect folds into the next iteration.
 
-### User configuration (stored in `~/.hermes/`)
+**Empirical ceiling: ~7 tightenings.** The operator-review-package session reached exactly 7 tightenings before execution (`SESSION-LOG-REVIEW.md:47`). Beyond ~7, the plan is carrying more patches than original intent and should be re-plan-moded from scratch.
 
-| Path | Purpose |
-|------|---------|
-| `~/.hermes/config.yaml` | Settings (model, terminal, toolsets, compression, etc.) |
-| `~/.hermes/.env` | API keys and secrets |
-| `~/.hermes/auth.json` | OAuth credentials (Nous Portal) |
-| `~/.hermes/skills/` | All active skills (bundled + hub-installed + agent-created) |
-| `~/.hermes/memories/` | Persistent memory (MEMORY.md, USER.md) |
-| `~/.hermes/state.db` | SQLite session database |
-| `~/.hermes/sessions/` | JSON session logs |
-| `~/.hermes/cron/` | Scheduled job data |
-| `~/.hermes/whatsapp/session/` | WhatsApp bridge credentials |
+Examples of high-leverage tightenings in this repo:
+
+- "12 roles, not 11" (v7.2 §13 line 1015-1028 canonical count).
+- "I-6a/b/c live at §6 line 407-409, not §1."
+- "`created_at` is BANNED in promotion `ORDER BY` (I-6b) but ALLOWED in `CREATE INDEX` and `CHECK` constraints."
+- "Single-option memo bodies with the alternative in an HTML comment for one-line flip."
 
 ---
 
-## Architecture Overview
+## 4. Scope rules
 
-### Core Loop
+See `AGENT-DISCIPLINE.md §5` (lines 82-90). Full text binds. Summary:
 
-```
-User message → AIAgent._run_agent_loop()
-  ├── Build system prompt (prompt_builder.py)
-  ├── Build API kwargs (model, messages, tools, reasoning config)
-  ├── Call LLM (OpenAI-compatible API)
-  ├── If tool_calls in response:
-  │     ├── Execute each tool via registry dispatch
-  │     ├── Add tool results to conversation
-  │     └── Loop back to LLM call
-  ├── If text response:
-  │     ├── Persist session to DB
-  │     └── Return final_response
-  └── Context compression if approaching token limit
-```
+- Reads outside declared workspaces require explicit operator authorization. No fishing in pre-Clay HTMLs, `archive/` content, or external repos without authorization.
+- Edits to `producer/**`, `reports/**`, `binding/**`, `archive/**`, `al/**` are **forbidden** unless the session mission explicitly authorizes.
+- Outputs go to declared workspaces: e.g. `worktree-session/swarm-raw/`, `drafts/scaffold/`, `.claude/rules/`. Any path outside → `SCOPE_CREEP_INFERRED`.
+- No DB apply, no `git push`, no PR creation unless explicitly authorized.
 
-### Key Design Patterns
-
-- **Self-registering tools**: Each tool file calls `registry.register()` at import time. `model_tools.py` triggers discovery by importing all tool modules.
-- **Toolset grouping**: Tools are grouped into toolsets (`web`, `terminal`, `file`, `browser`, etc.) that can be enabled/disabled per platform.
-- **Session persistence**: All conversations are stored in SQLite (`hermes_state.py`) with full-text search and unique session titles. JSON logs go to `~/.hermes/sessions/`.
-- **Ephemeral injection**: System prompts and prefill messages are injected at API call time, never persisted to the database or logs.
-- **Provider abstraction**: The agent works with any OpenAI-compatible API. Provider resolution happens at init time (Nous Portal OAuth, OpenRouter API key, or custom endpoint).
-- **Provider routing**: When using OpenRouter, `provider_routing` in config.yaml controls provider selection (sort by throughput/latency/price, allow/ignore specific providers, data retention policies). These are injected as `extra_body.provider` in API requests.
+Per-subsystem extensions at `.claude/rules/`: `producer-boundary.md`, `reports-readonly.md`, `scaffold-boundary.md`.
 
 ---
 
-## Code Style
+## 5. Worktree isolation
 
-- **PEP 8** with practical exceptions (we don't enforce strict line length)
-- **Comments**: Only when explaining non-obvious intent, trade-offs, or API quirks. Don't narrate what the code does — `# increment counter` adds nothing
-- **Error handling**: Catch specific exceptions. Log with `logger.warning()`/`logger.error()` — use `exc_info=True` for unexpected errors so stack traces appear in logs
-- **Cross-platform**: Never assume Unix. See [Cross-Platform Compatibility](#cross-platform-compatibility)
+Feature work lands in a sibling worktree, not in the primary clone:
+
+```
+git worktree add ../Case-Database-<name> -b overnight/<task>-<date>
+cd ../Case-Database-<name>
+# session work happens here; session log at worktree-session/SESSION-LOG-<name>.md
+```
+
+Benefits:
+
+- The primary clone stays on `main` and remains usable for unrelated operator work during long sessions.
+- A failed session can be abandoned by deleting the worktree without touching the primary clone's working tree.
+- Parallel sessions in different worktrees do not fight over the same index / HEAD.
+
+**Parallel-agent cap.** 2-3 parallel sub-agents is the empirical sweet spot; 5 is the ceiling (`AGENTS.md`). The cautionary tale is commit `a67b557`, where over-parallelism led to merge conflict and lost work.
+
+Unmerged branches stay unmerged until Chen-reviewed. Session working material lives at `worktree-session/` and merges with the PR for that branch.
 
 ---
 
-## Adding a New Tool
+## 6. The triple safety-net
 
-Before writing a tool, ask: [should this be a skill instead?](#should-it-be-a-skill-or-a-tool)
+Zero-Inference is enforced in practice through three overlapping stages:
 
-Tools self-register with the central registry. Each tool file co-locates its schema, handler, and registration:
+### 6.1 Read-before-replace
 
-```python
-"""my_tool — Brief description of what this tool does."""
+The `Edit` tool errors if `Read` has not been called on the target file in the session. This is a Claude Code harness behavior, not a repo file. The discipline it supports is `AGENT-DISCIPLINE.md §1.2` rule 3: "Names are grep-verified" — you cannot grep-verify a name you did not read.
 
-import json
-from tools.registry import registry
+### 6.2 `grep-verifier` sub-agent
 
+Skeptical one-shot claim validator that returns CONFIRMED / LIKELY / INDETERMINATE / FALSE POSITIVE verdicts with grep evidence. Historical AI-audit false-positive rate across tracked projects: **38-54 %** (`.claude/agents/grep-verifier.md` line 36-37; `.claude/agents/code-reviewer.md` line 33).
 
-def my_tool(param1: str, param2: int = 10, **kwargs) -> str:
-    """Handler. Returns a string result (often JSON)."""
-    result = do_work(param1, param2)
-    return json.dumps(result)
+Rules (`grep-verifier.md` lines 40-56): never accept a claim without grep evidence, rate every finding, show your work, check the live path not dead code, watch for phantom bugs.
 
+### 6.3 `chen` sub-agent adversarial review
 
-MY_TOOL_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "my_tool",
-        "description": "What this tool does and when the agent should use it.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "param1": {"type": "string", "description": "What param1 is"},
-                "param2": {"type": "integer", "description": "What param2 is", "default": 10},
-            },
-            "required": ["param1"],
-        },
-    },
-}
+Four focus modes (deep subsystem, finding expansion, spec-to-code delta, pre-launch failure). Labels: CONFIRMED / HYPOTHESIS / UNVERIFIED / DISPROVEN. Severity rubric observed in session commits: **BLOCKER / MAJOR / MINOR / NIT** (per `5d2e4c8`, `2e3fd63`, `dec9f3e`).
 
+Track record in this repo:
 
-def _check_requirements() -> bool:
-    """Return True if this tool's dependencies are available."""
-    return True
+- `2e3fd63` — 3 BLOCKERs + 3 MAJORs in scaffold-rebuild PR #4 (REVIEW-PR-3).
+- `dec9f3e` — 10 MAJOR + 6 MINOR citation defects in operator review package PR #3 (REVIEW-PR-4).
+- `5d2e4c8` — 8 MAJOR citation defects in prior reports (pre-PR-3 remediation).
 
-
-registry.register(
-    name="my_tool",
-    toolset="my_toolset",
-    schema=MY_TOOL_SCHEMA,
-    handler=lambda args, **kw: my_tool(**args, **kw),
-    check_fn=_check_requirements,
-)
-```
-
-Then add the import to `model_tools.py` in the `_modules` list:
-
-```python
-_modules = [
-    # ... existing modules ...
-    "tools.my_tool",
-]
-```
-
-If it's a new toolset, add it to `toolsets.py` and to the relevant platform presets.
+**The three nets overlap enough to be robust and differ enough not to be redundant:** read-before-replace catches stale-state edits; grep-verifier catches individual-claim mismatches; Chen catches subsystem-level defects, spec-to-code drift, and pattern-level issues.
 
 ---
 
-## Adding a Skill
+## 7. Zero-Inference Discipline
 
-Bundled skills live in `skills/` organized by category. Official optional skills use the same structure in `optional-skills/`:
+See `AGENT-DISCIPLINE.md §1`. Do not duplicate; reference.
 
-```
-skills/
-├── research/
-│   └── arxiv/
-│       ├── SKILL.md              # Required: main instructions
-│       └── scripts/              # Optional: helper scripts
-│           └── search_arxiv.py
-├── productivity/
-│   └── ocr-and-documents/
-│       ├── SKILL.md
-│       ├── scripts/
-│       └── references/
-└── ...
-```
+Summary:
 
-### SKILL.md format
+- Every value emitted in any output file (SQL, Markdown, JSON, code) is quoted verbatim from an authoritative source with a section + line cite. Never inferred.
+- **Counts are reporting facts.** A delta between v1 (N values) and v7.2 (N+K values) documents that K extra values exist; it does not license inventing the extra K.
+- **Names are grep-verified.** Every identifier (table name, column, ENUM value, ERRCODE, migration number, section number, role name) is grep-confirmed against v7.2 before emission.
+- **"Claude's recommendation" in v7.2 is advisory.** Where v7.2 pairs a recommendation with a "Clay ruling required," draft per the recommendation and tag `<X>_PENDING`; emit the reverse option commented adjacent.
+- **Silence is a gap, not a default** (`AGENT-DISCIPLINE.md §1.3`). Where v7.2 does not speak, log the silence inline (`-- v7.2 silent; chose <X> per minimal-assumption default`) and surface it for operator review.
 
-```markdown
----
-name: my-skill
-description: Brief description (shown in skill search results)
-version: 1.0.0
-author: Your Name
-license: MIT
-platforms: [macos, linux]          # Optional — restrict to specific OS platforms
-                                   #   Valid: macos, linux, windows
-                                   #   Omit to load on all platforms (default)
-required_environment_variables:    # Optional — secure setup-on-load metadata
-  - name: MY_API_KEY
-    prompt: API key
-    help: Where to get it
-    required_for: full functionality
-prerequisites:                     # Optional legacy runtime requirements
-  env_vars: [MY_API_KEY]           #   Backward-compatible alias for required env vars
-  commands: [curl, jq]             #   Advisory only; does not hide the skill
-metadata:
-  hermes:
-    tags: [Category, Subcategory, Keywords]
-    related_skills: [other-skill-name]
-    fallback_for_toolsets: [web]       # Optional — show only when toolset is unavailable
-    requires_toolsets: [terminal]      # Optional — show only when toolset is available
----
+The A-L category table in `AGENT-DISCIPLINE.md §3` (lines 49-62) enumerates the 12 highest-hallucination-risk surfaces with v7.2 cites. Row G = roles (12, v7.2 §13 line 1015-1028). Row H = event classes. Row I = invariants (§1 + §6 for I-6a/b/c).
 
-# Skill Title
-
-Brief intro.
-
-## When to Use
-Trigger conditions — when should the agent load this skill?
-
-## Quick Reference
-Table of common commands or API calls.
-
-## Procedure
-Step-by-step instructions the agent follows.
-
-## Pitfalls
-Known failure modes and how to handle them.
-
-## Verification
-How the agent confirms it worked.
-```
-
-### Platform-specific skills
-
-Skills can declare which OS platforms they support via the `platforms` frontmatter field. Skills with this field are automatically hidden from the system prompt, `skills_list()`, and slash commands on incompatible platforms.
-
-```yaml
-platforms: [macos]            # macOS only (e.g., iMessage, Apple Reminders)
-platforms: [macos, linux]     # macOS and Linux
-platforms: [windows]          # Windows only
-```
-
-If the field is omitted or empty, the skill loads on all platforms (backward compatible). See `skills/apple/` for examples of macOS-only skills.
-
-### Conditional skill activation
-
-Skills can declare conditions that control when they appear in the system prompt, based on which tools and toolsets are available in the current session. This is primarily used for **fallback skills** — alternatives that should only be shown when a primary tool is unavailable.
-
-Four fields are supported under `metadata.hermes`:
-
-```yaml
-metadata:
-  hermes:
-    fallback_for_toolsets: [web]      # Show ONLY when these toolsets are unavailable
-    requires_toolsets: [terminal]     # Show ONLY when these toolsets are available
-    fallback_for_tools: [web_search]  # Show ONLY when these specific tools are unavailable
-    requires_tools: [terminal]        # Show ONLY when these specific tools are available
-```
-
-**Semantics:**
-- `fallback_for_*`: The skill is a backup. It is **hidden** when the listed tools/toolsets are available, and **shown** when they are unavailable. Use this for free alternatives to premium tools.
-- `requires_*`: The skill needs certain tools to function. It is **hidden** when the listed tools/toolsets are unavailable. Use this for skills that depend on specific capabilities (e.g., a skill that only makes sense with terminal access).
-- If both are specified, both conditions must be satisfied for the skill to appear.
-- If neither is specified, the skill is always shown (backward compatible).
-
-**Examples:**
-
-```yaml
-# DuckDuckGo search — shown when Firecrawl (web toolset) is unavailable
-metadata:
-  hermes:
-    fallback_for_toolsets: [web]
-
-# Smart home skill — only useful when terminal is available
-metadata:
-  hermes:
-    requires_toolsets: [terminal]
-
-# Local browser fallback — shown when Browserbase is unavailable
-metadata:
-  hermes:
-    fallback_for_toolsets: [browser]
-```
-
-The filtering happens at prompt build time in `agent/prompt_builder.py`. The `build_skills_system_prompt()` function receives the set of available tools and toolsets from the agent and uses `_skill_should_show()` to evaluate each skill's conditions.
-
-### Skill setup metadata
-
-Skills can declare secure setup-on-load metadata via the `required_environment_variables` frontmatter field. Missing values do not hide the skill from discovery; they trigger a CLI-only secure prompt when the skill is actually loaded.
-
-```yaml
-required_environment_variables:
-  - name: TENOR_API_KEY
-    prompt: Tenor API key
-    help: Get a key from https://developers.google.com/tenor
-    required_for: full functionality
-```
-
-The user may skip setup and keep loading the skill. Hermes only exposes metadata (`stored_as`, `skipped`, `validated`) to the model — never the secret value.
-
-Legacy `prerequisites.env_vars` remains supported and is normalized into the new representation.
-
-```yaml
-prerequisites:
-  env_vars: [TENOR_API_KEY]       # Legacy alias for required_environment_variables
-  commands: [curl, jq]            # Advisory CLI checks
-```
-
-Gateway and messaging sessions never collect secrets in-band; they instruct the user to run `hermes setup` or update `~/.hermes/.env` locally.
-
-**When to declare required environment variables:**
-- The skill uses an API key or token that should be collected securely at load time
-- The skill can still be useful if the user skips setup, but may degrade gracefully
-
-**When to declare command prerequisites:**
-- The skill relies on a CLI tool that may not be installed (e.g., `himalaya`, `openhue`, `ddgs`)
-- Treat command checks as guidance, not discovery-time hiding
-
-See `skills/gifs/gif-search/` and `skills/email/himalaya/` for examples.
-
-### Skill guidelines
-
-- **No external dependencies unless absolutely necessary.** Prefer stdlib Python, curl, and existing Hermes tools (`web_extract`, `terminal`, `read_file`).
-- **Progressive disclosure.** Put the most common workflow first. Edge cases and advanced usage go at the bottom.
-- **Include helper scripts** for XML/JSON parsing or complex logic — don't expect the LLM to write parsers inline every time.
-- **Test it.** Run `hermes --toolsets skills -q "Use the X skill to do Y"` and verify the agent follows the instructions correctly.
+**Cautionary tale.** A prior session hallucinated four `al_treatment_type` values by reading v1 (15 lowercase) against v7.2 (16 UPPERCASE) and counting the delta. The correct 16 live verbatim at v7.2 §12 line 960-967. The invented values were not in v7.2. See `AGENT-DISCIPLINE.md §1.1` + `.claude/rules/reports-readonly.md` line 21.
 
 ---
 
-## Adding a Skin / Theme
+## 8. Sub-agent routing
 
-Hermes uses a data-driven skin system — no code changes needed to add a new skin.
+| Sub-agent | Invoke for | File |
+|---|---|---|
+| `architect` | Multi-file decomposition, extraction plans, **swarm orchestration** (sole authority). | `.claude/agents/architect.md` |
+| `chen` | Adversarial audits against merged or staged work. Spec-to-code delta. Pre-launch failure. | `.claude/agents/chen.md` |
+| `code-reviewer` | Post-change diff review, single pass. HYBRID grep + GitNexus where available. | `.claude/agents/code-reviewer.md` |
+| `grep-verifier` | Per-claim validation with grep evidence. Mid-session claim checking. | `.claude/agents/grep-verifier.md` |
 
-**Option A: User skin (YAML file)**
-
-Create `~/.hermes/skins/<name>.yaml`:
-
-```yaml
-name: mytheme
-description: Short description of the theme
-
-colors:
-  banner_border: "#HEX"     # Panel border color
-  banner_title: "#HEX"      # Panel title color
-  banner_accent: "#HEX"     # Section header color
-  banner_dim: "#HEX"        # Muted/dim text color
-  banner_text: "#HEX"       # Body text color
-  response_border: "#HEX"   # Response box border
-
-spinner:
-  waiting_faces: ["(⚔)", "(⛨)"]
-  thinking_faces: ["(⚔)", "(⌁)"]
-  thinking_verbs: ["forging", "plotting"]
-  wings:                     # Optional left/right decorations
-    - ["⟪⚔", "⚔⟫"]
-
-branding:
-  agent_name: "My Agent"
-  welcome: "Welcome message"
-  response_label: " ⚔ Agent "
-  prompt_symbol: "⚔"
-
-tool_prefix: "╎"             # Tool output line prefix
-```
-
-All fields are optional — missing values inherit from the default skin.
-
-**Option B: Built-in skin**
-
-Add to `_BUILTIN_SKINS` dict in `hermes_cli/skin_engine.py`. Use the same schema as above but as a Python dict. Built-in skins ship with the package and are always available.
-
-**Activating:**
-- CLI: `/skin mytheme` or set `display.skin: mytheme` in config.yaml
-- Config: `display: { skin: mytheme }`
-
-See `hermes_cli/skin_engine.py` for the full schema and existing skins as examples.
+Other sub-agents route swarm requests through architect; they do not swarm directly.
 
 ---
 
-## Cross-Platform Compatibility
+## 9. Commit conventions
 
-Hermes runs on Linux, macOS, and WSL2 on Windows. When writing code that touches the OS:
+Format:
 
-### Critical rules
+```
+<type>(<scope>): <summary> per <authority>
 
-1. **`termios` and `fcntl` are Unix-only.** Always catch both `ImportError` and `NotImplementedError`:
-   ```python
-   try:
-       from simple_term_menu import TerminalMenu
-       menu = TerminalMenu(options)
-       idx = menu.show()
-   except (ImportError, NotImplementedError):
-       # Fallback: numbered menu for Windows
-       for i, opt in enumerate(options):
-           print(f"  {i+1}. {opt}")
-       idx = int(input("Choice: ")) - 1
-   ```
+<body if needed>
 
-2. **File encoding.** Windows may save `.env` files in `cp1252`. Always handle encoding errors:
-   ```python
-   try:
-       load_dotenv(env_path)
-   except UnicodeDecodeError:
-       load_dotenv(env_path, encoding="latin-1")
-   ```
+Co-Authored-By: Claude <noreply@anthropic.com>
+```
 
-3. **Process management.** `os.setsid()`, `os.killpg()`, and signal handling differ on Windows. Use platform checks:
-   ```python
-   import platform
-   if platform.system() != "Windows":
-       kwargs["preexec_fn"] = os.setsid
-   ```
+- `type` ∈ `{feat, fix, docs, chore, reorganize, refactor}`.
+- `scope` names the subsystem slice: `scaffold`, `producer`, `reports`, `review-pkg`, `findings`, `session`, `phase-1a`, `reorg`, `rebuild-doc`, and similar.
+- `per <authority>` cites the ratifying reference: `per v7.2 §24 R-2`, `per Chen REVIEW-PR-3`, `per §13 line 1015-1028`.
 
-4. **Path separators.** Use `pathlib.Path` instead of string concatenation with `/`.
+Empirical examples from `git log`:
 
-5. **Shell commands in installers.** If you change `scripts/install.sh`, check if the equivalent change is needed in `scripts/install.ps1`.
+- `fix(scaffold): resolve 3 BLOCKERs + 3 MAJORs per Chen REVIEW-PR-3`
+- `fix(review-pkg): correct 10 MAJOR + 6 MINOR citation defects per Chen REVIEW-PR-4`
+- `reorganize(pr-3): promote 4 operator docs to docs/operator/, archive session artifacts`
+- `docs(session): log Phase 5 branch reconciliation in PHASE-5-STATUS`
+- `producer: V1 pipeline port to v7.2 (L0-L3 cascade, 194 tests, 4 xfail)`
+
+The `Co-Authored-By` trailer is standard when an agent contributed; observed variance includes `the role assigned to primary_reasoning` and bare `Claude`. Feature commits with dense bodies sometimes omit the trailer.
 
 ---
 
-## Security Considerations
+## 10. Session artifact conventions
 
-Hermes has terminal access. Security matters.
-
-### Existing protections
-
-| Layer | Implementation |
-|-------|---------------|
-| **Sudo password piping** | Uses `shlex.quote()` to prevent shell injection |
-| **Dangerous command detection** | Regex patterns in `tools/approval.py` with user approval flow |
-| **Cron prompt injection** | Scanner in `tools/cronjob_tools.py` blocks instruction-override patterns |
-| **Write deny list** | Protected paths (`~/.ssh/authorized_keys`, `/etc/shadow`) resolved via `os.path.realpath()` to prevent symlink bypass |
-| **Skills guard** | Security scanner for hub-installed skills (`tools/skills_guard.py`) |
-| **Code execution sandbox** | `execute_code` child process runs with API keys stripped from environment |
-| **Container hardening** | Docker: all capabilities dropped, no privilege escalation, PID limits, size-limited tmpfs |
-
-### When contributing security-sensitive code
-
-- **Always use `shlex.quote()`** when interpolating user input into shell commands
-- **Resolve symlinks** with `os.path.realpath()` before path-based access control checks
-- **Don't log secrets.** API keys, tokens, and passwords should never appear in log output
-- **Catch broad exceptions** around tool execution so a single failure doesn't crash the agent loop
-- **Test on all platforms** if your change touches file paths, process management, or shell commands
-
-If your PR affects security, note it explicitly in the description.
+| Path | Role | Retention |
+|---|---|---|
+| `worktree-session/` | Current session's logs, swarm-raw outputs, pre-flight reports. | Ephemeral within the session; merges with the PR. |
+| `archive/session-artifacts/<date>-<name>/` | Historical session evidence post-archive. | Read-only after archive. |
+| `docs/operator/` | Chen-verified operator reference material. | Ratified; maintain against v7.2 cites. |
+| `drafts/scaffold/` | 15 SQL migrations + 11 test files + `REBUILD-MANIFEST.md`. | On `main`; execution material for staging apply. |
+| `drafts/runbook/`, `drafts/remediation/` | Phase-1A execution material. | **Not on `main`.** Staged on `overnight/phase-1a-ready-2026-04-23` (local-only); lands at Phase-1A ratification. |
+| `reports/` | Session investigation outputs. Read-only per `.claude/rules/reports-readonly.md`. | On `main`; historical. |
 
 ---
 
-## Pull Request Process
+## 11. `.claude/rules/` template + when to add one
 
-### Branch naming
+Each `.claude/rules/*.md` file is a per-subsystem path-scoped discipline file. Template: `.claude/rules/example-rule.md`. Shape:
 
-```
-fix/description        # Bug fixes
-feat/description       # New features
-docs/description       # Documentation
-test/description       # Tests
-refactor/description   # Code restructuring
-```
+- **`paths`** — glob block naming the paths this rule governs.
+- **`DO NOT`** — bulleted prohibitions, each with rationale + v7.2 or authority cite.
+- **Architecture Notes** — entry points, source-of-truth files, state-management flow.
+- **Thresholds** — parameters with values + reasons (optional, when numeric limits apply).
+- **Key Files** — two-column table (File | Role).
 
-### Before submitting
+Existing rule files (per origin/main):
 
-1. **Run tests**: `pytest tests/ -v`
-2. **Test manually**: Run `hermes` and exercise the code path you changed
-3. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
-4. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.
+- `producer-boundary.md` — governs `producer/**`. Authority: v7.2 §3 Interpretation A, §11 line 739, §12 line 893, §29.
+- `reports-readonly.md` — governs `reports/**`. Carries the four-hallucinated-types cautionary tale.
+- `scaffold-boundary.md` — governs `drafts/scaffold/**`. Authority: v7.2 §20, §12, §24 plus Zero-Inference.
+- `example-rule.md` — the template.
 
-### PR description
-
-Include:
-- **What** changed and **why**
-- **How to test** it (reproduction steps for bugs, usage examples for features)
-- **What platforms** you tested on
-- Reference any related issues
-
-### Commit messages
-
-We use [Conventional Commits](https://www.conventionalcommits.org/):
-
-```
-<type>(<scope>): <description>
-```
-
-| Type | Use for |
-|------|---------|
-| `fix` | Bug fixes |
-| `feat` | New features |
-| `docs` | Documentation |
-| `test` | Tests |
-| `refactor` | Code restructuring (no behavior change) |
-| `chore` | Build, CI, dependency updates |
-
-Scopes: `cli`, `gateway`, `tools`, `skills`, `agent`, `install`, `whatsapp`, `security`, etc.
-
-Examples:
-```
-fix(cli): prevent crash in save_config_value when model is a string
-feat(gateway): add WhatsApp multi-user session isolation
-fix(security): prevent shell injection in sudo password piping
-test(tools): add unit tests for file_operations
-```
+**Write a new rule when:** a subsystem acquires a code surface large enough that its DO-NOTs cannot fit inside a single paragraph of `AGENT-DISCIPLINE.md §5`, when multiple agents are likely to touch it, or when it carries a distinct authority lineage (e.g., a new MCP-surface rule once §15 read surface ships). BACKLOG.md line 70 tracks anticipated additions.
 
 ---
 
-## Reporting Issues
+## 12. PENDING-EXPECTED discipline
 
-- Use [GitHub Issues](https://github.com/NousResearch/hermes-agent/issues)
-- Include: OS, Python version, Hermes version (`hermes version`), full error traceback
-- Include steps to reproduce
-- Check existing issues before creating duplicates
-- For security vulnerabilities, please report privately
+**PENDING-EXPECTED is a pattern, not a file.** Items tagged `<X>_PENDING_*` in scaffold source (e.g., `N-2_PENDING_CLAY_CONFIRM`, `R-1_PENDING_CLAY_RULING`, `R-3_PENDING_CLAY_RULING`) are **ratified draft states**, not defects. Reviewers and sub-agents MUST NOT flag them as bugs.
+
+The current instance-list for active work is `worktree-session/CHEN-FALSE-POSITIVES.md` (git `549a3ef`, 12 items enumerated). The canonical tag roster lives implicitly across `BACKLOG.md` lines 10-65 (every §24 / §29 item) and in the `-- PENDING:` tagged lines in `drafts/scaffold/*.sql` migration files.
+
+**Examples of PENDING-EXPECTED currently in the repo:**
+
+- R-1 Option B active at `drafts/scaffold/005_authority.sql:52` — Clay ratified 2026-04-23 by email; BACKLOG checkbox sync pending.
+- R-3 option (a) active at `drafts/scaffold/008_derivation.sql:70` — Clay ratified 2026-04-23.
+- N-2 trigger active at `drafts/scaffold/012_functions_triggers.sql:174`; application feature flag OFF until T-OV-1 passes.
+- Migrations 013 DRAFT, 014 OUTLINE (stubs raise NI001-NI005 in 012), 015 NI-stub + CREATE TRIGGER commented per Chen A-BLOCKER-2.
+- 4 strict xfails in producer V1 tests (F3, F5, F7, F8); prompts IMMUTABLE until these close.
+
+If Chen or grep-verifier is about to flag any of these, reference the allowlist-pattern first.
 
 ---
 
-## Community
+## 13. If something is ambiguous
 
-- **Discord**: [discord.gg/NousResearch](https://discord.gg/NousResearch) — for questions, showcasing projects, and sharing skills
-- **GitHub Discussions**: For design proposals and architecture discussions
-- **Skills Hub**: Upload specialized skills to a registry and share them with the community
+Halt and ask. Do not guess.
+
+`AGENT-DISCIPLINE.md §1.3`: "Silence in v7.2 is a gap, not a default." If v7.2 is silent on a schema / invariant / taxonomy question, it is an open Clay ask; log the silence, surface it to the operator, do not emit a fabricated value.
+
+If v7.2 is silent on a producer / models / cost / phase question, it is Porter's engineering call (v7.2 §3 Interpretation A); make the call explicit with rationale.
 
 ---
 
-## License
+## 14. Pointers for human contributors
 
-By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).
+- **`docs/operator/README.md`** — map of the operator execution package.
+- **`docs/operator/OPERATOR-REVIEW-CHECKLIST.md`** — per-migration review checklist.
+- **`docs/operator/ROADMAP-TIER-A-TO-D.md`** — the 28-prerequisite roadmap.
+- **`BACKLOG.md`** — what is open, by tier.
+- **`AGENT-DISCIPLINE.md`** — the operational doctrine in full.
+- **`.claude/agents/`** — sub-agent contracts (architect, chen, code-reviewer, grep-verifier).
+- **`CHANGELOG.md`** — chronological repo history.
+- **`SECURITY.md`** — schema guardrails + vulnerability reporting.
+
+Authority: `binding/v7.2.md`. Discipline: `AGENT-DISCIPLINE.md`.

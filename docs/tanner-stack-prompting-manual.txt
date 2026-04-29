@@ -1,0 +1,836 @@
+# Tanner-Stack Prompting Manual
+
+> **Audience.** A future assistant with no prior exposure to this harness who must write prompts that exercise it at full capacity. Every primitive named in this document was read directly from the harness configuration. Any capability the assistant might wish for that is **not** in here is **not** in this harness — write the prompt accordingly.
+>
+> **Method.** Read-only walk of `Porters-AI-Infra-main/Porters-AI-Infra-main/` (the actual harness root — see §0). Quotes are verbatim with `file:line` citations. Paraphrases are flagged. Inferences are flagged. The author of this manual did **not** invoke any sub-agent, skill, workflow, or command — only their definitions were read.
+>
+> **Build version observed.** v0.3.1 per the audit notes in `docs/build-notes/skill-audit-2026-04-21.md` (lines 144–148). Verification snapshot at `VERIFICATION.md` is v0.2-era (line 3); slash-prefixed skill references in that file reflect v0.2 conventions superseded by v0.3.0+.
+
+---
+
+## 0. Where the harness actually lives
+
+The user-facing primary working directory is `C:\Users\ptann\OneDrive\Work\motion granted\Case-Database-Production\`. The tanner-stack harness is **not** at that root. It is two directories deep at `Porters-AI-Infra-main/Porters-AI-Infra-main/`. All paths in this manual are relative to that nested root.
+
+Confirmed present at the harness root:
+
+| Asset | Status |
+|---|---|
+| `.claude/` (with `agents/`, `commands/`, `rules/`, `settings.json`, `launch.json`) | present |
+| `skills/` (28 directories) | present |
+| `workflows/` (4 markdown files) | present |
+| `personas/` (4 markdown files) | present |
+| `prompts/` (with `superprompts/` and `templates/`) | present (`templates/` is empty except `.gitkeep`) |
+| `docs/` (with `architecture.md`, `extending.md`, `methodology.md`, `project-claude-md-template.md`, `build-notes/`) | present |
+| `CLAUDE.md` | present (322 lines) |
+| `AGENTS.md` | present (104 lines) |
+| `VERIFICATION.md` | present (389 lines) |
+| `LEARNINGS.md` | present (105 lines) |
+| `BACKLOG.md` | present (57 lines) |
+| `README.md`, `LICENSE`, `.gitignore`, `.github/` | present |
+
+**Absent that a prompt-writer might assume.** There is no `binding/` directory at the harness root. There is no `archive/` directory at the harness root. There is no `mythos/` directory anywhere. There is no `hermes/` or `arsenal/` directory. There is no `hooks/` directory at the harness root (only a `.github/` directory and the path `hooks/` referenced in `CLAUDE.md` line 98 as a future Arsenal hook point that the harness does not ship). The directory `docs/build-notes/` exists and contains extraction-history notes (in scope but flagged as `type: other` per `CLAUDE.md` §3.5.6).
+
+---
+
+## 1. The single most important paragraph in the harness
+
+From `CLAUDE.md` lines 16–25:
+
+> tanner-stack is a drop-in starter kit for AI-assisted software engineering. It is not an application. It ships four things and nothing else:
+>
+> | Asset | Where | What it is |
+> |---|---|---|
+> | **Sub-agents** | `.claude/agents/` | Named sub-agents (Architect, Chen, Code Reviewer, Grep Verifier) with auto-delegation via `description`-field triggers, declared modes, and staged approval gates. Reference-doc copies at `personas/`. |
+> | **Skills** | `skills/` | Single-purpose capabilities that auto-invoke based on description matching. 8 are preloaded into sub-agents; 16 auto-invoke from the main session. |
+> | **Workflows** | `workflows/` | Reusable processes (audit → fix → build loop, PR review, commit conventions, audit-report template). |
+> | **Harness config** | `.claude/` | Settings, sub-agents, command shortcuts, rule scaffolds, launch config. |
+
+(Caveat: the asset table says "16 auto-invoke from the main session." The post-v0.3.1 inventory in `docs/build-notes/skill-audit-2026-04-21.md` lines 144–148 reports **19** main-session skills after `triage`, `finish`, and `summarize` were added. Treat **19** as canonical for v0.3.1.)
+
+The harness is **markdown plus YAML frontmatter plus a small `settings.json`**. There is no application code, no runtime, no server, no scheduler, no daemon. The "engine" is Claude Code's native delegation reading `description` fields.
+
+---
+
+## 2. Sub-agents — the only persistent operating identities
+
+Sub-agents live at `.claude/agents/*.md`. There are **four** and only four. Each is a markdown body with YAML frontmatter that Claude Code reads at session start to decide auto-delegation. Reference-doc mirrors at `personas/<name>.md` exist for historical continuity; the sub-agent files at `.claude/agents/` are authoritative (`CLAUDE.md` line 66).
+
+A sub-agent prompt should specify the natural-language signal that triggers the right sub-agent. Auto-dispatch is description-driven: each sub-agent's `description` field opens with `MUST BE USED` and lists `Use PROACTIVELY when user says ...` trigger phrases plus explicit `DO NOT USE for X — that is the Y sub-agent` carve-outs. Match your prompt's wording to those triggers and the right sub-agent fires without needing any explicit invocation syntax. (Quoted from `README.md` lines 18–20: "You speak to Claude Code naturally. ... Claude Code reads each sub-agent's and each skill's `description` frontmatter field at session start and routes your signal to the best match.")
+
+### 2.1 architect (`.claude/agents/architect.md`)
+
+| Field | Value |
+|---|---|
+| `name` | architect |
+| `model` | opus |
+| `tools` | Read, Write, Edit, Glob, Grep, Bash |
+| `color` | blue |
+| `memory` | project |
+| `skills` (preloaded) | swarm |
+| Expected posture | "high effort, long runs expected (design for up to ~60 turns). Staged work with operator gates between modes." (line 24) |
+
+**Auto-dispatch trigger** (line 10, verbatim):
+
+> MUST BE USED for system-level design, repo scaffolding, methodology extraction, staged audit/extract/verify workflows, AND all swarm orchestration decisions. Use PROACTIVELY when user says "architect", "scaffold", "extract", "audit a system", "parallel", "swarm", "multi-file refactor", or needs decisions about decomposing work across multiple independent execution units.
+
+**Modes.** Multi-mode with halt-and-await-approval gates: DISCOVER → EXTRACT → VERIFY. Architect declares `[MODE: DISCOVER]` / `[MODE: EXTRACT]` / `[MODE: VERIFY]` at the start of every response and never mixes modes (`.claude/agents/architect.md` lines 27–35).
+
+**Authority unique to architect.** Architect is the **sole sub-agent with swarm-invocation authority**. Other sub-agents request a swarm by routing through architect; they do not invoke `swarm` directly. The `swarm` skill is preloaded only in architect's frontmatter (line 16, plus the `Swarm Orchestration` section, lines 52–69).
+
+**Halt rules** (lines 92–98): operator-decision flag on any genericity classification ambiguity, path-sanity halt on missing source paths, provenance discipline on every extracted file, no silent decisions on lost behavior, swarm-veto authority over sequential-deps-disguised-as-swarm requests.
+
+**When to route to architect:** distill methodology from a codebase, scaffold a new repo from one, decompose multi-file/multi-subsystem work for parallel execution. Example trigger phrases verbatim (lines 84–90): "Extract the audit/fix/build methodology from `<path>` into a generic template." / "Pull Claude Code configs, skills, and personas from `<path>` and genericize them." / "I need to refactor these 40 files consistently — should I swarm this?" / "Run a parallel audit across these 12 subsystems."
+
+**When NOT to route to architect:** post-diff PR review (route to code-reviewer), latent-defect audit on existing code (route to chen), one-shot textual claim verification (route to grep-verifier).
+
+### 2.2 chen (`.claude/agents/chen.md`)
+
+| Field | Value |
+|---|---|
+| `name` | chen |
+| `model` | opus |
+| `tools` | Read, Grep, Glob, Bash (read-only — no Write, no Edit) |
+| `color` | orange |
+| `memory` | project |
+| `skills` (preloaded) | chen, audit-deep-subsystem, audit-finding-expansion, audit-spec-to-code-delta, audit-pre-launch-failure |
+| Expected posture | "max effort, long runs (design for up to ~80 turns). Audits are thorough by design — do not shortcut to hit a turn budget." (line 30) |
+
+**Auto-dispatch trigger** (line 10, verbatim):
+
+> MUST BE USED for audits of existing code in the repo. Use PROACTIVELY when user says "audit", "is this safe to ship", "what could break", "pre-launch check", "spec-to-code delta", or wants latent-issue discovery in a subsystem, module, or file that already exists (no pending diff or PR). Chen operates in four focused audit modes — deep subsystem, finding expansion, spec-to-code delta, pre-launch failure. Audit-only; does not fix, does not invent findings, requires grep evidence for every claim. DO NOT USE for reviewing proposed changes, diffs, or PRs — that is the code-reviewer sub-agent. DO NOT USE for first-pass textual verification of a claim — that is the grep-verifier sub-agent; chen's finding-expansion (MODE 2) is for drilling into an existing chen finding, not one-shot pattern checks.
+
+**Focus modes** (lines 32–51). Chen runs in exactly one of four modes per invocation. Mode is declared in the opening line of every response. Selection table verbatim from `chen.md` lines 44–49:
+
+| User signal | Mode |
+|---|---|
+| "audit this subsystem", "full audit of X", "what's wrong with X" | DEEP SUBSYSTEM |
+| "dig into this bug", "how far does this defect spread", "trace this finding" | FINDING EXPANSION |
+| "does the code match the spec", "verify against architecture", "has it drifted" | SPEC-TO-CODE DELTA |
+| "launch-ready?", "what would break in production", "pre-demo sanity" | PRE-LAUNCH FAILURE |
+
+If the signal is ambiguous between two modes, Chen states both candidates and picks the tighter one with justification; if irreducibly ambiguous, halts and asks (line 51).
+
+**Output contract** (lines 78–81). Chen produces a 12-section structured report (defined in the chen-audit superprompt — see §6 of this manual). Every finding labeled with severity (P0–P3), certainty (CONFIRMED / HYPOTHESIS / UNVERIFIED / DISPROVEN), blast radius, upstream cause, downstream consequence, recommended fix, live-verification bridge. Final verdict is one of: CLEAN, PROVISIONALLY CLEAN PENDING LIVE VERIFICATION, NO MATERIAL DEFECT FOUND IN REPO-ONLY REVIEW, NOT CLEAN, HIGH RISK / DO NOT SHIP.
+
+**What chen will not do** (lines 67–76): soften findings, narratively merge contradictions, mark CLEAN unless every false-clean-prevention criterion is met, carry a prior Claude answer forward as proof, declare a pattern-level finding closed from a single instance, Write or Edit files, mix modes within a single audit run.
+
+### 2.3 code-reviewer (`.claude/agents/code-reviewer.md`)
+
+| Field | Value |
+|---|---|
+| `name` | code-reviewer |
+| `model` | sonnet |
+| `tools` | Read, Grep, Glob, Bash (read-only) |
+| `color` | green |
+| `memory` | project |
+| `skills` (preloaded) | pr |
+| Expected posture | "high effort, moderate runs (design for ~30 turns). Single-pass review of a specific diff." (line 24) |
+
+**Auto-dispatch trigger** (line 10, verbatim):
+
+> MUST BE USED for pull request reviews, prepared diffs, and committed changes presented for review. Use PROACTIVELY when user says "review this PR", "review this diff", "check this change before I merge", or presents an explicit diff / changeset / commit for review. Applies three-layer discipline — correctness, design, style — plus blast-radius and scope-drift analysis via GitNexus (when available) and grep. Review-only; does not modify code. DO NOT USE for every WIP edit during active development — the code skill handles quick main-session review of work-in-progress. DO NOT USE for audits of existing code without a pending change — that is the chen sub-agent.
+
+**Mode.** Single-mode. Operates within `AGENTS.md`'s **IMPLEMENT** mode at the pre-commit phase (lines 26–29). Does not self-promote from review to edit.
+
+**Eight checks** (lines 70–172) labeled by evidence source (GREP / GRAPH / HYBRID): (1) highest-severity protocol violation, (2) dead-code edits, (3) inviolable-rule violations, (4) config-drift, (5) sensitive-field leaks, (6) logging discipline, (7) blast-radius analysis on modified symbols, (8) scope-drift check. Verdict: CLEAN / WARNINGS / BLOCKED.
+
+**GitNexus availability contract** (line 65): if any `npx gitnexus` call fails, continue with grep-only checks and explicitly note in the verdict which structural checks were skipped.
+
+### 2.4 grep-verifier (`.claude/agents/grep-verifier.md`)
+
+| Field | Value |
+|---|---|
+| `name` | grep-verifier |
+| `model` | sonnet |
+| `tools` | Read, Grep, Glob, Bash (read-only) |
+| `color` | cyan |
+| `memory` | project |
+| `skills` (preloaded) | grep-verify |
+| Expected posture | "high effort, short-to-moderate runs (design for ~30 turns). One-shot claim validator." (line 24) |
+
+**Auto-dispatch trigger** (line 10, verbatim):
+
+> MUST BE USED for textual / pattern verification of claims about file contents. Use PROACTIVELY when user says "did that edit apply", "does foo.ts still import bar", "is phrase X present in the repo", "confirm the change landed", or when R8-style domain-leakage greps need to run. Labels evidence CONFIRMED / LIKELY / INDETERMINATE / FALSE POSITIVE. Textual pattern-match confirmation only — no semantic judgment. DO NOT USE for semantic audit drill-down on an existing finding — that is chen's finding-expansion mode (MODE 2).
+
+**Output ratings** (lines 41–47): **CONFIRMED** (grep evidence directly supports), **LIKELY** (circumstantial supports), **INDETERMINATE** (can't prove or disprove from static analysis alone), **FALSE POSITIVE** (grep contradicts claim).
+
+**Six core rules** (lines 39–56) — never accept a claim without grep evidence; Phase 0 is mandatory; rate every finding; show your work; check the live path not dead code; watch for phantom bugs (the five named patterns: missing null check, unused variable, hardcoded value, function never called, dead code path).
+
+### 2.5 The personas/ directory — distinction
+
+Files at `personas/<name>.md` exist for the same four sub-agents (`architect`, `chen`, `code-reviewer`, `grep-verifier`). Each carries an explicit reference-doc disclaimer. From `personas/chen.md` line 17 (verbatim):
+
+> **REFERENCE DOC.** Operational form at [.claude/agents/chen.md](../.claude/agents/chen.md). Keep in sync on major edits; the sub-agent file is authoritative for Claude Code delegation.
+
+A prompt should never cite `personas/` for behavior. Cite `.claude/agents/` for delegation behavior; cite `personas/` only when discussing extension/historical-continuity context per `docs/extending.md` lines 9–15.
+
+There is **no separate "persona" concept beyond the sub-agents themselves** in this harness. The terminology "persona" appears in `docs/methodology.md` lines 50–62 as a general framing for "operating identities," but operationally a persona = a sub-agent.
+
+---
+
+## 3. Skills — the rigor and capability layer
+
+Skills live at `skills/<name>/SKILL.md`. There are 28 directories total: 8 sub-agent-preloaded, 19 main-session auto-invoke, 1 scaffold (`_template`). Per `docs/build-notes/skill-audit-2026-04-21.md` lines 144–157.
+
+Skills auto-invoke based on `description` matching, the same way sub-agents do. The harness's discipline — quoted from `docs/build-notes/skill-audit-2026-04-21.md` line 12 — is:
+
+> every skill must be either (a) preloaded in a sub-agent's `skills:` frontmatter OR (b) have auto-invocation language (`Use PROACTIVELY` / `MUST BE USED` / `Use when ...`) in its description — no orphans.
+
+### 3.1 Skill frontmatter vocabulary
+
+Recurring frontmatter fields (observed across all `SKILL.md` files):
+
+| Field | Meaning observed in the files |
+|---|---|
+| `name` | Lowercase hyphenated skill name, must match directory. |
+| `description` | Auto-invocation trigger language. |
+| `disable-model-invocation: true` | Model cannot auto-fire this skill from arbitrary prompts; operator (or sub-agent preload) must explicitly invoke. Present on most rigor and audit skills. |
+| `user-invocable: true` | Operator can directly invoke. Observed on `100`, `pr`, `soft`, `zero`. |
+| `context: fork` | Skill runs in a forked context window, isolating from main thread. Observed on most fork-style skills (`adverse`, `code`, `lossy`, `diagnose`, `chen`, `decide`, `grep-verify`, `audit-*`, `_template`, `st`). |
+| `effort: low \| medium \| high \| max` | Effort hint. `max` is observed on `adverse`, `code`, `lossy`, `st`, `chen`, `swarm`, `audit-*`. |
+| `argument-hint: "[...]"` | Hint string for the operator-supplied `$ARGUMENTS`. |
+| `allowed-tools: ...` | Tool allowlist for the skill body. |
+
+### 3.2 Rigor modes — the operator's primary discipline lever
+
+Four rigor modes ship. Each stays active for the rest of the session once activated.
+
+| Skill | Trigger phrases (from `description`) | Standard imposed |
+|---|---|---|
+| **`100`** (`skills/100/SKILL.md`) | "I need this right", "no margin for error", "prove it" | Strictest. file:line proof on every finding, proven root cause on every fix, full-file pattern census, deep wire trace, explicit CONFIRMED/HYPOTHESIS/UNVERIFIED labels. (Lines 24–59.) |
+| **`zero`** (`skills/zero/SKILL.md`) | "no false positives", "don't miss any", "find all of them" | Zero False Positive AND Zero False Negative. Pattern census, no clean verdict without exhaustive search. Lighter than `/100` (no deep-wire-trace requirement), stricter than `/soft`. (Lines 19–63.) |
+| **`soft`** (`skills/soft/SKILL.md`) | "no guessing", "hard evidence only", "prove it with the source" | Bans soft conclusions — no "likely", "probably", "should work", "might be" without exact file/line/runtime value/fix. (Lines 19–48.) |
+| **`shutup`** (`skills/shutup/SKILL.md`) | "stop talking", "shut up", "quiet" | Silent mode. Claude stops generating tokens until explicitly told to resume. Context-preservation tool. (Lines 14–22.) |
+
+The strictness ordering is documented in each skill's `description` field cross-references. From `skills/100/SKILL.md` line 10: "Strictest rigor tier — tighter than /zero (proof but not full census) and /soft (only bans soft conclusions)." From `skills/zero/SKILL.md` line 10: "Lighter than /100 (which also requires deep wire trace to execution proof) but stricter than /soft." From `skills/soft/SKILL.md` line 10: "Less strict than /100 (which also requires full-file pattern census and deep wire trace)."
+
+A `/max` command at `.claude/commands/max.md` activates `/100 + /zero + /soft` simultaneously as a one-shot wrapper (lines 1–32 of `max.md`).
+
+A prompt-writer declares rigor by either (a) using the natural-language trigger phrases above (auto-fire), (b) typing the slash form `/100`, `/zero`, `/soft`, `/shutup`, `/max` (operator override per `disable-model-invocation: true` semantics), or (c) writing the trigger phrases in the prompt body so the model self-elects (when `disable-model-invocation: true`, this requires the operator to explicitly invoke; the `100`/`soft`/`zero` skills carry both `user-invocable: true` and `disable-model-invocation: true`).
+
+### 3.3 Audit / stress-test skills (main-session)
+
+| Skill | Purpose | `effort` | Forks context? |
+|---|---|---|---|
+| `adverse` | Adversarial completeness check across security / business-logic / integration-wiring dimensions; scores each %. (`skills/adverse/SKILL.md` lines 18–117.) | max | yes |
+| `code` | Deep source-code verification. WIP-only — distinguishes WIRING CONFIRMED from EXECUTION PROVEN. Explicit carve-out from `code-reviewer` sub-agent. (`skills/code/SKILL.md` lines 18–115.) | max | yes |
+| `lossy` | Hunts design-level lossy transformations across pipeline boundaries. Distinct from `summarize` (document compression). (`skills/lossy/SKILL.md` lines 18–114.) | max | yes |
+| `st` | Full 5-step stress-test protocol — boundary + invariants → upstream/downstream contracts → 9-viewpoint stress test → conflict hunt → pre-mortem. Distinct from `adverse` and chen MODE 4. (`skills/st/SKILL.md` lines 19–219.) | max | yes |
+
+### 3.4 Active-bug investigation
+
+| Skill | Purpose |
+|---|---|
+| `diagnose` | 4-phase investigation: LOCATE (live-path verification) → CONTEXT (pipeline stage) → ROOT CAUSE (bug vs symptom vs upstream-data) → FIX PROPOSAL. Distinct from `chen` (latent-defect audit) and `code` (WIP execution verification). (`skills/diagnose/SKILL.md` lines 18–157.) |
+
+### 3.5 Decision support
+
+| Skill | Purpose |
+|---|---|
+| `triage` | Structured option-comparison framework when user has presented 2+ explicit choices. Carved out from `decide`. (`skills/triage/SKILL.md` lines 16–132.) |
+| `decide` | Surfaces pending decisions the project has stalled on (PROGRESS.md, CLAUDE.md, git state, code TODOs, uncommitted changes). Carved out from `triage`. (`skills/decide/SKILL.md` lines 18–71.) |
+
+### 3.6 Task closure
+
+| Skill | Purpose |
+|---|---|
+| `finish` | Commit-and-close-out for in-progress work. Verify → stage → commit → halt before push. Explicit carve-out from `pr` (PR submission lives in `pr` skill, preloaded in code-reviewer). (`skills/finish/SKILL.md` lines 18–145.) |
+| `summarize` | Length-targeted document compression with signal preservation. Carved out from `lossy` and `shutup`. (`skills/summarize/SKILL.md` lines 16–113.) |
+
+### 3.7 Session lifecycle
+
+| Skill | Purpose |
+|---|---|
+| `session-start` | Branch-safety check, dev-server status, recent commits, working tree, surface risks. Also invokable as `/start` (alias). (`skills/session-start/SKILL.md` lines 18–82.) |
+| `session-end` | Structured handoff doc. Captures git state + changes-with-risk-level + decision IDs touched + remaining work P0/P1/P2 + blockers + next concrete step. Also invokable as `/end` (alias). (`skills/session-end/SKILL.md` lines 18–113.) |
+| `pr` | PR preflight + submission. Preloaded in code-reviewer sub-agent. Branch-safety, code-reviewer delegation, typecheck/lint, explicit file staging, commit + push + `gh pr create`. (`skills/pr/SKILL.md` lines 19–78.) |
+
+### 3.8 GitNexus integration (auto-invoke only when GitNexus tooling is available)
+
+All four explicitly gate their auto-fire on GitNexus presence (per `docs/build-notes/adversarial-cleanup-2026-04-22.md` lines 49–50, "scope to 'when GitNexus tooling is available'"):
+
+| Skill | Purpose |
+|---|---|
+| `gitnexus-cli` | Reference for `npx gitnexus` commands (analyze, status, clean, wiki, list). |
+| `gitnexus-debugging` | Use GitNexus structural queries to trace errors. Falls back to `/diagnose` if GitNexus absent. |
+| `gitnexus-exploring` | GitNexus call-graph queries for unfamiliar code. Falls back to architect's DISCOVER mode if GitNexus absent. |
+| `gitnexus-guide` | Quick reference for all GitNexus MCP tools, resources, graph schema. |
+
+### 3.9 Sub-agent-preloaded skills (do not main-session auto-invoke)
+
+| Skill | Owning sub-agent | Purpose |
+|---|---|---|
+| `chen` | chen | Activates chen-audit-protocol superprompt. Description deliberately VAGUE (no `Use when` opener) because preloaded — see `docs/build-notes/adversarial-cleanup-2026-04-22.md` line 30. |
+| `audit-deep-subsystem` | chen | MODE 1 playbook. |
+| `audit-finding-expansion` | chen | MODE 2 playbook. |
+| `audit-spec-to-code-delta` | chen | MODE 3 playbook. |
+| `audit-pre-launch-failure` | chen | MODE 4 playbook. |
+| `pr` | code-reviewer | (See §3.7 — also operator-invocable.) |
+| `grep-verify` | grep-verifier | Claim verification protocol (CONFIRMED/LIKELY/INDETERMINATE/FALSE POSITIVE). |
+| `swarm` | architect | **Architect-invoked only.** Description (`skills/swarm/SKILL.md` line 10): "INVOKE ONLY FROM WITHIN the architect sub-agent — architect owns the swarm go/no-go decision. DO NOT auto-fire from main-session 'parallel' or 'bulk task' signals; those route to architect first, which invokes this skill internally when warranted." |
+
+### 3.10 Scaffold
+
+| Asset | Purpose |
+|---|---|
+| `skills/_template/SKILL.md` | Authoring scaffold for new skills. Not invokable. Operators copy via `cp -r skills/_template skills/<new>` per `docs/extending.md` lines 86. |
+
+---
+
+## 4. Slash-commands — operator-controlled overrides
+
+Commands live at `.claude/commands/*.md`. There are **17** files. Per `CLAUDE.md` line 25 and §3.5 line 74, commands are "structured slash-command workflows in `.claude/commands/`" that "always override auto-dispatch when you want direct control."
+
+Most commands take a free-form `$ARGUMENTS` and produce a structured output. Several are aliases pointing at a canonical command. The full list:
+
+| Command | One-line purpose | Notes |
+|---|---|---|
+| `/adverse` | Adversarial completeness check (security / business-logic / integration coverage). | Mirrors the `adverse` skill but as a structured slash invocation. (`adverse.md` lines 1–54.) |
+| `/blast` | Blast-radius analysis: direct deps → transitive → type deps → DB deps → pipeline-stage map → risk summary. (`blast.md` lines 1–40.) | Pre-change safety analysis. |
+| `/db` | Schema-code alignment check. SQL inspection + grep cross-ref + ghost/orphan column report. (`db.md` lines 1–62.) | DB-aware projects only. |
+| `/dead` | Live/dead-path verdict for a file or function. (`dead.md` lines 1–40.) | Verdict: LIVE / DEAD / PARTIAL. |
+| `/downstream` | Alias for `/impact`. (`downstream.md` lines 1–7.) | |
+| `/finalize` | Build-clean → `/zt` scan → uncommitted-changes review → stage + commit + push. (`finalize.md` lines 1–56.) | Ships work end-to-end with safety gates. Never push to main/master/Production. |
+| `/grep-all` | Exhaustive grep coverage protocol. Broad sweep + alias/variant sweep + every hit listed + classified + live-path filter. (`grep-all.md` lines 1–51.) | |
+| `/impact` | Upstream + downstream impact analysis with pipeline boundaries + inviolable-rule risk + risk rating. (`impact.md` lines 1–53.) | `/upstream` and `/downstream` both alias here. |
+| `/label` | Evidence-labeled investigation. Forces every finding to be CONFIRMED / INFERRED / UNVERIFIED. (`label.md` lines 1–32.) | |
+| `/max` | Activates `/100` + `/zero` + `/soft` simultaneously. (`max.md` lines 1–32.) | One-shot wrapper for the strictest combined rigor. |
+| `/project:tdd` | Test-Driven Fix Workflow. 4 phases: read spec → write FAILING tests → operator confirms → implement → verify. (`project-tdd.md` lines 1–45.) | Halts after Phase 2 (failing tests written) until operator says "implement." |
+| `/root` | Root-cause matrix. Generates candidates with FOR/AGAINST/falsification/likelihood per candidate. Halts before implementation. (`root.md` lines 1–39.) | |
+| `/swarm` | Parallel investigation swarm. Decompose → spawn ≤5 subagents → collect → synthesize. (`swarm.md` lines 1–43.) | Structured override for the architect-owned auto-routing path. |
+| `/upstream` | Alias for `/impact`. (`upstream.md` lines 1–7.) | |
+| `/verify` | 3-leg verification loop: STRUCTURE (typecheck/build) + FACTS (grep) + BEHAVIOR (tests). (`verify.md` lines 1–89.) | Cross-references `/project:tdd` if no test coverage. |
+| `/zero` | Zero-FP / Zero-FN mode (mirror of `zero` skill). (`zero.md` lines 1–34.) | Stays active for the rest of the session. |
+| `/zt` | Zero-tolerance pattern scan for inviolable-rule violations. (`zt.md` lines 1–37.) | Must be templated per project; ships as scaffold with placeholder rules. |
+
+A prompt-writer reaches for a slash-command when (a) they want direct control instead of letting auto-dispatch choose, (b) the work needs a specific structured output that the command produces, or (c) they want to trigger a workflow that auto-dispatch wouldn't fire on its own (e.g., `/finalize` for a end-of-task ship sequence). Otherwise, the harness's preference (`README.md` lines 16–22) is to speak naturally and let auto-dispatch route.
+
+---
+
+## 5. Workflows — multi-step processes
+
+Workflows live at `workflows/*.md`. Four workflow files ship.
+
+### 5.1 `workflows/audit-fix-build.md` — the default loop
+
+The harness's default for any non-trivial change. Three phases with halt gates.
+
+**Phase 1 — AUDIT** (find truth, propose nothing). Invocation: chen sub-agent (auto-delegates from "audit this subsystem" / "is this safe to ship") OR `diagnose` skill (auto-invokes from error / "why is this failing") OR code-reviewer sub-agent (auto-delegates from "review this diff"). Deliverable: findings report with severity + certainty + file:line evidence + pattern-vs-instance + blast radius + upstream/downstream + fix sketch (no implementation) + missing-evidence list. **Halt gate: operator reviews the report and approves specific findings for Phase 2. Never self-promote from AUDIT to FIX.** (Lines 22–48.)
+
+**Phase 2 — FIX** (one finding at a time). One finding per commit unless a grouped change set. Invoke grep-verifier on each claim. Run typecheck after every edit (PostToolUse hook). For pattern-level findings, run full-file or full-codebase census before claiming complete. Discipline rules quoted (lines 62–68): surgical changes (Karpathy 8.3); no speculative fixes; restrictive fallbacks (LEARNINGS §5); live path only; write-side before read-side (LEARNINGS §4). (Lines 50–73.)
+
+**Phase 3 — BUILD** (integrate, verify, ship). Invocation: `/verify <scope>` (3-leg) → `adverse` skill (auto-fires from "what am I missing") → optionally `st` skill → `pr` skill (preloaded in code-reviewer). Rules quoted (lines 91–97): execution proof not wiring proof; no "probably fixed"; session-end discipline. **Halt gate: operator owns PR merge. Never merge to main/master/LIVE/Production from a Claude Code session.** (Lines 75–98.)
+
+**Loop semantics** (lines 102–107): out-of-scope discoveries → BACKLOG.md, never inline. Bug that invalidates a Phase 1 finding → return to Phase 1. Multi-file refactors sharing a contract → grouped change set → one Phase 2 commit, not N. If batching is happening, STOP.
+
+**Anti-patterns named verbatim** (lines 111–117): "I already know the bug" (skip-Phase-1), pattern-level close-from-one-hit, writing code before success criteria, dead-code edits, "should work" / "looks correct" language.
+
+### 5.2 `workflows/pr-review.md` — three-layer PR discipline
+
+Three layers, none optional (lines 14–62). Layer 1: Author preflight via `pr` skill (branch safety / code-reviewer delegation / typecheck / test suite / explicit file staging / push + `gh pr create`). Layer 2: code-reviewer sub-agent structural sweep. Verdict CLEAN / WARNINGS / BLOCKED. Layer 3: human merge decision (operator — never the Claude Code session — makes the merge call).
+
+Binding rules quoted (lines 91–97): no force-push; no direct commits to protected branches; explicit file staging (`git add .` banned); commit messages follow convention or PR is blocked; code-reviewer runs on every PR; WARNINGS do not silently become CLEAN.
+
+### 5.3 `workflows/commit-conventions.md` — commit format
+
+Conventional Commits–style: `<type>(<scope>): <short description>` with body and footer. Subject ≤ 72 chars. Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `style`. Body required for every `fix` commit (lines 76–88). Decision-code reference convention. `BREAKING CHANGE:` footer for public-contract changes. Footer: `Co-Authored-By: Claude <noreply@anthropic.com>` per project attribution.
+
+Binding rules (lines 172–180): every fix has a body; imperative mood; no WIP commits on protected branches; one logical change per commit; reference decision codes; never `git add .`; never amend a pushed commit.
+
+### 5.4 `workflows/audit-report-template.md` — audit deliverable shape
+
+Structural template for any formal audit. Sections: Executive Summary → Scope → Findings (Critical/High/Medium/Low) → False Positives Investigated → Coverage Summary (Security / Business Logic / Integration with %) → Open Questions → Recommended Actions → Audit Checklist. (Lines 1–123.)
+
+---
+
+## 6. The chen-audit-protocol superprompt
+
+Lives at `prompts/superprompts/chen-audit-protocol.md`. 779 lines. The chen sub-agent's `chen` skill (preloaded) defers to this file for the full identity, authority resolution rules, failure-mode countermeasures, audit modes, review agents, search discipline, deep trace rules, false-clean prevention, report format, and severity definitions.
+
+**Authority resolution hierarchy** (verbatim, lines 138–145):
+
+> 1. **Live code read in this session**
+> 2. **Live ground-truth verification** (type-checker output, SQL results, execution traces, logs)
+> 3. **Binding decisions**
+> 4. **Current architecture document**
+> 5. **This superprompt's project-specific overlay facts**
+> 6. **Historical handoffs, summaries, prior Claude outputs, comments, assumptions**
+>
+> If this superprompt conflicts with live code, binding decisions, or the current architecture, this superprompt is wrong on that point.
+
+**The same-brain problem** (lines 28–55): "Claude and Chen are not truly independent minds. They share the same model family, similar priors, similar completion bias, similar tendency to smooth contradictions ... The only defense is **ground truth that neither side invented**: live code, actual command output, actual SQL results, actual schema output, actual logs, actual execution traces, exact file:line citations." A prompt-writer should expect Chen to call this out when the prior context is heavy with prior Claude reasoning.
+
+**10 core failure-mode countermeasures** (lines 185–238): CM-1 Code Before Specs / CM-2 Two Passes Per File / CM-3 Wiring is Not Correctness / CM-4 Never Trust Summaries / CM-5 Pattern Not Instance / CM-6 Absence Detection is Separate Work / CM-7 Interaction Bugs Outrank Isolated Cleanliness / CM-8 No Silent Conflict Resolution / CM-9 Consultation Mode is Weaker than Interrogation Mode / CM-10 False Clean is a Defect.
+
+**10 review agents** (lines 367–421): Static Code Correctness / Completeness-Absence / Wiring-Flow Trace / State Machine-Status Safety / Schema-Data Contract / External Integration Risk / Security-Privilege-Data Exposure / Representation-User Surface Risk / AI Slop Detection / Regression-Fix Collision.
+
+**Required report format** (lines 611–706): 12 sections — SCOPE → AUTHORITY/DRIFT CHECK → BOUNDARY INVENTORY → EXECUTIVE TRUTH → FINDINGS → GROUPED CHANGE SETS → MISSING EVIDENCE/CLOSURE LIMITS → OUT-OF-SCOPE CRITICAL FLAGS → RESIDUAL RISK → IMPLEMENTATION ORDER → ADVERSARIAL COMPLETENESS CHECK (with %) → CLEANLINESS VERDICT.
+
+**Severity definitions** (lines 709–716): P0 (user harm, data corruption, security breach, money/state divergence, false verification, production outage on a critical path); P1 (serious functional defect, broken workflow branch, hidden silent failure, major drift, high-likelihood production bug); P2 (correctness, resilience, maintainability that compounds); P3 (hygiene, cleanup, drift, low-risk inconsistency).
+
+**Final operating philosophy** (lines 759–767, verbatim):
+
+> Read the code before the story.
+> Surface the contradiction before the summary.
+> Trace the boundary before blessing the function.
+> Label the assumption before relying on it.
+> State the missing proof before claiming certainty.
+> If it is not verified, it is not clean.
+
+A prompt invoking chen does not need to repeat this content — chen's `chen` skill activator (preloaded) and the audit-mode skills (also preloaded) point chen at the superprompt. A prompt **does** need to scope chen properly: state the subsystem, the audit mode if you know it, and the boundary conditions. Per `chen.md` line 49 and the superprompt's AUDIT SCOPING RULE (lines 124–131), each audit targets one defined subsystem unless the operator explicitly instructs otherwise.
+
+---
+
+## 7. Rules — `.claude/rules/`
+
+Only one file ships: `.claude/rules/example-rule.md`. It is a **scaffold**, not an active rule. It contains placeholder slots: paths (`src/your-subsystem/`), DO NOT list with bracketed examples, Architecture Notes with `{path/to/entrypoint.ts}` slots, Thresholds table, Key Files table.
+
+Per `docs/extending.md` lines 122–134, rules are intended to be path-scoped and load when "the agent touches matching paths." The harness as shipped has zero active rules. A prompt-writer adopting tanner-stack for a real project must author per-subsystem rule files following the `example-rule.md` pattern. There is no harness-internal automation that fires rules — they are loaded contextually based on path matching by Claude Code's native rule-loading.
+
+(The mechanism by which Claude Code matches paths to rule files is **not documented in tanner-stack itself**. The behavior is described in `docs/extending.md` line 134: "Claude Code loads rule files when the agent touches matching paths.")
+
+---
+
+## 8. Settings, hooks, and launch config
+
+### 8.1 `.claude/settings.json`
+
+Full file (57 lines). Key facts:
+
+```json
+"model": "opus"
+"permissions": {
+  "allow": [
+    "Read", "Grep", "Glob",
+    "Bash(git status*)", "Bash(git branch*)", "Bash(git log*)",
+    "Bash(git diff*)", "Bash(git add*)", "Bash(git commit*)",
+    "Bash(git stash*)", "Bash(git push*)",
+    "Bash(grep *)", "Bash(find *)", "Bash(ls *)", "Bash(cat *)",
+    "Bash(head *)", "Bash(tail *)", "Bash(wc *)", "Bash(file *)",
+    "Bash(dos2unix *)"
+  ],
+  "deny": [
+    "Bash(rm -rf *)", "Bash(git push --force*)",
+    "Bash(git checkout main*)", "Bash(git checkout master*)"
+  ]
+}
+```
+
+**Hooks.** Two hook entries (lines 33–55):
+
+- **PostToolUse on Edit|Write**: echoes `'Edit complete. Run your project type checker (configured per language / toolchain).'` Reminder to type-check after every edit.
+- **PreToolUse on Edit|Write**: parses the file path from input, blocks if the path matches `(DEAD_FILE_PATTERN_1|DEAD_FILE_PATTERN_2|PRODUCTION_LIVE_PATH)` with stderr message `BLOCKED: $FILE_PATH matches a protected path. Check CLAUDE.md → DO NOT Edit.` and `exit 2`. The `DEAD_FILE_PATTERN_*` placeholders must be replaced per-project.
+
+The default is **opus**, write/edit are enabled (subject to the PreToolUse block), git operations are widely allowed, destructive shell commands and force-push and checkout-to-main/master are denied.
+
+### 8.2 `.claude/launch.json`
+
+Placeholder dev-server config:
+
+```json
+"name": "dev-server",
+"runtimeExecutable": "<PROJECT_DEV_COMMAND>",
+"runtimeArgs": ["<PROJECT_DEV_ARGS>"]
+```
+
+Comment (line 3): "Language- and project-specific values set by first-session derivation (v0.4+) or operator overlay in `.claude/settings.local.json`."
+
+---
+
+## 9. Auto-dispatch — how routing actually works
+
+Quoted from `CLAUDE.md` §3.5 line 74:
+
+> Routing sub-agents and skills from natural-language task signals is handled primarily by Claude Code's native delegation: each sub-agent's `description` frontmatter field (in `.claude/agents/*.md`) and each main-session skill's `description` field (in `skills/*/SKILL.md`) describe when they fire, and Claude Code picks the best match. **Structured slash-command workflows in `.claude/commands/` always override auto-dispatch** when you want direct control.
+
+The §3.5.1 routing table (`CLAUDE.md` lines 80–89) maps user signals to default dispatch. Quoted relevant rows:
+
+| User signal | Default dispatch |
+|---|---|
+| "audit" / "review this" / "is this correct" / "find issues" | chen sub-agent. Pick audit submode. |
+| "fix X" / "resolve Y" / "clean up Z" | `workflows/audit-fix-build.md` Phase 2 (FIX). If a prior audit report exists, resume at Phase 2; otherwise dispatch to chen first, then Phase 2. |
+| "build X" / "add X" / "create a feature" | Phase 3 (BUILD) via main session; conclude by auto-invoking the `pr` skill. |
+| "refactor" / "restructure" / "reorganize" | Full audit-fix-build loop starting with chen MODE 1 or MODE 2. Use `/blast` on all modified symbols. |
+| "PR review" / "review this pull request" / "review this diff" | code-reviewer sub-agent + `workflows/pr-review.md`. |
+| "verify X" / "confirm Y" / "check that Z" | grep-verifier (textual) or chen MODE 2 (semantic). |
+| "explain this codebase" / "onboard me" / "how does X work" | architect DISCOVER mode. GitNexus skill auto-invokes if available. |
+| "bulk task" / "do X across all files" / "parallel" / "swarm" | architect — architect decides swarm vs serial and invokes preloaded `swarm` skill when warranted. |
+
+**Clarification gate** (CLAUDE.md §3.5.5, lines 136–145, paraphrase): the harness binds itself to halt and ask exactly one clarifying question when (a) the signal does not clearly match any row in §3.5.1, (b) two conflicting signals are present, (c) target scope is undefined, or (d) the desired output shape is ambiguous (findings report vs implemented fix vs both). Do not chain guesses. Do not propose a menu. Per CLAUDE.md line 145 (verbatim): "The stack is built on the premise that **clarification cost < misroute cost**."
+
+**Live markdown cross-reference graph** (CLAUDE.md §3.5.6, lines 148–199). The harness instructs every session to build a live graph from the markdown files on session start. Quoted (line 199): "If §3.5.1 and the graph disagree, the graph wins." A prompt-writer should not over-trust any list in the manual or in CLAUDE.md — the markdown files themselves are source of truth, and routing is dynamically resolved against them on every session start.
+
+---
+
+## 10. Parallelism, swarm, and the unattended-overnight question
+
+This is the highest-stakes question for an external assistant who wants to run prompts overnight. The verdict the harness supports:
+
+### 10.1 Direct evidence on parallel execution
+
+**Architect owns swarm.** From `CLAUDE.md` lines 58–60 (verbatim):
+
+> **Swarm orchestration is architect-owned.** Any parallel execution decision — when to swarm, when not to, how to decompose the work — routes through the architect sub-agent. The `swarm` skill is preloaded only in `.claude/agents/architect.md`. Other sub-agents request a swarm *via* architect; they do not invoke it directly.
+
+**Triggers and prohibitions** verbatim from `CLAUDE.md` §3.5.4 lines 116–132:
+
+> Trigger a swarm when the task is genuinely parallelizable. Skip when the task requires holistic reasoning.
+>
+> **Trigger a swarm if any of these hold:**
+> - Task operates across 10+ independent files.
+> - No cross-file dependencies between the subtasks.
+> - Audit work where findings are independent per subsystem.
+> - Bulk refactor following a consistent, mechanical pattern.
+>
+> **Do NOT swarm when:**
+> - Single-file work.
+> - Sequential dependencies (subtask B consumes subtask A's output).
+> - Architectural changes requiring holistic reasoning about the whole system.
+> - Fewer than ~5 files — swarm overhead exceeds benefit.
+>
+> **Invocation:** architect decomposes the task and invokes the preloaded `swarm` skill (`skills/swarm/SKILL.md`) — decompose by file boundary, deploy up to 5 subagents, synthesize results, no two agents edit the same file. Synthesis step is mandatory.
+
+**Hard constraints** from `AGENTS.md` lines 28–34 verbatim:
+
+> 1. **Decompose by file boundary** — each agent owns a non-overlapping set of files.
+> 2. **Read-only subagents** — subagents investigate and report; the main thread synthesizes and edits.
+> 3. **Max 5 subagents per swarm** — context budget constraint.
+> 4. **Each agent must complete independently** — no agent waits on another's output.
+> 5. **Main thread merges** — conflicts between subagent findings are resolved by the main thread, not by the agents themselves.
+
+**Swarm patterns documented** (from `skills/swarm/SKILL.md` lines 41–60): Audit Swarm (one agent per codebase zone), Investigation Swarm (one issue from multiple angles), Review Swarm (one agent per changed file after implementation), Smoke-Test Swarm (one agent per tier/environment/variant).
+
+**Current-implementation acknowledgment.** From `docs/architecture.md` lines 42–46 (verbatim):
+
+> ### Swarm Mode
+>
+> **What it is:** A parallel agent coordination layer where multiple Claude Code agents work concurrently on non-overlapping file sets.
+>
+> **Current state:** The architect sub-agent's preloaded `swarm` skill (with a structured command wrapper at `.claude/commands/swarm.md`) implements single-session swarm decomposition (spawn subagents from a main thread). Full multi-process swarm coordination is not implemented.
+
+The `/swarm` slash-command wrapper (`.claude/commands/swarm.md` line 6 verbatim) describes mechanics: "Deploy subagents to investigate multiple files or areas simultaneously. Each subagent runs in a separate context window, keeping the main thread clean." Hard rule (line 39): "Maximum 5 subagents per swarm (context budget)" — and (line 40) "Each subagent should take < 2 minutes."
+
+### 10.2 Direct evidence on long-running / unattended work
+
+The harness has **no documented primitive for unattended overnight execution**. The terms `cron`, `scheduler`, `background daemon`, `automation runner`, `unattended runner`, `nightly job` do not appear in any harness configuration file outside the build-notes (and within the build-notes, the only "overnight" reference is to `mg-overnight`, the *name of a parallel source repository* used during the extraction phase — see `docs/build-notes/discovery.md` lines 23, 168, etc.; not a runtime capability).
+
+**Hermes (notification/routing) is documented as unimplemented.** From `docs/architecture.md` lines 52–58 (verbatim):
+
+> ### Hermes (Notification / Routing Agent)
+>
+> **What it is:** A lightweight agent responsible for routing findings and alerts between the main coding agent and human operators — Slack messages, GitHub comments, issue creation.
+>
+> **Plug-in point:** Hermes would operate as a separate MCP-connected agent. It would hook into session-end events (from `session-end` skill) and violation events (from `/zt`). The `AGENTS.md` parallel agent rules would govern its coordination with the main agent.
+>
+> **What's needed to implement:** An MCP server with Slack/GitHub write access, a finding serialization format, and routing rules.
+
+**Arsenal (tool registry) is documented as unimplemented.** `docs/architecture.md` lines 68–74.
+
+**Mythos (long-term memory) is documented as unimplemented.** `docs/architecture.md` lines 60–66 verbatim:
+
+> ### Mythos (Long-Term Memory Layer)
+>
+> **What it is:** A persistent memory system that survives across sessions — project decisions, resolved debates, accumulated LEARNINGS beyond what fits in LEARNINGS.md.
+>
+> **Plug-in point:** Mythos would connect at session start (read) and session end (write). The `session-start` and `session-end` skills are the current hook points. The `LEARNINGS.md` discipline is the manual equivalent.
+>
+> **What's needed to implement:** A vector store or structured knowledge base, a retrieval protocol (what to load given current task), and a write discipline (what's worth persisting).
+
+**Standing prohibition on inventing them.** `CLAUDE.md` line 274 (verbatim):
+
+> Do not invent architecture for Hermes / Mythos / Arsenal. If a task requires them, halt and ask the operator.
+
+### 10.3 Operator-owned destructive actions
+
+`AGENTS.md` line 98–103 (verbatim) names the inviolable session rules — five through five-of-six are operator-owned actions:
+
+> 5. **Operator owns production** — never push to production branches without explicit operator instruction.
+> 6. **Scope discipline** — out-of-scope findings go to BACKLOG.md, not inline fixes.
+
+Every workflow halt-gate references operator approval as the lever (e.g., `workflows/audit-fix-build.md` line 48: "the operator reviews the report and approves specific findings for Phase 2. Never self-promote from AUDIT to FIX."; line 98: "the operator owns PR merge"). The `pr` skill (`skills/pr/SKILL.md` line 78) ends with: "Never force-push. Never commit to `main`, `master`, `LIVE`, or `Production` branches." The `finish` skill (`skills/finish/SKILL.md` line 102) ends with: "**Never push automatically.** Push is always operator-initiated."
+
+### 10.4 Verdict for an external prompt-writer
+
+**Question: Can this harness safely run multiple agents in parallel overnight?**
+
+**Answer: Partial.**
+
+- **Single-session intra-process parallelism: Yes.** The architect sub-agent can decompose a parallelizable task and invoke the `swarm` skill, which spawns up to 5 subagents in their own context windows on non-overlapping files. The synthesis step is mandatory and runs in the main thread. Read-only subagents are the rule; the main thread does the editing. This is a documented and supported primitive.
+- **Multi-process or cross-session parallelism: No.** From `docs/architecture.md` line 46 verbatim: "Full multi-process swarm coordination is not implemented." There is no documented primitive for spawning concurrent independent Claude Code sessions or for a coordinator daemon that runs across sessions.
+- **Unattended overnight execution: Not documented as supported.** Every halt gate in every workflow waits for operator approval. The standing prohibition `CLAUDE.md` line 274 forbids inventing the missing pieces. Every fix workflow ends with "operator reviews," every PR workflow ends with "operator merges," every push ends with "operator initiates." The harness's single-most-cited binding rule (CLAUDE.md line 145) is `clarification cost < misroute cost` — implying preference for halting until operator answers, not for guessing through to completion.
+- **Pattern the harness does document for "long-running unattended work": session-handoff via `session-end` skill** (`skills/session-end/SKILL.md`). The skill produces a structured handoff document that is "self-contained — a reader with no session context should understand what happened and what to do next" (line 113). The next session starts via `session-start` skill which re-establishes branch / commits / dirty files / risks. The cross-session continuity primitive is **the handoff document, not a daemon**.
+
+A prompt-writer who wants overnight unattended work should either (a) confine it to a single architect-led swarm of ≤5 read-only investigators with a synthesizer waiting to greet the operator at AM-time, or (b) treat the work as a sequence of discrete sessions each ending with a `session-end` handoff and starting from a `session-start` briefing, with operator-in-the-loop between sessions. The harness as configured does not authorize agents to push to production, merge PRs, or self-promote across approval gates without the operator.
+
+**Most important citation supporting this answer:** `CLAUDE.md` line 274:
+
+> Do not invent architecture for Hermes / Mythos / Arsenal. If a task requires them, halt and ask the operator.
+
+Combined with `docs/architecture.md` line 46:
+
+> Full multi-process swarm coordination is not implemented.
+
+And the consistent operator-gate language across every workflow.
+
+---
+
+## 11. Specific named primitives — verbatim search results
+
+The external assistant referenced specific terms. Each was searched across the entire harness root.
+
+### "mythos" / "Mythos" / "MYTHOS"
+
+11 hits in 4 files. Every hit confirms Mythos is an **unimplemented future hook point** documented for planning purposes. Verbatim hits:
+
+- `docs/architecture.md:60`: `### Mythos (Long-Term Memory Layer)`
+- `docs/architecture.md:64`: `**Plug-in point:** Mythos would connect at session start (read) and session end (write). The session-start and session-end skills are the current hook points. The LEARNINGS.md discipline is the manual equivalent.`
+- `CLAUDE.md:33`: `Then skim [docs/architecture.md](docs/architecture.md) to understand current integration surfaces and future hook points (Swarm, Hermes, Mythos, Arsenal).`
+- `CLAUDE.md:100`: `| **Mythos / Hermes** | Referenced only by the *project-level* CLAUDE.md (not by tanner-stack itself) | If a project's CLAUDE.md documents them, follow that guide | Treat as future-integration hooks — see [docs/architecture.md § Future Hook Points](docs/architecture.md). Do not invent invocation for them. |`
+- `CLAUDE.md:271`: `- **Mythos** — long-term memory layer. Reserved subsection in architecture.md.`
+- `CLAUDE.md:274`: `Do not invent architecture for Hermes / Mythos / Arsenal. If a task requires them, halt and ask the operator.`
+- `VERIFICATION.md:16`, `VERIFICATION.md:137`, `VERIFICATION.md:147`: refer to Mythos as a hook point documented for planning.
+- `docs/build-notes/discovery.md:135`: `**Swarm / Mythos / Hermes / Arsenal:** Only swarm skill + swarm.md command found. No Mythos/Hermes/Arsenal references in either source — these are unimplemented integration targets per the mission spec.`
+- `docs/build-notes/discovery.md:252-256`: same point, longer.
+
+**Conclusion: Mythos is not a callable primitive in this harness.**
+
+### "focus feature" / "Focus Feature" / "FOCUS FEATURE"
+
+**Zero hits anywhere in the harness.** This term is not a tanner-stack primitive. The closest concept is Chen's "four focus modes" (`CLAUDE.md` line 60: "**Chen has four focus modes.** Chen declares its audit mode at the start of every invocation based on task signals."). The named modes are DEEP SUBSYSTEM, FINDING EXPANSION, SPEC-TO-CODE DELTA, PRE-LAUNCH FAILURE. If "focus feature" was intended to mean "Chen's focus modes," see §2.2 of this manual.
+
+### "Boris Cherny" / "Cherny" / "cheat code"
+
+**Zero hits anywhere in the harness.** Neither name nor the phrase appears in any markdown file or config file. The only Anthropic-namespace mention in the entire harness is `Co-Authored-By: Claude <noreply@anthropic.com>` in commit-message templates (`workflows/commit-conventions.md` lines 99, 140, 156, 167; `skills/finish/SKILL.md` lines 74, 85). There is no "Anthropic cheat code" concept documented.
+
+### Sub-agent dispatch authority
+
+Searched for `dispatch`, `delegation`, `delegate`, `spawn`, `sub-agent`. Recurring hits in 32 files. Key findings synthesized:
+
+- The **only** sub-agent that can dispatch further sub-agents (via `swarm`) is **architect**. Other sub-agents request a swarm by routing through architect (`CLAUDE.md` lines 58–60).
+- `chen` cannot Write or Edit and cannot self-promote to IMPLEMENT (`chen.md` lines 73–75).
+- `code-reviewer` cannot self-promote from review to edit (`code-reviewer.md` lines 28–29).
+- `grep-verifier` cannot self-promote to edit (`grep-verifier.md` lines 28–29).
+- `swarm` cannot main-session auto-fire — it is preloaded only in architect (`skills/swarm/SKILL.md` line 10).
+
+**Inference (flagged as inference, not fact):** The harness's documented primitives describe a one-level dispatch tree — main-session → sub-agent (per `description` field) — and one specific case where a sub-agent (architect) can fan out to up to 5 read-only subagents within a single session. The harness does not document any deeper nesting or any sub-agent's authority to spawn arbitrary other sub-agents.
+
+---
+
+## 12. LEARNINGS.md — anti-patterns, verbatim
+
+`LEARNINGS.md` documents seven hard-won failure modes plus a meta-lesson. Every prompt-writer should respect every one of these. Quoted in full per the prompt's instructions:
+
+### 1. The Dead Code Trap (lines 13–25)
+
+> **What happened:** Multiple fix sessions applied correct changes to a dead file. Every fix was technically correct. Every fix had zero production impact because the file was no longer on the live execution path.
+>
+> **The lesson:** ALWAYS grep-verify the live execution path before editing any file. Trace the call chain forward from the known entry point — don't assume a file is active because it exists and compiles.
+>
+> **Prevention:** Before editing any file, run: `grep -r "import.*from.*{filename}" {source_dir}/` to confirm something actually imports it. If zero results and it's not a known entry point, it's dead.
+
+### 2. False Positive Audit Findings (38–54% Rate) (lines 28–41)
+
+> **What happened:** AI-generated audit reports consistently flagged bugs that didn't exist in the actual code. Across multiple audit sessions, 38–54% of reported findings were false positives — phantom bugs created by the auditor misreading code, missing context, or hallucinating function behavior.
+>
+> **The lesson:** Never accept an audit finding at face value. Every finding must be grep-verified against the actual source before it's acted on. The forcing function: "Are you 100% certain? Show me the grep evidence."
+>
+> **Common false positive patterns:**
+> - "Missing null check" — value is guaranteed by a prior step or database constraint
+> - "Unused variable" — used via destructuring, spread, or dynamic access
+> - "Hardcoded value" — actually imported from config; the import just isn't on the same screen
+> - "Function never called" — called via event routing or dynamic dispatch
+> - "Dead code path" — actually the active path (the reverse of Lesson #1)
+
+### 3. CRLF Line Terminators — Silent Edit Failures (lines 44–50)
+
+> **What happened:** Claude Code's Edit tool silently failed when files had CRLF line terminators. The edit appeared to succeed but the file was unchanged. No error message. No warning. Nothing happened.
+>
+> **The fix:** `git config --global core.autocrlf input`. This is permanent. Never revert to `true`.
+>
+> **Detection:** If a Claude Code edit seems to have no effect, check line endings: `file <filename>` or `cat -A <filename> | head -5` (look for `^M` at line ends). Fix with `dos2unix <filename>`.
+
+### 4. Write-Side vs Read-Side Fix Ordering (lines 53–61)
+
+> **What happened:** Read-side fixes were technically correct but complete no-ops because the field being read was never written upstream. The read-side consumers would correctly use the field — but only if the write-side actually populated it first.
+>
+> **The fix:** Find and fix all write sites first. Verify the data is written. Then verify the read side uses it correctly.
+>
+> **The lesson:** ALWAYS trace BOTH directions before declaring a fix complete. Ask: "Is this value actually being written before it's read?" A read-side fix only works if the write-side populates the data. Trace the full pipeline: origin → write → read → consumer.
+
+### 5. Undefined Fallbacks Must Be Restrictive (lines 64–71)
+
+> **What happened:** A fallback value for an undefined state was set to the permissive option. TypeScript guaranteed the value was always present at runtime, but the fallback existed as a safety net. When the safety net triggered unexpectedly, it let bad data through instead of blocking it.
+>
+> **The fix:** Every fallback and default in a data pipeline must be the most restrictive option. Unknown or missing states should produce the safest outcome, not the happiest path.
+>
+> **The lesson:** Every fallback/default should answer: "If this value is unexpectedly missing, what's the safest thing to do?" The answer is always the restrictive option.
+
+### 6. Pattern Census Before Declaring Complete (lines 74–81)
+
+> **What happened:** One instance of a pattern was found and fixed. The fix was correct. But 10+ sibling instances of the same pattern existed elsewhere in the same file and weren't checked. The bug continued via the unfixed instances.
+>
+> **The fix:** Run a full-file (or full-codebase) pattern census before declaring any pattern-level bug fixed. One correct instance does NOT mean all sibling instances are correct.
+>
+> **The lesson:** For any fix that addresses a pattern (not just a single specific line), run: `grep -n '{pattern}' {file}` to find every instance. Fix all of them. Report the total count.
+
+### 7. Silent Data Truncation at Stage Boundaries (lines 84–98)
+
+> **What happened:** A JSON repair / parser library silently truncated oversized output from an upstream stage before the downstream stage consumed it. No error was thrown. No warning logged. The downstream stage received partial data, accepted it as valid, and proceeded to produce incomplete results. The truncation was only discovered weeks later when output quality metrics diverged from expectations.
+>
+> **The fix:** Every cross-stage handoff that uses serialization, repair, or transformation must (a) log when a size limit is reached, (b) fail loud rather than pass partial data downstream, and (c) include a length/completeness check on the receiving side that rejects obviously-truncated payloads.
+>
+> **The lesson:** Silent data loss is the worst kind of bug — it produces plausible-looking output that is quietly wrong. Any step that can truncate, repair, coerce, or re-serialize data across a boundary is a ticking time bomb unless you explicitly verify completeness. Invoke the `lossy` skill before trusting any cross-boundary transformation.
+
+### Meta-Lesson: Schema Before Code (lines 102–105)
+
+> Database migrations must deploy before code changes. The deployment sequence is non-negotiable: **schema → code → verify**. If your code change depends on a new column, table, or constraint, the migration must land first. The operator owns migration deployment.
+
+---
+
+## 13. Karpathy's four LLM-coding pitfalls — the prompt-writer's mental checklist
+
+`CLAUDE.md` §8 lines 280–304 names the four LLM-coding failure modes the harness's discipline layer was built to counter (synthesized from forrestchang/andrej-karpathy-skills, credit to Karpathy and Forrest Chang per line 302).
+
+1. **Think Before Coding** — state assumptions explicitly; if uncertain, ask. Enforced by `/100`, `/soft`, `/zero`, every persona's mode-declaration rule.
+2. **Simplicity First** — minimal code; no speculative features. Enforced by chen's "no rewrites when precise fixes are available" directive and code-reviewer's scope-drift check.
+3. **Surgical Changes** — touch only what you must; match surrounding style; do not "improve" unrelated areas; do not refactor as a side effect. Enforced by `/adverse` integration-wiring check and code-reviewer's blast-radius analysis.
+4. **Goal-Driven Execution** — transform request into verifiable success criteria before implementing; pair each plan step with a concrete check. Enforced by `/diagnose` Phase 3, `/verify` three-leg loop, chen's EXECUTION PROOF RULE.
+
+`CLAUDE.md` line 304: "Karpathy's principles are the *why*; §3.5 is the *how*."
+
+---
+
+## 14. The well-formed prompt — anatomy
+
+A prompt that exercises this harness at full capacity follows a recognizable shape. Most of the structure is implicit when natural-language signals match the auto-dispatch table (§9), but explicit prompts for high-stakes work should declare the following:
+
+1. **Mission statement.** One paragraph. What is the work, why does it matter, what shape of output do you want.
+2. **Sub-agent routing cue.** Match wording to the `description` triggers (§2). E.g., to invoke chen MODE 1: "Audit `<subsystem>` thoroughly — I want the whole failure surface mapped." To invoke architect for parallel work: "I need to refactor these 40 files consistently — should I swarm this?"
+3. **Rigor mode declaration.** One of `/100` (strictest), `/zero` (FP+FN), `/soft` (no hand-waving), `/max` (combined), or simply use the trigger phrases ("I need this right", "no margin for error", "no false positives", "no guessing", "hard evidence only").
+4. **Scope boundaries.** Explicit. What files? What subsystem? What's in scope, what's out. The harness will halt and ask if undefined (§3.5.5 clarification gate).
+5. **Halt gates / preflight conditions.** State the gates explicitly. Examples: "Halt after Phase 1 audit — do not implement until I approve specific findings." "Halt before push — let me review the commit." "Stop after writing the failing test."
+6. **Deliverable path and format.** Where should output land? In a report file? In `BACKLOG.md`? As inline code? What format — markdown headers, structured table, prose summary? The harness has multiple structured-output skills (`adverse`, `diagnose`, `chen`, `verify`, etc.) — pick or reference the format you want.
+7. **Out-of-scope and NOT-to-do list.** Explicit. What the agent must not touch (e.g., dead-code paths, production branches, untested fields). The PreToolUse hook in `settings.json` blocks edits to paths matching `DEAD_FILE_PATTERN_*` placeholders, but project-specific dead paths must be enumerated.
+8. **References to LEARNINGS.md anti-patterns.** If the work is in territory the lessons cover (dead code, write-side ordering, restrictive fallbacks, pattern census, silent data truncation), name the lesson explicitly so the agent attends to it.
+9. **GitNexus availability declaration** if relevant. The four `gitnexus-*` skills are gated on availability (`docs/build-notes/adversarial-cleanup-2026-04-22.md` lines 49–50). State whether GitNexus is indexed; if it isn't, the harness falls back to grep.
+10. **Session-handoff plan** for long work. State that the work should `/end` (`session-end` skill) at a clean stopping point with a structured handoff doc, so the next session can `/start` (`session-start` skill) and resume.
+
+**Example operator prompts the harness itself documents.** From `personas/architect.md` lines 62–66 (verbatim — the older form, but the trigger-phrase shape):
+
+> - "Extract the audit/fix/build methodology from `<path>` into a generic template."
+> - "Pull Claude Code configs, skills, and personas from `<path>` and genericize them."
+> - "Build a client-install template from my internal engineering system."
+
+From `.claude/agents/architect.md` lines 84–90:
+
+> - "Extract the audit/fix/build methodology from `<path>` into a generic template."
+> - "Pull Claude Code configs, skills, and personas from `<path>` and genericize them."
+> - "Build a client-install template from my internal engineering system."
+> - "I need to refactor these 40 files consistently — should I swarm this?"
+> - "Run a parallel audit across these 12 subsystems."
+
+From `.claude/agents/chen.md` lines 59–65:
+
+> - You need to know whether something is *actually safe* to ship, not just whether it looks plausible.
+> - A prior audit passed but you suspect it missed something.
+> - You're reviewing AI-generated code and want someone hostile to AI slop (phantom helpers, stale imports, half-renamed identifiers, spec-shaped code that never runs).
+> - You're about to launch or demo and need a pre-launch failure audit.
+> - You're reconciling a spec against the code after rapid iteration.
+
+---
+
+## 15. Cross-session handoff — the only documented "long work" primitive
+
+The session-end / session-start pair is the harness's documented mechanism for cross-session continuity.
+
+**`session-end` skill** (`skills/session-end/SKILL.md`) generates a structured handoff document. Sections (lines 75–106): SESSION HANDOFF header (date / branch / commit count), Changes Made (per-file: path / summary / decision ID / risk LOW/MEDIUM/HIGH), Decisions / Work Items Touched (table), Remaining Work (P0 merge blockers / P1 should-fix / P2 deferrable), Blockers, Next Step (single concrete action), Session Stats. Hard rule (line 113): "The handoff must be self-contained — a reader with no session context should understand what happened and what to do next."
+
+**`session-start` skill** (`skills/session-start/SKILL.md`) loads pre-state (branch / dev-server status / recent commits / working tree / changed files) and presents a briefing. Hard rule on production-branch detection (lines 45–49): "If the current branch is `main`, `master`, or contains `LIVE` or `Production` → report **🚨 DANGER: You are on a protected branch. Do NOT edit files. Switch to a feature branch immediately.**"
+
+A long unattended sequence is, per harness convention, structured as: session-start briefing → bounded work → session-end handoff → operator review → next session-start. Not as: continuous unattended overnight execution.
+
+---
+
+## 16. The three session-level modes — `AGENTS.md`
+
+Per `AGENTS.md` lines 9–22 verbatim:
+
+> ## Mode Selection
+>
+> Sessions operate in one of three modes. Declare your mode at the start of a session.
+>
+> | Mode | Trigger | Behavior |
+> |------|---------|----------|
+> | **IMPLEMENT** | Default — active coding task | High-effort editing, verification after every change, GitNexus impact check before every symbol edit |
+> | **AUDIT** | auto-delegation to chen sub-agent, `adverse` skill auto-invocation, or explicit operator request | Read-only investigation. No edits. Produce findings with evidence labels. Await operator approval before implementing. |
+> | **DISCOVERY** | New codebase, onboarding | Inventory mode. Read, map, document. No edits. Produce a structured report. |
+>
+> **Mode-switching rules:**
+> - Switching from AUDIT → IMPLEMENT requires explicit operator approval ("proceed", "implement", "go ahead").
+> - DISCOVERY produces a written report before any mode switch.
+> - Never self-promote to IMPLEMENT from AUDIT without approval.
+
+**Inviolable session rules** verbatim from `AGENTS.md` lines 96–103:
+
+> 1. **Branch check first** — `git branch --show-current` before any edit.
+> 2. **Grep before trust** — never accept an audit finding without grep evidence.
+> 3. **Dead code check** — verify the live path before editing any file.
+> 4. **Impact before edit** — GitNexus impact analysis before modifying any symbol.
+> 5. **Operator owns production** — never push to production branches without explicit operator instruction.
+> 6. **Scope discipline** — out-of-scope findings go to BACKLOG.md, not inline fixes.
+
+A prompt-writer should declare the session mode either explicitly ("Operating in AUDIT mode...") or by the choice of routing signal (e.g., "audit" routes to chen → AUDIT; "implement X" stays in IMPLEMENT; "explain this codebase" routes to architect DISCOVER → DISCOVERY).
+
+---
+
+## 17. The GitNexus inviolable mandate — cited in the project template, not the harness itself
+
+The harness's project template (`docs/project-claude-md-template.md` lines 109–188) ships a GitNexus integration block intended to be copied into adopting-project CLAUDE.md files. The block enumerates "Always Do" / "When Debugging" / "When Refactoring" / "Never Do" rules. Quoted "Never Do" rules (lines 140–144 of the template):
+
+> - NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
+> - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+> - NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
+> - NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
+
+These rules are inviolable **for projects that adopt the template**. The harness itself does not enforce them — they apply to downstream projects that vendor tanner-stack and configure GitNexus. The `code-reviewer` sub-agent's `GitNexus availability contract` (line 65 of `code-reviewer.md`) explicitly handles the case where GitNexus is unavailable: continue with grep-only checks and note in the verdict.
+
+---
+
+## 18. Finish-line checklist — what every well-formed tanner-stack prompt must hit
+
+Use this checklist to verify a prompt before sending it to the harness. Each item ties back to a specific harness primitive cited in this manual.
+
+- [ ] **Sub-agent routing matches `description` triggers.** (`§2`) Use the trigger phrases verbatim from the relevant `.claude/agents/<name>.md` file. Auto-dispatch is description-driven.
+- [ ] **Rigor mode declared.** (`§3.2`) Either invoke a slash form (`/100`, `/zero`, `/soft`, `/max`, `/shutup`) or use the natural-language trigger phrases ("I need this right" / "no false positives" / "no guessing" / "stop talking").
+- [ ] **Scope boundary explicit.** (`§9 / §3.5.5 clarification gate`) Name the file, subsystem, or PR. The harness halts and asks if undefined.
+- [ ] **Audit mode named when invoking chen.** (`§2.2`) Pick from DEEP SUBSYSTEM / FINDING EXPANSION / SPEC-TO-CODE DELTA / PRE-LAUNCH FAILURE. Match wording to the chen.md mode-selection table.
+- [ ] **Halt gates and preflight conditions specified.** (`§5.1 / §16`) State where the agent should stop and wait for operator approval. Audit-fix-build's halt gates between Phases 1 / 2 / 3 are the canonical pattern.
+- [ ] **Deliverable path and format specified.** (`§14 item 6`) Report file path, BACKLOG entry, structured table, etc. Reference `audit-report-template.md` if the deliverable is an audit.
+- [ ] **NOT-to-do list and out-of-scope items enumerated.** (`§14 item 7 / §16 rule 6`) Out-of-scope findings → BACKLOG.md, never inline.
+- [ ] **LEARNINGS.md anti-patterns respected.** (`§12`) Name the lessons that apply (dead code, write-side ordering, restrictive fallbacks, pattern census, silent truncation).
+- [ ] **No invocation of unimplemented primitives.** (`§10.2 / §11`) Mythos / Hermes / Arsenal are documented as future hooks. Do not assume their existence. CLAUDE.md line 274: "If a task requires them, halt and ask the operator."
+- [ ] **Parallel work routed through architect, with the swarm rules respected.** (`§10.1`) ≤5 read-only subagents, no two agents on the same file, mandatory main-thread synthesis. Do not ask sub-agents other than architect to spawn parallel work.
+- [ ] **Branch safety acknowledged.** (`§16 rule 1 / settings.json deny list`) Declare that destructive actions on `main` / `master` / `LIVE` / `Production` branches are operator-only.
+- [ ] **Session-handoff plan if work spans multiple sessions.** (`§15`) End with `/end` (`session-end` skill); next session begins with `/start` (`session-start` skill). Do not rely on cross-session memory persistence — it is not implemented.
+- [ ] **`gh` / `git push` is operator-initiated, not agent-initiated** — unless explicitly authorized for the specific task. (`workflows/pr-review.md` lines 91–97; `skills/pr/SKILL.md` line 78; `skills/finish/SKILL.md` line 102.)
+- [ ] **GitNexus availability declared** if any structural-query work is requested. (`§3.8 / §17`) Otherwise the agent will run in degraded grep-only mode and the prompt-writer should know that.
+
+---
+
+## 19. Closing notes on what the manual is and is not
+
+This manual documents the harness as it ships at v0.3.1. It does not document Claude Code's underlying delegation engine (which is upstream of tanner-stack), it does not document how Claude Code matches paths to rule files (which is also upstream), and it does not document any Anthropic-internal capabilities that may exist outside of what tanner-stack configures.
+
+If a future prompt-writer wants a primitive this manual does not list, the answer is **not to invent it**. Per the harness's own standing prohibition (CLAUDE.md line 274): halt and ask the operator. Per its own clarification-cost discipline (CLAUDE.md line 145): clarification cost < misroute cost.
+
+Two observations marked explicitly as **inferences** rather than as harness facts:
+
+- **Inference:** The harness's documented dispatch model is one-level (main → sub-agent), with one specific fan-out exception (architect → swarm subagents up to 5). The harness does not document deeper nesting; the most defensible reading is that deeper nesting is not authorized.
+- **Inference:** "Long-running unattended overnight work" as a single continuous session is not a configuration the harness was built for. The session-end / session-start pair is the documented continuity primitive. A prompt-writer who interprets this otherwise should expect halt-and-ask behavior at every gate.
+
+Beyond these two inferences, every claim in this manual ties to a specific file and (where useful) a specific line in the harness. Absences — "Boris Cherny", "anthropic cheat code", "focus feature", any cron / scheduler primitive — are stated plainly.
+
+---
+
+*End of manual. Verbatim quotations are bracketed by `>` block-quotes; paraphrases are inline; inferences are flagged. Cite this manual against the live harness on every read; the harness is the source of truth, and this manual was a snapshot taken on 2026-04-22.*

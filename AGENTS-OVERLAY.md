@@ -256,3 +256,7 @@ different pattern. The main thread synthesizes findings and owns edits.
 - `producer/`: V1 to v7.2 derivation producer boundary.
 - `BACKLOG.md`: outstanding operator, Clay, counsel, and Tier B+ work.
 - `archive/`: historical material; read-only, never authoritative over v7.2.
+
+## Project context - Hermes Agent
+
+Hermes-internal contributor onboarding lives in [AGENTS.md](AGENTS.md). This file extends with methodology governance. Both apply.
