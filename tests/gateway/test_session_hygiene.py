@@ -382,6 +382,19 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
     result = await runner._handle_message(event)
 
     assert result == "ok"
-    # Compression warnings are no longer sent to users — compression
-    # happens silently with server-side logging only.
-    assert len(adapter.sent) == 0
+    # Context compression notifications are now sent to users in gateway mode.
+    # Before: compression was silent. After: users see start/end messages.
+    # We expect at least 2 messages: "⏳ Compressing..." + "✅ Context compressed..."
+    assert len(adapter.sent) >= 2, f"Expected compression notifications, got {len(adapter.sent)}"
+    # Verify the start notification was sent
+    start_msgs = [s for s in adapter.sent if "Compressing" in s["content"] and "⏳" in s["content"]]
+    assert len(start_msgs) >= 1, f"Expected ⏳ start notification, got {adapter.sent}"
+    # Verify the end notification was sent
+    end_msgs = [s for s in adapter.sent if "compressed" in s["content"] and "✅" in s["content"]]
+    assert len(end_msgs) >= 1, f"Expected ✅ end notification, got {adapter.sent}"
+    # Verify notifications are sent to the correct thread (metadata.thread_id)
+    for msg in adapter.sent:
+        if msg.get("metadata") and msg["metadata"].get("thread_id"):
+            assert msg["metadata"]["thread_id"] == "17585", (
+                f"Thread metadata should preserve the original thread_id, got {msg}"
+            )

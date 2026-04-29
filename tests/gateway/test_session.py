@@ -1008,6 +1008,53 @@ class TestLastPromptTokens:
         store.update_session("k1", last_prompt_tokens=0)
         assert entry.last_prompt_tokens == 0
 
+class TestHygieneCount:
+    """Tests for the hygiene_count field — session compression tracking."""
+
+    def test_session_entry_default(self):
+        """New sessions should have hygiene_count=0."""
+        from gateway.session import SessionEntry
+        from datetime import datetime
+        entry = SessionEntry(
+            session_key="test",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+        assert entry.hygiene_count == 0
+
+    def test_session_entry_roundtrip(self):
+        """hygiene_count should survive serialization/deserialization."""
+        from gateway.session import SessionEntry
+        from datetime import datetime
+        entry = SessionEntry(
+            session_key="test",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            hygiene_count=3,
+        )
+        d = entry.to_dict()
+        assert d["hygiene_count"] == 3
+        restored = SessionEntry.from_dict(d)
+        assert restored.hygiene_count == 3
+
+    def test_session_entry_from_old_data(self):
+        """Old session data without hygiene_count should default to 0."""
+        from gateway.session import SessionEntry
+        data = {
+            "session_key": "test",
+            "session_id": "s1",
+            "created_at": "2025-01-01T00:00:00",
+            "updated_at": "2025-01-01T00:00:00",
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_tokens": 150,
+            # No hygiene_count — old format
+        }
+        entry = SessionEntry.from_dict(data)
+        assert entry.hygiene_count == 0
+
 class TestRewriteTranscriptPreservesReasoning:
     """rewrite_transcript must not drop reasoning fields from SQLite."""
 

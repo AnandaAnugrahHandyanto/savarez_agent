@@ -355,6 +355,10 @@ class SessionEntry:
     
     # Last API-reported prompt tokens (for accurate compression pre-check)
     last_prompt_tokens: int = 0
+
+    # Number of times session hygiene has auto-compressed this session.
+    # Used to warn users about quality degradation after repeated compactions.
+    hygiene_count: int = 0
     
     # Set when a session was created because the previous one expired;
     # consumed once by the message handler to inject a notice into context
@@ -388,6 +392,7 @@ class SessionEntry:
             "cache_write_tokens": self.cache_write_tokens,
             "total_tokens": self.total_tokens,
             "last_prompt_tokens": self.last_prompt_tokens,
+            "hygiene_count": self.hygiene_count,
             "estimated_cost_usd": self.estimated_cost_usd,
             "cost_status": self.cost_status,
             "memory_flushed": self.memory_flushed,
@@ -425,6 +430,7 @@ class SessionEntry:
             cache_write_tokens=data.get("cache_write_tokens", 0),
             total_tokens=data.get("total_tokens", 0),
             last_prompt_tokens=data.get("last_prompt_tokens", 0),
+            hygiene_count=data.get("hygiene_count", 0),
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
             cost_status=data.get("cost_status", "unknown"),
             memory_flushed=data.get("memory_flushed", False),

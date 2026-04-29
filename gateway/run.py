@@ -3418,7 +3418,31 @@ class GatewayRunner:
                         f"{_compress_token_threshold:,}",
                     )
 
+                    # Resolve adapter early — used for all notification paths below.
+                    _hyg_adapter = self.adapters.get(source.platform) if source.platform else None
                     _hyg_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                    _hyg_chat_id = source.chat_id
+
+                    # Emit session:compress hook (pre-compression).
+                    # This fires regardless of whether compression is feasible —
+                    # hooks are for observability, not UX.
+                    try:
+                        await self.hooks.emit("session:compress", {
+                            "platform": source.platform.value if source.platform else "",
+                            "user_id": source.user_id,
+                            "session_id": session_entry.session_id,
+                            "msg_count": _msg_count,
+                            "approx_tokens": _approx_tokens,
+                            "token_source": _token_source,
+                            "reason": "hygiene",
+                            "phase": "start",
+                        })
+                    except Exception:
+                        pass
+
+                    # Track whether we sent a "starting" notification so we can
+                    # send an appropriate follow-up on failure / abort.
+                    _hyg_sent_start = False
 
                     try:
                         from run_agent import AIAgent
@@ -3437,6 +3461,19 @@ class GatewayRunner:
                             ]
 
                             if len(_hyg_msgs) >= 4:
+                                # Compression is feasible — notify the user NOW.
+                                # Sending earlier (before the api_key / msg_count
+                                # checks) would leave a ⏳ with no follow-up.
+                                if _hyg_adapter:
+                                    try:
+                                        await _hyg_adapter.send(
+                                            _hyg_chat_id,
+                                            "⏳ Compressing context…",
+                                            metadata=_hyg_meta,
+                                        )
+                                        _hyg_sent_start = True
+                                    except Exception:
+                                        pass
                                 _hyg_agent = AIAgent(
                                     **_hyg_runtime,
                                     model=_hyg_model,
@@ -3463,7 +3500,11 @@ class GatewayRunner:
                                 _hyg_new_sid = _hyg_agent.session_id
                                 if _hyg_new_sid != session_entry.session_id:
                                     session_entry.session_id = _hyg_new_sid
-                                    self.session_store._save()
+
+                                # Increment hygiene count before _save() to avoid
+                                # a redundant second I/O call.
+                                session_entry.hygiene_count += 1
+                                self.session_store._save()
 
                                 self.session_store.rewrite_transcript(
                                     session_entry.session_id, _compressed
@@ -3483,17 +3524,83 @@ class GatewayRunner:
                                     f"{_approx_tokens:,}", f"{_new_tokens:,}",
                                 )
 
-                                if _new_tokens >= _warn_token_threshold:
-                                    logger.warning(
-                                        "Session hygiene: still ~%s tokens after "
-                                        "compression",
-                                        f"{_new_tokens:,}",
-                                    )
+                                # Emit session:compress hook (post-compression)
+                                try:
+                                    await self.hooks.emit("session:compress", {
+                                        "platform": source.platform.value if source.platform else "",
+                                        "user_id": source.user_id,
+                                        "session_id": session_entry.session_id,
+                                        "msg_count_before": _msg_count,
+                                        "msg_count_after": _new_count,
+                                        "tokens_before": _approx_tokens,
+                                        "tokens_after": _new_tokens,
+                                        "hygiene_count": session_entry.hygiene_count,
+                                        "reason": "hygiene",
+                                        "phase": "end",
+                                    })
+                                except Exception:
+                                    pass
+
+                                # Notify user of successful compression
+                                if _hyg_adapter:
+                                    try:
+                                        _fmt_before = f"{_approx_tokens:,}"
+                                        _fmt_after = f"{_new_tokens:,}"
+                                        _hyg_msg = f"✅ Context compressed ({_fmt_before} → {_fmt_after} tokens)"
+
+                                        # Warn if compression was ineffective
+                                        if _new_tokens >= _warn_token_threshold:
+                                            _hyg_msg += (
+                                                "\n⚠️ Compression insufficient — "
+                                                "consider starting a new thread (/new)"
+                                            )
+                                            logger.warning(
+                                                "Session hygiene: still ~%s tokens after "
+                                                "compression",
+                                                f"{_new_tokens:,}",
+                                            )
+
+                                        # Warn on repeated compactions (quality degrades)
+                                        if session_entry.hygiene_count >= 2:
+                                            _hyg_msg += (
+                                                f"\n⚠️ Session compressed {session_entry.hygiene_count} times — "
+                                                "accuracy may degrade. Consider /new to start fresh."
+                                            )
+
+                                        await _hyg_adapter.send(
+                                            _hyg_chat_id,
+                                            _hyg_msg,
+                                            metadata=_hyg_meta,
+                                        )
+                                    except Exception:
+                                        pass
 
                     except Exception as e:
                         logger.warning(
                             "Session hygiene auto-compress failed: %s", e
                         )
+                        # Emit session:compress hook (error phase)
+                        try:
+                            await self.hooks.emit("session:compress", {
+                                "platform": source.platform.value if source.platform else "",
+                                "user_id": source.user_id,
+                                "session_id": session_entry.session_id,
+                                "reason": "hygiene",
+                                "phase": "error",
+                                "error": str(e),
+                            })
+                        except Exception:
+                            pass
+                        # Notify user of compression failure
+                        if _hyg_adapter and _hyg_sent_start:
+                            try:
+                                await _hyg_adapter.send(
+                                    _hyg_chat_id,
+                                    f"⚠️ Context compression failed: {e}",
+                                    metadata=_hyg_meta,
+                                )
+                            except Exception:
+                                pass
 
         # First-message onboarding -- only on the very first interaction ever
         if not history and not self.session_store.has_any_sessions():
