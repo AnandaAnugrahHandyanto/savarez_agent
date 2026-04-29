@@ -26,14 +26,26 @@ PLATFORMS = {k: info.label for k, info in _PLATFORMS.items() if k != "api_server
 
 def get_disabled_skills(config: dict, platform: Optional[str] = None) -> Set[str]:
     """Return disabled skill names. Platform-specific list falls back to global."""
-    skills_cfg = config.get("skills", {})
-    global_disabled = set(skills_cfg.get("disabled", []))
+    skills_cfg = config.get("skills")
+    if not isinstance(skills_cfg, dict):
+        skills_cfg = {}
+
+    global_disabled = _normalize_string_set(skills_cfg.get("disabled"))
     if platform is None:
         return global_disabled
-    platform_disabled = skills_cfg.get("platform_disabled", {}).get(platform)
+    platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(platform)
     if platform_disabled is None:
         return global_disabled
-    return set(platform_disabled)
+    return _normalize_string_set(platform_disabled)
+
+
+def _normalize_string_set(values) -> Set[str]:
+    """Normalize config values into a cleaned set of strings."""
+    if values is None:
+        return set()
+    if isinstance(values, str):
+        values = [values]
+    return {str(v).strip() for v in values if str(v).strip()}
 
 
 def save_disabled_skills(config: dict, disabled: Set[str], platform: Optional[str] = None):

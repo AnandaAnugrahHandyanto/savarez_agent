@@ -39,6 +39,15 @@ class TestGetDisabledSkills:
         from hermes_cli.skills_config import get_disabled_skills
         assert get_disabled_skills({"skills": {"disabled": []}}) == set()
 
+    def test_disabled_scalar_is_treated_as_single_skill(self):
+        from hermes_cli.skills_config import get_disabled_skills
+        config = {"skills": {"disabled": "my-skill"}}
+        assert get_disabled_skills(config) == {"my-skill"}
+
+    def test_null_skills_returns_empty_set(self):
+        from hermes_cli.skills_config import get_disabled_skills
+        assert get_disabled_skills({"skills": None}) == set()
+
 
 # ---------------------------------------------------------------------------
 # save_disabled_skills
