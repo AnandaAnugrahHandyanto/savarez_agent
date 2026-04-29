@@ -2267,6 +2267,12 @@ class HermesCLI:
             return "class:status-bar-warn"
         return "class:status-bar-good"
 
+    def _reasoning_effort_label(self) -> str:
+        """Return a short label for the active reasoning effort level."""
+        from hermes_constants import reasoning_effort_label
+
+        return reasoning_effort_label(getattr(self, "reasoning_config", None))
+
     def _build_context_bar(self, percent_used: Optional[int], width: int = 10) -> str:
         safe_percent = max(0, min(100, percent_used or 0))
         filled = round((safe_percent / 100) * width)
@@ -2327,6 +2333,7 @@ class HermesCLI:
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "reasoning_label": self._reasoning_effort_label(),
             "duration": format_duration_compact(elapsed_seconds),
             "prompt_elapsed": self._format_prompt_elapsed(
                 getattr(self, "_prompt_start_time", None),
@@ -2506,11 +2513,16 @@ class HermesCLI:
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
 
+            rl = snapshot["reasoning_label"]
+            model_label = snapshot["model_short"]
+            if rl:
+                model_label = f"{model_label} ({rl})"
+
             if width < 52:
                 text = f"⚕ {snapshot['model_short']} · {duration_label}"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"⚕ {model_label}", percent_label]
                 parts.append(duration_label)
                 return self._trim_status_bar_text(" · ".join(parts), width)
 
@@ -2521,7 +2533,7 @@ class HermesCLI:
             else:
                 context_label = "ctx --"
 
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [f"⚕ {model_label}", context_label, percent_label]
             parts.append(duration_label)
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
@@ -2542,6 +2554,7 @@ class HermesCLI:
             # line and produce duplicated status bar rows over long sessions.
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
+            rl = snapshot["reasoning_label"]
 
             if width < 52:
                 frags = [
@@ -2564,6 +2577,8 @@ class HermesCLI:
                         ("class:status-bar-dim", duration_label),
                         ("class:status-bar", " "),
                     ]
+                    if rl:
+                        frags.insert(2, ("class:status-bar-dim", f" ({rl})"))
                 else:
                     if snapshot["context_length"]:
                         ctx_total = _format_context_length(snapshot["context_length"])
@@ -2585,6 +2600,8 @@ class HermesCLI:
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),
                     ]
+                    if rl:
+                        frags.insert(2, ("class:status-bar-dim", f" ({rl})"))
                     # Position 7: per-prompt elapsed timer (live or frozen)
                     prompt_elapsed = snapshot.get("prompt_elapsed")
                     if prompt_elapsed:

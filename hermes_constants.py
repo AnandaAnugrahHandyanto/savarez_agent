@@ -159,6 +159,18 @@ def parse_reasoning_effort(effort: str) -> dict | None:
     return None
 
 
+def reasoning_effort_label(reasoning_config: dict | None) -> str:
+    """Return the canonical display label for an explicit reasoning config."""
+    if not isinstance(reasoning_config, dict) or not reasoning_config:
+        return ""
+    if reasoning_config.get("enabled") is False:
+        return "none"
+    effort = str(reasoning_config.get("effort") or "").strip().lower()
+    if effort in VALID_REASONING_EFFORTS:
+        return effort
+    return ""
+
+
 def is_termux() -> bool:
     """Return True when running inside a Termux (Android) environment.
 
