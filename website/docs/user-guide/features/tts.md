@@ -14,7 +14,7 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 ## Text-to-Speech
 
-Convert text to speech with nine providers:
+Convert text to speech with ten providers:
 
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------|
@@ -25,6 +25,7 @@ Convert text to speech with nine providers:
 | **Mistral (Voxtral TTS)** | Excellent | Paid | `MISTRAL_API_KEY` |
 | **Google Gemini TTS** | Excellent | Free tier | `GEMINI_API_KEY` |
 | **xAI TTS** | Excellent | Paid | `XAI_API_KEY` |
+| **Gradium TTS** | Excellent | Paid | `GRADIUM_API_KEY` |
 | **NeuTTS** | Good | Free (local) | None needed |
 | **KittenTTS** | Good | Free (local) | None needed |
 
@@ -42,7 +43,7 @@ Convert text to speech with nine providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "gradium" | "neutts" | "kittentts"
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -73,6 +74,9 @@ tts:
     sample_rate: 24000          # 22050 / 24000 (default) / 44100 / 48000
     bit_rate: 128000            # MP3 bitrate; only applies when codec=mp3
     # base_url: "https://api.x.ai/v1"   # Override via XAI_BASE_URL env var
+  gradium:
+    voice_id: "YTpq7expH9539ERJ"   # Default English voice; browse more at https://studio.gradium.ai
+    model: "default"               # Gradium model name
   neutts:
     ref_audio: ''
     ref_text: ''
@@ -91,7 +95,7 @@ tts:
 
 Telegram voice bubbles require Opus/OGG audio format:
 
-- **OpenAI, ElevenLabs, and Mistral** produce Opus natively — no extra setup
+- **OpenAI, ElevenLabs, Mistral, and Gradium** produce Opus natively — no extra setup
 - **Edge TTS** (default) outputs MP3 and needs **ffmpeg** to convert:
 - **MiniMax TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
 - **Google Gemini TTS** outputs raw PCM and uses **ffmpeg** to encode Opus directly for Telegram voice bubbles
@@ -113,7 +117,7 @@ sudo dnf install ffmpeg
 Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, and KittenTTS audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
 
 :::tip
-If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.
+If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, Mistral, or Gradium provider.
 :::
 
 ## Voice Message Transcription (STT)
