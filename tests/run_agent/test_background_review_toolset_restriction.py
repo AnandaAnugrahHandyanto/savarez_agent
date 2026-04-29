@@ -5,13 +5,13 @@ inherited the full default toolset, allowing it to perform non-skill side
 effects (terminal, send_message, delegate_task, etc.).
 """
 
-import threading
 from unittest.mock import patch
 
+import run_agent
 
 def _make_agent_stub(agent_cls):
     """Create a minimal AIAgent-like object with just enough state for _spawn_background_review."""
-    agent = object.__new__(agent_cls)
+    agent = object.__new__(run_agent.AIAgent)
     agent.model = "test-model"
     agent.platform = "test"
     agent.provider = "openai"
@@ -53,7 +53,7 @@ def test_background_review_agent_uses_restricted_toolsets():
         raise RuntimeError("stop after capturing init args")
 
     with patch.object(run_agent.AIAgent, "__init__", _capture_init), \
-         patch("threading.Thread", _SyncThread):
+         patch("run_agent.threading.Thread", _SyncThread):
         agent._spawn_background_review(
             messages_snapshot=[],
             review_memory=True,
