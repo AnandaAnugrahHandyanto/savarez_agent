@@ -1158,12 +1158,7 @@ def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
         # These must not be converted to hyphens.  See issue #12295.
         if _is_bedrock_model_id(model):
             return model
-        # Only convert dots to hyphens for Anthropic/Claude models.
-        # Non-Anthropic models (gpt-5.4, gemini-2.5, etc.) use dots
-        # as part of their canonical names.  See issue #17171.
-        _lower = model.lower()
-        if _lower.startswith("claude-") or _lower.startswith("anthropic/"):
-            model = model.replace(".", "-")
+        model = model.replace(".", "-")
     return model
 
 
