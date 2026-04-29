@@ -9,6 +9,7 @@ back into the minimal shape Hermes expects from an OpenAI client.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import re
@@ -20,6 +21,8 @@ from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from agent.file_safety import get_read_block_error, is_write_denied
 from agent.redact import redact_sensitive_text
@@ -554,6 +557,43 @@ class CopilotACPClient:
                 text_parts=text_parts,
                 reasoning_parts=reasoning_parts,
             )
+
+            # When the ACP agent only produced thought chunks and no visible
+            # text (e.g. because a tool-call permission was denied mid-run),
+            # make one follow-up turn in the same session asking the model to
+            # answer from its existing knowledge.  This avoids the
+            # thinking-only retry loop in run_agent.py that would otherwise
+            # deliver "(empty)" to the user after two failed prefill attempts.
+            if not "".join(text_parts).strip() and "".join(reasoning_parts).strip():
+                logger.info(
+                    "Copilot ACP: first turn produced only thought chunks "
+                    "(tool call likely denied) — retrying with no-tools hint."
+                )
+                text_parts_retry: list[str] = []
+                reasoning_parts_retry: list[str] = []
+                _request(
+                    "session/prompt",
+                    {
+                        "sessionId": session_id,
+                        "prompt": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    "Please answer based on what you already know, "
+                                    "without running any commands or reading files."
+                                ),
+                            }
+                        ],
+                    },
+                    text_parts=text_parts_retry,
+                    reasoning_parts=reasoning_parts_retry,
+                )
+                if "".join(text_parts_retry).strip():
+                    return "".join(text_parts_retry), "".join(reasoning_parts_retry)
+                # Final fallback: surface the original reasoning as text so
+                # run_agent.py never sees a thinking-only or empty response.
+                return "".join(reasoning_parts), ""
+
             return "".join(text_parts), "".join(reasoning_parts)
         finally:
             self.close()
