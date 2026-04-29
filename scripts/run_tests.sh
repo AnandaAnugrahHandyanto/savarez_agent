@@ -111,6 +111,23 @@ fi
 # flakes that CI will never see. Pin to 4 so local matches CI.
 WORKERS="${HERMES_TEST_WORKERS:-4}"
 
+# macOS interactive shells often start with a 256 soft file-descriptor limit.
+# Four xdist workers can exhaust that before the suite finishes, which causes
+# a noisy cascade of unrelated "Too many open files" fixture errors. Raise the
+# soft limit inside the canonical runner when the OS allows it.
+NOFILE_TARGET="${HERMES_TEST_NOFILE_LIMIT:-4096}"
+if CURRENT_NOFILE="$(ulimit -Sn 2>/dev/null)"; then
+  case "$CURRENT_NOFILE:$NOFILE_TARGET" in
+    *[!0-9]*:*) ;;
+    *:*[!0-9]*) ;;
+    *)
+      if [ "$CURRENT_NOFILE" -lt "$NOFILE_TARGET" ]; then
+        ulimit -Sn "$NOFILE_TARGET" 2>/dev/null || true
+      fi
+      ;;
+  esac
+fi
+
 # ── Run pytest ──────────────────────────────────────────────────────────────
 cd "$REPO_ROOT"
 
