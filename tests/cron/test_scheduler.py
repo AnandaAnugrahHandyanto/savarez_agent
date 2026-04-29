@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, _create_discord_thread, run_job, SILENT_MARKER, _build_job_prompt
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -278,6 +278,135 @@ class TestResolveDeliveryTarget:
             "chat_id": "1001234567890",
             "thread_id": None,
         }
+
+    def test_discord_with_thread_name_and_auto_archive(self):
+        """deliver: 'discord:CHANNEL?thread_name=NAME&thread_auto_archive=DUR' parses thread params."""
+        job = {
+            "deliver": "discord:1477293101549617296?thread_name=Daily Digest-%Y-%m-%d&thread_auto_archive=4320",
+        }
+        result = _resolve_delivery_target(job)
+        assert result == {
+            "platform": "discord",
+            "chat_id": "1477293101549617296",
+            "thread_id": None,
+            "thread_name": "Daily Digest-%Y-%m-%d",
+            "thread_auto_archive": 4320,
+        }
+
+    def test_discord_thread_auto_archive_normalized(self):
+        """thread_auto_archive is normalized to closest Discord-allowed value."""
+        job = {
+            "deliver": "discord:123?thread_name=Test&thread_auto_archive=3000",
+        }
+        result = _resolve_delivery_target(job)
+        # 3000 is closest to 4320
+        assert result["thread_auto_archive"] == 4320
+
+        job2 = {
+            "deliver": "discord:123?thread_name=Test&thread_auto_archive=100",
+        }
+        result2 = _resolve_delivery_target(job2)
+        # 100 is closest to 60
+        assert result2["thread_auto_archive"] == 60
+
+    def test_discord_thread_name_only(self):
+        """deliver with only thread_name (no auto_archive) still parses correctly."""
+        job = {
+            "deliver": "discord:123?thread_name=My Thread",
+        }
+        result = _resolve_delivery_target(job)
+        assert result["thread_name"] == "My Thread"
+        assert "thread_auto_archive" not in result
+
+    def test_non_discord_with_query_params(self):
+        """Non-discord platforms ignore query params in deliver string."""
+        job = {
+            "deliver": "telegram:123?thread_name=Ignored",
+        }
+        result = _resolve_delivery_target(job)
+        # For telegram, the query string is part of the rest after ":"
+        # _parse_target_ref won't match it as numeric, so it falls through to raw
+        assert result["platform"] == "telegram"
+        assert result["chat_id"] == "123?thread_name=Ignored"
+        assert result["thread_id"] is None
+        assert "thread_name" not in result
+
+
+class TestAutoThreadCreation:
+    """Tests for automatic Discord thread creation during delivery."""
+
+    def test_deliver_result_creates_thread_when_thread_name_set(self):
+        """When thread_name is set and no thread_id exists, a thread is created."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        with patch("cron.scheduler._create_discord_thread", return_value="999888777") as thread_mock, \
+             patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "thread-test",
+                "name": "daily-digest",
+                "deliver": "discord:1477293101549617296?thread_name=Daily Digest-%Y-%m-%d&thread_auto_archive=4320",
+            }
+            _deliver_result(job, "Test content")
+
+        thread_mock.assert_called_once_with("1477293101549617296", "Daily Digest-%Y-%m-%d", 4320)
+        send_mock.assert_called_once()
+        # Verify thread_id was passed to the send function
+        call_kwargs = send_mock.call_args.kwargs
+        assert call_kwargs.get("thread_id") == "999888777"
+
+    def test_deliver_result_fallback_when_thread_creation_fails(self):
+        """If thread creation fails, delivery falls back to the channel."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        with patch("cron.scheduler._create_discord_thread", return_value=None), \
+             patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "thread-fail",
+                "name": "daily-digest",
+                "deliver": "discord:1477293101549617296?thread_name=Daily Digest-%Y-%m-%d",
+            }
+            err = _deliver_result(job, "Test content")
+
+        assert err is None  # delivery still succeeds (fallback to channel)
+        send_mock.assert_called_once()
+        call_kwargs = send_mock.call_args.kwargs
+        assert call_kwargs.get("thread_id") is None
+
+    def test_deliver_result_skips_thread_creation_when_thread_id_exists(self):
+        """If thread_id is already set, no new thread is created."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        with patch("cron.scheduler._create_discord_thread", return_value="NEW_THREAD") as thread_mock, \
+             patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "existing-thread",
+                "deliver": "discord:1477293101549617296:555444333?thread_name=Ignored",
+            }
+            _deliver_result(job, "Test content")
+
+        # Thread should NOT be created because thread_id already exists
+        thread_mock.assert_not_called()
+        send_mock.assert_called_once()
+        call_kwargs = send_mock.call_args.kwargs
+        assert call_kwargs.get("thread_id") == "555444333"
 
 
 class TestDeliverResultWrapping:

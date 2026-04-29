@@ -16,6 +16,8 @@ import logging
 import os
 import subprocess
 import sys
+import urllib.parse
+from datetime import datetime
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -183,6 +185,25 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         platform_name, rest = deliver_value.split(":", 1)
         platform_key = platform_name.lower()
 
+        # Parse optional query parameters for auto-thread creation (Discord only)
+        # Format: chat_id[:thread_id]?thread_name=NAME&thread_auto_archive=DUR
+        thread_name = None
+        thread_auto_archive = None
+        if platform_key == "discord" and "?" in rest:
+            base_ref, query_string = rest.split("?", 1)
+            params = urllib.parse.parse_qs(query_string)
+            thread_name = params.get("thread_name", [None])[0]
+            raw_dur = params.get("thread_auto_archive", [None])[0]
+            if raw_dur:
+                # Normalize to Discord's allowed values: 60, 1440, 4320, 10080
+                allowed = [60, 1440, 4320, 10080]
+                try:
+                    val = int(raw_dur)
+                    thread_auto_archive = min(allowed, key=lambda x: abs(x - val))
+                except ValueError:
+                    pass
+            rest = base_ref
+
         from tools.send_message_tool import _parse_target_ref
 
         parsed_chat_id, parsed_thread_id, is_explicit = _parse_target_ref(platform_key, rest)
@@ -206,11 +227,16 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         except Exception:
             pass
 
-        return {
+        result = {
             "platform": platform_name,
             "chat_id": chat_id,
             "thread_id": thread_id,
         }
+        if thread_name is not None:
+            result["thread_name"] = thread_name
+        if thread_auto_archive is not None:
+            result["thread_auto_archive"] = thread_auto_archive
+        return result
 
     platform_name = deliver_value
     if origin and origin.get("platform") == platform_name:
@@ -299,6 +325,72 @@ def _send_media_via_adapter(adapter, chat_id: str, media_files: list, metadata: 
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
+def _create_discord_thread(channel_id: str, thread_name: str, auto_archive_duration: int) -> str | None:
+    """Create a Discord thread via REST API for auto-delivery.
+
+    Args:
+        channel_id: The Discord channel ID to create the thread in.
+        thread_name: strftime-compatible thread name template (e.g. 'Daily Digest %Y-%m-%d').
+        auto_archive_duration: Auto-archive duration in minutes (60, 1440, 4320, or 10080).
+
+    Returns:
+        The created thread ID on success, None on failure.
+    """
+    # Format thread name with current date/time
+    formatted_name = datetime.now().strftime(thread_name)
+    formatted_name = formatted_name[:100]  # Discord thread name max length
+
+    # Get bot token from gateway config
+    try:
+        from gateway.config import load_gateway_config, Platform
+        config = load_gateway_config()
+        pconfig = config.platforms.get(Platform.DISCORD)
+        if not pconfig or not pconfig.token:
+            logger.warning("Cannot create Discord thread: no DISCORD token in gateway config")
+            return None
+        token = pconfig.token
+    except Exception as e:
+        logger.warning("Cannot create Discord thread: failed to load config: %s", e)
+        return None
+
+    url = f"https://discord.com/api/v10/channels/{channel_id}/threads"
+    payload = {
+        "name": formatted_name,
+        "type": 11,  # public thread
+        "auto_archive_duration": auto_archive_duration,
+    }
+    headers = {
+        "Authorization": f"Bot {token}",
+        "Content-Type": "application/json",
+    }
+
+    async def _do_request():
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=headers) as resp:
+                if resp.status in (200, 201):
+                    data = await resp.json()
+                    thread_id = data.get("id")
+                    logger.info(
+                        "Created Discord thread '%s' (id=%s) in channel %s",
+                        formatted_name, thread_id, channel_id,
+                    )
+                    return str(thread_id)
+                else:
+                    body = await resp.text()
+                    logger.warning(
+                        "Failed to create Discord thread in channel %s: HTTP %s — %s",
+                        channel_id, resp.status, body[:500],
+                    )
+                    return None
+
+    try:
+        return asyncio.run(_do_request())
+    except Exception as e:
+        logger.warning("Failed to create Discord thread in channel %s: %s", channel_id, e)
+        return None
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -382,6 +474,26 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         platform_name = target["platform"]
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")
+
+        # Auto-create a Discord thread if thread_name is specified and no thread_id exists
+        thread_name = target.get("thread_name")
+        thread_auto_archive = target.get("thread_auto_archive")
+        if thread_name and not thread_id and platform_name.lower() == "discord":
+            if thread_auto_archive is None:
+                thread_auto_archive = 4320  # default: 3 days
+            new_thread_id = _create_discord_thread(chat_id, thread_name, thread_auto_archive)
+            if new_thread_id:
+                thread_id = new_thread_id
+                target["thread_id"] = thread_id
+                logger.info(
+                    "Job '%s': auto-created thread %s for delivery to %s:%s",
+                    job["id"], thread_id, platform_name, chat_id,
+                )
+            else:
+                logger.warning(
+                    "Job '%s': failed to auto-create thread for %s:%s; falling back to channel delivery",
+                    job["id"], platform_name, chat_id,
+                )
 
         # Diagnostic: log thread_id for topic-aware delivery debugging
         origin = job.get("origin") or {}
