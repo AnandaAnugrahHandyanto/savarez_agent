@@ -530,6 +530,47 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
     return manifest
 
 
+def _skill_usage_signature(skills_dir: Path) -> tuple[int, int] | None:
+    """Return a cheap signature for lifecycle metadata that affects prompts."""
+    usage_path = skills_dir / ".usage.json"
+    try:
+        st = usage_path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _hide_stale_from_prompt_enabled() -> bool:
+    """Whether curator.hide_stale_from_prompt is enabled in config.yaml."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception as exc:
+        logger.debug("Could not load curator prompt-filter config: %s", exc)
+        return False
+    cur = cfg.get("curator") if isinstance(cfg, dict) else None
+    if not isinstance(cur, dict):
+        return False
+    return bool(cur.get("hide_stale_from_prompt", False))
+
+
+def _skill_hidden_by_curator(
+    skill_name: str,
+    frontmatter_name: str,
+    hide_stale_from_prompt: bool,
+) -> bool:
+    """Return True when curator lifecycle metadata should hide a skill entry."""
+    if not hide_stale_from_prompt:
+        return False
+    try:
+        from tools.skill_usage import should_hide_from_prompt
+        names = {n for n in (skill_name, frontmatter_name) if n}
+        return any(should_hide_from_prompt(n) for n in names)
+    except Exception as exc:
+        logger.debug("Could not apply curator skill prompt filter: %s", exc)
+        return False
+
+
 def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
     """Load the disk snapshot if it exists and its manifest still matches."""
     snapshot_path = _skills_prompt_snapshot_path()
@@ -685,6 +726,8 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names()
+    hide_stale_from_prompt = _hide_stale_from_prompt_enabled()
+    usage_signature = _skill_usage_signature(skills_dir) if hide_stale_from_prompt else None
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -692,6 +735,8 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        hide_stale_from_prompt,
+        usage_signature,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -718,6 +763,12 @@ def build_skills_system_prompt(
                 continue
             if frontmatter_name in disabled or skill_name in disabled:
                 continue
+            if _skill_hidden_by_curator(
+                skill_name,
+                frontmatter_name,
+                hide_stale_from_prompt,
+            ):
+                continue
             if not _skill_should_show(
                 entry.get("conditions") or {},
                 available_tools,
@@ -741,7 +792,14 @@ def build_skills_system_prompt(
             if not is_compatible:
                 continue
             skill_name = entry["skill_name"]
-            if entry["frontmatter_name"] in disabled or skill_name in disabled:
+            frontmatter_name = entry["frontmatter_name"]
+            if frontmatter_name in disabled or skill_name in disabled:
+                continue
+            if _skill_hidden_by_curator(
+                skill_name,
+                frontmatter_name,
+                hide_stale_from_prompt,
+            ):
                 continue
             if not _skill_should_show(
                 extract_skill_conditions(frontmatter),
@@ -797,6 +855,12 @@ def build_skills_system_prompt(
                 if frontmatter_name in seen_skill_names:
                     continue
                 if frontmatter_name in disabled or skill_name in disabled:
+                    continue
+                if _skill_hidden_by_curator(
+                    skill_name,
+                    frontmatter_name,
+                    hide_stale_from_prompt,
+                ):
                     continue
                 if not _skill_should_show(
                     extract_skill_conditions(frontmatter),

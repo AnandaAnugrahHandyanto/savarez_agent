@@ -311,6 +311,21 @@ def set_pinned(skill_name: str, pinned: bool) -> None:
     _mutate(skill_name, _apply)
 
 
+def should_hide_from_prompt(skill_name: str) -> bool:
+    """Return True when *skill_name* should be omitted from prompt-time indexes.
+
+    Stale skills may be hidden from the default skills prompt when the curator
+    config enables that policy, but pinned skills remain visible so users can
+    protect rare-but-important workflows from recency-based deprioritization.
+    This helper is deliberately config-free; callers decide whether the policy
+    is enabled and use this only for the lifecycle-state check.
+    """
+    if not skill_name:
+        return False
+    rec = get_record(skill_name)
+    return rec.get("state") == STATE_STALE and not bool(rec.get("pinned"))
+
+
 def forget(skill_name: str) -> None:
     """Drop a skill's usage entry entirely. Called when the skill is deleted."""
     if not skill_name:

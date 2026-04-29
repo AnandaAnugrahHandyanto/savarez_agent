@@ -181,6 +181,25 @@ def test_set_pinned(skills_home):
     assert get_record("x")["pinned"] is False
 
 
+def test_should_hide_from_prompt_only_for_unpinned_stale(skills_home):
+    from tools.skill_usage import (
+        set_pinned,
+        set_state,
+        should_hide_from_prompt,
+        STATE_ACTIVE,
+        STATE_STALE,
+    )
+
+    set_state("active", STATE_ACTIVE)
+    set_state("stale", STATE_STALE)
+    set_state("pinned-stale", STATE_STALE)
+    set_pinned("pinned-stale", True)
+
+    assert should_hide_from_prompt("active") is False
+    assert should_hide_from_prompt("stale") is True
+    assert should_hide_from_prompt("pinned-stale") is False
+
+
 def test_forget_removes_record(skills_home):
     from tools.skill_usage import bump_view, forget, load_usage
     bump_view("x")

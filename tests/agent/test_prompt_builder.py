@@ -372,6 +372,72 @@ class TestBuildSkillsSystemPrompt:
         second = build_skills_system_prompt()
         assert "cached-skill" not in second
 
+    def test_hides_stale_skills_from_prompt_when_curator_flag_enabled(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "curator:\n  hide_stale_from_prompt: true\n"
+        )
+        skills_root = tmp_path / "skills" / "tools"
+        for name in ("active-skill", "stale-skill", "pinned-stale-skill"):
+            skill_dir = skills_root / name
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {name} description\n---\n"
+            )
+        (tmp_path / "skills" / ".usage.json").write_text(
+            """
+{
+  "stale-skill": {"state": "stale", "pinned": false},
+  "pinned-stale-skill": {"state": "stale", "pinned": true}
+}
+""".strip()
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "    - active-skill:" in result
+        assert "    - stale-skill:" not in result
+        assert "    - pinned-stale-skill:" in result
+
+    def test_keeps_stale_skills_visible_when_curator_flag_disabled(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "curator:\n  hide_stale_from_prompt: false\n"
+        )
+        skill_dir = tmp_path / "skills" / "tools" / "stale-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: stale-skill\ndescription: Stale but visible\n---\n"
+        )
+        (tmp_path / "skills" / ".usage.json").write_text(
+            '{"stale-skill": {"state": "stale", "pinned": false}}'
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "stale-skill" in result
+
+    def test_rebuilds_prompt_when_skill_usage_state_changes(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "curator:\n  hide_stale_from_prompt: true\n"
+        )
+        skill_dir = tmp_path / "skills" / "tools" / "transitions-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: transitions-skill\ndescription: Changes state\n---\n"
+        )
+
+        first = build_skills_system_prompt()
+        assert "transitions-skill" in first
+
+        (tmp_path / "skills" / ".usage.json").write_text(
+            '{"transitions-skill": {"state": "stale", "pinned": false}}'
+        )
+
+        second = build_skills_system_prompt()
+        assert "transitions-skill" not in second
+
     def test_includes_setup_needed_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("MISSING_API_KEY_XYZ", raising=False)

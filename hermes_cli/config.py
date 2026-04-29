@@ -946,6 +946,9 @@ DEFAULT_CONFIG = {
         # Archive a skill (move to skills/.archive/) after this many days
         # without use. Archived skills are recoverable — no auto-deletion.
         "archive_after_days": 90,
+        # When true, skills in the stale lifecycle state are omitted from the
+        # default prompt-time skills index. Pinned stale skills stay visible.
+        "hide_stale_from_prompt": False,
         # Optional per-task override for the curator's aux model. Leave null
         # to use Hermes' main auxiliary client resolution.
         "auxiliary": {
