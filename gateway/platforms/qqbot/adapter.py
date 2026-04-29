@@ -458,6 +458,7 @@ class QQAdapter(BasePlatformAdapter):
                             "Too many quick disconnects — check bot permissions",
                             retryable=True,
                         )
+                        await self._notify_fatal_error()
                         return
                 else:
                     quick_disconnect_count = 0
@@ -474,6 +475,7 @@ class QQAdapter(BasePlatformAdapter):
                     self._set_fatal_error(
                         f"qq_{desc}", f"Bot is {desc}", retryable=False
                     )
+                    await self._notify_fatal_error()
                     return
 
                 # Rate limited
@@ -484,6 +486,12 @@ class QQAdapter(BasePlatformAdapter):
                         RATE_LIMIT_DELAY,
                     )
                     if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
+                        self._set_fatal_error(
+                            "qq_rate_limit_exhausted",
+                            "Rate limit reconnect attempts exhausted",
+                            retryable=True,
+                        )
+                        await self._notify_fatal_error()
                         return
                     await asyncio.sleep(RATE_LIMIT_DELAY)
                     if await self._reconnect(backoff_idx):
@@ -537,6 +545,12 @@ class QQAdapter(BasePlatformAdapter):
                     backoff_idx += 1
                     if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
                         logger.error("[%s] Max reconnect attempts reached (QQCloseError)", self._log_tag)
+                        self._set_fatal_error(
+                            "qq_reconnect_exhausted",
+                            "Max reconnect attempts reached after QQCloseError",
+                            retryable=True,
+                        )
+                        await self._notify_fatal_error()
                         return
 
             except Exception as exc:
@@ -548,6 +562,12 @@ class QQAdapter(BasePlatformAdapter):
 
                 if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
                     logger.error("[%s] Max reconnect attempts reached", self._log_tag)
+                    self._set_fatal_error(
+                        "qq_reconnect_exhausted",
+                        "Max reconnect attempts reached after WebSocket error",
+                        retryable=True,
+                    )
+                    await self._notify_fatal_error()
                     return
 
                 if await self._reconnect(backoff_idx):
