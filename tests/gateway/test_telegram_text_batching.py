@@ -147,6 +147,19 @@ class TestTextBatching:
         assert adapter._pending_text_batch_tasks == {}
 
     @pytest.mark.asyncio
+    async def test_disconnected_adapter_drops_pending_text_flush_before_dispatch(self):
+        """A pending text flush should drop its event if teardown wins the race."""
+        adapter = _make_adapter()
+
+        adapter._enqueue_text_event(_make_event("stale text"))
+        adapter._mark_disconnected()
+        await asyncio.sleep(0.2)
+
+        adapter.handle_message.assert_not_called()
+        assert adapter._pending_text_batches == {}
+        assert adapter._pending_text_batch_tasks == {}
+
+    @pytest.mark.asyncio
     async def test_disconnected_adapter_drops_late_text_batch_enqueue(self):
         """Late update handlers should not schedule batches after teardown starts."""
         adapter = _make_adapter()
@@ -158,6 +171,42 @@ class TestTextBatching:
         adapter.handle_message.assert_not_called()
         assert adapter._pending_text_batches == {}
         assert adapter._pending_text_batch_tasks == {}
+
+    @pytest.mark.asyncio
+    async def test_disconnected_adapter_drops_pending_photo_flush_before_dispatch(self):
+        """A pending photo batch should not dispatch after disconnect starts."""
+        adapter = _make_adapter()
+        adapter._media_batch_delay_seconds = 0.1
+        event = _make_event("photo caption")
+        event.media_urls = ["/tmp/photo.jpg"]
+        event.media_types = ["image/jpeg"]
+
+        adapter._enqueue_photo_event("chat:photo-burst", event)
+        adapter._mark_disconnected()
+        await asyncio.sleep(0.2)
+
+        adapter.handle_message.assert_not_called()
+        assert adapter._pending_photo_batches == {}
+        assert adapter._pending_photo_batch_tasks == {}
+
+    @pytest.mark.asyncio
+    async def test_disconnected_adapter_drops_pending_media_group_flush_before_dispatch(self):
+        """A pending media group should not dispatch after disconnect starts."""
+        from gateway.platforms.telegram import TelegramAdapter
+
+        adapter = _make_adapter()
+        event = _make_event("album caption")
+        event.media_urls = ["/tmp/photo.jpg"]
+        event.media_types = ["image/jpeg"]
+
+        with patch.object(TelegramAdapter, "MEDIA_GROUP_WAIT_SECONDS", 0.1):
+            await adapter._queue_media_group_event("album-1", event)
+            adapter._mark_disconnected()
+            await asyncio.sleep(0.2)
+
+        adapter.handle_message.assert_not_called()
+        assert adapter._media_group_events == {}
+        assert adapter._media_group_tasks == {}
 
     @pytest.mark.asyncio
     async def test_cancel_pending_delivery_tasks_skips_current_polling_error_task(self):

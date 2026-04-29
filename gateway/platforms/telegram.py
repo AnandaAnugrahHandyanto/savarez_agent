@@ -2587,6 +2587,9 @@ class TelegramAdapter(BasePlatformAdapter):
             event = self._pending_text_batches.pop(key, None)
             if not event:
                 return
+            if not self.is_connected:
+                logger.debug("[Telegram] Dropping text batch flush after disconnect started")
+                return
             logger.info(
                 "[Telegram] Flushing text batch %s (%d chars)",
                 key, len(event.text or ""),
@@ -2620,6 +2623,9 @@ class TelegramAdapter(BasePlatformAdapter):
             await asyncio.sleep(self._media_batch_delay_seconds)
             event = self._pending_photo_batches.pop(batch_key, None)
             if not event:
+                return
+            if not self.is_connected:
+                logger.debug("[Telegram] Dropping photo batch flush after disconnect started")
                 return
             logger.info("[Telegram] Flushing photo batch %s with %d image(s)", batch_key, len(event.media_urls))
             await self.handle_message(event)
@@ -2881,6 +2887,9 @@ class TelegramAdapter(BasePlatformAdapter):
             await asyncio.sleep(self.MEDIA_GROUP_WAIT_SECONDS)
             event = self._media_group_events.pop(media_group_id, None)
             if event is not None:
+                if not self.is_connected:
+                    logger.debug("[Telegram] Dropping media group flush after disconnect started")
+                    return
                 await self.handle_message(event)
         except asyncio.CancelledError:
             return
