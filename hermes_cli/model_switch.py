@@ -1389,7 +1389,12 @@ def list_authenticated_providers(
                     current_base_url
                     and api_url == current_base_url.strip().rstrip("/")
                 ):
-                    slug = current_provider or custom_provider_slug(display_name)
+                    # Check if current_provider is 'custom' (invalid bare slug)
+                    # If so, don't use it — generate a proper slug from display name
+                    if current_provider and current_provider.lower() == "custom":
+                        slug = custom_provider_slug(display_name)
+                    else:
+                        slug = current_provider or custom_provider_slug(display_name)
                 else:
                     slug = custom_provider_slug(display_name)
                 groups[group_key] = {
