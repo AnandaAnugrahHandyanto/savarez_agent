@@ -22,7 +22,7 @@ The **Tool Gateway** lets paid [Nous Portal](https://portal.nousresearch.com) su
 | **Text-to-speech** | Convert text to speech via OpenAI TTS | `VOICE_TOOLS_OPENAI_KEY`, `ELEVENLABS_API_KEY` |
 | **Browser automation** | Control cloud browsers via Browser Use or Skyvern | `BROWSER_USE_API_KEY`, `BROWSERBASE_API_KEY`, direct Skyvern MCP with `SKYVERN_API_KEY` |
 
-All four tool categories bill to your Nous subscription. You can enable any combination — for example, use the gateway for web and browser automation while keeping your own ElevenLabs key for TTS.
+All four tools bill to your Nous subscription. You can enable any combination — for example, use the gateway for web and image generation while keeping your own ElevenLabs key for TTS.
 
 ## Eligibility
 
@@ -74,7 +74,7 @@ Select a tool category (Web, Browser, Image Generation, or TTS), then choose **N
 
 ### Manual configuration
 
-Set the gateway flags directly in `~/.hermes/config.yaml`:
+Set the `use_gateway` flag directly in `~/.hermes/config.yaml`:
 
 ```yaml
 web:
