@@ -437,14 +437,26 @@ class GatewayStreamConsumer:
                         await self._send_new_chunk(self._accumulated, None)
                         current_update_visible = True
                     elif self._draft_mode and got_done:
-                        # Stream finished in draft mode: skip the final draft
-                        # update to avoid a visible delay on the client.
-                        # Sending a draft refresh right before the real message
-                        # forces the client to animate the draft content first,
-                        # then switch to the real message — causing the "draft
-                        # lingers after send" race.  The real message is sent
-                        # in the got_done block below.
-                        current_update_visible = False
+                        # Stream finished in draft mode: send one final draft
+                        # with the COMPLETE text but NO cursor, then let the
+                        # got_done block send the real message.
+                        #
+                        # The cursor triggers a typing animation on the
+                        # Telegram client.  If we skip the final draft entirely
+                        # (just send the real message), the client's animation
+                        # from the *previous* draft update may still be in
+                        # progress — the last few characters were never sent as
+                        # a draft, so they appear "stuck" for several seconds
+                        # while the client resolves the race between the stale
+                        # animation and the real message.
+                        #
+                        # By sending the complete text without cursor we give
+                        # the client the full content with no animation.  The
+                        # subsequent real message then dismisses the draft
+                        # cleanly.
+                        current_update_visible = await self._send_or_edit_draft(
+                            self._accumulated, finalize=True,
+                        )
                     else:
                         current_update_visible = await self._send_or_edit(
                             display_text,
