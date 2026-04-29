@@ -808,6 +808,59 @@ class ProcessRegistry:
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
+        # Guard against reader-thread race: if the process has already exited
+        # but _reader_loop hasn't set exited=True yet (fast exit before the
+        # reader thread enters its finally block), detect it here from the
+        # real process status so poll() doesn't return "running" forever.
+        if not session.exited and session.process is not None and session.process.poll() is not None:
+            with session._lock:
+                try:
+                    remaining = session.process.stdout.read()
+                    if remaining:
+                        session.output_buffer += remaining
+                        if len(session.output_buffer) > session.max_output_chars:
+                            session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                except Exception:
+                    pass
+            session.exited = True
+            session.exit_code = session.process.returncode
+            self._move_to_finished(session)
+
+        # Safety cap: track poll count and no-output cycles to break out of
+        # infinite polling loops when the reader thread never sets exited.
+        if not session.exited:
+            session._poll_count += 1
+            current_len = len(session.output_buffer)
+            if current_len == session._last_output_length:
+                session._no_output_cycles += 1
+            else:
+                session._no_output_cycles = 0
+            session._last_output_length = current_len
+
+            # Hard cap: if we've polled more than MAX_POLL_COUNT times with
+            # the process still showing as "running", promote to "completed"
+            # to break the loop rather than polling forever.
+            if session._poll_count >= MAX_POLL_COUNT:
+                logger.warning(
+                    "[process_registry] poll cap reached (%d) for %s, "
+                    "forcing completed",
+                    MAX_POLL_COUNT, session.id,
+                )
+                with session._lock:
+                    output_preview = strip_ansi(session.output_buffer[-1000:]) if session.output_buffer else ""
+                result = {
+                    "session_id": session.id,
+                    "command": session.command,
+                    "status": "completed",
+                    "pid": session.pid,
+                    "uptime_seconds": int(time.time() - session.started_at),
+                    "output_preview": output_preview,
+                    "exit_code": None,
+                    "note": "Poll limit reached; process may have exited without signalling completion",
+                }
+                self._completion_consumed.add(session_id)
+                return result
+
         with session._lock:
             output_preview = strip_ansi(session.output_buffer[-1000:]) if session.output_buffer else ""
 
