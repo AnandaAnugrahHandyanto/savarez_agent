@@ -289,6 +289,69 @@ class TestBlueBubblesGuidResolution:
         )
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_prefers_direct_dm_over_group_match(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_api_post(_path, _payload):
+            return {
+                "data": [
+                    {
+                        "guid": "iMessage;+;group-1",
+                        "chatIdentifier": "group-1",
+                        "isGroup": True,
+                        "participants": [{"address": "+15555550132"}],
+                    },
+                    {
+                        "guid": "iMessage;-;+15555550132",
+                        "chatIdentifier": "+15555550132",
+                        "isGroup": False,
+                        "participants": [{"address": "+15555550132"}],
+                    },
+                ]
+            }
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        assert await adapter._resolve_chat_guid("+15555550132") == "iMessage;-;+15555550132"
+
+    @pytest.mark.asyncio
+    async def test_group_only_match_fails_closed(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_api_post(_path, _payload):
+            return {
+                "data": [
+                    {
+                        "guid": "iMessage;+;group-1",
+                        "chatIdentifier": "group-1",
+                        "isGroup": True,
+                        "participants": [{"address": "+15555550132"}],
+                    }
+                ]
+            }
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        assert await adapter._resolve_chat_guid("+15555550132") is None
+
+    @pytest.mark.asyncio
+    async def test_normalizes_digits_only_sms_thread(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_api_post(_path, _payload):
+            return {
+                "data": [
+                    {
+                        "guid": "SMS;-;15555550132",
+                        "chatIdentifier": "15555550132",
+                        "isGroup": False,
+                        "participants": [{"address": "15555550132"}],
+                    }
+                ]
+            }
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        assert await adapter._resolve_chat_guid("+15555550132") == "SMS;-;15555550132"
+
 
 class TestBlueBubblesAttachmentDownload:
     """Verify _download_attachment routes to the correct cache helper."""

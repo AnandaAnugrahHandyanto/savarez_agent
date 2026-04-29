@@ -39,6 +39,7 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # downstream adapters (signal, etc.) expect.
 _PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
+_EMAIL_TARGET_RE = re.compile(r"^\s*[^\s@]+@[^\s@]+\.[^\s@]+\s*$")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
@@ -68,6 +69,35 @@ def _sanitize_error_text(text) -> str:
 def _error(message: str) -> dict:
     """Build a standardized error payload with redacted content."""
     return {"error": _sanitize_error_text(message)}
+
+
+_BRIDGE_HANDOFF_PATTERNS = (
+    re.compile(r"\bHND-\d{8}-\d{6}-[a-f0-9]+\b", re.IGNORECASE),
+    re.compile(r"^handoff_id\s*:", re.IGNORECASE | re.MULTILINE),
+    re.compile(
+        r"^(sender|recipient|issue_type|handoff_kind|resolution_summary|response_format|acknowledgment_source)\s*:",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+    re.compile(r"^##\s+(Requested Action|Minimal Context|Outcome)\b", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"/bridge/(incoming|archive|audit)/", re.IGNORECASE),
+)
+_HUMAN_MESSAGING_PLATFORMS = frozenset({"bluebubbles", "signal", "sms", "whatsapp", "email"})
+
+
+def _looks_like_bridge_handoff_payload(message: str) -> bool:
+    text = (message or "").strip()
+    if not text:
+        return False
+    hits = sum(1 for pattern in _BRIDGE_HANDOFF_PATTERNS if pattern.search(text))
+    return hits >= 2 or bool(_BRIDGE_HANDOFF_PATTERNS[0].search(text))
+
+
+def _should_block_human_target(platform_name: str, chat_id: str | None) -> bool:
+    if platform_name not in _HUMAN_MESSAGING_PLATFORMS:
+        return False
+    if platform_name == "bluebubbles":
+        return bool(chat_id)
+    return True
 
 
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
@@ -200,6 +230,13 @@ def _handle_send(args):
                 f"Try using a numeric channel ID instead."
             })
 
+    effective_chat_id = chat_id or target_ref
+    if _should_block_human_target(platform_name, effective_chat_id) and _looks_like_bridge_handoff_payload(message):
+        return json.dumps(_error(
+            "Blocked outbound message: content looks like internal bridge/handoff metadata. "
+            "Rewrite for human recipient before retrying."
+        ))
+
     from tools.interrupt import is_interrupted
     if is_interrupted():
         return tool_error("Interrupted")
@@ -310,44 +347,50 @@ def _handle_send(args):
 
 def _parse_target_ref(platform_name: str, target_ref: str):
     """Parse a tool target into chat_id/thread_id and whether it is explicit."""
+    cleaned = target_ref.strip()
     if platform_name == "telegram":
-        match = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(target_ref)
+        match = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(cleaned)
         if match:
             return match.group(1), match.group(2), True
     if platform_name == "feishu":
-        match = _FEISHU_TARGET_RE.fullmatch(target_ref)
+        match = _FEISHU_TARGET_RE.fullmatch(cleaned)
         if match:
             return match.group(1), match.group(2), True
     if platform_name == "discord":
-        match = _NUMERIC_TOPIC_RE.fullmatch(target_ref)
+        match = _NUMERIC_TOPIC_RE.fullmatch(cleaned)
         if match:
             return match.group(1), match.group(2), True
     if platform_name == "slack":
-        match = _SLACK_TARGET_RE.fullmatch(target_ref)
+        match = _SLACK_TARGET_RE.fullmatch(cleaned)
         if match:
             return match.group(1), None, True
     if platform_name == "weixin":
-        match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
+        match = _WEIXIN_TARGET_RE.fullmatch(cleaned)
         if match:
             return match.group(1), None, True
     if platform_name == "yuanbao":
-        match = _YUANBAO_TARGET_RE.fullmatch(target_ref)
+        match = _YUANBAO_TARGET_RE.fullmatch(cleaned)
         if match:
             return match.group(1), None, True
-        if target_ref.strip().isdigit():
-            return f"group:{target_ref.strip()}", None, True
+        if cleaned.isdigit():
+            return f"group:{cleaned}", None, True
         return None, None, False
     if platform_name in _PHONE_PLATFORMS:
-        match = _E164_TARGET_RE.fullmatch(target_ref)
+        match = _E164_TARGET_RE.fullmatch(cleaned)
         if match:
             # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
             # expect E.164 format for direct recipients.
-            return target_ref.strip(), None, True
-    if target_ref.lstrip("-").isdigit():
-        return target_ref, None, True
+            return cleaned, None, True
+    if platform_name == "bluebubbles":
+        if ";" in cleaned:
+            return cleaned, None, True
+        if _E164_TARGET_RE.fullmatch(cleaned) or _EMAIL_TARGET_RE.fullmatch(cleaned):
+            return cleaned, None, True
+    if cleaned.lstrip("-").isdigit():
+        return cleaned, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit
-    if platform_name == "matrix" and (target_ref.startswith("!") or target_ref.startswith("@")):
-        return target_ref, None, True
+    if platform_name == "matrix" and (cleaned.startswith("!") or cleaned.startswith("@")):
+        return cleaned, None, True
     return None, None, False
 
 
@@ -1582,7 +1625,7 @@ async def _send_bluebubbles(extra, chat_id, message):
         from gateway.config import PlatformConfig
         pconfig = PlatformConfig(extra=extra)
         adapter = BlueBubblesAdapter(pconfig)
-        connected = await adapter.connect()
+        connected = await adapter.connect_api_only()
         if not connected:
             return _error("BlueBubbles: failed to connect to server")
         try:

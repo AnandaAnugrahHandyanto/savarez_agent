@@ -24,6 +24,7 @@ from gateway.config import Platform
 from tools.send_message_tool import (
     _derive_forum_thread_name,
     _parse_target_ref,
+    _send_bluebubbles,
     _send_discord,
     _send_matrix_via_adapter,
     _send_signal,
@@ -78,6 +79,64 @@ def _ensure_slack_mock(monkeypatch):
 
 
 class TestSendMessageTool:
+    def test_bluebubbles_e164_target_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("bluebubbles", "+15555550132")
+        assert chat_id == "+15555550132"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_blocks_bridge_handoff_payload_for_bluebubbles_target(self):
+        blue_cfg = SimpleNamespace(enabled=True, token="", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.BLUEBUBBLES: blue_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+        message = """handoff_id: HND-20260427-024151-8923\nrecipient: hermes\n## Requested Action\nInvestigate this."""
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "bluebubbles:+15555550132",
+                        "message": message,
+                    }
+                )
+            )
+
+        assert "error" in result
+        assert "internal bridge/handoff metadata" in result["error"]
+
+    def test_send_bluebubbles_uses_api_only_connect(self, monkeypatch):
+        from gateway.platforms import bluebubbles as bluebubbles_module
+
+        class FakeAdapter:
+            def __init__(self, _config):
+                self.connect_api_only_calls = 0
+                self.disconnect_calls = 0
+
+            async def connect_api_only(self):
+                self.connect_api_only_calls += 1
+                return True
+
+            async def connect(self):
+                raise AssertionError("webhook bind path should not run")
+
+            async def send(self, chat_id, message):
+                return SimpleNamespace(success=True, message_id="bb-1")
+
+            async def disconnect(self):
+                self.disconnect_calls += 1
+
+        monkeypatch.setattr(bluebubbles_module, "check_bluebubbles_requirements", lambda: True)
+        monkeypatch.setattr(bluebubbles_module, "BlueBubblesAdapter", FakeAdapter)
+
+        result = asyncio.run(_send_bluebubbles({"server_url": "http://bb", "password": "***"}, "+15555550132", "hello"))
+
+        assert result["success"] is True
+        assert result["message_id"] == "bb-1"
+
     def test_cron_duplicate_target_is_skipped_and_explained(self):
         home = SimpleNamespace(chat_id="-1001")
         config, _telegram_cfg = _make_config()

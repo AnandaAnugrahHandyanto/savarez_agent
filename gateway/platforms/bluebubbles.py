@@ -154,17 +154,17 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def _connect_rest_client(self) -> bool:
         if not self.server_url or not self.password:
             logger.error(
                 "[bluebubbles] BLUEBUBBLES_SERVER_URL and BLUEBUBBLES_PASSWORD are required"
             )
             return False
-        from aiohttp import web
 
-        # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
-        from gateway.platforms._http_client_limits import platform_httpx_limits
-        self.client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
+        if self.client is None:
+            # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
+            from gateway.platforms._http_client_limits import platform_httpx_limits
+            self.client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
         try:
             await self._api_get("/api/v1/ping")
             info = await self._api_get("/api/v1/server/info")
@@ -177,6 +177,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 self._private_api_enabled,
                 self._helper_connected,
             )
+            return True
         except Exception as exc:
             logger.error(
                 "[bluebubbles] cannot reach server at %s: %s", self.server_url, exc
@@ -185,6 +186,18 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 await self.client.aclose()
                 self.client = None
             return False
+
+    async def connect_api_only(self) -> bool:
+        """Connect outbound REST client only. No local webhook bind."""
+        connected = await self._connect_rest_client()
+        if connected:
+            self._mark_connected()
+        return connected
+
+    async def connect(self) -> bool:
+        if not await self._connect_rest_client():
+            return False
+        from aiohttp import web
 
         app = web.Application()
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
@@ -209,7 +222,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         # Unregister webhook before cleaning up
-        await self._unregister_webhook()
+        if self._runner:
+            await self._unregister_webhook()
 
         if self.client:
             await self.client.aclose()
@@ -353,6 +367,25 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return target
         if target in self._guid_cache:
             return self._guid_cache[target]
+
+        def _normalized_handle(value: str) -> str:
+            value = (value or "").strip().lower()
+            if not value:
+                return ""
+            digits = re.sub(r"\D", "", value)
+            if len(digits) >= 10:
+                return digits[-10:]
+            return value
+
+        def _is_group_chat(chat: Dict[str, Any], guid: str | None) -> bool:
+            if chat.get("isGroup") is True:
+                return True
+            return ";+;" in (guid or "")
+
+        normalized_target = _normalized_handle(target)
+        direct_exact = None
+        direct_normalized = None
+        participant_normalized = None
         try:
             payload = await self._api_post(
                 "/api/v1/chat/query",
@@ -360,18 +393,34 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             )
             for chat in payload.get("data", []) or []:
                 guid = chat.get("guid") or chat.get("chatGuid")
-                identifier = chat.get("chatIdentifier") or chat.get("identifier")
-                if identifier == target:
-                    if guid:
-                        self._guid_cache[target] = guid
-                    return guid
-                for part in chat.get("participants", []) or []:
-                    if (part.get("address") or "").strip() == target and guid:
-                        self._guid_cache[target] = guid
-                        return guid
+                if not guid:
+                    continue
+                identifier = (chat.get("chatIdentifier") or chat.get("identifier") or "").strip()
+                is_group = _is_group_chat(chat, guid)
+                if identifier == target and not is_group:
+                    direct_exact = guid
+                    break
+                if _normalized_handle(identifier) == normalized_target and not is_group and direct_normalized is None:
+                    direct_normalized = guid
+                participants = chat.get("participants", []) or []
+                if is_group:
+                    continue
+                for part in participants:
+                    address = (part.get("address") or "").strip()
+                    if address == target:
+                        direct_exact = guid
+                        break
+                    if _normalized_handle(address) == normalized_target and participant_normalized is None:
+                        participant_normalized = guid
+                if direct_exact:
+                    break
         except Exception:
             pass
-        return None
+
+        resolved = direct_exact or direct_normalized or participant_normalized
+        if resolved:
+            self._guid_cache[target] = resolved
+        return resolved
 
     async def _create_chat_for_handle(
         self, address: str, message: str
