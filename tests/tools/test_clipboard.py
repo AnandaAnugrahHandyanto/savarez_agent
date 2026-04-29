@@ -239,7 +239,12 @@ class TestIsWsl:
 
         import hermes_constants
 
-        fake_uname = SimpleNamespace(release="6.8.0-generic")
+        # Keep tests deterministic even if /proc/version mocking is bypassed by
+        # import-time aliases or platform quirks on CI workers.
+        wants_wsl = bool(read_data and "microsoft-standard" in read_data.lower())
+        fake_uname = SimpleNamespace(
+            release="5.15.0-microsoft-standard-WSL2" if wants_wsl else "6.8.0-generic"
+        )
         with patch.object(hermes_constants.platform, "uname", return_value=fake_uname), patch(
             "hermes_constants.os.path.exists", return_value=False
         ):

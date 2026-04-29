@@ -102,6 +102,7 @@ def _make_runner():
 
 
 class TestAdapterSessionCancellation:
+    @pytest.mark.long_running
     @pytest.mark.asyncio
     @pytest.mark.parametrize("command_text", ["/stop", "/new", "/reset"])
     async def test_command_cancels_active_task_and_unblocks_follow_up(
