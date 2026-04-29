@@ -712,11 +712,11 @@ def _prompt_vercel_sandbox_settings(config: dict):
     token = prompt("    Vercel access token", get_env_value("VERCEL_TOKEN") or "", password=True)
     project = prompt(
         "    Vercel project ID",
-        get_env_value("VERCEL_PROJECT_ID") or linked_project.get("projectId", ""),
+        linked_project.get("projectId", "") or get_env_value("VERCEL_PROJECT_ID") or "",
     )
     team = prompt(
         "    Vercel team ID",
-        get_env_value("VERCEL_TEAM_ID") or linked_project.get("orgId", ""),
+        linked_project.get("orgId", "") or get_env_value("VERCEL_TEAM_ID") or "",
     )
     if token:
         save_env_value("VERCEL_TOKEN", token)
