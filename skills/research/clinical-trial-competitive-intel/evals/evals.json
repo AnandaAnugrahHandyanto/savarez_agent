@@ -1,0 +1,45 @@
+{
+  "skill_name": "clinical-trial-competitive-intel",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "帮我做 9MW1911 COPD 的国内外竞品临床试验分析，输出 Excel。不要只列 9MW1911 自己的试验。",
+      "expected_output": "Creates a bilingual Excel competitive-intelligence workbook with target-asset trials, true competitor trials, source logs, search dictionary, and QC evidence.",
+      "files": [],
+      "expectations": [
+        "The plan or output includes 9MW1911 plus at least two plausible competitors such as astegolimab, itepekimab, or tozorakimab unless a source-backed exclusion is given.",
+        "The deliverable is an .xlsx workbook, not markdown-only.",
+        "The workbook includes Chinese and English core sheets.",
+        "The workbook includes source_log and search_dictionary sheets or equivalent bilingual variants.",
+        "The response reports actual verification with openpyxl or an equivalent workbook-open check."
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "继续处理 CDE 查询结果。文件在 ~/Desktop/CDE_Query/9MW1911_xxxxxx/，请读取 cde_result.json/csv，并合并进 9MW1911 竞品分析 Excel。",
+      "expected_output": "Reads saved CDE JSON/CSV results, backs up the workbook, adds bilingual CDE sheets, merges CDE records into main trial_records, updates source_log, and records CTR-to-NCT dedup/crosswalk confidence.",
+      "files": [],
+      "expectations": [
+        "The workflow first locates and reads both cde_result.json and cde_result.csv when available.",
+        "The existing workbook is backed up before modification.",
+        "CDE records are merged into main trial_records sheets, not left only in side sheets.",
+        "CDE_trials_中文 and CDE_trials_EN or equivalent bilingual CDE sheets are created or updated.",
+        "source_log is updated so prior CDE blocked or failed status is not stale after a successful import.",
+        "dedup/crosswalk logic records CTR-to-NCT confidence and rationale."
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "追踪 GLP-1/GIP 肥胖方向最近 90 天全球和中国临床动态，输出给医学部看的 Excel。",
+      "expected_output": "Builds a current monitoring workbook for GLP-1/GIP obesity competitors with global and China registry coverage, recent-change classification, and a clear note when no prior snapshot exists.",
+      "files": [],
+      "expectations": [
+        "The workflow creates a search dictionary covering asset names, companies, targets, pathway terms, and Chinese/English indication aliases.",
+        "The output contains competitor-level comparison and trial-level records, not only a narrative summary.",
+        "Recent changes are classified by severity and separated from first-pass discovery when no prior snapshot exists.",
+        "China sources such as CDE or ChiCTR are attempted or explicitly logged as blocked/unavailable with evidence.",
+        "The final response includes the absolute workbook path and top takeaways."
+      ]
+    }
+  ]
+}
