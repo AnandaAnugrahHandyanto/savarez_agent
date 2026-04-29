@@ -32,6 +32,7 @@ import logging
 import os
 import queue
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -111,6 +112,10 @@ DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
 DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_GEMINI_TTS_VOICE = "Kore"
 DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+LOCAL_TTS_COMMAND_ENV = "HERMES_LOCAL_TTS_COMMAND"
+DEFAULT_LOCAL_TTS_TIMEOUT_SECONDS = 120
+DEFAULT_LOCAL_TTS_OUTPUT_FORMAT = "mp3"
+LOCAL_TTS_OUTPUT_FORMATS = {"mp3", "wav", "ogg", "flac"}
 # PCM output specs for Gemini TTS (fixed by the API)
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
@@ -139,6 +144,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
+    "local_command": 5000,  # user-supplied local TTS command
 }
 
 # ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models
@@ -222,6 +228,132 @@ def _load_tts_config() -> Dict[str, Any]:
 def _get_provider(tts_config: Dict[str, Any]) -> str:
     """Get the configured TTS provider name."""
     return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
+
+
+def _get_provider_config(tts_config: Dict[str, Any], provider: str) -> Dict[str, Any]:
+    """Return provider config, or an empty dict when the section is invalid."""
+    if not isinstance(tts_config, dict):
+        return {}
+    provider_config = tts_config.get(provider)
+    return provider_config if isinstance(provider_config, dict) else {}
+
+
+def _get_local_tts_command_template(tts_config: Dict[str, Any]) -> Optional[str]:
+    """Return local_command command template from config, then environment."""
+    local_config = _get_provider_config(tts_config, "local_command")
+    configured = local_config.get("command")
+    if isinstance(configured, str) and configured.strip():
+        return configured
+
+    env_command = os.getenv(LOCAL_TTS_COMMAND_ENV)
+    if isinstance(env_command, str) and env_command.strip():
+        return env_command
+    return None
+
+
+def _has_local_tts_command(tts_config: Optional[Dict[str, Any]] = None) -> bool:
+    """Return True when a local TTS command template is configured."""
+    if tts_config is None:
+        tts_config = _load_tts_config()
+    return _get_local_tts_command_template(tts_config) is not None
+
+
+def _get_local_tts_timeout(tts_config: Dict[str, Any]) -> float:
+    """Return local_command timeout in seconds, falling back for invalid values."""
+    local_config = _get_provider_config(tts_config, "local_command")
+    raw_timeout = local_config.get(
+        "timeout",
+        local_config.get("timeout_seconds", DEFAULT_LOCAL_TTS_TIMEOUT_SECONDS),
+    )
+    try:
+        timeout = float(raw_timeout)
+    except (TypeError, ValueError):
+        return float(DEFAULT_LOCAL_TTS_TIMEOUT_SECONDS)
+    if timeout <= 0:
+        return float(DEFAULT_LOCAL_TTS_TIMEOUT_SECONDS)
+    return timeout
+
+
+def _get_local_tts_output_format(tts_config: Dict[str, Any]) -> str:
+    """Return validated local_command output format."""
+    local_config = _get_provider_config(tts_config, "local_command")
+    output_format = str(
+        local_config.get("format")
+        or local_config.get("output_format")
+        or DEFAULT_LOCAL_TTS_OUTPUT_FORMAT
+    ).lower().strip()
+    if output_format not in LOCAL_TTS_OUTPUT_FORMATS:
+        return DEFAULT_LOCAL_TTS_OUTPUT_FORMAT
+    return output_format
+
+
+def _generate_local_command_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech by running a user-configured local command."""
+    command_template = _get_local_tts_command_template(tts_config)
+    if not command_template:
+        raise ValueError("tts.local_command.command is not configured")
+
+    local_config = _get_provider_config(tts_config, "local_command")
+    output = Path(output_path).expanduser()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    timeout = _get_local_tts_timeout(tts_config)
+    output_format = _get_local_tts_output_format(tts_config)
+    speed = local_config.get("speed", tts_config.get("speed", ""))
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        text_path = Path(tmpdir) / "input.txt"
+        text_path.write_text(text, encoding="utf-8")
+
+        placeholders = {
+            "input_path": shlex.quote(str(text_path)),
+            "text_path": shlex.quote(str(text_path)),
+            "output_path": shlex.quote(str(output)),
+            "format": shlex.quote(output_format),
+            "voice": shlex.quote(str(local_config.get("voice", ""))),
+            "model": shlex.quote(str(local_config.get("model", ""))),
+            "speed": shlex.quote(str(speed)),
+        }
+        template = command_template
+        for placeholder_name in placeholders:
+            template = template.replace(
+                f"{{{{{placeholder_name}}}}}",
+                f"{{{placeholder_name}}}",
+            )
+        try:
+            command = template.format(**placeholders)
+        except KeyError as exc:
+            missing = exc.args[0]
+            raise ValueError(
+                f"tts.local_command.command missing placeholder: {missing}"
+            ) from exc
+
+        try:
+            subprocess.run(
+                command,
+                shell=True,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"local_command TTS command timed out after {timeout:g} seconds"
+            ) from exc
+        except subprocess.CalledProcessError as exc:
+            detail_parts = []
+            if exc.stderr:
+                detail_parts.append(f"stderr: {exc.stderr.strip()}")
+            if exc.stdout:
+                detail_parts.append(f"stdout: {exc.stdout.strip()}")
+            detail = "; ".join(detail_parts) or "no command output"
+            raise RuntimeError(
+                f"local_command TTS command failed with exit code {exc.returncode}: {detail}"
+            ) from exc
+
+    if not output.exists() or output.stat().st_size <= 0:
+        raise RuntimeError("local_command TTS produced no output")
+    return str(output)
 
 
 # ===========================================================================
@@ -968,7 +1100,10 @@ def text_to_speech_tool(
         out_dir.mkdir(parents=True, exist_ok=True)
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        if want_opus and provider in ("openai", "elevenlabs", "mistral", "gemini"):
+        if provider == "local_command":
+            output_format = _get_local_tts_output_format(tts_config)
+            file_path = out_dir / f"tts_{timestamp}.{output_format}"
+        elif want_opus and provider in ("openai", "elevenlabs", "mistral", "gemini"):
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -1024,6 +1159,10 @@ def text_to_speech_tool(
         elif provider == "gemini":
             logger.info("Generating speech with Google Gemini TTS...")
             _generate_gemini_tts(text, file_str, tts_config)
+
+        elif provider == "local_command":
+            logger.info("Generating speech with local command TTS...")
+            _generate_local_command_tts(text, file_str, tts_config)
 
         elif provider == "neutts":
             if not _check_neutts_available():
@@ -1087,13 +1226,22 @@ def text_to_speech_tool(
         # Try Opus conversion for Telegram compatibility
         # Edge TTS outputs MP3, NeuTTS/KittenTTS output WAV — all need ffmpeg conversion
         voice_compatible = False
-        if provider in ("edge", "neutts", "minimax", "xai", "kittentts") and not file_str.endswith(".ogg"):
+        if (
+            provider in ("edge", "neutts", "minimax", "xai", "kittentts", "local_command")
+            and not file_str.endswith(".ogg")
+        ):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
-                voice_compatible = True
+                voice_compatible = provider != "local_command"
         elif provider in ("elevenlabs", "openai", "mistral", "gemini"):
             voice_compatible = file_str.endswith(".ogg")
+        if provider == "local_command":
+            local_config = _get_provider_config(tts_config, "local_command")
+            voice_compatible = (
+                bool(local_config.get("voice_compatible"))
+                and file_str.endswith(".ogg")
+            )
 
         file_size = os.path.getsize(file_str)
         logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{file_size:,}", provider)
@@ -1163,6 +1311,8 @@ def check_tts_requirements() -> bool:
     if os.getenv("XAI_API_KEY"):
         return True
     if os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
+        return True
+    if _has_local_tts_command():
         return True
     try:
         _import_mistral_client()
@@ -1470,11 +1620,12 @@ if __name__ == "__main__":
         "    API Key:  "
         f"{'set' if resolve_openai_audio_api_key() else 'not set (VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY)'}"
     )
+    config = _load_tts_config()
     print(f"  MiniMax:    {'API key set' if os.getenv('MINIMAX_API_KEY') else 'not set (MINIMAX_API_KEY)'}")
+    print(f"  Local cmd:  {'configured' if _has_local_tts_command(config) else 'not configured'}")
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
     print(f"\n  Output dir: {DEFAULT_OUTPUT_DIR}")
 
-    config = _load_tts_config()
     provider = _get_provider(config)
     print(f"  Configured provider: {provider}")
 
@@ -1492,7 +1643,7 @@ TTS_SCHEMA = {
         "properties": {
             "text": {
                 "type": "string",
-                "description": "The text to convert to speech. Provider-specific character caps apply and are enforced automatically (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k depending on model); over-long input is truncated."
+                "description": "The text to convert to speech. Provider-specific character caps apply and are enforced automatically (OpenAI 4096, xAI 15000, MiniMax 10000, local_command 5000, ElevenLabs 5k-40k depending on model); over-long input is truncated."
             },
             "output_path": {
                 "type": "string",
