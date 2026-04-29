@@ -387,6 +387,11 @@ from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
 from hermes_constants import get_hermes_dir
 
+try:
+    from tools.url_safety import is_safe_url as _is_safe_url
+except Exception:
+    _is_safe_url = lambda url: False  # noqa: E731 — fail-closed
+
 
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
     "Secure secret entry is not supported over messaging. "
@@ -2481,8 +2486,18 @@ class BasePlatformAdapter(ABC):
                 human_delay = self._get_human_delay()
 
                 # Send extracted images as native attachments
+                # Filter out private/internal URLs to prevent SSRF — platform
+                # adapters fetch these URLs server-side via send_image()
                 if images:
-                    logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
+                    safe_images = []
+                    for url, alt in images:
+                        if url.startswith(("http://", "https://")) and not _is_safe_url(url):
+                            logger.warning("[%s] Blocked SSRF image URL: %s", self.name, url[:80])
+                        else:
+                            safe_images.append((url, alt))
+                    images = safe_images
+                    if images:
+                        logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
                 for image_url, alt_text in images:
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
