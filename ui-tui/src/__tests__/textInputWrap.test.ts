@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { offsetFromPosition } from '../components/textInput.js'
-import { cursorLayout, inputVisualHeight, stableComposerColumns } from '../lib/inputMetrics.js'
+import { composerPromptWidth, cursorLayout, inputVisualHeight, stableComposerColumns } from '../lib/inputMetrics.js'
 
 describe('cursorLayout — char-wrap parity with wrap-ansi', () => {
   it('places cursor mid-line at its column', () => {
@@ -42,8 +42,15 @@ describe('input metrics helpers', () => {
     expect(inputVisualHeight('one\ntwo', 40)).toBe(2)
   })
 
+  it('counts the prompt gap as its own cell', () => {
+    expect(composerPromptWidth('>')).toBe(2)
+    expect(composerPromptWidth('❯')).toBe(2)
+    expect(composerPromptWidth('Ψ >')).toBe(4)
+  })
+
   it('reserves gutters on wide panes without starving narrow composer width', () => {
     expect(stableComposerColumns(100, 3)).toBe(93)
+    expect(stableComposerColumns(100, 5)).toBe(91)
     expect(stableComposerColumns(10, 3)).toBe(5)
     expect(stableComposerColumns(6, 3)).toBe(1)
   })

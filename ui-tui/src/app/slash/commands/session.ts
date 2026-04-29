@@ -12,6 +12,7 @@ import type {
 } from '../../../gatewayTypes.js'
 import { fmtK } from '../../../lib/text.js'
 import type { PanelSection } from '../../../types.js'
+import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
@@ -269,6 +270,43 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    help: 'pick the busy indicator: kaomoji (default), emoji, unicode (braille), or ascii',
+    name: 'indicator',
+    usage: `/indicator [${INDICATOR_STYLES.join('|')}]`,
+    run: (arg, ctx) => {
+      const value = arg.trim().toLowerCase()
+
+      if (!value) {
+        return ctx.gateway
+          .rpc<ConfigGetValueResponse>('config.get', { key: 'indicator' })
+          .then(
+            ctx.guarded<ConfigGetValueResponse>(r =>
+              ctx.transcript.sys(`indicator: ${r.value || DEFAULT_INDICATOR_STYLE}`)
+            )
+          )
+      }
+
+      if (!(INDICATOR_STYLES as readonly string[]).includes(value)) {
+        return ctx.transcript.sys(`usage: /indicator [${INDICATOR_STYLES.join('|')}]`)
+      }
+
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'indicator', value }).then(
+        ctx.guarded<ConfigSetResponse>(r => {
+          if (!r.value) {
+            return
+          }
+
+          // Hot-swap the running TUI immediately so the next render
+          // uses the new style without waiting for the 5s mtime poll
+          // to re-apply config.full.
+          patchUiState({ indicatorStyle: value as IndicatorStyle })
+          ctx.transcript.sys(`indicator → ${r.value}`)
+        })
+      )
+    }
+  },
+
+  {
     help: 'toggle yolo mode (per-session approvals)',
     name: 'yolo',
     run: (_arg, ctx) => {
@@ -294,7 +332,29 @@ export const sessionCommands: SlashCommand[] = [
 
       ctx.gateway
         .rpc<ConfigSetResponse>('config.set', { key: 'reasoning', session_id: ctx.sid, value: arg })
-        .then(ctx.guarded<ConfigSetResponse>(r => r.value && ctx.transcript.sys(`reasoning: ${r.value}`)))
+        .then(
+          ctx.guarded<ConfigSetResponse>(r => {
+            if (!r.value) {
+              return
+            }
+
+            if (r.value === 'hide') {
+              patchUiState(state => ({
+                ...state,
+                sections: { ...state.sections, thinking: 'hidden' },
+                showReasoning: false
+              }))
+            } else if (r.value === 'show') {
+              patchUiState(state => ({
+                ...state,
+                sections: { ...state.sections, thinking: 'expanded' },
+                showReasoning: true
+              }))
+            }
+
+            ctx.transcript.sys(`reasoning: ${r.value}`)
+          })
+        )
     }
   },
 

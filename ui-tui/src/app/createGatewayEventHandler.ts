@@ -1,6 +1,13 @@
 import { STREAM_BATCH_MS } from '../config/timing.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
-import type { CommandsCatalogResponse, DelegationStatusResponse, GatewayEvent, GatewaySkin } from '../gatewayTypes.js'
+import type {
+  CommandsCatalogResponse,
+  ConfigFullResponse,
+  DelegationStatusResponse,
+  GatewayEvent,
+  GatewaySkin,
+  SessionMostRecentResponse
+} from '../gatewayTypes.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatToolCall, stripAnsi } from '../lib/text.js'
@@ -178,7 +185,34 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       return
     }
 
-    patchUiState({ status: 'ready' })
+    // Opt-in: when `display.tui_auto_resume_recent` is true, look up
+    // the most recent human-facing session and resume it. Otherwise stay
+    // idle until the first prompt creates a session, so opening the dashboard
+    // or TUI does not mint an empty chat row.
+    rpc<ConfigFullResponse>('config.get', { key: 'full' })
+      .then(cfg => {
+        if (!cfg?.config?.display?.tui_auto_resume_recent) {
+          patchUiState({ status: 'ready' })
+
+          return
+        }
+
+        patchUiState({ status: 'checking recent session…' })
+
+        return rpc<SessionMostRecentResponse>('session.most_recent', {}).then(r => {
+          const target = r?.session_id
+
+          if (target) {
+            patchUiState({ status: 'resuming most recent…' })
+            resumeById(target)
+
+            return
+          }
+
+          patchUiState({ status: 'ready' })
+        })
+      })
+      .catch(() => patchUiState({ status: 'ready' }))
   }
 
   return (ev: GatewayEvent) => {
@@ -268,6 +302,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
+      case 'browser.progress': {
+        const message = String(ev.payload?.message ?? '').trim()
+
+        if (message) {
+          sys(message)
+        }
+
+        return
+      }
+
       case 'voice.status': {
         // Continuous VAD loop reports its internal state so the status bar
         // can show listening / transcribing / idle without polling.
@@ -320,11 +364,30 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'gateway.start_timeout': {
-        const { cwd, python } = ev.payload ?? {}
+        const { cwd, python, stderr_tail: stderrTail } = ev.payload ?? {}
         const trace = python || cwd ? ` · ${String(python || '')} ${String(cwd || '')}`.trim() : ''
 
         setStatus('gateway startup timeout')
         turnController.pushActivity(`gateway startup timed out${trace} · /logs to inspect`, 'error')
+
+        // Surface the most useful stderr lines inline so users can tell
+        // "wrong python", "missing dep", and "config parse failure"
+        // apart without leaving the TUI.  Filter blank rows BEFORE
+        // taking the last N so trailing empty lines in the buffer
+        // don't crowd out actual content; truncate to match the
+        // 120-char clip used for `gateway.stderr` activity entries.
+        const STDERR_LINE_CAP = 120
+        const STDERR_LINES_MAX = 8
+
+        const tailLines = (stderrTail ?? '')
+          .split('\n')
+          .map(l => l.trim())
+          .filter(Boolean)
+          .slice(-STDERR_LINES_MAX)
+
+        for (const line of tailLines) {
+          turnController.pushActivity(line.slice(0, STDERR_LINE_CAP), 'error')
+        }
 
         return
       }
