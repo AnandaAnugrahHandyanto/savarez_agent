@@ -71,7 +71,7 @@ Speech-to-text supports three providers: local Whisper (free, runs on-device), G
 
 ## Programmatic Access
 
-- **[API Server](/docs/user-guide/features/api-server)** — Expose Hermes as an OpenAI-compatible HTTP endpoint. Any frontend that speaks the OpenAI format — Open WebUI, LobeChat, LibreChat, NextChat, ChatBox — can connect and use Hermes as a backend with its full toolset.
+- **[API Server](/docs/user-guide/features/api-server)** — Expose Hermes as an OpenAI-compatible HTTP endpoint. Any frontend that speaks the OpenAI format — Open WebUI, LobeHub, LibreChat, NextChat, ChatBox — can connect and use Hermes as a backend with its full toolset.
 
 ## Memory & Personalization
 
