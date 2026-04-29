@@ -25,50 +25,49 @@ from hermes_cli.config import (
 class TestReloadEnv:
     """Tests for reload_env() — re-reads .env into os.environ."""
 
+    @staticmethod
+    def _hermes_dotenv(tmp_path: Path) -> Path:
+        """Path to the real .env under the hermetic HERMES_HOME (see conftest)."""
+        return tmp_path / "hermes_test" / ".env"
+
     def test_adds_new_vars(self, tmp_path):
         """reload_env() adds vars from .env that are not in os.environ."""
-        env_file = tmp_path / ".env"
+        env_file = self._hermes_dotenv(tmp_path)
         env_file.write_text("TEST_RELOAD_VAR=hello123\n")
-        with patch("hermes_cli.config.get_env_path", return_value=env_file):
-            os.environ.pop("TEST_RELOAD_VAR", None)
-            count = reload_env()
-            assert count >= 1
-            assert os.environ.get("TEST_RELOAD_VAR") == "hello123"
+        os.environ.pop("TEST_RELOAD_VAR", None)
+        count = reload_env()
+        assert count >= 1
+        assert os.environ.get("TEST_RELOAD_VAR") == "hello123"
         os.environ.pop("TEST_RELOAD_VAR", None)
 
     def test_updates_changed_vars(self, tmp_path):
         """reload_env() updates vars whose value changed on disk."""
-        env_file = tmp_path / ".env"
+        env_file = self._hermes_dotenv(tmp_path)
         env_file.write_text("TEST_RELOAD_VAR=old_value\n")
-        with patch("hermes_cli.config.get_env_path", return_value=env_file):
-            os.environ["TEST_RELOAD_VAR"] = "old_value"
-            # Now change the file
-            env_file.write_text("TEST_RELOAD_VAR=new_value\n")
-            count = reload_env()
-            assert count >= 1
-            assert os.environ.get("TEST_RELOAD_VAR") == "new_value"
+        os.environ["TEST_RELOAD_VAR"] = "old_value"
+        env_file.write_text("TEST_RELOAD_VAR=new_value\n")
+        count = reload_env()
+        assert count >= 1
+        assert os.environ.get("TEST_RELOAD_VAR") == "new_value"
         os.environ.pop("TEST_RELOAD_VAR", None)
 
     def test_removes_deleted_known_vars(self, tmp_path):
         """reload_env() removes known Hermes vars not present in .env."""
-        env_file = tmp_path / ".env"
+        env_file = self._hermes_dotenv(tmp_path)
         env_file.write_text("")  # empty .env
-        # Pick a known key from OPTIONAL_ENV_VARS
         known_key = next(iter(OPTIONAL_ENV_VARS.keys()))
-        with patch("hermes_cli.config.get_env_path", return_value=env_file):
-            os.environ[known_key] = "stale_value"
-            count = reload_env()
-            assert known_key not in os.environ
-            assert count >= 1
+        os.environ[known_key] = "stale_value"
+        count = reload_env()
+        assert known_key not in os.environ
+        assert count >= 1
 
     def test_does_not_remove_unknown_vars(self, tmp_path):
         """reload_env() preserves non-Hermes env vars even when absent from .env."""
-        env_file = tmp_path / ".env"
+        env_file = self._hermes_dotenv(tmp_path)
         env_file.write_text("")
-        with patch("hermes_cli.config.get_env_path", return_value=env_file):
-            os.environ["MY_CUSTOM_UNRELATED_VAR"] = "keep_me"
-            reload_env()
-            assert os.environ.get("MY_CUSTOM_UNRELATED_VAR") == "keep_me"
+        os.environ["MY_CUSTOM_UNRELATED_VAR"] = "keep_me"
+        reload_env()
+        assert os.environ.get("MY_CUSTOM_UNRELATED_VAR") == "keep_me"
         os.environ.pop("MY_CUSTOM_UNRELATED_VAR", None)
 
 
