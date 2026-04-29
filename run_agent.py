@@ -899,6 +899,7 @@ class AIAgent:
         provider_sort: str = None,
         provider_require_parameters: bool = False,
         provider_data_collection: str = None,
+        provider_zdr: bool = None,
         session_id: str = None,
         tool_progress_callback: callable = None,
         tool_start_callback: callable = None,
@@ -1164,6 +1165,7 @@ class AIAgent:
         self.provider_sort = provider_sort
         self.provider_require_parameters = provider_require_parameters
         self.provider_data_collection = provider_data_collection
+        self.provider_zdr = provider_zdr
 
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
@@ -8117,6 +8119,8 @@ class AIAgent:
             _prefs["require_parameters"] = True
         if self.provider_data_collection:
             _prefs["data_collection"] = self.provider_data_collection
+        if self.provider_zdr:
+            _prefs["zdr"] = True
 
         # Anthropic max output for Claude on OpenRouter/Nous
         _ant_max = None
