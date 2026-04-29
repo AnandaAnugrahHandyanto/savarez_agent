@@ -949,6 +949,13 @@ DEFAULT_CONFIG = {
         # When true, skills in the stale lifecycle state are omitted from the
         # default prompt-time skills index. Pinned stale skills stay visible.
         "hide_stale_from_prompt": False,
+        # Revalidate negative / environment-dependent skill claims such as
+        # "X command unavailable" after their TTL expires. The first pass only
+        # tracks metadata; the curator revalidation pass consumes these values.
+        "revalidate_negative_claims": True,
+        "negative_claim_ttl_days": 30,
+        "negative_claim_confidence_threshold": 0.6,
+        "negative_claim_max_per_run": 10,
         # Optional per-task override for the curator's aux model. Leave null
         # to use Hermes' main auxiliary client resolution.
         "auxiliary": {

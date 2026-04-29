@@ -71,6 +71,13 @@ class TestLoadConfigDefaults:
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
 
+    def test_curator_defaults_include_negative_claim_revalidation_settings(self):
+        curator = DEFAULT_CONFIG["curator"]
+        assert curator["revalidate_negative_claims"] is True
+        assert curator["negative_claim_ttl_days"] == 30
+        assert curator["negative_claim_confidence_threshold"] == 0.6
+        assert curator["negative_claim_max_per_run"] == 10
+
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config_path = tmp_path / "config.yaml"

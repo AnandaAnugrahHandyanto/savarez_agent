@@ -77,6 +77,12 @@ def test_get_record_missing_returns_empty_record(skills_home):
     assert rec["state"] == "active"
     assert rec["pinned"] is False
     assert rec["archived_at"] is None
+    assert rec["negative_claim_confidence"] is None
+    assert rec["negative_claim_ttl_days"] is None
+    assert rec["negative_claim_last_revalidated_at"] is None
+    assert rec["negative_claim_revalidation_due_at"] is None
+    assert rec["negative_claim_summary"] is None
+    assert rec["negative_claim_status"] is None
 
 
 def test_get_record_backfills_missing_keys(skills_home):
@@ -137,6 +143,86 @@ def test_bumps_do_not_corrupt_other_skills(skills_home):
     assert get_record("skill-a")["view_count"] == 2
     assert get_record("skill-a")["use_count"] == 0
     assert get_record("skill-b")["use_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Negative / environment-dependent claim metadata
+# ---------------------------------------------------------------------------
+
+def test_mark_negative_claim_records_summary_confidence_and_due_time(skills_home):
+    from datetime import datetime, timezone
+    from tools.skill_usage import mark_negative_claim, get_record
+
+    now = datetime(2026, 4, 29, 12, 0, tzinfo=timezone.utc)
+    mark_negative_claim(
+        "browser-skill",
+        summary="browser tools do not work in this environment",
+        confidence=0.8,
+        ttl_days=14,
+        now=now,
+    )
+
+    rec = get_record("browser-skill")
+    assert rec["negative_claim_summary"] == "browser tools do not work in this environment"
+    assert rec["negative_claim_confidence"] == 0.8
+    assert rec["negative_claim_ttl_days"] == 14
+    assert rec["negative_claim_status"] == "active"
+    assert rec["negative_claim_last_revalidated_at"] is None
+    assert rec["negative_claim_revalidation_due_at"] == "2026-05-13T12:00:00+00:00"
+
+
+def test_due_negative_claims_returns_only_due_active_claims(skills_home):
+    from datetime import datetime, timezone
+    from tools.skill_usage import (
+        due_negative_claims,
+        mark_negative_claim,
+        update_negative_claim_revalidation,
+    )
+
+    now = datetime(2026, 4, 29, 12, 0, tzinfo=timezone.utc)
+    mark_negative_claim("due", "command unavailable", ttl_days=1, now=now)
+    mark_negative_claim("future", "browser unavailable", ttl_days=10, now=now)
+    mark_negative_claim("disproven", "old false claim", ttl_days=1, now=now)
+    update_negative_claim_revalidation(
+        "disproven",
+        status="disproven",
+        now=now,
+    )
+
+    later = datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc)
+    due = due_negative_claims(now=later)
+
+    assert [row["name"] for row in due] == ["due"]
+    assert due[0]["negative_claim_summary"] == "command unavailable"
+
+
+def test_update_negative_claim_revalidation_refreshes_status_and_next_due(skills_home):
+    from datetime import datetime, timezone
+    from tools.skill_usage import (
+        get_record,
+        mark_negative_claim,
+        update_negative_claim_revalidation,
+    )
+
+    start = datetime(2026, 4, 29, 12, 0, tzinfo=timezone.utc)
+    checked = datetime(2026, 5, 2, 9, 30, tzinfo=timezone.utc)
+    mark_negative_claim("cmd-skill", "foo command unavailable", ttl_days=7, now=start)
+    update_negative_claim_revalidation(
+        "cmd-skill",
+        status="refreshed",
+        confidence=0.6,
+        summary="foo command still unavailable",
+        ttl_days=30,
+        now=checked,
+    )
+
+    rec = get_record("cmd-skill")
+    assert rec["negative_claim_status"] == "refreshed"
+    assert rec["negative_claim_confidence"] == 0.6
+    assert rec["negative_claim_summary"] == "foo command still unavailable"
+    assert rec["negative_claim_ttl_days"] == 30
+    assert rec["negative_claim_last_revalidated_at"] == "2026-05-02T09:30:00+00:00"
+    assert rec["negative_claim_revalidation_due_at"] == "2026-06-01T09:30:00+00:00"
 
 
 # ---------------------------------------------------------------------------

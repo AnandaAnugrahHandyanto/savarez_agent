@@ -26,7 +26,7 @@ import json
 import logging
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
@@ -178,6 +178,12 @@ def _empty_record() -> Dict[str, Any]:
         "state": STATE_ACTIVE,
         "pinned": False,
         "archived_at": None,
+        "negative_claim_confidence": None,
+        "negative_claim_ttl_days": None,
+        "negative_claim_last_revalidated_at": None,
+        "negative_claim_revalidation_due_at": None,
+        "negative_claim_summary": None,
+        "negative_claim_status": None,
     }
 
 
@@ -289,6 +295,129 @@ def bump_patch(skill_name: str) -> None:
         rec["patch_count"] = int(rec.get("patch_count") or 0) + 1
         rec["last_patched_at"] = _now_iso()
     _mutate(skill_name, _apply)
+
+
+# ---------------------------------------------------------------------------
+# Negative / environment-dependent claim metadata
+# ---------------------------------------------------------------------------
+
+def _ensure_aware(dt: Optional[datetime]) -> datetime:
+    if dt is None:
+        return datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _parse_iso(ts: Optional[str]) -> Optional[datetime]:
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(ts))
+    except (TypeError, ValueError):
+        return None
+    return _ensure_aware(dt)
+
+
+def mark_negative_claim(
+    skill_name: str,
+    summary: str,
+    confidence: Optional[float] = None,
+    ttl_days: Optional[int] = None,
+    now: Optional[datetime] = None,
+) -> None:
+    """Record that a skill contains a negative / environment-dependent claim.
+
+    The sidecar stores coarse per-skill metadata for the first lifecycle pass.
+    Future revisions can expand this to a per-claim list without rewriting
+    SKILL.md on every use.
+    """
+    when = _ensure_aware(now)
+    try:
+        ttl = int(ttl_days) if ttl_days is not None else None
+    except (TypeError, ValueError):
+        ttl = None
+    due = (when + timedelta(days=ttl)).isoformat() if ttl is not None else None
+
+    def _apply(rec: Dict[str, Any]) -> None:
+        rec["negative_claim_summary"] = str(summary or "").strip() or None
+        rec["negative_claim_confidence"] = confidence
+        rec["negative_claim_ttl_days"] = ttl
+        rec["negative_claim_last_revalidated_at"] = None
+        rec["negative_claim_revalidation_due_at"] = due
+        rec["negative_claim_status"] = "active"
+
+    _mutate(skill_name, _apply)
+
+
+def update_negative_claim_revalidation(
+    skill_name: str,
+    status: str,
+    confidence: Optional[float] = None,
+    summary: Optional[str] = None,
+    ttl_days: Optional[int] = None,
+    now: Optional[datetime] = None,
+) -> None:
+    """Update revalidation metadata after a negative claim has been checked."""
+    when = _ensure_aware(now)
+    valid_statuses = {"active", "refreshed", "disproven", "uncertain"}
+    next_status = status if status in valid_statuses else "uncertain"
+
+    def _apply(rec: Dict[str, Any]) -> None:
+        rec["negative_claim_status"] = next_status
+        rec["negative_claim_last_revalidated_at"] = when.isoformat()
+        if confidence is not None:
+            rec["negative_claim_confidence"] = confidence
+        if summary is not None:
+            rec["negative_claim_summary"] = str(summary).strip() or None
+        current_ttl = rec.get("negative_claim_ttl_days")
+        try:
+            ttl = int(ttl_days if ttl_days is not None else current_ttl)
+        except (TypeError, ValueError):
+            ttl = None
+        rec["negative_claim_ttl_days"] = ttl
+        rec["negative_claim_revalidation_due_at"] = (
+            (when + timedelta(days=ttl)).isoformat() if ttl is not None else None
+        )
+
+    _mutate(skill_name, _apply)
+
+
+def due_negative_claims(
+    now: Optional[datetime] = None,
+    limit: Optional[int] = None,
+    min_confidence: float = 0.0,
+) -> List[Dict[str, Any]]:
+    """Return negative claims whose TTL has expired and need revalidation."""
+    when = _ensure_aware(now)
+    rows: List[Dict[str, Any]] = []
+    for name, rec in load_usage().items():
+        if not isinstance(rec, dict):
+            continue
+        status = rec.get("negative_claim_status")
+        if status in (None, "disproven"):
+            continue
+        due = _parse_iso(rec.get("negative_claim_revalidation_due_at"))
+        if due is None or due > when:
+            continue
+        try:
+            confidence = float(rec.get("negative_claim_confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if confidence < min_confidence:
+            continue
+        base = _empty_record()
+        base.update(rec)
+        rows.append({"name": str(name), **base})
+
+    rows.sort(key=lambda row: (row.get("negative_claim_revalidation_due_at") or "", row["name"]))
+    if limit is not None:
+        try:
+            n = max(0, int(limit))
+            rows = rows[:n]
+        except (TypeError, ValueError):
+            pass
+    return rows
 
 
 def set_state(skill_name: str, state: str) -> None:
