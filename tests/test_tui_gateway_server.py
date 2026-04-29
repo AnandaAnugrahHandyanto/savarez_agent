@@ -964,11 +964,17 @@ def test_config_mouse_uses_documented_key_with_legacy_fallback(monkeypatch):
     assert set_toggle["result"] == {"key": "mouse", "value": "on"}
     assert writes == [("display.mouse_tracking", True)]
 
-    cfg["display"] = {"mouse_tracking": "off", "tui_mouse": True}
+    cfg["display"] = {"mouse_tracking": 0, "tui_mouse": True}
     get_canonical = server.handle_request(
         {"id": "3", "method": "config.get", "params": {"key": "mouse"}}
     )
     assert get_canonical["result"]["value"] == "off"
+
+    cfg["display"] = {"mouse_tracking": None, "tui_mouse": False}
+    get_null = server.handle_request(
+        {"id": "4", "method": "config.get", "params": {"key": "mouse"}}
+    )
+    assert get_null["result"]["value"] == "on"
 
 
 def test_enable_gateway_prompts_sets_gateway_env(monkeypatch):

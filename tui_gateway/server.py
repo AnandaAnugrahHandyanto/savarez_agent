@@ -698,7 +698,7 @@ def _display_mouse_tracking(display: dict) -> bool:
         raw = display.get("mouse_tracking")
     else:
         raw = display.get("tui_mouse", True)
-    if raw is False:
+    if raw is False or raw == 0:
         return False
     if isinstance(raw, str):
         return raw.strip().lower() not in {"0", "false", "no", "off"}
@@ -3187,11 +3187,8 @@ def _(rid, params: dict) -> dict:
 
     if key == "mouse":
         raw = str(value or "").strip().lower()
-        display = (
-            _load_cfg().get("display")
-            if isinstance(_load_cfg().get("display"), dict)
-            else {}
-        )
+        cfg = _load_cfg()
+        display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
         current = _display_mouse_tracking(display)
 
         if raw in ("", "toggle"):

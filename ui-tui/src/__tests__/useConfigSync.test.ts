@@ -184,8 +184,10 @@ describe('normalizeMouseTracking', () => {
   it('defaults on and prefers canonical mouse_tracking over legacy tui_mouse', () => {
     expect(normalizeMouseTracking({})).toBe(true)
     expect(normalizeMouseTracking({ mouse_tracking: false })).toBe(false)
+    expect(normalizeMouseTracking({ mouse_tracking: 0 })).toBe(false)
     expect(normalizeMouseTracking({ mouse_tracking: 'off' })).toBe(false)
     expect(normalizeMouseTracking({ mouse_tracking: 'false' })).toBe(false)
+    expect(normalizeMouseTracking({ mouse_tracking: null, tui_mouse: false })).toBe(true)
     expect(normalizeMouseTracking({ mouse_tracking: true, tui_mouse: false })).toBe(true)
     expect(normalizeMouseTracking({ tui_mouse: false })).toBe(false)
   })

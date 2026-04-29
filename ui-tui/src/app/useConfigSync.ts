@@ -64,11 +64,12 @@ export const normalizeIndicatorStyle = (raw: unknown): IndicatorStyle => {
 }
 
 const FALSEY_MOUSE = new Set(['0', 'false', 'no', 'off'])
+const hasOwn = (obj: object, key: PropertyKey) => Object.prototype.hasOwnProperty.call(obj, key)
 
 export const normalizeMouseTracking = (display: { mouse_tracking?: unknown; tui_mouse?: unknown }): boolean => {
-  const raw = display.mouse_tracking ?? display.tui_mouse
+  const raw = hasOwn(display, 'mouse_tracking') ? display.mouse_tracking : display.tui_mouse
 
-  if (raw === false) {
+  if (raw === false || raw === 0) {
     return false
   }
 
