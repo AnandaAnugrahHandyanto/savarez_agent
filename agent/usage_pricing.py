@@ -400,6 +400,10 @@ def resolve_billing_route(
         return BillingRoute(provider="anthropic", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name == "openai":
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    if provider_name == "nous" or base_url_host_matches(base_url or "", "nousresearch"):
+        return BillingRoute(provider="nous", model=model.split("/")[-1] if model else model, base_url=base_url or "", billing_mode="official_models_api")
+    if provider_name == "xai":
+        return BillingRoute(provider="xai", model=model.split("/")[-1] if model else model, base_url=base_url or "", billing_mode="official_models_api")
     if provider_name in {"custom", "local"} or (base and "localhost" in base):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")
@@ -489,7 +493,18 @@ def get_pricing_entry(
         )
         if entry:
             return entry
-    return _lookup_official_docs_pricing(route)
+    entry = _lookup_official_docs_pricing(route)
+    if entry:
+        return entry
+    # Fall back to cached OpenRouter pricing (fetched once per session if stale)
+    try:
+        from agent.pricing_cache import get_cached_pricing_entry
+        cache_entry = get_cached_pricing_entry(route.model)
+        if cache_entry:
+            return cache_entry
+    except Exception:
+        pass
+    return None
 
 
 def normalize_usage(
