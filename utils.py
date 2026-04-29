@@ -1,5 +1,6 @@
 """Shared utility functions for hermes-agent."""
 
+import errno
 import json
 import logging
 import os
@@ -78,7 +79,14 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     """
     target_str = str(target)
     real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
-    os.replace(str(tmp_path), real_path)
+    try:
+        os.replace(str(tmp_path), real_path)
+    except OSError as exc:
+        if exc.errno == getattr(errno, "EXDEV", 18):
+            import shutil
+            shutil.move(str(tmp_path), real_path)
+        else:
+            raise
     return real_path
 
 
