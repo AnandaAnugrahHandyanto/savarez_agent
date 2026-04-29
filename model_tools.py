@@ -114,9 +114,10 @@ def _run_async(coro):
             return future.result(timeout=300)
         except concurrent.futures.TimeoutError:
             future.cancel()
+            pool.shutdown(wait=True)
             raise
         finally:
-            pool.shutdown(wait=False, cancel_futures=True)
+            pool.shutdown(wait=True)
 
     # If we're on a worker thread (e.g., parallel tool execution in
     # delegate_task), use a per-thread persistent loop.  This avoids
@@ -584,7 +585,7 @@ def handle_function_call(
 
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
-        logger.error(error_msg)
+        logger.exception(error_msg)
         return json.dumps({"error": error_msg}, ensure_ascii=False)
 
 
