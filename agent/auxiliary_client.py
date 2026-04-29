@@ -2213,9 +2213,8 @@ def resolve_provider_client(
                          provider, ", ".join(tried_sources))
             return None, None
 
-        base_url = _to_openai_base_url(
-            str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
-        )
+        raw_base_url = (str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url)
+        base_url = _to_openai_base_url(raw_base_url)
 
         default_model = _API_KEY_PROVIDER_AUX_MODELS.get(provider, "")
         final_model = _normalize_resolved_model(model or default_model, provider)
@@ -2264,7 +2263,10 @@ def resolve_provider_client(
         # Anthropic-wire endpoints (Kimi Coding Plan api.kimi.com/coding,
         # /anthropic-suffixed gateways) so named providers like kimi-coding
         # land on the right transport without needing per-provider branches.
-        client = _wrap_if_needed(client, final_model, base_url, api_key)
+        # Pass raw_base_url (pre-conversion) so _maybe_wrap_anthropic gets the
+        # original /anthropic suffix for URL detection and Anthropic SDK construction.
+        # The OpenAI client above already uses the /v1-converted base_url.
+        client = _wrap_if_needed(client, final_model, raw_base_url, api_key)
 
         logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
