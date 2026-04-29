@@ -2,7 +2,7 @@
 """
 Text-to-Speech Tool Module
 
-Supports seven TTS providers:
+Supports TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
@@ -10,9 +10,10 @@ Supports seven TTS providers:
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
+- Local Command: User-supplied command that writes an audio file
 
 Output formats:
-- Opus (.ogg) for Telegram voice bubbles (requires ffmpeg for Edge TTS)
+- Opus (.ogg) for Telegram voice bubbles (requires ffmpeg for some providers)
 - MP3 (.mp3) for everything else (CLI, Discord, WhatsApp)
 
 Configuration is loaded from ~/.hermes/config.yaml under the 'tts:' key.
@@ -302,6 +303,19 @@ def _is_local_tts_voice_compatible(tts_config: Dict[str, Any]) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def _local_tts_attachment_output_path(path: Path, tts_config: Dict[str, Any]) -> Path:
+    """Avoid voice-message extensions unless local_command explicitly opts in."""
+    if _is_local_tts_voice_compatible(tts_config):
+        return path
+    if path.suffix.lower() not in {".ogg", ".opus"}:
+        return path
+
+    output_format = _get_local_tts_output_format(tts_config)
+    if output_format in {"ogg", "opus"}:
+        output_format = DEFAULT_LOCAL_TTS_OUTPUT_FORMAT
+    return path.with_suffix(f".{output_format}")
 
 
 def _generate_local_command_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
@@ -1115,6 +1129,8 @@ def text_to_speech_tool(
     # Determine output path
     if output_path:
         file_path = Path(output_path).expanduser()
+        if provider == "local_command":
+            file_path = _local_tts_attachment_output_path(file_path, tts_config)
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         out_dir = Path(DEFAULT_OUTPUT_DIR)
@@ -1661,7 +1677,7 @@ from tools.registry import registry, tool_error
 
 TTS_SCHEMA = {
     "name": "text_to_speech",
-    "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as a voice message. On Telegram it plays as a voice bubble, on Discord/WhatsApp as an audio attachment. In CLI mode, saves to ~/voice-memos/. Voice and provider are user-configured, not model-selected.",
+    "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as native audio. Compatible providers may be sent as voice bubbles; otherwise audio is sent as a regular attachment. In CLI mode, saves to ~/voice-memos/. Voice and provider are user-configured, not model-selected.",
     "parameters": {
         "type": "object",
         "properties": {

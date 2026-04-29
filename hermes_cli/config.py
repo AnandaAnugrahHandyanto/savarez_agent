@@ -790,7 +790,7 @@ DEFAULT_CONFIG = {
             "model": "",
             "voice": "",
             "speed": 1.0,
-            "voice_compatible": False,  # True only if the command writes Telegram-compatible Opus/OGG
+            "voice_compatible": False,  # True to opt in to voice-bubble delivery and Opus/OGG conversion
         },
     },
     

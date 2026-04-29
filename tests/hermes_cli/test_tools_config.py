@@ -470,17 +470,39 @@ def test_local_command_tts_provider_is_visible_without_env_vars():
     assert "command" in provider["tag"]
 
 
-def test_local_command_tts_provider_is_saved_explicitly():
+def test_local_command_tts_provider_prompts_for_command(monkeypatch):
     config = {}
     provider = next(
         provider
         for provider in TOOL_CATEGORIES["tts"]["providers"]
         if provider.get("tts_provider") == "local_command"
     )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt",
+        lambda *args, **kwargs: "my-tts --input {input_path} --output {output_path}",
+    )
 
     _configure_provider(provider, config)
 
     assert config["tts"]["provider"] == "local_command"
+    assert (
+        config["tts"]["local_command"]["command"]
+        == "my-tts --input {input_path} --output {output_path}"
+    )
+
+
+def test_local_command_tts_provider_without_command_falls_back_to_edge(monkeypatch):
+    config = {}
+    provider = next(
+        provider
+        for provider in TOOL_CATEGORIES["tts"]["providers"]
+        if provider.get("tts_provider") == "local_command"
+    )
+    monkeypatch.setattr("hermes_cli.tools_config._prompt", lambda *args, **kwargs: "")
+
+    _configure_provider(provider, config)
+
+    assert config["tts"]["provider"] == "edge"
 
 
 def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):

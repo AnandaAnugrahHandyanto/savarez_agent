@@ -1584,6 +1584,38 @@ def _configure_imagegen_model_for_plugin(plugin_name: str, config: dict) -> None
     _print_success(f"  Model set to: {chosen}")
 
 
+def _configure_local_command_tts(config: dict) -> bool:
+    """Prompt for the command template required by the local_command TTS provider."""
+    tts_cfg = config.setdefault("tts", {})
+    if not isinstance(tts_cfg, dict):
+        tts_cfg = {}
+        config["tts"] = tts_cfg
+
+    local_cfg = tts_cfg.setdefault("local_command", {})
+    if not isinstance(local_cfg, dict):
+        local_cfg = {}
+        tts_cfg["local_command"] = local_cfg
+
+    existing_command = str(local_cfg.get("command") or "").strip()
+    _print_info("  Hermes writes text to {input_path} and expects audio at {output_path}.")
+    _print_info("  Example: my-tts --input {input_path} --output {output_path} --format {format}")
+    if existing_command:
+        command = _prompt("    Command template (Enter to keep current)", existing_command)
+        command = str(command or existing_command).strip()
+    else:
+        command = str(_prompt("    Command template") or "").strip()
+
+    if not command:
+        _print_warning("    Local Command requires tts.local_command.command. Keeping Edge TTS.")
+        tts_cfg["provider"] = "edge"
+        tts_cfg["use_gateway"] = False
+        return False
+
+    local_cfg["command"] = command
+    _print_success("    Local Command template saved")
+    return True
+
+
 def _select_plugin_image_gen_provider(plugin_name: str, config: dict) -> None:
     """Persist a plugin-backed image generation provider selection."""
     img_cfg = config.setdefault("image_gen", {})
@@ -1612,6 +1644,9 @@ def _configure_provider(provider: dict, config: dict):
         tts_cfg = config.setdefault("tts", {})
         tts_cfg["provider"] = provider["tts_provider"]
         tts_cfg["use_gateway"] = bool(managed_feature)
+        if provider["tts_provider"] == "local_command":
+            _configure_local_command_tts(config)
+            return
 
     # Set browser cloud provider in config if applicable
     if "browser_provider" in provider:
@@ -1863,6 +1898,9 @@ def _reconfigure_provider(provider: dict, config: dict):
     if provider.get("tts_provider"):
         config.setdefault("tts", {})["provider"] = provider["tts_provider"]
         _print_success(f"  TTS provider set to: {provider['tts_provider']}")
+        if provider["tts_provider"] == "local_command":
+            _configure_local_command_tts(config)
+            return
 
     if "browser_provider" in provider:
         bp = provider["browser_provider"]

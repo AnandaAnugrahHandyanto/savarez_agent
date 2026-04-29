@@ -92,7 +92,7 @@ tts:
     voice: ''
     speed: 1.0
     max_text_length: 5000
-    voice_compatible: false                     # Only true when the command writes Telegram-compatible Opus/OGG
+    voice_compatible: false                     # Opt in to voice-bubble delivery; Hermes can convert to Opus/OGG with ffmpeg
 ```
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
@@ -105,6 +105,8 @@ The command template supports these placeholders: `{input_path}`, `{output_path}
 
 `tts.local_command.command` is required. Optional settings are `timeout` (default `120` seconds), `output_format` or `format` (default `mp3`; supported `mp3`, `wav`, `ogg`, `flac`), `model`, `voice`, `speed`, `max_text_length`, and `voice_compatible`.
 
+`voice_compatible` is off by default. When it is on, Hermes can deliver the result as a voice bubble; if the command writes MP3/WAV/FLAC, Hermes tries to convert it to Opus/OGG with ffmpeg first. If the command already writes Telegram-compatible Opus/OGG, no conversion is needed.
+
 ### Telegram Voice Bubbles & ffmpeg
 
 Telegram voice bubbles require Opus/OGG audio format:
@@ -116,7 +118,7 @@ Telegram voice bubbles require Opus/OGG audio format:
 - **xAI TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
 - **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **KittenTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
-- **Local Command** output is treated as a regular audio file by default. Set `voice_compatible: true` only when your command already writes Telegram-compatible Opus/OGG and you want voice bubble behavior.
+- **Local Command** output is treated as a regular audio file by default. Set `voice_compatible: true` when you want voice bubble behavior; Hermes will use Opus/OGG output directly or try ffmpeg conversion.
 
 ```bash
 # Ubuntu/Debian
@@ -129,7 +131,7 @@ brew install ffmpeg
 sudo dnf install ffmpeg
 ```
 
-Without ffmpeg, Edge TTS, MiniMax TTS, xAI TTS, NeuTTS, and KittenTTS audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble). Local Command audio is also sent as a regular audio file unless `voice_compatible: true` is set and the command writes Telegram-compatible Opus/OGG.
+Without ffmpeg, Edge TTS, MiniMax TTS, xAI TTS, NeuTTS, and KittenTTS audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble). Local Command audio is also sent as a regular audio file unless `voice_compatible: true` is set and the final file is Opus/OGG.
 
 :::tip
 If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.

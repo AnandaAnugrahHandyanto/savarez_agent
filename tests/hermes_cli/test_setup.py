@@ -76,6 +76,27 @@ def test_setup_delegates_to_select_provider_and_model(tmp_path, monkeypatch):
     assert reloaded["model"]["default"] == "qwen3.5:32b"
 
 
+def test_setup_tts_provider_lists_local_command(monkeypatch):
+    """The setup wizard exposes Local Command as a TTS provider."""
+    seen = {}
+
+    def fake_prompt_choice(question, choices, default=0, description=None):
+        assert question == "Select TTS provider:"
+        seen["choices"] = choices
+        return len(choices) - 1
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.managed_nous_tools_enabled", lambda: False)
+    monkeypatch.setattr(
+        "hermes_cli.setup.get_nous_subscription_features",
+        lambda _config: types.SimpleNamespace(nous_auth_present=False),
+    )
+
+    setup_mod._setup_tts_provider({"tts": {"provider": "edge"}})
+
+    assert any("Local Command" in choice for choice in seen["choices"])
+
+
 def test_setup_syncs_openrouter_from_disk(tmp_path, monkeypatch):
     """When select_provider_and_model saves OpenRouter config to disk,
     the wizard's config dict picks it up."""

@@ -372,6 +372,13 @@ class TestBuildSchemaFromConfig:
             assert "options" in entry
             assert "local" in entry["options"]
 
+    def test_tts_provider_options_include_local_command(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        entry = CONFIG_SCHEMA["tts.provider"]
+        assert entry["type"] == "select"
+        assert "local_command" in entry["options"]
+
     def test_empty_prefix_produces_correct_keys(self):
         from hermes_cli.web_server import _build_schema_from_config
         test_config = {"model": "test", "nested": {"key": "val"}}

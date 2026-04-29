@@ -317,6 +317,37 @@ def test_text_to_speech_tool_local_command_ogg_format_without_voice_compatible_s
     assert result["voice_compatible"] is False
 
 
+def test_text_to_speech_tool_local_command_explicit_ogg_path_without_voice_compatible_uses_attachment_extension(
+    monkeypatch,
+    tmp_path,
+):
+    from tools.tts_tool import text_to_speech_tool
+
+    calls = {}
+
+    def fake_local_command(text, output_path_arg, tts_config):
+        calls["output_path"] = output_path_arg
+        Path(output_path_arg).write_bytes(b"AUDIO")
+        return output_path_arg
+
+    requested_path = tmp_path / "speech.ogg"
+    config = {
+        "provider": "local_command",
+        "local_command": {"command": "fake", "output_format": "ogg"},
+    }
+    monkeypatch.setattr("tools.tts_tool._load_tts_config", lambda: config)
+    monkeypatch.setattr("tools.tts_tool._generate_local_command_tts", fake_local_command)
+    _disable_non_local_tts_providers(monkeypatch)
+
+    result = json.loads(text_to_speech_tool("hello", output_path=str(requested_path)))
+
+    assert result["success"] is True
+    assert result["file_path"] == str(tmp_path / "speech.mp3")
+    assert calls["output_path"] == str(tmp_path / "speech.mp3")
+    assert result["media_tag"] == f"MEDIA:{result['file_path']}"
+    assert result["voice_compatible"] is False
+
+
 def test_text_to_speech_tool_local_command_voice_compatible_allows_ogg_output(
     monkeypatch,
     tmp_path,
