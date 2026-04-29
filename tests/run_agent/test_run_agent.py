@@ -903,6 +903,26 @@ class TestBuildSystemPrompt:
         # Should contain current date info like "Conversation started:"
         assert "Conversation started:" in prompt
 
+    def test_prefers_effective_model_in_prompt_when_api_reports_one(self, agent):
+        agent.model = "gpt-5.4"
+        agent._effective_model = "gpt-5.5"
+        agent._effective_model_requested_model = "gpt-5.4"
+
+        prompt = agent._build_system_prompt()
+
+        assert "Model: gpt-5.5" in prompt
+        assert "Model: gpt-5.4" not in prompt
+
+    def test_ignores_stale_effective_model_after_requested_model_changes(self, agent):
+        agent.model = "gpt-5.5"
+        agent._effective_model = "gpt-5.4"
+        agent._effective_model_requested_model = "gpt-5.4"
+
+        prompt = agent._build_system_prompt()
+
+        assert "Model: gpt-5.5" in prompt
+        assert "Model: gpt-5.4" not in prompt
+
     def test_includes_nous_subscription_prompt(self, agent, monkeypatch):
         monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")
         prompt = agent._build_system_prompt()

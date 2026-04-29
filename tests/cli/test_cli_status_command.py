@@ -86,6 +86,21 @@ def test_show_session_status_prints_gateway_style_summary():
     assert kwargs.get("markup") is False
 
 
+def test_show_session_status_prefers_agent_effective_model_when_available():
+    cli_obj = _make_cli()
+    cli_obj.agent = SimpleNamespace(
+        session_total_tokens=321,
+        session_api_calls=4,
+        get_effective_model=lambda: "openai/gpt-5.5",
+    )
+
+    with patch("cli.display_hermes_home", return_value="~/.hermes"):
+        cli_obj._show_session_status()
+
+    printed = "\n".join(str(call.args[0]) for call in cli_obj.console.print.call_args_list)
+    assert "Model: openai/gpt-5.5 (openai)" in printed
+
+
 def test_profile_command_reports_custom_root_profile(monkeypatch, tmp_path, capsys):
     """Profile detection works for custom-root deployments (not under ~/.hermes)."""
     cli_obj = _make_cli()

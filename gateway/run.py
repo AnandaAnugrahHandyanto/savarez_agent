@@ -10347,7 +10347,8 @@ class GatewayRunner:
             cache_write = getattr(agent, "session_cache_write_tokens", 0) or 0
 
             lines.append("📊 **Session Token Usage**")
-            lines.append(f"Model: `{agent.model}`")
+            _display_model = agent.get_effective_model() if hasattr(agent, "get_effective_model") else agent.model
+            lines.append(f"Model: `{_display_model}`")
             lines.append(f"Input tokens: {input_tokens:,}")
             if cache_read:
                 lines.append(f"Cache read tokens: {cache_read:,}")

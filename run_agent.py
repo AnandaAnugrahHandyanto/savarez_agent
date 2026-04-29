@@ -1019,6 +1019,12 @@ class AIAgent:
         _install_safe_stdio()
 
         self.model = model
+        # Last API-reported model actually used for this requested model.  This
+        # lets self-identification prefer provider-truth over stale configured
+        # metadata (e.g. Codex runtime changed externally), while avoiding stale
+        # carryover after an intentional Hermes-side /model switch.
+        self._effective_model: Optional[str] = None
+        self._effective_model_requested_model: Optional[str] = None
         self.max_iterations = max_iterations
         # Shared iteration budget — parent creates, children inherit.
         # Consumed by every LLM turn across parent + all subagents.
@@ -5058,8 +5064,9 @@ class AIAgent:
         timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
         if self.pass_session_id and self.session_id:
             timestamp_line += f"\nSession ID: {self.session_id}"
-        if self.model:
-            timestamp_line += f"\nModel: {self.model}"
+        display_model = self.get_effective_model()
+        if display_model:
+            timestamp_line += f"\nModel: {display_model}"
         if self.provider:
             timestamp_line += f"\nProvider: {self.provider}"
         prompt_parts.append(timestamp_line)
@@ -5457,6 +5464,36 @@ class AIAgent:
             return matches[0]
 
         return None
+
+    def get_effective_model(self) -> str:
+        """Return the best-known active model identifier for display/prompt use.
+
+        Prefer the last API-reported model only when it was observed while the
+        current requested model string was active.  This preserves useful
+        provider-truth across `/new` while avoiding stale carryover after an
+        intentional `/model` switch inside Hermes.
+        """
+        if (
+            isinstance(self._effective_model, str)
+            and self._effective_model.strip()
+            and self._effective_model_requested_model == self.model
+        ):
+            return self._effective_model.strip()
+        return self.model
+
+    def _record_effective_model(self, response_model: Optional[str]) -> None:
+        """Capture provider-reported model identity and refresh cached prompt if needed."""
+        if not isinstance(response_model, str):
+            return
+        response_model = response_model.strip()
+        if not response_model or response_model == "N/A":
+            return
+
+        prior_effective = self.get_effective_model()
+        self._effective_model = response_model
+        self._effective_model_requested_model = self.model
+        if self.get_effective_model() != prior_effective:
+            self._invalidate_system_prompt()
 
     def _invalidate_system_prompt(self):
         """
@@ -11418,6 +11455,9 @@ class AIAgent:
                         # Log response with provider info if available
                         resp_model = getattr(response, 'model', 'N/A') if response else 'N/A'
                         logging.debug(f"API Response received - Model: {resp_model}, Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
+                    else:
+                        resp_model = getattr(response, 'model', None) if response else None
+                    self._record_effective_model(resp_model)
                     
                     # Validate response shape before proceeding
                     response_invalid = False

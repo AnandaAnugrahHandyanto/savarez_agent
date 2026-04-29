@@ -4804,7 +4804,10 @@ class HermesCLI:
         agent = getattr(self, "agent", None)
         total_tokens = getattr(agent, "session_total_tokens", 0) or 0
         provider = getattr(self, "provider", None) or "unknown"
-        model = getattr(self, "model", None) or "(unknown)"
+        if agent and hasattr(agent, "get_effective_model"):
+            model = agent.get_effective_model() or getattr(self, "model", None) or "(unknown)"
+        else:
+            model = getattr(self, "model", None) or "(unknown)"
         is_running = bool(getattr(self, "_agent_running", False))
 
         lines = [
