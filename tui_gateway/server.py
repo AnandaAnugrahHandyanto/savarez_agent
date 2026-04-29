@@ -471,12 +471,11 @@ def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
 def _start_agent_build(sid: str, session: dict) -> None:
     """Start building the real AIAgent for a TUI session, once.
 
-    Classic `hermes` shows the prompt before constructing AIAgent; the TUI used
-    to eagerly build it during session.create, making startup feel blocked on
-    tool discovery/model metadata even though the composer was visible.  Keep
-    the shell responsive by deferring this work until the first prompt (or any
-    command that actually needs the agent), while retaining the same ready/error
-    event contract for the frontend.
+    Build work happens in a daemon thread so session.create can still return a
+    lightweight session immediately.  Starting that worker during session.create
+    (instead of via a zero-delay timer) keeps startup responsive while avoiding
+    a create → close race where the timer can observe the session already gone
+    and skip the worker cleanup path.
     """
     ready = session.get("agent_ready")
     if ready is None:
