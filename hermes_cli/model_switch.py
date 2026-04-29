@@ -1388,6 +1388,7 @@ def list_authenticated_providers(
                 if (
                     current_base_url
                     and api_url == current_base_url.strip().rstrip("/")
+                    and current_provider != "custom"
                 ):
                     slug = current_provider or custom_provider_slug(display_name)
                 else:
