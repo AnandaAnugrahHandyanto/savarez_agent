@@ -513,6 +513,9 @@ def test_vercel_setup_configures_access_token_auth(tmp_path, monkeypatch):
 
 def test_vercel_setup_prefills_project_and_team_from_link_file(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # Isolate from prior tests that may seed VERCEL_* envs.
+    monkeypatch.delenv("VERCEL_PROJECT_ID", raising=False)
+    monkeypatch.delenv("VERCEL_TEAM_ID", raising=False)
     project_root = tmp_path / "project"
     nested = project_root / "app" / "src"
     nested.mkdir(parents=True)
