@@ -556,11 +556,15 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Slack: use the native adapter helper when media is present ---
+    if platform == Platform.SLACK and media_files:
+        return await _send_slack_via_adapter(pconfig, chat_id, message, media_files, thread_id=thread_id)
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal and yuanbao; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, slack and yuanbao; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -568,7 +572,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal and yuanbao"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, slack and yuanbao"
         )
 
     last_result = None
@@ -1282,6 +1286,66 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
         }
     except Exception as e:
         return _error(f"Matrix send failed: {e}")
+    finally:
+        try:
+            await adapter.disconnect()
+        except Exception:
+            pass
+
+
+async def _send_slack_via_adapter(pconfig, chat_id, message, media_files=None, thread_id=None):
+    """Send via the Slack adapter so native Slack file uploads are preserved."""
+    try:
+        from gateway.platforms.slack import SlackAdapter
+    except ImportError:
+        return {"error": "SlackAdapter not available"}
+
+    media_files = media_files or []
+
+    try:
+        adapter = SlackAdapter(pconfig)
+        connected = await adapter.connect()
+        if not connected:
+            return _error("Slack connect failed")
+
+        metadata = {"thread_ts": thread_id} if thread_id else None
+        last_result = None
+
+        if message.strip():
+            last_result = await adapter.send(chat_id, message, metadata=metadata)
+            if not last_result.success:
+                return _error(f"Slack send failed: {last_result.error}")
+
+        for media_path, is_voice in media_files:
+            if not os.path.exists(media_path):
+                return _error(f"Media file not found: {media_path}")
+
+            ext = os.path.splitext(media_path)[1].lower()
+            if ext in _IMAGE_EXTS:
+                last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
+            elif ext in _VIDEO_EXTS:
+                last_result = await adapter.send_video(chat_id, media_path, metadata=metadata)
+            elif ext in _VOICE_EXTS and is_voice:
+                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+            elif ext in _AUDIO_EXTS:
+                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+            else:
+                last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
+
+            if not last_result.success:
+                return _error(f"Slack media send failed: {last_result.error}")
+
+        if last_result is None:
+            return {"error": "No deliverable text or media remained after processing MEDIA tags"}
+
+        return {
+            "success": True,
+            "platform": "slack",
+            "chat_id": chat_id,
+            "message_id": getattr(last_result, "message_id", None),
+        }
+    except Exception as e:
+        return _error(f"Slack send failed: {e}")
     finally:
         try:
             await adapter.disconnect()
