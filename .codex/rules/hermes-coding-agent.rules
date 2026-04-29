@@ -1,0 +1,165 @@
+# Motion Granted Codex command policy.
+# Rules control commands Codex may run outside the sandbox. AGENTS.md still
+# governs behavioral distinctions that prefix rules cannot express.
+
+prefix_rule(
+    pattern = ["git", "status"],
+    decision = "allow",
+    justification = "Read-only repository status is pre-approved.",
+)
+
+prefix_rule(
+    pattern = ["git", "diff"],
+    decision = "allow",
+    justification = "Read-only diff inspection is pre-approved.",
+)
+
+prefix_rule(
+    pattern = ["git", "log"],
+    decision = "allow",
+    justification = "Read-only history inspection is pre-approved.",
+)
+
+prefix_rule(
+    pattern = ["git", "branch"],
+    decision = "allow",
+    justification = "Read-only branch inspection is pre-approved.",
+)
+
+prefix_rule(
+    pattern = ["git", "show"],
+    decision = "allow",
+    justification = "Read-only object inspection is pre-approved.",
+)
+
+prefix_rule(
+    pattern = ["rg"],
+    decision = "allow",
+    justification = "Repository text search is pre-approved.",
+)
+
+prefix_rule(
+    pattern = ["grep"],
+    decision = "allow",
+    justification = "Repository text search is pre-approved.",
+)
+
+prefix_rule(
+    pattern = ["pytest"],
+    decision = "allow",
+    justification = "Project test execution is pre-approved when it stays in the workspace.",
+)
+
+prefix_rule(
+    pattern = ["python", "-m", "pytest"],
+    decision = "allow",
+    justification = "Project test execution is pre-approved when it stays in the workspace.",
+)
+
+prefix_rule(
+    pattern = ["ruff"],
+    decision = "allow",
+    justification = "Project linting/formatting checks are pre-approved when scoped to the workspace.",
+)
+
+prefix_rule(
+    pattern = ["black"],
+    decision = "allow",
+    justification = "Project formatting is pre-approved when explicitly requested or repo-configured.",
+)
+
+prefix_rule(
+    pattern = ["mypy"],
+    decision = "allow",
+    justification = "Project type-checking is pre-approved when scoped to the workspace.",
+)
+
+prefix_rule(
+    pattern = ["git", "add"],
+    decision = "prompt",
+    justification = "Staging changes is an operator-visible boundary.",
+)
+
+prefix_rule(
+    pattern = ["git", "commit"],
+    decision = "prompt",
+    justification = "Commits require operator authorization and pre-commit verification.",
+)
+
+prefix_rule(
+    pattern = ["git", "checkout"],
+    decision = "prompt",
+    justification = "Branch switching can alter the working surface and requires confirmation.",
+)
+
+prefix_rule(
+    pattern = ["git", "push"],
+    decision = "prompt",
+    justification = "Remote pushes require operator authorization.",
+)
+
+prefix_rule(
+    pattern = ["git", "push", "origin", "main"],
+    decision = "forbidden",
+    justification = "Never push directly to main from Codex. Operator owns production branches.",
+)
+
+prefix_rule(
+    pattern = ["git", "push", "--force", "origin", "main"],
+    decision = "forbidden",
+    justification = "Never force-push main from Codex. Operator owns production branches.",
+)
+
+prefix_rule(
+    pattern = ["git", "push", "-f", "origin", "main"],
+    decision = "forbidden",
+    justification = "Never force-push main from Codex. Operator owns production branches.",
+)
+
+prefix_rule(
+    pattern = ["gh"],
+    decision = "prompt",
+    justification = "GitHub CLI actions require operator authorization.",
+)
+
+prefix_rule(
+    pattern = ["gh", "pr", "merge"],
+    decision = "forbidden",
+    justification = "Codex never merges pull requests. Porter handles merge decisions.",
+)
+
+prefix_rule(
+    pattern = ["psql", "-c", "DROP TABLE foo"],
+    decision = "forbidden",
+    justification = "Codex never executes database DDL/DML. Operator owns database mutation.",
+)
+
+prefix_rule(
+    pattern = ["psql"],
+    decision = "prompt",
+    justification = "SQL execution can touch staging data; allow only confirmed read-only SELECTs.",
+)
+
+prefix_rule(
+    pattern = ["rm", "-rf", "binding/"],
+    decision = "forbidden",
+    justification = "Codex never destructively deletes protected binding paths.",
+)
+
+prefix_rule(
+    pattern = ["rm", "-rf", "binding"],
+    decision = "forbidden",
+    justification = "Codex never destructively deletes protected binding paths.",
+)
+
+prefix_rule(
+    pattern = ["supabase", "db", "push"],
+    decision = "forbidden",
+    justification = "Codex never applies migrations or pushes database changes.",
+)
+
+prefix_rule(
+    pattern = ["supabase", "migration", "up"],
+    decision = "forbidden",
+    justification = "Codex never applies migrations.",
+)
