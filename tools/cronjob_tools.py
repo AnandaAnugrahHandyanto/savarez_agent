@@ -174,32 +174,33 @@ def _normalize_deliver_param(value: Any) -> Optional[str]:
 def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     """Validate a cron job script path at the API boundary.
 
-    Scripts must be relative paths that resolve within HERMES_HOME/scripts/.
-    Absolute paths and ~ expansion are rejected to prevent arbitrary script
-    execution via prompt injection.
+    Scripts must be relative paths that resolve within the shared Hermes
+    root ``scripts/`` directory. Absolute paths and ``~`` expansion are
+    rejected to prevent arbitrary script execution via prompt injection.
 
     Returns an error string if blocked, else None (valid).
     """
     if not script or not script.strip():
         return None  # empty/None = clearing the field, always OK
 
-    from hermes_constants import get_hermes_home
+    from hermes_constants import get_default_hermes_root
 
     raw = script.strip()
 
     # Reject absolute paths and ~ expansion at the API boundary.
-    # Only relative paths within ~/.hermes/scripts/ are allowed.
+    # Only relative paths within the shared Hermes root scripts/ dir are allowed.
     if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":"):
         return (
-            f"Script path must be relative to ~/.hermes/scripts/. "
+            f"Script path must be relative to the shared Hermes scripts directory "
+            f"({get_default_hermes_root() / 'scripts'}). "
             f"Got absolute or home-relative path: {raw!r}. "
-            f"Place scripts in ~/.hermes/scripts/ and use just the filename."
+            f"Place scripts there and use just the filename."
         )
 
     # Validate containment after resolution
     from tools.path_security import validate_within_dir
 
-    scripts_dir = get_hermes_home() / "scripts"
+    scripts_dir = get_default_hermes_root() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     containment_error = validate_within_dir(scripts_dir / raw, scripts_dir)
     if containment_error:

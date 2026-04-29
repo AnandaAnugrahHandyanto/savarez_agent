@@ -91,6 +91,24 @@ class TestJobScriptField:
 class TestRunJobScript:
     """Test the _run_job_script() function."""
 
+    def test_profile_mode_relative_script_resolves_from_shared_root_scripts(self, tmp_path, monkeypatch):
+        from cron.scheduler import _run_job_script
+
+        hermes_root = tmp_path / ".hermes"
+        profile_home = hermes_root / "profiles" / "ceo"
+        shared_scripts = hermes_root / "scripts"
+        (profile_home / "cron" / "output").mkdir(parents=True)
+        shared_scripts.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        script = shared_scripts / "shared.py"
+        script.write_text('print("shared root works")\n')
+
+        success, output = _run_job_script("shared.py")
+        assert success is True
+        assert output == "shared root works"
+
     def test_successful_script(self, cron_env):
         from cron.scheduler import _run_job_script
 
@@ -410,6 +428,27 @@ class TestScriptPathContainment:
 
 class TestCronjobToolScriptValidation:
     """Test API-boundary validation of cron script paths in cronjob_tools."""
+
+    def test_profile_mode_relative_script_uses_shared_root_scripts_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        hermes_root = tmp_path / ".hermes"
+        profile_home = hermes_root / "profiles" / "ceo"
+        shared_scripts = hermes_root / "scripts"
+        (profile_home / "cron" / "output").mkdir(parents=True)
+        shared_scripts.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        from tools.cronjob_tools import cronjob
+
+        result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Monitor things",
+            script="shared.py",
+        ))
+        assert result["success"] is True
+        assert result["job"]["script"] == "shared.py"
 
     def test_create_with_absolute_script_rejected(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
