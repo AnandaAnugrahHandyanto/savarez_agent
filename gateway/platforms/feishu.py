@@ -2723,7 +2723,7 @@ class FeishuAdapter(BasePlatformAdapter):
             chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type),
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
-            thread_id=getattr(message, "thread_id", None) or None,
+            thread_id=getattr(message, "root_id", None) or getattr(message, "thread_id", None) or None,
             user_id_alt=sender_profile["user_id_alt"],
         )
         normalized = MessageEvent(
@@ -4051,7 +4051,7 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
         last_error: Optional[Exception] = None
-        active_reply_to = reply_to
+        active_reply_to = reply_to or self._metadata_thread_reply_target(metadata)
         for attempt in range(_FEISHU_SEND_ATTEMPTS):
             try:
                 response = await self._send_raw_message(
@@ -4099,6 +4099,21 @@ class FeishuAdapter(BasePlatformAdapter):
                 )
                 await asyncio.sleep(wait_seconds)
         raise last_error or RuntimeError("Feishu send failed")
+
+    @staticmethod
+    def _metadata_thread_reply_target(metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+        """Return a Feishu message-id reply target carried in thread metadata.
+
+        Hermes stores Feishu topic roots in ``metadata["thread_id"]`` so shared
+        gateway code can keep sessions isolated. Feishu's reply API needs a
+        message ID (``om_...``), not the topic resource ID (``omt_...``), so only
+        use metadata as an implicit reply target when it has the message-id shape.
+        """
+        thread_id = (metadata or {}).get("thread_id")
+        if not thread_id:
+            return None
+        candidate = str(thread_id).strip()
+        return candidate if candidate.startswith("om_") else None
 
     async def _release_app_lock(self) -> None:
         if not self._app_lock_identity:

@@ -1856,6 +1856,87 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertTrue(captured["request"].request_body.reply_in_thread)
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_root_thread_metadata_as_reply_target(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _ReplyAPI:
+            def reply(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_reply"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_ReplyAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="progress in topic",
+                    metadata={"thread_id": "om_topic_root"},
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_reply")
+        self.assertEqual(captured["request"].message_id, "om_topic_root")
+        self.assertTrue(captured["request"].request_body.reply_in_thread)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_does_not_use_topic_resource_id_as_reply_target(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_created"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="plain topic resource",
+                    metadata={"thread_id": "omt_topic_resource"},
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_created")
+        self.assertEqual(captured["request"].request_body.receive_id, "oc_chat")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_retries_transient_failure(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
@@ -4095,6 +4176,31 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         event = adapter._dispatch_inbound_event.call_args.args[0]
         self.assertEqual(event.text, "/help")
         self.assertEqual(event.message_type, MessageType.COMMAND)
+
+    def test_topic_root_id_is_used_as_thread_id(self):
+        adapter = self._build_adapter()
+        message = SimpleNamespace(
+            content=json.dumps({"text": "topic reply"}),
+            message_type="text",
+            message_id="m_topic_reply",
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            root_id="om_topic_root",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m_topic_reply",
+            )
+        )
+
+        self.assertEqual(adapter.build_source.call_args.kwargs["thread_id"], "om_topic_root")
 
     def test_non_command_message_with_mentions_injects_hint(self):
         from gateway.platforms.base import MessageType
