@@ -240,7 +240,9 @@ class TestIsWsl:
         import hermes_constants
 
         fake_uname = SimpleNamespace(release="6.8.0-generic")
-        with patch.object(hermes_constants.platform, "uname", return_value=fake_uname):
+        with patch.object(hermes_constants.platform, "uname", return_value=fake_uname), patch(
+            "hermes_constants.os.path.exists", return_value=False
+        ):
             if open_exc is not None:
                 with patch("hermes_constants._builtin_open", side_effect=open_exc), patch(
                     "builtins.open", side_effect=open_exc

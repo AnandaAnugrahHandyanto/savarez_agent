@@ -489,8 +489,10 @@ def test_run_as_host_user_warns_and_skips_when_no_posix_ids(monkeypatch, caplog)
     container at its image default user (no --user flag, full cap set)."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     # Simulate a platform where os.getuid is absent (e.g. Windows host).
-    monkeypatch.delattr(docker_env.os, "getuid", raising=False)
-    monkeypatch.delattr(docker_env.os, "getgid", raising=False)
+    # On some Python builds os.getuid/getgid may not be safely deletable; force
+    # the absence semantics by replacing them with non-callable sentinels.
+    monkeypatch.setattr(docker_env.os, "getuid", None, raising=False)
+    monkeypatch.setattr(docker_env.os, "getgid", None, raising=False)
     calls = _mock_subprocess_run(monkeypatch)
 
     with caplog.at_level(logging.WARNING):
