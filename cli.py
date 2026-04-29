@@ -11176,7 +11176,10 @@ def main(
 
     # Signal to terminal_tool that we're in interactive mode
     # This enables interactive sudo password prompts with timeout
-    os.environ["HERMES_INTERACTIVE"] = "1"
+    # Only set when stdin and stdout are real TTYs to avoid breaking
+    # piped/non-interactive usage (CI, Docker, cron jobs)
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        os.environ["HERMES_INTERACTIVE"] = "1"
     
     # Handle gateway mode (messaging + cron)
     if gateway:
