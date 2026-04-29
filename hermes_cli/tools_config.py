@@ -1203,6 +1203,49 @@ def _plugin_image_gen_providers() -> list[dict]:
     return rows
 
 
+def _plugin_tts_providers() -> list[dict]:
+    """Build picker-row dicts from plugin-registered TTS providers.
+
+    Each returned dict looks like a regular ``TOOL_CATEGORIES`` provider
+    row but carries a ``tts_plugin_name`` marker so downstream code
+    (config writing, active detection) knows to route through the TTS
+    plugin registry instead of the in-tree provider chain.
+
+    Legacy provider names (edge/elevenlabs/...) are skipped — they're
+    already exposed by the hardcoded ``TOOL_CATEGORIES["tts"]`` entries.
+    """
+    try:
+        from agent.tts_registry import list_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered
+        from tools.tts_tool import LEGACY_TTS_PROVIDERS
+
+        _ensure_plugins_discovered()
+        providers = list_providers()
+    except Exception:
+        return []
+
+    rows: list[dict] = []
+    for provider in providers:
+        if getattr(provider, "name", None) in LEGACY_TTS_PROVIDERS:
+            continue
+        try:
+            schema = provider.get_setup_schema()
+        except Exception:
+            continue
+        if not isinstance(schema, dict):
+            continue
+        rows.append(
+            {
+                "name": schema.get("name", provider.display_name),
+                "badge": schema.get("badge", ""),
+                "tag": schema.get("tag", ""),
+                "env_vars": schema.get("env_vars", []),
+                "tts_plugin_name": provider.name,
+            }
+        )
+    return rows
+
+
 def _visible_providers(cat: dict, config: dict) -> list[dict]:
     """Return provider entries visible for the current auth/config state."""
     features = get_nous_subscription_features(config)
@@ -1218,6 +1261,11 @@ def _visible_providers(cat: dict, config: dict) -> list[dict]:
     # later) so the picker lists them alongside FAL / Nous Subscription.
     if cat.get("name") == "Image Generation":
         visible.extend(_plugin_image_gen_providers())
+
+    # Inject plugin-registered TTS backends (Volcengine today, more
+    # later) so the picker lists them alongside Edge / ElevenLabs / etc.
+    if cat.get("name") == "Text-to-Speech":
+        visible.extend(_plugin_tts_providers())
 
     return visible
 
@@ -1334,6 +1382,11 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
     if plugin_name:
         image_cfg = config.get("image_gen", {})
         return isinstance(image_cfg, dict) and image_cfg.get("provider") == plugin_name
+
+    tts_plugin_name = provider.get("tts_plugin_name")
+    if tts_plugin_name:
+        tts_cfg = config.get("tts", {})
+        return isinstance(tts_cfg, dict) and tts_cfg.get("provider") == tts_plugin_name
 
     managed_feature = provider.get("managed_nous_feature")
     if managed_feature:
@@ -1606,6 +1659,13 @@ def _configure_provider(provider: dict, config: dict):
         tts_cfg = config.setdefault("tts", {})
         tts_cfg["provider"] = provider["tts_provider"]
         tts_cfg["use_gateway"] = bool(managed_feature)
+
+    # Plugin-registered TTS provider: write tts.provider directly.
+    tts_plugin_name = provider.get("tts_plugin_name")
+    if tts_plugin_name:
+        tts_cfg = config.setdefault("tts", {})
+        tts_cfg["provider"] = tts_plugin_name
+        tts_cfg["use_gateway"] = False
 
     # Set browser cloud provider in config if applicable
     if "browser_provider" in provider:
