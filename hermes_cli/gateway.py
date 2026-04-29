@@ -830,6 +830,35 @@ def _user_dbus_socket_path() -> Path:
     return Path(xdg) / "bus"
 
 
+def _systemd_private_socket_path() -> Path:
+    """Return the per-user systemd private socket path (regardless of existence)."""
+    xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return Path(xdg) / "systemd" / "private"
+
+
+_SYSTEMD_REACHABLE_STATES = frozenset({
+    "initializing", "starting", "running", "degraded",
+    "maintenance",
+})
+
+
+def _probe_systemctl_user(timeout: float = 3.0) -> bool:
+    """Return True if ``systemctl --user`` can reach the user's systemd instance."""
+    if not shutil.which("systemctl"):
+        return False
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-system-running"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+        return result.stdout.strip() in _SYSTEMD_REACHABLE_STATES
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
 def _ensure_user_systemd_env() -> None:
     """Ensure DBUS_SESSION_BUS_ADDRESS and XDG_RUNTIME_DIR are set for systemctl --user.
 
@@ -865,8 +894,10 @@ def _wait_for_user_dbus_socket(timeout: float = 3.0) -> bool:
         if _user_dbus_socket_path().exists():
             _ensure_user_systemd_env()
             return True
+        if _systemd_private_socket_path().exists():
+            return True
         time.sleep(0.2)
-    return _user_dbus_socket_path().exists()
+    return _user_dbus_socket_path().exists() or _systemd_private_socket_path().exists()
 
 
 def _preflight_user_systemd(*, auto_enable_linger: bool = True) -> None:
@@ -892,6 +923,9 @@ def _preflight_user_systemd(*, auto_enable_linger: bool = True) -> None:
     if bus_path.exists():
         return
 
+    if _systemd_private_socket_path().exists() or _probe_systemctl_user():
+        return
+
     import getpass
 
     username = getpass.getuser()
@@ -899,6 +933,8 @@ def _preflight_user_systemd(*, auto_enable_linger: bool = True) -> None:
 
     if linger_enabled is True:
         if _wait_for_user_dbus_socket(timeout=3.0):
+            return
+        if _probe_systemctl_user():
             return
         # Linger is on but socket still missing — unusual; fall through to error.
         _raise_user_systemd_unavailable(
@@ -920,6 +956,8 @@ def _preflight_user_systemd(*, auto_enable_linger: bool = True) -> None:
                 timeout=30,
             )
         except Exception as exc:
+            if _probe_systemctl_user():
+                return
             _raise_user_systemd_unavailable(
                 username,
                 reason=f"loginctl enable-linger failed ({exc}).",
@@ -929,6 +967,9 @@ def _preflight_user_systemd(*, auto_enable_linger: bool = True) -> None:
             if result.returncode == 0:
                 if _wait_for_user_dbus_socket(timeout=5.0):
                     print(f"✓ Enabled linger for {username} — user D-Bus now available")
+                    return
+                if _probe_systemctl_user():
+                    print(f"✓ Enabled linger for {username} — user systemd now reachable")
                     return
                 # enable-linger succeeded but the socket never appeared.
                 _raise_user_systemd_unavailable(
@@ -940,12 +981,16 @@ def _preflight_user_systemd(*, auto_enable_linger: bool = True) -> None:
                     ),
                 )
             detail = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
+            if _probe_systemctl_user():
+                return
             _raise_user_systemd_unavailable(
                 username,
                 reason=f"loginctl enable-linger was denied: {detail}",
                 fix_hint=f"  sudo loginctl enable-linger {username}",
             )
 
+    if _probe_systemctl_user():
+        return
     _raise_user_systemd_unavailable(
         username,
         reason=(
