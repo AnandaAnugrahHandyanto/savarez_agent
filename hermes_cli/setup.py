@@ -479,7 +479,23 @@ def _print_setup_summary(config: dict, hermes_home):
         else:
             tool_status.append(("Text-to-Speech (KittenTTS — not installed)", False, "run 'hermes setup tts'"))
     else:
-        tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
+        # Plugin-registered backend?
+        _tts_plugin_found = False
+        try:
+            from agent.tts_registry import get_provider as _tts_get_provider
+            from hermes_cli.plugins import _ensure_plugins_discovered
+            _ensure_plugins_discovered()
+            _tts_plugin = _tts_get_provider(tts_provider)
+            if _tts_plugin is not None:
+                _tts_plugin_found = True
+                if _tts_plugin.is_available():
+                    tool_status.append((f"Text-to-Speech ({_tts_plugin.display_name})", True, None))
+                else:
+                    tool_status.append((f"Text-to-Speech ({_tts_plugin.display_name} — missing env vars)", False, "run 'hermes setup tts'"))
+        except Exception:
+            pass
+        if not _tts_plugin_found:
+            tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
 
     if subscription_features.modal.managed_by_nous:
         tool_status.append(("Modal Execution (Nous subscription)", True, None))
