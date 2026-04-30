@@ -9056,9 +9056,10 @@ class AIAgent:
 
         # Update token estimate after compaction so pressure calculations
         # use the post-compression count, not the stale pre-compression one.
-        _compressed_est = (
-            estimate_tokens_rough(new_system_prompt)
-            + estimate_messages_tokens_rough(compressed)
+        _compressed_est = estimate_request_tokens_rough(
+            compressed,
+            system_prompt=new_system_prompt or "",
+            tools=self.tools or None,
         )
         self.context_compressor.last_prompt_tokens = _compressed_est
         self.context_compressor.last_completion_tokens = 0
