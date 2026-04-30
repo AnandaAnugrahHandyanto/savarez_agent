@@ -373,18 +373,25 @@ def session_search(
                 "message": "No matching sessions found.",
             }, ensure_ascii=False)
 
-        # Resolve child sessions to their parent — delegation stores detailed
-        # content in child sessions, but the user's conversation is the parent.
-        def _resolve_to_parent(session_id: str) -> str:
-            """Walk delegation chain to find the root parent session ID."""
+        def _resolve_to_parent(session_id: str) -> tuple:
+            """Walk lineage to find the root parent session ID.
+
+            Returns ``(root_session_id, has_compression_hop)``.  Delegation
+            children can be collapsed to their parent conversation. Compression
+            fragments cannot: each fragment contains a distinct slice of raw
+            messages that may no longer be present in the active context.
+            """
             visited = set()
             sid = session_id
+            has_compression = False
             while sid and sid not in visited:
                 visited.add(sid)
                 try:
                     session = db.get_session(sid)
                     if not session:
                         break
+                    if session.get("end_reason") == "compression":
+                        has_compression = True
                     parent = session.get("parent_session_id")
                     if parent:
                         sid = parent
@@ -398,29 +405,32 @@ def session_search(
                         exc_info=True,
                     )
                     break
-            return sid
+            return sid, has_compression
 
-        current_lineage_root = (
-            _resolve_to_parent(current_session_id) if current_session_id else None
+        _current_root, _ = (
+            _resolve_to_parent(current_session_id) if current_session_id else (None, False)
         )
 
-        # Group by resolved (parent) session_id, dedup, skip the current
-        # session lineage. Compression and delegation create child sessions
-        # that still belong to the same active conversation.
+        # Group matching sessions, dedup, and skip the current context.  Pure
+        # delegation children still collapse to their parent conversation, but
+        # compression chains keep the matched raw session id so we summarize
+        # the fragment that actually contained the FTS hit.
         seen_sessions = {}
         for result in raw_results:
             raw_sid = result["session_id"]
-            resolved_sid = _resolve_to_parent(raw_sid)
-            # Skip the current session lineage — the agent already has that
-            # context, even if older turns live in parent fragments.
-            if current_lineage_root and resolved_sid == current_lineage_root:
-                continue
+            resolved_sid, has_compression = _resolve_to_parent(raw_sid)
             if current_session_id and raw_sid == current_session_id:
                 continue
-            if resolved_sid not in seen_sessions:
+            # Skip current-lineage content only when it is still available to
+            # the agent.  Compression fragments are searchable because their
+            # original messages were replaced by summaries in later children.
+            if _current_root and resolved_sid == _current_root and not has_compression:
+                continue
+            result_sid = raw_sid if has_compression else resolved_sid
+            if result_sid not in seen_sessions:
                 result = dict(result)
-                result["session_id"] = resolved_sid
-                seen_sessions[resolved_sid] = result
+                result["session_id"] = result_sid
+                seen_sessions[result_sid] = result
             if len(seen_sessions) >= limit:
                 break
 
