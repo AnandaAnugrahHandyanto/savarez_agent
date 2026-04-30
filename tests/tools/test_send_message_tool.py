@@ -1621,3 +1621,48 @@ class TestForumProbeCache:
         assert result2["success"] is True
         # Only one session opened (thread creation) — no probe session this time
         # (verified by not raising from our side_effect exhaustion)
+
+
+class TestLazyPlatformImports:
+    """Regression: _send_to_platform must not eagerly import all platform adapters."""
+
+    def test_send_to_platform_does_not_import_slack_for_feishu(self, tmp_path):
+        """Sending to Feishu must not trigger a Slack/Discord/Telegram import.
+
+        Previously _send_to_platform imported SlackAdapter, DiscordAdapter,
+        TelegramAdapter, and FeishuAdapter unconditionally at the top of the
+        function.  A broken or unavailable Slack dependency would then crash
+        *every* send — even to completely unrelated platforms like Feishu.
+
+        Regression test for the ``cannot import name
+        'is_host_excluded_by_no_proxy' from 'gateway.platforms.base'`` error
+        that occurred because ``slack.py`` had a side-effect import that
+        polluted ``sys.modules`` with a partially-loaded base module.
+        """
+        # Simulate: Slack import fails, but Feishu should still work.
+        import_error = ImportError("slack_bolt not installed")
+
+        feishu_cfg = SimpleNamespace(enabled=True, token="t", extra={})
+        pconfig = SimpleNamespace(platforms={Platform.FEISHU: feishu_cfg})
+
+        fake_result = {"success": True, "platform": "feishu"}
+
+        # Patch Slack import to fail — the old code would crash here even for
+        # Feishu sends because it imported SlackAdapter unconditionally.
+        with patch.dict("sys.modules", {"gateway.platforms.slack": None}):
+            with patch(
+                "tools.send_message_tool._send_feishu",
+                new_callable=AsyncMock,
+                return_value=fake_result,
+            ) as feishu_mock:
+                result = _run_async_immediately(
+                    _send_to_platform(
+                        Platform.FEISHU,
+                        feishu_cfg,
+                        "oc_test123",
+                        "hello",
+                    )
+                )
+
+        assert result == fake_result
+        feishu_mock.assert_called_once()

@@ -441,40 +441,40 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     """
     from gateway.config import Platform
     from gateway.platforms.base import BasePlatformAdapter, utf16_len
-    from gateway.platforms.discord import DiscordAdapter
-    from gateway.platforms.slack import SlackAdapter
-
-    # Telegram adapter import is optional (requires python-telegram-bot)
-    try:
-        from gateway.platforms.telegram import TelegramAdapter
-        _telegram_available = True
-    except ImportError:
-        _telegram_available = False
-
-    # Feishu adapter import is optional (requires lark-oapi)
-    try:
-        from gateway.platforms.feishu import FeishuAdapter
-        _feishu_available = True
-    except ImportError:
-        _feishu_available = False
 
     media_files = media_files or []
 
+    # --- Per-platform adapter imports (lazy: only import what we need) ---
     if platform == Platform.SLACK and message:
         try:
+            from gateway.platforms.slack import SlackAdapter
             slack_adapter = SlackAdapter.__new__(SlackAdapter)
             message = slack_adapter.format_message(message)
         except Exception:
             logger.debug("Failed to apply Slack mrkdwn formatting in _send_to_platform", exc_info=True)
 
-    # Platform message length limits (from adapter class attributes)
-    _MAX_LENGTHS = {
-        Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH if _telegram_available else 4096,
-        Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
-        Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
-    }
-    if _feishu_available:
-        _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH
+    # Platform message length limits (from adapter class attributes).
+    # Each adapter is imported on demand so a broken/unavailable platform
+    # never blocks sending to a different one.
+    _MAX_LENGTHS: dict = {}
+    if platform == Platform.TELEGRAM:
+        try:
+            from gateway.platforms.telegram import TelegramAdapter
+            _MAX_LENGTHS[Platform.TELEGRAM] = TelegramAdapter.MAX_MESSAGE_LENGTH
+        except ImportError:
+            _MAX_LENGTHS[Platform.TELEGRAM] = 4096
+    elif platform == Platform.DISCORD:
+        from gateway.platforms.discord import DiscordAdapter
+        _MAX_LENGTHS[Platform.DISCORD] = DiscordAdapter.MAX_MESSAGE_LENGTH
+    elif platform == Platform.SLACK:
+        from gateway.platforms.slack import SlackAdapter
+        _MAX_LENGTHS[Platform.SLACK] = SlackAdapter.MAX_MESSAGE_LENGTH
+    elif platform == Platform.FEISHU:
+        try:
+            from gateway.platforms.feishu import FeishuAdapter
+            _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH
+        except ImportError:
+            pass
 
     # Check plugin registry for max_message_length
     if platform not in _MAX_LENGTHS:
