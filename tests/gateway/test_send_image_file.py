@@ -9,12 +9,15 @@ Covers: local image file sending, file-not-found handling, fallback on error,
 import asyncio
 import os
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
+from gateway.run import GatewayRunner
+from gateway.session import SessionSource
 
 
 def _run(coro):
@@ -435,3 +438,164 @@ class TestScreenshotCleanup:
         from tools.browser_tool import _cleanup_old_screenshots, _last_screenshot_cleanup_by_dir
         _last_screenshot_cleanup_by_dir.clear()
         _cleanup_old_screenshots(Path("/nonexistent/dir"), max_age_hours=24)  # Should not raise
+
+
+
+class TestPostStreamDataUrlImageDelivery:
+    @pytest.mark.asyncio
+    async def test_streaming_final_response_delivers_data_url_image_file(self, tmp_path, monkeypatch):
+        """Post-stream media delivery must cache data URL images and send them as files."""
+        from gateway import platforms as _platforms_pkg
+        import gateway.platforms.base as base_module
+
+        monkeypatch.setattr(base_module, "IMAGE_CACHE_DIR", tmp_path)
+
+        class Adapter(BasePlatformAdapter):
+            name = "test"
+
+            def __init__(self):
+                super().__init__(PlatformConfig(enabled=True), Platform.LOCAL)
+                self.sent_images = []
+                self.sent_remote_images = []
+                self.sent_documents = []
+
+            async def connect(self):
+                return True
+
+            async def disconnect(self):
+                pass
+
+            async def get_chat_info(self, chat_id):
+                return {"id": chat_id, "name": "Test"}
+
+            async def send(self, chat_id, content, reply_to=None, metadata=None):
+                return SendResult(success=True, message_id="msg-text")
+
+            async def send_image_file(self, chat_id, image_path, caption=None, reply_to=None, **kwargs):
+                self.sent_images.append((chat_id, image_path, kwargs.get("metadata")))
+                return SendResult(success=True, message_id="msg-image")
+
+            async def send_image(self, chat_id, image_url, caption=None, reply_to=None, metadata=None):
+                self.sent_remote_images.append((chat_id, image_url, metadata))
+                return SendResult(success=True, message_id="msg-remote-image")
+
+            async def send_document(self, chat_id, file_path, caption=None, reply_to=None, metadata=None):
+                self.sent_documents.append(file_path)
+                return SendResult(success=True, message_id="msg-doc")
+
+        adapter = Adapter()
+        runner = object.__new__(GatewayRunner)
+        event = MessageEvent(
+            text="draw",
+            source=SessionSource(platform=Platform.LOCAL, chat_id="chat_1", thread_id="thread_1"),
+            message_id="m1",
+        )
+        response = (
+            "Here is the image\n"
+            "![tiny](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ)"
+        )
+
+        await runner._deliver_media_from_response(response, event, adapter)
+
+        assert len(adapter.sent_images) == 1
+        chat_id, image_path, metadata = adapter.sent_images[0]
+        assert chat_id == "chat_1"
+        assert metadata == {"thread_id": "thread_1"}
+        cached = Path(image_path)
+        assert cached.suffix == ".png"
+        assert cached.parent == tmp_path
+        assert cached.is_file()
+        assert b"\x89PNG\r\n\x1a\n" in cached.read_bytes()
+        assert adapter.sent_documents == []
+
+    @pytest.mark.asyncio
+    async def test_post_stream_does_not_duplicate_remote_images(self, tmp_path, monkeypatch):
+        """Post-stream delivery should only send cached local data URL images."""
+        import gateway.platforms.base as base_module
+
+        monkeypatch.setattr(base_module, "IMAGE_CACHE_DIR", tmp_path)
+
+        class Adapter(BasePlatformAdapter):
+            name = "test"
+
+            def __init__(self):
+                super().__init__(PlatformConfig(enabled=True), Platform.LOCAL)
+                self.sent_images = []
+                self.sent_remote_images = []
+
+            async def connect(self):
+                return True
+
+            async def disconnect(self):
+                pass
+
+            async def get_chat_info(self, chat_id):
+                return {"id": chat_id, "name": "Test"}
+
+            async def send(self, chat_id, content, reply_to=None, metadata=None):
+                return SendResult(success=True, message_id="msg-text")
+
+            async def send_image_file(self, chat_id, image_path, caption=None, reply_to=None, **kwargs):
+                self.sent_images.append((chat_id, image_path, kwargs.get("metadata")))
+                return SendResult(success=True, message_id="msg-image")
+
+            async def send_image(self, chat_id, image_url, caption=None, reply_to=None, metadata=None):
+                self.sent_remote_images.append((chat_id, image_url, metadata))
+                return SendResult(success=True, message_id="msg-remote-image")
+
+        adapter = Adapter()
+        runner = object.__new__(GatewayRunner)
+        event = MessageEvent(
+            text="draw",
+            source=SessionSource(platform=Platform.LOCAL, chat_id="chat_1"),
+            message_id="m1",
+        )
+        response = "remote ![img](https://example.com/image.png)"
+
+        await runner._deliver_media_from_response(response, event, adapter)
+
+        assert adapter.sent_images == []
+        assert adapter.sent_remote_images == []
+
+    @pytest.mark.asyncio
+    async def test_post_stream_does_not_treat_url_as_local_path(self):
+        """Scheme-bearing URLs must be skipped even if a similar local path exists."""
+        class Adapter(BasePlatformAdapter):
+            name = "test"
+
+            def __init__(self):
+                super().__init__(PlatformConfig(enabled=True), Platform.LOCAL)
+                self.sent_images = []
+
+            async def connect(self):
+                return True
+
+            async def disconnect(self):
+                pass
+
+            async def get_chat_info(self, chat_id):
+                return {"id": chat_id, "name": "Test"}
+
+            async def send(self, chat_id, content, reply_to=None, metadata=None):
+                return SendResult(success=True, message_id="msg-text")
+
+            async def send_image_file(self, chat_id, image_path, caption=None, reply_to=None, **kwargs):
+                self.sent_images.append(image_path)
+                return SendResult(success=True, message_id="msg-image")
+
+        adapter = Adapter()
+        runner = object.__new__(GatewayRunner)
+        event = MessageEvent(
+            text="draw",
+            source=SessionSource(platform=Platform.LOCAL, chat_id="chat_1"),
+            message_id="m1",
+        )
+
+        with patch("gateway.run.Path") as mock_path:
+            mock_path.return_value.suffix.lower.return_value = ".png"
+            mock_path.return_value.is_file.return_value = True
+            await runner._deliver_media_from_response(
+                "remote ![img](https://example.com/image.png)", event, adapter
+            )
+
+        assert adapter.sent_images == []
