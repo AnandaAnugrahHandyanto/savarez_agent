@@ -3413,6 +3413,7 @@ class GatewayRunner:
         }
         platform_group_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
+            Platform.WEIXIN: "WEIXIN_GROUP_ALLOWED_USERS",
             Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
         }
         platform_allow_all_map = {
