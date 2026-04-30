@@ -1699,6 +1699,115 @@ class TestThinkingBlockSignatureManagement:
         assert last_thinking[0]["signature"] == "sig_3"
 
 
+class TestRawAnthropicContent:
+    """Test Option B: _raw_anthropic_content as source of truth (#17861)."""
+
+    def test_raw_anthropic_content_used_directly(self):
+        """When _raw_anthropic_content is present, it is used directly."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "The answer is 42.",
+                "_raw_anthropic_content": [
+                    {"type": "thinking", "thinking": "Let me think.", "signature": "sig_abc"},
+                    {"type": "text", "text": "The answer is 42."},
+                ],
+            },
+            {"role": "user", "content": "Thanks!"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+
+        assistants = [m for m in result if m["role"] == "assistant"]
+        assert len(assistants) == 1
+        blocks = assistants[0]["content"]
+
+        # Thinking block preserved with signature (used raw content directly)
+        thinking = [b for b in blocks if b.get("type") == "thinking"]
+        assert len(thinking) == 1
+        assert thinking[0]["signature"] == "sig_abc"
+        assert thinking[0]["thinking"] == "Let me think."
+
+    def test_raw_anthropic_content_with_tool_use(self):
+        """_raw_anthropic_content includes tool_use blocks from SDK."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "_raw_anthropic_content": [
+                    {"type": "thinking", "thinking": "Check the tool.", "signature": "sig_tool"},
+                    {"type": "tool_use", "id": "tool_1", "name": "search", "input": {"query": "test"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tool_1", "content": "result"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+
+        assistants = [m for m in result if m["role"] == "assistant"]
+        assert len(assistants) == 1
+        blocks = assistants[0]["content"]
+
+        types = [b.get("type") for b in blocks]
+        assert "thinking" in types
+        assert "tool_use" in types
+
+    def test_raw_anthropic_content_preserves_ordering(self):
+        """Block ordering is preserved from raw content."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Answer.",
+                "_raw_anthropic_content": [
+                    {"type": "thinking", "thinking": "First thought.", "signature": "sig1"},
+                    {"type": "text", "text": "Partial answer."},
+                    {"type": "redacted_thinking", "data": "opaque_data"},
+                    {"type": "text", "text": "Final answer."},
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+
+        blocks = result[0]["content"]
+        assert len(blocks) == 4
+        assert blocks[0]["type"] == "thinking"
+        assert blocks[1]["type"] == "text"
+        assert blocks[2]["type"] == "redacted_thinking"
+        assert blocks[3]["type"] == "text"
+
+    def test_multi_turn_raw_content_preserves_all_signatures(self):
+        """Multi-turn: each assistant with _raw_anthropic_content keeps its signatures."""
+        messages = [
+            {"role": "user", "content": "Q1"},
+            {
+                "role": "assistant",
+                "content": "A1",
+                "_raw_anthropic_content": [
+                    {"type": "thinking", "thinking": "T1", "signature": "sig_1"},
+                    {"type": "text", "text": "A1"},
+                ],
+            },
+            {"role": "user", "content": "Q2"},
+            {
+                "role": "assistant",
+                "content": "A2",
+                "_raw_anthropic_content": [
+                    {"type": "thinking", "thinking": "T2", "signature": "sig_2"},
+                    {"type": "text", "text": "A2"},
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+
+        assistants = [m for m in result if m["role"] == "assistant"]
+        assert len(assistants) == 2
+
+        # Both assistants preserve their thinking blocks
+        for i, expected_sig in enumerate(["sig_1", "sig_2"], 1):
+            thinking = [b for b in assistants[i - 1]["content"]
+                        if b.get("type") == "thinking"]
+            assert len(thinking) == 1
+            assert thinking[0]["signature"] == expected_sig
+
+
 # ---------------------------------------------------------------------------
 # Tool choice
 # ---------------------------------------------------------------------------

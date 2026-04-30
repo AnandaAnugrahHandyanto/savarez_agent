@@ -8516,12 +8516,48 @@ class AIAgent:
         if isinstance(_san_content, str) and _san_content:
             _san_content = self._strip_think_blocks(_san_content).strip()
 
+        # Anthropic SDK returns ``content`` as a list of block objects
+        # (ThinkingBlock, TextBlock, RedactedThinkingBlock, etc.).
+        # Serialize them as stable dicts so ``convert_messages_to_anthropic()``
+        # can use them directly as the source of truth — preserving exact
+        # block interleaving and cryptographic signatures without relying
+        # on reconstruction from ``reasoning_details``.
+        # See hermes-agent#17861.
+        _raw_anthropic_content = None
+        if isinstance(_raw_content, list):
+            _raw_anthropic_content = []
+            for block in _raw_content:
+                if isinstance(block, dict):
+                    _raw_anthropic_content.append(block)
+                elif hasattr(block, "model_dump"):
+                    _raw_anthropic_content.append(block.model_dump())
+                elif hasattr(block, "__dict__"):
+                    _raw_anthropic_content.append(block.__dict__.copy())
+                else:
+                    _raw_anthropic_content.append({"type": "text", "text": str(block)})
+            # Also serialize tool_use blocks (separate from content in SDK)
+            for tc in getattr(assistant_message, "tool_calls", []) or []:
+                if not tc:
+                    continue
+                tc_dict = tc if isinstance(tc, dict) else (
+                    tc.model_dump() if hasattr(tc, "model_dump") else tc.__dict__.copy()
+                )
+                _raw_anthropic_content.append({
+                    "type": "tool_use",
+                    "id": tc_dict.get("id", ""),
+                    "name": tc_dict.get("function", {}).get("name", "") if isinstance(tc_dict.get("function"), dict) else "",
+                    "input": tc_dict.get("function", {}).get("arguments", {}) if isinstance(tc_dict.get("function"), dict) else {},
+                })
+
         msg = {
             "role": "assistant",
             "content": _san_content,
             "reasoning": reasoning_text,
             "finish_reason": finish_reason,
         }
+
+        if _raw_anthropic_content:
+            msg["_raw_anthropic_content"] = _raw_anthropic_content
 
         if hasattr(assistant_message, "reasoning_content"):
             raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)

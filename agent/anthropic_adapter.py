@@ -1422,29 +1422,43 @@ def convert_messages_to_anthropic(
             continue
 
         if role == "assistant":
-            blocks = _extract_preserved_thinking_blocks(m)
-            if content:
-                if isinstance(content, list):
-                    converted_content = _convert_content_to_anthropic(content)
-                    if isinstance(converted_content, list):
-                        blocks.extend(converted_content)
-                else:
-                    blocks.append({"type": "text", "text": str(content)})
-            for tc in m.get("tool_calls", []):
-                if not tc or not isinstance(tc, dict):
-                    continue
-                fn = tc.get("function", {})
-                args = fn.get("arguments", "{}")
-                try:
-                    parsed_args = json.loads(args) if isinstance(args, str) else args
-                except (json.JSONDecodeError, ValueError):
-                    parsed_args = {}
-                blocks.append({
-                    "type": "tool_use",
-                    "id": _sanitize_tool_id(tc.get("id", "")),
-                    "name": fn.get("name", ""),
-                    "input": parsed_args,
-                })
+            # Option B: When _raw_anthropic_content is present, use it directly
+            # as the source of truth.  This preserves exact block interleaving
+            # and cryptographic signatures, eliminating the reconstruction
+            # edge cases that caused HTTP 400 errors (#17861).
+            raw = m.get("_raw_anthropic_content")
+            if isinstance(raw, list) and raw:
+                blocks = copy.deepcopy(raw)
+                # tool_use blocks are already included in raw content from the
+                # SDK response — skip the reconstruction loop below.
+                _skip_tool_reconstruct = True
+            else:
+                # Legacy fallback: reconstruct from content + reasoning_details
+                _skip_tool_reconstruct = False
+                blocks = _extract_preserved_thinking_blocks(m)
+                if content:
+                    if isinstance(content, list):
+                        converted_content = _convert_content_to_anthropic(content)
+                        if isinstance(converted_content, list):
+                            blocks.extend(converted_content)
+                    else:
+                        blocks.append({"type": "text", "text": str(content)})
+            if not _skip_tool_reconstruct:
+                for tc in m.get("tool_calls", []):
+                    if not tc or not isinstance(tc, dict):
+                        continue
+                    fn = tc.get("function", {})
+                    args = fn.get("arguments", "{}")
+                    try:
+                        parsed_args = json.loads(args) if isinstance(args, str) else args
+                    except (json.JSONDecodeError, ValueError):
+                        parsed_args = {}
+                    blocks.append({
+                        "type": "tool_use",
+                        "id": _sanitize_tool_id(tc.get("id", "")),
+                        "name": fn.get("name", ""),
+                        "input": parsed_args,
+                    })
             # Kimi's /coding endpoint (Anthropic protocol) requires assistant
             # tool-call messages to carry reasoning_content when thinking is
             # enabled server-side.  Preserve it as a thinking block so Kimi
