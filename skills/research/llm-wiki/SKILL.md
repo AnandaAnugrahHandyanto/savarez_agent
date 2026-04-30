@@ -40,6 +40,7 @@ Use this skill when the user:
 - Asks a question and an existing wiki is present at the configured path
 - Asks to lint, audit, or health-check their wiki
 - References their wiki, knowledge base, or "notes" in a research context
+- Asks to switch wikis, create a new wiki, or list their wikis
 
 ## Wiki Location
 
@@ -131,7 +132,10 @@ at hand before creating anything new.
 
 When the user asks to create or start a wiki:
 
-1. Determine the wiki path (from `$WIKI_PATH` env var, or ask the user; default `~/wiki`)
+1. Determine the wiki path:
+   - If `WIKI_PATH` env var is set, use that (existing behavior)
+   - Otherwise, use `{HERMES_HOME}/wikis/default/` (create if needed)
+   - Initialize config: set `llm-wiki.active_wiki` to "default", add default entry to `llm-wiki.wikis`
 2. Create the directory structure above
 3. Ask the user what domain the wiki covers — be specific
 4. Write `SCHEMA.md` customized to the domain (see template below)
@@ -397,6 +401,51 @@ wiki = "<WIKI_PATH>"
    severity (broken links > orphans > source drift > contested pages > stale content > style issues).
 
 ⑬ **Append to log.md:** `## [YYYY-MM-DD] lint | N issues found`
+
+## Wiki Management
+
+### Switching Wikis
+
+When the user says something like "switch to the research wiki" or
+"use my personal wiki":
+
+1. Read `llm-wiki.wikis` config to check the requested wiki exists
+2. If it exists, update `llm-wiki.active_wiki` via `save_config_value()`
+3. Orient to the new wiki (read its SCHEMA.md, index.md, recent log.md)
+4. Confirm the switch: "Switched to `research` wiki. [Brief summary of what's in it.]"
+5. If the wiki doesn't exist, offer to create it
+
+### Creating a New Wiki
+
+When the user asks to create a new wiki:
+
+1. Ask for a name (lowercase, hyphens, used as directory name) and description
+2. Read current `llm-wiki.wikis` config
+3. Check no name collision with existing wikis
+4. Add entry to `llm-wiki.wikis` config: `{"name": {"path": "name", "description": "..."}}`
+5. Create directory structure under `{HERMES_HOME}/wikis/{name}/`
+6. Initialize SCHEMA.md, index.md, log.md (same as Initializing a New Wiki)
+7. Set `llm-wiki.active_wiki` to the new wiki name
+8. Confirm: "Created `research` wiki and switched to it."
+
+### Listing Wikis
+
+When the user asks what wikis they have or which is active:
+
+1. Read `llm-wiki.wikis` and `llm-wiki.active_wiki` from config
+2. List each wiki with its description and page count
+3. Mark which one is active
+
+### Pre-Write Content Check
+
+Before any ingest operation, the agent should analyze content relevance to the
+current `active_wiki`. If the content is a better fit for another wiki:
+
+> "This looks like it belongs in the `research` wiki, but `personal` is currently
+> active. Should I switch to `research` for this, or keep it in `personal`?"
+
+This is a judgment call based on the wiki descriptions and existing content.
+Don't ask for every source — only when there's a clear mismatch.
 
 ## Working with the Wiki
 
