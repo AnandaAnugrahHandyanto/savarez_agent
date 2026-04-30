@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Dict
 
 from hermes_constants import display_hermes_home
+from utils import atomic_replace
+from hermes_cli.config import cfg_get
 
 
 _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
@@ -52,7 +54,7 @@ def _save_subscriptions(subs: Dict[str, dict]) -> None:
         json.dumps(subs, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-    os.replace(str(tmp_path), str(path))
+    atomic_replace(tmp_path, path)
 
 
 def _get_webhook_config() -> dict:
@@ -65,7 +67,7 @@ def _get_webhook_config() -> dict:
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-        wh = dict(cfg.get("platforms", {}).get("webhook", {}))
+        wh = dict(cfg_get(cfg, "platforms", "webhook", default={}) or {})
     except Exception:
         wh = {}
 
