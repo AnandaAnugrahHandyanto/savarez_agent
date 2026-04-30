@@ -2724,13 +2724,17 @@ class GatewayRunner:
             from tools.process_registry import process_registry
             while process_registry.pending_watchers:
                 watcher = process_registry.pending_watchers.pop(0)
-                asyncio.create_task(self._run_process_watcher(watcher))
+                task = asyncio.create_task(self._run_process_watcher(watcher))
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
                 logger.info("Resumed watcher for recovered process %s", watcher.get("session_id"))
         except Exception as e:
             logger.error("Recovered watcher setup error: %s", e)
 
         # Start background session expiry watcher to finalize expired sessions
-        asyncio.create_task(self._session_expiry_watcher())
+        _expiry_task = asyncio.create_task(self._session_expiry_watcher())
+        self._background_tasks.add(_expiry_task)
+        _expiry_task.add_done_callback(self._background_tasks.discard)
 
         # Start background reconnection watcher for platforms that failed at startup
         if self._failed_platforms:
@@ -2739,7 +2743,9 @@ class GatewayRunner:
                 len(self._failed_platforms),
                 ", ".join(p.value for p in self._failed_platforms),
             )
-        asyncio.create_task(self._platform_reconnect_watcher())
+        _reconnect_task = asyncio.create_task(self._platform_reconnect_watcher())
+        self._background_tasks.add(_reconnect_task)
+        _reconnect_task.add_done_callback(self._background_tasks.discard)
 
         logger.info("Press Ctrl+C to stop")
         
@@ -5545,7 +5551,9 @@ class GatewayRunner:
                 from tools.process_registry import process_registry
                 while process_registry.pending_watchers:
                     watcher = process_registry.pending_watchers.pop(0)
-                    asyncio.create_task(self._run_process_watcher(watcher))
+                    _watcher_task = asyncio.create_task(self._run_process_watcher(watcher))
+                    self._background_tasks.add(_watcher_task)
+                    _watcher_task.add_done_callback(self._background_tasks.discard)
             except Exception as e:
                 logger.error("Process watcher setup error: %s", e)
 
