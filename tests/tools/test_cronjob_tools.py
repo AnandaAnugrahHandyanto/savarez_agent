@@ -9,6 +9,7 @@ from tools.cronjob_tools import (
     check_cronjob_requirements,
     cronjob,
 )
+from tools.registry import registry
 
 
 # =========================================================================
@@ -133,6 +134,18 @@ class TestUnifiedCronjobTool:
         resumed = json.loads(cronjob(action="resume", job_id=job_id))
         assert resumed["success"] is True
         assert resumed["job"]["state"] == "scheduled"
+
+    def test_registry_handler_list_omits_disabled_jobs_by_default(self):
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+        job_id = created["job_id"]
+
+        paused = json.loads(cronjob(action="pause", job_id=job_id))
+        assert paused["success"] is True
+
+        listing = json.loads(registry.get_entry("cronjob").handler({"action": "list"}))
+        assert listing["success"] is True
+        assert listing["count"] == 0
+        assert listing["jobs"] == []
 
     def test_update_schedule_recomputes_display(self):
         created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
