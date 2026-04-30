@@ -2030,7 +2030,20 @@ async def send_weixin_direct(
 
     live_adapter = _LIVE_ADAPTERS.get(resolved_token)
     send_session = getattr(live_adapter, '_send_session', None)
-    if live_adapter is not None and send_session is not None and not send_session.closed:
+    # Guard against event-loop mismatch: when a cron job runs in a different
+    # loop than the one that created the adapter's session, reusing the session
+    # raises "Timeout context manager should be used inside a task".  Fall
+    # through to the one-shot path in that case.  See #18014.
+    _session_loop_ok = True
+    if send_session is not None and not send_session.closed:
+        try:
+            current_loop = asyncio.get_running_loop()
+            session_loop = getattr(send_session, '_loop', None)
+            if session_loop is not None and session_loop is not current_loop:
+                _session_loop_ok = False
+        except RuntimeError:
+            _session_loop_ok = False
+    if live_adapter is not None and send_session is not None and not send_session.closed and _session_loop_ok:
         last_result: Optional[SendResult] = None
         cleaned = live_adapter.format_message(message)
         if cleaned:
