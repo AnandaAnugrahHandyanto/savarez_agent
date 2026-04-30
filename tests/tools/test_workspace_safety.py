@@ -465,6 +465,20 @@ def test_cd_with_tilde_before_git_mutation_fails_closed(tmp_path):
     assert "cannot verify the target repository" in error
 
 
+def test_conventional_commit_message_with_parentheses_allowed_in_bound_repo(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            'git commit -m "fix(matrix): preserve named room identity"',
+            bound_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is None
+
+
 def test_subshell_cd_wrong_repo_fails_closed(tmp_path):
     bound_repo = _git_repo(tmp_path / "bound")
     other_repo = _git_repo(tmp_path / "other")

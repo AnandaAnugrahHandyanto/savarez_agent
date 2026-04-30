@@ -266,10 +266,43 @@ def _path_has_shell_expansion(value: str) -> bool:
     return "$" in value or "`" in value or "$(" in value or value.startswith("~")
 
 
+def _has_unquoted_shell_paren(value: str) -> bool:
+    in_single = False
+    in_double = False
+    escaped = False
+
+    for ch in value:
+        if escaped:
+            escaped = False
+            continue
+
+        if ch == "\\" and not in_single:
+            escaped = True
+            continue
+
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            continue
+
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            continue
+
+        if ch in "()" and not in_single and not in_double:
+            return True
+
+    return False
+
+
 def _has_unverifiable_shell_git(command: str) -> bool:
+    # Command substitution can redirect the git target at runtime and is
+    # intentionally fail-closed rather than partially shell-parsed.
     if "$(" in command and "git" in command:
         return True
-    return ("(" in command or ")" in command) and "git" in command
+
+    # Only unquoted parentheses imply shell grouping/subshell syntax. Quoted
+    # parentheses are common in conventional commit scopes and format strings.
+    return _has_unquoted_shell_paren(command) and "git" in command
 
 
 def _env_assignment_name(token: str) -> Optional[str]:
