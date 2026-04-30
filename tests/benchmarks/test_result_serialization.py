@@ -3,9 +3,14 @@ import json
 from benchmarks.capabilities import BackendCapabilities
 from benchmarks.interface import AggregateResult, BenchmarkConfig, CategoryResult, RunResult
 from benchmarks.runner import (
+    BACKENDS,
+    CATEGORY_RUNNERS,
     build_result_data,
     build_skipped_category_reasons,
+    load_run_checkpoint,
     print_results,
+    run_single,
+    save_run_checkpoint,
     shared_category_view,
 )
 
@@ -142,3 +147,117 @@ def test_shared_category_view_scores_only_intersection():
     assert view["categories"] == ["semantic_recall"]
     assert view["backends"]["a"] == {"score": 0.8, "correct": 8, "total": 10}
     assert view["backends"]["b"] == {"score": 0.6, "correct": 6, "total": 10}
+
+
+def test_run_checkpoint_round_trips_category_metrics(tmp_path):
+    config = BenchmarkConfig(
+        backend_name="baseline-flat",
+        profile="balanced",
+        embedding_model="tfidf",
+        parameters={"suites": ["a"]},
+        num_runs=1,
+        seeds=[42],
+    )
+    run = _sample_run(seed=42)
+
+    path = save_run_checkpoint(tmp_path, config, run, completed=True)
+    loaded, metadata = load_run_checkpoint(tmp_path, config, seed=42)
+
+    assert path.exists()
+    assert metadata["completed"] is True
+    assert loaded is not None
+    assert loaded.seed == 42
+    assert loaded.overall_score == 0.8
+    assert loaded.token_usage == {"recall_tokens": 50}
+    assert loaded.retrieval_metrics == {"recall_at_5": 0.8}
+    assert loaded.cost_metrics == {"tokens_per_query": 5.0}
+    category = loaded.results_by_category["semantic_recall"]
+    assert category.correct == 8
+    assert category.total == 10
+    assert category.score == 0.8
+    assert category.sub_scores == {"easy": 1.0}
+    assert category.retrieval_metrics == {"recall_at_5": 0.8}
+    assert category.recall_tokens == 50
+    assert category.recall_chars == 200
+
+
+def test_run_single_resume_skips_checkpointed_categories(tmp_path, monkeypatch):
+    class TinyBackend:
+        def __init__(self, **kwargs):
+            pass
+        def store(self, *args, **kwargs):
+            pass
+        def recall(self, *args, **kwargs):
+            return []
+        def simulate_time(self, days):
+            pass
+        def simulate_access(self, content_substring):
+            pass
+        def consolidate(self):
+            pass
+        def get_stats(self):
+            return {}
+        def reset(self):
+            pass
+
+    completed = RunResult(
+        seed=42,
+        results_by_category={
+            "semantic_recall": CategoryResult(
+                "semantic_recall",
+                total=1,
+                correct=1,
+                score=1.0,
+                recall_tokens=3,
+                recall_chars=12,
+            )
+        },
+        overall_score=1.0,
+        token_usage={"recall_tokens": 3, "recall_chars": 12, "recall_queries": 1, "avg_recall_tokens_per_query": 3},
+        wall_time_seconds=0.1,
+        retrieval_metrics={},
+        cost_metrics={"score": 1.0},
+    )
+    config = BenchmarkConfig(
+        backend_name="tiny-resume",
+        parameters={
+            "suites": ["z"],
+            "checkpoint_dir": str(tmp_path),
+            "checkpoint_enabled": True,
+            "resume": True,
+        },
+        num_runs=1,
+        seeds=[42],
+    )
+    save_run_checkpoint(tmp_path, config, completed, completed=False)
+
+    calls = []
+    def already_done_runner(backend, scenarios, judge):
+        calls.append("semantic_recall")
+        return CategoryResult("semantic_recall", total=1, correct=0, score=0.0)
+    def missing_runner(backend, scenarios, judge):
+        calls.append("contradictions")
+        return CategoryResult(
+            "contradictions",
+            total=2,
+            correct=1,
+            score=0.5,
+            recall_tokens=5,
+            recall_chars=20,
+            retrieval_metrics={"recall_at_5": 0.5},
+        )
+
+    monkeypatch.setitem(BACKENDS, "tiny-resume", TinyBackend)
+    monkeypatch.setattr("benchmarks.runner.load_fixtures", lambda suite: {"semantic_recall": [{}], "contradictions": [{}, {}]})
+    monkeypatch.setitem(CATEGORY_RUNNERS, "semantic_recall", already_done_runner)
+    monkeypatch.setitem(CATEGORY_RUNNERS, "contradictions", missing_runner)
+
+    run = run_single(config, seed=42)
+    loaded, metadata = load_run_checkpoint(tmp_path, config, seed=42)
+
+    assert calls == ["contradictions"]
+    assert set(run.results_by_category) == {"semantic_recall", "contradictions"}
+    assert run.overall_score == 2 / 3
+    assert metadata["completed"] is True
+    assert loaded is not None
+    assert set(loaded.results_by_category) == {"semantic_recall", "contradictions"}

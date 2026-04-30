@@ -261,10 +261,97 @@ def serialize_run(run: RunResult) -> dict:
                 "recall_chars": cr.recall_chars,
                 "retrieval_metrics": cr.retrieval_metrics,
                 "sub_scores": cr.sub_scores,
+                "details": cr.details,
             }
             for cat, cr in run.results_by_category.items()
         },
     }
+
+
+def deserialize_category_result(category: str, data: dict) -> CategoryResult:
+    """Rebuild a CategoryResult from serialized JSON data."""
+    return CategoryResult(
+        category=category,
+        total=int(data.get("total", 0)),
+        correct=int(data.get("correct", 0)),
+        score=float(data.get("score", 0.0)),
+        sub_scores=dict(data.get("sub_scores", {})),
+        details=list(data.get("details", [])),
+        recall_tokens=int(data.get("recall_tokens", 0)),
+        recall_chars=int(data.get("recall_chars", 0)),
+        retrieval_metrics=dict(data.get("retrieval_metrics", {})),
+    )
+
+
+def deserialize_run(data: dict) -> RunResult:
+    """Rebuild a RunResult from serialized JSON data."""
+    return RunResult(
+        seed=int(data.get("seed", 0)),
+        results_by_category={
+            cat: deserialize_category_result(cat, cat_data)
+            for cat, cat_data in data.get("categories", {}).items()
+        },
+        overall_score=float(data.get("overall_score", 0.0)),
+        token_usage=dict(data.get("token_usage", {})),
+        wall_time_seconds=float(data.get("wall_time_seconds", 0.0)),
+        retrieval_metrics=dict(data.get("retrieval_metrics", {})),
+        cost_metrics=dict(data.get("cost_metrics", {})),
+    )
+
+
+def checkpoint_path(checkpoint_dir: str | Path, backend_name: str, seed: int) -> Path:
+    """Return the atomic checkpoint path for one backend/seed run."""
+    safe_backend = backend_name.replace("/", "_").replace(" ", "_")
+    return Path(checkpoint_dir) / f"{safe_backend}_seed{seed}.json"
+
+
+def save_run_checkpoint(
+    checkpoint_dir: str | Path,
+    config: BenchmarkConfig,
+    run: RunResult,
+    completed: bool = False,
+) -> Path:
+    """Atomically save a partial or completed run checkpoint.
+
+    Checkpoints are intentionally per-seed so a process killed by OOM loses at
+    most the category currently executing. They are not publication artifacts;
+    final schema-v2 JSON is still written by the normal save path.
+    """
+    import datetime
+    checkpoint_dir = Path(checkpoint_dir)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    path = checkpoint_path(checkpoint_dir, config.backend_name, run.seed)
+    payload = {
+        "schema_version": "checkpoint-v1",
+        "backend": config.backend_name,
+        "seed": run.seed,
+        "completed": completed,
+        "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "suites": config.parameters.get("suites", ["a"]),
+        "run": serialize_run(run),
+    }
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp_path, "w") as f:
+        json.dump(payload, f, indent=2)
+    tmp_path.replace(path)
+    return path
+
+
+def load_run_checkpoint(
+    checkpoint_dir: str | Path,
+    config: BenchmarkConfig,
+    seed: int,
+) -> tuple[RunResult | None, dict]:
+    """Load a run checkpoint if present, returning (run, metadata)."""
+    path = checkpoint_path(checkpoint_dir, config.backend_name, seed)
+    if not path.exists():
+        return None, {}
+    with open(path) as f:
+        payload = json.load(f)
+    if payload.get("backend") != config.backend_name or int(payload.get("seed", seed)) != seed:
+        raise ValueError(f"Checkpoint {path} does not match {config.backend_name} seed={seed}")
+    metadata = {k: v for k, v in payload.items() if k != "run"}
+    return deserialize_run(payload.get("run", {})), metadata
 
 
 def credential_presence(backend_name: str) -> dict[str, str]:
@@ -2977,6 +3064,44 @@ CATEGORY_RUNNERS = {
 
 # --- Main Run Logic ---
 
+def finalize_run_result(run: RunResult, wall_time_seconds: float | None = None) -> RunResult:
+    """Recompute aggregate fields on a RunResult after category changes."""
+    results_by_cat = run.results_by_category
+    total_correct = sum(c.correct for c in results_by_cat.values())
+    total_items = sum(c.total for c in results_by_cat.values())
+    run.overall_score = total_correct / total_items if total_items > 0 else 0
+
+    total_recall_tokens = sum(c.recall_tokens for c in results_by_cat.values())
+    total_recall_chars = sum(c.recall_chars for c in results_by_cat.values())
+    num_queries = total_items
+    run.token_usage = {
+        "recall_tokens": total_recall_tokens,
+        "recall_chars": total_recall_chars,
+        "recall_queries": num_queries,
+        "avg_recall_tokens_per_query": total_recall_tokens // max(num_queries, 1),
+    }
+
+    all_cat_metrics = {}
+    metric_counts = {}
+    for cat_result in results_by_cat.values():
+        for metric_name, value in cat_result.retrieval_metrics.items():
+            if metric_name not in all_cat_metrics:
+                all_cat_metrics[metric_name] = 0.0
+                metric_counts[metric_name] = 0
+            all_cat_metrics[metric_name] += value
+            metric_counts[metric_name] += 1
+    run.retrieval_metrics = {k: v / metric_counts[k] for k, v in all_cat_metrics.items()}
+    run.cost_metrics = compute_cost_metrics(
+        total_tokens=total_recall_tokens,
+        total_queries=num_queries,
+        correct=total_correct,
+        total=total_items,
+    )
+    if wall_time_seconds is not None:
+        run.wall_time_seconds = wall_time_seconds
+    return run
+
+
 def run_single(config: BenchmarkConfig, seed: int) -> RunResult:
     """Execute one full benchmark run with a given seed.
     
@@ -2992,13 +3117,25 @@ def run_single(config: BenchmarkConfig, seed: int) -> RunResult:
     start = time.time()
     backend = get_backend(config.backend_name, config)
 
+    checkpoint_dir = config.parameters.get("checkpoint_dir")
+    checkpoint_enabled = bool(config.parameters.get("checkpoint_enabled", False) and checkpoint_dir)
+    resume = bool(config.parameters.get("resume", False))
+    checkpoint_base_elapsed = 0.0
+    results_by_cat = {}
+    if checkpoint_enabled and resume:
+        checkpointed_run, checkpoint_metadata = load_run_checkpoint(checkpoint_dir, config, seed)
+        if checkpointed_run is not None:
+            results_by_cat.update(checkpointed_run.results_by_category)
+            checkpoint_base_elapsed = checkpointed_run.wall_time_seconds
+            completed = sorted(checkpointed_run.results_by_category)
+            status = "completed" if checkpoint_metadata.get("completed") else "partial"
+            print(f"resuming {status} checkpoint with {len(completed)} categories", end=" ", flush=True)
+
     # Use HeuristicJudge by default; LLM judge for real results
     if config.judge_model == "heuristic":
         judge = HeuristicJudge(model="heuristic")
     else:
         judge = MemoryJudge(model=config.judge_model)
-
-    results_by_cat = {}
 
     suites_to_run = config.parameters.get("suites", ["a"])
     if suites_to_run == ["all"] or suites_to_run == "all":
@@ -3011,6 +3148,8 @@ def run_single(config: BenchmarkConfig, seed: int) -> RunResult:
         for category_name, scenarios in fixtures.items():
             runner = CATEGORY_RUNNERS.get(category_name)
             if runner:
+                if checkpoint_enabled and resume and category_name in results_by_cat:
+                    continue
                 # Skip categories the backend doesn't support
                 caps = BACKEND_CAPABILITIES.get(config.backend_name)
                 if caps is not None:
@@ -3041,56 +3180,25 @@ def run_single(config: BenchmarkConfig, seed: int) -> RunResult:
                     )
                 results_by_cat[category_name] = cat_result
 
+                if checkpoint_enabled:
+                    partial = RunResult(seed=seed, results_by_category=dict(results_by_cat))
+                    finalize_run_result(
+                        partial,
+                        wall_time_seconds=checkpoint_base_elapsed + (time.time() - start),
+                    )
+                    save_run_checkpoint(checkpoint_dir, config, partial, completed=False)
+
                 # Free transient memory between categories to prevent OOM
                 # in constrained Docker containers.  The backend.reset()
                 # inside each scenario already clears the store; this just
                 # reclaims Python garbage (embedding vectors, scored lists).
                 gc.collect()
 
-    elapsed = time.time() - start
-
-    # Compute overall score (weighted average)
-    total_correct = sum(c.correct for c in results_by_cat.values())
-    total_items = sum(c.total for c in results_by_cat.values())
-    overall = total_correct / total_items if total_items > 0 else 0
-
-    # Aggregate token usage across categories
-    total_recall_tokens = sum(c.recall_tokens for c in results_by_cat.values())
-    total_recall_chars = sum(c.recall_chars for c in results_by_cat.values())
-    num_queries = total_items
-
-    # Aggregate retrieval metrics across categories
-    all_cat_metrics = {}
-    metric_counts = {}
-    for cat_name, cat_result in results_by_cat.items():
-        for metric_name, value in cat_result.retrieval_metrics.items():
-            if metric_name not in all_cat_metrics:
-                all_cat_metrics[metric_name] = 0.0
-                metric_counts[metric_name] = 0
-            all_cat_metrics[metric_name] += value
-            metric_counts[metric_name] += 1
-
-    avg_metrics = {k: v / metric_counts[k] for k, v in all_cat_metrics.items()}
-
-    run_result = RunResult(
-        seed=seed,
-        results_by_category=results_by_cat,
-        overall_score=overall,
-        token_usage={
-            "recall_tokens": total_recall_tokens,
-            "recall_chars": total_recall_chars,
-            "recall_queries": num_queries,
-            "avg_recall_tokens_per_query": total_recall_tokens // max(num_queries, 1),
-        },
-        wall_time_seconds=elapsed,
-    )
-    run_result.retrieval_metrics = avg_metrics
-    run_result.cost_metrics = compute_cost_metrics(
-        total_tokens=total_recall_tokens,
-        total_queries=num_queries,
-        correct=total_correct,
-        total=total_items,
-    )
+    elapsed = checkpoint_base_elapsed + (time.time() - start)
+    run_result = RunResult(seed=seed, results_by_category=results_by_cat)
+    finalize_run_result(run_result, wall_time_seconds=elapsed)
+    if checkpoint_enabled:
+        save_run_checkpoint(checkpoint_dir, config, run_result, completed=True)
     return run_result
 
 
@@ -3233,6 +3341,12 @@ def main():
                         help="Output results as JSON")
     parser.add_argument("--preflight", action="store_true",
                         help="Run backend setup/store/recall/reset smoke check and exit")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume completed categories from per-seed checkpoints")
+    parser.add_argument("--no-checkpoint", action="store_true",
+                        help="Disable per-category checkpoint files")
+    parser.add_argument("--checkpoint-dir", default=None,
+                        help="Directory for per-seed checkpoint JSON files (default: <output-dir>/checkpoints)")
 
     args = parser.parse_args()
 
@@ -3241,6 +3355,9 @@ def main():
         suites = discover_suites()
     else:
         suites = [s.strip() for s in args.suite.split(",")]
+
+    checkpoint_enabled = not args.no_checkpoint
+    checkpoint_dir = args.checkpoint_dir or str(Path(args.output_dir) / "checkpoints")
 
     config = BenchmarkConfig(
         backend_name=args.backend,
@@ -3254,6 +3371,9 @@ def main():
             "profile": args.profile,
             "embedding_model": args.embedding,
             "suites": suites,
+            "checkpoint_enabled": checkpoint_enabled,
+            "checkpoint_dir": checkpoint_dir,
+            "resume": args.resume,
             **({"contradiction_llm_model": args.contradiction_llm}
                if args.contradiction_llm else {}),
         },
@@ -3313,6 +3433,9 @@ def main():
                 "profile": args.profile,
                 "embedding_model": args.embedding,
                 "suites": suites,
+                "checkpoint_enabled": checkpoint_enabled,
+                "checkpoint_dir": checkpoint_dir,
+                "resume": args.resume,
                 **({"contradiction_llm_model": args.contradiction_llm}
                    if args.contradiction_llm else {}),
             },
