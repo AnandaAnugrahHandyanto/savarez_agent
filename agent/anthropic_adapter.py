@@ -1636,12 +1636,6 @@ def convert_messages_to_anthropic(
         or _is_deepseek_anthropic_endpoint(base_url)
     )
 
-    last_assistant_idx = None
-    for i in range(len(result) - 1, -1, -1):
-        if result[i].get("role") == "assistant":
-            last_assistant_idx = i
-            break
-
     for idx, m in enumerate(result):
         if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
             continue
@@ -1664,38 +1658,21 @@ def convert_messages_to_anthropic(
                 # keep it: the upstream needs it for message-history validation.
                 new_content.append(b)
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
-        elif _is_third_party or idx != last_assistant_idx:
-            # Third-party endpoint: strip ALL thinking blocks from every
-            # assistant message — signatures are Anthropic-proprietary.
-            # Direct Anthropic: strip from non-latest assistant messages only.
+        else:
+            # Strip ALL thinking/redacted_thinking blocks from every
+            # assistant message — including the latest turn on direct
+            # Anthropic.  Previously we preserved signed blocks on the
+            # latest turn for reasoning continuity, but persisted blocks
+            # can have stale signatures after session serialisation,
+            # context compression, or message truncation, causing
+            # HTTP 400 on multi-turn sessions (#17861).  Anthropic
+            # explicitly allows omitting thinking blocks — the model
+            # re-thinks from scratch.
             stripped = [
                 b for b in m["content"]
                 if not (isinstance(b, dict) and b.get("type") in _THINKING_TYPES)
             ]
             m["content"] = stripped or [{"type": "text", "text": "(thinking elided)"}]
-        else:
-            # Latest assistant on direct Anthropic: keep signed thinking
-            # blocks for reasoning continuity; downgrade unsigned ones to
-            # plain text.
-            new_content = []
-            for b in m["content"]:
-                if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
-                    new_content.append(b)
-                    continue
-                if b.get("type") == "redacted_thinking":
-                    # Redacted blocks use 'data' for the signature payload
-                    if b.get("data"):
-                        new_content.append(b)
-                    # else: drop — no data means it can't be validated
-                elif b.get("signature"):
-                    # Signed thinking block — keep it
-                    new_content.append(b)
-                else:
-                    # Unsigned thinking — downgrade to text so it's not lost
-                    thinking_text = b.get("thinking", "")
-                    if thinking_text:
-                        new_content.append({"type": "text", "text": thinking_text})
-            m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
 
         # Strip cache_control from any remaining thinking/redacted_thinking
         # blocks — cache markers interfere with signature validation.

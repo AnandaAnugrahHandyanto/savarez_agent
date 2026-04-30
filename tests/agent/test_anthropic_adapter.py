@@ -833,10 +833,10 @@ class TestConvertMessages:
         _, result = convert_messages_to_anthropic(messages)
         assistant_blocks = next(msg for msg in result if msg["role"] == "assistant")["content"]
 
-        assert assistant_blocks[0]["type"] == "thinking"
-        assert assistant_blocks[0]["thinking"] == "Need to inspect the tool result first."
-        assert assistant_blocks[0]["signature"] == "sig_123"
-        assert assistant_blocks[1]["type"] == "tool_use"
+        # After #17861 fix: thinking blocks are stripped from ALL assistant
+        # turns (including latest) to avoid stale signature HTTP 400 errors.
+        assert not any(b.get("type") == "thinking" for b in assistant_blocks)
+        assert any(b.get("type") == "tool_use" for b in assistant_blocks)
 
     def test_converts_data_url_image_to_anthropic_image_block(self):
         messages = [
@@ -1453,8 +1453,8 @@ class TestRoleAlternation:
 
 
 class TestThinkingBlockSignatureManagement:
-    """Tests for the thinking block handling strategy:
-    strip from old turns, preserve latest signed, downgrade unsigned."""
+    """Tests for the thinking block handling strategy (#17861):
+    strip thinking blocks from ALL assistant turns to avoid stale signature errors."""
 
     def test_thinking_stripped_from_non_last_assistant(self):
         """Thinking blocks are removed from all assistant messages except the last."""
@@ -1494,15 +1494,14 @@ class TestThinkingBlockSignatureManagement:
         assert "redacted_thinking" not in first_types
         assert "tool_use" in first_types  # tool_use should survive
 
-        # Last assistant: thinking block preserved with signature
-        last_blocks = assistants[1]["content"]
-        thinking_blocks = [b for b in last_blocks if b.get("type") == "thinking"]
-        assert len(thinking_blocks) == 1
-        assert thinking_blocks[0]["thinking"] == "Latest reasoning."
-        assert thinking_blocks[0]["signature"] == "sig_new"
+        # Last assistant: thinking blocks also stripped (#17861)
+        last_types = [b.get("type") for b in assistants[1]["content"]]
+        assert "thinking" not in last_types
+        assert "redacted_thinking" not in last_types
+        assert "tool_use" in last_types
 
-    def test_signed_thinking_preserved_on_last_turn(self):
-        """A signed thinking block on the last assistant message is kept."""
+    def test_signed_thinking_stripped_on_last_turn(self):
+        """Signed thinking blocks are stripped even from the last assistant (#17861)."""
         messages = [
             {
                 "role": "assistant",
@@ -1514,19 +1513,18 @@ class TestThinkingBlockSignatureManagement:
         ]
         _, result = convert_messages_to_anthropic(messages)
         blocks = result[0]["content"]
-        thinking = [b for b in blocks if b.get("type") == "thinking"]
-        assert len(thinking) == 1
-        assert thinking[0]["signature"] == "sig_valid"
+        assert not any(b.get("type") == "thinking" for b in blocks)
+        # Text content preserved
+        assert any(b.get("text") == "The answer is 42." for b in blocks if isinstance(b, dict))
 
-    def test_unsigned_thinking_downgraded_to_text_on_last_turn(self):
-        """Unsigned thinking blocks on the last turn become text blocks."""
+    def test_unsigned_thinking_stripped_on_last_turn(self):
+        """Unsigned thinking blocks on the last turn are stripped (#17861)."""
         messages = [
             {
                 "role": "assistant",
                 "content": "Response text.",
                 "reasoning_details": [
                     {"type": "thinking", "thinking": "Unsigned reasoning."},
-                    # No 'signature' field
                 ],
             },
         ]
@@ -1535,12 +1533,12 @@ class TestThinkingBlockSignatureManagement:
 
         # No thinking blocks should remain
         assert not any(b.get("type") == "thinking" for b in blocks)
-        # The reasoning text should be preserved as a text block
+        # Response text preserved
         text_contents = [b.get("text", "") for b in blocks if b.get("type") == "text"]
-        assert "Unsigned reasoning." in text_contents
+        assert "Response text." in text_contents
 
-    def test_redacted_thinking_with_data_preserved(self):
-        """Redacted thinking with 'data' field is kept on last turn."""
+    def test_redacted_thinking_with_data_stripped(self):
+        """Redacted thinking with 'data' is stripped from all turns (#17861)."""
         messages = [
             {
                 "role": "assistant",
@@ -1552,9 +1550,7 @@ class TestThinkingBlockSignatureManagement:
         ]
         _, result = convert_messages_to_anthropic(messages)
         blocks = result[0]["content"]
-        redacted = [b for b in blocks if b.get("type") == "redacted_thinking"]
-        assert len(redacted) == 1
-        assert redacted[0]["data"] == "opaque_signature_data"
+        assert not any(b.get("type") == "redacted_thinking" for b in blocks)
 
     def test_redacted_thinking_without_data_dropped(self):
         """Redacted thinking without 'data' is dropped — can't be validated."""
@@ -1622,11 +1618,9 @@ class TestThinkingBlockSignatureManagement:
         assistants = [m for m in result if m["role"] == "assistant"]
         assert len(assistants) == 1
 
-        # Only the first thinking block should remain (signed, on the last/only assistant)
+        # All thinking blocks stripped from merged assistant (#17861)
         blocks = assistants[0]["content"]
-        thinking = [b for b in blocks if b.get("type") == "thinking"]
-        assert len(thinking) == 1
-        assert thinking[0]["thinking"] == "First thought."
+        assert not any(b.get("type") == "thinking" for b in blocks)
 
     def test_empty_content_after_strip_gets_placeholder(self):
         """If stripping thinking leaves an empty message, a placeholder is added."""
@@ -1690,13 +1684,12 @@ class TestThinkingBlockSignatureManagement:
                 if isinstance(b, dict)
             )
 
-        # Last one: thinking preserved
-        last_thinking = [
-            b for b in assistants[2]["content"]
-            if isinstance(b, dict) and b.get("type") == "thinking"
-        ]
-        assert len(last_thinking) == 1
-        assert last_thinking[0]["signature"] == "sig_3"
+        # Last one: also stripped (#17861)
+        assert not any(
+            b.get("type") in ("thinking", "redacted_thinking")
+            for b in assistants[2]["content"]
+            if isinstance(b, dict)
+        )
 
 
 # ---------------------------------------------------------------------------
