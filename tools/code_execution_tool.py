@@ -224,9 +224,10 @@ def retry(fn, max_attempts=3, delay=2):
 
 _UDS_TRANSPORT_HEADER = '''\
 """Auto-generated Hermes tools RPC stubs."""
-import json, os, socket, shlex, time
+import json, os, socket, shlex, threading, time
 
 _sock = None
+_lock = threading.Lock()
 ''' + _COMMON_HELPERS + '''\
 
 def _connect():
@@ -239,17 +240,18 @@ def _connect():
 
 def _call(tool_name, args):
     """Send a tool call to the parent process and return the parsed result."""
-    conn = _connect()
-    request = json.dumps({"tool": tool_name, "args": args}) + "\\n"
-    conn.sendall(request.encode())
-    buf = b""
-    while True:
-        chunk = conn.recv(65536)
-        if not chunk:
-            raise RuntimeError("Agent process disconnected")
-        buf += chunk
-        if buf.endswith(b"\\n"):
-            break
+    with _lock:
+        conn = _connect()
+        request = json.dumps({"tool": tool_name, "args": args}) + "\\n"
+        conn.sendall(request.encode())
+        buf = b""
+        while True:
+            chunk = conn.recv(65536)
+            if not chunk:
+                raise RuntimeError("Agent process disconnected")
+            buf += chunk
+            if buf.endswith(b"\\n"):
+                break
     raw = buf.decode().strip()
     result = json.loads(raw)
     if isinstance(result, str):
@@ -274,8 +276,9 @@ _seq = 0
 def _call(tool_name, args):
     """Send a tool call request via file-based RPC and wait for response."""
     global _seq
-    _seq += 1
-    seq_str = f"{_seq:06d}"
+    with _seq_lock:
+        _seq += 1
+        seq_str = f"{_seq:06d}"
     req_file = os.path.join(_RPC_DIR, f"req_{seq_str}")
     res_file = os.path.join(_RPC_DIR, f"res_{seq_str}")
 
