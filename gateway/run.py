@@ -782,6 +782,17 @@ def _format_gateway_process_notification(evt: dict) -> "str | None":
     return None
 
 
+# Module-level reference to the active GatewayRunner instance.
+# Used by send_message_tool to reuse live platform adapters (e.g. WeCom)
+# instead of creating throwaway connections that disrupt the main one.
+_active_gateway_runner: Optional["GatewayRunner"] = None
+
+
+def get_active_gateway_runner() -> Optional["GatewayRunner"]:
+    """Return the running GatewayRunner instance, if any."""
+    return _active_gateway_runner
+
+
 class GatewayRunner:
     """
     Main gateway controller.
@@ -806,8 +817,10 @@ class GatewayRunner:
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
     
     def __init__(self, config: Optional[GatewayConfig] = None):
+        global _active_gateway_runner
         self.config = config or load_gateway_config()
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
+        _active_gateway_runner = self
         self._warn_if_docker_media_delivery_is_risky()
 
         # Load ephemeral config from config.yaml / env vars.
