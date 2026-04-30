@@ -67,6 +67,10 @@ SOURCE_IMAGE_EDIT_HINTS = [
     "补总标题",
     "补标题",
     "补卖点",
+    "这个设计",
+    "设计稿",
+    "调整",
+    "调成",
     "标题",
     "卖点",
     "文案",
@@ -223,6 +227,19 @@ def _fit_headline(value: str, limit: int) -> str:
     return clean[:limit] if len(clean) > limit else clean
 
 
+def _is_internal_placeholder(value: str) -> bool:
+    text = _as_text(value)
+    return (
+        not text
+        or "本次指定" in text
+        or "沿用参考图" in text
+        or "用户本条需求" in text
+        or "当前图片" in text
+        or "视觉主体" in text
+        or "引用图片" in text
+    )
+
+
 def _suggest_headline(text: str, subject: str) -> str:
     explicit = _extract_explicit_title(text)
     if explicit:
@@ -233,17 +250,31 @@ def _suggest_headline(text: str, subject: str) -> str:
             return _fit_headline("外酥里嫩臭豆腐", limit)
         if any(word in text for word in ("冰柠", "柠檬", "鲜果", "饮品", "果茶")) or any(word in subject for word in ("饮品", "冰柠", "鲜果")):
             return _fit_headline("鲜果冰柠一夏", limit)
-        if subject and subject != "本次指定单一主体":
+        if subject and not _is_internal_placeholder(subject):
             return _fit_headline(f"{subject}上新", limit)
-    return subject or "本次指定单一主体"
+        return ""
+    if subject and not _is_internal_placeholder(subject):
+        return subject
+    return ""
 
 
 def _extract_headline(text: str, fallback: str) -> str:
     explicit = _extract_explicit_title(text)
     if explicit:
         return explicit
-    subject = _extract_subject_anchor(text) or fallback
-    return _suggest_headline(text, subject)
+    subject = _extract_subject_anchor(text)
+    if subject:
+        return _suggest_headline(text, subject)
+    if _wants_generated_title(text):
+        return _suggest_headline(text, fallback)
+    return ""
+
+
+def _title_instruction(headline: Any, fallback_instruction: str) -> str:
+    value = _as_text(headline)
+    if value and not _is_internal_placeholder(value):
+        return f"主标题「{value}」"
+    return f"主标题：{fallback_instruction}；不得把这句说明当作画面文字"
 
 
 def _extract_copy_line(text: str, label: str, fallback: str) -> str:
@@ -356,7 +387,7 @@ def build_visual_brief_from_payload(payload: Mapping[str, Any]) -> dict[str, Any
             "source_text": text,
         }
 
-    default_subject = subject or "本次指定单一主体"
+    default_subject = subject or "用户本条需求中的视觉主体"
     return {
         "brand": "火宫殿 T3" if "火宫殿" in text or subject in DISH_HINTS else "用户视觉任务",
         "asset_type": "单品菜品海报" if subject in DISH_HINTS or "菜" in text else "完整海报设计稿",
@@ -401,9 +432,9 @@ def _build_source_edit_prompt(brief: Mapping[str, Any]) -> str:
 {continuation}主视觉对象：{main_visual}。
 {subject_lock}
 用户原始修改要求：{brief.get('source_text', '')}
-文案上图要求：主标题「{copy.get('headline', '沿用参考图标题层级')}」；一句卖点「{copy.get('selling_point', '按用户回复执行')}」；信息线「{copy.get('info_line', '保留参考图已有信息位置')}」。
+文案上图要求：{_title_instruction(copy.get('headline'), '沿用参考图已有核心标题/商品名层级；若源图无标题，则按本条需求生成合适短标题')}；一句卖点「{copy.get('selling_point', '按用户回复执行')}」；信息线「{copy.get('info_line', '保留参考图已有信息位置')}」。
 参考源文件：{_source_file_summary(source_files)}。
-不要新增火宫殿/T3/机场/门店信息，除非用户在本条需求里明确要求；不得套用默认辣椒小炒肉/火宫殿单品模板。
+只使用当前飞书话题、本条用户需求和引用/上传图片，不得从旧任务或历史会话抓取标题/主体；不要新增火宫殿/T3/机场/门店信息，除非用户在本条需求里明确要求；不得套用默认辣椒小炒肉/火宫殿单品模板。
 最终图必须是完整可审阅海报/配图，不是裸底图、局部补丁或等待脚本后期贴字的半成品。
 候选图必须先过 subject/freshness/no-logo gate；P0/P1 不准进入飞书发送。
 """.strip()
@@ -418,7 +449,8 @@ def _build_default_prompt(brief: Mapping[str, Any]) -> str:
 业务归属：{brief.get('brand', '火宫殿 T3')}；但这只是内部归属，不要在画面中生成品牌字标或门头。
 物料类型：{brief.get('asset_type')}；业务目标：{brief.get('business_goal')}。
 主视觉对象：{main_visual}。
-文案上图要求：主标题「{copy.get('headline', main_visual)}」；一句卖点「{copy.get('selling_point', '突出食欲和本次业务目标')}」；信息线「{copy.get('info_line', '按用户本条需求克制呈现')}」。
+文案上图要求：{_title_instruction(copy.get('headline'), '根据本条需求生成合适短标题；如果用户没有给标题，不得使用内部占位说明或历史任务标题')}；一句卖点「{copy.get('selling_point', '突出食欲和本次业务目标')}」；信息线「{copy.get('info_line', '按用户本条需求克制呈现')}」。
+只使用当前飞书话题和本条用户需求，不得从旧任务或历史会话抓取标题/主体。
 默认不生成 Logo、火宫殿字标、店招、印章或任何伪品牌标识；只保留自然 Logo 安全区。
 画面必须像一次性完整海报设计稿，可审阅，不是裸底图、拼贴图或脚本后期贴字半成品。
 """.strip()

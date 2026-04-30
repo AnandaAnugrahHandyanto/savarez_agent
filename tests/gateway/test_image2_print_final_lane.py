@@ -192,6 +192,48 @@ def test_size_only_reply_in_image_thread_routes_to_direct_print_source(tmp_path,
     assert payload["print_request"]["spec"]["target_height_px"] == 7087
 
 
+def test_size_only_direct_print_source_takes_priority_over_accidental_preview(tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    db_path = runtime / "image2_jobs.sqlite"
+    store = Image2JobStore(db_path=db_path, runtime_root=runtime)
+    preview = store.enqueue_feishu({"feishu_message_id": "om_preview", "chat_id": "oc_chat", "root_id": "om_root", "thread_id": "om_root", "text": "这个就直接是设计稿"})
+    preview_dir = Path(str(preview["job_dir"]))
+    accidental_preview = preview_dir / "candidates" / "preview.png"
+    accidental_preview.parent.mkdir(parents=True, exist_ok=True)
+    accidental_preview.write_bytes(b"accidental-generated-preview")
+    accidental_sha = hashlib.sha256(accidental_preview.read_bytes()).hexdigest()
+    (preview_dir / "worker_result.json").write_text(json.dumps({"delivery_contract": {"status": "ready_to_send", "image_path": str(accidental_preview), "image_sha256": accidental_sha}, "delivery_readback": {"verified": True, "message_id": "om_accidental_img", "readback_msg_type": "image"}}, ensure_ascii=False), encoding="utf-8")
+    store.mark_readback_verified(task_id=str(preview["task_id"]), worker_id="unit")
+
+    source = tmp_path / "thread-root-design.png"
+    source.write_bytes(b"real-user-design-draft")
+    settings = Image2IngressSettings(enabled=True, runtime_root=runtime, db_path=db_path, launch_worker=True)
+    launched: list[str] = []
+
+    def fake_thread_image(_event, destination, **_kwargs):
+        return {
+            "path": str(source),
+            "mime_type": "image/png",
+            "source": "feishu_thread_root_image",
+            "parent_message_id": "om_root",
+        }
+
+    monkeypatch.setattr(ingress, "resolve_feishu_thread_image", fake_thread_image)
+
+    ack = handle_image2_feishu_ingress_event(
+        _event("80×120厘米", message_id="om_size_only", root_id="om_root"),
+        settings=settings,
+        launch_func=lambda _settings, *, task_id: launched.append(task_id) or {"pid": 123},
+    )
+
+    assert "印刷定稿队列" in ack
+    print_job = _row(db_path, launched[0])
+    payload = json.loads(str(print_job["payload_json"]))
+    assert payload["print_request"]["approved_task_id"] == "feishu_source:om_root"
+    assert payload["print_request"]["approved_image_path"] == str(source)
+    assert payload["print_request"]["approved_image_sha256"] != accidental_sha
+
+
 def test_print_request_without_thread_does_not_pick_random_chat_preview(tmp_path):
     runtime = tmp_path / "runtime"
     db_path = runtime / "image2_jobs.sqlite"

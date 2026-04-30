@@ -128,3 +128,38 @@ def test_explicit_plain_title_label_is_preserved_for_source_edit(tmp_path):
 
     assert brief["copy"]["headline"] == "夏日鲜果 冰柠系列"
     assert "主标题「夏日鲜果 冰柠系列」" in prompt
+
+def test_generic_visual_prompt_does_not_render_internal_placeholder_as_title():
+    from gateway.image2_prompt import compile_image2_prompt_payload
+
+    compiled = compile_image2_prompt_payload({
+        "feishu_message_id": "om_generic_title",
+        "chat_id": "oc_chat",
+        "root_id": "om_generic",
+        "thread_id": "om_generic",
+        "text": "/image2 设计一张海报，整体更高级一点",
+        "source_files": [],
+    })
+
+    prompt = compiled["one_shot_design_prompt"]
+    assert "主标题「本次指定单一主体」" not in prompt
+    assert "本次指定单一主体" not in prompt
+    assert "内部占位" in prompt
+
+
+def test_source_image_edit_prompt_uses_title_instruction_not_literal_fallback():
+    from gateway.image2_prompt import compile_image2_prompt_payload
+
+    compiled = compile_image2_prompt_payload({
+        "feishu_message_id": "om_source_title",
+        "chat_id": "oc_chat",
+        "root_id": "om_source",
+        "thread_id": "om_source",
+        "text": "/image2 这个设计调整一下，更有质感",
+        "source_files": [{"path": "/tmp/source.jpg", "mime_type": "image/jpeg", "source": "feishu_thread_root_image"}],
+    })
+
+    prompt = compiled["one_shot_design_prompt"]
+    assert "主标题「沿用参考图里的核心标题/商品名层级」" not in prompt
+    assert "主标题：沿用参考图已有核心标题/商品名层级" in prompt
+    assert "不得把这句说明当作画面文字" in prompt
