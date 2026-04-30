@@ -1,5 +1,10 @@
 (function () {
   "use strict";
+  // hermes-achievements dashboard plugin
+  // Originally authored by @PCinkusz — https://github.com/PCinkusz/hermes-achievements (MIT).
+  // Bundled into hermes-agent. Upstream repo remains the staging ground for new
+  // badges and UI iteration; the in-progress scan banner below is a small addition
+  // layered on top of the original dist bundle.
   const SDK = window.__HERMES_PLUGIN_SDK__;
   if (!SDK || !window.__HERMES_PLUGINS__) return;
 
@@ -213,7 +218,27 @@
         .catch(function (err) { setError(String(err)); })
         .finally(function () { setLoading(false); });
     }
+    // refresh() re-fetches without flipping the loading state — used by the
+    // auto-poller during an in-progress background scan so the page updates
+    // with growing unlock counts instead of flashing the loading skeleton.
+    function refresh() {
+      api("/achievements")
+        .then(function (payload) { setData(payload); setError((payload && payload.error) || null); })
+        .catch(function (err) { setError(String(err)); });
+    }
     hooks.useEffect(load, []);
+
+    // Auto-poll while the backend is still scanning. scan_meta.mode is
+    // "pending" on the very first request (no cache yet) and "in_progress"
+    // while the background thread is publishing partial snapshots. Once it
+    // flips to "full" or "incremental" the scan is done and we stop polling.
+    const scanMode = (data && data.scan_meta && data.scan_meta.mode) || null;
+    const scanInFlight = scanMode === "pending" || scanMode === "in_progress";
+    hooks.useEffect(function () {
+      if (!scanInFlight) return undefined;
+      const id = setInterval(refresh, 4000);
+      return function () { clearInterval(id); };
+    }, [scanInFlight]);
 
     const achievements = (data && data.achievements) || [];
     const categories = ["All"].concat(Array.from(new Set(achievements.map(function (a) { return a.category; }))));
@@ -230,6 +255,37 @@
     const latest = unlocked.slice().sort(function (a, b) { return (b.unlocked_at || 0) - (a.unlocked_at || 0); }).slice(0, 5);
     const highest = ["Olympian", "Diamond", "Gold", "Silver", "Copper"].find(function (tier) { return unlocked.some(function (a) { return a.tier === tier; }); }) || "None yet";
 
+    // Build the in-progress scan banner once so the JSX below stays readable.
+    // Shows nothing when the scan is idle. When a scan is running it renders
+    // a pulsing status row with "X / Y sessions · Z%" and a filling bar, so
+    // the user gets continuous visual feedback during long cold scans on
+    // large session databases (can take several minutes on 8000+ sessions).
+    let scanBanner = null;
+    if (scanInFlight) {
+      const meta = (data && data.scan_meta) || {};
+      const scanned = Number(meta.sessions_scanned_so_far || meta.sessions_total || 0);
+      const total = Number(meta.sessions_expected_total || 0);
+      const pct = total > 0 ? Math.max(0, Math.min(100, Math.floor((scanned / total) * 100))) : 0;
+      const headline = scanMode === "pending"
+        ? "Starting achievement scan…"
+        : "Building achievement profile…";
+      const detail = total > 0
+        ? ("Scanned " + scanned.toLocaleString() + " of " + total.toLocaleString() + " sessions · " + pct + "%. Badges unlock as more history streams in.")
+        : "Reading sessions, tool calls, model metadata, and unlock state. Badges appear here as they unlock.";
+      scanBanner = React.createElement("section", { className: "ha-scan-banner", role: "status", "aria-live": "polite" },
+        React.createElement("div", { className: "ha-scan-banner-head" },
+          React.createElement("span", { className: "ha-scan-pulse", "aria-hidden": "true" }),
+          React.createElement("div", { className: "ha-scan-banner-text" },
+            React.createElement("strong", null, headline),
+            React.createElement("p", null, detail)
+          )
+        ),
+        total > 0 && React.createElement("div", { className: "ha-scan-progress-track", role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": pct },
+          React.createElement("div", { className: "ha-scan-progress-fill", style: { width: pct + "%" } })
+        )
+      );
+    }
+
     if (loading) {
       return React.createElement(LoadingPage, null);
     }
@@ -243,6 +299,7 @@
         ),
         React.createElement(C.Button, { onClick: load, className: "ha-refresh" }, "Rescan")
       ),
+      scanBanner,
       error && React.createElement(C.Card, { className: "ha-error" }, React.createElement(C.CardContent, null, String(error))),
       React.createElement("div", { className: "ha-stats" },
         React.createElement(StatCard, { label: "Unlocked", value: (data ? data.unlocked_count : 0) + " / " + (data ? data.total_count : 0), hint: "earned badges" }),
