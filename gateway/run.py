@@ -2731,6 +2731,7 @@ class GatewayRunner:
             "BLUEBUBBLES_ALLOWED_USERS",
             "QQ_ALLOWED_USERS",
             "YUANBAO_ALLOWED_USERS",
+            "GOOGLE_CHAT_ALLOWED_USERS",
             "GATEWAY_ALLOWED_USERS",
         )
         _builtin_allow_all_vars = (
@@ -2746,6 +2747,7 @@ class GatewayRunner:
             "BLUEBUBBLES_ALLOW_ALL_USERS",
             "QQ_ALLOW_ALL_USERS",
             "YUANBAO_ALLOW_ALL_USERS",
+            "GOOGLE_CHAT_ALLOW_ALL_USERS",
         )
         # Also pick up plugin-registered platforms — each entry can declare
         # its own allowed_users_env / allow_all_env, so the warning stays
@@ -4226,7 +4228,18 @@ class GatewayRunner:
                 return None
             return YuanbaoAdapter(config)
 
+        elif platform == Platform.GOOGLE_CHAT:
+            from gateway.platforms.google_chat import GoogleChatAdapter, check_google_chat_requirements
+            if not check_google_chat_requirements():
+                logger.warning(
+                    "Google Chat: google-cloud-pubsub / google-api-python-client not installed. "
+                    "Run: pip install 'hermes-agent[google_chat]'"
+                )
+                return None
+            return GoogleChatAdapter(config)
+
         return None
+
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
         Check if a user is authorized to use the bot.
@@ -4268,6 +4281,7 @@ class GatewayRunner:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
+            Platform.GOOGLE_CHAT: "GOOGLE_CHAT_ALLOWED_USERS",
         }
         platform_group_user_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
@@ -4294,6 +4308,7 @@ class GatewayRunner:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
+            Platform.GOOGLE_CHAT: "GOOGLE_CHAT_ALLOW_ALL_USERS",
         }
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
         platform_allow_bots_map = {
@@ -4415,6 +4430,15 @@ class GatewayRunner:
         if "@" in user_id:
             check_ids.add(user_id.split("@")[0])
 
+        # Google Chat: source.user_id is "users/{id}" but operators typically
+        # configure GOOGLE_CHAT_ALLOWED_USERS with email addresses (matching
+        # the setup wizard's prompt). Include source.user_id_alt (the sender's
+        # email) in the check_ids set so email-based allowlists actually match.
+        if source.platform == Platform.GOOGLE_CHAT and source.user_id_alt:
+            check_ids.add(source.user_id_alt)
+            if "@" in source.user_id_alt:
+                check_ids.add(source.user_id_alt.split("@")[0])
+
         # WhatsApp: resolve phone↔LID aliases from bridge session mapping files
         if source.platform == Platform.WHATSAPP:
             normalized_allowed_ids = set()
@@ -4479,6 +4503,7 @@ class GatewayRunner:
                 Platform.WEIXIN:   "WEIXIN_ALLOWED_USERS",
                 Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
                 Platform.QQBOT:    "QQ_ALLOWED_USERS",
+                Platform.GOOGLE_CHAT: "GOOGLE_CHAT_ALLOWED_USERS",
             }
             platform_group_env_map = {
                 Platform.TELEGRAM: (
