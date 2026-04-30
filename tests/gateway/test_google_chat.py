@@ -1432,6 +1432,51 @@ class TestThreadCountStore:
         assert store.get("spaces/BAD_COUNT", "spaces/BAD_COUNT/threads/T") == 0
 
     @pytest.mark.asyncio
+    async def test_outbound_thread_tracked_for_user_reply_in_bot_thread(self, adapter):
+        """The bug Ramón hit on the live mac-mini: when the bot replies
+        in a fresh thread (Chat-created for the bot's outbound message),
+        a future user 'Reply in thread' on that bot message should be
+        recognized as a SIDE THREAD (not main flow). For that, the
+        outbound thread must be in the count store BEFORE the user's
+        reply arrives.
+
+        Regression pin: counting only inbound left bot-created threads
+        invisible. User 'Reply in thread' on the bot's response was
+        misclassified as main-flow because prev_count was 0."""
+        # Stub _create_message's underlying create call — we want to
+        # exercise the real _create_message body so the count-tracking
+        # branch actually fires.
+        create_call = MagicMock()
+        create_call.return_value.execute = MagicMock(
+            return_value={
+                "name": "spaces/S/messages/BOT_REPLY",
+                "thread": {"name": "spaces/S/threads/BOT_THREAD"},
+            }
+        )
+        adapter._chat_api.spaces.return_value.messages.return_value.create = create_call
+
+        # Bot sends a top-level reply (no thread.name in body — main flow).
+        await adapter._create_message("spaces/S", {"text": "hola"})
+
+        # Outbound thread must now be in the store with count >= 1.
+        assert adapter._thread_count_store.get(
+            "spaces/S", "spaces/S/threads/BOT_THREAD"
+        ) == 1
+
+        # Now user clicks "Reply in thread" on the bot's message →
+        # inbound arrives in spaces/S/threads/BOT_THREAD.
+        env = _make_chat_envelope(
+            text="follow-up", thread_name="spaces/S/threads/BOT_THREAD"
+        )
+        msg = env["chat"]["messagePayload"]["message"]
+        event = await adapter._build_message_event(msg, env)
+
+        # MUST be classified as side thread (isolated session +
+        # outbound stays in the thread).
+        assert event.source.thread_id == "spaces/S/threads/BOT_THREAD"
+        assert adapter._last_inbound_thread["spaces/S"] == "spaces/S/threads/BOT_THREAD"
+
+    @pytest.mark.asyncio
     async def test_side_thread_detection_survives_restart(self, adapter, tmp_path):
         """End-to-end regression for the bug Ramón hit across 4
         iterations: gateway restart must NOT demote an active side

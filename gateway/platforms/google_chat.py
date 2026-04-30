@@ -1700,6 +1700,22 @@ class GoogleChatAdapter(BasePlatformAdapter):
             )
 
         resp = await asyncio.to_thread(_do_create)
+        # Track outbound destination thread in the persistent count store
+        # so a future user "Reply in thread" on the bot's message resolves
+        # to a known thread (prev_count >= 1 → side thread). Without
+        # this, threads created by the bot's own outbound look fresh
+        # the first time the user engages them, and the heuristic
+        # incorrectly classifies the engagement as main-flow → bot
+        # replies at top-level instead of in the thread.
+        resp_thread = (resp.get("thread") or {}).get("name") or ""
+        if chat_id and resp_thread:
+            try:
+                self._thread_count_store.incr(chat_id, resp_thread)
+            except Exception:
+                logger.debug(
+                    "[GoogleChat] outbound thread-count incr failed",
+                    exc_info=True,
+                )
         return SendResult(success=True, message_id=resp.get("name"))
 
     async def send_typing(self, chat_id: str, metadata: Any = None) -> None:
@@ -2225,6 +2241,18 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
         try:
             resp = await asyncio.to_thread(_create_with_attachment)
+            # Track outbound destination thread (see _create_message
+            # comment for why — same reasoning applies to the
+            # user-OAuth attachment path).
+            resp_thread = (resp.get("thread") or {}).get("name") or ""
+            if chat_id and resp_thread:
+                try:
+                    self._thread_count_store.incr(chat_id, resp_thread)
+                except Exception:
+                    logger.debug(
+                        "[GoogleChat] outbound thread-count incr failed",
+                        exc_info=True,
+                    )
             return SendResult(
                 success=True, message_id=resp.get("name"),
             )
