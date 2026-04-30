@@ -109,6 +109,15 @@ class TestStripBlockedTools(unittest.TestCase):
 
 
 class TestDelegateTask(unittest.TestCase):
+    def setUp(self):
+        # Orchestration unit tests use mocked child agents and must not depend
+        # on the operator's live delegation config/credentials.
+        self._load_config_patch = patch("tools.delegate_tool._load_config", return_value={})
+        self._load_config_patch.start()
+
+    def tearDown(self):
+        self._load_config_patch.stop()
+
     def test_no_parent_agent(self):
         result = json.loads(delegate_task(goal="test"))
         self.assertIn("error", result)
@@ -312,6 +321,13 @@ class TestDelegateTask(unittest.TestCase):
 class TestToolNamePreservation(unittest.TestCase):
     """Verify _last_resolved_tool_names is restored after subagent runs."""
 
+    def setUp(self):
+        self._load_config_patch = patch("tools.delegate_tool._load_config", return_value={})
+        self._load_config_patch.start()
+
+    def tearDown(self):
+        self._load_config_patch.stop()
+
     def test_global_tool_names_restored_after_delegation(self):
         """The process-global _last_resolved_tool_names must be restored
         after a subagent completes so the parent's execute_code sandbox
@@ -407,6 +423,13 @@ class TestToolNamePreservation(unittest.TestCase):
 
 class TestDelegateObservability(unittest.TestCase):
     """Tests for enriched metadata returned by _run_single_child."""
+
+    def setUp(self):
+        self._load_config_patch = patch("tools.delegate_tool._load_config", return_value={})
+        self._load_config_patch.start()
+
+    def tearDown(self):
+        self._load_config_patch.stop()
 
     def test_observability_fields_present(self):
         """Completed child should return tool_trace, tokens, model, exit_reason."""

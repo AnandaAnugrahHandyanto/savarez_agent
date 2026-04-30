@@ -1761,16 +1761,6 @@ def delegate_task(
         )
     effective_max_iter = default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
-
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     if tasks and isinstance(tasks, list):
@@ -1797,6 +1787,16 @@ def delegate_task(
     for i, task in enumerate(task_list):
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+
+    # Resolve delegation credentials (provider:model pair) only after cheap
+    # structural validation.  Tests and callers should receive local input
+    # errors (e.g. too many tasks, missing goals) before environment-specific
+    # credential errors, and mocked child execution should not be short-circuited
+    # by an unrelated delegation.base_url in the user's config.
+    try:
+        creds = _resolve_delegation_credentials(cfg, parent_agent)
+    except ValueError as exc:
+        return tool_error(str(exc))
 
     overall_start = time.monotonic()
     results = []

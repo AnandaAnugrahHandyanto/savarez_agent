@@ -527,9 +527,11 @@ def _cmd_cleanup(args):
         print_success("No OpenClaw directories found. Nothing to clean up.")
         return
 
-    # Warn if OpenClaw is still running — archiving while the service is
-    # active causes it to recreate an empty skeleton directory (#8502).
-    running = _detect_openclaw_processes()
+    # Warn if OpenClaw is still running before destructive cleanup — archiving
+    # while the service is active causes it to recreate an empty skeleton
+    # directory (#8502). Dry-run performs no archive, so it must remain a safe
+    # preview even in non-interactive sessions with OpenClaw running.
+    running = [] if dry_run else _detect_openclaw_processes()
     if running:
         print()
         print_error("OpenClaw appears to be still running:")

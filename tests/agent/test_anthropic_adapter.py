@@ -26,6 +26,21 @@ from agent.anthropic_adapter import (
 from agent.transports import get_transport
 
 
+@pytest.fixture(autouse=True)
+def _disable_real_claude_code_keychain(monkeypatch):
+    """Keep adapter unit tests from reading the developer's real macOS Keychain.
+
+    Keychain-specific behavior is covered in test_anthropic_keychain.py, where the
+    security command is mocked explicitly. The generic Anthropic adapter tests
+    exercise JSON/env resolution and must stay hermetic on macOS machines that
+    have live Claude Code credentials in Keychain.
+    """
+    monkeypatch.setattr(
+        "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+        lambda: None,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------

@@ -51,8 +51,14 @@ class TestCustomProviderModelSwitch:
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
 
-        # fetch_api_models MUST be called even though model was saved
-        mock_fetch.assert_called_once_with("sk-test", "https://vllm.example.com/v1", timeout=8.0)
+        # fetch_api_models MUST be called even though model was saved.
+        # No api_mode in the provider entry means runtime/default OpenAI-compatible probing.
+        mock_fetch.assert_called_once_with(
+            "sk-test",
+            "https://vllm.example.com/v1",
+            timeout=8.0,
+            api_mode=None,
+        )
 
     def test_can_switch_to_different_model(self, config_home):
         """User selects a different model than the saved one."""

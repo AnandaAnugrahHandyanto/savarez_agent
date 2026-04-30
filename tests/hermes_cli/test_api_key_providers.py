@@ -22,6 +22,15 @@ from hermes_cli.auth import (
 from hermes_cli.copilot_auth import _try_gh_cli_token
 
 
+@pytest.fixture(autouse=True)
+def _isolate_auth_store(monkeypatch):
+    """Keep API-key provider tests from reading/writing real ~/.hermes/auth.json."""
+    for name in ("GLM_BASE_URL", "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: {"providers": {}})
+    monkeypatch.setattr("hermes_cli.auth._save_provider_state", lambda *a, **kw: None)
+
+
 # =============================================================================
 # Provider Registry tests
 # =============================================================================

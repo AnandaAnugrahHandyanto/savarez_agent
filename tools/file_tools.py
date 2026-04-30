@@ -148,6 +148,13 @@ _SENSITIVE_PATH_PREFIXES = (
     "/private/etc/", "/private/var/",
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
+_SENSITIVE_PATH_ALLOWED_PREFIXES = (
+    # macOS per-user temporary directories live under /private/var/folders.
+    # Treating all of /private/var as sensitive blocks legitimate file-tool
+    # writes to tempfile paths used by tests and normal agent scratch work.
+    "/private/var/folders/",
+    "/var/folders/",
+)
 
 
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
@@ -161,6 +168,9 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
+    for allowed_prefix in _SENSITIVE_PATH_ALLOWED_PREFIXES:
+        if resolved.startswith(allowed_prefix) or normalized.startswith(allowed_prefix):
+            return None
     for prefix in _SENSITIVE_PATH_PREFIXES:
         if resolved.startswith(prefix) or normalized.startswith(prefix):
             return _err

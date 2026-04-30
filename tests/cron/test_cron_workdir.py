@@ -208,6 +208,12 @@ class TestTickWorkdirPartition:
     def test_workdir_jobs_run_sequentially(self, tmp_path, monkeypatch):
         import cron.scheduler as sched
 
+        # Point the tick file lock at a per-test temp dir to avoid xdist contention
+        # with other scheduler.tick() tests running in parallel.
+        lock_dir = tmp_path / "tick-lock"
+        monkeypatch.setattr(sched, "_LOCK_DIR", lock_dir)
+        monkeypatch.setattr(sched, "_LOCK_FILE", lock_dir / ".tick.lock")
+
         # Two "jobs" — one with workdir, one without.  get_due_jobs returns both.
         workdir_job = {"id": "a", "name": "A", "workdir": str(tmp_path)}
         parallel_job = {"id": "b", "name": "B", "workdir": None}
