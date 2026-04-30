@@ -28,7 +28,7 @@ import time
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional, Any, List
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
@@ -455,6 +455,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     merge_pending_message_event,
+    read_media_sidecar,
 )
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -618,6 +619,170 @@ def _is_control_interrupt_message(message: Optional[str]) -> bool:
         return False
     normalized = " ".join(str(message).strip().split()).lower()
     return normalized in _CONTROL_INTERRUPT_MESSAGES
+
+
+# Pre-compiled patterns for stripping noise out of topic previews. We strip:
+#   - leading ``[Replying to message ... at HH:MM: "..."]\n\n`` blocks (and the
+#     legacy ``[Replying to: "..."]`` form), because these reflect the *quoted*
+#     message, not the user's new intent.
+#   - leading shared-session sender markers ``[<name>] `` so the preview
+#     focuses on what the user said, not who they are.
+_REPLY_PREFIX_RE = re.compile(
+    r'^\[Replying to[^\]]*\](?:\n+)?',
+    flags=re.DOTALL,
+)
+_SENDER_MARKER_RE = re.compile(r'^\[[^\]\n]{1,40}\]\s+')
+
+
+def topic_preview_for_progress(message: Optional[str], *, max_chars: int = 30) -> str:
+    """Return a short topic preview suitable for a progress-message header.
+
+    Strips leading ``[Replying to ...]`` blocks and ``[name] `` shared-session
+    markers, collapses whitespace, and truncates to ``max_chars`` codepoints
+    (with a trailing ellipsis when truncation actually drops content).
+
+    Designed to give 玉子燒-style shared-session groups a clear "the agent is
+    currently thinking about *this*" header so participants can see which
+    queued question the bot is working on, even when their own message hasn't
+    been picked up yet.
+    """
+    if not message:
+        return ""
+    text = str(message)
+    # Strip leading Replying-to block(s).
+    while True:
+        m = _REPLY_PREFIX_RE.match(text)
+        if not m:
+            break
+        text = text[m.end():]
+    # Strip leading sender marker.
+    text = _SENDER_MARKER_RE.sub("", text, count=1)
+    # Collapse whitespace and trim.
+    text = " ".join(text.split())
+    if not text:
+        return ""
+    if len(text) > max_chars:
+        return text[:max_chars] + "…"
+    return text
+
+
+def _build_progress_header(
+    source: "SessionSource",
+    message: Optional[str],
+    *,
+    group_sessions_per_user: bool = True,
+    thread_sessions_per_user: bool = False,
+) -> Optional[str]:
+    """Return a one-line topic header for the progress message, or None.
+
+    Only emitted when the session is shared across multiple participants
+    (``is_shared_multi_user_session(source) is True``). In DMs and per-user
+    isolated groups every progress message is unambiguously about the only
+    participant who can see it, so a header would just be noise.
+
+    Format::
+
+        ⏳ 玉青：米粉跟醬包各2
+
+    The ⏳ icon makes it visually distinct from regular progress lines (which
+    start with tool emoji like 🔍 / 📑). The sender name + topic snippet
+    answer "who's question is being processed?" at a glance.
+    """
+    if not is_shared_multi_user_session(
+        source,
+        group_sessions_per_user=group_sessions_per_user,
+        thread_sessions_per_user=thread_sessions_per_user,
+    ):
+        return None
+    name = (getattr(source, "user_name", None) or "").strip()
+    if not name:
+        return None
+    topic = topic_preview_for_progress(message, max_chars=30)
+    if topic:
+        return f"⏳ {name}：{topic}"
+    return f"⏳ {name}"
+
+
+def _format_sidecar_time(raw: Any) -> str:
+    """Format a sidecar ``date`` value as ``HH:MM`` (local clock) or "".
+
+    Accepts ISO-8601 strings (with or without timezone), unix timestamps
+    (int / float), or ``datetime`` instances. Returns an empty string when
+    the value is missing or cannot be parsed.
+    """
+    if raw in (None, "", 0):
+        return ""
+    try:
+        if isinstance(raw, datetime):
+            dt = raw
+        elif isinstance(raw, (int, float)):
+            dt = datetime.fromtimestamp(float(raw), tz=timezone.utc)
+        elif isinstance(raw, str):
+            # Accept "...Z" suffix.
+            iso = raw.replace("Z", "+00:00") if raw.endswith("Z") else raw
+            try:
+                dt = datetime.fromisoformat(iso)
+            except ValueError:
+                # Try unix-timestamp-encoded-as-string.
+                dt = datetime.fromtimestamp(float(raw), tz=timezone.utc)
+        else:
+            return ""
+    except Exception:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    # Convert to local for display.
+    try:
+        dt_local = dt.astimezone()
+    except Exception:
+        dt_local = dt
+    return dt_local.strftime("%H:%M")
+
+
+def _describe_media_origin(media_path: Optional[str]) -> str:
+    """Read the JSON sidecar next to ``media_path`` and return a short tag
+    describing who sent it and when, or an empty string when no sidecar
+    exists / it lacks attribution data.
+
+    Formats:
+      "(from 子家 at 14:04)"                    — both name and time
+      "(from 玉青)"                              — name only
+      "(at 14:04)"                              — time only
+      "(originally from 子家 at 14:04)"          — when is_quoted_reply=True
+      ""                                        — no sidecar / no data
+
+    Used by ``_enrich_message_with_vision`` and
+    ``_enrich_message_with_transcription`` to surface attribution into the
+    prompt the agent sees, so it can answer "who sent that image?" without
+    a separate tool call. The sidecar itself is written by Telegram's
+    ``_record_media_sender`` at cache time.
+    """
+    if not media_path:
+        return ""
+    try:
+        sc = read_media_sidecar(media_path)
+    except Exception:
+        return ""
+    if not sc:
+        return ""
+    name = (sc.get("from_name") or "").strip()
+    time_str = _format_sidecar_time(sc.get("date"))
+    is_quoted = bool(sc.get("is_quoted_reply"))
+    if not name and not time_str:
+        return ""
+    parts = []
+    if is_quoted:
+        parts.append("originally from")
+    else:
+        parts.append("from")
+    if name:
+        parts.append(name)
+    if time_str:
+        if name:
+            parts.append(f"at {time_str}")
+        else:
+            parts = ["at", time_str]
+    return "(" + " ".join(parts) + ")"
 
 
 def _check_unavailable_skill(command_name: str) -> str | None:
@@ -1961,15 +2126,21 @@ class GatewayRunner:
             except Exception:
                 pass  # don't let interrupt failure block the ack
 
-        # Debounce: only send an acknowledgment once every 30 seconds per session
-        # to avoid spamming the user when they send multiple messages quickly
+        # Debounce: only send an acknowledgment once every 30 seconds per
+        # (session, sender) pair to avoid spamming a single user when they
+        # send several follow-ups in a row, while still letting a *different*
+        # participant in a shared-session group get their own ack within the
+        # window — silence on a second sender's first message looks like the
+        # bot ignored them entirely.
         _BUSY_ACK_COOLDOWN = 30
         now = time.time()
-        last_ack = self._busy_ack_ts.get(session_key, 0)
+        _ack_user_id = getattr(event.source, "user_id", None) or "_anon"
+        ack_key = (session_key, _ack_user_id)
+        last_ack = self._busy_ack_ts.get(ack_key, 0)
         if now - last_ack < _BUSY_ACK_COOLDOWN:
             return True  # interrupt sent (if not queue), ack already delivered recently
 
-        self._busy_ack_ts[session_key] = now
+        self._busy_ack_ts[ack_key] = now
 
         # Build a status-rich acknowledgment
         status_parts = []
@@ -4783,7 +4954,76 @@ class GatewayRunner:
             # multiple times, and without an explicit pointer the agent has to
             # guess (or answer for both subjects). Token overhead is minimal.
             reply_snippet = event.reply_to_text[:500]
-            message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+            from_name = getattr(event, "reply_to_from_name", None)
+            date_val = getattr(event, "reply_to_date", None)
+            time_str: Optional[str] = None
+            if date_val is not None:
+                try:
+                    import datetime as _dt
+                    if isinstance(date_val, (int, float)):
+                        dt_obj = _dt.datetime.fromtimestamp(int(date_val))
+                    elif isinstance(date_val, _dt.datetime):
+                        dt_obj = date_val
+                    else:
+                        dt_obj = None
+                    if dt_obj is not None:
+                        time_str = dt_obj.strftime("%H:%M")
+                except Exception:
+                    time_str = None
+            if from_name and time_str:
+                prefix = f'[Replying to message from {from_name} at {time_str}: "{reply_snippet}"]'
+            elif from_name:
+                prefix = f'[Replying to {from_name}: "{reply_snippet}"]'
+            elif time_str:
+                prefix = f'[Replying to message at {time_str}: "{reply_snippet}"]'
+            else:
+                prefix = f'[Replying to: "{reply_snippet}"]'
+            message_text = f'{prefix}\n\n{message_text}'
+
+        # If the quoted (replied-to) message had attached media, enrich the
+        # prompt the same way we would for current-message media: vision-
+        # describe images, transcribe audio, note documents. This is what
+        # makes "reply to a photo and ask about it" actually work — without
+        # this block, the agent only sees the quoted text snippet and is
+        # blind to the image the user is pointing at.
+        reply_media_urls = getattr(event, "reply_to_media_urls", None) or []
+        if reply_media_urls:
+            reply_media_types = getattr(event, "reply_to_media_types", None) or []
+            reply_image_paths: List[str] = []
+            reply_audio_paths: List[str] = []
+            reply_doc_paths: List[tuple[str, str]] = []  # (path, mime)
+            for i, path in enumerate(reply_media_urls):
+                mtype = reply_media_types[i] if i < len(reply_media_types) else ""
+                if mtype.startswith("image/"):
+                    reply_image_paths.append(path)
+                elif mtype.startswith("audio/"):
+                    reply_audio_paths.append(path)
+                elif mtype.startswith(("application/", "text/")) or mtype.startswith("video/"):
+                    reply_doc_paths.append((path, mtype))
+
+            if reply_image_paths:
+                # Reuse the same vision pipeline; tag output as "quoted" so
+                # the agent doesn't confuse it with current-message media.
+                vision_prefix = await self._enrich_message_with_vision("", reply_image_paths)
+                if vision_prefix:
+                    message_text = (
+                        "[The user is replying to a previous message that contained "
+                        f"an image. {vision_prefix}]\n\n{message_text}"
+                    )
+            if reply_audio_paths:
+                audio_prefix = await self._enrich_message_with_transcription("", reply_audio_paths)
+                if audio_prefix:
+                    message_text = (
+                        "[The user is replying to a previous voice/audio message. "
+                        f"{audio_prefix}]\n\n{message_text}"
+                    )
+            for path, mtype in reply_doc_paths:
+                kind = "video" if mtype.startswith("video/") else "document"
+                message_text = (
+                    f"[The user is replying to a previous message that attached a "
+                    f"{kind}. The file is saved at: {path} (mime: {mtype}).]\n\n"
+                    f"{message_text}"
+                )
 
         if "@" in message_text:
             try:
@@ -9461,6 +9701,8 @@ class GatewayRunner:
         for path in image_paths:
             try:
                 logger.debug("Auto-analyzing user image: %s", path)
+                origin_tag = _describe_media_origin(path)
+                origin_suffix = f" {origin_tag}" if origin_tag else ""
                 result_json = await vision_analyze_tool(
                     image_url=path,
                     user_prompt=analysis_prompt,
@@ -9470,20 +9712,22 @@ class GatewayRunner:
                     description = result.get("analysis", "")
                     description = sanitize_context(description)
                     enriched_parts.append(
-                        f"[The user sent an image~ Here's what I can see:\n{description}]\n"
+                        f"[The user sent an image{origin_suffix}~ Here's what I can see:\n{description}]\n"
                         f"[If you need a closer look, use vision_analyze with "
                         f"image_url: {path} ~]"
                     )
                 else:
                     enriched_parts.append(
-                        "[The user sent an image but I couldn't quite see it "
+                        f"[The user sent an image{origin_suffix} but I couldn't quite see it "
                         "this time (>_<) You can try looking at it yourself "
                         f"with vision_analyze using image_url: {path}]"
                     )
             except Exception as e:
                 logger.error("Vision auto-analysis error: %s", e)
+                origin_tag = _describe_media_origin(path)
+                origin_suffix = f" {origin_tag}" if origin_tag else ""
                 enriched_parts.append(
-                    f"[The user sent an image but something went wrong when I "
+                    f"[The user sent an image{origin_suffix} but something went wrong when I "
                     f"tried to look at it~ You can try examining it yourself "
                     f"with vision_analyze using image_url: {path}]"
                 )
@@ -9528,13 +9772,15 @@ class GatewayRunner:
 
         enriched_parts = []
         for path in audio_paths:
+            origin_tag = _describe_media_origin(path)
+            origin_suffix = f" {origin_tag}" if origin_tag else ""
             try:
                 logger.debug("Transcribing user voice: %s", path)
                 result = await asyncio.to_thread(transcribe_audio, path)
                 if result["success"]:
                     transcript = result["transcript"]
                     enriched_parts.append(
-                        f'[The user sent a voice message~ '
+                        f'[The user sent a voice message{origin_suffix}~ '
                         f'Here\'s what they said: "{transcript}"]'
                     )
                 else:
@@ -10844,11 +11090,35 @@ class GatewayRunner:
                         break
                 return
 
+            # Shared-session header: in groups where multiple participants
+            # share one session, prefix the progress message with a one-line
+            # "⏳ <sender>：<topic>" so the chat at large can see *whose*
+            # question the agent is currently working on.  Always None in
+            # DMs and per-user-isolated groups.
+            _progress_header = _build_progress_header(
+                source,
+                message,
+                group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+                thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            )
+            # When we have a header (multi-user shared session), reply the
+            # progress message to the originating user message so Telegram
+            # draws a connecting line — even better attribution than the
+            # header alone.  In DMs and per-user groups we leave reply_to
+            # off so the progress doesn't pile up references.
+            _progress_reply_to = event_message_id if _progress_header else None
+
             progress_lines = []      # Accumulated tool lines
             progress_msg_id = None   # ID of the progress message to edit
             can_edit = True          # False once an edit fails (platform doesn't support it)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
+
+            def _render_progress_text() -> str:
+                lines = list(progress_lines)
+                if _progress_header:
+                    lines.insert(0, _progress_header)
+                return "\n".join(lines)
 
             while True:
                 try:
@@ -10920,7 +11190,7 @@ class GatewayRunner:
 
                     if can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
-                        full_text = "\n".join(progress_lines)
+                        full_text = _render_progress_text()
                         result = await adapter.edit_message(
                             chat_id=source.chat_id,
                             message_id=progress_msg_id,
@@ -10941,8 +11211,13 @@ class GatewayRunner:
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
-                            full_text = "\n".join(progress_lines)
-                            result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata=_progress_metadata)
+                            full_text = _render_progress_text()
+                            result = await adapter.send(
+                                chat_id=source.chat_id,
+                                content=full_text,
+                                reply_to=_progress_reply_to,
+                                metadata=_progress_metadata,
+                            )
                         else:
                             # Editing unsupported: send just this line
                             result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
@@ -10991,7 +11266,7 @@ class GatewayRunner:
                             break
                     # Final edit with all remaining tools (only if editing works)
                     if can_edit and progress_lines and progress_msg_id:
-                        full_text = "\n".join(progress_lines)
+                        full_text = _render_progress_text()
                         try:
                             await adapter.edit_message(
                                 chat_id=source.chat_id,
