@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
+from contextlib import contextmanager
 from unittest.mock import patch, MagicMock, call
 
 import pytest
@@ -78,6 +79,21 @@ def _ps_runner(stdout: str):
         # Any other subprocess.run (e.g. taskkill) — benign success stub.
         return MagicMock(returncode=0, stdout="", stderr="")
     return _side_effect
+
+
+@contextmanager
+def _mock_kill_dashboard_pids(pids: list[int]):
+    """Patch the finder used by the imported kill helper itself.
+
+    Some tests import ``hermes_cli.main`` fresh. If ``sys.modules`` is later
+    replaced, patching ``hermes_cli.main._find_stale_dashboard_pids`` misses the
+    globals dict captured by the already-imported kill helper.
+    """
+    with patch.dict(
+        _kill_stale_dashboard_processes.__globals__,
+        {"_find_stale_dashboard_pids": MagicMock(return_value=pids)},
+    ):
+        yield
 
 
 class TestFindStaleDashboardPids:
@@ -191,7 +207,7 @@ class TestKillStaleDashboardPosix:
     """Kill path on Linux / macOS: SIGTERM then SIGKILL any survivors."""
 
     def test_no_stale_processes_is_a_noop(self, capsys):
-        with patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[]):
+        with _mock_kill_dashboard_pids([]):
             _kill_stale_dashboard_processes()
         assert capsys.readouterr().out == ""
 
@@ -209,8 +225,7 @@ class TestKillStaleDashboardPosix:
                 raise ProcessLookupError
             # SIGTERM itself: succeed silently.
 
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
-                   return_value=[12345, 12346]), \
+        with _mock_kill_dashboard_pids([12345, 12346]), \
              patch("os.kill", side_effect=fake_kill), \
              patch("time.sleep"):
             _kill_stale_dashboard_processes()
@@ -241,8 +256,7 @@ class TestKillStaleDashboardPosix:
                 return
             # Any other signal — also fine.
 
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
-                   return_value=[99999]), \
+        with _mock_kill_dashboard_pids([99999]), \
              patch("os.kill", side_effect=fake_kill), \
              patch("time.sleep"), \
              patch("time.monotonic", side_effect=[0.0] + [10.0] * 20):
@@ -264,8 +278,7 @@ class TestKillStaleDashboardPosix:
         def fake_kill(pid, sig):
             raise PermissionError("Operation not permitted")
 
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
-                   return_value=[12345]), \
+        with _mock_kill_dashboard_pids([12345]), \
              patch("os.kill", side_effect=fake_kill), \
              patch("time.sleep"):
             _kill_stale_dashboard_processes()  # must not raise
@@ -280,8 +293,7 @@ class TestKillStaleDashboardPosix:
         def fake_kill(pid, sig):
             raise ProcessLookupError
 
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
-                   return_value=[12345]), \
+        with _mock_kill_dashboard_pids([12345]), \
              patch("os.kill", side_effect=fake_kill), \
              patch("time.sleep"):
             _kill_stale_dashboard_processes()
@@ -301,8 +313,7 @@ class TestKillStaleDashboardWindows:
             # taskkill returns 0 on success
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
-                   return_value=[12345, 12346]), \
+        with _mock_kill_dashboard_pids([12345, 12346]), \
              patch("subprocess.run", side_effect=fake_run) as mock_run:
             _kill_stale_dashboard_processes()
 
@@ -326,8 +337,7 @@ class TestKillStaleDashboardWindows:
             return MagicMock(returncode=128, stdout="",
                              stderr="ERROR: Access is denied.")
 
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
-                   return_value=[12345]), \
+        with _mock_kill_dashboard_pids([12345]), \
              patch("subprocess.run", side_effect=fake_run):
             _kill_stale_dashboard_processes()  # must not raise
 
