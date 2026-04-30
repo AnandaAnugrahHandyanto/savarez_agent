@@ -132,8 +132,14 @@ def _base_config(**extra):
 
 
 @pytest.fixture()
-def adapter():
-    """Build an adapter with its loop captured and Chat client mocked."""
+def adapter(tmp_path):
+    """Build an adapter with its loop captured and Chat client mocked.
+
+    Redirects the persistent thread-count store to a tmp file so tests
+    don't pollute (or read state from) the developer's real
+    ~/.hermes/google_chat_thread_counts.json.
+    """
+    from gateway.platforms.google_chat import _ThreadCountStore
     a = GoogleChatAdapter(_base_config())
     a._loop = asyncio.get_event_loop_policy().new_event_loop()
     a._chat_api = MagicMock()
@@ -143,6 +149,11 @@ def adapter():
     a._subscription_path = "projects/test-project/subscriptions/test-sub"
     a._new_authed_http = MagicMock(return_value=MagicMock())
     a.handle_message = AsyncMock()
+    # Replace the production store (which would write to ~/.hermes/...)
+    # with a tmp-path one so tests can roundtrip without side effects.
+    a._thread_count_store = _ThreadCountStore(
+        tmp_path / "google_chat_thread_counts.json"
+    )
     yield a
     try:
         a._loop.close()
@@ -563,8 +574,10 @@ class TestBuildMessageEvent:
         # set, Chat would show the pair as an expandable thread under
         # the user's message instead of two adjacent top-level cards.
         assert "spaces/S" not in adapter._last_inbound_thread
-        # Counter populated for next-time decision.
-        assert adapter._thread_msg_counts["spaces/S"]["spaces/S/threads/T1"] == 1
+        # Counter populated for next-time decision (persisted store).
+        assert adapter._thread_count_store.get(
+            "spaces/S", "spaces/S/threads/T1"
+        ) == 1
 
     @pytest.mark.asyncio
     async def test_dm_second_message_in_same_thread_is_side_thread(self, adapter):
@@ -1337,6 +1350,135 @@ class TestUserOAuthHelper:
         Drive, no broader Chat scopes. Defends against scope creep."""
         from gateway.platforms.google_chat_user_oauth import SCOPES
         assert SCOPES == ["https://www.googleapis.com/auth/chat.messages.create"]
+
+
+# ===========================================================================
+# Persistent thread-count store (restart-safe side-thread heuristic)
+# ===========================================================================
+
+
+class TestThreadCountStore:
+    def test_missing_file_returns_zero_counts(self, tmp_path):
+        from gateway.platforms.google_chat import _ThreadCountStore
+        store = _ThreadCountStore(tmp_path / "nonexistent.json")
+        store.load()
+        assert store.get("spaces/X", "spaces/X/threads/T") == 0
+
+    def test_corrupt_json_treated_as_empty(self, tmp_path):
+        """A garbage file shouldn't crash the adapter — log warn, treat
+        as fresh, move on. The next incr() will overwrite."""
+        from gateway.platforms.google_chat import _ThreadCountStore
+        path = tmp_path / "counts.json"
+        path.write_text("not valid json {")
+        store = _ThreadCountStore(path)
+        store.load()
+        assert store.get("spaces/X", "spaces/X/threads/T") == 0
+        # Next write should overwrite cleanly.
+        prev = store.incr("spaces/X", "spaces/X/threads/T")
+        assert prev == 0
+        # File now has valid JSON.
+        import json
+        data = json.loads(path.read_text())
+        assert data == {"spaces/X": {"spaces/X/threads/T": 1}}
+
+    def test_incr_returns_pre_increment_value(self, tmp_path):
+        """The PRE-increment count is the heuristic input — it answers
+        'have we seen this thread BEFORE this message?'. Off-by-one in
+        either direction would break the main-flow vs side-thread call."""
+        from gateway.platforms.google_chat import _ThreadCountStore
+        store = _ThreadCountStore(tmp_path / "counts.json")
+        store.load()
+        assert store.incr("spaces/X", "spaces/X/threads/T") == 0
+        assert store.incr("spaces/X", "spaces/X/threads/T") == 1
+        assert store.incr("spaces/X", "spaces/X/threads/T") == 2
+        assert store.get("spaces/X", "spaces/X/threads/T") == 3
+
+    def test_round_trip_persists_across_load(self, tmp_path):
+        """Two store instances on the same file behave like a single
+        store split across a process boundary. This is the exact
+        restart-safety property the store exists to provide."""
+        from gateway.platforms.google_chat import _ThreadCountStore
+        path = tmp_path / "counts.json"
+
+        store_a = _ThreadCountStore(path)
+        store_a.load()
+        store_a.incr("spaces/X", "spaces/X/threads/T")
+        store_a.incr("spaces/X", "spaces/X/threads/T")
+        store_a.incr("spaces/Y", "spaces/Y/threads/U")
+
+        # Simulate gateway restart: fresh store instance, same file.
+        store_b = _ThreadCountStore(path)
+        store_b.load()
+        assert store_b.get("spaces/X", "spaces/X/threads/T") == 2
+        assert store_b.get("spaces/Y", "spaces/Y/threads/U") == 1
+        # Next incr in store_b returns the persisted prev count.
+        assert store_b.incr("spaces/X", "spaces/X/threads/T") == 2
+
+    def test_invalid_shape_dropped_silently(self, tmp_path):
+        """If someone hand-edits the file with weird shapes, drop the
+        bad entries but keep the valid ones."""
+        from gateway.platforms.google_chat import _ThreadCountStore
+        import json
+        path = tmp_path / "counts.json"
+        path.write_text(json.dumps({
+            "spaces/OK": {"spaces/OK/threads/T": 3},
+            "spaces/BAD_VALUE": "not a dict",
+            "spaces/BAD_COUNT": {"spaces/BAD_COUNT/threads/T": "five"},
+        }))
+        store = _ThreadCountStore(path)
+        store.load()
+        assert store.get("spaces/OK", "spaces/OK/threads/T") == 3
+        assert store.get("spaces/BAD_VALUE", "any") == 0
+        assert store.get("spaces/BAD_COUNT", "spaces/BAD_COUNT/threads/T") == 0
+
+    @pytest.mark.asyncio
+    async def test_side_thread_detection_survives_restart(self, adapter, tmp_path):
+        """End-to-end regression for the bug Ramón hit across 4
+        iterations: gateway restart must NOT demote an active side
+        thread back to main flow.
+
+        Flow:
+          1. User has an existing thread (count >= 1 from prior turn).
+          2. Gateway restarts (fresh adapter instance with same store path).
+          3. User sends another message in that thread.
+          4. Adapter must STILL classify it as side thread (isolated
+             session + outbound thread) — otherwise main-flow context
+             leaks in.
+        """
+        # Turn 1: simulate prior engagement of T_existing.
+        env1 = _make_chat_envelope(text="first", thread_name="spaces/S/threads/T_existing")
+        await adapter._build_message_event(env1["chat"]["messagePayload"]["message"], env1)
+        env2 = _make_chat_envelope(text="second", thread_name="spaces/S/threads/T_existing")
+        await adapter._build_message_event(env2["chat"]["messagePayload"]["message"], env2)
+        # After two turns, this is a known side-thread. The store on disk
+        # has count >= 2.
+        assert adapter._thread_count_store.get(
+            "spaces/S", "spaces/S/threads/T_existing"
+        ) == 2
+
+        # Simulate restart: build a fresh adapter pointing at the SAME
+        # persistence file the previous one used.
+        from gateway.platforms.google_chat import (
+            GoogleChatAdapter, _ThreadCountStore,
+        )
+        store_path = adapter._thread_count_store._path
+        fresh = GoogleChatAdapter(_base_config())
+        fresh._chat_api = MagicMock()
+        fresh._credentials = MagicMock()
+        fresh._new_authed_http = MagicMock(return_value=MagicMock())
+        fresh.handle_message = AsyncMock()
+        fresh._thread_count_store = _ThreadCountStore(store_path)
+        fresh._thread_count_store.load()
+
+        # Turn 3 (post-restart, same thread).
+        env3 = _make_chat_envelope(text="third", thread_name="spaces/S/threads/T_existing")
+        event3 = await fresh._build_message_event(
+            env3["chat"]["messagePayload"]["message"], env3
+        )
+        # MUST be classified as side thread (isolated session).
+        assert event3.source.thread_id == "spaces/S/threads/T_existing"
+        # Outbound cache populated for in-thread reply.
+        assert fresh._last_inbound_thread["spaces/S"] == "spaces/S/threads/T_existing"
 
 
 # ===========================================================================

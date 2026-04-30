@@ -210,6 +210,116 @@ def _mime_for_message_type(mime: str) -> MessageType:
     return MessageType.DOCUMENT
 
 
+class _ThreadCountStore:
+    """Per-(chat_id, thread_name) inbound message counter, persisted to disk.
+
+    Drives the DM main-flow vs side-thread heuristic:
+
+    - prev_count == 0 (first time we see this thread) → "main flow":
+      Google Chat just auto-created a fresh thread for the user's
+      top-level message. Treat it as part of the shared DM session;
+      bot replies at top-level (no thread.name on outbound).
+    - prev_count >= 1 (we've already seen this thread) → "side thread":
+      user explicitly engaged a thread that's been around. Isolate
+      session by thread, route bot reply into the same thread.
+
+    Persistence is essential: without it, every gateway restart wipes
+    counts and active side-threads silently demote to "main flow",
+    which leaks main-flow context into the user's isolated thread
+    (the bug Ramón reported across 4 iterations of the in-memory
+    version).
+
+    File format (JSON):
+        {"<chat_id>": {"<thread_name>": <int_count>, ...}, ...}
+
+    Failure modes are non-fatal: a missing or corrupt file resets to
+    empty (logged as warning) so the adapter never crashes on disk
+    issues. The next ``incr`` will write a fresh file.
+
+    Save strategy: write-through after every ``incr``. The file is
+    tiny (a few KB even for very active bots), so the simplicity of
+    write-through outweighs the cost of debouncing for now.
+    """
+
+    def __init__(self, path: _Path):
+        self._path = path
+        self._counts: Dict[str, Dict[str, int]] = {}
+        self._loaded = False
+
+    def load(self) -> None:
+        """Load counts from disk. Safe to call multiple times.
+
+        Missing file → empty store. Corrupt JSON → empty store + warn.
+        """
+        self._loaded = True
+        if not self._path.exists():
+            self._counts = {}
+            return
+        try:
+            raw = self._path.read_text()
+            data = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "[GoogleChat] thread-count store at %s is corrupt; "
+                "starting fresh: %s",
+                self._path, exc,
+            )
+            self._counts = {}
+            return
+        except OSError as exc:
+            logger.warning(
+                "[GoogleChat] could not read thread-count store at %s: %s",
+                self._path, exc,
+            )
+            self._counts = {}
+            return
+        # Validate shape — anything off-schema gets dropped silently.
+        clean: Dict[str, Dict[str, int]] = {}
+        if isinstance(data, dict):
+            for chat_id, threads in data.items():
+                if not isinstance(chat_id, str) or not isinstance(threads, dict):
+                    continue
+                clean_threads: Dict[str, int] = {}
+                for thread_name, count in threads.items():
+                    if isinstance(thread_name, str) and isinstance(count, int):
+                        clean_threads[thread_name] = count
+                if clean_threads:
+                    clean[chat_id] = clean_threads
+        self._counts = clean
+
+    def get(self, chat_id: str, thread_name: str) -> int:
+        """Return the current count for (chat_id, thread_name), or 0."""
+        return self._counts.get(chat_id, {}).get(thread_name, 0)
+
+    def incr(self, chat_id: str, thread_name: str) -> int:
+        """Increment count and write through to disk. Returns the
+        PRE-increment value (the heuristic input — "have we seen this
+        thread before this message?")."""
+        chat_counts = self._counts.setdefault(chat_id, {})
+        prev = chat_counts.get(thread_name, 0)
+        chat_counts[thread_name] = prev + 1
+        self._save()
+        return prev
+
+    def _save(self) -> None:
+        """Atomic write of the counts dict to disk.
+
+        Failure is non-fatal — log warning and continue. The in-memory
+        counts stay consistent within the running process; only restart
+        recovery is affected.
+        """
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._path.with_suffix(self._path.suffix + ".tmp")
+            tmp.write_text(json.dumps(self._counts, separators=(",", ":")))
+            os.replace(tmp, self._path)
+        except OSError as exc:
+            logger.warning(
+                "[GoogleChat] could not persist thread-count store to %s: %s",
+                self._path, exc,
+            )
+
+
 class GoogleChatAdapter(BasePlatformAdapter):
     """
     Google Chat bot adapter using Pub/Sub pull + Chat REST API.
@@ -263,16 +373,21 @@ class GoogleChatAdapter(BasePlatformAdapter):
         #       replies still land in the right visual thread without
         #       re-coupling sessions to threads.
         self._last_inbound_thread: Dict[str, str] = {}
-        # Inbound message count per (chat_id, thread_name). Used to
-        # distinguish "main flow" messages (Chat auto-creates a fresh
-        # thread per top-level message in DMs — first-time threads share
-        # session by chat_id) from "side threads" (user explicitly clicked
-        # 'Reply in thread' on an existing thread — second+ messages in
-        # the same thread get an isolated session by chat_id+thread_id).
-        # Without this, either DMs lose context across messages or threads
-        # leak context into each other. See _build_message_event for the
-        # session_thread_id heuristic.
-        self._thread_msg_counts: Dict[str, Dict[str, int]] = {}
+        # Inbound message count per (chat_id, thread_name). Drives the
+        # DM main-flow vs side-thread heuristic in _build_message_event
+        # and the outbound thread routing in _resolve_thread_id.
+        # Persisted to ${HERMES_HOME}/google_chat_thread_counts.json so
+        # active side-threads survive gateway restarts (the bug that
+        # made the in-memory version of this heuristic flaky for
+        # multi-restart sessions).
+        try:
+            from hermes_constants import get_hermes_home as _get_hermes_home
+            _hermes_home = _get_hermes_home()
+        except (ModuleNotFoundError, ImportError):
+            _hermes_home = _Path.home() / ".hermes"
+        self._thread_count_store = _ThreadCountStore(
+            _hermes_home / "google_chat_thread_counts.json"
+        )
         # In-flight typing-card creates per chat_id. send_typing() reserves
         # an Event here BEFORE starting the API call so concurrent calls
         # from base.py's _keep_typing wait instead of duplicating cards.
@@ -536,6 +651,16 @@ class GoogleChatAdapter(BasePlatformAdapter):
             )
             self._user_credentials = None
             self._user_chat_api = None
+
+        # Load the persistent thread-count store so the side-thread
+        # heuristic in _build_message_event survives gateway restarts.
+        try:
+            await asyncio.to_thread(self._thread_count_store.load)
+        except Exception:
+            logger.warning(
+                "[GoogleChat] thread-count store load failed (treating "
+                "all threads as fresh)", exc_info=True,
+            )
 
         # Sanity check: subscription exists / SA has access.
         self._subscriber = pubsub_v1.SubscriberClient(credentials=credentials)
@@ -1090,14 +1215,15 @@ class GoogleChatAdapter(BasePlatformAdapter):
         if is_slash:
             message_type = MessageType.COMMAND
 
-        # Increment the inbound count for this thread. The PRE-increment
-        # value (==0 for the very first message in a thread) is what
-        # tells us "main flow" vs "side thread".
+        # Increment the persistent inbound count for this thread.
+        # The PRE-increment value (==0 for the very first time we see
+        # this thread, persisted across gateway restarts) drives the
+        # main-flow-vs-side-thread heuristic below.
         prev_thread_count = 0
         if thread_name and space_name:
-            chat_counts = self._thread_msg_counts.setdefault(space_name, {})
-            prev_thread_count = chat_counts.get(thread_name, 0)
-            chat_counts[thread_name] = prev_thread_count + 1
+            prev_thread_count = self._thread_count_store.incr(
+                space_name, thread_name
+            )
 
         # Session-thread + outbound-thread routing for DMs:
         # - prev_count == 0  → first message in this thread. Google Chat
