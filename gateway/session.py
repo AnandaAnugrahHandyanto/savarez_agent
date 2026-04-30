@@ -62,6 +62,7 @@ from .config import (
 )
 from .whatsapp_identity import (
     canonical_whatsapp_identifier,
+    normalize_whatsapp_identifier,
 )
 from utils import atomic_replace
 
@@ -175,6 +176,23 @@ class SessionContext:
     session_id: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+    @property
+    def channel_identity_json(self) -> str:
+        """Compact, deterministic identity for the current channel/thread."""
+        source = self.source
+        identity = {
+            "platform": source.platform.value,
+            "channel_type": source.chat_type,
+            "channel_id": source.chat_id,
+        }
+        if source.chat_name:
+            identity["channel_name"] = source.chat_name
+        if source.thread_id:
+            identity["thread_id"] = source.thread_id
+        if source.parent_chat_id:
+            identity["parent_channel_id"] = source.parent_chat_id
+        return json.dumps(identity, separators=(",", ":"))
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -281,6 +299,18 @@ def build_session_context_prompt(
     # Channel topic (if available - provides context about the channel's purpose)
     if context.source.chat_topic:
         lines.append(f"**Channel Topic:** {context.source.chat_topic}")
+
+    channel_identity = json.loads(context.channel_identity_json)
+    if redact_pii:
+        channel_identity["channel_id"] = _hash_chat_id(channel_identity["channel_id"])
+        if "thread_id" in channel_identity:
+            channel_identity["thread_id"] = _hash_chat_id(channel_identity["thread_id"])
+        if "parent_channel_id" in channel_identity:
+            channel_identity["parent_channel_id"] = _hash_chat_id(channel_identity["parent_channel_id"])
+    lines.append(
+        "**Channel identity:** "
+        + json.dumps(channel_identity, separators=(",", ":"))
+    )
 
     # User identity.
     # In shared multi-user sessions (shared threads OR shared non-thread groups
