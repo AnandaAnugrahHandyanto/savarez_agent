@@ -360,6 +360,26 @@ class TestLoadGatewayConfig:
             "C01ABC": "Code review mode",
         }
 
+    def test_bridges_feishu_group_reply_settings_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "feishu:\n"
+            "  require_group_mention: false\n"
+            "  default_group_policy: open\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
+        monkeypatch.setenv("FEISHU_APP_SECRET", "test_secret")
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.FEISHU].extra["require_group_mention"] is False
+        assert config.platforms[Platform.FEISHU].extra["default_group_policy"] == "open"
+
     def test_invalid_quick_commands_in_config_yaml_are_ignored(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
