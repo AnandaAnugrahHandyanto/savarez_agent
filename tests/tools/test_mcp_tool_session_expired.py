@@ -173,13 +173,66 @@ def _install_stub_server(name: str = "wpcom"):
     # is polled by _handle_session_expired_and_retry until the timeout).
     ready_flag = threading.Event()
     ready_flag.set()
-    server._ready = MagicMock()
-    server._ready.is_set = ready_flag.is_set
+
+    class _ReadyProxy:
+        """Threading.Event-backed _ready that supports both is_set() and
+        clear().  _handle_session_expired_and_retry calls clear() to
+        mark the server as not-ready during reconnect, then the
+        lifecycle loop would normally set() it again — here we
+        simulate that by re-setting after a short delay."""
+        def is_set(self):
+            return ready_flag.is_set()
+        def clear(self):
+            ready_flag.clear()
+        def set(self):
+            ready_flag.set()
+
+    server._ready = _ReadyProxy()
 
     # session attr must be truthy for the handler's initial check
     # (``if not server or not server.session``) and for the post-
     # reconnect readiness probe (``srv.session is not None``).
-    server.session = MagicMock()
+    # _handle_session_expired_and_retry clears srv.session on
+    # session-expired; we simulate reconnect by restoring it.
+    _original_session = MagicMock()
+
+    class _SessionProxy:
+        """Proxy that delegates to the current session MagicMock.
+        After _handle_session_expired_and_retry sets srv.session = None,
+        we detect the clear and schedule a "reconnect" that restores
+        both srv.session and srv._ready."""
+        def __init__(self):
+            self._real = _original_session
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+        def __bool__(self):
+            return True
+
+    session_proxy = _SessionProxy()
+    server.session = session_proxy
+
+    # When the handler clears session/ready, simulate the lifecycle
+    # loop's reconnect by restoring them after a short delay.
+    _reconnect_scheduled = threading.Event()
+
+    def _schedule_reconnect():
+        """Wait for the handler to clear session, then restore both."""
+        # Poll until srv.session is None (cleared by handler)
+        for _ in range(200):  # up to 10s
+            if mcp_tool._servers.get(name) is server and server.session is None:
+                break
+            time.sleep(0.05)
+        else:
+            return
+        # Simulate reconnect completing
+        time.sleep(0.1)
+        server.session = session_proxy
+        server._ready.set()
+        _reconnect_scheduled.set()
+
+    t = threading.Thread(target=_schedule_reconnect, daemon=True)
+    t.start()
+
     return server, reconnect_flag
 
 
