@@ -712,8 +712,18 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> di
     start = (page - 1) * page_size
     page_items = deduped[start : min(start + page_size, total)]
     return {
-        "items": [{"name": r.name, "description": r.description, "source": r.source,
-                    "trust": r.trust_level} for r in page_items],
+        "items": [
+            {
+                "name": r.name,
+                "description": r.description,
+                "source": r.source,
+                "trust": r.trust_level,
+                "identifier": r.identifier,
+                "tags": list(r.tags) if getattr(r, "tags", None) else [],
+                "extra": getattr(r, "extra", {}) or {},
+            }
+            for r in page_items
+        ],
         "page": page,
         "total_pages": total_pages,
         "total": total,

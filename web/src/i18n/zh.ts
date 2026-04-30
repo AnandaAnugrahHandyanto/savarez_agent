@@ -28,6 +28,7 @@ export const zh: Translations = {
     none: "无",
     form: "表单",
     noResults: "无结果",
+    all: "全部",
     of: "/",
     page: "页",
     msgs: "消息",
@@ -35,6 +36,7 @@ export const zh: Translations = {
     match: "匹配",
     other: "其他",
     configured: "已配置",
+    installed: "已安装",
     removed: "已移除",
     failedToToggle: "切换失败",
     failedToRemove: "移除失败",
@@ -66,9 +68,11 @@ export const zh: Translations = {
       stopped: "已停止",
     },
     nav: {
+      dashboard: "仪表盘",
       analytics: "分析",
       chat: "对话",
       config: "配置",
+      connectors: "连接器",
       cron: "定时任务",
       documentation: "文档",
       keys: "密钥",
@@ -178,6 +182,11 @@ export const zh: Translations = {
     component: "组件",
     lines: "行数",
     noLogLines: "未找到日志记录",
+  },
+
+  connectors: {
+    title: "连接器",
+    configure: "配置",
   },
 
   cron: {

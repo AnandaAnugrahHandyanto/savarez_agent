@@ -29,6 +29,7 @@ export interface Translations {
     none: string;
     form: string;
     noResults: string;
+    all: string;
     of: string;
     page: string;
     msgs: string;
@@ -36,6 +37,7 @@ export interface Translations {
     match: string;
     other: string;
     configured: string;
+    installed: string;
     removed: string;
     failedToToggle: string;
     failedToRemove: string;
@@ -67,9 +69,11 @@ export interface Translations {
       stopped: string;
     };
     nav: {
+      dashboard: string;
       analytics: string;
       chat: string;
       config: string;
+      connectors: string;
       cron: string;
       documentation: string;
       keys: string;
@@ -183,6 +187,11 @@ export interface Translations {
     component: string;
     lines: string;
     noLogLines: string;
+  };
+
+  connectors: {
+    title: string;
+    configure: string;
   };
 
   // ── Cron page ──

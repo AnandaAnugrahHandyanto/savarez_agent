@@ -31,6 +31,7 @@ import {
   Menu,
   MessageSquare,
   Package,
+  Plug,
   Puzzle,
   RotateCw,
   Settings,
@@ -58,6 +59,8 @@ import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import CronPage from "@/pages/CronPage";
 import SkillsPage from "@/pages/SkillsPage";
+import DashboardPage from "@/pages/DashboardPage";
+import ConnectorsPage from "@/pages/ConnectorsPage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
@@ -68,7 +71,7 @@ import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 
 function RootRedirect() {
-  return <Navigate to="/sessions" replace />;
+  return <Navigate to="/dashboard" replace />;
 }
 
 const CHAT_NAV_ITEM: NavItem = {
@@ -81,17 +84,25 @@ const CHAT_NAV_ITEM: NavItem = {
 /** Built-in routes except /chat (only with `hermes dashboard --tui`). */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
+  "/dashboard": DashboardPage,
   "/sessions": SessionsPage,
   "/analytics": AnalyticsPage,
   "/logs": LogsPage,
   "/cron": CronPage,
   "/skills": SkillsPage,
+  "/connectors": ConnectorsPage,
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
 };
 
 const BUILTIN_NAV_REST: NavItem[] = [
+  {
+    path: "/dashboard",
+    labelKey: "dashboard",
+    label: "Dashboard",
+    icon: Activity,
+  },
   {
     path: "/sessions",
     labelKey: "sessions",
@@ -107,6 +118,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
+  { path: "/connectors", labelKey: "connectors", label: "Connectors", icon: Plug },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
   {

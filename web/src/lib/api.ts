@@ -45,6 +45,7 @@ async function getSessionToken(): Promise<string> {
 
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getDashboardState: () => fetchJSON<DashboardState>("/api/dashboard/state"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -130,7 +131,38 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, enabled }),
     }),
+  browseSkillsHub: (page = 1, pageSize = 20, source = "all") =>
+    fetchJSON<SkillsHubBrowseResponse>(
+      `/api/skills/hub/browse?page=${page}&page_size=${pageSize}&source=${encodeURIComponent(source)}`,
+    ),
+  inspectSkillHub: (identifier: string) =>
+    fetchJSON<{ info: SkillsHubSkillInspect }>(
+      `/api/skills/hub/inspect?identifier=${encodeURIComponent(identifier)}`,
+    ),
+  getInstalledHubSkills: () =>
+    fetchJSON<{ installed: SkillsHubInstalledSkill[] }>("/api/skills/hub/installed"),
+  installHubSkill: (body: SkillsHubInstallRequest) =>
+    fetchJSON<SkillsHubInstallResponse>("/api/skills/hub/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  uninstallHubSkill: (body: SkillsHubUninstallRequest) =>
+    fetchJSON<{ ok: boolean; message: string }>("/api/skills/hub/uninstall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   getToolsets: () => fetchJSON<ToolsetInfo[]>("/api/tools/toolsets"),
+
+  // Connectors
+  getConnectors: () => fetchJSON<ConnectorsResponse>("/api/connectors"),
+  updateConnector: (id: string, patch: ConnectorPatch) =>
+    fetchJSON<{ ok: boolean }>(`/api/connectors/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ patch }),
+    }),
 
   // Session search (FTS5)
   searchSessions: (q: string) =>
@@ -256,6 +288,33 @@ export interface StatusResponse {
   latest_config_version: number;
   release_date: string;
   version: string;
+}
+
+export interface DashboardState {
+  ts: number;
+  status: StatusResponse;
+  system: SystemMetrics;
+  skills: SimpleCountSummary;
+  connectors: SimpleCountSummary;
+  config_mtime: number | null;
+}
+
+export interface SimpleCountSummary {
+  total: number;
+  enabled: number;
+  disabled: number;
+}
+
+export interface SystemMetrics {
+  uptime_seconds: number;
+  cpu_count: number;
+  load_avg_1?: number;
+  load_avg_5?: number;
+  load_avg_15?: number;
+  mem_total_bytes?: number;
+  mem_available_bytes?: number;
+  process_rss_bytes?: number | null;
+  disk?: { total: number; used: number; free: number } | null;
 }
 
 export interface SessionInfo {
@@ -391,6 +450,70 @@ export interface SkillInfo {
   enabled: boolean;
 }
 
+export interface SkillsHubBrowseItem {
+  name: string;
+  description: string;
+  source: string;
+  trust: string;
+  identifier: string;
+  tags: string[];
+  extra: Record<string, unknown>;
+}
+
+export interface SkillsHubBrowseResponse {
+  items: SkillsHubBrowseItem[];
+  page: number;
+  total_pages: number;
+  total: number;
+}
+
+export interface SkillsHubSkillInspect {
+  name: string;
+  description: string;
+  source: string;
+  identifier: string;
+  tags: string[];
+  skill_md_preview?: string;
+}
+
+export interface SkillsHubInstalledSkill {
+  name: string;
+  source: string;
+  identifier: string;
+  trust_level: string;
+  scan_verdict: string;
+  content_hash: string;
+  install_path: string;
+  installed_at: string;
+  updated_at: string;
+  files: string[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface SkillsHubInstallRequest {
+  identifier: string;
+  category?: string | null;
+  confirm?: boolean;
+  force?: boolean;
+  activate_now?: boolean;
+}
+
+export interface SkillsHubInstallResponse {
+  ok: boolean;
+  name: string;
+  identifier: string;
+  source: string;
+  trust_level: string;
+  scan_verdict: string;
+  install_path: string;
+  reason: string;
+}
+
+export interface SkillsHubUninstallRequest {
+  name: string;
+  activate_now?: boolean;
+}
+
 export interface ToolsetInfo {
   name: string;
   label: string;
@@ -398,6 +521,39 @@ export interface ToolsetInfo {
   enabled: boolean;
   configured: boolean;
   tools: string[];
+}
+
+export interface ConnectorRuntimeState {
+  state: string;
+  updated_at: string;
+  error_code?: string;
+  error_message?: string;
+}
+
+export interface ConnectorInfo {
+  id: string;
+  label: string;
+  enabled: boolean;
+  configured: boolean;
+  reply_to_mode: string;
+  home_channel: unknown;
+  extra: Record<string, unknown>;
+  token_redacted: string | null;
+  api_key_redacted: string | null;
+  runtime: ConnectorRuntimeState | null;
+}
+
+export interface ConnectorsResponse {
+  connectors: ConnectorInfo[];
+}
+
+export interface ConnectorPatch {
+  enabled?: boolean;
+  token?: string | null;
+  api_key?: string | null;
+  reply_to_mode?: "off" | "first" | "all";
+  home_channel?: { chat_id?: string | number | null; name?: string | null } | null;
+  extra?: Record<string, unknown> | null;
 }
 
 export interface SessionSearchResult {

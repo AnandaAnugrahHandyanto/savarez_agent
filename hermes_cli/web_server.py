@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -51,7 +52,7 @@ from gateway.status import get_running_pid, read_runtime_status
 try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ImportError:
@@ -76,6 +77,8 @@ _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
 # or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = False
+
+_SERVER_STARTED_AT = time.time()
 
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []
@@ -103,6 +106,7 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/config/defaults",
     "/api/config/schema",
     "/api/model/info",
+    "/api/dashboard/stream",
     "/api/dashboard/themes",
     "/api/dashboard/plugins",
     "/api/dashboard/plugins/rescan",
@@ -334,6 +338,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "cron": "agent",
     "network": "agent",
     "checkpoints": "agent",
+    "prompt_caching": "compression",
     "approvals": "security",
     "human_delay": "display",
     "dashboard": "display",
@@ -585,6 +590,283 @@ async def get_status():
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
     }
+
+
+def _read_meminfo_bytes() -> dict:
+    if not sys.platform.startswith("linux"):
+        return {}
+    try:
+        data: dict[str, int] = {}
+        with open("/proc/meminfo", encoding="utf-8") as f:
+            for line in f:
+                if ":" not in line:
+                    continue
+                key, rest = line.split(":", 1)
+                parts = rest.strip().split()
+                if not parts:
+                    continue
+                try:
+                    value = int(parts[0])
+                except ValueError:
+                    continue
+                unit = parts[1].lower() if len(parts) > 1 else ""
+                mul = 1024 if unit == "kb" else 1
+                data[key] = value * mul
+        return data
+    except Exception:
+        return {}
+
+
+def _read_proc_rss_bytes() -> int | None:
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        with open("/proc/self/statm", encoding="utf-8") as f:
+            parts = f.read().strip().split()
+        if len(parts) < 2:
+            return None
+        pages = int(parts[1])
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        return pages * page_size
+    except Exception:
+        return None
+
+
+def _system_metrics() -> dict:
+    load_avg = None
+    try:
+        load_avg = os.getloadavg()
+    except Exception:
+        load_avg = None
+
+    meminfo = _read_meminfo_bytes()
+    rss = _read_proc_rss_bytes()
+    hermes_home = get_hermes_home()
+    disk = None
+    try:
+        usage = shutil.disk_usage(hermes_home)
+        disk = {"total": usage.total, "used": usage.used, "free": usage.free}
+    except Exception:
+        disk = None
+
+    out: dict[str, Any] = {
+        "uptime_seconds": max(0, int(time.time() - _SERVER_STARTED_AT)),
+        "cpu_count": os.cpu_count() or 0,
+        "process_rss_bytes": rss,
+        "disk": disk,
+    }
+    if load_avg:
+        out["load_avg_1"] = float(load_avg[0])
+        out["load_avg_5"] = float(load_avg[1])
+        out["load_avg_15"] = float(load_avg[2])
+    if meminfo:
+        out["mem_total_bytes"] = meminfo.get("MemTotal")
+        out["mem_available_bytes"] = meminfo.get("MemAvailable")
+    return out
+
+
+def _skills_summary() -> dict:
+    try:
+        from tools.skills_tool import _find_all_skills
+        from hermes_cli.skills_config import get_disabled_skills
+
+        cfg = load_config()
+        disabled = get_disabled_skills(cfg)
+        skills = _find_all_skills(skip_disabled=True)
+        total = len(skills)
+        enabled = sum(1 for s in skills if s.get("name") not in disabled)
+        return {"total": total, "enabled": enabled, "disabled": total - enabled}
+    except Exception:
+        return {"total": 0, "enabled": 0, "disabled": 0}
+
+
+def _connectors_summary() -> dict:
+    try:
+        cfg = load_config()
+        platforms = cfg.get("platforms") if isinstance(cfg.get("platforms"), dict) else {}
+        enabled = 0
+        total = 0
+        if isinstance(platforms, dict):
+            for _, block in platforms.items():
+                if not isinstance(block, dict):
+                    continue
+                total += 1
+                if bool(block.get("enabled")):
+                    enabled += 1
+        return {"total": total, "enabled": enabled, "disabled": total - enabled}
+    except Exception:
+        return {"total": 0, "enabled": 0, "disabled": 0}
+
+
+async def _dashboard_state() -> dict:
+    status = await get_status()
+    config_mtime = None
+    try:
+        p = get_config_path()
+        if p.exists():
+            config_mtime = p.stat().st_mtime
+    except Exception:
+        config_mtime = None
+    return {
+        "ts": time.time(),
+        "status": status,
+        "system": _system_metrics(),
+        "skills": _skills_summary(),
+        "connectors": _connectors_summary(),
+        "config_mtime": config_mtime,
+    }
+
+
+@app.get("/api/dashboard/state")
+async def dashboard_state():
+    return await _dashboard_state()
+
+
+@app.get("/api/dashboard/stream")
+async def dashboard_stream():
+    async def gen():
+        try:
+            while True:
+                payload = await _dashboard_state()
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                await asyncio.sleep(2)
+        except asyncio.CancelledError:
+            return
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _redacted_secret(v: Any) -> str | None:
+    if not v:
+        return None
+    if not isinstance(v, str):
+        v = str(v)
+    return redact_key(v)
+
+
+@app.get("/api/connectors")
+async def get_connectors():
+    try:
+        from gateway.config import Platform as GwPlatform
+        from hermes_cli.platforms import platform_label
+
+        cfg = load_config()
+        platforms_cfg = cfg.get("platforms") if isinstance(cfg.get("platforms"), dict) else {}
+        status = await get_status()
+        runtime_platforms = status.get("gateway_platforms") if isinstance(status.get("gateway_platforms"), dict) else {}
+
+        items: list[dict] = []
+        for p in GwPlatform:
+            if p.value in ("local", "api_server"):
+                continue
+            key = p.value
+            block = platforms_cfg.get(key) if isinstance(platforms_cfg, dict) else None
+            block = block if isinstance(block, dict) else {}
+            token = block.get("token")
+            api_key = block.get("api_key")
+            enabled = bool(block.get("enabled", False))
+            configured = bool(token or api_key or block.get("home_channel") or block.get("extra"))
+            items.append(
+                {
+                    "id": key,
+                    "label": platform_label(key, key),
+                    "enabled": enabled,
+                    "configured": configured,
+                    "reply_to_mode": block.get("reply_to_mode", "first"),
+                    "home_channel": block.get("home_channel"),
+                    "extra": block.get("extra", {}),
+                    "token_redacted": _redacted_secret(token),
+                    "api_key_redacted": _redacted_secret(api_key),
+                    "runtime": runtime_platforms.get(key),
+                }
+            )
+        items.sort(key=lambda x: x["label"])
+        return {"connectors": items}
+    except Exception:
+        _log.exception("GET /api/connectors failed")
+        raise HTTPException(status_code=500, detail="Failed to load connectors")
+
+
+@app.put("/api/connectors/{connector_id}")
+async def update_connector(connector_id: str, request: Request):
+    try:
+        from gateway.config import Platform as GwPlatform
+
+        allowed = {p.value for p in GwPlatform if p.value not in ("local", "api_server")}
+        if connector_id not in allowed:
+            raise HTTPException(status_code=404, detail="Connector not found")
+
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Body must be a JSON object")
+
+        patch = body.get("patch")
+        if not isinstance(patch, dict):
+            raise HTTPException(status_code=400, detail="Missing patch object")
+
+        if "enabled" in patch and not isinstance(patch["enabled"], bool):
+            raise HTTPException(status_code=400, detail="enabled must be boolean")
+        if "reply_to_mode" in patch:
+            mode = patch["reply_to_mode"]
+            if mode is not None and mode not in ("off", "first", "all"):
+                raise HTTPException(status_code=400, detail="reply_to_mode must be off|first|all")
+        if "home_channel" in patch:
+            hc = patch["home_channel"]
+            if hc is not None and not isinstance(hc, dict):
+                raise HTTPException(status_code=400, detail="home_channel must be object or null")
+            if isinstance(hc, dict):
+                if "chat_id" in hc and hc["chat_id"] is not None and not isinstance(hc["chat_id"], (str, int)):
+                    raise HTTPException(status_code=400, detail="home_channel.chat_id must be string")
+                if "name" in hc and hc["name"] is not None and not isinstance(hc["name"], str):
+                    raise HTTPException(status_code=400, detail="home_channel.name must be string")
+        if "extra" in patch:
+            extra = patch["extra"]
+            if extra is not None and not isinstance(extra, dict):
+                raise HTTPException(status_code=400, detail="extra must be object or null")
+
+        cfg = load_config()
+        platforms_cfg = cfg.get("platforms")
+        if not isinstance(platforms_cfg, dict):
+            platforms_cfg = {}
+            cfg["platforms"] = platforms_cfg
+
+        existing = platforms_cfg.get(connector_id)
+        if not isinstance(existing, dict):
+            existing = {}
+            platforms_cfg[connector_id] = existing
+
+        for k, v in patch.items():
+            if k in ("token", "api_key"):
+                if v is None:
+                    existing.pop(k, None)
+                else:
+                    if not isinstance(v, str):
+                        raise HTTPException(status_code=400, detail=f"{k} must be string or null")
+                    existing[k] = v
+            elif k == "home_channel":
+                if v is None:
+                    existing.pop("home_channel", None)
+                else:
+                    existing["home_channel"] = v
+            elif k == "extra":
+                if v is None:
+                    existing.pop("extra", None)
+                else:
+                    existing["extra"] = v
+            else:
+                existing[k] = v
+
+        save_config(cfg)
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("PUT /api/connectors/%s failed", connector_id)
+        raise HTTPException(status_code=500, detail="Failed to update connector")
 
 
 # ---------------------------------------------------------------------------
@@ -2134,6 +2416,167 @@ async def toggle_skill(body: SkillToggle):
         disabled.add(body.name)
     save_disabled_skills(config, disabled)
     return {"ok": True, "name": body.name, "enabled": body.enabled}
+
+
+@app.get("/api/skills/hub/browse")
+async def skills_hub_browse(page: int = 1, page_size: int = 20, source: str = "all"):
+    try:
+        from hermes_cli.skills_hub import browse_skills
+
+        return browse_skills(page=page, page_size=page_size, source=source)
+    except Exception:
+        _log.exception("GET /api/skills/hub/browse failed")
+        raise HTTPException(status_code=500, detail="Failed to browse Skills Hub")
+
+
+@app.get("/api/skills/hub/inspect")
+async def skills_hub_inspect(identifier: str):
+    try:
+        from hermes_cli.skills_hub import inspect_skill
+
+        info = inspect_skill(identifier)
+        if not info:
+            raise HTTPException(status_code=404, detail="Skill not found")
+        return {"info": info}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/skills/hub/inspect failed")
+        raise HTTPException(status_code=500, detail="Failed to inspect skill")
+
+
+@app.get("/api/skills/hub/installed")
+async def skills_hub_installed():
+    try:
+        from tools.skills_hub import HubLockFile
+
+        lock = HubLockFile()
+        installed = lock.list_installed()
+        for entry in installed:
+            meta = entry.get("metadata")
+            if isinstance(meta, dict):
+                meta.pop("token", None)
+                meta.pop("api_key", None)
+        return {"installed": installed}
+    except Exception:
+        _log.exception("GET /api/skills/hub/installed failed")
+        raise HTTPException(status_code=500, detail="Failed to load installed hub skills")
+
+
+class SkillHubInstall(BaseModel):
+    identifier: str
+    category: str | None = None
+    confirm: bool = False
+    force: bool = False
+    activate_now: bool = False
+
+
+@app.post("/api/skills/hub/install")
+async def skills_hub_install(body: SkillHubInstall):
+    try:
+        from tools.skills_hub import GitHubAuth, create_source_router, ensure_hub_dirs, quarantine_bundle, install_from_quarantine
+        from tools.skills_guard import scan_skill, should_allow_install
+
+        ensure_hub_dirs()
+        auth = GitHubAuth()
+        sources = create_source_router(auth)
+
+        identifier = body.identifier.strip()
+        if not identifier:
+            raise HTTPException(status_code=400, detail="identifier is required")
+
+        bundle = None
+        matched_source = None
+        for src in sources:
+            try:
+                bundle = src.fetch(identifier)
+            except Exception:
+                bundle = None
+            if bundle:
+                matched_source = src
+                break
+        if not bundle:
+            raise HTTPException(status_code=404, detail="Skill not found in any source")
+
+        category = (body.category or "").strip()
+        if bundle.source == "official" and not category:
+            parts = bundle.identifier.split("/")
+            if len(parts) >= 3:
+                category = parts[1]
+
+        q_path = quarantine_bundle(bundle)
+        result = scan_skill(q_path, source=bundle.identifier or identifier)
+        if result.verdict == "dangerous":
+            shutil.rmtree(q_path, ignore_errors=True)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Installation blocked (dangerous verdict, {len(result.findings)} findings)",
+            )
+
+        allowed, reason = should_allow_install(result, force=body.force)
+        if allowed is None and not body.confirm and not body.force:
+            shutil.rmtree(q_path, ignore_errors=True)
+            raise HTTPException(status_code=409, detail=f"confirmation_required: {reason}")
+        if allowed is False:
+            shutil.rmtree(q_path, ignore_errors=True)
+            raise HTTPException(status_code=400, detail=reason)
+
+        install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
+
+        if body.activate_now:
+            try:
+                from agent.prompt_builder import clear_skills_system_prompt_cache
+
+                clear_skills_system_prompt_cache(clear_snapshot=True)
+            except Exception:
+                pass
+
+        return {
+            "ok": True,
+            "name": bundle.name,
+            "identifier": bundle.identifier,
+            "source": bundle.source,
+            "trust_level": bundle.trust_level,
+            "scan_verdict": result.verdict,
+            "install_path": str(install_dir),
+            "reason": reason,
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/skills/hub/install failed")
+        raise HTTPException(status_code=500, detail="Failed to install skill")
+
+
+class SkillHubUninstall(BaseModel):
+    name: str
+    activate_now: bool = False
+
+
+@app.post("/api/skills/hub/uninstall")
+async def skills_hub_uninstall(body: SkillHubUninstall):
+    try:
+        from tools.skills_hub import uninstall_skill
+
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        ok, msg = uninstall_skill(name)
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+        if body.activate_now:
+            try:
+                from agent.prompt_builder import clear_skills_system_prompt_cache
+
+                clear_skills_system_prompt_cache(clear_snapshot=True)
+            except Exception:
+                pass
+        return {"ok": True, "message": msg}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/skills/hub/uninstall failed")
+        raise HTTPException(status_code=500, detail="Failed to uninstall skill")
 
 
 @app.get("/api/tools/toolsets")

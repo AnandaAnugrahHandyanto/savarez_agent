@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, useMemo } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
   Package,
   Search,
@@ -14,15 +14,28 @@ import {
   Code,
   Zap,
   Filter,
+  ExternalLink,
+  ChevronLeft,
+  ChevronRight,
+  Download,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { SkillInfo, ToolsetInfo } from "@/lib/api";
+import type {
+  SkillInfo,
+  ToolsetInfo,
+  SkillsHubBrowseItem,
+  SkillsHubBrowseResponse,
+  SkillsHubInstalledSkill,
+} from "@/lib/api";
 import { useToast } from "@/hooks/useToast";
 import { Toast } from "@/components/Toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Select, SelectOption } from "@/components/ui/select";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
@@ -94,22 +107,123 @@ export default function SkillsPage() {
   const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [view, setView] = useState<"skills" | "toolsets">("skills");
+  const [view, setView] = useState<"skills" | "toolsets" | "hub">("skills");
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [togglingSkills, setTogglingSkills] = useState<Set<string>>(new Set());
+  const [hub, setHub] = useState<SkillsHubBrowseResponse | null>(null);
+  const [hubInstalled, setHubInstalled] = useState<SkillsHubInstalledSkill[]>([]);
+  const [hubLoading, setHubLoading] = useState(false);
+  const [hubPage, setHubPage] = useState(1);
+  const [hubSource, setHubSource] = useState("all");
+  const [installing, setInstalling] = useState<string | null>(null);
+  const [confirmInstall, setConfirmInstall] = useState<SkillsHubBrowseItem | null>(null);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
 
   useEffect(() => {
-    Promise.all([api.getSkills(), api.getToolsets()])
-      .then(([s, tsets]) => {
+    Promise.all([api.getSkills(), api.getToolsets(), api.getInstalledHubSkills()])
+      .then(([s, tsets, hubSkills]) => {
         setSkills(s);
         setToolsets(tsets);
+        setHubInstalled(hubSkills.installed);
       })
       .catch(() => showToast(t.common.loading, "error"))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      Promise.all([api.getSkills(), api.getToolsets(), api.getInstalledHubSkills()])
+        .then(([s, tsets, hubSkills]) => {
+          setSkills(s);
+          setToolsets(tsets);
+          setHubInstalled(hubSkills.installed);
+        })
+        .catch(() => {});
+    }, 8000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const loadHub = useCallback(
+    (p: number, src: string) => {
+      setHubLoading(true);
+      api
+        .browseSkillsHub(p, 20, src)
+        .then(setHub)
+        .catch((e) => showToast(String(e), "error"))
+        .finally(() => setHubLoading(false));
+    },
+    [showToast],
+  );
+
+  useEffect(() => {
+    if (view !== "hub") return;
+    loadHub(hubPage, hubSource);
+  }, [hubPage, hubSource, loadHub, view]);
+
+  const installedSkillNames = useMemo(
+    () => new Set(skills.map((s) => s.name)),
+    [skills],
+  );
+
+  const hubInstalledNames = useMemo(
+    () => new Set(hubInstalled.map((s) => s.name)),
+    [hubInstalled],
+  );
+
+  const handleInstallHub = async (item: SkillsHubBrowseItem, confirm: boolean) => {
+    setInstalling(item.identifier);
+    try {
+      await api.installHubSkill({
+        identifier: item.identifier,
+        confirm,
+        activate_now: true,
+      });
+      showToast(`${t.common.create} ${item.name}`, "success");
+      const [s, installed] = await Promise.all([
+        api.getSkills(),
+        api.getInstalledHubSkills(),
+      ]);
+      setSkills(s);
+      setHubInstalled(installed.installed);
+    } catch (e) {
+      const msg = String(e);
+      if (msg.includes("409") && msg.includes("confirmation_required")) {
+        setConfirmInstall(item);
+      } else {
+        showToast(msg, "error");
+      }
+    } finally {
+      setInstalling(null);
+    }
+  };
+
+  const handleUninstallHub = async (name: string) => {
+    setInstalling(name);
+    try {
+      await api.uninstallHubSkill({ name, activate_now: true });
+      showToast(`${t.common.removed}: ${name}`, "success");
+      const [s, installed] = await Promise.all([
+        api.getSkills(),
+        api.getInstalledHubSkills(),
+      ]);
+      setSkills(s);
+      setHubInstalled(installed.installed);
+    } catch (e) {
+      showToast(String(e), "error");
+    } finally {
+      setInstalling(null);
+    }
+  };
+
+  useEffect(() => {
+    if (view !== "hub") return;
+    api
+      .getInstalledHubSkills()
+      .then((r) => setHubInstalled(r.installed))
+      .catch(() => {});
+  }, [view]);
 
   /* ---- Toggle skill ---- */
   const handleToggleSkill = async (skill: SkillInfo) => {
@@ -190,13 +304,23 @@ export default function SkillsPage() {
       setEnd(null);
       return;
     }
-    setAfterTitle(
-      <span className="whitespace-nowrap text-xs text-muted-foreground">
-        {t.skills.enabledOf
-          .replace("{enabled}", String(enabledCount))
-          .replace("{total}", String(skills.length))}
-      </span>,
-    );
+    if (view === "hub") {
+      setAfterTitle(
+        <span className="whitespace-nowrap text-xs text-muted-foreground">
+          {hub
+            ? `${hub.page}/${hub.total_pages} · ${hub.total}`
+            : "Skills Hub"}
+        </span>,
+      );
+    } else {
+      setAfterTitle(
+        <span className="whitespace-nowrap text-xs text-muted-foreground">
+          {t.skills.enabledOf
+            .replace("{enabled}", String(enabledCount))
+            .replace("{total}", String(skills.length))}
+        </span>,
+      );
+    }
     setEnd(
       <div className="relative w-full min-w-0 sm:max-w-xs">
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
@@ -223,11 +347,13 @@ export default function SkillsPage() {
     };
   }, [
     enabledCount,
+    hub,
     loading,
     search,
     setAfterTitle,
     setEnd,
     skills.length,
+    view,
     t,
   ]);
 
@@ -296,6 +422,16 @@ export default function SkillsPage() {
                   onClick={() => {
                     setView("toolsets");
                     setSearch("");
+                  }}
+                />
+                <PanelItem
+                  icon={Download}
+                  label="Skills Hub"
+                  active={view === "hub"}
+                  onClick={() => {
+                    setView("hub");
+                    setActiveCategory(null);
+                    setHubPage(1);
                   }}
                 />
               </div>
@@ -375,63 +511,317 @@ export default function SkillsPage() {
                     {t.skills.noSkillsMatch}
                   </p>
                 ) : (
-                  <div className="grid gap-1">
-                    {searchMatchedSkills.map((skill) => (
-                      <SkillRow
-                        key={skill.name}
-                        skill={skill}
-                        toggling={togglingSkills.has(skill.name)}
-                        onToggle={() => handleToggleSkill(skill)}
-                        noDescriptionLabel={t.skills.noDescription}
-                      />
-                    ))}
+                  <div className="grid gap-4">
+                    <div>
+                      <div className="flex items-center justify-between pb-2">
+                        <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                          {t.common.active}
+                        </span>
+                        <Badge variant="success" className="text-[10px]">
+                          {searchMatchedSkills.filter((s) => s.enabled).length}
+                        </Badge>
+                      </div>
+                      <div className="grid gap-1">
+                        {searchMatchedSkills
+                          .filter((s) => s.enabled)
+                          .map((skill) => (
+                            <SkillRow
+                              key={skill.name}
+                              skill={skill}
+                              toggling={togglingSkills.has(skill.name)}
+                              onToggle={() => handleToggleSkill(skill)}
+                              noDescriptionLabel={t.skills.noDescription}
+                            />
+                          ))}
+                        {searchMatchedSkills.filter((s) => s.enabled).length === 0 && (
+                          <p className="text-xs text-muted-foreground py-4 text-center">
+                            {t.common.none}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between pb-2">
+                        <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                          {t.common.inactive}
+                        </span>
+                        <Badge variant="outline" className="text-[10px]">
+                          {searchMatchedSkills.filter((s) => !s.enabled).length}
+                        </Badge>
+                      </div>
+                      <div className="grid gap-1">
+                        {searchMatchedSkills
+                          .filter((s) => !s.enabled)
+                          .map((skill) => (
+                            <SkillRow
+                              key={skill.name}
+                              skill={skill}
+                              toggling={togglingSkills.has(skill.name)}
+                              onToggle={() => handleToggleSkill(skill)}
+                              noDescriptionLabel={t.skills.noDescription}
+                            />
+                          ))}
+                        {searchMatchedSkills.filter((s) => !s.enabled).length === 0 && (
+                          <p className="text-xs text-muted-foreground py-4 text-center">
+                            {t.common.none}
+                          </p>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 )}
               </CardContent>
             </Card>
           ) : view === "skills" ? (
             /* Skills list */
-            <Card>
-              <CardHeader className="py-3 px-4">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-sm flex items-center gap-2">
-                    <Package className="h-4 w-4" />
-                    {activeCategory
-                      ? prettyCategory(
-                          activeCategory === "__none__" ? null : activeCategory,
-                          t.common.general,
-                        )
-                      : t.skills.all}
-                  </CardTitle>
-                  <Badge variant="secondary" className="text-[10px]">
-                    {t.skills.skillCount
-                      .replace("{count}", String(activeSkills.length))
-                      .replace("{s}", activeSkills.length !== 1 ? "s" : "")}
-                  </Badge>
-                </div>
-              </CardHeader>
-              <CardContent className="px-4 pb-4">
-                {activeSkills.length === 0 ? (
-                  <p className="text-sm text-muted-foreground text-center py-8">
-                    {skills.length === 0
-                      ? t.skills.noSkills
-                      : t.skills.noSkillsMatch}
-                  </p>
-                ) : (
-                  <div className="grid gap-1">
-                    {activeSkills.map((skill) => (
-                      <SkillRow
-                        key={skill.name}
-                        skill={skill}
-                        toggling={togglingSkills.has(skill.name)}
-                        onToggle={() => handleToggleSkill(skill)}
-                        noDescriptionLabel={t.skills.noDescription}
-                      />
-                    ))}
+            <div className="grid gap-4">
+              <Card>
+                <CardHeader className="py-3 px-4">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-sm flex items-center gap-2">
+                      <Package className="h-4 w-4" />
+                      {activeCategory
+                        ? prettyCategory(
+                            activeCategory === "__none__"
+                              ? null
+                              : activeCategory,
+                            t.common.general,
+                          )
+                        : t.skills.all}
+                    </CardTitle>
+                    <Badge variant="secondary" className="text-[10px]">
+                      {t.skills.skillCount
+                        .replace("{count}", String(activeSkills.length))
+                        .replace("{s}", activeSkills.length !== 1 ? "s" : "")}
+                    </Badge>
                   </div>
-                )}
-              </CardContent>
-            </Card>
+                </CardHeader>
+                <CardContent className="px-4 pb-4 grid gap-4">
+                  {activeSkills.length === 0 ? (
+                    <p className="text-sm text-muted-foreground text-center py-8">
+                      {skills.length === 0
+                        ? t.skills.noSkills
+                        : t.skills.noSkillsMatch}
+                    </p>
+                  ) : (
+                    <>
+                      <div>
+                        <div className="flex items-center justify-between pb-2">
+                          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                            {t.common.active}
+                          </span>
+                          <Badge variant="success" className="text-[10px]">
+                            {activeSkills.filter((s) => s.enabled).length}
+                          </Badge>
+                        </div>
+                        <div className="grid gap-1">
+                          {activeSkills
+                            .filter((s) => s.enabled)
+                            .map((skill) => (
+                              <SkillRow
+                                key={skill.name}
+                                skill={skill}
+                                toggling={togglingSkills.has(skill.name)}
+                                onToggle={() => handleToggleSkill(skill)}
+                                noDescriptionLabel={t.skills.noDescription}
+                              />
+                            ))}
+                          {activeSkills.filter((s) => s.enabled).length === 0 && (
+                            <p className="text-xs text-muted-foreground py-4 text-center">
+                              {t.common.none}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between pb-2">
+                          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                            {t.common.inactive}
+                          </span>
+                          <Badge variant="outline" className="text-[10px]">
+                            {activeSkills.filter((s) => !s.enabled).length}
+                          </Badge>
+                        </div>
+                        <div className="grid gap-1">
+                          {activeSkills
+                            .filter((s) => !s.enabled)
+                            .map((skill) => (
+                              <SkillRow
+                                key={skill.name}
+                                skill={skill}
+                                toggling={togglingSkills.has(skill.name)}
+                                onToggle={() => handleToggleSkill(skill)}
+                                noDescriptionLabel={t.skills.noDescription}
+                              />
+                            ))}
+                          {activeSkills.filter((s) => !s.enabled).length === 0 && (
+                            <p className="text-xs text-muted-foreground py-4 text-center">
+                              {t.common.none}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          ) : view === "hub" ? (
+            <div className="flex flex-col gap-3">
+              <ConfirmDialog
+                open={confirmInstall !== null}
+                onCancel={() => setConfirmInstall(null)}
+                onConfirm={() => {
+                  if (!confirmInstall) return;
+                  void handleInstallHub(confirmInstall, true);
+                  setConfirmInstall(null);
+                }}
+                title="Install skill?"
+                description="This skill requires confirmation based on its security scan. Confirm to proceed."
+                confirmLabel={t.common.confirm}
+                cancelLabel={t.common.cancel}
+              />
+
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Select value={hubSource} onValueChange={(v) => setHubSource(v)}>
+                    <SelectOption value="all">all</SelectOption>
+                    <SelectOption value="official">official</SelectOption>
+                    <SelectOption value="skills-sh">skills.sh</SelectOption>
+                    <SelectOption value="well-known">well-known</SelectOption>
+                    <SelectOption value="github">github</SelectOption>
+                  </Select>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs gap-1.5"
+                    onClick={() => window.open("https://agentskills.io", "_blank", "noopener,noreferrer")}
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    SkillHub
+                  </Button>
+                </div>
+
+                <div className="flex items-center gap-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 w-8 p-0"
+                    disabled={hubLoading || hubPage <= 1}
+                    onClick={() => setHubPage((p) => Math.max(1, p - 1))}
+                    aria-label="Previous"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 w-8 p-0"
+                    disabled={hubLoading || (hub ? hubPage >= hub.total_pages : true)}
+                    onClick={() => setHubPage((p) => p + 1)}
+                    aria-label="Next"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+
+              <Card>
+                <CardHeader className="py-3 px-4">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-sm flex items-center gap-2">
+                      <Download className="h-4 w-4" />
+                      Skills Hub
+                    </CardTitle>
+                    {hubLoading && (
+                      <div className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                    )}
+                  </div>
+                </CardHeader>
+                <CardContent className="px-4 pb-4">
+                  {!hub || hub.items.length === 0 ? (
+                    <p className="text-sm text-muted-foreground text-center py-8">
+                      {t.common.noResults}
+                    </p>
+                  ) : (
+                    <div className="grid gap-2">
+                      {hub.items
+                        .filter((it) => {
+                          if (!search.trim()) return true;
+                          const q = search.trim().toLowerCase();
+                          return (
+                            it.name.toLowerCase().includes(q) ||
+                            it.description.toLowerCase().includes(q) ||
+                            it.identifier.toLowerCase().includes(q)
+                          );
+                        })
+                        .map((it) => {
+                          const isInstalled = installedSkillNames.has(it.name);
+                          const isHubInstalled = hubInstalledNames.has(it.name);
+                          const busy = installing === it.identifier || installing === it.name;
+                          return (
+                            <div key={it.identifier} className="border border-border p-3">
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-mono-ui text-sm">{it.name}</span>
+                                    <Badge variant="secondary" className="text-[10px]">
+                                      {it.source}
+                                    </Badge>
+                                    <Badge variant="outline" className="text-[10px]">
+                                      {it.trust}
+                                    </Badge>
+                                    {isInstalled && (
+                                      <Badge variant="success" className="text-[10px]">
+                                        {t.common.installed}
+                                      </Badge>
+                                    )}
+                                  </div>
+                                  <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
+                                    {it.description}
+                                  </p>
+                                  <p className="text-[10px] text-muted-foreground/60 mt-1 font-mono-ui break-all">
+                                    {it.identifier}
+                                  </p>
+                                </div>
+                                <div className="shrink-0 flex flex-col gap-2">
+                                  {!isInstalled && (
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      disabled={busy}
+                                      onClick={() => void handleInstallHub(it, false)}
+                                      className="h-8 text-xs"
+                                    >
+                                      {busy ? "…" : "Install"}
+                                    </Button>
+                                  )}
+                                  {isHubInstalled && (
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="destructive"
+                                      disabled={busy}
+                                      onClick={() => void handleUninstallHub(it.name)}
+                                      className="h-8 text-xs"
+                                    >
+                                      {busy ? "…" : t.common.delete}
+                                    </Button>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
           ) : (
             /* Toolsets grid */
             <>

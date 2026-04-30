@@ -28,6 +28,7 @@ export const en: Translations = {
     none: "None",
     form: "Form",
     noResults: "No results",
+    all: "All",
     of: "of",
     page: "Page",
     msgs: "msgs",
@@ -35,6 +36,7 @@ export const en: Translations = {
     match: "match",
     other: "Other",
     configured: "configured",
+    installed: "installed",
     removed: "removed",
     failedToToggle: "Failed to toggle",
     failedToRemove: "Failed to remove",
@@ -67,9 +69,11 @@ export const en: Translations = {
       stopped: "Stopped",
     },
     nav: {
+      dashboard: "Dashboard",
       analytics: "Analytics",
       chat: "Chat",
       config: "Config",
+      connectors: "Connectors",
       cron: "Cron",
       documentation: "Documentation",
       keys: "Keys",
@@ -180,6 +184,11 @@ export const en: Translations = {
     component: "Component",
     lines: "Lines",
     noLogLines: "No log lines found",
+  },
+
+  connectors: {
+    title: "Connectors",
+    configure: "Configure",
   },
 
   cron: {
