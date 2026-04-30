@@ -387,6 +387,19 @@ class TestDispatchPayload:
         # Should be 50000 / 1000 * 0.8 = 40.0
         assert adapter._heartbeat_interval == 40.0
 
+    def test_create_task_closes_unscheduled_coroutine_without_running_loop(self):
+        from gateway.platforms.qqbot import QQAdapter
+
+        class DummyCoro:
+            closed = False
+
+            def close(self):
+                self.closed = True
+
+        coro = DummyCoro()
+        assert QQAdapter._create_task(coro) is None
+        assert coro.closed is True
+
     def test_op11_heartbeat_ack(self):
         adapter = self._make_adapter(app_id="a", client_secret="b")
         # Should not raise

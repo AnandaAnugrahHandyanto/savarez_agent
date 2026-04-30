@@ -690,15 +690,18 @@ class QQAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _create_task(coro):
-        """Schedule a coroutine, silently skipping if no event loop is running.
+        """Schedule a coroutine, closing it if no event loop is running.
 
         This avoids ``RuntimeError: no running event loop`` when tests call
         ``_dispatch_payload`` synchronously outside of ``asyncio.run()``.
+        Closing the unscheduled coroutine prevents un-awaited coroutine
+        warnings from synchronous tests.
         """
         try:
             loop = asyncio.get_running_loop()
             return loop.create_task(coro)
         except RuntimeError:
+            coro.close()
             return None
 
     def _dispatch_payload(self, payload: Dict[str, Any]) -> None:
