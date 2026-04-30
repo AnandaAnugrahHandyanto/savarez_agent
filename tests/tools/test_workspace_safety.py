@@ -236,3 +236,35 @@ def test_git_branch_set_upstream_is_guarded(tmp_path):
 
     assert error is not None
     assert "Blocked repo side effect outside authoritative workspace binding" in error
+
+
+def test_git_explicit_git_dir_fails_closed_even_from_bound_repo(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    other_repo = _git_repo(tmp_path / "other")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            f"git --git-dir={other_repo / '.git'} commit -m update",
+            bound_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "cannot verify the target repository" in error
+
+
+def test_complex_cd_before_git_fails_closed(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    other_repo = _git_repo(tmp_path / "other")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            f"cd {other_repo} extra && git commit -m update",
+            bound_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "cannot verify the target repository" in error

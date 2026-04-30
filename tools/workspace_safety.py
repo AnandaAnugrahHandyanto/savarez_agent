@@ -127,6 +127,8 @@ def check_terminal_side_effect_allowed(command: str, cwd: str | Path) -> Optiona
     for invocation in _iter_git_invocations(command, cwd_path):
         if not _git_invocation_is_mutating(invocation):
             continue
+        if invocation.subcommand == _UNSAFE_GIT_CWD_SUBCOMMAND:
+            return _unverified_git_message()
         repo_root = _find_git_root(invocation.cwd)
         if repo_root is None:
             return None
@@ -137,6 +139,14 @@ def check_terminal_side_effect_allowed(command: str, cwd: str | Path) -> Optiona
         if not _same_path(repo_root, bound_repo):
             return _blocked_message(repo_root, bound_repo)
     return None
+
+
+def _unverified_git_message() -> str:
+    return (
+        "Blocked repo side effect: workspace guard cannot verify the target "
+        "repository for this git command. Avoid complex cd/global git-dir/work-tree "
+        "forms or run the command from the bound repository."
+    )
 
 
 def _blocked_message(actual_repo: Path, bound_repo: Optional[Path]) -> str:
@@ -197,6 +207,8 @@ def _iter_git_invocations(command: str, cwd: Path) -> Iterable[GitInvocation]:
         try:
             tokens = shlex.split(segment)
         except ValueError:
+            if "git" in segment:
+                yield GitInvocation(_UNSAFE_GIT_CWD_SUBCOMMAND, [], current_cwd)
             continue
         if not tokens:
             continue
