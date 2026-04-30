@@ -761,6 +761,20 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         _m = _cfg.get("model", {}) if isinstance(_cfg.get("model"), dict) else {}
         _provider = _m.get("provider") or "auto"
         _model_name = _m.get("default") or _m.get("model") or ""
+        # Per-task auxiliary override: if curator.auxiliary.{provider,model}
+        # is set, prefer it over the main-model defaults so users can pin
+        # the curator to a cheaper aux model without changing their main.
+        # Either field can be set independently — provider falls back to
+        # the main provider, model falls back to the main model.
+        _cur = _cfg.get("curator") or {}
+        _aux = _cur.get("auxiliary") or {} if isinstance(_cur, dict) else {}
+        if isinstance(_aux, dict):
+            _aux_provider = _aux.get("provider")
+            _aux_model = _aux.get("model")
+            if _aux_provider:
+                _provider = _aux_provider
+            if _aux_model:
+                _model_name = _aux_model
         _rp = resolve_runtime_provider(
             requested=_provider, target_model=_model_name
         )

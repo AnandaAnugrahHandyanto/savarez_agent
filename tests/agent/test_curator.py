@@ -470,6 +470,112 @@ def test_cli_unpin_refuses_bundled_skill(curator_env, capsys):
     assert "bundled" in captured.out.lower() or "hub" in captured.out.lower()
 
 
+# ---------------------------------------------------------------------------
+# _run_llm_review provider/model resolution — curator.auxiliary override (#17572)
+# ---------------------------------------------------------------------------
+
+
+def _patch_run_llm_review_deps(monkeypatch, cfg):
+    """Patch the inner imports of _run_llm_review to capture AIAgent kwargs."""
+    captured = {}
+
+    class _StubAgent:
+        def __init__(self, **kwargs):
+            captured["agent_kwargs"] = kwargs
+            self._review_skipped = True
+
+        def disable_curator_review(self):
+            pass
+
+        def run_conversation(self, *a, **kw):
+            return {"final_response": "ok", "messages": []}
+
+    import hermes_cli.config as cfg_mod
+    import hermes_cli.runtime_provider as rp_mod
+    import run_agent
+
+    def _stub_resolve(requested=None, target_model=None, **_):
+        captured["resolve_args"] = {
+            "requested": requested,
+            "target_model": target_model,
+        }
+        return {
+            "api_key": "k",
+            "base_url": "https://example/api",
+            "api_mode": "chat_completions",
+            "provider": requested,
+        }
+
+    monkeypatch.setattr(cfg_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(rp_mod, "resolve_runtime_provider", _stub_resolve)
+    monkeypatch.setattr(run_agent, "AIAgent", _StubAgent)
+    return captured
+
+
+def test_run_llm_review_uses_main_model_when_auxiliary_unset(
+    curator_env, monkeypatch
+):
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "anthropic", "default": "claude-opus-4-7"},
+        "curator": {"auxiliary": {"provider": None, "model": None}},
+    }
+    captured = _patch_run_llm_review_deps(monkeypatch, cfg)
+    # Bypass the default neutralization installed by curator_env.
+    monkeypatch.undo()
+    monkeypatch.setattr(Path, "home", lambda: curator_env["home"].parent)
+    monkeypatch.setenv("HERMES_HOME", str(curator_env["home"]))
+    captured = _patch_run_llm_review_deps(monkeypatch, cfg)
+
+    curator._run_llm_review("prompt")
+    assert captured["resolve_args"]["requested"] == "anthropic"
+    assert captured["resolve_args"]["target_model"] == "claude-opus-4-7"
+    assert captured["agent_kwargs"]["model"] == "claude-opus-4-7"
+    assert captured["agent_kwargs"]["provider"] == "anthropic"
+
+
+def test_run_llm_review_honors_auxiliary_model_override(
+    curator_env, monkeypatch
+):
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "anthropic", "default": "claude-opus-4-7"},
+        "curator": {
+            "auxiliary": {"provider": "anthropic", "model": "claude-haiku-4-6"}
+        },
+    }
+    monkeypatch.undo()
+    monkeypatch.setattr(Path, "home", lambda: curator_env["home"].parent)
+    monkeypatch.setenv("HERMES_HOME", str(curator_env["home"]))
+    captured = _patch_run_llm_review_deps(monkeypatch, cfg)
+
+    curator._run_llm_review("prompt")
+    assert captured["resolve_args"]["target_model"] == "claude-haiku-4-6"
+    assert captured["agent_kwargs"]["model"] == "claude-haiku-4-6"
+    assert captured["agent_kwargs"]["provider"] == "anthropic"
+
+
+def test_run_llm_review_partial_auxiliary_provider_only(
+    curator_env, monkeypatch
+):
+    """Provider override alone should keep the main model."""
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "anthropic", "default": "claude-opus-4-7"},
+        "curator": {
+            "auxiliary": {"provider": "openrouter", "model": None}
+        },
+    }
+    monkeypatch.undo()
+    monkeypatch.setattr(Path, "home", lambda: curator_env["home"].parent)
+    monkeypatch.setenv("HERMES_HOME", str(curator_env["home"]))
+    captured = _patch_run_llm_review_deps(monkeypatch, cfg)
+
+    curator._run_llm_review("prompt")
+    assert captured["resolve_args"]["requested"] == "openrouter"
+    assert captured["resolve_args"]["target_model"] == "claude-opus-4-7"
+
+
 def test_cli_pin_refuses_bundled_skill(curator_env, capsys):
     from hermes_cli import curator as cli
     skills_dir = curator_env["home"] / "skills"
