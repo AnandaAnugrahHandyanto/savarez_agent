@@ -3804,7 +3804,9 @@ class FeishuAdapter(BasePlatformAdapter):
             recent = self._seen_message_order[-self._dedup_cache_size:]
             # Save as {msg_id: timestamp} so TTL filtering works across restarts.
             payload = {"message_ids": {k: self._seen_message_ids[k] for k in recent if k in self._seen_message_ids}}
-            self._dedup_state_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            _tmp = self._dedup_state_path.with_suffix(".tmp")
+            _tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            _tmp.replace(self._dedup_state_path)
         except OSError:
             logger.warning("[Feishu] Failed to persist dedup state to %s", self._dedup_state_path, exc_info=True)
 
