@@ -44,23 +44,29 @@ Use this skill when the user:
 
 ## Wiki Location
 
-The agent resolves the active wiki path from config on every operation. The skill
-config system injects two values:
+The agent resolves the active wiki path from the config system. When this skill
+triggers, config values are injected in this format:
 
-- `llm-wiki.active_wiki` — which wiki is currently selected (e.g. "default", "research")
-- `llm-wiki.wikis` — JSON registry of all wikis with their paths and descriptions
-
-**Path resolution:**
-
-```bash
-# Config values are injected by the agent as [Skill config: ...]
-# Parse the registry and resolve the active wiki path:
-WIKI="${HERMES_HOME}/wikis/${resolved_active_wiki_path}"
+```
+[Skill config (from ~/.hermes/config.yaml):
+  llm-wiki.active_wiki = default
+  llm-wiki.wikis = {"default":{"path":"default","description":"Default wiki"}}
+]
 ```
 
+**Before every operation, resolve the active wiki:**
+
+1. From the injected config, read `llm-wiki.active_wiki` — this is the wiki name (e.g. "default")
+2. From the injected config, read `llm-wiki.wikis` — parse the JSON string into a dict
+3. Look up `wikis[active_wiki_name]["path"]` — this is the subdirectory name (e.g. "default")
+4. Construct the full path: `WIKI="${HERMES_HOME}/wikis/<path>"`
+
+Example: if `active_wiki = "default"` and the wiki entry is `{"path":"default",...}`,
+then `WIKI="${HERMES_HOME}/wikis/default"`.
+
 The resolved path is always under `{HERMES_HOME}/wikis/`. Each wiki is a
-subdirectory — open it in Obsidian, VS Code, or any editor. No database,
-no special tooling required.
+subdirectory of markdown files — open it in Obsidian, VS Code, or any editor.
+No database, no special tooling required.
 
 **Profile isolation:** In named profiles, wikis live under
 `~/.hermes/profiles/<profile>/wikis/`. The `HERMES_HOME` env var already
@@ -68,10 +74,13 @@ points to the profile root, so path resolution works identically.
 
 **Backward compatibility:** On first use after upgrading, if the agent detects
 an existing `~/wiki` directory and no `~/.hermes/wikis/default` exists, it
-silently creates a symlink:
+creates a symlink:
 
-```
-~/.hermes/wikis/default → ~/wiki
+```bash
+if [ -d ~/wiki ] && [ ! -e ~/.hermes/wikis/default ]; then
+  mkdir -p ~/.hermes/wikis
+  ln -s ~/wiki ~/.hermes/wikis/default
+fi
 ```
 
 The user's existing wiki and Obsidian vault continue working unchanged. If
@@ -135,7 +144,7 @@ When the user asks to create or start a wiki:
 1. Determine the wiki path:
    - If `WIKI_PATH` env var is set, use that (existing behavior)
    - Otherwise, use `{HERMES_HOME}/wikis/default/` (create if needed)
-   - Initialize config: set `llm-wiki.active_wiki` to "default", add default entry to `llm-wiki.wikis`
+   - Initialize config: `save_config_value("skills.config.llm-wiki.active_wiki", "default")` and `save_config_value("skills.config.llm-wiki.wikis", '{"default":{"path":"default","description":"Default wiki"}}')`
 2. Create the directory structure above
 3. Ask the user what domain the wiki covers — be specific
 4. Write `SCHEMA.md` customized to the domain (see template below)
@@ -409,8 +418,8 @@ wiki = "<WIKI_PATH>"
 When the user says something like "switch to the research wiki" or
 "use my personal wiki":
 
-1. Read `llm-wiki.wikis` config to check the requested wiki exists
-2. If it exists, update `llm-wiki.active_wiki` via `save_config_value()`
+1. Read `llm-wiki.wikis` from injected config, parse JSON, check the requested wiki exists
+2. If it exists, update the config: `save_config_value("skills.config.llm-wiki.active_wiki", "<wiki-name>")`
 3. Orient to the new wiki (read its SCHEMA.md, index.md, recent log.md)
 4. Confirm the switch: "Switched to `research` wiki. [Brief summary of what's in it.]"
 5. If the wiki doesn't exist, offer to create it
@@ -420,19 +429,19 @@ When the user says something like "switch to the research wiki" or
 When the user asks to create a new wiki:
 
 1. Ask for a name (lowercase, hyphens, used as directory name) and description
-2. Read current `llm-wiki.wikis` config
+2. Read `llm-wiki.wikis` from injected config, parse JSON
 3. Check no name collision with existing wikis
-4. Add entry to `llm-wiki.wikis` config: `{"name": {"path": "name", "description": "..."}}`
+4. Update the registry: add the new entry to the wikis dict, then `save_config_value("skills.config.llm-wiki.wikis", json.dumps(updated_wikis))`
 5. Create directory structure under `{HERMES_HOME}/wikis/{name}/`
 6. Initialize SCHEMA.md, index.md, log.md (same as Initializing a New Wiki)
-7. Set `llm-wiki.active_wiki` to the new wiki name
+7. Set active: `save_config_value("skills.config.llm-wiki.active_wiki", "<name>")`
 8. Confirm: "Created `research` wiki and switched to it."
 
 ### Listing Wikis
 
 When the user asks what wikis they have or which is active:
 
-1. Read `llm-wiki.wikis` and `llm-wiki.active_wiki` from config
+1. Read `llm-wiki.wikis` and `llm-wiki.active_wiki` from injected config, parse wikis JSON
 2. List each wiki with its description and page count
 3. Mark which one is active
 
@@ -499,62 +508,6 @@ For best results:
 
 If using the Obsidian skill alongside this one, set `OBSIDIAN_VAULT_PATH` to the
 same directory as the wiki path.
-
-### Obsidian Headless (servers and headless machines)
-
-On machines without a display, use `obsidian-headless` instead of the desktop app.
-It syncs vaults via Obsidian Sync without a GUI — perfect for agents running on
-servers that write to the wiki while Obsidian desktop reads it on another device.
-
-**Setup:**
-```bash
-# Requires Node.js 22+
-npm install -g obsidian-headless
-
-# Login (requires Obsidian account with Sync subscription)
-ob login --email <email> --password '<password>'
-
-# Create a remote vault for the wiki
-ob sync-create-remote --name "LLM Wiki"
-
-# Connect the wiki directory to the vault
-cd ~/wiki
-ob sync-setup --vault "<vault-id>"
-
-# Initial sync
-ob sync
-
-# Continuous sync (foreground — use systemd for background)
-ob sync --continuous
-```
-
-**Continuous background sync via systemd:**
-```ini
-# ~/.config/systemd/user/obsidian-wiki-sync.service
-[Unit]
-Description=Obsidian LLM Wiki Sync
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-ExecStart=/path/to/ob sync --continuous
-WorkingDirectory=/home/user/wiki
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=default.target
-```
-
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now obsidian-wiki-sync
-# Enable linger so sync survives logout:
-sudo loginctl enable-linger $USER
-```
-
-This lets the agent write to `~/wiki` on a server while you browse the same
-vault in Obsidian on your laptop/phone — changes appear within seconds.
 
 ## Pitfalls
 
