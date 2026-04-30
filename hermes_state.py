@@ -21,6 +21,7 @@ import re
 import sqlite3
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
@@ -30,6 +31,32 @@ from typing import Any, Callable, Dict, List, Optional, TypeVar
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+
+def _normalize_timestamp(value: Any) -> Any:
+    """Best-effort normalization for legacy/imported timestamp values.
+
+    Session rows are supposed to store REAL epoch seconds, but imported data may
+    contain ISO-8601 strings. Normalize those on read so downstream callers can
+    safely compare/subtract timestamps without exploding.
+    """
+    if value is None or value == "":
+        return value
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return value
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return value
+    return value
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
@@ -1004,6 +1031,9 @@ class SessionDB:
         sessions = []
         for row in rows:
             s = dict(row)
+            for key in ("started_at", "ended_at", "last_active"):
+                if key in s:
+                    s[key] = _normalize_timestamp(s.get(key))
             # Build the preview from the raw substring
             raw = s.pop("_preview_raw", "").strip()
             if raw:
@@ -1076,6 +1106,9 @@ class SessionDB:
         if not row:
             return None
         s = dict(row)
+        for key in ("started_at", "ended_at", "last_active"):
+            if key in s:
+                s[key] = _normalize_timestamp(s.get(key))
         raw = s.pop("_preview_raw", "").strip()
         if raw:
             text = raw[:60]
