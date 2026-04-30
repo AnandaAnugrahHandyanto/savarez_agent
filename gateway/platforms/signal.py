@@ -1316,8 +1316,12 @@ class SignalAdapter(BasePlatformAdapter):
                         _prepare_signal_voice_note_audio, file_path
                     )
                 except (RuntimeError, OSError) as exc:
-                    logger.warning("Signal: could not prepare voice note: %s", exc)
-                    return SendResult(success=False, error=str(exc))
+                    logger.warning(
+                        "Signal: could not prepare native voice note; "
+                        "sending regular audio attachment instead: %s",
+                        exc,
+                    )
+                    voice_note = False
 
             params: Dict[str, Any] = {
                 "account": self.account,

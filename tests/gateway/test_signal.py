@@ -632,6 +632,29 @@ class TestSignalSendVoice:
         assert captured[0]["params"]["voice-note"] is True
 
     @pytest.mark.asyncio
+    async def test_send_voice_falls_back_to_attachment_without_ffmpeg(
+        self, monkeypatch, tmp_path
+    ):
+        """Non-M4A voice payloads should remain sendable without ffmpeg."""
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1234567890})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        audio_path = tmp_path / "reply.ogg"
+        audio_path.write_bytes(b"OggS" + b"\x00" * 100)
+
+        monkeypatch.setattr("gateway.platforms.signal.shutil.which", lambda name: None)
+
+        result = await adapter.send_voice(chat_id="+155****4567", audio_path=str(audio_path))
+
+        assert result.success is True
+        assert captured[0]["params"]["attachments"] == [str(audio_path)]
+        assert "voice-note" not in captured[0]["params"]
+        assert 1234567890 in adapter._recent_sent_timestamps
+
+    @pytest.mark.asyncio
     async def test_send_voice_missing_file(self, monkeypatch):
         """send_voice should fail for nonexistent audio."""
         adapter = _make_signal_adapter(monkeypatch)
