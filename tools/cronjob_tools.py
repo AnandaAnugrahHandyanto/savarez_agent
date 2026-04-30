@@ -74,7 +74,6 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
         get_chat_id as _ctx_get_chat_id,
         get_chat_name as _ctx_get_chat_name,
         get_platform as _ctx_get_platform,
-        get_thread_id as _ctx_get_thread_id,
     )
     origin_platform = _ctx_get_platform() or os.getenv("HERMES_SESSION_PLATFORM")
     origin_chat_id = _ctx_get_chat_id() or os.getenv("HERMES_SESSION_CHAT_ID")
@@ -83,7 +82,7 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
             "platform": origin_platform,
             "chat_id": origin_chat_id,
             "chat_name": _ctx_get_chat_name() or os.getenv("HERMES_SESSION_CHAT_NAME"),
-            "thread_id": _ctx_get_thread_id() or os.getenv("HERMES_SESSION_THREAD_ID"),
+            "thread_id": None,
         }
     return None
 
