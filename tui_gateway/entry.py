@@ -132,7 +132,7 @@ def _log_signal(signum: int, frame) -> None:
 signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 signal.signal(signal.SIGTERM, _log_signal)
 signal.signal(signal.SIGHUP, _log_signal)
-signal.signal(signal.SIGINT, signal.SIG_IGN)
+signal.signal(signal.SIGINT, _log_signal)
 
 
 def _log_exit(reason: str) -> None:
