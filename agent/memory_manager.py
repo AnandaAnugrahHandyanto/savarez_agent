@@ -56,7 +56,7 @@ _INTERNAL_NOTE_RE = re.compile(
 # provider output.  These are stripped as a defense-in-depth measure
 # against prompt injection from compromised memory backends.
 _PROMPT_STRUCTURE_TAG_RE = re.compile(
-    r'</?\s*(?:system|instructions|tool_use|tool_result|human|assistant|function_call)\b[^>]*>',
+    r'</?\s*(?:system|instructions|tool_use|tool_result|mandatory_tool_use|human|assistant|function_call)\b[^>]*>',
     re.IGNORECASE,
 )
 
