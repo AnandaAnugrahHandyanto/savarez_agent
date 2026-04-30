@@ -595,6 +595,13 @@ class APIServerAdapter(BasePlatformAdapter):
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        # Sandbox isolation: "shared" (default) = all API sessions share one
+        # Docker container (task_id="default"); "per_session" = each session
+        # gets its own container (task_id=session_id), matching gateway behavior.
+        self._sandbox_isolation: str = extra.get(
+            "sandbox_isolation",
+            os.getenv("API_SERVER_SANDBOX_ISOLATION", "shared"),
+        )
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -2354,7 +2361,7 @@ class APIServerAdapter(BasePlatformAdapter):
             result = agent.run_conversation(
                 user_message=user_message,
                 conversation_history=conversation_history,
-                task_id="default",
+                task_id=session_id if self._sandbox_isolation == "per_session" else "default",
             )
             usage = {
                 "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
@@ -2554,7 +2561,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     r = agent.run_conversation(
                         user_message=user_message,
                         conversation_history=conversation_history,
-                        task_id="default",
+                        task_id=session_id if self._sandbox_isolation == "per_session" else "default",
                     )
                     u = {
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
