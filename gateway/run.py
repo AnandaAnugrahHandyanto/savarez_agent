@@ -559,6 +559,7 @@ from gateway.config import (
 from gateway.session import (
     SessionStore,
     SessionSource,
+    SessionGoalContract,
     SessionContext,
     build_session_context,
     build_session_context_prompt,
@@ -4293,6 +4294,8 @@ class GatewayRunner:
                     return await self._handle_commands_command(event)
                 if _cmd_def_inner.name == "profile":
                     return await self._handle_profile_command(event)
+                if _cmd_def_inner.name == "goal":
+                    return await self._handle_goal_command(event)
                 if _cmd_def_inner.name == "update":
                     return await self._handle_update_command(event)
 
@@ -4484,6 +4487,9 @@ class GatewayRunner:
 
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "goal":
+            return await self._handle_goal_command(event)
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
@@ -6124,6 +6130,94 @@ class GatewayRunner:
         ])
 
         return "\n".join(lines)
+
+    def _format_goal_status(self, contract: Optional[SessionGoalContract]) -> str:
+        if not contract:
+            return (
+                "🎯 **Session Goal**\n\n"
+                "No goal contract is set for this session.\n\n"
+                "Use `/goal new <objective>` to pin the active objective so "
+                "compression summaries cannot redefine the task."
+            )
+
+        lines = [
+            "🎯 **Session Goal**",
+            "",
+            f"**Objective:** {contract.current_objective}",
+            f"**Status:** {contract.status}",
+            f"**Scope policy:** {contract.scope_policy}",
+            f"**Locked:** {'yes' if contract.locked else 'no'}",
+            f"**Operator confirmed:** {'yes' if contract.operator_confirmed else 'no'}",
+        ]
+        if contract.allowed_subtasks:
+            lines.extend(["", "**Allowed subtasks:**"])
+            lines.extend(f"- {item}" for item in contract.allowed_subtasks)
+        if contract.non_goals:
+            lines.extend(["", "**Non-goals / out of scope:**"])
+            lines.extend(f"- {item}" for item in contract.non_goals)
+        return "\n".join(lines)
+
+    async def _handle_goal_command(self, event: MessageEvent) -> str:
+        """Handle /goal — manage the persisted session goal contract."""
+        session_entry = self.session_store.get_or_create_session(event.source)
+        args = event.get_command_args().strip()
+        if not args:
+            subcommand = "status"
+            rest = ""
+        else:
+            parts = args.split(maxsplit=1)
+            candidate = parts[0].strip().lower()
+            if candidate in {"status", "new", "lock", "unlock", "clear"}:
+                subcommand = candidate
+                rest = parts[1].strip() if len(parts) > 1 else ""
+            else:
+                # Ergonomic shorthand: /goal <objective> means /goal new <objective>.
+                subcommand = "new"
+                rest = args
+
+        if subcommand == "status":
+            return self._format_goal_status(session_entry.goal_contract)
+
+        if subcommand == "new":
+            objective = rest.strip()
+            if not objective:
+                return "Usage: `/goal new <objective>`"
+            session_entry.goal_contract = SessionGoalContract(
+                current_objective=objective,
+                status="active",
+                scope_policy="soft",
+                operator_confirmed=True,
+                original_prompt=objective,
+            )
+            self.session_store.update_session(session_entry.session_key)
+            return f"🎯 Goal set.\n\n**Objective:** {objective}"
+
+        contract = session_entry.goal_contract
+        if not contract:
+            return "No goal contract is set. Use `/goal new <objective>` first."
+
+        if subcommand == "lock":
+            contract.locked = True
+            contract.scope_policy = "locked"
+            contract.locked_at = datetime.now()
+            contract.touch()
+            self.session_store.update_session(session_entry.session_key)
+            return "🔒 Session goal locked. Hermes will ask before changing scope."
+
+        if subcommand == "unlock":
+            contract.locked = False
+            contract.scope_policy = "soft"
+            contract.locked_at = None
+            contract.touch()
+            self.session_store.update_session(session_entry.session_key)
+            return "🔓 Session goal unlocked. Scope changes are allowed when explicitly requested."
+
+        if subcommand == "clear":
+            session_entry.goal_contract = None
+            self.session_store.update_session(session_entry.session_key)
+            return "🧹 Session goal cleared."
+
+        return "Usage: `/goal [status|new|lock|unlock|clear] [objective]`"
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""
