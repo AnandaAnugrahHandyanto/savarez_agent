@@ -68,6 +68,17 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 # ``config.yaml`` ``agent.gateway_auto_continue_freshness``.
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
 
+# Strip the model's own `usage:t=...` line before appending the gateway's
+# runtime footer.  The agent system prompt instructs models to emit a usage
+# line; when the gateway also injects token information in the runtime footer
+# (snapshot-diff values), we get two different numbers in the same reply.
+# Matching against the agent-prompt format (backtick-delimited, comma-separated
+# thousands, optional cached/reasoning suffixes) and stripping it avoids the
+# duplicate.  (issue #17592 / PR discussion)
+_AGENT_USAGE_LINE_RE = re.compile(
+    r'\n*`usage:t=[\d,]+ i=[\d,]+(?: \(\+ [\d,]+ c\))? o=[\d,]+(?: \(r [\d,]+\))?`[ \t]*$'
+)
+
 
 def _snapshot_agent_token_usage(agent: Any) -> "Dict[str, int]":
     """Return cumulative token counters from an AIAgent instance."""
@@ -5344,6 +5355,10 @@ class GatewayRunner:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
                 _footer_line = ""
             if _footer_line and response and not agent_result.get("already_sent"):
+                # Strip the agent's self-reported usage line before the gateway
+                # appends its own token footer (they differ: the agent-side line
+                # is the model's estimate; ours is per-turn snapshot-diff).
+                response = _AGENT_USAGE_LINE_RE.sub('', response).rstrip()
                 response = f"{response}\n\n{_footer_line}"
 
             # Emit agent:end hook

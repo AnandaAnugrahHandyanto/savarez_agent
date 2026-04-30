@@ -175,7 +175,7 @@ def format_runtime_footer(
 
     if not parts:
         return ""
-    return _SEP.join(parts)
+    return f"`{_SEP.join(parts)}`"
 
 
 def build_footer_line(
