@@ -101,6 +101,24 @@ _ensure_google_mocks()
 
 # Patch the availability flag before importing, so the adapter doesn't bail
 # out at the "missing deps" gate during construction.
+#
+# Note on imports: Teams' test suite uses
+# ``tests.gateway._plugin_adapter_loader.load_plugin_adapter`` to load
+# its adapter under a unique ``plugin_adapter_<name>`` module name. That
+# helper assumes the plugin is a single ``adapter.py`` file with no
+# companion modules — it does not set ``__package__`` on the loaded
+# module, so any relative import (e.g. our adapter's ``from .oauth import``)
+# raises ``ImportError: attempted relative import with no known parent
+# package``.
+#
+# Our google_chat plugin has a companion ``oauth.py`` module (the
+# OAuth helper for native attachment delivery), so we need a real package
+# context. The fully-qualified package import below resolves correctly
+# because ``plugins/__init__.py`` and ``plugins/platforms/__init__.py``
+# exist as regular packages on disk. The conftest anti-pattern guard
+# (which targets bare ``import adapter`` / ``from adapter import …`` and
+# ``sys.path.insert`` into ``plugins/platforms/``) does not flag this
+# fully-qualified form.
 import plugins.platforms.google_chat.adapter as _gc_mod  # noqa: E402
 
 _gc_mod.GOOGLE_CHAT_AVAILABLE = True

@@ -386,6 +386,12 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
         and (cfg.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET"))
     ),
     # Google Chat needs both a Pub/Sub project and a subscription to be reachable.
+    # Functionally redundant with the plugin's _is_connected callback (registered
+    # via plugins/platforms/google_chat/adapter.py), but kept here because
+    # _BUILTIN_PLATFORM_VALUES still contains GOOGLE_CHAT (we keep the explicit
+    # enum entry to avoid touching ~15 call sites that use ``Platform.GOOGLE_CHAT``
+    # attribute access). ``test_platform_connected_checkers`` enforces that every
+    # built-in has a checker; this entry satisfies that contract.
     Platform.GOOGLE_CHAT: lambda cfg: bool(
         cfg.extra.get("project_id") and cfg.extra.get("subscription_name")
     ),
