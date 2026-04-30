@@ -16,7 +16,7 @@ Karpathy's LLM Wiki: build/query interlinked markdown KB.
 |---|---|
 | Source | Bundled (installed by default) |
 | Path | `skills/research/llm-wiki` |
-| Version | `2.1.0` |
+| Version | `2.2.0` |
 | Author | Hermes Agent |
 | License | MIT |
 | Tags | `wiki`, `knowledge-base`, `research`, `notes`, `markdown`, `rag-alternative` |
@@ -48,19 +48,45 @@ Use this skill when the user:
 - Asks a question and an existing wiki is present at the configured path
 - Asks to lint, audit, or health-check their wiki
 - References their wiki, knowledge base, or "notes" in a research context
+- Asks to switch wikis, create a new wiki, or list their wikis
 
 ## Wiki Location
 
-**Location:** Set via `WIKI_PATH` environment variable (e.g. in `~/.hermes/.env`).
+The agent resolves the active wiki path from config on every operation. The skill
+config system injects two values:
 
-If unset, defaults to `~/wiki`.
+- `llm-wiki.active_wiki` — which wiki is currently selected (e.g. "default", "research")
+- `llm-wiki.wikis` — JSON registry of all wikis with their paths and descriptions
+
+**Path resolution:**
 
 ```bash
-WIKI="${WIKI_PATH:-$HOME/wiki}"
+# Config values are injected by the agent as [Skill config: ...]
+# Parse the registry and resolve the active wiki path:
+WIKI="${HERMES_HOME}/wikis/${resolved_active_wiki_path}"
 ```
 
-The wiki is just a directory of markdown files — open it in Obsidian, VS Code, or
-any editor. No database, no special tooling required.
+The resolved path is always under `{HERMES_HOME}/wikis/`. Each wiki is a
+subdirectory — open it in Obsidian, VS Code, or any editor. No database,
+no special tooling required.
+
+**Profile isolation:** In named profiles, wikis live under
+`~/.hermes/profiles/<profile>/wikis/`. The `HERMES_HOME` env var already
+points to the profile root, so path resolution works identically.
+
+**Backward compatibility:** On first use after upgrading, if the agent detects
+an existing `~/wiki` directory and no `~/.hermes/wikis/default` exists, it
+silently creates a symlink:
+
+```
+~/.hermes/wikis/default → ~/wiki
+```
+
+The user's existing wiki and Obsidian vault continue working unchanged. If
+`WIKI_PATH` env var is set, it takes priority (existing behavior preserved).
+
+**Edge case:** If no `~/wiki` exists and no `WIKI_PATH` is set, the agent
+creates `~/.hermes/wikis/default/` with fresh structure on first use.
 
 ## Architecture: Three Layers
 
@@ -96,7 +122,7 @@ When the user has an existing wiki, **always orient yourself before doing anythi
 ③ **Scan recent `log.md`** — read the last 20-30 entries to understand recent activity.
 
 ```bash
-WIKI="${WIKI_PATH:-$HOME/wiki}"
+# WIKI is resolved from skill config (see Wiki Location above)
 # Orientation reads at session start
 read_file "$WIKI/SCHEMA.md"
 read_file "$WIKI/index.md"
@@ -116,7 +142,10 @@ at hand before creating anything new.
 
 When the user asks to create or start a wiki:
 
-1. Determine the wiki path (from `$WIKI_PATH` env var, or ask the user; default `~/wiki`)
+1. Determine the wiki path:
+   - If `WIKI_PATH` env var is set, use that (existing behavior)
+   - Otherwise, use `{HERMES_HOME}/wikis/default/` (create if needed)
+   - Initialize config: set `llm-wiki.active_wiki` to "default", add default entry to `llm-wiki.wikis`
 2. Create the directory structure above
 3. Ask the user what domain the wiki covers — be specific
 4. Write `SCHEMA.md` customized to the domain (see template below)
@@ -382,6 +411,51 @@ wiki = "<WIKI_PATH>"
    severity (broken links > orphans > source drift > contested pages > stale content > style issues).
 
 ⑬ **Append to log.md:** `## [YYYY-MM-DD] lint | N issues found`
+
+## Wiki Management
+
+### Switching Wikis
+
+When the user says something like "switch to the research wiki" or
+"use my personal wiki":
+
+1. Read `llm-wiki.wikis` config to check the requested wiki exists
+2. If it exists, update `llm-wiki.active_wiki` via `save_config_value()`
+3. Orient to the new wiki (read its SCHEMA.md, index.md, recent log.md)
+4. Confirm the switch: "Switched to `research` wiki. [Brief summary of what's in it.]"
+5. If the wiki doesn't exist, offer to create it
+
+### Creating a New Wiki
+
+When the user asks to create a new wiki:
+
+1. Ask for a name (lowercase, hyphens, used as directory name) and description
+2. Read current `llm-wiki.wikis` config
+3. Check no name collision with existing wikis
+4. Add entry to `llm-wiki.wikis` config: `{"name": {"path": "name", "description": "..."}}`
+5. Create directory structure under `{HERMES_HOME}/wikis/{name}/`
+6. Initialize SCHEMA.md, index.md, log.md (same as Initializing a New Wiki)
+7. Set `llm-wiki.active_wiki` to the new wiki name
+8. Confirm: "Created `research` wiki and switched to it."
+
+### Listing Wikis
+
+When the user asks what wikis they have or which is active:
+
+1. Read `llm-wiki.wikis` and `llm-wiki.active_wiki` from config
+2. List each wiki with its description and page count
+3. Mark which one is active
+
+### Pre-Write Content Check
+
+Before any ingest operation, the agent should analyze content relevance to the
+current `active_wiki`. If the content is a better fit for another wiki:
+
+> "This looks like it belongs in the `research` wiki, but `personal` is currently
+> active. Should I switch to `research` for this, or keep it in `personal`?"
+
+This is a judgment call based on the wiki descriptions and existing content.
+Don't ask for every source — only when there's a clear mismatch.
 
 ## Working with the Wiki
 
