@@ -1150,6 +1150,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"agent.run_conversation returned {type(result).__name__} instead of dict: {result!r}"
             )
 
+        # Check the agent's failure flag returned by run_conversation (fix #17855)
+        _agent_failed = result.get("failed", False)
+        _agent_error = result.get("error") or ""
+        _agent_completed = result.get("completed", True)
+
         final_response = result.get("final_response", "") or ""
         # Strip leaked placeholder text that upstream may inject on empty completions.
         if final_response.strip() == "(No response generated)":
@@ -1172,6 +1177,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
 {logged_response}
 """
+
+        if _agent_failed or not _agent_completed:
+            error = _agent_error or final_response or "Agent failed to produce a response"
+            logger.error("Job '%s' agent reported failure: %s", job_name, error)
+            return False, output, "", error
         
         logger.info("Job '%s' completed successfully", job_name)
         return True, output, final_response, None
@@ -1322,6 +1332,12 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 if verbose:
                     logger.info("Output saved to: %s", output_file)
 
+                # Treat empty final_response as a soft failure FIRST (before delivery)
+                # so error notifications are delivered — fix #17855
+                if success and not final_response:
+                    success = False
+                    error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+
                 # Deliver the final response to the origin/target chat.
                 # If the agent responded with [SILENT], skip delivery (but
                 # output is already saved above).  Failed jobs always deliver.
@@ -1338,13 +1354,6 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     except Exception as de:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)
-
-                # Treat empty final_response as a soft failure so last_status
-                # is not "ok" — the agent ran but produced nothing useful.
-                # (issue #8585)
-                if success and not final_response:
-                    success = False
-                    error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
                 mark_job_run(job["id"], success, error, delivery_error=delivery_error)
                 return True
