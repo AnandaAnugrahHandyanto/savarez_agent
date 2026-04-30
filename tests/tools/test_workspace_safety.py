@@ -303,6 +303,72 @@ def test_absolute_git_binary_wrong_repo_commit_is_blocked(tmp_path):
     assert "Blocked repo side effect outside authoritative workspace binding" in error
 
 
+def test_git_config_core_worktree_fails_closed(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    other_repo = _git_repo(tmp_path / "other")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            f"git -c core.worktree={other_repo} commit -m update",
+            bound_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "cannot verify the target repository" in error
+
+
+def test_git_inline_config_core_worktree_fails_closed(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    other_repo = _git_repo(tmp_path / "other")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            f"git -ccore.worktree={other_repo} commit -m update",
+            bound_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "cannot verify the target repository" in error
+
+
+def test_git_config_env_core_worktree_fails_closed(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    other_repo = _git_repo(tmp_path / "other")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            "GIT_CONFIG_COUNT=1 "
+            "GIT_CONFIG_KEY_0=core.worktree "
+            f"GIT_CONFIG_VALUE_0={other_repo} "
+            "git commit -m update",
+            bound_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "cannot verify the target repository" in error
+
+
+def test_git_config_env_option_core_worktree_fails_closed(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            "git --config-env core.worktree=WORKTREE_FROM_ENV commit -m update",
+            bound_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "cannot verify the target repository" in error
+
+
 def test_git_dir_env_assignment_fails_closed(tmp_path):
     bound_repo = _git_repo(tmp_path / "bound")
     other_repo = _git_repo(tmp_path / "other")

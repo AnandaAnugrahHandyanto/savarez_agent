@@ -95,6 +95,14 @@ _UNSAFE_GIT_ENV_VARS = frozenset({
     "GIT_NAMESPACE",
 })
 
+_UNSAFE_GIT_CONFIG_KEYS = frozenset({
+    "core.worktree",
+})
+
+_UNSAFE_GIT_CONFIG_ENV_PREFIXES = (
+    "GIT_CONFIG_",
+)
+
 
 @dataclass(frozen=True)
 class GitInvocation:
@@ -268,6 +276,21 @@ def _env_assignment_name(token: str) -> Optional[str]:
     return name
 
 
+def _env_name_is_unsafe_git(name: str) -> bool:
+    return name in _UNSAFE_GIT_ENV_VARS or any(
+        name.startswith(prefix) for prefix in _UNSAFE_GIT_CONFIG_ENV_PREFIXES
+    )
+
+
+def _git_config_key(token: str) -> str:
+    key, _, _value = token.partition("=")
+    return key.strip().lower()
+
+
+def _is_unsafe_git_config_assignment(token: str) -> bool:
+    return _git_config_key(token) in _UNSAFE_GIT_CONFIG_KEYS
+
+
 def _strip_env_prefix(tokens: list[str]) -> tuple[bool, list[str]]:
     unsafe_env = False
     index = 0
@@ -279,7 +302,7 @@ def _strip_env_prefix(tokens: list[str]) -> tuple[bool, list[str]]:
         name = _env_assignment_name(tokens[index])
         if name is None:
             break
-        if name in _UNSAFE_GIT_ENV_VARS:
+        if _env_name_is_unsafe_git(name):
             unsafe_env = True
         index += 1
     return unsafe_env, tokens[index:]
@@ -308,7 +331,22 @@ def _parse_git_invocation(tokens: list[str], base_cwd: Path) -> Optional[GitInvo
             index += 1
             continue
         if token in {"-c", "--config-env"}:
+            if index + 1 >= len(tokens):
+                return GitInvocation(_UNSAFE_GIT_CWD_SUBCOMMAND, tokens[index + 1 :], git_cwd)
+            if _is_unsafe_git_config_assignment(tokens[index + 1]):
+                return GitInvocation(_UNSAFE_GIT_CWD_SUBCOMMAND, tokens[index + 1 :], git_cwd)
             index += 2
+            continue
+        if token.startswith("-c") and token != "-c":
+            inline_config = token[2:]
+            if _is_unsafe_git_config_assignment(inline_config):
+                return GitInvocation(_UNSAFE_GIT_CWD_SUBCOMMAND, tokens[index + 1 :], git_cwd)
+            index += 1
+            continue
+        if token.startswith("--config-env="):
+            if _is_unsafe_git_config_assignment(token.removeprefix("--config-env=")):
+                return GitInvocation(_UNSAFE_GIT_CWD_SUBCOMMAND, tokens[index + 1 :], git_cwd)
+            index += 1
             continue
         if token.startswith("--git-dir") or token.startswith("--work-tree"):
             return GitInvocation(_UNSAFE_GIT_CWD_SUBCOMMAND, tokens[index + 1 :], git_cwd)
