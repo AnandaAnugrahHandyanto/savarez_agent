@@ -1444,6 +1444,46 @@ def test_session_compress_uses_compress_helper(monkeypatch):
     )
 
 
+def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
+    """When AIAgent._compress_context rotates session_id (compression split),
+    the gateway session_key must follow so subsequent approval routing,
+    DB title/history lookups, and slash worker resume target the new
+    continuation session — mirrors HermesCLI._manual_compress's
+    session_id sync (cli.py).
+    """
+    agent = types.SimpleNamespace(session_id="rotated-id")
+    server._sessions["sid"] = _session(agent=agent)
+    server._sessions["sid"]["session_key"] = "old-key"
+    server._sessions["sid"]["pending_title"] = "stale title"
+
+    monkeypatch.setattr(
+        server,
+        "_compress_session_history",
+        lambda session, focus_topic=None, **_kw: (2, {"total": 42}),
+    )
+    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x"})
+    restart_calls = []
+    monkeypatch.setattr(
+        server, "_restart_slash_worker", lambda s: restart_calls.append(s)
+    )
+
+    try:
+        with patch("tui_gateway.server._emit"):
+            server.handle_request(
+                {
+                    "id": "1",
+                    "method": "session.compress",
+                    "params": {"session_id": "sid"},
+                }
+            )
+
+        assert server._sessions["sid"]["session_key"] == "rotated-id"
+        assert server._sessions["sid"]["pending_title"] is None
+        assert len(restart_calls) == 1
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_prompt_submit_sets_approval_session_key(monkeypatch):
     from tools.approval import get_current_session_key
 

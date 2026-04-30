@@ -1007,6 +1007,8 @@ def _compress_session_history(
     session: dict,
     focus_topic: str | None = None,
     approx_tokens: int | None = None,
+    before_messages: list | None = None,
+    history_version: int | None = None,
 ) -> tuple[int, dict]:
     from agent.model_metadata import estimate_messages_tokens_rough
 
@@ -1015,16 +1017,23 @@ def _compress_session_history(
     # below does NOT hold history_lock for the duration of the request —
     # otherwise other handlers acquiring the lock (prompt.submit etc.)
     # block on the dispatcher loop while compaction runs.
-    with session["history_lock"]:
-        history = list(session.get("history", []))
-        history_version = int(session.get("history_version", 0))
+    if before_messages is None or history_version is None:
+        with session["history_lock"]:
+            before_messages = list(session.get("history", []))
+            history_version = int(session.get("history_version", 0))
+    history = before_messages
     if len(history) < 4:
         return 0, _get_usage(agent)
     if approx_tokens is None:
         approx_tokens = estimate_messages_tokens_rough(history)
+    # Pass system_message=None so AIAgent._compress_context rebuilds the
+    # system prompt cleanly via _build_system_prompt(None). Passing the
+    # cached prompt (which already contains the agent identity block)
+    # makes the rebuild append the identity a second time. Mirrors the
+    # CLI's _manual_compress fix for issue #15281.
     compressed, _ = agent._compress_context(
         history,
-        getattr(agent, "_cached_system_prompt", "") or "",
+        None,
         approx_tokens=approx_tokens,
         focus_topic=focus_topic or None,
     )
@@ -1036,6 +1045,67 @@ def _compress_session_history(
         session["history"] = compressed
         session["history_version"] = history_version + 1
     return len(history) - len(compressed), _get_usage(agent)
+
+
+def _sync_session_key_after_compress(sid: str, session: dict) -> None:
+    """Re-anchor session_key when AIAgent._compress_context rotates session_id.
+
+    AIAgent._compress_context ends the current SessionDB session and creates
+    a new continuation session, rotating ``agent.session_id``.  The TUI
+    gateway keeps the gateway-side ``session_key`` separate (used for
+    approval routing, slash worker init, DB title/history lookups, yolo
+    state).  Without this sync, those operations would target the ended
+    parent session while the agent writes to the new continuation session.
+    Mirrors HermesCLI._manual_compress's session_id sync.
+    """
+    agent = session.get("agent")
+    new_session_id = getattr(agent, "session_id", None) or ""
+    old_key = session.get("session_key", "") or ""
+    if not new_session_id or new_session_id == old_key:
+        return
+
+    try:
+        from tools.approval import (
+            disable_session_yolo,
+            enable_session_yolo,
+            is_session_yolo_enabled,
+            register_gateway_notify,
+            unregister_gateway_notify,
+        )
+
+        try:
+            unregister_gateway_notify(old_key)
+        except Exception:
+            pass
+        session["session_key"] = new_session_id
+        try:
+            yolo_was_on = is_session_yolo_enabled(old_key)
+        except Exception:
+            yolo_was_on = False
+        if yolo_was_on:
+            try:
+                enable_session_yolo(new_session_id)
+                disable_session_yolo(old_key)
+            except Exception:
+                pass
+        try:
+            register_gateway_notify(
+                new_session_id,
+                lambda data: _emit("approval.request", sid, data),
+            )
+        except Exception:
+            pass
+    except Exception:
+        # Even if the approval module fails to import, still anchor the
+        # session_key on the new continuation id so downstream lookups
+        # don't keep targeting the ended row.
+        session["session_key"] = new_session_id
+
+    session["pending_title"] = None
+    try:
+        _restart_slash_worker(session)
+    except Exception:
+        pass
 
 
 def _get_usage(agent) -> dict:
@@ -2062,6 +2132,7 @@ def _(rid, params: dict) -> dict:
 
         with session["history_lock"]:
             before_messages = list(session.get("history", []))
+            history_version = int(session.get("history_version", 0))
         before_count = len(before_messages)
         before_tokens = (
             estimate_messages_tokens_rough(before_messages) if before_count else 0
@@ -2078,7 +2149,11 @@ def _(rid, params: dict) -> dict:
 
         try:
             removed, usage = _compress_session_history(
-                session, focus_topic, approx_tokens=before_tokens
+                session,
+                focus_topic,
+                approx_tokens=before_tokens,
+                before_messages=before_messages,
+                history_version=history_version,
             )
             with session["history_lock"]:
                 messages = list(session.get("history", []))
@@ -2086,10 +2161,12 @@ def _(rid, params: dict) -> dict:
             after_tokens = (
                 estimate_messages_tokens_rough(messages) if after_count else 0
             )
+            agent = session["agent"]
+            _sync_session_key_after_compress(sid, session)
             summary = summarize_manual_compression(
                 before_messages, messages, before_tokens, after_tokens
             )
-            info = _session_info(session["agent"])
+            info = _session_info(agent)
             _emit("session.info", sid, info)
             return _ok(
                 rid,
