@@ -1,0 +1,7 @@
+name: gbrain
+version: 1.0.0
+description: "GBrain — local knowledge-brain memory provider with gbrain search/query/get/remember tools."
+hooks:
+  - on_memory_write
+  - on_pre_compress
+  - sync_turn
