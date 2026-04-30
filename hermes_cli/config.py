@@ -1078,6 +1078,12 @@ DEFAULT_CONFIG = {
     # Or dict format: {"name": {"description": "...", "system_prompt": "...", "tone": "...", "style": "..."}}
     "personalities": {},
 
+    # RTK routing for terminal command rewriting
+    "rtk": {
+        "enabled": "auto",  # off | auto | force
+        "path": "rtk",
+    },
+
     # Pre-exec security scanning via tirith
     "security": {
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
@@ -4528,6 +4534,12 @@ def set_config_value(key: str, value: str):
         'TINKER_API_KEY',
     ]
     
+    if key.lower().startswith('rtk.'):
+        env_key = f"TERMINAL_RTK_{key.split('.')[-1].upper()}"
+        save_env_value(env_key, value)
+        print(f"✓ Set {key} in {get_env_path()}")
+        return
+
     if key.upper() in api_keys or key.upper().endswith(('_API_KEY', '_TOKEN')) or key.upper().startswith('TERMINAL_SSH'):
         save_env_value(key.upper(), value)
         print(f"✓ Set {key} in {get_env_path()}")
