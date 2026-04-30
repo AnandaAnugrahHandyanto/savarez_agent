@@ -7,9 +7,9 @@ MODEL_PATH=${1:-"meta-llama/Llama-3.1-8B-Instruct"}
 PORT=${2:-30000}
 TP_SIZE=${3:-1}  # Default to TP=1 for single-GPU setups
 
-echo "🚀 Launching SGLang Inference Server..."
-echo "📍 Model: $MODEL_PATH"
-echo "🛠️ TP: $TP_SIZE | Port: $PORT"
+echo "Launching SGLang Inference Server..."
+echo "Model: $MODEL_PATH"
+echo "TP: $TP_SIZE | Port: $PORT"
 
 python -m sglang.launch_server \
     --model-path "$MODEL_PATH" \

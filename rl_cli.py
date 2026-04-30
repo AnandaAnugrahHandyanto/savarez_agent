@@ -46,7 +46,7 @@ try:
     from hermes_cli.env_loader import load_hermes_dotenv
     _loaded_env_paths = load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
     for _env_path in _loaded_env_paths:
-        print(f"✅ Loaded environment variables from {_env_path}")
+        print(f"Loaded environment variables from {_env_path}")
 except ImportError:
     pass  # hermes_cli may not be installed in all environments
 
@@ -56,12 +56,12 @@ tinker_atropos_dir = Path(__file__).parent / 'tinker-atropos'
 if tinker_atropos_dir.exists():
     os.environ['TERMINAL_CWD'] = str(tinker_atropos_dir)
     os.environ['HERMES_QUIET'] = '1'  # Disable temp subdirectory creation
-    print(f"📂 Terminal working directory: {tinker_atropos_dir}")
+    print(f"Terminal working directory: {tinker_atropos_dir}")
 else:
     # Fall back to hermes-agent directory if submodule not found
     os.environ['TERMINAL_CWD'] = str(Path(__file__).parent)
     os.environ['HERMES_QUIET'] = '1'
-    print(f"⚠️  tinker-atropos submodule not found, using: {Path(__file__).parent}")
+    print(f"Warning: tinker-atropos submodule not found, using: {Path(__file__).parent}")
 
 <<<<<<< HEAD
 # Import agent and tools (lazy — may fail if not installed)
@@ -117,7 +117,7 @@ def load_hermes_config() -> dict:
                 config["base_url"] = file_config["base_url"]
                 
         except Exception as e:
-            print(f"⚠️  Warning: Failed to load config.yaml: {e}")
+            print(f"Warning: Failed to load config.yaml: {e}")
     
     return config
 
@@ -210,7 +210,7 @@ def check_requirements():
         errors.append(f"Missing RL API keys: {', '.join(missing_rl_keys)}")
     
     if errors:
-        print("❌ Missing requirements:")
+        print("Missing requirements:")
         for error in errors:
             print(f"   - {error}")
         print("\nPlease set these environment variables in your .env file or shell.")
@@ -305,7 +305,7 @@ def main(
     
     # Handle Evolution Mode
     if evolution:
-        print("\n🚀 Starting Autonomous Evolution (GASP Loop)...")
+        print("\nStarting Autonomous Evolution (GASP Loop)...")
         print("=" * 60)
         
         # Lazy imports — only loaded when evolution mode is triggered
@@ -332,7 +332,7 @@ def main(
             active_model = None
             optimizer = None
             if not tinker.is_active():
-                print("🧠 Loading GRPO Reference Model (local training mode)...")
+                print("Loading GRPO Reference Model (local training mode)...")
                 try:
                     grpo = GRPOTrainer(
                         model_name="meta-llama/Llama-3.1-8B-Instruct",
@@ -342,7 +342,7 @@ def main(
                     peft.import_utils.is_torchao_available = lambda: False
                     from peft import LoraConfig, get_peft_model
                     import torch
-                    print("🧠 Applying PEFT LoRA to create Active Policy...")
+                    print("Applying PEFT LoRA to create Active Policy...")
                     lora_config = LoraConfig(
                         r=64,
                         lora_alpha=16,
@@ -356,7 +356,7 @@ def main(
                         active_model.gradient_checkpointing_enable()
                     optimizer = torch.optim.AdamW(active_model.parameters(), lr=5e-6)
                 except Exception as e:
-                    print(f"⚠️  GRPO load failed: {e}")
+                    print(f"Warning: GRPO load failed: {e}")
                     import traceback
                     traceback.print_exc()
             
@@ -370,7 +370,7 @@ def main(
                 active_lora = None
                 all_rewards = []
                 for i in range(evolution_iterations):
-                    print(f"\n⚡ Iteration {i+1}/{evolution_iterations}")
+                    print(f"\nIteration {i+1}/{evolution_iterations}")
                     print("-" * 40)
                     
                     # 1. Generate rollouts and grade them
@@ -378,8 +378,8 @@ def main(
                     mean_reward = sum(rewards) / len(rewards) if rewards else 0.0
                     all_rewards.append(mean_reward)
                     
-                    print(f"👨‍🏫 Teacher generated task: {task_str[:80]}...")
-                    print(f"⚖️ Grading {len(rewards)} rollouts in parallel... Mean Reward: {mean_reward:.2f}")
+                    print(f"Teacher generated task: {task_str[:80]}...")
+                    print(f"Grading {len(rewards)} rollouts... Mean Reward: {mean_reward:.2f}")
                     
                     # 2. Training step
                     if tinker and tinker.is_active():
@@ -388,15 +388,15 @@ def main(
                         # Local training path
                         adapter_path = f"output/adapter_v{i+1}"
                         os.makedirs(adapter_path, exist_ok=True)
-                        print(f"🧠 Updating Weights locally (GRPO)...")
+                        print(f"Updating Weights locally (GRPO)...")
                         
                         if active_model is not None and optimizer is not None and grpo is not None:
                             try:
                                 loss = grpo.update(active_model, optimizer, prompts, rollouts, rewards)
-                                print(f"📉 Training Loss: {loss:.4f}")
+                                print(f"Training Loss: {loss:.4f}")
                                 active_model.save_pretrained(adapter_path)
                             except Exception as e:
-                                print(f"⚠️  Local training failed: {e}")
+                                print(f"Warning: Local training failed: {e}")
                                 import traceback
                                 traceback.print_exc()
 
@@ -409,19 +409,19 @@ def main(
                                 "num_rollouts": len(rollouts),
                                 "task": task_str[:200]
                             }, f, indent=2)
-                        print(f"✅ Adapter saved to: {adapter_path}")
+                        print(f"Adapter saved to: {adapter_path}")
                     
                     # 3. Hot-swap sync
                     if adapter_path:
-                        print("🔄 Synchronizing Inference Engine...")
+                        print("Synchronizing Inference Engine...")
                         success = await sync_engine.sync_weights(
                             adapter_path=adapter_path, 
                             adapter_name="active_policy"
                         )
                         if success:
-                            print("✅ LoRA Sync Success")
+                            print("LoRA Sync Success")
                         else:
-                            print("⚠️  LoRA Sync Failed (expected if SGLang LoRA pool not initialized)")
+                            print("Warning: LoRA Sync Failed (expected if SGLang LoRA pool not initialized)")
                         active_lora = adapter_path
                 
                 # Summary
@@ -439,27 +439,27 @@ def main(
         asyncio.run(run_evolution())
         return
 
-    print("🎯 RL Training Agent")
+    print("RL Training Agent")
     print("=" * 60)
     
     # Handle setup check
     if check_server:
-        print("\n🔍 Checking tinker-atropos setup...")
+        print("\nChecking tinker-atropos setup...")
         ok, result = check_tinker_atropos()
         if ok:
-            print("✅ tinker-atropos submodule found")
+            print("tinker-atropos submodule found")
             print(f"   Path: {result.get('path')}")
             print(f"   Environments found: {result.get('environments_count', 0)}")
             
             # Also check API keys
             missing = get_missing_keys()
             if missing:
-                print(f"\n⚠️  Missing API keys: {', '.join(missing)}")
+                print(f"\nWarning: Missing API keys: {', '.join(missing)}")
                 print("   Add them to ~/.hermes/.env")
             else:
-                print("✅ API keys configured")
+                print("API keys configured")
         else:
-            print(f"❌ tinker-atropos not set up: {result}")
+            print(f"Error: tinker-atropos not set up: {result}")
             print("\nTo set up:")
             print("  git submodule update --init")
             print("  pip install -e ./tinker-atropos")
@@ -472,7 +472,7 @@ def main(
         try:
             data = list_environments_sync()
             if "error" in data:
-                print(f"❌ Error: {data['error']}")
+                print(f"Error: {data['error']}")
                 return
             
             envs = data.get("environments", [])
@@ -483,17 +483,17 @@ def main(
                 return
             
             for env in envs:
-                print(f"\n  📦 {env['name']}")
+                print(f"\n  Package: {env['name']}")
                 print(f"     Class: {env['class_name']}")
                 print(f"     Path: {env['file_path']}")
                 if env.get('description'):
                     desc = env['description'][:100] + "..." if len(env.get('description', '')) > 100 else env.get('description', '')
                     print(f"     Description: {desc}")
             
-            print(f"\n📊 Total: {len(envs)} environments")
+            print(f"\nTotal: {len(envs)} environments")
             print("\nUse `rl_select_environment(name)` to select an environment for training.")
         except Exception as e:
-            print(f"❌ Error listing environments: {e}")
+            print(f"Error listing environments: {e}")
             print("\nMake sure tinker-atropos is set up:")
             print("  git submodule update --init")
             print("  pip install -e ./tinker-atropos")
@@ -505,7 +505,7 @@ def main(
     
     # Set default task if none provided
     if not task and not interactive:
-        print("\n⚠️  No task provided. Use --interactive for interactive mode or provide a task.")
+        print("\nWarning: No task provided. Use --interactive for interactive mode or provide a task.")
         print("\nExamples:")
         print('  python rl_cli.py "Train a model on GSM8k math problems"')
         print('  python rl_cli.py "Create an RL environment for code generation"')
@@ -515,10 +515,10 @@ def main(
     # Get API key
     api_key = api_key or os.getenv("OPENROUTER_API_KEY")
     if not api_key:
-        print("❌ No API key provided. Set OPENROUTER_API_KEY or pass --api-key")
+        print("Error: No API key provided. Set OPENROUTER_API_KEY or pass --api-key")
         sys.exit(1)
     
-    print(f"\n🤖 Model: {model}")
+    print(f"\nModel: {model}")
     print(f"🔧 Max iterations: {max_iterations}")
     print(f"📁 Toolsets: {', '.join(RL_TOOLSETS)}")
     print("=" * 60)
@@ -538,14 +538,14 @@ def main(
     
     if interactive:
         # Interactive mode - multiple conversations
-        print("\n🔄 Interactive RL Training Mode")
+        print("\nInteractive RL Training Mode")
         print("Type 'quit' or 'exit' to end the session.")
         print("Type 'status' to check active training runs.")
         print("-" * 40)
         
         while True:
             try:
-                user_input = input("\n🎯 RL Task> ").strip()
+                user_input = input("\nTask> ").strip()
                 
                 if not user_input:
                     continue
@@ -574,10 +574,10 @@ def main(
                 print("\n" + "=" * 60)
                 
             except KeyboardInterrupt:
-                print("\n\n👋 Interrupted. Goodbye!")
+                print("\n\nInterrupted. Goodbye!")
                 break
             except Exception as e:
-                print(f"\n❌ Error: {e}")
+                print(f"\nError: {e}")
                 if verbose:
                     import traceback
                     traceback.print_exc()
@@ -589,11 +589,11 @@ def main(
         try:
             agent.run_conversation(task)
             print("\n" + "=" * 60)
-            print("✅ Task completed")
+            print("Task completed")
         except KeyboardInterrupt:
-            print("\n\n⚠️ Interrupted by user")
+            print("\n\nWarning: Interrupted by user")
         except Exception as e:
-            print(f"\n❌ Error: {e}")
+            print(f"\nError: {e}")
             if verbose:
                 import traceback
                 traceback.print_exc()

@@ -145,7 +145,7 @@ class DockerSandbox:
 if __name__ == "__main__":
     async def verify():
         sandbox = DockerSandbox()
-        print(f"🚀 Testing Sandbox (Docker={sandbox.use_docker})...")
+        print(f"Testing Sandbox (Docker={sandbox.use_docker})...")
         
         tasks = [
             sandbox.execute_code("print('Hello')"),

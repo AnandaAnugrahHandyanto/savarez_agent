@@ -48,7 +48,7 @@ TASKS = [
 ]
 
 async def evaluate_adapter(client: SGLangClient, sandbox: DockerSandbox, adapter_path: str = None, adapter_name: str = "active_policy", samples: int = 4):
-    print(f"\n🔍 Evaluating: {'Base Model' if not adapter_path else adapter_path}")
+    print(f"\nEvaluating: {'Base Model' if not adapter_path else adapter_path}")
     
     results = {}
     
@@ -101,7 +101,7 @@ async def main():
         target_results = None
         if args.adapter:
             # Sync the adapter to SGLang first
-            print(f"\n🔄 Syncing adapter {args.adapter} to SGLang...")
+            print(f"\nSyncing adapter {args.adapter} to SGLang...")
             await sync.sync_weights(adapter_path=args.adapter, adapter_name="eval_policy")
             target_results = await evaluate_adapter(client, sandbox, adapter_path=args.adapter, samples=args.samples)
 

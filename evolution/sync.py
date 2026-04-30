@@ -37,17 +37,17 @@ class LoRASyncEngine:
             # Load the new weights
             async with session.post(self.load_endpoint, json=payload) as resp:
                 if resp.status == 200:
-                    print(f"✅ LoRA Sync Success: Adapter '{adapter_name}' updated from {adapter_path}")
+                    print(f"LoRA Sync Success: Adapter '{adapter_name}' updated from {adapter_path}")
                     return True
                 else:
                     error_text = await resp.text()
-                    print(f"❌ LoRA Sync Failed ({resp.status}): {error_text}")
+                    print(f"LoRA Sync Failed ({resp.status}): {error_text}")
                     return False
 
 if __name__ == "__main__":
     async def verify():
         engine = LoRASyncEngine()
-        print("🚀 Testing LoRA Sync Bridge...")
+        print("Testing LoRA Sync Bridge...")
         # Note: This will fail if SGLang is not running or doesn't have the path
         await engine.sync_weights("/home/ruffy-369/NousResearch/hermes-rl/output/adapter_v1", "test_adapter")
 

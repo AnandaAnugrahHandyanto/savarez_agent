@@ -14,7 +14,7 @@ from evolution.judge import PRMJudge
 from evolution.sync import LoRASyncEngine
 
 async def run_live_test():
-    print("🚀 PHASE 2: Testing Live Chat-to-Train Logic")
+    print("PHASE 2: Testing Live Chat-to-Train Logic")
     print("=" * 60)
 
     # 1. Initialize Components
@@ -36,19 +36,19 @@ async def run_live_test():
         )
 
         # 2. Simulate a User "Correction" in Chat
-        print("\n💬 [User]: No, don't use 'if' statements. Use boolean masking.")
-        print("🤖 [Agent]: Let me re-align my reasoning policy...")
+        print("\n[User]: No, don't use 'if' statements. Use boolean masking.")
+        print("[Agent]: Let me re-align my reasoning policy...")
 
         # 3. Trigger the Evolution Cycle
-        print("\n⚡ Starting Background Evolution Cycle...")
+        print("\nStarting Background Evolution Cycle...")
         rewards, rollouts, prompts, task = await orchestrator.run_iteration()
         
         mean_reward = sum(rewards) / len(rewards) if rewards else 0.0
-        print(f"\n👨‍🏫 Teacher generated task: {task[:80]}...")
-        print(f"⚖️ Grading {len(rewards)} rollouts in parallel... Mean Reward: {mean_reward:.2f}")
+        print(f"\nTeacher generated task: {task[:80]}...")
+        print(f"Grading {len(rewards)} rollouts... Mean Reward: {mean_reward:.2f}")
 
         # 4. Local Training (simulate adapter creation)
-        print("\n🧠 Updating Weights locally (GRPO)...")
+        print("\nUpdating Weights locally (GRPO)...")
         adapter_path = "output/test_adapter_live"
         os.makedirs(adapter_path, exist_ok=True)
         # Write a marker to prove the directory was created
@@ -59,24 +59,24 @@ async def run_live_test():
                 "num_rollouts": len(rollouts),
                 "task": task[:200]
             }, f, indent=2)
-        print(f"✅ Adapter saved to: {adapter_path}")
+        print(f"Adapter saved to: {adapter_path}")
 
         # 5. Hot-Swap Sync (Zero-Downtime)
-        print("\n🔄 Synchronizing Inference Engine...")
+        print("\nSynchronizing Inference Engine...")
         success = await sync.sync_weights(adapter_path=adapter_path, adapter_name="active_policy")
         
         if success:
-            print("✅ LoRA Sync Success")
+            print("LoRA Sync Success")
         else:
-            print("⚠️  Sync failed (Expected if SGLang LoRA pool not initialized). Logic verified.")
+            print("Warning: Sync failed (Expected if SGLang LoRA pool not initialized). Logic verified.")
 
         # Final Status
         print("\n" + "=" * 60)
-        print("📋 MILESTONE CHECKLIST:")
-        print(f"  ✅ 1. Teacher generated task: {'PASS' if task else 'FAIL'}")
-        print(f"  ✅ 2. Grading rollouts (Mean Reward: {mean_reward:.2f}): {'PASS' if len(rewards) > 0 else 'FAIL'}")
-        print(f"  ✅ 3. Updating Weights (GRPO): {'PASS' if os.path.exists(adapter_path) else 'FAIL'}")
-        print(f"  {'✅' if success else '⚠️'} 4. LoRA Sync: {'PASS' if success else 'PARTIAL (SGLang LoRA not configured)'}")
+        print("MILESTONE CHECKLIST:")
+        print(f"  1. Teacher generated task: {'PASS' if task else 'FAIL'}")
+        print(f"  2. Grading rollouts (Mean Reward: {mean_reward:.2f}): {'PASS' if len(rewards) > 0 else 'FAIL'}")
+        print(f"  3. Updating Weights (GRPO): {'PASS' if os.path.exists(adapter_path) else 'FAIL'}")
+        print(f"  4. LoRA Sync: {'PASS' if success else 'PARTIAL (SGLang LoRA not configured)'}")
 
     finally:
         await client.close()

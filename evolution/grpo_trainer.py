@@ -18,7 +18,7 @@ class GRPOTrainer:
         self.kl_coeff = kl_coeff
         
         # Load Frozen Reference Model (Isolate to separate GPU memory if possible)
-        print(f"🚀 [GRPO] Loading Frozen Reference Model: {model_name}")
+        print(f"[GRPO] Loading Frozen Reference Model: {model_name}")
         self.ref_model = AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype=torch.bfloat16,
@@ -173,4 +173,4 @@ class GRPOTrainer:
         return total_loss
 
 if __name__ == "__main__":
-    print("✅ GRPO Trainer updated for Reference Model Distillation.")
+    print("GRPO Trainer initialized.")
