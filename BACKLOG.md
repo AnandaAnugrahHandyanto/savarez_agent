@@ -36,3 +36,7 @@ Use when comparing implementation to architecture, handoffs, task lists, binding
 ## /escalate smoke test deferred (2026-04-29)
 
 Deferred until full provider setup is complete. Command contract installed, but multi-family fan-out and cost tracking still need a live-provider smoke test.
+
+## tdd-guard hook deferred (2026-04-29)
+
+Stage 7 calls for a tdd-guard hook in dry-run for the first two sessions, but no concrete local tdd-guard command or package was present in the plan. Left as BACKLOG tuning item rather than installing an unknown hook.
