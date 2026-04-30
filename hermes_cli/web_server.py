@@ -78,6 +78,9 @@ _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 # or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = False
 
+# Allow non-loopback connections when --insecure is used. Set from :func:`start_server`.
+_ALLOW_PUBLIC = False
+
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
@@ -2724,10 +2727,10 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    # Allow non-loopback connections when --insecure is used.
+    if client_host and client_host not in _LOOPBACK_HOSTS and not _ALLOW_PUBLIC:
         await ws.close(code=4403)
         return
-
     await ws.accept()
 
     # --- spawn PTY ------------------------------------------------------
@@ -2832,10 +2835,11 @@ async def gateway_ws(ws: WebSocket) -> None:
         return
 
     client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    # Allow non-loopback connections when --insecure is used.
+    if client_host and client_host not in _LOOPBACK_HOSTS and not _ALLOW_PUBLIC:
         await ws.close(code=4403)
         return
-
+    # Note: handle_ws() does the actual ws.accept()
     from tui_gateway.ws import handle_ws
 
     await handle_ws(ws)
@@ -2865,16 +2869,15 @@ async def pub_ws(ws: WebSocket) -> None:
         return
 
     client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    # Allow non-loopback connections when --insecure is used.
+    if client_host and client_host not in _LOOPBACK_HOSTS and not _ALLOW_PUBLIC:
         await ws.close(code=4403)
         return
-
+    await ws.accept()
     channel = _channel_or_close_code(ws)
     if not channel:
         await ws.close(code=4400)
         return
-
-    await ws.accept()
 
     try:
         while True:
@@ -2895,16 +2898,15 @@ async def events_ws(ws: WebSocket) -> None:
         return
 
     client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    # Allow non-loopback connections when --insecure is used.
+    if client_host and client_host not in _LOOPBACK_HOSTS and not _ALLOW_PUBLIC:
         await ws.close(code=4403)
         return
-
+    await ws.accept()
     channel = _channel_or_close_code(ws)
     if not channel:
         await ws.close(code=4400)
         return
-
-    await ws.accept()
 
     async with _event_lock:
         _event_channels.setdefault(channel, set()).add(ws)
@@ -3483,8 +3485,9 @@ def start_server(
     """Start the web UI server."""
     import uvicorn
 
-    global _DASHBOARD_EMBEDDED_CHAT_ENABLED
+    global _DASHBOARD_EMBEDDED_CHAT_ENABLED, _ALLOW_PUBLIC
     _DASHBOARD_EMBEDDED_CHAT_ENABLED = embedded_chat
+    _ALLOW_PUBLIC = allow_public
 
     _LOCALHOST = ("127.0.0.1", "localhost", "::1")
     if host not in _LOCALHOST and not allow_public:
