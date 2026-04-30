@@ -191,6 +191,21 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     return host_only == bound_lc
 
 
+def _is_accepted_ws_client(ws: WebSocket) -> bool:
+    """True when a dashboard WebSocket peer is allowed to connect.
+
+    The default dashboard bind is loopback-only, so reject non-loopback peers
+    as a defense-in-depth check. When the operator explicitly starts the
+    dashboard with ``--insecure`` on a public bind, HTTP already permits remote
+    clients; WebSockets need to honor the same opt-in or reverse-proxied chat
+    fails with a pre-accept 403.
+    """
+    if getattr(app.state, "allow_public", False):
+        return True
+    client_host = ws.client.host if ws.client else ""
+    return not client_host or client_host in _LOOPBACK_HOSTS
+
+
 @app.middleware("http")
 async def host_header_middleware(request: Request, call_next):
     """Reject requests whose Host header doesn't match the bound interface.
@@ -2866,8 +2881,8 @@ async def get_models_analytics(days: int = 30):
 #
 # Auth: ``?token=<session_token>`` query param (browsers can't set
 # Authorization on the WS upgrade).  Same ephemeral ``_SESSION_TOKEN`` as
-# REST.  Localhost-only — we defensively reject non-loopback clients even
-# though uvicorn binds to 127.0.0.1.
+# REST.  Localhost-only by default; non-loopback WebSocket peers are accepted
+# only when the dashboard was explicitly started with ``--insecure``.
 # ---------------------------------------------------------------------------
 
 import re
@@ -2932,6 +2947,11 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
     if not host or not port:
         return None
 
+    if host == "0.0.0.0":
+        host = "127.0.0.1"
+    elif host == "::":
+        host = "::1"
+
     netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
     qs = urllib.parse.urlencode({"token": _SESSION_TOKEN, "channel": channel})
 
@@ -2972,8 +2992,7 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if not _is_accepted_ws_client(ws):
         await ws.close(code=4403)
         return
 
@@ -3080,8 +3099,7 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if not _is_accepted_ws_client(ws):
         await ws.close(code=4403)
         return
 
@@ -3113,8 +3131,7 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if not _is_accepted_ws_client(ws):
         await ws.close(code=4403)
         return
 
@@ -3143,8 +3160,7 @@ async def events_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if not _is_accepted_ws_client(ws):
         await ws.close(code=4403)
         return
 
@@ -3754,6 +3770,7 @@ def start_server(
     # PTY child uses to publish events to the dashboard sidebar.
     app.state.bound_host = host
     app.state.bound_port = port
+    app.state.allow_public = bool(allow_public and host not in _LOCALHOST)
 
     if open_browser:
         import webbrowser
