@@ -165,7 +165,7 @@ stdenv.mkDerivation {
     ${lib.optionalString (extraPythonPackages != [ ]) ''
       echo "=== Checking for plugin/core package collisions ==="
       ${hermesVenv}/bin/python3 -c "${checkPackageCollisions}"
-          echo "=== No collisions ==="
+      echo "=== No collisions ==="
     ''}
 
     runHook postInstall
