@@ -16,6 +16,7 @@ from tools.file_operations import (
     normalize_search_pagination,
 )
 from tools import file_state
+from tools.workspace_safety import check_path_side_effect_allowed
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
@@ -792,6 +793,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
+    workspace_err = check_path_side_effect_allowed(_resolve_path_for_task(path, task_id))
+    if workspace_err:
+        return tool_error(workspace_err)
     if _is_internal_file_status_text(content):
         return tool_error(
             "Refusing to write internal read_file status text as file content. "
@@ -860,6 +864,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
             return tool_error(sensitive_err)
+        workspace_err = check_path_side_effect_allowed(_resolve_path_for_task(_p, task_id))
+        if workspace_err:
+            return tool_error(workspace_err)
     try:
         # Resolve paths for locking.  Ordered + deduplicated so concurrent
         # callers lock in the same order — prevents deadlock on overlapping

@@ -56,6 +56,8 @@ _SESSION_USER_ID: ContextVar = ContextVar("HERMES_SESSION_USER_ID", default=_UNS
 _SESSION_USER_NAME: ContextVar = ContextVar("HERMES_SESSION_USER_NAME", default=_UNSET)
 _SESSION_KEY: ContextVar = ContextVar("HERMES_SESSION_KEY", default=_UNSET)
 _SESSION_CHANNEL_IDENTITY: ContextVar = ContextVar("HERMES_SESSION_CHANNEL_IDENTITY", default=_UNSET)
+_WORKSPACE_SLUG: ContextVar = ContextVar("HERMES_WORKSPACE_SLUG", default=_UNSET)
+_WORKSPACE_REPO_PATH: ContextVar = ContextVar("HERMES_WORKSPACE_REPO_PATH", default=_UNSET)
 
 # Cron auto-delivery vars — set per-job in run_job() so concurrent jobs
 # don't clobber each other's delivery targets.
@@ -72,6 +74,8 @@ _VAR_MAP = {
     "HERMES_SESSION_USER_NAME": _SESSION_USER_NAME,
     "HERMES_SESSION_KEY": _SESSION_KEY,
     "HERMES_SESSION_CHANNEL_IDENTITY": _SESSION_CHANNEL_IDENTITY,
+    "HERMES_WORKSPACE_SLUG": _WORKSPACE_SLUG,
+    "HERMES_WORKSPACE_REPO_PATH": _WORKSPACE_REPO_PATH,
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
     "HERMES_CRON_AUTO_DELIVER_THREAD_ID": _CRON_AUTO_DELIVER_THREAD_ID,
@@ -87,6 +91,8 @@ def set_session_vars(
     user_name: str = "",
     session_key: str = "",
     channel_identity: str = "",
+    workspace_slug: str = "",
+    workspace_repo_path: str = "",
 ) -> list:
     """Set all session context variables and return reset tokens.
 
@@ -105,6 +111,8 @@ def set_session_vars(
         _SESSION_USER_NAME.set(user_name),
         _SESSION_KEY.set(session_key),
         _SESSION_CHANNEL_IDENTITY.set(channel_identity),
+        _WORKSPACE_SLUG.set(workspace_slug),
+        _WORKSPACE_REPO_PATH.set(workspace_repo_path),
     ]
     return tokens
 
@@ -129,6 +137,8 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_USER_NAME,
         _SESSION_KEY,
         _SESSION_CHANNEL_IDENTITY,
+        _WORKSPACE_SLUG,
+        _WORKSPACE_REPO_PATH,
     ):
         var.set("")
 

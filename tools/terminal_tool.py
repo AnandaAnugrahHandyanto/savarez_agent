@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 # long-running subprocesses immediately instead of blocking until timeout.
 # ---------------------------------------------------------------------------
 from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — re-exported
+from tools.workspace_safety import check_terminal_side_effect_allowed
 # display_hermes_home imported lazily at call site (stale-module safety during hermes update)
 
 
@@ -1838,6 +1839,16 @@ def terminal_tool(
                     "error": workdir_error,
                     "status": "blocked"
                 }, ensure_ascii=False)
+
+        effective_cwd = workdir or cwd
+        workspace_err = check_terminal_side_effect_allowed(command, effective_cwd)
+        if workspace_err:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": workspace_err,
+                "status": "blocked",
+            }, ensure_ascii=False)
 
         # Prepare command for execution
         pty_disabled_reason = None

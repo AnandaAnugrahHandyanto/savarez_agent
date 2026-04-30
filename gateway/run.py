@@ -8808,6 +8808,7 @@ class GatewayRunner:
         in a ``finally`` block.
         """
         from gateway.session_context import set_session_vars
+        binding = context.workspace_binding
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -8817,6 +8818,8 @@ class GatewayRunner:
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
             channel_identity=context.channel_identity_json,
+            workspace_slug=getattr(binding, "slug", "") if binding else "",
+            workspace_repo_path=getattr(binding, "repo_path", "") if binding else "",
         )
 
     def _clear_session_env(self, tokens: list) -> None:
