@@ -10215,6 +10215,11 @@ def main():
     auth_add.add_argument("--client-id", help="OAuth client id")
     auth_add.add_argument("--scope", help="OAuth scope override")
     auth_add.add_argument(
+        "--auth-method",
+        choices=["device", "device_code", "browser", "browser_oauth", "browser_oauth_pkce", "pkce"],
+        help="OAuth method for providers with multiple OAuth flows (currently openai-codex)",
+    )
+    auth_add.add_argument(
         "--no-browser",
         action="store_true",
         help="Do not auto-open a browser for OAuth login",
