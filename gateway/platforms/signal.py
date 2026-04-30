@@ -1229,6 +1229,7 @@ class SignalAdapter(BasePlatformAdapter):
         file_path: str,
         media_label: str,
         caption: Optional[str] = None,
+        voice_note: bool = False,
     ) -> SendResult:
         """Send any file as a Signal attachment via RPC.
 
@@ -1250,6 +1251,8 @@ class SignalAdapter(BasePlatformAdapter):
             "message": caption or "",
             "attachments": [file_path],
         }
+        if voice_note:
+            params["voiceNote"] = True
 
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
@@ -1296,12 +1299,14 @@ class SignalAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         **kwargs,
     ) -> SendResult:
-        """Send an audio file as a Signal attachment.
-
-        Signal does not distinguish voice messages from file attachments at
-        the API level, so this routes through the same RPC send path.
-        """
-        return await self._send_attachment(chat_id, audio_path, "Audio", caption)
+        """Send an audio file as a native Signal voice note."""
+        return await self._send_attachment(
+            chat_id,
+            audio_path,
+            "Audio",
+            caption,
+            voice_note=True,
+        )
 
     async def send_video(
         self,
