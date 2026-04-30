@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from gateway.image2_feishu_ingress import Image2IngressSettings, handle_image2_feishu_ingress_event
 from gateway.image2_feishu_delivery import FeishuDeliveryError, FeishuImageClient
 from gateway.image2_print import parse_print_spec, should_handle_print_request
+from gateway.image2_print_reconstruction import reconstruct_print_source_with_chatgpt
 from gateway.image2_store import Image2JobStore
 from gateway.image2_worker import run_worker
 
@@ -191,6 +192,9 @@ def test_worker_print_lane_packages_psd_pdf_and_sends_documents(tmp_path):
     approved = tmp_path / "approved.png"
     approved.write_bytes(b"approved")
     approved_sha = hashlib.sha256(approved.read_bytes()).hexdigest()
+    reconstructed = tmp_path / "reconstructed-print-source.png"
+    reconstructed.write_bytes(b"reconstructed-print-source")
+    reconstructed_sha = hashlib.sha256(reconstructed.read_bytes()).hexdigest()
     spec = parse_print_spec("定稿，出印刷版，尺寸 100×150cm")
     job = Image2JobStore(db_path=db_path, runtime_root=runtime).enqueue_feishu({
         "feishu_message_id": "om_print",
@@ -210,7 +214,7 @@ def test_worker_print_lane_packages_psd_pdf_and_sends_documents(tmp_path):
         for path, payload in [(psd, b"psd"), (pdf, b"pdf"), (preview, b"png")]:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(payload)
-        return {"status": "pass", "psd_path": str(psd), "pdf_path": str(pdf), "preview_path": str(preview), "approved_sha256": approved_sha, "target_width_px": 5906, "target_height_px": 8858, "dpi": 150}
+        return {"status": "pass", "psd_path": str(psd), "pdf_path": str(pdf), "preview_path": str(preview), "approved_sha256": hashlib.sha256(Path(approved_image_path).read_bytes()).hexdigest(), "target_width_px": 5906, "target_height_px": 8858, "dpi": 150}
 
     def fake_file_delivery(*, files: list[dict[str, object]], chat_id: str, reply_to: str, environ: dict[str, str]):
         calls["delivery"] = {"files": files, "chat_id": chat_id, "reply_to": reply_to}
@@ -223,6 +227,7 @@ def test_worker_print_lane_packages_psd_pdf_and_sends_documents(tmp_path):
         worker_id="print-worker",
         environ={"IMAGE2_WORKER_LIVE_ENABLED": "1", "FEISHU_APP_ID": "present", "FEISHU_APP_SECRET": "present"},
         print_packager=fake_print_packager,
+        print_reconstructor=lambda **kwargs: {"status": "pass", "image_path": str(reconstructed), "image_sha256": reconstructed_sha, "mode": "unit_reconstruction"},
         file_delivery_sender=fake_file_delivery,
     )
 
@@ -393,6 +398,9 @@ def test_worker_print_lane_fails_closed_when_no_deliverable_psd(tmp_path):
     approved = tmp_path / "approved.png"
     approved.write_bytes(b"approved")
     approved_sha = hashlib.sha256(approved.read_bytes()).hexdigest()
+    reconstructed = tmp_path / "reconstructed-print-source.png"
+    reconstructed.write_bytes(b"reconstructed-print-source")
+    reconstructed_sha = hashlib.sha256(reconstructed.read_bytes()).hexdigest()
     spec = parse_print_spec("定稿，出印刷版，尺寸 100×150cm")
     job = Image2JobStore(db_path=db_path, runtime_root=runtime).enqueue_feishu({
         "feishu_message_id": "om_print",
@@ -409,7 +417,7 @@ def test_worker_print_lane_fails_closed_when_no_deliverable_psd(tmp_path):
         for path, payload in [(pdf, b"pdf"), (highres, b"png")]:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(payload)
-        return {"status": "pass", "pdf_path": str(pdf), "highres_path": str(highres), "approved_sha256": approved_sha, "dpi": 150}
+        return {"status": "pass", "pdf_path": str(pdf), "highres_path": str(highres), "approved_sha256": hashlib.sha256(Path(approved_image_path).read_bytes()).hexdigest(), "dpi": 150}
 
     def should_not_send(**kwargs):
         raise AssertionError("sender must not be called without a deliverable PSD")
@@ -421,8 +429,143 @@ def test_worker_print_lane_fails_closed_when_no_deliverable_psd(tmp_path):
         worker_id="print-worker",
         environ={"IMAGE2_WORKER_LIVE_ENABLED": "1", "FEISHU_APP_ID": "present", "FEISHU_APP_SECRET": "present"},
         print_packager=fake_print_packager,
+        print_reconstructor=lambda **kwargs: {"status": "pass", "image_path": str(reconstructed), "image_sha256": reconstructed_sha, "mode": "unit_reconstruction"},
         file_delivery_sender=should_not_send,
     )
 
     assert result["status"] == "failed_final"
     assert result["reason"] == "print_delivery_file_missing"
+
+
+
+def test_worker_print_lane_uses_chatgpt_reconstruction_before_packaging(tmp_path):
+    runtime = tmp_path / "runtime"
+    db_path = runtime / "image2_jobs.sqlite"
+    approved = tmp_path / "approved.png"
+    approved.write_bytes(b"approved-preview")
+    approved_sha = hashlib.sha256(approved.read_bytes()).hexdigest()
+    reconstructed = tmp_path / "reconstructed.png"
+    reconstructed.write_bytes(b"chatgpt-reconstructed-preview")
+    reconstructed_sha = hashlib.sha256(reconstructed.read_bytes()).hexdigest()
+    spec = parse_print_spec("定稿，出印刷版，尺寸 80×120cm，200dpi")
+    job = Image2JobStore(db_path=db_path, runtime_root=runtime).enqueue_feishu({
+        "feishu_message_id": "om_print",
+        "chat_id": "oc_chat",
+        "root_id": "om_root",
+        "thread_id": "om_root",
+        "text": "定稿，出印刷版，尺寸 80×120cm，200dpi",
+        "print_request": {"approved_task_id": "img2_preview", "approved_image_path": str(approved), "approved_image_sha256": approved_sha, "spec": spec, "chatgpt_url": "https://chatgpt.com/c/test"},
+    })
+    calls = {}
+
+    def fake_reconstructor(**kwargs):
+        calls["reconstructor"] = {
+            "approved": str(kwargs["approved_image_path"]),
+            "approved_sha256": kwargs["approved_sha256"],
+            "history": kwargs["print_request"].get("chatgpt_url"),
+        }
+        return {"status": "pass", "image_path": str(reconstructed), "image_sha256": reconstructed_sha, "mode": "chatgpt_reconstruction", "attempts": [{"file_upload": True}, {"file_upload": False}]}
+
+    def fake_packager(*, job_dir: Path, approved_image_path: Path, spec: dict[str, object], environ: dict[str, str]):
+        calls["packager"] = {"source": str(approved_image_path), "dpi": spec["dpi"]}
+        psd = job_dir / "print" / "psd" / "unit_flat.psd"
+        pdf = job_dir / "print" / "proof" / "unit_proof.pdf"
+        highres = job_dir / "print" / "highres" / "unit.png"
+        for path, payload in [(psd, b"psd"), (pdf, b"pdf"), (highres, b"png")]:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payload)
+        return {"status": "pass", "psd_path": str(psd), "pdf_path": str(pdf), "highres_path": str(highres), "approved_sha256": reconstructed_sha, "dpi": spec["dpi"]}
+
+    from gateway.image2_worker import run_worker
+
+    result = run_worker(
+        db_path=db_path,
+        runtime_root=runtime,
+        worker_id="print-worker",
+        task_id=str(job["task_id"]),
+        environ={"FEISHU_APP_ID": "app", "FEISHU_APP_SECRET": "secret"},
+        print_packager=fake_packager,
+        print_reconstructor=fake_reconstructor,
+        file_delivery_sender=lambda **_kwargs: {"verified": True},
+    )
+    assert result["status"] == "readback_verified"
+    assert calls["reconstructor"]["approved"] == str(approved)
+    assert calls["reconstructor"]["approved_sha256"] == approved_sha
+    assert calls["reconstructor"]["history"] == "https://chatgpt.com/c/test"
+    assert calls["packager"]["source"] == str(reconstructed)
+    assert result["print_reconstruction"]["mode"] == "chatgpt_reconstruction"
+
+
+def test_worker_print_lane_fails_closed_when_chatgpt_reconstruction_rejects_source_echo(tmp_path):
+    runtime = tmp_path / "runtime"
+    db_path = runtime / "image2_jobs.sqlite"
+    approved = tmp_path / "approved.png"
+    approved.write_bytes(b"approved-preview")
+    approved_sha = hashlib.sha256(approved.read_bytes()).hexdigest()
+    spec = parse_print_spec("定稿，出印刷版，尺寸 80×120cm")
+    job = Image2JobStore(db_path=db_path, runtime_root=runtime).enqueue_feishu({
+        "feishu_message_id": "om_print",
+        "chat_id": "oc_chat",
+        "root_id": "om_root",
+        "thread_id": "om_root",
+        "text": "定稿，出印刷版，尺寸 80×120cm",
+        "print_request": {"approved_task_id": "img2_preview", "approved_image_path": str(approved), "approved_image_sha256": approved_sha, "spec": spec},
+    })
+    from gateway.image2_worker import run_worker
+
+    result = run_worker(
+        db_path=db_path,
+        runtime_root=runtime,
+        worker_id="print-worker",
+        task_id=str(job["task_id"]),
+        environ={"FEISHU_APP_ID": "app", "FEISHU_APP_SECRET": "secret"},
+        print_reconstructor=lambda **_kwargs: {"status": "rejected", "reason": "source_sha_match", "image_path": str(approved), "image_sha256": approved_sha},
+        print_packager=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("packager must not run after rejected ChatGPT reconstruction")),
+        file_delivery_sender=lambda **_kwargs: {"verified": True},
+    )
+    assert result["status"] == "failed_final"
+    assert result["reason"] == "print_reconstruction_failed"
+    assert "source_sha_match" in result["last_error"]
+
+
+def test_reconstruct_print_source_retries_without_file_when_upload_route_is_blocked(tmp_path):
+    approved = tmp_path / "approved.png"
+    approved.write_bytes(b"approved-preview")
+    approved_sha = hashlib.sha256(approved.read_bytes()).hexdigest()
+    out_file = tmp_path / "job" / "print" / "reconstruction" / "candidates" / "chatgpt_rebuilt.png"
+    calls = []
+    timeouts = []
+
+    class Proc:
+        def __init__(self, returncode=0, stdout="[]", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def fake_run(cmd, cwd, env, text, capture_output, timeout):
+        calls.append(list(cmd))
+        timeouts.append(timeout)
+        if "--file" in cmd:
+            return Proc(0, '[{"status":"blocked","file":"-"}]', "blocked")
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        out_file.write_bytes(b"rebuilt-not-source")
+        return Proc(0, '[{"status":"saved","file":"%s","link":"https://chatgpt.com/c/rebuilt"}]' % out_file)
+
+    result = reconstruct_print_source_with_chatgpt(
+        job_dir=tmp_path / "job",
+        approved_image_path=approved,
+        approved_sha256=approved_sha,
+        print_request={"spec": {"width_mm": 800, "height_mm": 1200, "dpi": 200}, "chatgpt_url": "https://chatgpt.com/c/old"},
+        prompt_text="主视觉对象：夏日鲜果冰柠系列",
+        environ={"PATH": "/usr/bin", "IMAGE2_PRINT_RECONSTRUCT_OPENCLI_TIMEOUT": "111", "IMAGE2_PRINT_RECONSTRUCT_SUBPROCESS_TIMEOUT": "222"},
+        command_runner=fake_run,
+    )
+    assert result["status"] == "pass"
+    assert result["image_path"] == str(out_file)
+    assert result["image_sha256"] != approved_sha
+    assert "--file" in calls[0]
+    assert "--history" in calls[0]
+    assert calls[0][calls[0].index("--timeout") + 1] == "111"
+    assert timeouts == [222, 222]
+    assert "--file" not in calls[1]
+    assert "--history" in calls[1]

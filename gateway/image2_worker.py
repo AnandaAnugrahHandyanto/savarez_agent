@@ -15,6 +15,7 @@ from gateway.image2_delivery_contract import evaluate_delivery_contract
 from gateway.image2_feishu_delivery import send_feishu_files_from_print_package, send_feishu_image_from_contract
 from gateway.image2_generation import probe_opencli_browser_state, run_opencli_generation
 from gateway.image2_print import package_flat_print_outputs
+from gateway.image2_print_reconstruction import reconstruct_print_source_with_chatgpt
 from gateway.image2_review_gate import evaluate_review_gate
 from gateway.image2_store import Image2JobStore
 from gateway.image2_visual_reviewer import review_candidate_image
@@ -28,6 +29,7 @@ Reviewer = Callable[..., dict[str, Any]]
 DeliverySender = Callable[..., dict[str, Any]]
 PrintPackager = Callable[..., dict[str, Any]]
 FileDeliverySender = Callable[..., dict[str, Any]]
+PrintReconstructor = Callable[..., dict[str, Any]]
 
 
 FEISHU_IM_FILE_UPLOAD_MAX_BYTES_DEFAULT = 30_000_000
@@ -284,6 +286,7 @@ def run_worker(
     delivery_sender: DeliverySender | None = None,
     print_packager: PrintPackager | None = None,
     file_delivery_sender: FileDeliverySender | None = None,
+    print_reconstructor: PrintReconstructor | None = None,
 ) -> dict[str, Any]:
     """Claim, generate, gate, review, deliver/read-back, or package approved print finals."""
     env = dict(environ if environ is not None else os.environ)
@@ -354,12 +357,83 @@ def run_worker(
                 extra={"print_request": print_request, "approved_sha256_actual": actual_approved_sha, **prompt_common},
                 exit_code=6,
             )
+        store.mark_status(task_id=str(task_id), status="reconstructing_print_source", worker_id=str(worker_id), last_error=None)
+        reconstructor = print_reconstructor or reconstruct_print_source_with_chatgpt
+        try:
+            reconstruction_result = reconstructor(
+                job_dir=job_dir,
+                approved_image_path=approved_path,
+                approved_sha256=expected_approved_sha,
+                print_request=print_request,
+                prompt_text=prompt_text,
+                environ=env,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _terminal_failure(
+                store=store,
+                task_id=str(task_id),
+                worker_id=str(worker_id),
+                job_dir=job_dir,
+                reason="print_reconstruction_failed",
+                last_error=f"print_reconstruction_failed: {exc.__class__.__name__}: {exc}",
+                extra={"print_request": print_request, **prompt_common},
+                exit_code=6,
+            )
+        (job_dir / "print" / "reports").mkdir(parents=True, exist_ok=True)
+        (job_dir / "print" / "reports" / "reconstruction_result.json").write_text(_safe_json(reconstruction_result), encoding="utf-8")
+        if reconstruction_result.get("status") != "pass":
+            return _terminal_failure(
+                store=store,
+                task_id=str(task_id),
+                worker_id=str(worker_id),
+                job_dir=job_dir,
+                reason="print_reconstruction_failed",
+                last_error="print_reconstruction_failed: " + str(reconstruction_result.get("reason") or reconstruction_result.get("status")),
+                extra={"print_request": print_request, "print_reconstruction": reconstruction_result, **prompt_common},
+                exit_code=6,
+            )
+        print_source_path = Path(str(reconstruction_result.get("image_path") or ""))
+        expected_print_source_sha = str(reconstruction_result.get("image_sha256") or "")
+        if not print_source_path.is_file() or not expected_print_source_sha:
+            return _terminal_failure(
+                store=store,
+                task_id=str(task_id),
+                worker_id=str(worker_id),
+                job_dir=job_dir,
+                reason="print_reconstruction_missing_output",
+                last_error="print_reconstruction_missing_output: ChatGPT reconstruction did not return a local image path and sha256",
+                extra={"print_request": print_request, "print_reconstruction": reconstruction_result, **prompt_common},
+                exit_code=6,
+            )
+        actual_print_source_sha = hashlib.sha256(print_source_path.read_bytes()).hexdigest()
+        if actual_print_source_sha != expected_print_source_sha:
+            return _terminal_failure(
+                store=store,
+                task_id=str(task_id),
+                worker_id=str(worker_id),
+                job_dir=job_dir,
+                reason="print_reconstruction_sha_mismatch",
+                last_error="print_reconstruction_sha_mismatch: reconstructed image bytes changed before packaging",
+                extra={"print_request": print_request, "print_reconstruction": reconstruction_result, "print_source_sha256_actual": actual_print_source_sha, **prompt_common},
+                exit_code=6,
+            )
+        if actual_print_source_sha == expected_approved_sha:
+            return _terminal_failure(
+                store=store,
+                task_id=str(task_id),
+                worker_id=str(worker_id),
+                job_dir=job_dir,
+                reason="print_reconstruction_failed",
+                last_error="print_reconstruction_failed: source_sha_match",
+                extra={"print_request": print_request, "print_reconstruction": reconstruction_result, **prompt_common},
+                exit_code=6,
+            )
         store.mark_status(task_id=str(task_id), status="packaging_print_files", worker_id=str(worker_id), last_error=None)
         try:
             packager = print_packager or package_flat_print_outputs
             package_result = packager(
                 job_dir=job_dir,
-                approved_image_path=approved_path,
+                approved_image_path=print_source_path,
                 spec=dict(print_request.get("spec") or {}),
                 environ=env,
             )
@@ -376,15 +450,16 @@ def run_worker(
             )
         (job_dir / "print" / "reports").mkdir(parents=True, exist_ok=True)
         (job_dir / "print" / "reports" / "package_report.json").write_text(_safe_json(package_result), encoding="utf-8")
-        if str(package_result.get("approved_sha256") or expected_approved_sha) != expected_approved_sha:
+        package_source_sha = str(package_result.get("approved_sha256") or "")
+        if package_source_sha != expected_print_source_sha:
             return _terminal_failure(
                 store=store,
                 task_id=str(task_id),
                 worker_id=str(worker_id),
                 job_dir=job_dir,
                 reason="print_package_source_sha_mismatch",
-                last_error="print_package_source_sha_mismatch: package did not use approved preview bytes",
-                extra={"print_request": print_request, "print_package": package_result, **prompt_common},
+                last_error="print_package_source_sha_mismatch: package did not use ChatGPT reconstructed bytes",
+                extra={"print_request": print_request, "print_reconstruction": reconstruction_result, "print_package": package_result, **prompt_common},
                 exit_code=6,
             )
         if package_result.get("status") != "pass":
@@ -395,13 +470,13 @@ def run_worker(
                 job_dir=job_dir,
                 reason="print_package_rejected",
                 last_error="print_package_rejected: " + str(package_result.get("reason") or package_result.get("status")),
-                extra={"print_request": print_request, "print_package": package_result, **prompt_common},
+                extra={"print_request": print_request, "print_reconstruction": reconstruction_result, "print_package": package_result, **prompt_common},
                 exit_code=6,
             )
         files, print_delivery_meta = _build_print_delivery_files(
             package_result=package_result,
             job_dir=job_dir,
-            approved_path=approved_path,
+            approved_path=print_source_path,
             print_request=print_request,
             environ=env,
             packager=packager,
@@ -414,7 +489,7 @@ def run_worker(
                 job_dir=job_dir,
                 reason="print_delivery_file_missing" if print_delivery_meta.get("psd_delivery_mode") == "missing" else "print_delivery_file_too_large",
                 last_error="print_delivery_file_missing: no flat PSD was generated" if print_delivery_meta.get("psd_delivery_mode") == "missing" else "print_delivery_file_too_large: flat PSD exceeds Feishu upload limit and no transfer fallback fits",
-                extra={"print_request": print_request, "print_package": package_result, "print_delivery": print_delivery_meta, **prompt_common},
+                extra={"print_request": print_request, "print_reconstruction": reconstruction_result, "print_package": package_result, "print_delivery": print_delivery_meta, **prompt_common},
                 exit_code=6,
             )
         try:
@@ -430,7 +505,7 @@ def run_worker(
                 job_dir=job_dir,
                 reason="print_delivery_failed",
                 last_error=f"print_delivery_failed: {exc.__class__.__name__}: {exc}",
-                extra={"print_request": print_request, "print_package": package_result, **prompt_common},
+                extra={"print_request": print_request, "print_reconstruction": reconstruction_result, "print_package": package_result, **prompt_common},
                 exit_code=6,
             )
         (job_dir / "print" / "reports" / "delivery_report.json").write_text(_safe_json(delivery_report), encoding="utf-8")
@@ -442,7 +517,7 @@ def run_worker(
                 job_dir=job_dir,
                 reason="print_delivery_readback_failed",
                 last_error="print_delivery_readback_failed: expected verified file read-backs",
-                extra={"print_request": print_request, "print_package": package_result, "print_delivery": delivery_report, **prompt_common},
+                extra={"print_request": print_request, "print_reconstruction": reconstruction_result, "print_package": package_result, "print_delivery": delivery_report, **prompt_common},
                 exit_code=6,
             )
         return _terminal_success(
@@ -450,7 +525,7 @@ def run_worker(
             task_id=str(task_id),
             worker_id=str(worker_id),
             job_dir=job_dir,
-            payload={"print_request": print_request, "print_package": package_result, "print_delivery": delivery_report, **prompt_common},
+            payload={"print_request": print_request, "print_reconstruction": reconstruction_result, "print_package": package_result, "print_delivery": delivery_report, **prompt_common},
             reason="Feishu print files read-back verified",
         )
 

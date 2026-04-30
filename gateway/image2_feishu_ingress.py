@@ -1082,12 +1082,21 @@ def find_latest_verified_image2_preview(
         readback = worker_result.get("delivery_readback") or {}
         if readback.get("verified") is not True or readback.get("readback_msg_type") != "image" or not str(readback.get("message_id") or ""):
             continue
+        generation = worker_result.get("generation_result") or {}
+        if not generation and (job_dir / "generation_result.json").is_file():
+            try:
+                loaded_generation = json.loads((job_dir / "generation_result.json").read_text(encoding="utf-8"))
+                generation = loaded_generation if isinstance(loaded_generation, Mapping) else {}
+            except Exception:
+                generation = {}
         return {
             "task_id": str(item.get("task_id") or ""),
             "job_dir": str(job_dir),
             "approved_image_path": str(image_path),
             "approved_image_sha256": image_sha256,
             "feishu_image_message_id": str(readback.get("message_id") or ""),
+            "chatgpt_url": str(generation.get("link") or generation.get("chatgpt_url") or generation.get("history") or ""),
+            "generation_title": str(generation.get("title") or ""),
         }
     return None
 
@@ -1240,6 +1249,8 @@ def handle_image2_feishu_ingress_event(
                     "approved_image_path": approved["approved_image_path"],
                     "approved_image_sha256": approved.get("approved_image_sha256", ""),
                     "feishu_image_message_id": approved.get("feishu_image_message_id", ""),
+                    "chatgpt_url": approved.get("chatgpt_url", ""),
+                    "generation_title": approved.get("generation_title", ""),
                     "spec": spec,
                 },
             }
