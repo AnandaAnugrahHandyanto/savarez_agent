@@ -266,9 +266,13 @@ def test_report_md_splits_consolidated_and_pruned_sections(curator_env):
     # Both lists exist and are disjoint
     consolidated_names = {e["name"] for e in payload["consolidated"]}
     assert consolidated_names == {"absorbed-skill"}
-    assert payload["pruned"] == ["dead-skill"]
+    # `pruned` holds full dicts {name, source, reason}; `pruned_names` is the
+    # flat list for quick scans / legacy compat.
+    pruned_names = payload["pruned_names"]
+    assert pruned_names == ["dead-skill"]
+    assert all(isinstance(e, dict) and "name" in e for e in payload["pruned"])
     # The union still matches the legacy "archived" field for backward compat
-    assert set(payload["archived"]) == consolidated_names | set(payload["pruned"])
+    assert set(payload["archived"]) == consolidated_names | set(pruned_names)
     # counts exposed
     assert payload["counts"]["consolidated_this_run"] == 1
     assert payload["counts"]["pruned_this_run"] == 1
@@ -281,3 +285,266 @@ def test_report_md_splits_consolidated_and_pruned_sections(curator_env):
     assert "`dead-skill`" in md
     # The old single-lump section should not appear
     assert "### Skills archived" not in md
+
+
+# ---------------------------------------------------------------------------
+# _parse_structured_summary — extracting the model's required YAML block
+# ---------------------------------------------------------------------------
+
+
+def test_parse_structured_summary_happy_path(curator_env):
+    text = (
+        "Long human summary here. I processed clusters X, Y, Z.\n\n"
+        "## Structured summary (required)\n"
+        "```yaml\n"
+        "consolidations:\n"
+        "  - from: anthropic-api\n"
+        "    into: llm-providers\n"
+        "    reason: duplicate of the generic llm-providers skill\n"
+        "  - from: openai-api\n"
+        "    into: llm-providers\n"
+        "    reason: same — merged with sibling\n"
+        "prunings:\n"
+        "  - name: random-old-notes\n"
+        "    reason: pre-curator garbage, no overlap\n"
+        "```\n"
+    )
+    out = curator_env._parse_structured_summary(text)
+    assert len(out["consolidations"]) == 2
+    assert out["consolidations"][0] == {
+        "from": "anthropic-api",
+        "into": "llm-providers",
+        "reason": "duplicate of the generic llm-providers skill",
+    }
+    assert len(out["prunings"]) == 1
+    assert out["prunings"][0]["reason"] == "pre-curator garbage, no overlap"
+
+
+def test_parse_structured_summary_missing_block(curator_env):
+    out = curator_env._parse_structured_summary("No block in this text.")
+    assert out == {"consolidations": [], "prunings": []}
+
+
+def test_parse_structured_summary_malformed_yaml(curator_env):
+    text = "```yaml\nthis: is\n  not: [valid yaml\n```"
+    out = curator_env._parse_structured_summary(text)
+    assert out == {"consolidations": [], "prunings": []}
+
+
+def test_parse_structured_summary_empty_lists(curator_env):
+    text = "```yaml\nconsolidations: []\nprunings: []\n```"
+    out = curator_env._parse_structured_summary(text)
+    assert out == {"consolidations": [], "prunings": []}
+
+
+def test_parse_structured_summary_ignores_bare_strings(curator_env):
+    """Entries that aren't dicts (e.g. a model wrote bare names) are skipped."""
+    text = (
+        "```yaml\n"
+        "consolidations:\n"
+        "  - just-a-bare-string\n"
+        "  - from: real-entry\n"
+        "    into: umbrella\n"
+        "    reason: valid\n"
+        "prunings: []\n"
+        "```"
+    )
+    out = curator_env._parse_structured_summary(text)
+    assert len(out["consolidations"]) == 1
+    assert out["consolidations"][0]["from"] == "real-entry"
+
+
+def test_parse_structured_summary_missing_required_fields(curator_env):
+    """Consolidation entries without from+into are skipped."""
+    text = (
+        "```yaml\n"
+        "consolidations:\n"
+        "  - from: only-from\n"
+        "    reason: no into\n"
+        "  - into: only-into\n"
+        "  - from: good\n"
+        "    into: umbrella\n"
+        "prunings: []\n"
+        "```"
+    )
+    out = curator_env._parse_structured_summary(text)
+    assert len(out["consolidations"]) == 1
+    assert out["consolidations"][0]["from"] == "good"
+
+
+# ---------------------------------------------------------------------------
+# _reconcile_classification — merging model block with heuristic
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_model_wins_when_umbrella_exists(curator_env):
+    """Model claim + umbrella in destinations → model authority (with reason)."""
+    out = curator_env._reconcile_classification(
+        removed=["anthropic-api"],
+        heuristic={"consolidated": [], "pruned": [{"name": "anthropic-api"}]},
+        model_block={
+            "consolidations": [{
+                "from": "anthropic-api",
+                "into": "llm-providers",
+                "reason": "duplicate",
+            }],
+            "prunings": [],
+        },
+        destinations={"llm-providers"},
+    )
+    assert len(out["consolidated"]) == 1
+    e = out["consolidated"][0]
+    assert e["name"] == "anthropic-api"
+    assert e["into"] == "llm-providers"
+    assert e["reason"] == "duplicate"
+    assert e["source"] == "model"
+    assert out["pruned"] == []
+
+
+def test_reconcile_model_hallucinates_umbrella(curator_env):
+    """Model names a non-existent umbrella — downgrade, prefer heuristic if any."""
+    out = curator_env._reconcile_classification(
+        removed=["thing"],
+        heuristic={
+            "consolidated": [{"name": "thing", "into": "real-umbrella", "evidence": "..."}],
+            "pruned": [],
+        },
+        model_block={
+            "consolidations": [{
+                "from": "thing",
+                "into": "nonexistent-umbrella",
+                "reason": "confused",
+            }],
+            "prunings": [],
+        },
+        destinations={"real-umbrella"},
+    )
+    assert len(out["consolidated"]) == 1
+    e = out["consolidated"][0]
+    assert e["into"] == "real-umbrella"
+    assert "tool-call audit" in e["source"]
+    assert e["model_claimed_into"] == "nonexistent-umbrella"
+
+
+def test_reconcile_model_hallucinates_with_no_heuristic_evidence(curator_env):
+    """Model names a non-existent umbrella AND no tool-call evidence → prune."""
+    out = curator_env._reconcile_classification(
+        removed=["ghost"],
+        heuristic={"consolidated": [], "pruned": [{"name": "ghost"}]},
+        model_block={
+            "consolidations": [{
+                "from": "ghost",
+                "into": "nonexistent",
+                "reason": "wrong",
+            }],
+            "prunings": [],
+        },
+        destinations={"real-umbrella"},
+    )
+    assert out["consolidated"] == []
+    assert len(out["pruned"]) == 1
+    assert "fallback" in out["pruned"][0]["source"]
+
+
+def test_reconcile_heuristic_catches_model_omission(curator_env):
+    """Model forgot to list a consolidation, heuristic found it."""
+    out = curator_env._reconcile_classification(
+        removed=["forgotten"],
+        heuristic={
+            "consolidated": [{
+                "name": "forgotten",
+                "into": "umbrella",
+                "evidence": "write_file on umbrella referenced forgotten.md",
+            }],
+            "pruned": [],
+        },
+        model_block={"consolidations": [], "prunings": []},
+        destinations={"umbrella"},
+    )
+    assert len(out["consolidated"]) == 1
+    e = out["consolidated"][0]
+    assert e["into"] == "umbrella"
+    assert "model omitted" in e["source"]
+
+
+def test_reconcile_model_prunes_with_reason(curator_env):
+    """Model says pruned, heuristic agrees, we surface the reason."""
+    out = curator_env._reconcile_classification(
+        removed=["stale-skill"],
+        heuristic={"consolidated": [], "pruned": [{"name": "stale-skill"}]},
+        model_block={
+            "consolidations": [],
+            "prunings": [{"name": "stale-skill", "reason": "superseded by bundled skill"}],
+        },
+        destinations=set(),
+    )
+    assert len(out["pruned"]) == 1
+    e = out["pruned"][0]
+    assert e["reason"] == "superseded by bundled skill"
+    assert e["source"] == "model"
+
+
+def test_reconcile_model_block_visible_in_full_report(curator_env):
+    """End-to-end: LLM final response with the YAML block → reasons in REPORT.md."""
+    import json as _json
+    from datetime import datetime as _dt, timezone as _tz
+
+    start = _dt.now(_tz.utc)
+    before = [
+        {"name": "anthropic-api", "state": "active", "pinned": False},
+        {"name": "stale-thing", "state": "stale", "pinned": False},
+    ]
+    after = [{"name": "llm-providers", "state": "active", "pinned": False}]
+
+    llm_final_text = (
+        "Processed 3 clusters. Absorbed anthropic-api into llm-providers.\n\n"
+        "## Structured summary (required)\n"
+        "```yaml\n"
+        "consolidations:\n"
+        "  - from: anthropic-api\n"
+        "    into: llm-providers\n"
+        "    reason: duplicate content, now a subsection\n"
+        "prunings:\n"
+        "  - name: stale-thing\n"
+        "    reason: pre-curator junk, no overlap with anything\n"
+        "```\n"
+    )
+
+    run_dir = curator_env._write_run_report(
+        started_at=start,
+        elapsed_seconds=30.0,
+        auto_counts={"checked": 2, "marked_stale": 0, "archived": 0, "reactivated": 0},
+        auto_summary="none",
+        before_report=before,
+        before_names={r["name"] for r in before},
+        after_report=after,
+        llm_meta={
+            "final": llm_final_text,
+            "summary": "1 consolidated, 1 pruned",
+            "model": "m",
+            "provider": "p",
+            "error": None,
+            "tool_calls": [
+                {"name": "skill_manage", "arguments": _json.dumps({
+                    "action": "create",
+                    "name": "llm-providers",
+                    "content": "# llm-providers\nIncludes anthropic-api",
+                })},
+            ],
+        },
+    )
+
+    payload = _json.loads((run_dir / "run.json").read_text())
+    cons = payload["consolidated"][0]
+    assert cons["name"] == "anthropic-api"
+    assert cons["into"] == "llm-providers"
+    assert cons["reason"] == "duplicate content, now a subsection"
+    assert cons["source"] == "model+audit"  # model AND heuristic both had it
+
+    pruned = payload["pruned"][0]
+    assert pruned["name"] == "stale-thing"
+    assert pruned["reason"] == "pre-curator junk, no overlap with anything"
+
+    md = (run_dir / "REPORT.md").read_text()
+    assert "duplicate content, now a subsection" in md
+    assert "pre-curator junk" in md

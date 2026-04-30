@@ -347,10 +347,27 @@ CURATOR_REVIEW_PROMPT = (
     "cluster. If you end the pass with fewer than 10 archives, you "
     "stopped too early — go back and look at the clusters you left "
     "alone.\n\n"
-    "When done, write a summary with: clusters processed, skills "
-    "patched/absorbed, skills demoted to references/templates/scripts, "
-    "skills archived, new umbrellas created, and clusters you "
-    "deliberately left alone with one line each."
+    "When done, write a human summary AND a structured machine-readable "
+    "block so downstream tooling can distinguish consolidation from "
+    "pruning. Format EXACTLY:\n\n"
+    "## Structured summary (required)\n"
+    "```yaml\n"
+    "consolidations:\n"
+    "  - from: <old-skill-name>\n"
+    "    into: <umbrella-skill-name>\n"
+    "    reason: <one short sentence — why merged, not just 'similar'>\n"
+    "prunings:\n"
+    "  - name: <skill-name>\n"
+    "    reason: <one short sentence — why archived with no merge target>\n"
+    "```\n\n"
+    "Every skill you moved to .archive/ MUST appear in exactly one of the "
+    "two lists. If you consolidated X into umbrella Y (patched Y, wrote "
+    "a references file to Y, or created Y with X's content absorbed), X "
+    "goes under `consolidations` with `into: Y`. If you archived X with "
+    "no absorption — truly stale, irrelevant, or obsolete — X goes under "
+    "`prunings`. Leave a list empty (`consolidations: []`) if none. Do "
+    "not omit the block. The block comes AFTER your human-readable "
+    "summary of clusters processed, patches made, and decisions left alone."
 )
 
 
@@ -488,6 +505,179 @@ def _classify_removed_skills(
     return {"consolidated": consolidated, "pruned": pruned}
 
 
+def _parse_structured_summary(
+    llm_final: str,
+) -> Dict[str, List[Dict[str, str]]]:
+    """Extract the structured YAML block from the curator's final response.
+
+    The curator prompt requires a fenced ```yaml block under
+    ``## Structured summary (required)`` with ``consolidations:`` and
+    ``prunings:`` lists. This parses it tolerantly:
+
+    - Missing block → returns empty lists (we'll fall back to heuristic).
+    - Malformed YAML → returns empty lists and we rely on heuristic.
+    - Partial block (e.g. only consolidations) → returns what we could parse.
+
+    Returns ``{"consolidations": [{"from", "into", "reason"}, ...],
+               "prunings":       [{"name", "reason"}, ...]}``.
+    """
+    empty = {"consolidations": [], "prunings": []}
+    if not llm_final or not isinstance(llm_final, str):
+        return empty
+
+    # Find the YAML fenced block. We look for ```yaml ... ``` specifically
+    # rather than any fenced block so we don't accidentally pick up a code
+    # sample the model quoted elsewhere.
+    import re
+    match = re.search(
+        r"```ya?ml\s*\n(.*?)\n```",
+        llm_final,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if not match:
+        return empty
+
+    body = match.group(1)
+
+    # Prefer PyYAML when available — every hermes install already has it
+    # (config.yaml loader). Fall back to a hand parser for paranoia.
+    try:
+        import yaml  # type: ignore
+        data = yaml.safe_load(body)
+    except Exception:
+        return empty
+
+    if not isinstance(data, dict):
+        return empty
+
+    out: Dict[str, List[Dict[str, str]]] = {"consolidations": [], "prunings": []}
+    cons_raw = data.get("consolidations") or []
+    prun_raw = data.get("prunings") or []
+
+    if isinstance(cons_raw, list):
+        for entry in cons_raw:
+            if not isinstance(entry, dict):
+                continue
+            frm = entry.get("from")
+            into = entry.get("into")
+            if not (isinstance(frm, str) and frm.strip()
+                    and isinstance(into, str) and into.strip()):
+                continue
+            reason = entry.get("reason")
+            out["consolidations"].append({
+                "from": frm.strip(),
+                "into": into.strip(),
+                "reason": (reason or "").strip() if isinstance(reason, str) else "",
+            })
+
+    if isinstance(prun_raw, list):
+        for entry in prun_raw:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            if not (isinstance(name, str) and name.strip()):
+                continue
+            reason = entry.get("reason")
+            out["prunings"].append({
+                "name": name.strip(),
+                "reason": (reason or "").strip() if isinstance(reason, str) else "",
+            })
+
+    return out
+
+
+def _reconcile_classification(
+    removed: List[str],
+    heuristic: Dict[str, List[Dict[str, Any]]],
+    model_block: Dict[str, List[Dict[str, str]]],
+    destinations: Set[str],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Merge heuristic (tool-call evidence) with the model's structured block.
+
+    Rules:
+    - Model-declared consolidation wins when its ``into`` target exists
+      in ``destinations`` (survived or newly-created). This gives the
+      model authority over intent + rationale.
+    - Model-declared consolidation whose ``into`` target does NOT exist is
+      downgraded: the model hallucinated an umbrella. We prefer the
+      heuristic's finding for that skill, or fall back to pruned.
+    - Heuristic-only finding (model didn't mention it, tool calls confirm)
+      is preserved as a consolidation, marked ``source="tool-call audit"``.
+    - Model-declared pruning is accepted unless the heuristic has
+      tool-call evidence that contradicts it (rare — the heuristic would
+      have flagged consolidation). In that case we log both.
+
+    Every removed skill is placed in exactly one bucket.
+    """
+    heur_cons = {e["name"]: e for e in heuristic.get("consolidated", [])}
+    heur_pruned = {e["name"] for e in heuristic.get("pruned", [])}
+
+    model_cons = {e["from"]: e for e in model_block.get("consolidations", [])}
+    model_pruned = {e["name"]: e for e in model_block.get("prunings", [])}
+
+    consolidated: List[Dict[str, Any]] = []
+    pruned: List[Dict[str, Any]] = []
+
+    for name in removed:
+        mc = model_cons.get(name)
+        mp = model_pruned.get(name)
+        hc = heur_cons.get(name)
+
+        # Model says consolidated — trust it if the destination is real.
+        if mc and mc.get("into") in destinations:
+            entry: Dict[str, Any] = {
+                "name": name,
+                "into": mc["into"],
+                "source": "model" + ("+audit" if hc else ""),
+                "reason": mc.get("reason") or "",
+            }
+            if hc and hc.get("evidence"):
+                entry["evidence"] = hc["evidence"]
+            consolidated.append(entry)
+            continue
+
+        # Model says consolidated but the umbrella doesn't exist —
+        # hallucination. Fall back to heuristic or prune.
+        if mc and mc.get("into") not in destinations:
+            if hc:
+                consolidated.append({
+                    "name": name,
+                    "into": hc["into"],
+                    "source": "tool-call audit (model named missing umbrella)",
+                    "reason": "",
+                    "evidence": hc.get("evidence", ""),
+                    "model_claimed_into": mc["into"],
+                })
+            else:
+                pruned.append({
+                    "name": name,
+                    "source": "fallback (model named missing umbrella, no tool-call evidence)",
+                    "reason": "",
+                })
+            continue
+
+        # Heuristic found consolidation the model didn't mention.
+        if hc:
+            consolidated.append({
+                "name": name,
+                "into": hc["into"],
+                "source": "tool-call audit (model omitted from structured block)",
+                "reason": "",
+                "evidence": hc.get("evidence", ""),
+            })
+            continue
+
+        # Model says pruned (or no mention + no heuristic evidence).
+        reason = mp.get("reason", "") if mp else ""
+        pruned.append({
+            "name": name,
+            "source": "model" if mp else "no-evidence fallback",
+            "reason": reason,
+        })
+
+    return {"consolidated": consolidated, "pruned": pruned}
+
+
 def _write_run_report(
     *,
     started_at: datetime,
@@ -549,11 +739,29 @@ def _write_run_report(
     # (archived for staleness, content not preserved elsewhere). The old
     # "Skills archived" section lumped both together, which misled users
     # into thinking consolidated skills had been pruned.
-    classification = _classify_removed_skills(
+    #
+    # Classification strategy:
+    # 1. Parse the curator's structured YAML block from its final response.
+    #    The curator is now prompted to emit consolidations/prunings lists
+    #    with short rationale. The model has intent visibility the tool
+    #    calls don't.
+    # 2. Run the tool-call heuristic as a ground-truth audit.
+    # 3. Reconcile: model gets authority over intent + rationale, heuristic
+    #    catches hallucination (umbrella doesn't exist) and omission
+    #    (model forgot to list an actual consolidation).
+    heuristic = _classify_removed_skills(
         removed=removed,
         added=added,
         after_names=after_names,
         tool_calls=llm_meta.get("tool_calls", []) or [],
+    )
+    model_block = _parse_structured_summary(llm_meta.get("final", "") or "")
+    destinations = set(after_names) | set(added or [])
+    classification = _reconcile_classification(
+        removed=removed,
+        heuristic=heuristic,
+        model_block=model_block,
+        destinations=destinations,
     )
     consolidated = classification["consolidated"]
     pruned = classification["pruned"]
@@ -578,7 +786,8 @@ def _write_run_report(
         "tool_call_counts": tc_counts,
         "archived": removed,
         "consolidated": consolidated,
-        "pruned": [p["name"] for p in pruned],
+        "pruned": pruned,
+        "pruned_names": [p["name"] for p in pruned],
         "added": added,
         "state_transitions": transitions,
         "llm_final": llm_meta.get("final", ""),
@@ -667,7 +876,22 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
         for entry in consolidated[:SHOW]:
             name = entry.get("name", "?")
             into = entry.get("into", "?")
-            lines.append(f"- `{name}` → merged into `{into}`")
+            reason = (entry.get("reason") or "").strip()
+            source = entry.get("source", "")
+            line = f"- `{name}` → merged into `{into}`"
+            if reason:
+                line += f" — {reason}"
+            if source and source.startswith("tool-call audit"):
+                # The model didn't enumerate this one — surface that to the
+                # user so they know why the row has no rationale.
+                line += f"  _(detected via {source})_"
+            lines.append(line)
+            if entry.get("model_claimed_into"):
+                lines.append(
+                    f"  ⚠ The curator's summary named `{entry['model_claimed_into']}` "
+                    "as the umbrella but that skill doesn't exist post-run; "
+                    "showing the tool-call audit's finding instead."
+                )
         if len(consolidated) > SHOW:
             lines.append(f"- … and {len(consolidated) - SHOW} more (see `run.json`)")
         lines.append("")
@@ -684,8 +908,19 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
             "Restore any via `hermes curator restore <name>`._\n"
         )
         SHOW = 50
-        for n in pruned[:SHOW]:
-            lines.append(f"- `{n}`")
+        for entry in pruned[:SHOW]:
+            # Entries are dicts with {name, source, reason} when written via
+            # the reconciler, or bare strings when an older format slipped
+            # through. Handle both.
+            if isinstance(entry, dict):
+                name = entry.get("name", "?")
+                reason = (entry.get("reason") or "").strip()
+                line = f"- `{name}`"
+                if reason:
+                    line += f" — {reason}"
+                lines.append(line)
+            else:
+                lines.append(f"- `{entry}`")
         if len(pruned) > SHOW:
             lines.append(f"- … and {len(pruned) - SHOW} more (see `run.json`)")
         lines.append("")
