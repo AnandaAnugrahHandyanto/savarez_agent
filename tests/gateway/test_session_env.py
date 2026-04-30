@@ -316,9 +316,9 @@ def test_set_session_env_includes_normalized_channel_identity():
     tokens = runner._set_session_env(context)
     try:
         assert get_session_env("HERMES_SESSION_CHANNEL_IDENTITY") == (
-            '{"platform":"discord","channel_type":"channel",'
-            '"channel_id":"channel-123","channel_name":"Project Example",'
-            '"thread_id":"thread-456","parent_channel_id":"parent-789"}'
+            '{"channel_id":"channel-123","channel_name":"Project Example",'
+            '"channel_type":"channel","parent_channel_id":"parent-789",'
+            '"platform":"discord","thread_id":"thread-456"}'
         )
     finally:
         runner._clear_session_env(tokens)
