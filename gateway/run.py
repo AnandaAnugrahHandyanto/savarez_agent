@@ -4571,10 +4571,21 @@ class GatewayRunner:
 
                 _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
                 _msg_runtime = _resolve_runtime_agent_kwargs()
+                _msg_config_ctx = None
+                try:
+                    _msg_cfg = _load_gateway_config()
+                    _msg_model_cfg = _msg_cfg.get("model", {})
+                    if isinstance(_msg_model_cfg, dict):
+                        _msg_raw_ctx = _msg_model_cfg.get("context_length")
+                        if _msg_raw_ctx is not None:
+                            _msg_config_ctx = int(_msg_raw_ctx)
+                except Exception:
+                    pass
                 _msg_ctx_len = get_model_context_length(
                     self._model,
                     base_url=self._base_url or _msg_runtime.get("base_url") or "",
                     api_key=_msg_runtime.get("api_key") or "",
+                    config_context_length=_msg_config_ctx,
                 )
                 _ctx_result = await preprocess_context_references_async(
                     message_text,
@@ -6287,6 +6298,16 @@ class GatewayRunner:
                         lines.append(f"Provider: {plabel}")
                         mi = result.model_info
                         from hermes_cli.model_switch import resolve_display_context_length
+                        _sw_config_ctx = None
+                        try:
+                            _sw_cfg = _load_gateway_config()
+                            _sw_model_cfg = _sw_cfg.get("model", {})
+                            if isinstance(_sw_model_cfg, dict):
+                                _sw_raw = _sw_model_cfg.get("context_length")
+                                if _sw_raw is not None:
+                                    _sw_config_ctx = int(_sw_raw)
+                        except Exception:
+                            pass
                         ctx = resolve_display_context_length(
                             result.new_model,
                             result.target_provider,
@@ -6294,6 +6315,7 @@ class GatewayRunner:
                             api_key=result.api_key or current_api_key or "",
                             model_info=mi,
                             custom_providers=custom_provs,
+                            config_context_length=_sw_config_ctx,
                         )
                         if ctx:
                             lines.append(f"Context: {ctx:,} tokens")
@@ -6436,6 +6458,16 @@ class GatewayRunner:
         # Copilot, and Nous-enforced caps win over the raw models.dev entry.
         mi = result.model_info
         from hermes_cli.model_switch import resolve_display_context_length
+        _sw2_config_ctx = None
+        try:
+            _sw2_cfg = _load_gateway_config()
+            _sw2_model_cfg = _sw2_cfg.get("model", {})
+            if isinstance(_sw2_model_cfg, dict):
+                _sw2_raw = _sw2_model_cfg.get("context_length")
+                if _sw2_raw is not None:
+                    _sw2_config_ctx = int(_sw2_raw)
+        except Exception:
+            pass
         ctx = resolve_display_context_length(
             result.new_model,
             result.target_provider,
@@ -6443,6 +6475,7 @@ class GatewayRunner:
             api_key=result.api_key or current_api_key or "",
             model_info=mi,
             custom_providers=custom_provs,
+            config_context_length=_sw2_config_ctx,
         )
         if ctx:
             lines.append(f"Context: {ctx:,} tokens")
