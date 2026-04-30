@@ -1,6 +1,7 @@
 """Tests for hermes_cli.gateway."""
 
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch, call
 
 import hermes_cli.gateway as gateway
@@ -107,6 +108,23 @@ def test_gateway_start_in_container_with_operational_systemd_uses_systemd(monkey
     gateway.gateway_command(args)
 
     assert calls == [False]
+
+
+def test_run_gateway_handles_keyboardinterrupt_cleanly(monkeypatch, capsys):
+    fake_gateway_run = ModuleType("gateway.run")
+    fake_gateway_run.start_gateway = lambda **kwargs: object()
+    monkeypatch.setitem(sys.modules, "gateway.run", fake_gateway_run)
+
+    def raise_keyboardinterrupt(_coro):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(gateway.asyncio, "run", raise_keyboardinterrupt)
+
+    gateway.run_gateway()
+
+    captured = capsys.readouterr()
+    assert "Gateway stopped." in captured.out
+    assert "KeyboardInterrupt" not in captured.err
 
 
 def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys):
