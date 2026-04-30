@@ -2,10 +2,20 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 
-def _make_adapter(require_mention=None, free_response_chats=None, mention_patterns=None):
+@pytest.fixture(autouse=True)
+def _clear_telegram_group_env(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_ALLOWED_THREADS", raising=False)
+    monkeypatch.delenv("TELEGRAM_FREE_RESPONSE_CHATS", raising=False)
+    monkeypatch.delenv("TELEGRAM_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("TELEGRAM_MENTION_PATTERNS", raising=False)
+
+
+def _make_adapter(require_mention=None, free_response_chats=None, mention_patterns=None, allowed_threads=None):
     from gateway.platforms.telegram import TelegramAdapter
 
     extra = {}
@@ -13,6 +23,8 @@ def _make_adapter(require_mention=None, free_response_chats=None, mention_patter
         extra["require_mention"] = require_mention
     if free_response_chats is not None:
         extra["free_response_chats"] = free_response_chats
+    if allowed_threads is not None:
+        extra["allowed_threads"] = allowed_threads
     if mention_patterns is not None:
         extra["mention_patterns"] = mention_patterns
 
@@ -28,7 +40,16 @@ def _make_adapter(require_mention=None, free_response_chats=None, mention_patter
     return adapter
 
 
-def _group_message(text="hello", *, chat_id=-100, reply_to_bot=False, entities=None, caption=None, caption_entities=None):
+def _group_message(
+    text="hello",
+    *,
+    chat_id=-100,
+    thread_id=None,
+    reply_to_bot=False,
+    entities=None,
+    caption=None,
+    caption_entities=None,
+):
     reply_to_message = None
     if reply_to_bot:
         reply_to_message = SimpleNamespace(from_user=SimpleNamespace(id=999))
@@ -38,6 +59,7 @@ def _group_message(text="hello", *, chat_id=-100, reply_to_bot=False, entities=N
         entities=entities or [],
         caption_entities=caption_entities or [],
         chat=SimpleNamespace(id=chat_id, type="group"),
+        message_thread_id=thread_id,
         reply_to_message=reply_to_message,
     )
 
@@ -69,6 +91,44 @@ def test_free_response_chats_bypass_mention_requirement():
     assert adapter._should_process_message(_group_message("hello everyone", chat_id=-201)) is False
 
 
+def test_allowed_threads_limit_processing_to_one_topic():
+    adapter = _make_adapter(
+        require_mention=True,
+        free_response_chats=["-200"],
+        allowed_threads=["-200:159975"],
+    )
+
+    assert adapter._should_process_message(
+        _group_message("hello everyone", chat_id=-200, thread_id=159975)
+    ) is True
+    assert adapter._should_process_message(
+        _group_message("hello everyone", chat_id=-200, thread_id=159976)
+    ) is False
+    assert adapter._should_process_message(
+        _group_message("hello everyone", chat_id=-200)
+    ) is False
+
+
+def test_allowed_threads_block_other_topics_even_when_explicitly_triggered():
+    adapter = _make_adapter(
+        require_mention=True,
+        free_response_chats=["-200"],
+        allowed_threads=["-200:159975"],
+    )
+    mentioned = _group_message(
+        "hi @hermes_bot",
+        chat_id=-200,
+        thread_id=159976,
+        entities=[_mention_entity("hi @hermes_bot")],
+    )
+    replied = _group_message("replying", chat_id=-200, thread_id=159976, reply_to_bot=True)
+    commanded = _group_message("/status", chat_id=-200, thread_id=159976)
+
+    assert adapter._should_process_message(mentioned) is False
+    assert adapter._should_process_message(replied) is False
+    assert adapter._should_process_message(commanded, is_command=True) is False
+
+
 def test_regex_mention_patterns_allow_custom_wake_words():
     adapter = _make_adapter(require_mention=True, mention_patterns=[r"^\s*chompy\b"])
 
@@ -93,7 +153,9 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
         "  mention_patterns:\n"
         "    - \"^\\\\s*chompy\\\\b\"\n"
         "  free_response_chats:\n"
-        "    - \"-123\"\n",
+        "    - \"-123\"\n"
+        "  allowed_threads:\n"
+        "    - \"-123:456\"\n",
         encoding="utf-8",
     )
 
@@ -101,6 +163,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     monkeypatch.delenv("TELEGRAM_REQUIRE_MENTION", raising=False)
     monkeypatch.delenv("TELEGRAM_MENTION_PATTERNS", raising=False)
     monkeypatch.delenv("TELEGRAM_FREE_RESPONSE_CHATS", raising=False)
+    monkeypatch.delenv("TELEGRAM_ALLOWED_THREADS", raising=False)
 
     config = load_gateway_config()
 
@@ -108,3 +171,4 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     assert __import__("os").environ["TELEGRAM_REQUIRE_MENTION"] == "true"
     assert json.loads(__import__("os").environ["TELEGRAM_MENTION_PATTERNS"]) == [r"^\s*chompy\b"]
     assert __import__("os").environ["TELEGRAM_FREE_RESPONSE_CHATS"] == "-123"
+    assert __import__("os").environ["TELEGRAM_ALLOWED_THREADS"] == "-123:456"

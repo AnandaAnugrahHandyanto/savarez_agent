@@ -37,7 +37,7 @@ def _clear_auth_env(monkeypatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
-def _make_event(platform: Platform, user_id: str, chat_id: str) -> MessageEvent:
+def _make_event(platform: Platform, user_id: str, chat_id: str, *, chat_type: str = "dm") -> MessageEvent:
     return MessageEvent(
         text="hello",
         message_id="m1",
@@ -46,7 +46,7 @@ def _make_event(platform: Platform, user_id: str, chat_id: str) -> MessageEvent:
             user_id=user_id,
             chat_id=chat_id,
             user_name="tester",
-            chat_type="dm",
+            chat_type=chat_type,
         ),
     )
 
@@ -126,6 +126,26 @@ def test_star_wildcard_works_for_any_platform(monkeypatch):
         chat_id="123456789",
         user_name="stranger",
         chat_type="dm",
+    )
+    assert runner._is_user_authorized(source) is True
+
+
+def test_telegram_free_response_chat_authorizes_group_participants(monkeypatch):
+    """Configured Telegram free-response chats should bypass user auth in groups."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_FREE_RESPONSE_CHATS", "-1003839624196")
+
+    runner, _adapter = _make_runner(
+        Platform.TELEGRAM,
+        GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")}),
+    )
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="5313240810",
+        chat_id="-1003839624196",
+        user_name="block chain",
+        chat_type="group",
     )
     assert runner._is_user_authorized(source) is True
 

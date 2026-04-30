@@ -14,6 +14,7 @@ Usage:
 """
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import os
@@ -2320,6 +2321,22 @@ class GatewayRunner:
         if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in ("true", "1", "yes"):
             return True
 
+        # Telegram free-response chats are intended to behave like open group
+        # topics where any participant may speak without mention-gating. Honor
+        # that allowlist at the authorization layer too; otherwise strangers in
+        # those chats are still dropped before TelegramAdapter can process them.
+        if (
+            source.platform == Platform.TELEGRAM
+            and source.chat_type in ("group", "thread")
+            and source.chat_id
+        ):
+            telegram_chat_allowlist = os.getenv("TELEGRAM_FREE_RESPONSE_CHATS", "")
+            allowed_chat_ids = {
+                part.strip() for part in telegram_chat_allowlist.split(",") if part.strip()
+            }
+            if str(source.chat_id).strip() in allowed_chat_ids:
+                return True
+
         # Check pairing store (always checked, regardless of allowlists)
         platform_name = source.platform.value if source.platform else ""
         if self.pairing_store.is_approved(platform_name, user_id):
@@ -3088,6 +3105,50 @@ class GatewayRunner:
                 logger.debug("@ context reference expansion failed: %s", exc)
 
         return message_text
+
+    def _build_clarify_callback(
+        self,
+        adapter,
+        source,
+        session_key: str,
+        loop,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout_seconds: int = 600,
+    ):
+        """Bridge the sync clarify tool callback to an async platform prompt."""
+        if getattr(type(adapter), "send_clarify_prompt", None) is None:
+            return None
+
+        def _clarify_sync(question: str, choices: Optional[List[str]] = None) -> str:
+            response_future: concurrent.futures.Future = concurrent.futures.Future()
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    adapter.send_clarify_prompt(
+                        chat_id=source.chat_id,
+                        question=question,
+                        choices=choices,
+                        session_key=session_key,
+                        response_future=response_future,
+                        metadata=metadata,
+                    ),
+                    loop,
+                ).result(timeout=15)
+            except Exception as exc:
+                logger.error("Failed to send clarify prompt: %s", exc)
+                return (
+                    "The clarify prompt could not be delivered to the user. "
+                    f"Send failure: {exc}"
+                )
+
+            try:
+                return str(response_future.result(timeout=timeout_seconds)).strip()
+            except concurrent.futures.TimeoutError:
+                return (
+                    "The user did not provide a response within the time limit. "
+                    "Use your best judgment and proceed with a reasonable default."
+                )
+
+        return _clarify_sync
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str):
         """Inner handler that runs under the _running_agents sentinel guard."""
@@ -7918,6 +7979,13 @@ class GatewayRunner:
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
+            agent.clarify_callback = self._build_clarify_callback(
+                adapter=_status_adapter,
+                source=source,
+                session_key=session_key,
+                loop=_loop_for_step,
+                metadata=_status_thread_metadata,
+            ) if _status_adapter else None
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides")

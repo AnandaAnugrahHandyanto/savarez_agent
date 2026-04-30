@@ -8,6 +8,8 @@ Uses python-telegram-bot library for:
 """
 
 import asyncio
+import concurrent.futures
+import itertools
 import json
 import logging
 import os
@@ -162,6 +164,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Clarify prompt state: clarify_id -> pending response metadata
+        self._clarify_state: Dict[int, Dict[str, Any]] = {}
 
     def _fallback_ips(self) -> list[str]:
         """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
@@ -1025,13 +1029,16 @@ class TelegramAdapter(BasePlatformAdapter):
         self, chat_id: str, prompt: str, default: str = "",
         session_key: str = "",
     ) -> SendResult:
-        """Send an inline-keyboard update prompt (Yes / No buttons).
+        """Send an inline update prompt (Yes/No) to Telegram.
 
-        Used by the gateway ``/update`` watcher when ``hermes update --gateway``
-        needs user input (stash restore, config migration).
+        The response will be written to ``~/.hermes/.update_response`` by the
+        callback-query handler.  ``session_key`` is accepted for API symmetry but
+        isn't currently needed because there is only ever one update prompt at a
+        time.
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+
         try:
             default_hint = f" (default: {default})" if default else ""
             text = f"⚕ *Update needs your input:*\n\n{prompt}{default_hint}"
@@ -1050,6 +1057,77 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.warning("[%s] send_update_prompt failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def send_clarify_prompt(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[List[str]] = None,
+        session_key: str = "",
+        response_future: Optional[concurrent.futures.Future] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a clarify prompt to Telegram and track the pending response."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            if not hasattr(self, "_clarify_counter"):
+                self._clarify_counter = itertools.count(1)
+            clarify_id = next(self._clarify_counter)
+            cleaned_choices = [str(c).strip() for c in (choices or []) if str(c).strip()]
+            is_open_ended = len(cleaned_choices) == 0
+
+            thread_id = None
+            if metadata:
+                thread_id = metadata.get("thread_id") or metadata.get("message_thread_id")
+
+            text_lines = ["❓ 需要你的选择", "", question.strip()]
+            reply_markup = None
+            if is_open_ended:
+                text_lines.extend(["", "请直接回复你的答案。"])
+            else:
+                text_lines.append("")
+                for idx, choice in enumerate(cleaned_choices, start=1):
+                    text_lines.append(f"{idx}. {choice}")
+                text_lines.extend(["", "也可以点“其他”后直接回复。"])
+
+                rows = []
+                row = []
+                for idx, choice in enumerate(cleaned_choices):
+                    label = choice if len(choice) <= 28 else choice[:25] + "..."
+                    row.append(InlineKeyboardButton(label, callback_data=f"cq:{clarify_id}:{idx}"))
+                    if len(row) == 2:
+                        rows.append(row)
+                        row = []
+                if row:
+                    rows.append(row)
+                rows.append([InlineKeyboardButton("其他", callback_data=f"cq:{clarify_id}:other")])
+                reply_markup = InlineKeyboardMarkup(rows)
+
+            kwargs = {
+                "chat_id": int(chat_id),
+                "text": "\n".join(text_lines),
+                "reply_markup": reply_markup,
+            }
+            if thread_id is not None:
+                kwargs["message_thread_id"] = int(thread_id)
+
+            msg = await self._bot.send_message(**kwargs)
+            self._clarify_state[clarify_id] = {
+                "session_key": session_key,
+                "question": question.strip(),
+                "choices": cleaned_choices or None,
+                "response_future": response_future,
+                "awaiting_text": is_open_ended,
+                "chat_id": str(chat_id),
+                "thread_id": str(thread_id) if thread_id is not None else None,
+                "message_id": str(getattr(msg, "message_id", "")) or None,
+            }
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_clarify_prompt failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
     async def send_exec_approval(
@@ -1484,6 +1562,58 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception as exc:
                     logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
+            return
+
+        # --- Clarify callbacks (cq:clarify_id:choice) ---
+        if data.startswith("cq:"):
+            parts = data.split(":", 2)
+            if len(parts) != 3:
+                await query.answer(text="Invalid clarify data.")
+                return
+            try:
+                clarify_id = int(parts[1])
+            except ValueError:
+                await query.answer(text="Invalid clarify ID.")
+                return
+
+            state = self._clarify_state.get(clarify_id)
+            if not state:
+                await query.answer(text="This choice has expired.")
+                return
+
+            choice_token = parts[2]
+            if choice_token == "other":
+                state["awaiting_text"] = True
+                await query.answer(text="请直接回复你的答案。")
+                try:
+                    await query.edit_message_text(
+                        text="❓ 请输入你的自定义答案\n\n请直接发送下一条消息回复。",
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+                return
+
+            choices = state.get("choices") or []
+            try:
+                choice_index = int(choice_token)
+                selected = choices[choice_index]
+            except (ValueError, IndexError, TypeError):
+                await query.answer(text="Invalid choice.")
+                return
+
+            future = state.get("response_future")
+            if future is not None and not future.done():
+                future.set_result(selected)
+            self._clarify_state.pop(clarify_id, None)
+            await query.answer(text=f"已选择：{selected}")
+            try:
+                await query.edit_message_text(
+                    text=f"❓ 已选择：{selected}",
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
             return
 
         # --- Update prompt callbacks ---
@@ -1991,6 +2121,27 @@ class TelegramAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
+    def _telegram_allowed_threads(self) -> set[str]:
+        """Return group-thread keys where the bot is allowed to respond.
+
+        Entries use ``<chat_id>:<thread_id>`` so a single forum topic can be
+        allowlisted without opening the rest of the group.
+        """
+        raw = self.config.extra.get("allowed_threads")
+        if raw is None:
+            raw = os.getenv("TELEGRAM_ALLOWED_THREADS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _message_thread_key(self, message: Message) -> Optional[str]:
+        """Return a stable ``chat_id:thread_id`` key for forum topic messages."""
+        chat_id = getattr(getattr(message, "chat", None), "id", None)
+        thread_id = getattr(message, "message_thread_id", None)
+        if chat_id is None or thread_id is None:
+            return None
+        return f"{chat_id}:{thread_id}"
+
     def _compile_mention_patterns(self) -> List[re.Pattern]:
         """Compile optional regex wake-word patterns for group triggers."""
         patterns = self.config.extra.get("mention_patterns")
@@ -2102,6 +2253,11 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._is_group_chat(message):
             return True
+        allowed_threads = self._telegram_allowed_threads()
+        if allowed_threads:
+            thread_key = self._message_thread_key(message)
+            if thread_key not in allowed_threads:
+                return False
         if str(getattr(getattr(message, "chat", None), "id", "")) in self._telegram_free_response_chats():
             return True
         if not self._telegram_require_mention():
@@ -2123,12 +2279,37 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not update.message or not update.message.text:
             return
+        pending_clarify_id = self._match_pending_clarify(update.message)
+        if pending_clarify_id is not None:
+            response = (update.message.text or "").strip()
+            state = self._clarify_state.pop(pending_clarify_id, None)
+            if state:
+                future = state.get("response_future")
+                if future is not None and not future.done():
+                    future.set_result(response)
+            return
         if not self._should_process_message(update.message):
             return
 
         event = self._build_message_event(update.message, MessageType.TEXT)
         event.text = self._clean_bot_trigger_text(event.text)
         self._enqueue_text_event(event)
+
+    def _match_pending_clarify(self, message: Message) -> Optional[int]:
+        """Return clarify_id when a text reply should resolve a pending clarify prompt."""
+        chat_id = str(getattr(message, "chat_id", "") or getattr(getattr(message, "chat", None), "id", ""))
+        thread_id = getattr(message, "message_thread_id", None)
+        thread_id = str(thread_id) if thread_id is not None else None
+        for clarify_id, state in list(self._clarify_state.items()):
+            if not state.get("awaiting_text"):
+                continue
+            if str(state.get("chat_id") or "") != chat_id:
+                continue
+            state_thread = state.get("thread_id")
+            if state_thread is not None and state_thread != thread_id:
+                continue
+            return clarify_id
+        return None
     
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
