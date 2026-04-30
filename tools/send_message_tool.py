@@ -21,6 +21,8 @@ _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::(
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
+# QQBot OpenID format: uppercase hex string (32 chars)
+_QQBOT_TARGET_RE = re.compile(r"^\s*([A-F0-9]{32})\s*$")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a"}
@@ -244,6 +246,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             return match.group(1), match.group(2), True
     if platform_name == "weixin":
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), None, True
+    if platform_name == "qqbot":
+        match = _QQBOT_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), None, True
     if target_ref.lstrip("-").isdigit():
@@ -1110,8 +1116,12 @@ async def _send_qqbot(pconfig, chat_id, message):
     """Send via QQBot using the REST API directly (no WebSocket needed).
 
     Uses the QQ Bot Open Platform REST endpoints to get an access token
-    and post a message. Works for guild channels without requiring
-    a running gateway adapter.
+    and post a message. Works for guild channels, C2C, and groups without
+    requiring a running gateway adapter.
+
+    Chat type detection:
+    - Numeric chat_id → guild channel (uses /channels/{id}/messages)
+    - 32-char hex OpenID → C2C or group (tries /v2/users then /v2/groups)
     """
     try:
         import httpx
@@ -1125,8 +1135,18 @@ async def _send_qqbot(pconfig, chat_id, message):
     if not appid or not secret:
         return _error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured.")
 
+    # Determine chat type based on chat_id format
+    # - Pure numeric → guild channel
+    # - 32-char uppercase hex → C2C or group OpenID
+    is_guild = chat_id.isdigit()
+    is_openid = bool(re.match(r"^[A-F0-9]{32}$", chat_id))
+
+    # Early validation: return error before making any API calls
+    if not is_guild and not is_openid:
+        return _error(f"QQBot: unrecognized chat_id format: {chat_id[:16]}...")
+
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             # Step 1: Get access token
             token_resp = await client.post(
                 "https://bots.qq.com/app/getAppAccessToken",
@@ -1139,21 +1159,53 @@ async def _send_qqbot(pconfig, chat_id, message):
             if not access_token:
                 return _error(f"QQBot: no access_token in response")
 
-            # Step 2: Send message via REST
             headers = {
-                "Authorization": f"QQBotAccessToken {access_token}",
+                "Authorization": f"QQBot {access_token}",
                 "Content-Type": "application/json",
             }
-            url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"
+
+            # Step 2: Send message based on chat type
             payload = {"content": message[:4000], "msg_type": 0}
 
-            resp = await client.post(url, json=payload, headers=headers)
-            if resp.status_code in (200, 201):
-                data = resp.json()
-                return {"success": True, "platform": "qqbot", "chat_id": chat_id,
-                        "message_id": data.get("id")}
-            else:
-                return _error(f"QQBot send failed: {resp.status_code} {resp.text}")
+            if is_guild:
+                # Guild channel endpoint
+                url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"
+                resp = await client.post(url, json=payload, headers=headers)
+                if resp.status_code in (200, 201):
+                    data = resp.json()
+                    return {"success": True, "platform": "qqbot", "chat_id": chat_id,
+                            "message_id": data.get("id"), "chat_type": "guild"}
+                return _error(f"QQBot guild send failed: {resp.status_code} {resp.text}")
+
+            elif is_openid:
+                # Try C2C first, then group if that fails
+                # Use msg_seq in range 0..65535 (per QQBotAdapter._next_msg_seq)
+                msg_seq = int(time.time() * 1000) % 65536
+                
+                # C2C endpoint
+                c2c_url = f"https://api.sgroup.qq.com/v2/users/{chat_id}/messages"
+                c2c_payload = {**payload, "msg_seq": msg_seq}
+                c2c_resp = await client.post(c2c_url, json=c2c_payload, headers=headers)
+                if c2c_resp.status_code in (200, 201):
+                    data = c2c_resp.json()
+                    return {"success": True, "platform": "qqbot", "chat_id": chat_id,
+                            "message_id": data.get("id"), "chat_type": "c2c"}
+
+                # Try group endpoint as fallback
+                group_url = f"https://api.sgroup.qq.com/v2/groups/{chat_id}/messages"
+                group_payload = {**payload, "msg_seq": msg_seq}
+                group_resp = await client.post(group_url, json=group_payload, headers=headers)
+                if group_resp.status_code in (200, 201):
+                    data = group_resp.json()
+                    return {"success": True, "platform": "qqbot", "chat_id": chat_id,
+                            "message_id": data.get("id"), "chat_type": "group"}
+
+                return _error(
+                    f"QQBot send failed (tried C2C and group): "
+                    f"C2C={c2c_resp.status_code} {c2c_resp.text}; "
+                    f"group={group_resp.status_code} {group_resp.text}"
+                )
+
     except Exception as e:
         return _error(f"QQBot send failed: {e}")
 
