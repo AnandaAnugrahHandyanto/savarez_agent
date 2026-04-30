@@ -1961,9 +1961,11 @@ class TestPtyWebSocket:
         from urllib.parse import urlencode
         from hermes_cli import web_server as ws_mod
 
-        qs = urlencode({"token": self.token, "channel": "broadcast-test"})
+        channel = "broadcast-test"
+        qs = urlencode({"token": self.token, "channel": channel})
         pub_path = f"/api/pub?{qs}"
         sub_path = f"/api/events?{qs}"
+        self.ws_module._event_channels.pop(channel, None)
 
         with self.client.websocket_connect(sub_path) as sub:
             # Wait for the subscriber to be registered on the server side.
@@ -1973,7 +1975,7 @@ class TestPtyWebSocket:
             # subscriber registration and the message is dropped.
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
-                if ws_mod._event_channels.get("broadcast-test"):
+                if self.ws_module._event_channels.get(channel):
                     break
                 time.sleep(0.01)
             else:
