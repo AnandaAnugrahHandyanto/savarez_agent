@@ -5722,7 +5722,12 @@ class GatewayRunner:
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
             platform_name = source.platform.value
             env_key = f"{platform_name.upper()}_HOME_CHANNEL"
-            if not os.getenv(env_key):
+            # Check env var first, then fall back to yaml config (#10581)
+            home_channel_set = (
+                os.getenv(env_key)
+                or self.config.get_home_channel(source.platform)
+            )
+            if not home_channel_set:
                 adapter = self.adapters.get(source.platform)
                 if adapter:
                     # Slack dispatches all Hermes commands through a single
