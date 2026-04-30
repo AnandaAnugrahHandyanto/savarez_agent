@@ -102,6 +102,7 @@ _UNSAFE_GIT_CONFIG_KEYS = frozenset({
 
 _UNSAFE_GIT_CONFIG_KEY_PREFIXES = (
     "includeif.",
+    "alias.",
 )
 
 _UNSAFE_GIT_CONFIG_ENV_PREFIXES = (
@@ -152,9 +153,13 @@ def check_terminal_side_effect_allowed(command: str, cwd: str | Path) -> Optiona
             continue
         if invocation.subcommand == _UNSAFE_GIT_CWD_SUBCOMMAND:
             return _unverified_git_message()
+        if _git_subcommand_target_is_unverifiable(invocation.subcommand):
+            return _unverified_git_message()
         repo_root = _find_git_root(invocation.cwd)
         if repo_root is None:
-            return None
+            # Preserve current behavior for non-repo scratch contexts while
+            # still checking later git invocations in the same shell command.
+            continue
 
         bound_repo = _bound_repo_path()
         if bound_repo is None:
@@ -412,6 +417,21 @@ def _git_invocation_is_mutating(invocation: GitInvocation) -> bool:
         return True
     # Unknown git subcommands are potentially side-effecting; guard them.
     return True
+
+
+def _git_subcommand_target_is_unverifiable(subcommand: str) -> bool:
+    """Return true when a git subcommand might be an alias or extension.
+
+    Unknown git subcommands are treated as mutating above. They can also be
+    repo-local or global aliases that shell out to a different repository, so
+    the workspace guard cannot verify their target from the current cwd alone.
+    """
+
+    return (
+        subcommand not in _READ_ONLY_GIT_SUBCOMMANDS
+        and subcommand not in _MUTATING_GIT_SUBCOMMANDS
+        and subcommand not in {"branch", "remote"}
+    )
 
 
 def _branch_is_mutating(args: list[str]) -> bool:

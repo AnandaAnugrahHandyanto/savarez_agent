@@ -465,6 +465,89 @@ def test_cd_with_tilde_before_git_mutation_fails_closed(tmp_path):
     assert "cannot verify the target repository" in error
 
 
+def test_second_git_invocation_wrong_repo_is_blocked(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    other_repo = _git_repo(tmp_path / "other")
+
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            f"git add README.md; git -C {other_repo} commit -m oops",
+            bound_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "outside authoritative workspace binding" in error
+
+
+def test_allowed_first_git_then_cd_wrong_repo_git_is_blocked(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    other_repo = _git_repo(tmp_path / "other")
+
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            f"git status; cd {other_repo} && git commit -m oops",
+            bound_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "outside authoritative workspace binding" in error
+
+
+def test_non_repo_git_mutation_does_not_short_circuit_later_wrong_repo(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    other_repo = _git_repo(tmp_path / "other")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            f"cd {scratch} && git add README.md; git -C {other_repo} commit -m oops",
+            bound_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "outside authoritative workspace binding" in error
+
+
+def test_git_config_alias_shell_fails_closed(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    other_repo = _git_repo(tmp_path / "other")
+
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            f"git -c alias.ci='!git -C {other_repo} commit -m oops' ci",
+            bound_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "cannot verify the target repository" in error
+
+
+def test_unknown_git_subcommand_alias_fails_closed_from_bound_repo(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed("git ci", bound_repo)
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "cannot verify the target repository" in error
+
+
 def test_conventional_commit_message_with_parentheses_allowed_in_bound_repo(tmp_path):
     bound_repo = _git_repo(tmp_path / "bound")
     tokens = _gateway_session(bound_repo)
