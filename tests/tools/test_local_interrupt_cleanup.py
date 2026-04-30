@@ -12,6 +12,7 @@ because _wait_for_process never got to call _kill_process before python
 died.  See commit message for full context.
 """
 import os
+import signal
 import subprocess
 import threading
 import time
