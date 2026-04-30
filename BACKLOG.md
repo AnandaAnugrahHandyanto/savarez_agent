@@ -40,3 +40,14 @@ Deferred until full provider setup is complete. Command contract installed, but 
 ## tdd-guard hook deferred (2026-04-29)
 
 Stage 7 calls for a tdd-guard hook in dry-run for the first two sessions, but no concrete local tdd-guard command or package was present in the plan. Left as BACKLOG tuning item rather than installing an unknown hook.
+
+## Overlay follow-up backlog
+
+- Anthropic-coupled MCP/security-review picks: replace with provider-neutral tools if migrating off Anthropic.
+- /escalate convergence detection v2: embedding similarity and LLM judge.
+- scripts/sync-from-cdb.sh: formalize CDB to Hermes methodology sync.
+- Chen v83 model-agnostic ratification: required if CDB updates v83.
+- tdd-guard tuning after first two dry-run sessions.
+- LiteLLM integration for unified billing/auth across providers.
+- Quarterly retention review for `audits/` folder growth.
+- Provider-cost dashboard for monthly role spend.
