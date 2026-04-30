@@ -97,7 +97,12 @@ _UNSAFE_GIT_ENV_VARS = frozenset({
 
 _UNSAFE_GIT_CONFIG_KEYS = frozenset({
     "core.worktree",
+    "include.path",
 })
+
+_UNSAFE_GIT_CONFIG_KEY_PREFIXES = (
+    "includeif.",
+)
 
 _UNSAFE_GIT_CONFIG_ENV_PREFIXES = (
     "GIT_CONFIG_",
@@ -288,7 +293,10 @@ def _git_config_key(token: str) -> str:
 
 
 def _is_unsafe_git_config_assignment(token: str) -> bool:
-    return _git_config_key(token) in _UNSAFE_GIT_CONFIG_KEYS
+    key = _git_config_key(token)
+    return key in _UNSAFE_GIT_CONFIG_KEYS or any(
+        key.startswith(prefix) for prefix in _UNSAFE_GIT_CONFIG_KEY_PREFIXES
+    )
 
 
 def _strip_env_prefix(tokens: list[str]) -> tuple[bool, list[str]]:

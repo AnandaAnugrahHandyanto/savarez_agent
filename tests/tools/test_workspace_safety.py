@@ -369,6 +369,40 @@ def test_git_config_env_option_core_worktree_fails_closed(tmp_path):
     assert "cannot verify the target repository" in error
 
 
+def test_git_config_include_path_fails_closed(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    config_file = tmp_path / "unsafe.gitconfig"
+    config_file.write_text("[core]\nworktree = /tmp/other\n", encoding="utf-8")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            f"git -c include.path={config_file} commit -m update",
+            bound_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "cannot verify the target repository" in error
+
+
+def test_git_config_include_if_path_fails_closed(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    config_file = tmp_path / "unsafe.gitconfig"
+    config_file.write_text("[core]\nworktree = /tmp/other\n", encoding="utf-8")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            f"git -c includeIf.gitdir:{bound_repo}/.path={config_file} commit -m update",
+            bound_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "cannot verify the target repository" in error
+
+
 def test_git_dir_env_assignment_fails_closed(tmp_path):
     bound_repo = _git_repo(tmp_path / "bound")
     other_repo = _git_repo(tmp_path / "other")
