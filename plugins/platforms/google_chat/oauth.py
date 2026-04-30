@@ -66,7 +66,9 @@ import sys
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
-logger = logging.getLogger(__name__)
+# Pin the legacy logger name so operator-side log filters keep matching
+# after the in-tree → plugin migration. See adapter.py for context.
+logger = logging.getLogger("gateway.platforms.google_chat_user_oauth")
 
 # Use the project's HERMES_HOME helper so the token follows the user's
 # profile (e.g. tests can override via HERMES_HOME=/tmp/...).

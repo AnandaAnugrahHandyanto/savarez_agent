@@ -83,7 +83,13 @@ from gateway.platforms.base import (
 )
 
 
-logger = logging.getLogger(__name__)
+# Pin the logger name to the legacy module path so operator log filters,
+# grep aliases, and the gateway's bundled log views keep matching after
+# the in-tree → plugin migration. ``__name__`` resolves to
+# ``hermes_plugins.platforms__google_chat.adapter`` once the plugin
+# loader namespaces this module, which would silently break every
+# downstream log-monitor that greps for ``gateway.platforms.google_chat``.
+logger = logging.getLogger("gateway.platforms.google_chat")
 
 
 # Regex validating Pub/Sub subscription path format.
