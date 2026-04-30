@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.session_context import clear_session_vars, set_session_vars
+from gateway.session_context import clear_session_vars, get_session_env, set_session_vars
 from tools.file_tools import patch_tool, write_file_tool
 from tools.terminal_tool import terminal_tool
 from tools.workspace_safety import check_terminal_side_effect_allowed
@@ -92,6 +92,23 @@ def test_read_only_and_non_repo_behavior_unchanged(tmp_path):
     assert write_result.get("error") in (None, "")
     assert non_repo.read_text() == "data"
     assert readonly_error is None
+
+
+def test_channel_identity_and_workspace_contextvars_coexist(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    tokens = set_session_vars(
+        platform="matrix",
+        chat_id="!room:example.org",
+        channel_identity='{"platform":"matrix","channel_id":"!room:example.org"}',
+        workspace_slug="example",
+        workspace_repo_path=str(bound_repo),
+    )
+    try:
+        assert get_session_env("HERMES_SESSION_CHANNEL_IDENTITY")
+        assert get_session_env("HERMES_WORKSPACE_SLUG") == "example"
+        assert get_session_env("HERMES_WORKSPACE_REPO_PATH") == str(bound_repo)
+    finally:
+        clear_session_vars(tokens)
 
 
 def test_patch_blocked_in_wrong_repo(tmp_path):
@@ -261,6 +278,100 @@ def test_complex_cd_before_git_fails_closed(tmp_path):
     try:
         error = check_terminal_side_effect_allowed(
             f"cd {other_repo} extra && git commit -m update",
+            bound_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "cannot verify the target repository" in error
+
+
+def test_absolute_git_binary_wrong_repo_commit_is_blocked(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    other_repo = _git_repo(tmp_path / "other")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            "/usr/bin/git commit -m update",
+            other_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "Blocked repo side effect outside authoritative workspace binding" in error
+
+
+def test_git_dir_env_assignment_fails_closed(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    other_repo = _git_repo(tmp_path / "other")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            f"GIT_DIR={other_repo / '.git'} GIT_WORK_TREE={other_repo} git commit -m update",
+            bound_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "cannot verify the target repository" in error
+
+
+def test_env_git_dir_assignment_fails_closed(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    other_repo = _git_repo(tmp_path / "other")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            f"env GIT_DIR={other_repo / '.git'} GIT_WORK_TREE={other_repo} git commit -m update",
+            bound_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "cannot verify the target repository" in error
+
+
+def test_git_dash_c_with_shell_var_fails_closed(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            'git -C "$HOME/wrong-repo" commit -m update',
+            bound_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "cannot verify the target repository" in error
+
+
+def test_cd_with_tilde_before_git_mutation_fails_closed(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            "cd ~/wrong-repo && git commit -m update",
+            bound_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "cannot verify the target repository" in error
+
+
+def test_subshell_cd_wrong_repo_fails_closed(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    other_repo = _git_repo(tmp_path / "other")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            f"(cd {other_repo} && git commit -m update)",
             bound_repo,
         )
     finally:

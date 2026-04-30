@@ -85,6 +85,16 @@ _MUTATING_BRANCH_FLAGS = frozenset({
 
 _UNSAFE_GIT_CWD_SUBCOMMAND = "__unsafe_explicit_git_dir__"
 
+_UNSAFE_GIT_ENV_VARS = frozenset({
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+})
+
 
 @dataclass(frozen=True)
 class GitInvocation:
@@ -203,6 +213,9 @@ def _safe_resolve(path: str | Path) -> Path:
 
 def _iter_git_invocations(command: str, cwd: Path) -> Iterable[GitInvocation]:
     current_cwd = cwd
+    if _has_unverifiable_shell_git(command):
+        yield GitInvocation(_UNSAFE_GIT_CWD_SUBCOMMAND, [], current_cwd)
+        return
     for segment in _split_shell_segments(command):
         try:
             tokens = shlex.split(segment)
@@ -212,22 +225,68 @@ def _iter_git_invocations(command: str, cwd: Path) -> Iterable[GitInvocation]:
             continue
         if not tokens:
             continue
+        unsafe_env, tokens = _strip_env_prefix(tokens)
+        if unsafe_env and any(_is_git_executable_token(token) for token in tokens):
+            yield GitInvocation(_UNSAFE_GIT_CWD_SUBCOMMAND, [], current_cwd)
+            continue
+        if not tokens:
+            continue
         if tokens[0] == "cd":
-            if len(tokens) != 2:
+            if len(tokens) != 2 or _path_has_shell_expansion(tokens[1]):
                 yield GitInvocation(_UNSAFE_GIT_CWD_SUBCOMMAND, [], current_cwd)
                 continue
             current_cwd = _safe_resolve(current_cwd / tokens[1])
             continue
         for index, token in enumerate(tokens):
-            if token != "git":
+            if not _is_git_executable_token(token):
                 continue
             invocation = _parse_git_invocation(tokens[index:], current_cwd)
             if invocation:
                 yield invocation
 
 
+def _is_git_executable_token(token: str) -> bool:
+    return Path(token).name == "git"
+
+
+def _path_has_shell_expansion(value: str) -> bool:
+    return "$" in value or "`" in value or "$(" in value or value.startswith("~")
+
+
+def _has_unverifiable_shell_git(command: str) -> bool:
+    if "$(" in command and "git" in command:
+        return True
+    return ("(" in command or ")" in command) and "git" in command
+
+
+def _env_assignment_name(token: str) -> Optional[str]:
+    if "=" not in token or token.startswith("="):
+        return None
+    name, _, _ = token.partition("=")
+    if not name or any(ch in name for ch in "-./"):
+        return None
+    return name
+
+
+def _strip_env_prefix(tokens: list[str]) -> tuple[bool, list[str]]:
+    unsafe_env = False
+    index = 0
+    if tokens and tokens[0] == "env":
+        index = 1
+        while index < len(tokens) and tokens[index].startswith("-"):
+            index += 1
+    while index < len(tokens):
+        name = _env_assignment_name(tokens[index])
+        if name is None:
+            break
+        if name in _UNSAFE_GIT_ENV_VARS:
+            unsafe_env = True
+        index += 1
+    return unsafe_env, tokens[index:]
+
+
 def _parse_git_invocation(tokens: list[str], base_cwd: Path) -> Optional[GitInvocation]:
-    if not tokens or tokens[0] != "git":
+    if not tokens or not _is_git_executable_token(tokens[0]):
         return None
 
     git_cwd = base_cwd
@@ -237,12 +296,14 @@ def _parse_git_invocation(tokens: list[str], base_cwd: Path) -> Optional[GitInvo
         if token == "--":
             return None
         if token == "-C":
-            if index + 1 >= len(tokens):
-                return None
+            if index + 1 >= len(tokens) or _path_has_shell_expansion(tokens[index + 1]):
+                return GitInvocation(_UNSAFE_GIT_CWD_SUBCOMMAND, tokens[index + 1 :], git_cwd)
             git_cwd = _safe_resolve(git_cwd / tokens[index + 1])
             index += 2
             continue
         if token.startswith("-C") and token != "-C":
+            if _path_has_shell_expansion(token[2:]):
+                return GitInvocation(_UNSAFE_GIT_CWD_SUBCOMMAND, tokens[index + 1 :], git_cwd)
             git_cwd = _safe_resolve(git_cwd / token[2:])
             index += 1
             continue
