@@ -300,6 +300,30 @@ async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
     }
 
 
+def test_set_session_env_includes_normalized_channel_identity():
+    """Gateway session env should expose a normalized channel identity JSON blob."""
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="channel-123",
+        chat_name="Project Example",
+        chat_type="channel",
+        thread_id="thread-456",
+        parent_chat_id="parent-789",
+    )
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+
+    tokens = runner._set_session_env(context)
+    try:
+        assert get_session_env("HERMES_SESSION_CHANNEL_IDENTITY") == (
+            '{"platform":"discord","channel_type":"channel",'
+            '"channel_id":"channel-123","channel_name":"Project Example",'
+            '"thread_id":"thread-456","parent_channel_id":"parent-789"}'
+        )
+    finally:
+        runner._clear_session_env(tokens)
+
+
 @pytest.mark.asyncio
 async def test_run_in_executor_with_context_forwards_args():
     """_run_in_executor_with_context should forward *args to the callable."""
