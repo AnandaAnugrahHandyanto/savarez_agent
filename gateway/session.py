@@ -363,6 +363,10 @@ def build_session_context_prompt(
                 "This binding is authoritative for side-effecting project work; do not switch projects "
                 "based on memory or keyword overlap unless the user explicitly asks."
             )
+            lines.append(
+                "Repo path and canonical URL are session-local operational metadata for safety checks; "
+                "do not log, quote, screenshot, or otherwise disclose them unless the user explicitly asks."
+            )
         else:
             lines.append("  - No authoritative project binding was found for this chat/thread.")
             lines.append(

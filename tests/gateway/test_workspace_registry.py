@@ -130,6 +130,8 @@ def test_prompt_includes_authoritative_project_binding():
     assert "Repo path: `/srv/example`" in prompt
     assert "Canonical repo URL: `git@github.com:example/project.git`" in prompt
     assert "authoritative for side-effecting project work" in prompt
+    assert "session-local operational metadata" in prompt
+    assert "do not log, quote, screenshot" in prompt
 
 
 def test_prompt_marks_missing_project_binding_for_gateway_rooms():
