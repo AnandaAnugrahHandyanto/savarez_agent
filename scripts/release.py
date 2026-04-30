@@ -98,6 +98,7 @@ AUTHOR_MAP = {
     "glesstech@gmail.com": "georgeglessner",
     "maxim.smetanin@gmail.com": "maxims-oss",
     "nazirulhafiy@gmail.com": "nazirulhafiy",
+    "kelsia014@gmail.com": "kelsia14",
     "CREWorx@users.noreply.github.com": "BadTechBandit",
     "yoimexex@gmail.com": "Yoimex",
     "6548898+romanornr@users.noreply.github.com": "romanornr",
