@@ -133,9 +133,6 @@ export const sessionCommands: SlashCommand[] = [
     help: 'compress transcript',
     name: 'compress',
     run: (arg, ctx) => {
-      const focusSuffix = arg ? `, focus: "${arg}"` : ''
-
-      ctx.transcript.sys(`compressing context${focusSuffix}...`)
       ctx.gateway
         .rpc<SessionCompressResponse>('session.compress', {
           session_id: ctx.sid,

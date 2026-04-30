@@ -2058,7 +2058,7 @@ def _(rid, params: dict) -> dict:
             _status_update(
                 sid,
                 "compressing",
-                f"compressing {before_count} messages "
+                f"⠋ compressing {before_count} messages "
                 f"(~{before_tokens:,} tok){focus_suffix}…",
             )
 
