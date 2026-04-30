@@ -1387,10 +1387,10 @@ def convert_messages_to_anthropic(
     System messages are extracted since Anthropic takes them as a separate param.
     system_prompt is a string or list of content blocks (when cache_control present).
 
-    When *base_url* is provided and points to a third-party Anthropic-compatible
-    endpoint, all thinking block signatures are stripped.  Signatures are
-    Anthropic-proprietary — third-party endpoints cannot validate them and will
-    reject them with HTTP 400 "Invalid signature in thinking block".
+    All thinking/redacted_thinking blocks are stripped from every assistant
+    message on both direct Anthropic and third-party endpoints, as stale
+    signatures from upstream mutations cause HTTP 400 errors
+    (hermes-agent#17861).
 
     When *model* is provided and matches the Kimi / Moonshot family (or
     *base_url* is a Kimi / Moonshot host), unsigned thinking blocks
@@ -1608,23 +1608,11 @@ def convert_messages_to_anthropic(
     # orphan stripping, message merging) invalidates the signature,
     # causing HTTP 400 "Invalid signature in thinking block".
     #
-    # Signatures are Anthropic-proprietary.  Third-party endpoints
-    # (MiniMax, Azure AI Foundry, self-hosted proxies) cannot validate
-    # them and will reject them outright.  When targeting a third-party
-    # endpoint, strip ALL thinking/redacted_thinking blocks from every
-    # assistant message — the third-party will generate its own
-    # thinking blocks if it supports extended thinking.
-    #
-    # For direct Anthropic (strategy following clawdbot/OpenClaw):
-    # 1. Strip thinking/redacted_thinking from all assistant messages
-    #    EXCEPT the last one — preserves reasoning continuity on the
-    #    current tool-use chain while avoiding stale signature errors.
-    # 2. Downgrade unsigned thinking blocks (no signature) to text —
-    #    Anthropic can't validate them and will reject them.
-    # 3. Strip cache_control from thinking/redacted_thinking blocks —
-    #    cache markers can interfere with signature validation.
+    # Strip ALL thinking/redacted_thinking blocks from every assistant
+    # message on both direct Anthropic and third-party endpoints.
+    # Anthropic explicitly allows omitting thinking blocks on replay
+    # (hermes-agent#17861).
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
-    _is_third_party = _is_third_party_anthropic_endpoint(base_url)
     # Kimi /coding and DeepSeek /anthropic share a contract: both speak the
     # Anthropic Messages protocol upstream but require that thinking blocks
     # synthesised from reasoning_content round-trip on subsequent turns when
@@ -1635,12 +1623,6 @@ def convert_messages_to_anthropic(
         _is_kimi_family_endpoint(base_url, model)
         or _is_deepseek_anthropic_endpoint(base_url)
     )
-
-    last_assistant_idx = None
-    for i in range(len(result) - 1, -1, -1):
-        if result[i].get("role") == "assistant":
-            last_assistant_idx = i
-            break
 
     for idx, m in enumerate(result):
         if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
@@ -1664,44 +1646,27 @@ def convert_messages_to_anthropic(
                 # keep it: the upstream needs it for message-history validation.
                 new_content.append(b)
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
-        elif _is_third_party or idx != last_assistant_idx:
-            # Third-party endpoint: strip ALL thinking blocks from every
-            # assistant message — signatures are Anthropic-proprietary.
-            # Direct Anthropic: strip from non-latest assistant messages only.
+        else:
+            # Strip ALL thinking/redacted_thinking blocks from every
+            # assistant message — direct Anthropic or third-party.
+            #
+            # Anthropic signs thinking blocks against the full turn content.
+            # Any upstream mutation (context compression, session truncation,
+            # orphan stripping, message merging) invalidates the signature,
+            # causing HTTP 400 "Invalid signature in thinking block".
+            #
+            # Anthropic explicitly allows omitting thinking blocks on replay:
+            # "If you send thinking blocks back, they must be unmodified."
+            # The corollary: you are always allowed to NOT send them back.
+            #
+            # Cost: No reasoning continuity across turns — the model
+            # re-thinks from scratch each turn.  Benefit: eliminates the
+            # 400 completely.  See hermes-agent#17861.
             stripped = [
                 b for b in m["content"]
                 if not (isinstance(b, dict) and b.get("type") in _THINKING_TYPES)
             ]
             m["content"] = stripped or [{"type": "text", "text": "(thinking elided)"}]
-        else:
-            # Latest assistant on direct Anthropic: keep signed thinking
-            # blocks for reasoning continuity; downgrade unsigned ones to
-            # plain text.
-            new_content = []
-            for b in m["content"]:
-                if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
-                    new_content.append(b)
-                    continue
-                if b.get("type") == "redacted_thinking":
-                    # Redacted blocks use 'data' for the signature payload
-                    if b.get("data"):
-                        new_content.append(b)
-                    # else: drop — no data means it can't be validated
-                elif b.get("signature"):
-                    # Signed thinking block — keep it
-                    new_content.append(b)
-                else:
-                    # Unsigned thinking — downgrade to text so it's not lost
-                    thinking_text = b.get("thinking", "")
-                    if thinking_text:
-                        new_content.append({"type": "text", "text": thinking_text})
-            m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
-
-        # Strip cache_control from any remaining thinking/redacted_thinking
-        # blocks — cache markers interfere with signature validation.
-        for b in m["content"]:
-            if isinstance(b, dict) and b.get("type") in _THINKING_TYPES:
-                b.pop("cache_control", None)
 
     return system, result
 
