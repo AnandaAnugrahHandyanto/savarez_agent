@@ -4122,6 +4122,42 @@ class HermesCLI:
         sys.stdout.write(seq)
         sys.stdout.flush()
 
+    def _write_native_clipboard(self, text: str) -> bool:
+        """Best-effort native clipboard copy.  Returns True on success.
+
+        OSC 52 is the right answer for SSH/tmux scenarios but is silently
+        ignored by some terminals (notably macOS Terminal.app), so we
+        also try the platform's native clipboard helper.
+        """
+        import subprocess
+
+        if sys.platform == "darwin":
+            candidates = (["pbcopy"],)
+        elif sys.platform.startswith("linux"):
+            candidates = (
+                ["wl-copy"],
+                ["xclip", "-selection", "clipboard"],
+                ["xsel", "--clipboard", "--input"],
+            )
+        elif sys.platform.startswith("win"):
+            candidates = (["clip"],)
+        else:
+            return False
+
+        for cmd in candidates:
+            if shutil.which(cmd[0]) is None:
+                continue
+            try:
+                proc = subprocess.run(
+                    cmd, input=text, text=True, timeout=2, check=False,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if proc.returncode == 0:
+                return True
+        return False
+
     def _handle_copy_command(self, cmd_original: str) -> None:
         """Handle /copy [number] — copy assistant output to clipboard."""
         parts = cmd_original.split(maxsplit=1)
@@ -4154,11 +4190,25 @@ class HermesCLI:
             _cprint("  Nothing to copy in that assistant response.")
             return
 
+        # OSC 52 covers SSH/tmux; native clipboard covers terminals (e.g.
+        # macOS Terminal.app) that silently ignore the OSC 52 sequence.
+        # Only one of the two needs to land for the copy to count.
+        osc_err: Exception | None = None
         try:
             self._write_osc52_clipboard(text)
-            _cprint(f"  Copied assistant response #{idx + 1} to clipboard")
+            osc_ok = True
         except Exception as e:
-            _cprint(f"  Clipboard copy failed: {e}")
+            osc_err = e
+            osc_ok = False
+        try:
+            native_ok = self._write_native_clipboard(text)
+        except Exception:
+            native_ok = False
+
+        if osc_ok or native_ok:
+            _cprint(f"  Copied assistant response #{idx + 1} to clipboard")
+        else:
+            _cprint(f"  Clipboard copy failed: {osc_err}")
 
     def _handle_image_command(self, cmd_original: str):
         """Handle /image <path> — attach a local image file for the next prompt."""
