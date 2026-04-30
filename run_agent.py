@@ -36,6 +36,7 @@ import sys
 import tempfile
 import time
 import threading
+from dataclasses import dataclass
 from types import SimpleNamespace
 import urllib.request
 import uuid
@@ -862,6 +863,31 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+@dataclass
+class ContextUsageReport:
+    """Telemetry snapshot of context window utilization."""
+
+    used_tokens: int
+    total_tokens: int
+    message_count: int
+
+    @property
+    def percentage(self) -> float:
+        if self.total_tokens <= 0:
+            return 0.0
+        return (self.used_tokens / self.total_tokens) * 100
+
+    def is_warning(self, threshold_percent: float = 85.0) -> bool:
+        return self.percentage >= threshold_percent
+
+    def summary(self) -> str:
+        pct = self.percentage
+        return (
+            f"Context: {self.used_tokens:,}/{self.total_tokens:,} tokens "
+            f"({pct:.1f}%) — {self.message_count} messages"
+        )
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -1247,6 +1273,10 @@ class AIAgent:
         # Rate limit tracking — updated from x-ratelimit-* response headers
         # after each API call.  Accessed by /usage slash command.
         self._rate_limit_state: Optional["RateLimitState"] = None
+
+        # Context window warning deduplication — emit once per conversation,
+        # not once per API call iteration.
+        self._context_warning_emitted: bool = False
 
         # Centralized logging — agent.log (INFO+) and errors.log (WARNING+)
         # both live under ~/.hermes/logs/.  Idempotent, so gateway mode
@@ -10230,6 +10260,7 @@ class AIAgent:
         self._last_content_tools_all_housekeeping = False
         self._mute_post_response = False
         self._unicode_sanitization_passes = 0
+        self._context_warning_emitted = False
 
         # Pre-turn connection health check: detect and clean up dead TCP
         # connections left over from provider outages or dropped streams.
@@ -10788,7 +10819,27 @@ class AIAgent:
             # Calculate approximate request size for logging
             total_chars = sum(len(str(msg)) for msg in api_messages)
             approx_tokens = estimate_messages_tokens_rough(api_messages)
-            
+
+            # ── Context window usage telemetry ──
+            # Use estimate_request_tokens_rough so tool schemas (20-30K tokens
+            # with 50+ tools) are included in the utilisation figure.  The
+            # system prompt is already embedded as a system-role dict inside
+            # api_messages, so no separate system_prompt= argument is needed.
+            _compressor = getattr(self, "context_compressor", None)
+            _ctx_limit = getattr(_compressor, "context_length", None) if _compressor else None
+            if _ctx_limit:
+                _full_tokens = estimate_request_tokens_rough(
+                    api_messages, tools=self.tools or None
+                )
+                _usage = ContextUsageReport(
+                    used_tokens=_full_tokens,
+                    total_tokens=_ctx_limit,
+                    message_count=len(api_messages),
+                )
+                if _usage.is_warning(threshold_percent=85) and not self._context_warning_emitted:
+                    self._context_warning_emitted = True
+                    self._emit_warning(f"⚠️  {_usage.summary()}")
+
             # Thinking spinner for quiet mode (animated during API call)
             thinking_spinner = None
             
