@@ -541,7 +541,12 @@ class TestOnPubsubMessage:
 
 class TestBuildMessageEvent:
     @pytest.mark.asyncio
-    async def test_text_message_parses_source_and_thread(self, adapter):
+    async def test_dm_drops_thread_id_from_source_for_session_continuity(self, adapter):
+        """Google Chat DMs spawn a new thread per top-level user message.
+        We deliberately DROP thread_id from the source for DMs so the
+        session_key (which includes thread_id when present) stays stable
+        across top-level messages and the agent retains conversation
+        memory. The thread is still cached for outbound reply placement."""
         env = _make_chat_envelope(text="hola", thread_name="spaces/S/threads/T1")
         msg = env["chat"]["messagePayload"]["message"]
         event = await adapter._build_message_event(msg, env)
@@ -549,8 +554,25 @@ class TestBuildMessageEvent:
         assert event.text == "hola"
         assert event.message_type == MessageType.TEXT
         assert event.source.chat_id == "spaces/S"
-        assert event.source.thread_id == "spaces/S/threads/T1"
+        # DM = thread_id NOT propagated to the source.
+        assert event.source.thread_id is None
         assert event.source.user_id_alt == "u@example.com"
+        # But the thread IS cached so outbound replies stay connected.
+        assert adapter._last_inbound_thread["spaces/S"] == "spaces/S/threads/T1"
+
+    @pytest.mark.asyncio
+    async def test_group_keeps_thread_id_on_source(self, adapter):
+        """In group spaces, threads are real conversational containers —
+        keep thread_id on the source so different threads get isolated
+        sessions (Telegram forum / Discord thread parity)."""
+        env = _make_chat_envelope(text="ping", thread_name="spaces/G/threads/T1")
+        # Force chat_type=group by making space type a regular SPACE.
+        env["chat"]["messagePayload"]["space"]["spaceType"] = "SPACE"
+        env["chat"]["messagePayload"]["message"]["space"]["spaceType"] = "SPACE"
+        msg = env["chat"]["messagePayload"]["message"]
+        event = await adapter._build_message_event(msg, env)
+        assert event.source.chat_type == "group"
+        assert event.source.thread_id == "spaces/G/threads/T1"
 
     @pytest.mark.asyncio
     async def test_slash_command_yields_command_type(self, adapter):
@@ -1050,7 +1072,9 @@ class TestUserOAuthHelper:
 
 class TestAttachmentSSRFGuard:
     @pytest.mark.asyncio
-    async def test_drive_file_skipped_silently(self, adapter):
+    async def test_drive_picker_only_skipped_when_no_resource_name(self, adapter):
+        """Pure Drive-picker shares (source=DRIVE_FILE, no resourceName)
+        cannot be downloaded with bot SA — skip silently."""
         attachment = {
             "source": "DRIVE_FILE",
             "contentType": "application/pdf",
@@ -1058,6 +1082,39 @@ class TestAttachmentSSRFGuard:
         }
         path, mime = await adapter._download_attachment(attachment)
         assert path is None
+        assert mime == "application/pdf"
+
+    @pytest.mark.asyncio
+    async def test_drive_file_with_resource_name_uses_bot_path(self, adapter, tmp_path, monkeypatch):
+        """Drag-and-drop chat uploads ALSO carry source=DRIVE_FILE but
+        come with attachmentDataRef.resourceName — bot media.download_media
+        works against those. Regression test for the original bug where
+        we skipped them all (left users with 'I don't see any PDF')."""
+        attachment = {
+            "source": "DRIVE_FILE",
+            "contentType": "application/pdf",
+            "name": "spaces/S/messages/M/attachments/A",
+            "attachmentDataRef": {
+                "resourceName": "spaces/S/messages/M/attachments/A",
+            },
+        }
+
+        # Patch the inner _fetch_media path by hijacking asyncio.to_thread
+        # — return some bytes directly, no need to walk the full
+        # google-api-client mock chain.
+        async def _fake_to_thread(fn, *args, **kwargs):
+            return b"%PDF-fake"
+
+        monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
+        from gateway.platforms import google_chat as gc_mod
+        monkeypatch.setattr(
+            gc_mod, "cache_document_from_bytes",
+            lambda data, ext=None, filename=None: str(tmp_path / "out.pdf"),
+            raising=False,
+        )
+
+        path, mime = await adapter._download_attachment(attachment)
+        assert path == str(tmp_path / "out.pdf")
         assert mime == "application/pdf"
 
     @pytest.mark.asyncio
@@ -1078,6 +1135,51 @@ class TestAttachmentSSRFGuard:
         }
         path, mime = await adapter._download_attachment(attachment)
         assert path is None
+
+
+# ===========================================================================
+# Outbound thread routing (anti-top-level fallback in DMs)
+# ===========================================================================
+
+
+class TestOutboundThreadRouting:
+    def test_resolve_uses_metadata_thread_id(self, adapter):
+        result = adapter._resolve_thread_id(
+            reply_to=None,
+            metadata={"thread_id": "spaces/X/threads/EXPLICIT"},
+            chat_id="spaces/X",
+        )
+        assert result == "spaces/X/threads/EXPLICIT"
+
+    def test_resolve_falls_back_to_cached_thread_for_dm(self, adapter):
+        """In DMs the source.thread_id is None, so the metadata passed
+        to send() lacks a thread. Without the cache fallback, replies
+        would land at top-level (visually disconnected from the user's
+        thread)."""
+        adapter._last_inbound_thread["spaces/X"] = "spaces/X/threads/CACHED"
+        result = adapter._resolve_thread_id(
+            reply_to=None,
+            metadata=None,
+            chat_id="spaces/X",
+        )
+        assert result == "spaces/X/threads/CACHED"
+
+    def test_resolve_metadata_overrides_cache(self, adapter):
+        """Explicit metadata (e.g. agent replying to a specific event)
+        wins over the cached thread."""
+        adapter._last_inbound_thread["spaces/X"] = "spaces/X/threads/CACHED"
+        result = adapter._resolve_thread_id(
+            reply_to=None,
+            metadata={"thread_id": "spaces/X/threads/EXPLICIT"},
+            chat_id="spaces/X",
+        )
+        assert result == "spaces/X/threads/EXPLICIT"
+
+    def test_resolve_returns_none_when_no_inputs(self, adapter):
+        result = adapter._resolve_thread_id(
+            reply_to=None, metadata=None, chat_id="spaces/UNKNOWN",
+        )
+        assert result is None
 
 
 # ===========================================================================

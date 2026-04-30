@@ -253,6 +253,16 @@ class GoogleChatAdapter(BasePlatformAdapter):
         self._typing_messages: Dict[str, str] = {}
         self._shutting_down = False
         self._rate_limit_hits: Dict[str, int] = {}
+        # Last-seen inbound thread name per chat_id (space). Google Chat
+        # DMs create a NEW thread per top-level user message but the user
+        # views them as one logical conversation. We:
+        #   (a) drop thread_id from the source for DMs (so session_key
+        #       stays stable across top-level messages — see
+        #       gateway/session.py:build_session_key).
+        #   (b) cache the most recent inbound thread name here so outbound
+        #       replies still land in the right visual thread without
+        #       re-coupling sessions to threads.
+        self._last_inbound_thread: Dict[str, str] = {}
         # FlowControl knobs (env-configurable).
         self._max_messages = int(os.getenv("GOOGLE_CHAT_MAX_MESSAGES", "1"))
         self._max_bytes = int(os.getenv("GOOGLE_CHAT_MAX_BYTES", str(16 * 1024 * 1024)))
@@ -1060,13 +1070,29 @@ class GoogleChatAdapter(BasePlatformAdapter):
         if is_slash:
             message_type = MessageType.COMMAND
 
+        # Cache the inbound thread for outbound reply placement (see
+        # _last_inbound_thread docstring). This runs BEFORE the source
+        # builds so DMs can drop thread_id without losing the reply
+        # destination.
+        if thread_name and space_name:
+            self._last_inbound_thread[space_name] = thread_name
+
+        # In DMs, do NOT propagate thread_id to the session source.
+        # Google Chat DMs spawn a fresh thread per top-level user
+        # message, but that's a UI artifact — the conversation is
+        # logically one stream. Including thread_id in the session key
+        # would make every new top-level message a fresh session with no
+        # memory of prior turns. For groups we keep thread_id (different
+        # threads ARE different conversations there).
+        session_thread_id = None if chat_type == "dm" else thread_name
+
         source = self.build_source(
             chat_id=space_name,
             chat_name=space.get("displayName") or space.get("name") or "",
             chat_type=chat_type,
             user_id=sender_name,
             user_name=sender_display,
-            thread_id=thread_name,
+            thread_id=session_thread_id,
             user_id_alt=sender_email or None,
         )
         return MessageEvent(
@@ -1104,9 +1130,19 @@ class GoogleChatAdapter(BasePlatformAdapter):
         resource_name = attachment_data_ref.get("resourceName") or ""
         download_uri = attachment.get("downloadUri") or ""
 
-        if source == "DRIVE_FILE":
+        # NOTE on ``source == "DRIVE_FILE"``: Google Chat tags BOTH
+        # drag-and-drop chat uploads AND Drive-picker shares with this
+        # source string, but the two have different access models.
+        # Drag-and-drop uploads come with an ``attachmentDataRef.resourceName``
+        # that bot SA tokens CAN download via ``media.download_media``.
+        # Pure Drive-picker shares often lack that field and require
+        # user OAuth + Drive scope (which we deliberately don't request).
+        # So we only short-circuit when there's nothing the bot path
+        # can use — otherwise try the bot path first.
+        if source == "DRIVE_FILE" and not resource_name:
             logger.info(
-                "[GoogleChat] Skipping Drive-hosted attachment (OAuth required)"
+                "[GoogleChat] Skipping Drive-picker attachment (no "
+                "resourceName, would need user-OAuth Drive scope)"
             )
             return None, mime
 
@@ -1212,7 +1248,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         If ``content`` exceeds MAX_MESSAGE_LENGTH, the first chunk patches
         the typing card (if any), subsequent chunks are new messages.
         """
-        thread_id = self._resolve_thread_id(reply_to, metadata)
+        thread_id = self._resolve_thread_id(reply_to, metadata, chat_id=chat_id)
         self.pause_typing_for_chat(chat_id)
         try:
             chunks = self._chunk_text(content)
@@ -1411,23 +1447,29 @@ class GoogleChatAdapter(BasePlatformAdapter):
             remaining = remaining[cut:].lstrip()
         return chunks
 
-    @staticmethod
     def _resolve_thread_id(
+        self,
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
+        chat_id: Optional[str] = None,
     ) -> Optional[str]:
         """Return the Google Chat thread resource name to reply under, or None.
 
         Priority:
           1. ``metadata['thread_id']`` — populated by the gateway's session
              plumbing from ``SessionSource.thread_id`` (the inbound
-             ``thread.name``). This is the canonical path.
+             ``thread.name``). Canonical path for groups.
           2. ``metadata['thread_name']`` / ``metadata['thread_ts']`` — Slack
              precedent aliases that the broader codebase sometimes passes.
           3. ``reply_to`` if it already looks like a thread resource name
              (``spaces/X/threads/Y``). Message names ``spaces/X/messages/Y``
-             cannot be converted to threads without an extra API call, so
-             they are ignored here — replies in that case go top-level.
+             cannot be converted to threads without an extra API call.
+          4. ``self._last_inbound_thread[chat_id]`` — Google Chat DMs spawn
+             a new thread per top-level user message, and the adapter
+             intentionally drops thread_id from the source so the session
+             key stays stable. Without this fallback, DM replies would
+             land at top-level (a fresh thread separate from the user's),
+             visually disconnected from the user's question.
         """
         if metadata:
             for key in ("thread_id", "thread_name", "thread_ts"):
@@ -1436,6 +1478,10 @@ class GoogleChatAdapter(BasePlatformAdapter):
                     return str(value)
         if reply_to and "/threads/" in reply_to and "/messages/" not in reply_to:
             return reply_to
+        if chat_id:
+            cached = self._last_inbound_thread.get(chat_id)
+            if cached:
+                return cached
         return None
 
     def _new_authed_http(self) -> Any:
@@ -1607,7 +1653,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         the image (caption + URL) — same anti-tombstone pattern used by
         ``send()``. Otherwise create a new message.
         """
-        thread_id = self._resolve_thread_id(reply_to, metadata)
+        thread_id = self._resolve_thread_id(reply_to, metadata, chat_id=chat_id)
         text_parts: List[str] = []
         if caption:
             text_parts.append(caption)
@@ -1636,7 +1682,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         return await self._send_file(
             chat_id, image_path, caption,
             mime_hint="image/*",
-            thread_id=self._resolve_thread_id(reply_to, kwargs.get("metadata")),
+            thread_id=self._resolve_thread_id(reply_to, kwargs.get("metadata"), chat_id=chat_id),
         )
 
     async def send_document(
@@ -1651,7 +1697,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         return await self._send_file(
             chat_id, file_path, caption,
             mime_hint=None,
-            thread_id=self._resolve_thread_id(reply_to, kwargs.get("metadata")),
+            thread_id=self._resolve_thread_id(reply_to, kwargs.get("metadata"), chat_id=chat_id),
             override_filename=file_name,
         )
 
@@ -1666,7 +1712,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         return await self._send_file(
             chat_id, audio_path, caption,
             mime_hint="audio/ogg",
-            thread_id=self._resolve_thread_id(reply_to, kwargs.get("metadata")),
+            thread_id=self._resolve_thread_id(reply_to, kwargs.get("metadata"), chat_id=chat_id),
         )
 
     async def send_video(
@@ -1680,7 +1726,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         return await self._send_file(
             chat_id, video_path, caption,
             mime_hint="video/mp4",
-            thread_id=self._resolve_thread_id(reply_to, kwargs.get("metadata")),
+            thread_id=self._resolve_thread_id(reply_to, kwargs.get("metadata"), chat_id=chat_id),
         )
 
     async def send_animation(
