@@ -257,3 +257,40 @@ class TestListNavigation:
         raw = (_isolated_hermes_home / "config.yaml").read_text()
         assert "custom_providers:\n- " in raw or "custom_providers:\n  - " in raw, \
             f"YAML must keep list syntax, got:\n{raw}"
+
+    def test_set_nested_rejects_non_integer_list_index(self):
+        config = {"custom_providers": [{"name": "a"}]}
+        with pytest.raises(ValueError, match="invalid list index 'foo'"):
+            _set_nested(config, "custom_providers.foo.api_key", "x")
+
+    def test_set_nested_rejects_setting_under_scalar(self):
+        config = {"custom_providers": ["just_a_string"]}
+        with pytest.raises(ValueError, match="cannot set 'api_key'"):
+            _set_nested(config, "custom_providers.0.api_key", "x")
+
+    def test_set_nested_rejects_deep_descent_into_scalar(self):
+        config = {"custom_providers": ["just_a_string"]}
+        with pytest.raises(ValueError, match="cannot descend into 'foo'"):
+            _set_nested(config, "custom_providers.0.foo.bar", "x")
+
+    def test_set_nested_out_of_range_index_raises_index_error(self):
+        config = {"custom_providers": [{"name": "a"}]}
+        with pytest.raises(IndexError):
+            _set_nested(config, "custom_providers.5.api_key", "x")
+
+    def test_set_config_value_invalid_index_exits_with_clean_message(
+        self, _isolated_hermes_home, capsys
+    ):
+        self._seed_yaml(_isolated_hermes_home, {
+            "custom_providers": [{"name": "a", "api_key": "old"}],
+        })
+
+        with pytest.raises(SystemExit):
+            set_config_value("custom_providers.foo.api_key", "x")
+
+        captured = capsys.readouterr()
+        assert "Error setting custom_providers.foo.api_key" in captured.out
+        assert "list components must be integers" in captured.out
+        # Original config must remain intact on error.
+        result = yaml.safe_load((_isolated_hermes_home / "config.yaml").read_text())
+        assert result["custom_providers"][0]["api_key"] == "old"

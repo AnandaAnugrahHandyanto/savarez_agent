@@ -2312,21 +2312,46 @@ def _set_nested(config: dict, dotted_key: str, value):
     ensures ``c["a"]["b"]["c"] == 1``. Numeric components index into existing
     lists (``custom_providers.0.api_key``) rather than overwriting them with
     a dict, so list-valued config fields survive ``hermes config set``.
+
+    Raises ``ValueError`` for malformed paths (non-integer list index,
+    descending into a scalar) so callers can surface a friendly CLI error
+    instead of leaking ``TypeError``/``AttributeError`` from deeper code.
     """
+    def _list_index(part: str) -> int:
+        try:
+            return int(part)
+        except ValueError:
+            raise ValueError(
+                f"invalid list index '{part}' in '{dotted_key}': "
+                f"list components must be integers"
+            ) from None
+
     parts = dotted_key.split(".")
     current = config
-    for part in parts[:-1]:
+    for i, part in enumerate(parts[:-1]):
         if isinstance(current, list):
-            current = current[int(part)]
+            current = current[_list_index(part)]
             continue
+        if not isinstance(current, dict):
+            walked = ".".join(parts[:i]) or "<root>"
+            raise ValueError(
+                f"cannot descend into '{part}' under '{walked}': value is "
+                f"a {type(current).__name__}, not a dict or list"
+            )
         if part not in current or not isinstance(current.get(part), (dict, list)):
             current[part] = {}
         current = current[part]
     last = parts[-1]
     if isinstance(current, list):
-        current[int(last)] = value
-    else:
+        current[_list_index(last)] = value
+    elif isinstance(current, dict):
         current[last] = value
+    else:
+        walked = ".".join(parts[:-1]) or "<root>"
+        raise ValueError(
+            f"cannot set '{last}' under '{walked}': value is a "
+            f"{type(current).__name__}, not a dict or list"
+        )
 
 
 def get_missing_config_fields() -> List[Dict[str, Any]]:
@@ -4440,8 +4465,14 @@ def set_config_value(key: str, value: str):
     elif value.replace('.', '', 1).isdigit():
         value = float(value)
 
-    # Handle nested keys (e.g., "tts.provider", "custom_providers.0.api_key")
-    _set_nested(user_config, key, value)
+    # Handle nested keys (e.g., "tts.provider", "custom_providers.0.api_key").
+    # Surface invalid-path errors as a clean CLI message rather than a stack
+    # trace, since the user types arbitrary strings here.
+    try:
+        _set_nested(user_config, key, value)
+    except (ValueError, IndexError) as exc:
+        print(f"Error setting {key}: {exc}")
+        sys.exit(1)
     
     # Write only user config back (not the full merged defaults)
     ensure_hermes_home()
