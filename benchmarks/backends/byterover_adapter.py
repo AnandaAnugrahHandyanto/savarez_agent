@@ -91,9 +91,9 @@ class ByteRoverBenchmarkAdapter(BenchmarkableStore):
         """Query ByteRover memory and return a list of result strings."""
         del scope  # brv query does not expose a scope flag
         result = subprocess.run(
-            [self._binary, "query", "--", query],
+            [self._binary, "query", "--timeout", "120", "--", query],
             cwd=self._workdir,
-            timeout=10,
+            timeout=150,
             capture_output=True,
             text=True,
         )
