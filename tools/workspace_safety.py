@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shlex
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -18,11 +19,13 @@ _MUTATING_GIT_SUBCOMMANDS = frozenset({
     "am",
     "apply",
     "bisect",
-    "branch",
     "checkout",
     "cherry-pick",
     "clean",
+    "clone",
     "commit",
+    "fetch",
+    "gc",
     "merge",
     "mv",
     "pull",
@@ -33,6 +36,7 @@ _MUTATING_GIT_SUBCOMMANDS = frozenset({
     "revert",
     "rm",
     "stash",
+    "submodule",
     "switch",
     "tag",
     "worktree",
@@ -40,19 +44,53 @@ _MUTATING_GIT_SUBCOMMANDS = frozenset({
 
 _READ_ONLY_GIT_SUBCOMMANDS = frozenset({
     "blame",
-    "branch",  # treated as mutating when flags imply create/delete; see parser
+    "branch",  # treated as mutating when args imply config/ref changes
     "diff",
-    "fetch",
     "grep",
     "log",
     "ls-files",
-    "remote",
+    "remote",  # treated as mutating when args imply config/ref changes
     "rev-parse",
     "show",
     "status",
 })
 
-_MUTATING_BRANCH_FLAGS = ("-d", "-D", "--delete", "-m", "-M", "--move", "-c", "-C", "--copy")
+_MUTATING_REMOTE_SUBCOMMANDS = frozenset({
+    "add",
+    "remove",
+    "rm",
+    "rename",
+    "set-branches",
+    "set-head",
+    "set-url",
+    "prune",
+    "update",
+})
+
+_MUTATING_BRANCH_FLAGS = frozenset({
+    "-d",
+    "-D",
+    "-m",
+    "-M",
+    "-c",
+    "-C",
+    "-u",
+    "--delete",
+    "--move",
+    "--copy",
+    "--set-upstream-to",
+    "--unset-upstream",
+    "--edit-description",
+})
+
+_UNSAFE_GIT_CWD_SUBCOMMAND = "__unsafe_explicit_git_dir__"
+
+
+@dataclass(frozen=True)
+class GitInvocation:
+    subcommand: str
+    args: list[str]
+    cwd: Path
 
 
 def check_path_side_effect_allowed(path: str | Path) -> Optional[str]:
@@ -82,19 +120,22 @@ def check_path_side_effect_allowed(path: str | Path) -> Optional[str]:
 def check_terminal_side_effect_allowed(command: str, cwd: str | Path) -> Optional[str]:
     """Return an error if a mutating git command is outside the binding."""
 
-    if not _in_gateway_session() or not _looks_like_mutating_git_command(command):
+    if not _in_gateway_session():
         return None
 
     cwd_path = _safe_resolve(cwd)
-    repo_root = _find_git_root(cwd_path)
-    if repo_root is None:
-        return None
+    for invocation in _iter_git_invocations(command, cwd_path):
+        if not _git_invocation_is_mutating(invocation):
+            continue
+        repo_root = _find_git_root(invocation.cwd)
+        if repo_root is None:
+            return None
 
-    bound_repo = _bound_repo_path()
-    if bound_repo is None:
-        return _blocked_message(repo_root, None)
-    if not _same_path(repo_root, bound_repo):
-        return _blocked_message(repo_root, bound_repo)
+        bound_repo = _bound_repo_path()
+        if bound_repo is None:
+            return _blocked_message(repo_root, None)
+        if not _same_path(repo_root, bound_repo):
+            return _blocked_message(repo_root, bound_repo)
     return None
 
 
@@ -150,52 +191,91 @@ def _safe_resolve(path: str | Path) -> Path:
     return Path(path).expanduser().resolve(strict=False)
 
 
-def _looks_like_mutating_git_command(command: str) -> bool:
-    for tokens in _split_shell_segments(command):
-        for index, token in enumerate(tokens):
-            if token != "git":
-                continue
-            subcommand, rest = _git_subcommand(tokens[index + 1 :])
-            if not subcommand:
-                continue
-            if subcommand == "branch":
-                if any(arg in _MUTATING_BRANCH_FLAGS for arg in rest):
-                    return True
-                # `git branch name` creates a branch; `git branch` lists.
-                return bool(rest and not any(arg.startswith("-") for arg in rest))
-            if subcommand in _READ_ONLY_GIT_SUBCOMMANDS:
-                return False
-            if subcommand in _MUTATING_GIT_SUBCOMMANDS:
-                return True
-            # Unknown git subcommands are potentially side-effecting; guard them.
-            return True
-    return False
-
-
-def _git_subcommand(args: list[str]) -> tuple[Optional[str], list[str]]:
-    index = 0
-    while index < len(args):
-        arg = args[index]
-        if arg == "--":
-            return None, []
-        if arg.startswith("-C"):
-            index += 2 if arg == "-C" else 1
-            continue
-        if arg in {"-c", "--config-env"}:
-            index += 2
-            continue
-        if arg.startswith("-"):
-            index += 1
-            continue
-        return arg, args[index + 1 :]
-    return None, []
-
-
-def _split_shell_segments(command: str) -> Iterable[list[str]]:
-    for segment in command.replace("&&", ";").replace("||", ";").split(";"):
+def _iter_git_invocations(command: str, cwd: Path) -> Iterable[GitInvocation]:
+    current_cwd = cwd
+    for segment in _split_shell_segments(command):
         try:
             tokens = shlex.split(segment)
         except ValueError:
             continue
-        if tokens:
-            yield tokens
+        if not tokens:
+            continue
+        if tokens[0] == "cd":
+            if len(tokens) != 2:
+                yield GitInvocation(_UNSAFE_GIT_CWD_SUBCOMMAND, [], current_cwd)
+                continue
+            current_cwd = _safe_resolve(current_cwd / tokens[1])
+            continue
+        for index, token in enumerate(tokens):
+            if token != "git":
+                continue
+            invocation = _parse_git_invocation(tokens[index:], current_cwd)
+            if invocation:
+                yield invocation
+
+
+def _parse_git_invocation(tokens: list[str], base_cwd: Path) -> Optional[GitInvocation]:
+    if not tokens or tokens[0] != "git":
+        return None
+
+    git_cwd = base_cwd
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return None
+        if token == "-C":
+            if index + 1 >= len(tokens):
+                return None
+            git_cwd = _safe_resolve(git_cwd / tokens[index + 1])
+            index += 2
+            continue
+        if token.startswith("-C") and token != "-C":
+            git_cwd = _safe_resolve(git_cwd / token[2:])
+            index += 1
+            continue
+        if token in {"-c", "--config-env"}:
+            index += 2
+            continue
+        if token.startswith("--git-dir") or token.startswith("--work-tree"):
+            return GitInvocation(_UNSAFE_GIT_CWD_SUBCOMMAND, tokens[index + 1 :], git_cwd)
+        if token.startswith("-"):
+            index += 1
+            continue
+        return GitInvocation(token, tokens[index + 1 :], git_cwd)
+    return None
+
+
+def _git_invocation_is_mutating(invocation: GitInvocation) -> bool:
+    subcommand = invocation.subcommand
+    if subcommand == _UNSAFE_GIT_CWD_SUBCOMMAND:
+        return True
+    if subcommand == "branch":
+        return _branch_is_mutating(invocation.args)
+    if subcommand == "remote":
+        return _remote_is_mutating(invocation.args)
+    if subcommand in _READ_ONLY_GIT_SUBCOMMANDS:
+        return False
+    if subcommand in _MUTATING_GIT_SUBCOMMANDS:
+        return True
+    # Unknown git subcommands are potentially side-effecting; guard them.
+    return True
+
+
+def _branch_is_mutating(args: list[str]) -> bool:
+    if any(arg in _MUTATING_BRANCH_FLAGS for arg in args):
+        return True
+    # `git branch name` creates a branch; `git branch` and flags like `-vv` list.
+    return bool(args and not any(arg.startswith("-") for arg in args))
+
+
+def _remote_is_mutating(args: list[str]) -> bool:
+    non_flags = [arg for arg in args if not arg.startswith("-")]
+    return bool(non_flags and non_flags[0] in _MUTATING_REMOTE_SUBCOMMANDS)
+
+
+def _split_shell_segments(command: str) -> Iterable[str]:
+    for segment in command.replace("&&", ";").replace("||", ";").split(";"):
+        segment = segment.strip()
+        if segment:
+            yield segment

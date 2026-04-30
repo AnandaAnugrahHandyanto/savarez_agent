@@ -147,3 +147,92 @@ def test_read_only_git_command_allowed(tmp_path):
         clear_session_vars(tokens)
 
     assert error is None
+
+
+def test_git_dash_c_wrong_repo_commit_is_blocked(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    other_repo = _git_repo(tmp_path / "other")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            f"git -C {other_repo} commit -m update",
+            bound_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "Blocked repo side effect outside authoritative workspace binding" in error
+
+
+def test_cd_wrong_repo_then_git_commit_is_blocked(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    other_repo = _git_repo(tmp_path / "other")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            f"cd {other_repo} && git commit -m update",
+            bound_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "Blocked repo side effect outside authoritative workspace binding" in error
+
+
+def test_git_fetch_is_guarded_as_repo_side_effect(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    other_repo = _git_repo(tmp_path / "other")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed("git fetch origin", other_repo)
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "Blocked repo side effect outside authoritative workspace binding" in error
+
+
+def test_git_remote_add_is_guarded(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    other_repo = _git_repo(tmp_path / "other")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            "git remote add origin https://example.invalid/repo.git",
+            other_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "Blocked repo side effect outside authoritative workspace binding" in error
+
+
+def test_git_remote_get_url_is_allowed_read_only(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    other_repo = _git_repo(tmp_path / "other")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed("git remote get-url origin", other_repo)
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is None
+
+
+def test_git_branch_set_upstream_is_guarded(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    other_repo = _git_repo(tmp_path / "other")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            "git branch --set-upstream-to origin/main",
+            other_repo,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "Blocked repo side effect outside authoritative workspace binding" in error
