@@ -208,6 +208,10 @@ class TestTickWorkdirPartition:
     def test_workdir_jobs_run_sequentially(self, tmp_path, monkeypatch):
         import cron.scheduler as sched
 
+        lock_dir = tmp_path / "cron-lock"
+        monkeypatch.setattr(sched, "_LOCK_DIR", lock_dir)
+        monkeypatch.setattr(sched, "_LOCK_FILE", lock_dir / ".tick.lock")
+
         # Two "jobs" — one with workdir, one without.  get_due_jobs returns both.
         workdir_job = {"id": "a", "name": "A", "workdir": str(tmp_path)}
         parallel_job = {"id": "b", "name": "B", "workdir": None}
@@ -298,6 +302,11 @@ class TestRunJobTerminalCwd:
 
         # Stub scheduler helpers that would otherwise hit the filesystem / config.
         monkeypatch.setattr(sched, "_build_job_prompt", lambda job, prerun_script=None: "hi")
+        monkeypatch.setattr(
+            sched,
+            "_resolve_job_hermes_home",
+            lambda job: sched._hermes_home.expanduser().resolve(),
+        )
         monkeypatch.setattr(sched, "_resolve_origin", lambda job: None)
         monkeypatch.setattr(sched, "_resolve_delivery_target", lambda job: None)
         monkeypatch.setattr(sched, "_resolve_cron_enabled_toolsets", lambda job, cfg: None)

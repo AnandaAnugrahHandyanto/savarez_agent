@@ -64,49 +64,16 @@ class TestResolveDeliveryTarget:
             "thread_id": "17585",
         }
 
-    @pytest.mark.parametrize(
-        ("platform", "env_var", "chat_id"),
-        [
-            ("matrix", "MATRIX_HOME_ROOM", "!bot-room:example.org"),
-            ("signal", "SIGNAL_HOME_CHANNEL", "+15551234567"),
-            ("mattermost", "MATTERMOST_HOME_CHANNEL", "team-town-square"),
-            ("sms", "SMS_HOME_CHANNEL", "+15557654321"),
-            ("email", "EMAIL_HOME_ADDRESS", "home@example.com"),
-            ("dingtalk", "DINGTALK_HOME_CHANNEL", "cidNNN"),
-            ("feishu", "FEISHU_HOME_CHANNEL", "oc_home"),
-            ("wecom", "WECOM_HOME_CHANNEL", "wecom-home"),
-            ("weixin", "WEIXIN_HOME_CHANNEL", "wxid_home"),
-            ("qqbot", "QQ_HOME_CHANNEL", "group-openid-home"),
-        ],
-    )
-    def test_origin_delivery_without_origin_falls_back_to_supported_home_channels(
-        self, monkeypatch, platform, env_var, chat_id
-    ):
-        for fallback_env in (
-            "MATRIX_HOME_ROOM",
-            "MATRIX_HOME_CHANNEL",
-            "TELEGRAM_HOME_CHANNEL",
-            "DISCORD_HOME_CHANNEL",
-            "SLACK_HOME_CHANNEL",
-            "SIGNAL_HOME_CHANNEL",
-            "MATTERMOST_HOME_CHANNEL",
-            "SMS_HOME_CHANNEL",
-            "EMAIL_HOME_ADDRESS",
-            "DINGTALK_HOME_CHANNEL",
-            "BLUEBUBBLES_HOME_CHANNEL",
-            "FEISHU_HOME_CHANNEL",
-            "WECOM_HOME_CHANNEL",
-            "WEIXIN_HOME_CHANNEL",
-            "QQ_HOME_CHANNEL",
+    def test_origin_delivery_without_origin_is_local_only_even_if_home_channels_exist(self, monkeypatch):
+        for fallback_env, value in (
+            ("MATRIX_HOME_ROOM", "!bot-room:example.org"),
+            ("TELEGRAM_HOME_CHANNEL", "-1001"),
+            ("DISCORD_HOME_CHANNEL", "999888777"),
+            ("SIGNAL_HOME_CHANNEL", "+15550001111"),
         ):
-            monkeypatch.delenv(fallback_env, raising=False)
-        monkeypatch.setenv(env_var, chat_id)
+            monkeypatch.setenv(fallback_env, value)
 
-        assert _resolve_delivery_target({"deliver": "origin"}) == {
-            "platform": platform,
-            "chat_id": chat_id,
-            "thread_id": None,
-        }
+        assert _resolve_delivery_target({"deliver": "origin"}) is None
 
     def test_bare_matrix_delivery_uses_matrix_home_room(self, monkeypatch):
         monkeypatch.delenv("MATRIX_HOME_CHANNEL", raising=False)
@@ -394,6 +361,38 @@ class TestDeliverResultWrapping:
         assert sent_content == "Clean output only."
         assert "Cronjob Response" not in sent_content
         assert "The agent cannot see" not in sent_content
+
+    def test_delivery_treats_origin_without_metadata_as_local_only(self, monkeypatch):
+        """Unattended origin-less jobs must not fall back to any configured home channel."""
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-1001")
+
+        with patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "orphan-origin-job",
+                "name": "orphan-origin-job",
+                "deliver": "origin",
+                "origin": None,
+            }
+            result = _deliver_result(job, "No delivery expected.")
+
+        assert result is None
+        send_mock.assert_not_called()
+
+    def test_delivery_treats_list_form_origin_without_metadata_as_local_only(self, monkeypatch):
+        """Legacy/list-form deliver values should normalize before origin-local-only checks."""
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-1001")
+
+        with patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "orphan-origin-list-job",
+                "name": "orphan-origin-list-job",
+                "deliver": ["origin"],
+                "origin": None,
+            }
+            result = _deliver_result(job, "No delivery expected.")
+
+        assert result is None
+        send_mock.assert_not_called()
 
     def test_delivery_extracts_media_tags_before_send(self):
         """Cron delivery should pass MEDIA attachments separately to the send helper."""
@@ -693,6 +692,7 @@ class TestRunJobSessionPersistence:
         fake_db = MagicMock()
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_job_hermes_home", return_value=tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("dotenv.load_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
@@ -740,6 +740,7 @@ class TestRunJobSessionPersistence:
         fake_db = MagicMock()
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_job_hermes_home", return_value=tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("dotenv.load_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
@@ -777,6 +778,7 @@ class TestRunJobSessionPersistence:
         fake_db = MagicMock()
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_job_hermes_home", return_value=tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("dotenv.load_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
@@ -805,13 +807,14 @@ class TestRunJobSessionPersistence:
         fake_db = MagicMock()
         return fake_db, [
             patch("cron.scheduler._hermes_home", tmp_path),
+            patch("cron.scheduler._resolve_job_hermes_home", return_value=tmp_path),
             patch("cron.scheduler._resolve_origin", return_value=None),
             patch("dotenv.load_dotenv"),
             patch("hermes_state.SessionDB", return_value=fake_db),
             patch(
                 "hermes_cli.runtime_provider.resolve_runtime_provider",
                 return_value={
-                    "api_key": "test-key",
+                    "api_key": "***",
                     "base_url": "https://example.invalid/v1",
                     "provider": "openrouter",
                     "api_mode": "chat_completions",
@@ -827,7 +830,7 @@ class TestRunJobSessionPersistence:
             "enabled_toolsets": ["web", "terminal", "file"],
         }
         fake_db, patches = self._make_run_job_patches(tmp_path)
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
@@ -852,7 +855,7 @@ class TestRunJobSessionPersistence:
             "prompt": "hello",
         }
         fake_db, patches = self._make_run_job_patches(tmp_path)
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
@@ -880,7 +883,7 @@ class TestRunJobSessionPersistence:
         fake_db, patches = self._make_run_job_patches(tmp_path)
         # Even if the user has ``hermes tools`` configured to enable web+file
         # for cron, the per-job override wins.
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
              patch("run_agent.AIAgent") as mock_agent_cls, \
              patch(
                  "hermes_cli.tools_config._get_platform_tools",
@@ -908,6 +911,7 @@ class TestRunJobSessionPersistence:
         fake_db = MagicMock()
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_job_hermes_home", return_value=tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("dotenv.load_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
@@ -984,6 +988,7 @@ class TestRunJobSessionPersistence:
         fake_db = MagicMock()
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_job_hermes_home", return_value=tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("dotenv.load_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
@@ -1023,6 +1028,7 @@ class TestRunJobSessionPersistence:
         fake_db = MagicMock()
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_job_hermes_home", return_value=tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("dotenv.load_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
@@ -1057,6 +1063,8 @@ class TestRunJobSessionPersistence:
         from cron.scheduler import tick
         from cron.jobs import load_jobs, save_jobs
 
+        lock_dir = tmp_path / "cron-lock"
+
         job = {
             "id": "empty-job",
             "name": "empty-test",
@@ -1071,6 +1079,8 @@ class TestRunJobSessionPersistence:
         fake_db = MagicMock()
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._LOCK_DIR", lock_dir), \
+             patch("cron.scheduler._LOCK_FILE", lock_dir / ".tick.lock"), \
              patch("cron.scheduler.get_due_jobs", return_value=[job]), \
              patch("cron.scheduler.advance_next_run"), \
              patch("cron.scheduler.mark_job_run") as mock_mark, \
@@ -1114,6 +1124,7 @@ class TestRunJobSessionPersistence:
                 return {"final_response": "ok"}
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_job_hermes_home", return_value=tmp_path), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -1180,6 +1191,7 @@ class TestRunJobSessionPersistence:
                 return {"final_response": "ok"}
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_job_hermes_home", return_value=tmp_path), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -1231,6 +1243,7 @@ class TestRunJobConfigLogging:
         }
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_job_hermes_home", return_value=tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("dotenv.load_dotenv"), \
              patch("run_agent.AIAgent") as mock_agent_cls:
@@ -1260,6 +1273,7 @@ class TestRunJobConfigLogging:
         }
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_job_hermes_home", return_value=tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("dotenv.load_dotenv"), \
              patch("run_agent.AIAgent") as mock_agent_cls:
@@ -1299,6 +1313,7 @@ class TestRunJobSkillBacked:
             return {"final_response": "ok"}
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_job_hermes_home", return_value=tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("dotenv.load_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
@@ -1358,6 +1373,7 @@ class TestRunJobSkillBacked:
             return {"final_response": "ok"}
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_job_hermes_home", return_value=tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("tools.credential_files._resolve_hermes_home", return_value=tmp_path), \
              patch("dotenv.load_dotenv"), \
@@ -1397,6 +1413,7 @@ class TestRunJobSkillBacked:
         fake_db = MagicMock()
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_job_hermes_home", return_value=tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("dotenv.load_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
@@ -1443,6 +1460,7 @@ class TestRunJobSkillBacked:
             return json.dumps({"success": True, "content": f"# {name}\nInstructions for {name}."})
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_job_hermes_home", return_value=tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("dotenv.load_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
@@ -1478,6 +1496,13 @@ class TestRunJobSkillBacked:
 
 class TestSilentDelivery:
     """Verify that [SILENT] responses suppress delivery while still saving output."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_tick_lock(self, tmp_path):
+        lock_dir = tmp_path / "cron-lock"
+        with patch("cron.scheduler._LOCK_DIR", lock_dir), \
+             patch("cron.scheduler._LOCK_FILE", lock_dir / ".tick.lock"):
+            yield
 
     def _make_job(self):
         return {
@@ -1667,9 +1692,13 @@ class TestRunJobWakeGate:
             "source": "stub",
             "requested_provider": None,
         }
+        import cron.scheduler as scheduler
         with patch(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             return_value=fake_runtime,
+        ), patch(
+            "cron.scheduler._resolve_job_hermes_home",
+            side_effect=lambda job: scheduler._hermes_home,
         ):
             yield
 
@@ -2114,3 +2143,23 @@ class TestSendMediaTimeoutCancelsFuture:
         # 2. Second file still got dispatched — one timeout doesn't abort the batch
         adapter.send_video.assert_called_once()
         assert adapter.send_video.call_args[1]["video_path"] == "/tmp/fast.mp4"
+
+
+class TestBoundHomeRunJob:
+    def test_bound_home_tempfile_setup_failure_returns_structured_error(self, tmp_path):
+        import cron.scheduler as sched
+
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+
+        with patch("cron.scheduler.tempfile.NamedTemporaryFile", side_effect=OSError("disk full")):
+            success, output, final_response, error = sched._run_job_in_bound_home(
+                {"id": "job-1", "name": "bound-home-failure", "prompt": "ping"},
+                hermes_home,
+            )
+
+        assert success is False
+        assert final_response == ""
+        assert error == "Failed to prepare child result file in bound Hermes home: disk full"
+        assert "# Cron Job Failure" in output
+        assert "disk full" in output
