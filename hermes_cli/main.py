@@ -5009,6 +5009,13 @@ def cmd_import(args):
     run_import(args)
 
 
+def cmd_sync(args):
+    """Portable profile sync export/import."""
+    from hermes_cli.sync import run_sync
+
+    run_sync(args)
+
+
 def cmd_version(args):
     """Show version."""
     print(f"Hermes Agent v{__version__} ({__release_date__})")
@@ -8885,6 +8892,63 @@ Examples:
         help="Overwrite existing files without confirmation",
     )
     import_parser.set_defaults(func=cmd_import)
+
+    # =========================================================================
+    # sync command
+    # =========================================================================
+    sync_parser = subparsers.add_parser(
+        "sync",
+        help="Export/import portable profile sync state",
+        description="Manage the local, structured Hermes profile sync format. "
+        "This does not sync the entire Hermes home directory and never exports "
+        "plaintext secrets.",
+    )
+    sync_subparsers = sync_parser.add_subparsers(dest="sync_action")
+
+    sync_export = sync_subparsers.add_parser(
+        "export",
+        help="Export portable profile state to a directory",
+    )
+    sync_export.add_argument(
+        "--out",
+        required=True,
+        help="Output directory for the structured sync repo",
+    )
+    sync_export.add_argument(
+        "--device-id",
+        help="Device identifier for device-local config (default: derived from host)",
+    )
+
+    sync_import = sync_subparsers.add_parser(
+        "import",
+        help="Import portable profile state from a directory",
+    )
+    sync_import.add_argument(
+        "--from",
+        dest="source_dir",
+        required=True,
+        help="Sync repo directory to import from",
+    )
+    sync_import.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the exact local write plan without changing files",
+    )
+    sync_import.add_argument(
+        "--device-id",
+        help="Device identifier for device-local config (default: derived from host)",
+    )
+
+    sync_doctor = sync_subparsers.add_parser(
+        "doctor",
+        help="Validate a local sync repo",
+    )
+    sync_doctor.add_argument(
+        "--repo",
+        required=True,
+        help="Sync repo directory to validate",
+    )
+    sync_parser.set_defaults(func=cmd_sync)
 
     # =========================================================================
     # config command
