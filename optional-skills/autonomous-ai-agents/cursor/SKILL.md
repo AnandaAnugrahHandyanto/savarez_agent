@@ -4,6 +4,13 @@ description: Delegate coding tasks to Cursor's headless agent CLI (cursor-agent)
 version: 1.0.0
 author: Hermes Agent (Nous Research)
 license: MIT
+required_environment_variables:
+  - name: CURSOR_API_KEY
+    prompt: Cursor API key
+    help: Generate one at https://cursor.com/integrations (Settings → API Keys). Only needed for headless/CI use; interactive installs can complete browser OAuth on first run.
+    required_for: headless and CI use (skip if you'll authenticate via browser OAuth)
+prerequisites:
+  commands: [cursor-agent]
 metadata:
   hermes:
     tags: [Coding-Agent, Cursor, Anthropic, OpenAI, PTY, Automation]
@@ -184,6 +191,15 @@ The local terminal call returns once the task is dispatched; the Cloud Agent con
 | `cursor-agent ls` | List previous chats |
 | `cursor-agent resume` | Resume the latest chat |
 | `cursor-agent update` | Update the CLI |
+
+## Pitfalls
+
+1. **Binary alias.** Newer Cursor builds rename the binary from `cursor-agent` to `agent`. If `command -v cursor-agent` fails, try `command -v agent` and either symlink it or substitute `agent` in commands.
+2. **First-run requires a browser** for OAuth. On a headless box, set `CURSOR_API_KEY` before the first invocation or the agent will hang on a localhost callback URL.
+3. **No `--workspace` flag.** The cwd is the workspace. Always pass `workdir` to `terminal()` instead of trying to flag the path.
+4. **PTY is mandatory.** `cursor-agent` is a TUI; without `pty=true` it hangs.
+5. **Cloud handoff is fire-and-forget.** A `&`-prefixed prompt dispatches to Cloud Agent and the local call returns. Don't expect file changes locally — pull them via `git fetch` once the cloud run completes.
+6. **`--mode ask` cannot edit files.** If `cursor-agent` says it can't write to a path, check whether you accidentally launched ask mode.
 
 ## Rules
 
