@@ -1082,8 +1082,10 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 everything else.  Inspired by Claude Code's ``/compact``.
         """
         n_messages = len(messages)
-        # Only need head + 3 tail messages minimum (token budget decides the real tail size)
-        _min_for_compress = self.protect_first_n + 3 + 1
+        # Only need system messages + 3 tail messages minimum (token budget decides the real tail size)
+        # Note: old logic used protect_first_n (default 3) but we now only protect system messages
+        _n_system = sum(1 for m in messages if m.get("role") == "system")
+        _min_for_compress = _n_system + 3 + 1
         if n_messages <= _min_for_compress:
             if not self.quiet_mode:
                 logger.warning(
@@ -1103,7 +1105,18 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
 
         # Phase 2: Determine boundaries
-        compress_start = self.protect_first_n
+        # ── Only protect system messages (persona/instructions), not head conversation text ──
+        # Old logic used protect_first_n=3 to keep first 3 messages verbatim, but head
+        # messages are stale conversation content that never gets updated by compression.
+        # The model would treat them as current context → hallucination across sessions.
+        # Fix: only preserve role=system messages (immutable system prompts); all user/assistant
+        # messages enter the compression window for the summariser to handle uniformly.
+        compress_start = 0
+        for i, msg in enumerate(messages):
+            if msg.get("role") == "system":
+                compress_start = i + 1
+            else:
+                break
         compress_start = self._align_boundary_forward(messages, compress_start)
 
         # Use token-budget tail protection instead of fixed message count
