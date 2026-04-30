@@ -2670,8 +2670,19 @@ class BasePlatformAdapter(ABC):
                 if _active is not None:
                     _active.clear()
                 await _stop_typing_task()
-                # Process pending message in new background task
-                await self._process_message_background(pending_event, session_key)
+                # Spawn pending-message drain as an independent task instead
+                # of recursive await — unbounded recursion exhausts the C
+                # stack and SIGSEGVs under sustained pending-queue activity.
+                # (#17758)
+                drain_task = asyncio.create_task(
+                    self._process_message_background(pending_event, session_key)
+                )
+                self._session_tasks[session_key] = drain_task
+                try:
+                    self._background_tasks.add(drain_task)
+                    drain_task.add_done_callback(self._background_tasks.discard)
+                except TypeError:
+                    pass
                 return  # Already cleaned up
                 
         except asyncio.CancelledError:
