@@ -277,6 +277,23 @@ DANGEROUS_PATTERNS = [
     # a script is first made executable then immediately run. The script
     # content may contain dangerous commands that individual patterns miss.
     (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod +x followed by immediate execution"),
+    # Reverse-shell-via-flag patterns. The existing `bash -c` / `python -c` /
+    # heredoc / `curl | sh` rules catch most shell-bootstrap shapes, but the
+    # standard offensive-tooling reverse shells use a flag that asks the
+    # network tool itself to spawn a shell — `nc -e /bin/bash`, `ncat -e sh`,
+    # `socat EXEC:/bin/bash` — without ever invoking bash on the command
+    # line. Catch them by the flag/keyword regardless of host (the IP-based
+    # variants in some adjacent proposals miss hostnames like `evil.example.com`).
+    (r'\b(nc|ncat)\s+(?:-[^\s]*\s+)*-e\s+/?(?:bin/)?(?:bash|sh|zsh|ksh|dash)\b',
+     "reverse shell via netcat -e"),
+    (r'\bsocat\b[^\n]*\bEXEC\s*:\s*["\']?/?(?:bin/)?(?:bash|sh|zsh|ksh|dash)\b',
+     "reverse shell via socat EXEC"),
+    # Two-stage download-then-execute. `curl URL | bash` (pipe-to-shell) is
+    # already caught above, but the trivial syntactic variant `curl -o file
+    # && bash file` (or `; bash file`, `| chmod +x ... ; ./file`) is not.
+    # Same threat model, no new bypass surface.
+    (r'\b(?:curl|wget)\b[^\n]*\s-[oO]\s+\S+[^\n]*[;&|]+\s*(?:(?:/?(?:bin/)?(?:bash|sh|zsh|ksh|dash))\b|chmod\s+\+x\b)',
+     "download then execute"),
 ]
 
 
