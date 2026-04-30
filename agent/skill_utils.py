@@ -270,13 +270,33 @@ def get_external_skills_dirs() -> List[Path]:
     return result
 
 
+def _get_bundled_skills_dirs() -> List[Path]:
+    """Return any skill directories shipped inside the Hermes repo itself.
+
+    The Inkbox-powered fork ships its own Inkbox SDK / CLI / OpenClaw skills
+    under ``<repo>/bundled_skills/`` so a fresh install knows how to use the
+    Inkbox APIs without the user having to symlink anything into HERMES_HOME.
+    """
+    bundled: List[Path] = []
+    try:
+        repo_root = Path(__file__).resolve().parent.parent
+        candidate = repo_root / "bundled_skills"
+        if candidate.is_dir():
+            bundled.append(candidate)
+    except Exception:
+        pass
+    return bundled
+
+
 def get_all_skills_dirs() -> List[Path]:
     """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
 
     The local dir is always first (and always included even if it doesn't exist
-    yet — callers handle that).  External dirs follow in config order.
+    yet — callers handle that).  Bundled-with-the-fork skills follow, then
+    user-configured external dirs.
     """
     dirs = [get_skills_dir()]
+    dirs.extend(_get_bundled_skills_dirs())
     dirs.extend(get_external_skills_dirs())
     return dirs
 
