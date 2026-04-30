@@ -296,12 +296,17 @@ def test_list_authenticated_providers_groups_same_endpoint(monkeypatch):
 def test_list_authenticated_providers_current_endpoint_uses_current_slug(monkeypatch):
     """When current_base_url matches the grouped endpoint, the slug must
     equal current_provider so picker selection routes through the live
-    credential pipeline."""
+    credential pipeline.
+
+    Note: ``"custom"`` and ``"local"`` are treated as broken-state
+    sentinels (#17478) and explicitly rebuilt to the canonical
+    ``custom:<name>`` slug; covered separately below.
+    """
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
 
     providers = list_authenticated_providers(
-        current_provider="custom",
+        current_provider="custom:ollama",
         current_base_url="http://localhost:11434/v1",
         user_providers={},
         custom_providers=[
@@ -314,7 +319,7 @@ def test_list_authenticated_providers_current_endpoint_uses_current_slug(monkeyp
     matches = [p for p in providers if p.get("is_user_defined")]
     assert len(matches) == 1
     group = matches[0]
-    assert group["slug"] == "custom"
+    assert group["slug"] == "custom:ollama"
     assert group["is_current"] is True
 
 
@@ -479,3 +484,90 @@ def test_lmstudio_picker_skips_probe_when_not_configured(monkeypatch):
     )
 
     assert "base_url" not in captured
+
+
+def test_custom_sentinel_provider_recovers_canonical_slug(monkeypatch):
+    """Regression for #17478: when a prior broken switch wrote the literal
+    string ``"custom"`` into ``model.provider``, the next picker pass must
+    not propagate that sentinel back as a slug. The canonical
+    ``custom:<name>`` slug should be rebuilt from the entry name so the
+    picker writes a resolvable provider on the next switch.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="https://token-plan-sgp.xiaomimimo.com/v1",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "xiaomi-coding",
+                "base_url": "https://token-plan-sgp.xiaomimimo.com/v1",
+                "model": "GLM-4.6",
+            }
+        ],
+        max_models=50,
+    )
+
+    rows = [p for p in providers if p["name"] == "xiaomi-coding"]
+    assert len(rows) == 1
+    assert rows[0]["slug"] == "custom:xiaomi-coding"
+    # Defensive: the literal sentinel must never appear as a slug.
+    assert "custom" not in {p["slug"] for p in providers}
+
+
+def test_local_sentinel_provider_recovers_canonical_slug(monkeypatch):
+    """Same recovery semantics for the ``"local"`` sentinel — also a
+    broken-state placeholder that must not be reused as a real provider
+    slug."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="local",
+        current_base_url="http://127.0.0.1:4141/v1",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Local (127.0.0.1:4141)",
+                "base_url": "http://127.0.0.1:4141/v1",
+                "model": "rotator-openrouter-coding",
+            }
+        ],
+        max_models=50,
+    )
+
+    rows = [p for p in providers if p["name"] == "Local (127.0.0.1:4141)"]
+    assert len(rows) == 1
+    assert rows[0]["slug"] == "custom:local-(127.0.0.1:4141)"
+    assert "local" not in {p["slug"] for p in providers}
+
+
+def test_real_provider_still_reused_as_slug_when_endpoints_match(monkeypatch):
+    """Guard: the recovery must not regress the live-credential routing.
+    When ``current_provider`` is a real (non-sentinel) name and the
+    endpoint matches, the entry's slug should still be the active
+    provider so picker-driven switches reuse the resolved credential
+    pipeline.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="custom:my-shop",
+        current_base_url="https://api.example.com/v1",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "My Shop",
+                "base_url": "https://api.example.com/v1",
+                "model": "model-a",
+            }
+        ],
+        max_models=50,
+    )
+
+    rows = [p for p in providers if p["name"] == "My Shop"]
+    assert len(rows) == 1
+    assert rows[0]["slug"] == "custom:my-shop"

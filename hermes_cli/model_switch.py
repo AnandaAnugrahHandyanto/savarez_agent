@@ -1497,11 +1497,22 @@ def list_authenticated_providers(
                 # If this endpoint matches the currently active one, use
                 # ``current_provider`` as the slug so picker-driven switches
                 # route through the live credential pipeline.
+                #
+                # Skip the sentinel values ``"custom"`` / ``"local"`` here:
+                # they aren't real provider names, only placeholders that
+                # earlier broken switches may have written into config.yaml
+                # (#17478). Reusing such a sentinel would persist it back
+                # to ``model.provider`` on the next switch, leaving the
+                # config in an unresolvable state ("Unknown provider
+                # 'custom'"). Always rebuild the canonical
+                # ``custom:<name>`` slug for those cases.
+                _current_lc = (current_provider or "").strip().lower()
                 if (
                     current_base_url
                     and api_url == current_base_url.strip().rstrip("/")
+                    and _current_lc not in ("", "custom", "local")
                 ):
-                    slug = current_provider or custom_provider_slug(display_name)
+                    slug = current_provider
                 else:
                     slug = custom_provider_slug(display_name)
                 groups[group_key] = {
