@@ -1661,12 +1661,18 @@ def _handle_auth_error_and_retry(
 # the request because its server-side transport session expired /
 # was garbage-collected.  The caller's OAuth token is still valid —
 # only the transport-layer session state needs rebuilding.  See #13383.
+#
+# "session terminated" — sent by the MCP SDK's streamable-http server
+# when the client POSTs to a session ID that no longer exists (server
+# restart, idle TTL expiry, pod rotation, etc.).  The SDK raises this
+# as ``McpError(ErrorData(code=32600, message="Session terminated"))``.
 _SESSION_EXPIRED_MARKERS: tuple = (
     "invalid or expired session",
     "expired session",
     "session expired",
     "session not found",
     "unknown session",
+    "session terminated",
 )
 
 

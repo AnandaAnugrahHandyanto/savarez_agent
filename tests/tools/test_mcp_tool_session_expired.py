@@ -80,6 +80,70 @@ def test_is_session_expired_rejects_empty_message():
     assert _is_session_expired_error(Exception()) is False
 
 
+def test_is_session_expired_detects_session_terminated():
+    """The MCP SDK's streamable-http server sends
+    ``McpError(ErrorData(code=32600, message="Session terminated"))``
+    when the client POSTs to a session ID that no longer exists
+    (server restart, idle TTL expiry, pod rotation, etc.).
+    This must be recognised as a session-expired error so the
+    transport reconnect path fires instead of surfacing a generic
+    tool failure.
+    """
+    from tools.mcp_tool import _is_session_expired_error
+    # Exact message from mcp.client.streamable_http (code 32600)
+    assert _is_session_expired_error(RuntimeError("Session terminated")) is True
+    # Case-insensitive match
+    assert _is_session_expired_error(RuntimeError("SESSION TERMINATED")) is True
+
+
+def test_call_tool_handler_reconnects_on_session_terminated(monkeypatch, tmp_path):
+    """When a streamable-http MCP server restarts, it drops the old
+    session and the SDK raises ``McpError("Session terminated")``.
+    The handler must trigger a transport reconnect, retry once, and
+    return the retry's result — same as the ``"Invalid or expired
+    session"`` path exercised by test_call_tool_handler_reconnects_on_session_expired.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    server, reconnect_flag = _install_stub_server("crg")
+    mcp_tool._servers["crg"] = server
+    mcp_tool._server_error_counts.pop("crg", None)
+
+    call_count = {"n": 0}
+
+    async def _call_sequence(*a, **kw):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # Exact error from mcp.client.streamable_http on stale session
+            raise RuntimeError("Session terminated")
+        result = MagicMock()
+        result.isError = False
+        result.content = [MagicMock(type="text", text="reconnected ok")]
+        result.structuredContent = None
+        return result
+
+    server.session.call_tool = _call_sequence
+
+    try:
+        handler = _make_tool_handler("crg", "crg-tool", 10.0)
+        out = handler({"query": "test"})
+        parsed = json.loads(out)
+        assert "error" not in parsed, (
+            f"Expected retry to succeed after reconnect; got: {parsed}"
+        )
+        assert reconnect_flag.is_set(), (
+            "Handler did not trigger transport reconnect on "
+            "'Session terminated' error"
+        )
+        assert call_count["n"] == 2
+    finally:
+        mcp_tool._servers.pop("crg", None)
+        mcp_tool._server_error_counts.pop("crg", None)
+
+
 # ---------------------------------------------------------------------------
 # Handler integration — verify the recovery plumbing wires end-to-end
 # ---------------------------------------------------------------------------
