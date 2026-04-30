@@ -54,6 +54,72 @@ SCOPES = [
 ]
 
 
+def _load_resource_ownership_policy() -> dict:
+    try:
+        import yaml
+    except Exception:
+        return {}
+    try:
+        cfg_path = HERMES_HOME / "config.yaml"
+        if not cfg_path.exists():
+            return {}
+        data = yaml.safe_load(cfg_path.read_text()) or {}
+        policy = data.get("resource_ownership") or {}
+        return policy if isinstance(policy, dict) else {}
+    except Exception:
+        return {}
+
+
+def _entry_platform_ids(entry: dict, platform: str) -> set[str]:
+    if not isinstance(entry, dict):
+        return set()
+    values: set[str] = set()
+    platforms = entry.get("platforms")
+    if isinstance(platforms, dict):
+        raw = platforms.get(platform) or platforms.get(str(platform))
+        if isinstance(raw, (list, tuple, set)):
+            values.update(str(v) for v in raw if str(v).strip())
+        elif raw:
+            values.add(str(raw))
+    raw_ids = entry.get("user_ids")
+    if isinstance(raw_ids, dict):
+        raw = raw_ids.get(platform) or raw_ids.get(str(platform))
+        if isinstance(raw, (list, tuple, set)):
+            values.update(str(v) for v in raw if str(v).strip())
+        elif raw:
+            values.add(str(raw))
+    elif isinstance(raw_ids, (list, tuple, set)):
+        values.update(str(v) for v in raw_ids if str(v).strip())
+    return values
+
+
+def _guard_profile_google_token_for_requester():
+    """Prevent collaborator sessions from silently using owner Google OAuth.
+
+    CLI and cron runs have no HERMES_SESSION_* metadata and are left unchanged.
+    Gateway-originated non-owner sessions must connect requester-owned Google
+    OAuth instead of falling back to HERMES_HOME/google_token.json.
+    """
+    platform = os.getenv("HERMES_SESSION_PLATFORM", "").strip()
+    if not platform:
+        return
+    user_id = os.getenv("HERMES_SESSION_USER_ID", "").strip()
+    chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "").strip()
+    source_ids = {v for v in (user_id, chat_id) if v}
+    policy = _load_resource_ownership_policy()
+    owner = policy.get("owner") if isinstance(policy.get("owner"), dict) else {}
+    owner_ids = _entry_platform_ids(owner, platform)
+    if owner_ids and source_ids & owner_ids:
+        return
+    owner_name = owner.get("name") or "the agent owner"
+    print(
+        "Blocked: this Google Workspace helper is configured with the profile owner's OAuth token. "
+        f"Requester-owned Google authorization is required; not using {owner_name}'s Google token by fallback.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
 def _normalize_authorized_user_payload(payload: dict) -> dict:
     normalized = dict(payload)
     if not normalized.get("type"):
@@ -62,6 +128,7 @@ def _normalize_authorized_user_payload(payload: dict) -> dict:
 
 
 def _ensure_authenticated():
+    _guard_profile_google_token_for_requester()
     if not TOKEN_PATH.exists():
         print("Not authenticated. Run the setup script first:", file=sys.stderr)
         print(f"  python {Path(__file__).parent / 'setup.py'}", file=sys.stderr)
