@@ -689,6 +689,104 @@ class TestAdapterBehavior(unittest.TestCase):
             adapter._on_reaction_event("im.message.reaction.created_v1", data)
         run_threadsafe.assert_called_once()
 
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_BOT_OPEN_ID": "ou_hermes",
+            "FEISHU_BOT_USER_ID": "u_hermes",
+        },
+        clear=True,
+    )
+    def test_user_reaction_on_other_app_message_is_dropped(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = Mock()
+        adapter._client.im.v1.message.get = Mock()
+        adapter._build_get_message_request = Mock(return_value=object())
+        adapter._handle_message_with_guards = AsyncMock()
+
+        target_message = SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_type="app",
+                sender_id=SimpleNamespace(open_id="ou_other_bot", user_id="u_other_bot"),
+            ),
+            chat_id="oc_group",
+            chat_type="group",
+        )
+        response = Mock()
+        response.success = Mock(return_value=True)
+        response.data = SimpleNamespace(items=[target_message])
+        adapter._client.im.v1.message.get.return_value = response
+
+        data = SimpleNamespace(
+            event=SimpleNamespace(
+                message_id="om_other_bot",
+                user_id=SimpleNamespace(open_id="ou_user", user_id="u_user", union_id="on_user"),
+                reaction_type=SimpleNamespace(emoji_type="THUMBSUP"),
+            )
+        )
+
+        asyncio.run(adapter._handle_reaction_event("im.message.reaction.created_v1", data))
+
+        adapter._handle_message_with_guards.assert_not_awaited()
+
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_BOT_OPEN_ID": "ou_hermes",
+            "FEISHU_BOT_USER_ID": "u_hermes",
+        },
+        clear=True,
+    )
+    def test_user_reaction_on_own_app_message_is_routed(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = Mock()
+        adapter._client.im.v1.message.get = Mock()
+        adapter._build_get_message_request = Mock(return_value=object())
+        adapter._handle_message_with_guards = AsyncMock()
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={
+                "user_id": "u_user",
+                "user_name": "Feishu User",
+                "user_id_alt": "on_user",
+            }
+        )
+        adapter.get_chat_info = AsyncMock(return_value={"name": "Feishu Group", "type": "group"})
+
+        target_message = SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_type="app",
+                sender_id=SimpleNamespace(open_id="ou_hermes", user_id="u_hermes"),
+            ),
+            chat_id="oc_group",
+            chat_type="group",
+        )
+        response = Mock()
+        response.success = Mock(return_value=True)
+        response.data = SimpleNamespace(items=[target_message])
+        adapter._client.im.v1.message.get.return_value = response
+
+        data = SimpleNamespace(
+            event=SimpleNamespace(
+                message_id="om_hermes",
+                user_id=SimpleNamespace(open_id="ou_user", user_id="u_user", union_id="on_user"),
+                reaction_type=SimpleNamespace(emoji_type="THUMBSUP"),
+            )
+        )
+
+        asyncio.run(adapter._handle_reaction_event("im.message.reaction.created_v1", data))
+
+        adapter._handle_message_with_guards.assert_awaited_once()
+        event = adapter._handle_message_with_guards.await_args.args[0]
+        self.assertEqual(event.text, "reaction:added:THUMBSUP")
+        self.assertEqual(event.source.chat_id, "oc_group")
+        self.assertEqual(event.source.user_id, "u_user")
+
     @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
     def test_group_message_requires_mentions_even_when_policy_open(self):
         from gateway.config import PlatformConfig

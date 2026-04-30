@@ -2390,8 +2390,7 @@ class FeishuAdapter(BasePlatformAdapter):
             if not msg:
                 return
             sender = getattr(msg, "sender", None)
-            sender_type = str(getattr(sender, "sender_type", "") or "").lower()
-            if sender_type != "app":
+            if not self._is_own_bot_sender(sender):
                 return  # only route reactions on our own bot messages
             chat_id = str(getattr(msg, "chat_id", "") or "")
             chat_type_raw = str(getattr(msg, "chat_type", "p2p") or "p2p")
@@ -3647,6 +3646,10 @@ class FeishuAdapter(BasePlatformAdapter):
     def _is_self_sent_bot_message(self, event: Any) -> bool:
         """Return True only for Feishu events emitted by this Hermes bot."""
         sender = getattr(event, "sender", None)
+        return self._is_own_bot_sender(sender)
+
+    def _is_own_bot_sender(self, sender: Any) -> bool:
+        """Return True only for senders that match this Hermes bot identity."""
         sender_type = str(getattr(sender, "sender_type", "") or "").strip().lower()
         if sender_type not in {"bot", "app"}:
             return False
