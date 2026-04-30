@@ -4228,15 +4228,10 @@ class GatewayRunner:
                 return None
             return YuanbaoAdapter(config)
 
-        elif platform == Platform.GOOGLE_CHAT:
-            from gateway.platforms.google_chat import GoogleChatAdapter, check_google_chat_requirements
-            if not check_google_chat_requirements():
-                logger.warning(
-                    "Google Chat: google-cloud-pubsub / google-api-python-client not installed. "
-                    "Run: pip install 'hermes-agent[google_chat]'"
-                )
-                return None
-            return GoogleChatAdapter(config)
+        # Google Chat used to live in this if/elif chain. It now ships as a
+        # bundled plugin under ``plugins/platforms/google_chat/`` and is
+        # picked up by the platform_registry lookup at the top of this
+        # method. The arm was removed in the plugin migration commit.
 
         return None
 

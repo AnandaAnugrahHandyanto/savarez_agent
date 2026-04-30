@@ -68,9 +68,6 @@ except ImportError:
     HttpError = Exception  # type: ignore
     MediaFileUpload = None  # type: ignore
 
-import sys
-sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
-
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
@@ -101,7 +98,7 @@ _SUBSCRIPTION_PATH_RE = re.compile(
 # adjustment changes it.
 #
 # Native attachment delivery (bot → user) is handled via a separate user-
-# OAuth flow in ``google_chat_user_oauth.py``: the user grants the bot
+# OAuth flow in ``oauth.py`` (this plugin's helper module): the user grants the bot
 # the chat.messages.create scope ONCE via an in-chat consent flow; the
 # bot then calls media.upload on the user's behalf when sending files.
 # See https://developers.google.com/chat/api/guides/auth/users
@@ -347,7 +344,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         self._subscriber: Optional[Any] = None
         self._chat_api: Optional[Any] = None
         # User-authed Chat API client built lazily from the OAuth refresh
-        # token persisted by ``google_chat_user_oauth.py``. Required for
+        # token persisted by the plugin's ``oauth.py`` helper. Required for
         # native ``media.upload`` (bot identity is rejected by that
         # endpoint).
         #
@@ -645,7 +642,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # here is NON-fatal: text messaging continues to work; only
         # attachments degrade to a setup-instructions text notice.
         try:
-            from gateway.platforms.google_chat_user_oauth import (
+            from .oauth import (
                 load_user_credentials as _load_user_creds,
                 build_user_chat_service as _build_user_chat,
                 list_authorized_emails as _list_emails,
@@ -1047,7 +1044,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         (one-time terminal step). The status reply tells the user how to
         do that if it's missing.
         """
-        from gateway.platforms import google_chat_user_oauth as oauth_helper
+        from . import oauth as oauth_helper
 
         # Normalize the email: lowercase + strip. The on-disk token path
         # is sanitized further inside the helper, but having the same
@@ -1099,7 +1096,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                     "*Create credentials* → *OAuth client ID* → *Desktop app*. "
                     "Download the JSON. Then on the host run:\n"
                     "```\n"
-                    "python -m gateway.platforms.google_chat_user_oauth "
+                    "python -m plugins.platforms.google_chat.oauth "
                     "--client-secret /path/to/client_secret.json\n"
                     "```\n"
                     "**Step 2:** come back here and send `/setup-files start`."
@@ -2145,7 +2142,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
     #
     # See https://developers.google.com/chat/api/guides/auth/users for
     # the upstream limitation that makes user OAuth necessary, and
-    # ``gateway/platforms/google_chat_user_oauth.py`` for the helper
+    # ``plugins/platforms/google_chat/oauth.py`` for the helper
     # script + library functions backing this path.
     # ------------------------------------------------------------------
     @staticmethod
@@ -2177,7 +2174,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         next request goes back through the disk path (and ultimately the
         text-notice fallback if the user has revoked).
         """
-        from gateway.platforms.google_chat_user_oauth import (
+        from .oauth import (
             load_user_credentials as _load,
             build_user_chat_service as _build,
             refresh_or_none as _refresh,
@@ -2239,7 +2236,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
         if self._user_chat_api is not None:
             try:
-                from gateway.platforms.google_chat_user_oauth import (
+                from .oauth import (
                     refresh_or_none as _refresh,
                 )
                 refreshed = await asyncio.to_thread(
@@ -2494,3 +2491,90 @@ class GoogleChatAdapter(BasePlatformAdapter):
             "type": "dm" if space_type in ("DIRECT_MESSAGE", "DM") else "group",
             "chat_id": chat_id,
         }
+
+
+# ---------------------------------------------------------------------------
+# Plugin entry point
+# ---------------------------------------------------------------------------
+
+
+def _validate_config(config: PlatformConfig) -> bool:
+    """Plugin-side config gate: require both Pub/Sub project and subscription.
+
+    Mirrors the legacy dispatch entry in ``gateway/config.py`` so the
+    registry can decide whether the platform is configured without
+    importing the legacy table.
+    """
+    extra = getattr(config, "extra", {}) or {}
+    return bool(
+        extra.get("project_id") and extra.get("subscription_name")
+    )
+
+
+def _check_for_registry() -> bool:
+    """``check_fn`` for the platform registry pass — stricter than the
+    deps-only ``check_google_chat_requirements``.
+
+    The registry pass at ``gateway/config.py:_apply_env_overrides`` adds
+    the platform to ``cfg.platforms`` whenever ``check_fn`` returns True.
+    For backward compat with the pre-plugin behavior, we ALSO require
+    the minimum Pub/Sub env vars so an unconfigured user doesn't
+    accidentally see ``google_chat`` enabled. This matches the legacy
+    ``if gc_project and gc_subscription`` gate.
+    """
+    if not check_google_chat_requirements():
+        return False
+    project = (
+        os.getenv("GOOGLE_CHAT_PROJECT_ID")
+        or os.getenv("GOOGLE_CLOUD_PROJECT")
+    )
+    subscription = (
+        os.getenv("GOOGLE_CHAT_SUBSCRIPTION_NAME")
+        or os.getenv("GOOGLE_CHAT_SUBSCRIPTION")
+    )
+    return bool(project and subscription)
+
+
+def _is_connected(config: PlatformConfig) -> bool:
+    """``GatewayConfig.get_connected_platforms()`` polls this."""
+    return bool(getattr(config, "enabled", False)) and _validate_config(config)
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system at startup.
+
+    Registers the Google Chat adapter under the ``google_chat`` name.
+    The gateway's ``_create_adapter`` consults the platform registry
+    BEFORE its built-in if/elif chain, so this registration is what
+    drives adapter creation at runtime.
+    """
+    ctx.register_platform(
+        name="google_chat",
+        label="Google Chat",
+        adapter_factory=lambda cfg: GoogleChatAdapter(cfg),
+        check_fn=_check_for_registry,
+        validate_config=_validate_config,
+        is_connected=_is_connected,
+        required_env=[
+            "GOOGLE_CHAT_PROJECT_ID",
+            "GOOGLE_CHAT_SUBSCRIPTION_NAME",
+            "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON",
+        ],
+        install_hint="pip install 'hermes-agent[google_chat]'",
+        # Auth env vars for _is_user_authorized() integration.
+        allowed_users_env="GOOGLE_CHAT_ALLOWED_USERS",
+        allow_all_env="GOOGLE_CHAT_ALLOW_ALL_USERS",
+        # Chat caps text messages at 4096 chars; we leave margin to fit
+        # the "Hermes is thinking..." marker patches and edit overhead.
+        max_message_length=4000,
+        emoji="💬",
+        allow_update_command=True,
+        platform_hint=(
+            "You are chatting via Google Chat. The renderer accepts a "
+            "limited markdown subset: *bold*, _italic_, ~strike~, "
+            "`code`. Headings and lists do not render. Native file "
+            "attachments require the user to run /setup-files once in "
+            "their own DM — until they do, file requests fall back to "
+            "a text notice with the host path."
+        ),
+    )

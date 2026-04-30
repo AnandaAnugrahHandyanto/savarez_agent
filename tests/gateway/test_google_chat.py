@@ -101,12 +101,12 @@ _ensure_google_mocks()
 
 # Patch the availability flag before importing, so the adapter doesn't bail
 # out at the "missing deps" gate during construction.
-import gateway.platforms.google_chat as _gc_mod  # noqa: E402
+import plugins.platforms.google_chat.adapter as _gc_mod  # noqa: E402
 
 _gc_mod.GOOGLE_CHAT_AVAILABLE = True
 
 from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome  # noqa: E402
-from gateway.platforms.google_chat import (  # noqa: E402
+from plugins.platforms.google_chat.adapter import (  # noqa: E402
     GoogleChatAdapter,
     _is_google_owned_host,
     _mime_for_message_type,
@@ -139,7 +139,7 @@ def adapter(tmp_path):
     don't pollute (or read state from) the developer's real
     ~/.hermes/google_chat_thread_counts.json.
     """
-    from gateway.platforms.google_chat import _ThreadCountStore
+    from plugins.platforms.google_chat.adapter import _ThreadCountStore
     a = GoogleChatAdapter(_base_config())
     a._loop = asyncio.get_event_loop_policy().new_event_loop()
     a._chat_api = MagicMock()
@@ -783,7 +783,7 @@ class TestSend:
         # After patch, the typing slot holds the consumed sentinel so the
         # base class's _keep_typing loop cannot post a fresh marker that
         # the cleanup pass would later delete and tombstone.
-        from gateway.platforms.google_chat import _TYPING_CONSUMED_SENTINEL
+        from plugins.platforms.google_chat.adapter import _TYPING_CONSUMED_SENTINEL
         assert adapter._typing_messages["spaces/S"] == _TYPING_CONSUMED_SENTINEL
 
     @pytest.mark.asyncio
@@ -965,7 +965,7 @@ class TestTypingLifecycle:
         _orphan_typing_messages. on_processing_complete must patch each
         orphan to a benign marker so users don't see stuck
         'Hermes is thinking…' messages."""
-        from gateway.platforms.google_chat import _TYPING_CONSUMED_SENTINEL
+        from plugins.platforms.google_chat.adapter import _TYPING_CONSUMED_SENTINEL
         adapter._orphan_typing_messages["spaces/S"] = [
             "spaces/S/messages/ORPHAN1",
             "spaces/S/messages/ORPHAN2",
@@ -1008,7 +1008,7 @@ class TestTypingLifecycle:
     async def test_stop_typing_pops_sentinel(self, adapter):
         """After send() patches the typing card, the slot holds the
         sentinel; stop_typing pops it so the next turn starts fresh."""
-        from gateway.platforms.google_chat import _TYPING_CONSUMED_SENTINEL
+        from plugins.platforms.google_chat.adapter import _TYPING_CONSUMED_SENTINEL
         adapter._typing_messages["spaces/S"] = _TYPING_CONSUMED_SENTINEL
         await adapter.stop_typing("spaces/S")
         assert "spaces/S" not in adapter._typing_messages
@@ -1023,7 +1023,7 @@ class TestTypingLifecycle:
     @pytest.mark.asyncio
     async def test_on_processing_complete_pops_sentinel_on_success(self, adapter):
         """SUCCESS path: send() set the sentinel; cleanup just pops it."""
-        from gateway.platforms.google_chat import _TYPING_CONSUMED_SENTINEL
+        from plugins.platforms.google_chat.adapter import _TYPING_CONSUMED_SENTINEL
         adapter._typing_messages["spaces/S"] = _TYPING_CONSUMED_SENTINEL
         adapter._patch_message = AsyncMock()
         event = MagicMock()
@@ -1110,7 +1110,7 @@ class TestEditMessage:
         ever shown to the user — so this test guards against a future
         accidental removal."""
         from gateway.platforms.base import BasePlatformAdapter
-        from gateway.platforms.google_chat import GoogleChatAdapter
+        from plugins.platforms.google_chat.adapter import GoogleChatAdapter
         assert GoogleChatAdapter.edit_message is not BasePlatformAdapter.edit_message
 
 
@@ -1336,26 +1336,26 @@ class TestUserOAuthHelper:
         """Missing token file is the expected no-op case (user hasn't
         run /setup-files yet). Must NOT raise."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from gateway.platforms.google_chat_user_oauth import load_user_credentials
+        from plugins.platforms.google_chat.oauth import load_user_credentials
         assert load_user_credentials() is None
 
     def test_load_user_credentials_returns_none_on_corrupt_token(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "google_chat_user_token.json").write_text("not json")
-        from gateway.platforms.google_chat_user_oauth import load_user_credentials
+        from plugins.platforms.google_chat.oauth import load_user_credentials
         assert load_user_credentials() is None
 
     def test_scopes_are_minimal(self):
         """The OAuth flow should request ONLY chat.messages.create — no
         Drive, no broader Chat scopes. Defends against scope creep."""
-        from gateway.platforms.google_chat_user_oauth import SCOPES
+        from plugins.platforms.google_chat.oauth import SCOPES
         assert SCOPES == ["https://www.googleapis.com/auth/chat.messages.create"]
 
     def test_sanitize_email_lowercases_and_replaces_unsafe_chars(self):
         """Path components must be filesystem-safe across users.
         ``a@B.com`` and ``A@b.com`` must collapse to the same key, and
         path-traversal characters must NOT escape into the filename."""
-        from gateway.platforms.google_chat_user_oauth import _sanitize_email
+        from plugins.platforms.google_chat.oauth import _sanitize_email
         assert _sanitize_email("Ramon@NTTData.com") == "ramon@nttdata.com"
         assert _sanitize_email("user+tag@x.io") == "user_tag@x.io"
         # Slashes are stripped (path separator); dots inside names are
@@ -1368,7 +1368,7 @@ class TestUserOAuthHelper:
         """Per-user files live under a dedicated subdirectory so the
         legacy single-user JSON stays addressable on disk."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from gateway.platforms.google_chat_user_oauth import (
+        from plugins.platforms.google_chat.oauth import (
             _token_path, _legacy_token_path,
         )
         per_user = _token_path("alice@example.com")
@@ -1383,7 +1383,7 @@ class TestUserOAuthHelper:
         """A user who has not authorized has no token file; load returns
         ``None`` and never throws — same contract as the legacy path."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from gateway.platforms.google_chat_user_oauth import load_user_credentials
+        from plugins.platforms.google_chat.oauth import load_user_credentials
         assert load_user_credentials("nobody@example.com") is None
 
     def test_list_authorized_emails_lists_per_user_files(
@@ -1399,7 +1399,7 @@ class TestUserOAuthHelper:
         # Legacy file should NOT appear in the list.
         (tmp_path / "google_chat_user_token.json").write_text("{}")
 
-        from gateway.platforms.google_chat_user_oauth import list_authorized_emails
+        from plugins.platforms.google_chat.oauth import list_authorized_emails
         assert list_authorized_emails() == [
             "alice@example.com", "bob@example.com",
         ]
@@ -1408,7 +1408,7 @@ class TestUserOAuthHelper:
         self, tmp_path, monkeypatch
     ):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from gateway.platforms.google_chat_user_oauth import list_authorized_emails
+        from plugins.platforms.google_chat.oauth import list_authorized_emails
         assert list_authorized_emails() == []
 
     def test_pending_auth_path_is_per_user_when_email_given(
@@ -1418,7 +1418,7 @@ class TestUserOAuthHelper:
         clobber each other's PKCE verifier — the pending state file
         is namespaced by email."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from gateway.platforms.google_chat_user_oauth import _pending_auth_path
+        from plugins.platforms.google_chat.oauth import _pending_auth_path
         a = _pending_auth_path("alice@example.com")
         b = _pending_auth_path("bob@example.com")
         legacy = _pending_auth_path(None)
@@ -1475,7 +1475,7 @@ class TestPerUserAttachmentRouting:
         adapter._user_credentials = MagicMock(valid=True)
         adapter._consume_typing_card_with_text = AsyncMock(return_value=None)
 
-        from gateway.platforms import google_chat_user_oauth as helper
+        from plugins.platforms.google_chat import oauth as helper
         with patch.object(
             helper, "load_user_credentials",
             return_value=MagicMock(valid=True),
@@ -1548,7 +1548,7 @@ class TestPerUserAttachmentRouting:
 
         f = tmp_path / "x.pdf"
         f.write_bytes(b"%PDF")
-        from gateway.platforms import google_chat_user_oauth as helper
+        from plugins.platforms.google_chat import oauth as helper
         with patch.object(helper, "load_user_credentials", return_value=None):
             result = await adapter._send_file(
                 "spaces/S", str(f), caption=None,
@@ -1611,7 +1611,7 @@ class TestPerUserAttachmentRouting:
             return_value=type("R", (), {"success": True, "message_id": "m",
                                         "error": None})()
         )
-        from gateway.platforms import google_chat_user_oauth as helper
+        from plugins.platforms.google_chat import oauth as helper
         # Stub the costly bits; we're verifying routing, not OAuth I/O.
         alice_creds = MagicMock(valid=True)
         with patch.object(helper, "exchange_auth_code") as ex, \
@@ -1654,7 +1654,7 @@ class TestPerUserAttachmentRouting:
                                         "error": None})()
         )
 
-        from gateway.platforms import google_chat_user_oauth as helper
+        from plugins.platforms.google_chat import oauth as helper
         with patch.object(helper, "revoke") as rev:
             await adapter._handle_setup_files_command(
                 chat_id="spaces/S",
@@ -1679,7 +1679,7 @@ class TestPerUserAttachmentRouting:
 
 class TestThreadCountStore:
     def test_missing_file_returns_zero_counts(self, tmp_path):
-        from gateway.platforms.google_chat import _ThreadCountStore
+        from plugins.platforms.google_chat.adapter import _ThreadCountStore
         store = _ThreadCountStore(tmp_path / "nonexistent.json")
         store.load()
         assert store.get("spaces/X", "spaces/X/threads/T") == 0
@@ -1687,7 +1687,7 @@ class TestThreadCountStore:
     def test_corrupt_json_treated_as_empty(self, tmp_path):
         """A garbage file shouldn't crash the adapter — log warn, treat
         as fresh, move on. The next incr() will overwrite."""
-        from gateway.platforms.google_chat import _ThreadCountStore
+        from plugins.platforms.google_chat.adapter import _ThreadCountStore
         path = tmp_path / "counts.json"
         path.write_text("not valid json {")
         store = _ThreadCountStore(path)
@@ -1705,7 +1705,7 @@ class TestThreadCountStore:
         """The PRE-increment count is the heuristic input — it answers
         'have we seen this thread BEFORE this message?'. Off-by-one in
         either direction would break the main-flow vs side-thread call."""
-        from gateway.platforms.google_chat import _ThreadCountStore
+        from plugins.platforms.google_chat.adapter import _ThreadCountStore
         store = _ThreadCountStore(tmp_path / "counts.json")
         store.load()
         assert store.incr("spaces/X", "spaces/X/threads/T") == 0
@@ -1717,7 +1717,7 @@ class TestThreadCountStore:
         """Two store instances on the same file behave like a single
         store split across a process boundary. This is the exact
         restart-safety property the store exists to provide."""
-        from gateway.platforms.google_chat import _ThreadCountStore
+        from plugins.platforms.google_chat.adapter import _ThreadCountStore
         path = tmp_path / "counts.json"
 
         store_a = _ThreadCountStore(path)
@@ -1737,7 +1737,7 @@ class TestThreadCountStore:
     def test_invalid_shape_dropped_silently(self, tmp_path):
         """If someone hand-edits the file with weird shapes, drop the
         bad entries but keep the valid ones."""
-        from gateway.platforms.google_chat import _ThreadCountStore
+        from plugins.platforms.google_chat.adapter import _ThreadCountStore
         import json
         path = tmp_path / "counts.json"
         path.write_text(json.dumps({
@@ -1823,7 +1823,7 @@ class TestThreadCountStore:
 
         # Simulate restart: build a fresh adapter pointing at the SAME
         # persistence file the previous one used.
-        from gateway.platforms.google_chat import (
+        from plugins.platforms.google_chat.adapter import (
             GoogleChatAdapter, _ThreadCountStore,
         )
         store_path = adapter._thread_count_store._path
@@ -1887,7 +1887,7 @@ class TestAttachmentSSRFGuard:
             return b"%PDF-fake"
 
         monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
-        from gateway.platforms import google_chat as gc_mod
+        from plugins.platforms.google_chat import adapter as gc_mod
         monkeypatch.setattr(
             gc_mod, "cache_document_from_bytes",
             lambda data, ext=None, filename=None: str(tmp_path / "out.pdf"),
@@ -2031,7 +2031,7 @@ class TestSupervisorReconnect:
         async def _instant(*args, **kwargs):
             return None
         monkeypatch.setattr(
-            "gateway.platforms.google_chat.asyncio.sleep", _instant
+            "plugins.platforms.google_chat.adapter.asyncio.sleep", _instant
         )
 
         def _fail(*args, **kwargs):
