@@ -254,8 +254,60 @@ def _install_safe_stdio() -> None:
             setattr(sys, stream_name, _SafeWriter(stream))
 
 
+# ---------------------------------------------------------------------------
+# Tool cost weights for the iteration budget.
+#
+# Each API round-trip starts with a 1.0-unit reservation.  After tool
+# execution, IterationBudget.adjust_for_tools() replaces that reservation
+# with the actual cost from this table.  Cheap read-only tools get a
+# partial refund; expensive side-effecting tools incur an extra charge.
+#
+# When multiple tools are called in one turn, the most expensive tool
+# determines the cost for the whole turn.
+# ---------------------------------------------------------------------------
+TOOL_COSTS: dict[str, float] = {
+    # Free — informational / programmatic, should not eat the budget
+    "execute_code": 0.0,
+    "search_files": 0.0,
+    "session_search": 0.0,
+    "skills_list": 0.0,
+    # Cheap — read-only reconnaissance
+    "read_file": 0.5,
+    "skill_view": 0.5,
+    "web_search": 0.5,
+    "web_extract": 0.5,
+    "vision_analyze": 0.5,
+    "browser_navigate": 0.5,
+    "browser_snapshot": 0.5,
+    "browser_back": 0.5,
+    "browser_click": 0.5,
+    "browser_type": 0.5,
+    "browser_press": 0.5,
+    "browser_scroll": 0.5,
+    "browser_vision": 0.5,
+    "browser_get_images": 0.5,
+    "browser_console": 0.5,
+    "memory": 0.0,
+    "todo": 0.0,
+    "clarify": 0.0,
+    # Standard — mutations and I/O
+    "write_file": 1.0,
+    "patch": 1.0,
+    "skill_manage": 1.0,
+    "text_to_speech": 1.0,
+    # Expensive — long-running, side-effecting, or spawning sub-processes
+    "terminal": 2.0,
+    "delegate_task": 2.0,
+    "cronjob": 2.0,
+    "process": 2.0,
+    "image_gen": 2.0,
+}
+# Default cost for tools not listed above.
+_DEFAULT_TOOL_COST = 1.0
+
+
 class IterationBudget:
-    """Thread-safe iteration counter for an agent.
+    """Thread-safe iteration counter with weighted costs.
 
     Each agent (parent or subagent) gets its own ``IterationBudget``.
     The parent's budget is capped at ``max_iterations`` (default 90).
@@ -265,35 +317,74 @@ class IterationBudget:
     Users control the per-subagent limit via ``delegation.max_iterations``
     in config.yaml.
 
-    ``execute_code`` (programmatic tool calling) iterations are refunded via
-    :meth:`refund` so they don't eat into the budget.
+    Budget is consumed in two phases:
+
+    1. **Reserve** — :meth:`consume` charges 1.0 unit upfront before the
+       API call, when the tool names are still unknown.
+    2. **Adjust** — :meth:`adjust_for_tools` credits or debits the
+       difference after tool execution, based on the per-tool cost table
+       (:data:`TOOL_COSTS`).  Cheap read-only tools get a partial refund;
+       expensive tools incur an additional charge.
+
+    ``execute_code`` has a cost of 0.0, so :meth:`adjust_for_tools`
+    refunds the full 1.0 reservation — replacing the old explicit
+    :meth:`refund` call.
     """
 
     def __init__(self, max_total: int):
         self.max_total = max_total
-        self._used = 0
+        self._used: float = 0.0
         self._lock = threading.Lock()
 
     def consume(self) -> bool:
-        """Try to consume one iteration.  Returns True if allowed."""
+        """Reserve one iteration unit upfront.  Returns True if allowed.
+
+        The full cost is resolved later by :meth:`adjust_for_tools` once
+        the actual tool names are known.  The reservation ensures the loop
+        can't start an API call that would exceed the budget even in the
+        worst case (cost = 1.0 per tool).
+        """
         with self._lock:
             if self._used >= self.max_total:
                 return False
-            self._used += 1
+            self._used += 1.0
             return True
 
+    def adjust_for_tools(self, tool_names: set[str]) -> None:
+        """Adjust the budget after tool names are known.
+
+        Each iteration starts with a 1.0 reservation (:meth:`consume`).
+        This method replaces that reservation with the actual weighted
+        cost based on the tools called.  When multiple tools are called
+        in one turn, the cost of the most expensive tool wins (a turn
+        that mixes a read and a write is still a write turn).
+
+        ``tool_names`` is the set of tool names from
+        ``assistant_message.tool_calls``.
+        """
+        if not tool_names:
+            return
+        # Most-expensive-tool-wins: a turn that calls both read_file
+        # and write_file costs the same as write_file alone.
+        actual_cost = max(TOOL_COSTS.get(name, _DEFAULT_TOOL_COST) for name in tool_names)
+        delta = actual_cost - 1.0  # difference from the 1.0 reservation
+        if delta == 0.0:
+            return
+        with self._lock:
+            self._used = max(0.0, self._used + delta)
+
     def refund(self) -> None:
-        """Give back one iteration (e.g. for execute_code turns)."""
+        """Give back one iteration unit (e.g. for compression restarts)."""
         with self._lock:
             if self._used > 0:
-                self._used -= 1
+                self._used -= 1.0
 
     @property
-    def used(self) -> int:
+    def used(self) -> float:
         return self._used
 
     @property
-    def remaining(self) -> int:
+    def remaining(self) -> float:
         with self._lock:
             return max(0, self.max_total - self._used)
 
@@ -10446,7 +10537,9 @@ class AIAgent:
             elif not self.iteration_budget.consume():
                 _turn_exit_reason = "budget_exhausted"
                 if not self.quiet_mode:
-                    self._safe_print(f"\n⚠️  Iteration budget exhausted ({self.iteration_budget.used}/{self.iteration_budget.max_total} iterations used)")
+                    _b_used = self.iteration_budget.used
+                    _b_fmt = f"{_b_used:.1f}" if _b_used != int(_b_used) else str(int(_b_used))
+                    self._safe_print(f"\n⚠️  Iteration budget exhausted ({_b_fmt}/{self.iteration_budget.max_total} iterations used)")
                 break
 
             # Fire step_callback for gateway hooks (agent:step event)
@@ -12910,12 +13003,13 @@ class AIAgent:
                     # arrives.
                     self._stream_needs_break = True
 
-                    # Refund the iteration if the ONLY tool(s) called were
-                    # execute_code (programmatic tool calling).  These are
-                    # cheap RPC-style calls that shouldn't eat the budget.
+                    # Adjust the iteration budget based on the actual tools
+                    # called.  The budget was charged 1.0 upfront (reservation);
+                    # this credits back for cheap tools and charges extra for
+                    # expensive ones.  execute_code (cost 0.0) gets a full
+                    # refund, replacing the old explicit refund() call.
                     _tc_names = {tc.function.name for tc in assistant_message.tool_calls}
-                    if _tc_names == {"execute_code"}:
-                        self.iteration_budget.refund()
+                    self.iteration_budget.adjust_for_tools(_tc_names)
                     
                     # Use real token counts from the API response to decide
                     # compression.  prompt_tokens + completion_tokens is the

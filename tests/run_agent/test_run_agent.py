@@ -3644,6 +3644,130 @@ class TestBudgetPressure:
         assert agent._budget_grace_call is False
 
 
+class TestIterationBudgetWeightedCost:
+    """Weighted iteration budget: cheap tools cost less, expensive tools cost more."""
+
+    def test_consume_reserves_one_unit(self):
+        from run_agent import IterationBudget
+        budget = IterationBudget(max_total=10)
+        assert budget.consume() is True
+        assert budget.used == 1.0
+        assert budget.remaining == 9.0
+
+    def test_consume_blocked_when_exhausted(self):
+        from run_agent import IterationBudget
+        budget = IterationBudget(max_total=2)
+        budget.consume()
+        budget.consume()
+        assert budget.consume() is False
+        assert budget.remaining == 0.0
+
+    def test_adjust_for_free_tools(self):
+        """Free tools (cost 0.0) get a full refund of the 1.0 reservation."""
+        from run_agent import IterationBudget
+        budget = IterationBudget(max_total=10)
+        budget.consume()  # reserves 1.0
+        budget.adjust_for_tools({"execute_code"})  # cost 0.0, refund 1.0
+        assert budget.used == 0.0
+        assert budget.remaining == 10.0
+
+    def test_adjust_for_cheap_tools(self):
+        """Cheap tools (cost 0.5) get a partial refund."""
+        from run_agent import IterationBudget
+        budget = IterationBudget(max_total=10)
+        budget.consume()  # reserves 1.0
+        budget.adjust_for_tools({"read_file"})  # cost 0.5, refund 0.5
+        assert budget.used == 0.5
+        assert budget.remaining == 9.5
+
+    def test_adjust_for_standard_tools(self):
+        """Standard tools (cost 1.0) — no adjustment needed."""
+        from run_agent import IterationBudget
+        budget = IterationBudget(max_total=10)
+        budget.consume()  # reserves 1.0
+        budget.adjust_for_tools({"write_file"})  # cost 1.0, delta 0.0
+        assert budget.used == 1.0
+
+    def test_adjust_for_expensive_tools(self):
+        """Expensive tools (cost 2.0) incur an extra charge."""
+        from run_agent import IterationBudget
+        budget = IterationBudget(max_total=10)
+        budget.consume()  # reserves 1.0
+        budget.adjust_for_tools({"terminal"})  # cost 2.0, extra 1.0
+        assert budget.used == 2.0
+        assert budget.remaining == 8.0
+
+    def test_mixed_tools_most_expensive_wins(self):
+        """When multiple tools called, most expensive determines cost."""
+        from run_agent import IterationBudget
+        budget = IterationBudget(max_total=10)
+        budget.consume()  # reserves 1.0
+        budget.adjust_for_tools({"read_file", "terminal"})  # max(0.5, 2.0) = 2.0
+        assert budget.used == 2.0
+
+    def test_mixed_cheap_tools(self):
+        """Multiple cheap tools — highest cheap cost wins."""
+        from run_agent import IterationBudget
+        budget = IterationBudget(max_total=10)
+        budget.consume()  # reserves 1.0
+        budget.adjust_for_tools({"search_files", "read_file"})  # max(0.0, 0.5) = 0.5
+        assert budget.used == 0.5
+
+    def test_unknown_tool_costs_default(self):
+        """Tools not in TOOL_COSTS default to 1.0."""
+        from run_agent import IterationBudget
+        budget = IterationBudget(max_total=10)
+        budget.consume()  # reserves 1.0
+        budget.adjust_for_tools({"some_future_tool"})  # default 1.0
+        assert budget.used == 1.0
+
+    def test_read_heavy_workflow_stays_within_budget(self):
+        """A read-heavy workflow should use far less than the raw iteration count."""
+        from run_agent import IterationBudget
+        budget = IterationBudget(max_total=10)
+        # Simulate 10 read-only iterations — each costs 0.5
+        for _ in range(10):
+            budget.consume()
+            budget.adjust_for_tools({"read_file"})
+        assert budget.used == 5.0
+        assert budget.remaining == 5.0
+
+    def test_terminal_heavy_workflow_exhausts_faster(self):
+        """Expensive tools exhaust the budget faster than the raw count."""
+        from run_agent import IterationBudget
+        budget = IterationBudget(max_total=10)
+        for _ in range(5):
+            budget.consume()
+            budget.adjust_for_tools({"terminal"})
+        assert budget.used == 10.0
+        assert budget.remaining == 0.0
+        # 6th iteration blocked even though raw count would be 5
+        assert budget.consume() is False
+
+    def test_refund_still_works(self):
+        """refund() still works for compression restarts (charged as 1.0)."""
+        from run_agent import IterationBudget
+        budget = IterationBudget(max_total=10)
+        budget.consume()  # reserves 1.0
+        budget.refund()   # gives back 1.0
+        assert budget.used == 0.0
+
+    def test_adjust_empty_tool_set_is_noop(self):
+        from run_agent import IterationBudget
+        budget = IterationBudget(max_total=10)
+        budget.consume()
+        budget.adjust_for_tools(set())
+        assert budget.used == 1.0
+
+    def test_adjust_cannot_go_below_zero(self):
+        """Adjustment can't make used go negative (safety check)."""
+        from run_agent import IterationBudget
+        budget = IterationBudget(max_total=10)
+        # Don't consume — then adjust. used stays at 0.
+        budget.adjust_for_tools({"execute_code"})
+        assert budget.used == 0.0
+
+
 class TestSafeWriter:
     """Verify _SafeWriter guards stdout against OSError (broken pipes)."""
 
