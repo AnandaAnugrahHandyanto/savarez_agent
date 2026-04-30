@@ -490,6 +490,10 @@ class HindsightMemoryProvider(MemoryProvider):
         self._bank_retain_mission: str | None = None
         self._bank_id_template = ""
 
+        # Smart retain (pre-filter + context tagging)
+        self._retain_prefilter = False
+        self._retain_context_tagging = "off"  # "off", "on", or "smart"
+
     @property
     def name(self) -> str:
         return "hindsight"
@@ -763,6 +767,8 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "retain_every_n_turns", "description": "Retain every N turns (1 = every turn)", "default": 1},
             {"key": "retain_async","description": "Process retain asynchronously on the Hindsight server", "default": True},
             {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
+            {"key": "retain_prefilter", "description": "Classify content with auxiliary LLM before retaining (requires bank_retain_mission)", "default": False},
+            {"key": "retain_context_tagging", "description": "Scope-tag retained memories: 'off' (no tags), 'on' (always tag by platform:chat_id), 'smart' (classify general vs scoped via auxiliary LLM)", "default": "off", "choices": ["off", "on", "smart"]},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
@@ -1022,6 +1028,23 @@ class HindsightMemoryProvider(MemoryProvider):
         self._bank_mission = self._config.get("bank_mission", "")
         self._bank_retain_mission = self._config.get("bank_retain_mission") or None
 
+        # Smart retain
+        self._retain_prefilter = self._config.get("retain_prefilter", False)
+        raw_tagging = self._config.get("retain_context_tagging", "off")
+        # Backward compat: treat True as "smart", False as "off"
+        if raw_tagging is True:
+            raw_tagging = "smart"
+        elif raw_tagging is False:
+            raw_tagging = "off"
+        self._retain_context_tagging = raw_tagging if raw_tagging in ("off", "on", "smart") else "off"
+        if self._retain_prefilter and not self._bank_retain_mission:
+            logger.warning(
+                "Hindsight retain_prefilter enabled but no bank_retain_mission set — "
+                "pre-filtering disabled (will retain all content). Set bank_retain_mission "
+                "or configure it on the bank via the Hindsight API."
+            )
+            self._retain_prefilter = False
+
         # Tags
         self._retain_tags = _normalize_retain_tags(
             self._config.get("retain_tags")
@@ -1174,8 +1197,16 @@ class HindsightMemoryProvider(MemoryProvider):
         def _run():
             try:
                 if self._prefetch_method == "reflect":
-                    logger.debug("Prefetch: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))
-                    resp = self._run_hindsight_operation(lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget))
+                    reflect_kwargs: dict = {
+                        "bank_id": self._bank_id, "query": query, "budget": self._budget,
+                    }
+                    scope_tags = self._build_recall_scope_tags()
+                    if scope_tags:
+                        reflect_kwargs["tags"] = scope_tags
+                        reflect_kwargs["tags_match"] = "any"
+                    logger.debug("Prefetch: calling reflect (bank=%s, query_len=%d, tags=%s)",
+                                 self._bank_id, len(query), reflect_kwargs.get("tags"))
+                    resp = self._run_hindsight_operation(lambda client: client.areflect(**reflect_kwargs))
                     text = resp.text or ""
                 else:
                     recall_kwargs: dict = {
@@ -1185,10 +1216,21 @@ class HindsightMemoryProvider(MemoryProvider):
                     if self._recall_tags:
                         recall_kwargs["tags"] = self._recall_tags
                         recall_kwargs["tags_match"] = self._recall_tags_match
+                    # Dynamic scope filtering: when context tagging is active,
+                    # recall only general + current-channel memories
+                    scope_tags = self._build_recall_scope_tags()
+                    if scope_tags and "tags" not in recall_kwargs:
+                        recall_kwargs["tags"] = scope_tags
+                        recall_kwargs["tags_match"] = "any"
+                    elif scope_tags and "tags" in recall_kwargs:
+                        # Merge scope tags with explicit recall_tags
+                        for st in scope_tags:
+                            if st not in recall_kwargs["tags"]:
+                                recall_kwargs["tags"].append(st)
                     if self._recall_types:
                         recall_kwargs["types"] = self._recall_types
-                    logger.debug("Prefetch: calling recall (bank=%s, query_len=%d, budget=%s)",
-                                 self._bank_id, len(query), self._budget)
+                    logger.debug("Prefetch: calling recall (bank=%s, query_len=%d, budget=%s, tags=%s)",
+                                 self._bank_id, len(query), self._budget, recall_kwargs.get("tags"))
                     resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
                     num_results = len(resp.results) if resp.results else 0
                     logger.debug("Prefetch: recall returned %d results", num_results)
@@ -1274,6 +1316,85 @@ class HindsightMemoryProvider(MemoryProvider):
             kwargs["tags"] = merged_tags
         return kwargs
 
+    def _classify_for_retain(self, content: str) -> str:
+        """Classify content relevance using auxiliary LLM.
+
+        Returns one of: SKIP, GENERAL, SCOPED.
+        - SKIP: noise (greetings, acks, meta-commentary) — don't retain
+        - GENERAL: knowledge useful across all contexts
+        - SCOPED: knowledge specific to the current platform/channel context
+        """
+        try:
+            from agent.auxiliary_client import get_text_auxiliary_client
+
+            task = "memory_retain_filter"
+            client, model = get_text_auxiliary_client(task)
+
+            if not client:
+                logger.debug("No auxiliary client for %s; fail-open to GENERAL", task)
+                return "GENERAL"
+
+            # Truncate from the START to preserve the most recent (most relevant) content
+            truncated = content[-4000:] if len(content) > 4000 else content
+
+            prompt = (
+                f"Classify this conversation for memory retention.\n\n"
+                f"RETAIN MISSION (what to keep vs ignore):\n{self._bank_retain_mission}\n\n"
+                f"CONVERSATION:\n{truncated}\n\n"
+                f"Rules:\n"
+                f"- SKIP = content the mission says to ignore, OR pure noise "
+                f"(greetings, acks, \"got it\", status pings, empty exchanges)\n"
+                f"- GENERAL = durable knowledge reusable in any project/context "
+                f"(patterns, conventions, preferences, tool behavior)\n"
+                f"- SCOPED = knowledge tied to a specific project, channel, or task "
+                f"(project-specific decisions, feature details, bug fixes for one codebase)\n\n"
+                f"If in doubt between GENERAL and SCOPED, choose SCOPED. "
+                f"If in doubt between SKIP and retaining, choose GENERAL.\n\n"
+                f"Reply with one word: SKIP, GENERAL, or SCOPED"
+            )
+
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=10,
+                temperature=0,
+            )
+            result = response.choices[0].message.content.strip().upper()
+            # Normalize to valid values
+            if result not in ("SKIP", "GENERAL", "SCOPED"):
+                # Try to extract from response
+                for valid in ("SKIP", "GENERAL", "SCOPED"):
+                    if valid in result:
+                        result = valid
+                        break
+                else:
+                    result = "GENERAL"  # fail-open
+            logger.info("Smart retain classification: %s (content_len=%d)", result, len(content))
+            return result
+        except Exception as exc:
+            logger.warning("Smart retain classification failed (%s); fail-open to GENERAL", exc)
+            return "GENERAL"
+
+    def _build_scope_tag(self) -> str:
+        """Build a scope tag from session context."""
+        if self._platform and self._chat_id:
+            return f"scope:{self._platform}:{self._chat_id}"
+        return "scope:general"
+
+    def _build_recall_scope_tags(self) -> list[str] | None:
+        """Build scope tags for recall filtering when context tagging is active.
+
+        Returns a list like ["scope:general", "scope:discord:123456"] so recall
+        fetches both general knowledge and channel-specific memories, or None
+        if scope tagging is disabled.
+        """
+        if self._retain_context_tagging not in ("on", "smart"):
+            return None
+        tags = ["scope:general"]
+        if self._platform and self._chat_id:
+            tags.append(f"scope:{self._platform}:{self._chat_id}")
+        return tags
+
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Enqueue a retain for the current turn. Non-blocking.
 
@@ -1325,11 +1446,35 @@ class HindsightMemoryProvider(MemoryProvider):
         retain_context = self._retain_context
 
         def _do_retain() -> None:
+            # Determine if classification is needed:
+            # - prefilter needs it to decide SKIP vs retain
+            # - "smart" tagging needs it to decide GENERAL vs SCOPED
+            needs_classification = self._retain_prefilter or self._retain_context_tagging == "smart"
+            classification = None
+
+            if needs_classification:
+                classification = self._classify_for_retain(content)
+                if self._retain_prefilter and classification == "SKIP":
+                    logger.info("Smart retain: SKIP — not retaining %d chars", len(content))
+                    return
+
+            # Build scope tag based on tagging mode
+            extra_tags = list(lineage_tags) if lineage_tags else []
+            if self._retain_context_tagging == "on":
+                # Always tag with the concrete scope — no classification needed
+                extra_tags.append(self._build_scope_tag())
+            elif self._retain_context_tagging == "smart":
+                # Use classification result to decide tag
+                if classification == "SCOPED":
+                    extra_tags.append(self._build_scope_tag())
+                else:
+                    extra_tags.append("scope:general")
+
             item = self._build_retain_kwargs(
                 content,
                 context=retain_context,
                 metadata=metadata_snapshot,
-                tags=lineage_tags or None,
+                tags=extra_tags or None,
             )
             item.pop("bank_id", None)
             item.pop("retain_async", None)
@@ -1361,10 +1506,16 @@ class HindsightMemoryProvider(MemoryProvider):
                 return tool_error("Missing required parameter: content")
             context = args.get("context")
             try:
+                # Merge user-provided tags with scope tag when context tagging is active
+                extra_tags = list(_normalize_retain_tags(args.get("tags")))
+                if self._retain_context_tagging in ("on", "smart"):
+                    scope_tag = self._build_scope_tag()
+                    if scope_tag not in extra_tags:
+                        extra_tags.append(scope_tag)
                 retain_kwargs = self._build_retain_kwargs(
                     content,
                     context=context,
-                    tags=args.get("tags"),
+                    tags=extra_tags or None,
                 )
                 logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
                              self._bank_id, len(content), context)
@@ -1387,10 +1538,19 @@ class HindsightMemoryProvider(MemoryProvider):
                 if self._recall_tags:
                     recall_kwargs["tags"] = self._recall_tags
                     recall_kwargs["tags_match"] = self._recall_tags_match
+                # Dynamic scope filtering (same as prefetch)
+                scope_tags = self._build_recall_scope_tags()
+                if scope_tags and "tags" not in recall_kwargs:
+                    recall_kwargs["tags"] = scope_tags
+                    recall_kwargs["tags_match"] = "any"
+                elif scope_tags and "tags" in recall_kwargs:
+                    for st in scope_tags:
+                        if st not in recall_kwargs["tags"]:
+                            recall_kwargs["tags"].append(st)
                 if self._recall_types:
                     recall_kwargs["types"] = self._recall_types
-                logger.debug("Tool hindsight_recall: bank=%s, query_len=%d, budget=%s",
-                             self._bank_id, len(query), self._budget)
+                logger.debug("Tool hindsight_recall: bank=%s, query_len=%d, budget=%s, tags=%s",
+                             self._bank_id, len(query), self._budget, recall_kwargs.get("tags"))
                 resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
                 num_results = len(resp.results) if resp.results else 0
                 logger.debug("Tool hindsight_recall: %d results", num_results)
@@ -1407,12 +1567,18 @@ class HindsightMemoryProvider(MemoryProvider):
             if not query:
                 return tool_error("Missing required parameter: query")
             try:
-                logger.debug("Tool hindsight_reflect: bank=%s, query_len=%d, budget=%s",
-                             self._bank_id, len(query), self._budget)
+                reflect_kwargs: dict = {
+                    "bank_id": self._bank_id, "query": query, "budget": self._budget,
+                }
+                # Dynamic scope filtering (same as recall paths)
+                scope_tags = self._build_recall_scope_tags()
+                if scope_tags:
+                    reflect_kwargs["tags"] = scope_tags
+                    reflect_kwargs["tags_match"] = "any"
+                logger.debug("Tool hindsight_reflect: bank=%s, query_len=%d, budget=%s, tags=%s",
+                             self._bank_id, len(query), self._budget, reflect_kwargs.get("tags"))
                 resp = self._run_hindsight_operation(
-                    lambda client: client.areflect(
-                        bank_id=self._bank_id, query=query, budget=self._budget
-                    )
+                    lambda client: client.areflect(**reflect_kwargs)
                 )
                 logger.debug("Tool hindsight_reflect: response_len=%d", len(resp.text or ""))
                 return json.dumps({"result": resp.text or "No relevant memories found."})
@@ -1483,6 +1649,11 @@ class HindsightMemoryProvider(MemoryProvider):
                 old_lineage_tags.append(f"session:{old_session_id}")
             if old_parent_session_id:
                 old_lineage_tags.append(f"parent:{old_parent_session_id}")
+            # Add scope tag for flush-on-switch (same as sync_turn and retain tool)
+            if self._retain_context_tagging in ("on", "smart"):
+                scope_tag = self._build_scope_tag()
+                if scope_tag not in old_lineage_tags:
+                    old_lineage_tags.append(scope_tag)
             old_content = "[" + ",".join(old_turns) + "]"
 
             def _flush():
