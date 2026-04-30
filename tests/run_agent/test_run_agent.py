@@ -2632,6 +2632,46 @@ class TestFlushSentinelNotLeaked:
                 f"_flush_sentinel leaked to API in message: {msg}"
             )
 
+    def test_flush_auxiliary_messages_skip_tool_role_history(self, agent_with_memory_tool):
+        """Flush calls should not forward tool-role transcript messages to aux providers."""
+        agent = agent_with_memory_tool
+        agent._memory_store = MagicMock()
+        agent._memory_flush_min_turns = 1
+        agent._user_turn_count = 10
+        agent._cached_system_prompt = "system"
+
+        messages = [
+            {"role": "user", "content": "hello"},
+            {
+                "role": "assistant",
+                "content": "Let me check",
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {"name": "memory", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_123",
+                "content": '{"ok": true}',
+            },
+            {"role": "user", "content": "remember this"},
+        ]
+
+        mock_msg = SimpleNamespace(content="OK", tool_calls=None)
+        mock_choice = SimpleNamespace(message=mock_msg)
+        mock_response = SimpleNamespace(choices=[mock_choice])
+
+        with patch("agent.auxiliary_client.call_llm", return_value=mock_response) as mock_call_llm:
+            agent.flush_memories(messages, min_turns=0)
+
+        assert mock_call_llm.called, "flush_memories never called the auxiliary client"
+        api_messages = mock_call_llm.call_args.kwargs["messages"]
+        assert all(msg.get("role") != "tool" for msg in api_messages)
+
 
 # ---------------------------------------------------------------------------
 # Conversation history mutation

@@ -7254,8 +7254,12 @@ class AIAgent:
             _needs_sanitize = self._should_sanitize_tool_calls()
             api_messages = []
             for msg in messages:
+                role = msg.get("role")
+                if role not in ("user", "assistant", "system", "developer"):
+                    continue
+
                 api_msg = msg.copy()
-                if msg.get("role") == "assistant":
+                if role == "assistant":
                     reasoning = msg.get("reasoning")
                     if reasoning:
                         api_msg["reasoning_content"] = reasoning
@@ -7263,6 +7267,8 @@ class AIAgent:
                 api_msg.pop("finish_reason", None)
                 api_msg.pop("_flush_sentinel", None)
                 api_msg.pop("_thinking_prefill", None)
+                api_msg.pop("tool_call_id", None)
+                api_msg.pop("tool_name", None)
                 if _needs_sanitize:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
