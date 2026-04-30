@@ -117,6 +117,7 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
+from agent.reviewer_audit import append_reviewer_audit_event
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
 
 
@@ -1124,8 +1125,8 @@ class AIAgent:
         self.provider_data_collection = provider_data_collection
 
         # Store toolset filtering options
-        self.enabled_toolsets = enabled_toolsets
-        self.disabled_toolsets = disabled_toolsets
+        self.enabled_toolsets = list(enabled_toolsets) if enabled_toolsets is not None else None
+        self.disabled_toolsets = list(disabled_toolsets) if disabled_toolsets is not None else None
         
         # Model response configuration
         self.max_tokens = max_tokens  # None = use model default
@@ -3233,15 +3234,38 @@ class AIAgent:
         # Pick the right prompt based on which triggers fired
         if review_memory and review_skills:
             prompt = self._COMBINED_REVIEW_PROMPT
+            review_kind = "combined"
         elif review_memory:
             prompt = self._MEMORY_REVIEW_PROMPT
+            review_kind = "memory"
         else:
             prompt = self._SKILL_REVIEW_PROMPT
+            review_kind = "skill"
+
+        audit_base = {
+            "session_id": getattr(self, "session_id", None),
+            "parent_session_id": getattr(self, "_parent_session_id", None),
+            "platform": getattr(self, "platform", None),
+            "review_memory": review_memory,
+            "review_skills": review_skills,
+        }
+
+        def _audit(event: str, **fields: Any) -> None:
+            try:
+                append_reviewer_audit_event(
+                    event,
+                    review_kind,
+                    **audit_base,
+                    **fields,
+                )
+            except Exception:
+                pass
 
         def _run_review():
             import contextlib
             review_agent = None
             try:
+                _audit("review.started")
                 with open(os.devnull, "w") as _devnull, \
                      contextlib.redirect_stdout(_devnull), \
                      contextlib.redirect_stderr(_devnull):
@@ -3260,6 +3284,8 @@ class AIAgent:
                         quiet_mode=True,
                         platform=self.platform,
                         provider=self.provider,
+                        enabled_toolsets=getattr(self, "enabled_toolsets", None),
+                        disabled_toolsets=getattr(self, "disabled_toolsets", None),
                         api_mode=_parent_runtime.get("api_mode") or None,
                         base_url=_parent_runtime.get("base_url") or None,
                         api_key=_parent_runtime.get("api_key") or None,
@@ -3290,8 +3316,12 @@ class AIAgent:
                     messages_snapshot,
                 )
 
-                if actions:
-                    summary = " · ".join(dict.fromkeys(actions))
+                unique_actions = list(dict.fromkeys(actions))
+                for action in unique_actions:
+                    _audit("review.tool_result", action=action)
+
+                if unique_actions:
+                    summary = " · ".join(unique_actions)
                     self._safe_print(f"  💾 {summary}")
                     _bg_cb = self.background_review_callback
                     if _bg_cb:
@@ -3299,8 +3329,23 @@ class AIAgent:
                             _bg_cb(f"💾 {summary}")
                         except Exception:
                             pass
+                else:
+                    summary = ""
+
+                _audit(
+                    "review.completed",
+                    status="accepted" if unique_actions else "no_op",
+                    summary=summary,
+                    action_count=len(unique_actions),
+                )
 
             except Exception as e:
+                _audit(
+                    "review.failed",
+                    status="failed",
+                    error_type=e.__class__.__name__,
+                    error=str(e),
+                )
                 logger.warning("Background memory/skill review failed: %s", e)
                 self._emit_auxiliary_failure("background review", e)
             finally:
