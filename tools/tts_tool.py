@@ -56,12 +56,14 @@ from urllib.parse import urljoin
 from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
-def get_env_value(name, default=None):
-    """Read env values through the live config module.
 
-    Tests may monkeypatch and later restore ``hermes_cli.config.get_env_value``
-    before this module is imported. Resolve the helper at call time so TTS does
-    not keep a stale imported function for the rest of the test process.
+
+def get_env_value(name, default=None):
+    """Resolve env values through Hermes config when available.
+
+    Import-order tests can temporarily make ``hermes_cli.config`` unavailable
+    before this module is imported. Resolve lazily on each call so TTS
+    providers still see values from ~/.hermes/.env once config is importable.
     """
     try:
         from hermes_cli.config import get_env_value as _get_env_value
@@ -69,6 +71,8 @@ def get_env_value(name, default=None):
         return os.getenv(name, default)
     value = _get_env_value(name)
     return default if value is None else value
+
+
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway, resolve_openai_audio_api_key
 from tools.xai_http import hermes_xai_user_agent
