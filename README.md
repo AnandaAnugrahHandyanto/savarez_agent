@@ -178,3 +178,9 @@ scripts/run_tests.sh
 MIT — see [LICENSE](LICENSE).
 
 Built by [Nous Research](https://nousresearch.com).
+### Developer Installation (Editable Mode)
+To contribute to the project, it is recommended to install the agent in editable mode:
+```bash
+git clone [https://github.com/NousResearch/hermes-agent.git](https://github.com/NousResearch/hermes-agent.git)
+cd hermes-agent
+pip install -e .
