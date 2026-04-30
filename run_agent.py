@@ -39,7 +39,7 @@ import threading
 from types import SimpleNamespace
 import urllib.request
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
@@ -52,6 +52,9 @@ from datetime import datetime
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
+
+if TYPE_CHECKING:
+    from agent.rate_limit_tracker import RateLimitState
 
 
 _OPENAI_CLS_CACHE: Optional[type] = None
@@ -881,6 +884,7 @@ class AIAgent:
         api_mode: str = None,
         acp_command: str = None,
         acp_args: list[str] | None = None,
+        acp_allow_writes: bool = False,
         command: str = None,
         args: list[str] | None = None,
         model: str = "",
@@ -1020,6 +1024,7 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
+        self.acp_allow_writes = bool(acp_allow_writes)
         if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
@@ -1390,6 +1395,7 @@ class AIAgent:
                 if self.provider == "copilot-acp":
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
+                    client_kwargs["allow_writes"] = self.acp_allow_writes
                 effective_base = base_url
                 if base_url_host_matches(effective_base, "openrouter.ai"):
                     client_kwargs["default_headers"] = {
@@ -3805,7 +3811,8 @@ class AIAgent:
                     
                     # Add tool calls wrapped in XML tags
                     for tool_call in msg["tool_calls"]:
-                        if not tool_call or not isinstance(tool_call, dict): continue
+                        if not tool_call or not isinstance(tool_call, dict):
+                            continue
                         # Parse arguments - should always succeed since we validate during conversation
                         # but keep try-except as safety net
                         try:
@@ -6484,6 +6491,18 @@ class AIAgent:
             or getattr(self, "_stream_callback", None) is not None
         )
 
+    def _supports_streaming_api_call(self) -> bool:
+        """Return False for local ACP adapters that expose only create()."""
+        if self.provider == "copilot-acp":
+            return False
+        base_url = str(self.base_url or "").lower()
+        if base_url.startswith("acp://copilot") or base_url.startswith("acp+tcp://"):
+            return False
+        client = getattr(self, "client", None)
+        if client is not None and client.__class__.__name__ == "CopilotACPClient":
+            return False
+        return True
+
     def _interruptible_streaming_api_call(
         self, api_kwargs: dict, *, on_first_delta: callable = None
     ):
@@ -9041,7 +9060,15 @@ class AIAgent:
             max_iterations=function_args.get("max_iterations"),
             acp_command=function_args.get("acp_command"),
             acp_args=function_args.get("acp_args"),
+            unsafe_allow_writes=bool(function_args.get("unsafe_allow_writes", False)),
+            transport=function_args.get("transport"),
+            bridge_initial_wait_seconds=function_args.get("bridge_initial_wait_seconds"),
             role=function_args.get("role"),
+            persona=function_args.get("persona"),
+            persona_provider=function_args.get("persona_provider"),
+            persona_model=function_args.get("persona_model"),
+            workdir=function_args.get("workdir"),
+            compress_persona=function_args.get("compress_persona"),
             parent_agent=self,
         )
 
@@ -10842,15 +10869,7 @@ class AIAgent:
                     # session instead of re-failing every retry.
                     if getattr(self, "_disable_streaming", False):
                         _use_streaming = False
-                    # CopilotACPClient communicates via subprocess stdio and
-                    # returns a plain SimpleNamespace — not an iterable
-                    # stream.  Mirror the ACP exclusion used for Responses
-                    # API upgrade (lines ~1083-1085).
-                    elif (
-                        self.provider == "copilot-acp"
-                        or str(self.base_url or "").lower().startswith("acp://copilot")
-                        or str(self.base_url or "").lower().startswith("acp+tcp://")
-                    ):
+                    elif not self._supports_streaming_api_call():
                         _use_streaming = False
                     elif not self._has_stream_consumers():
                         # No display/TTS consumer. Still prefer streaming for
@@ -11029,7 +11048,7 @@ class AIAgent:
                         elif _resp_error_code == 504:
                             _failure_hint = f"upstream gateway timeout (504, {api_duration:.0f}s)"
                         elif _resp_error_code == 429:
-                            _failure_hint = f"rate limited by upstream provider (429)"
+                            _failure_hint = "rate limited by upstream provider (429)"
                         elif _resp_error_code in (500, 502):
                             _failure_hint = f"upstream server error ({_resp_error_code}, {api_duration:.0f}s)"
                         elif _resp_error_code in (503, 529):
@@ -13289,7 +13308,8 @@ class AIAgent:
                             if isinstance(m, dict) and m.get("role") == "tool"
                         }
                         for tc in msg["tool_calls"]:
-                            if not tc or not isinstance(tc, dict): continue
+                            if not tc or not isinstance(tc, dict):
+                                continue
                             if tc["id"] not in answered_ids:
                                 err_msg = {
                                     "role": "tool",
