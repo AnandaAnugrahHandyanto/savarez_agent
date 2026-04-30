@@ -10441,42 +10441,24 @@ class HermesCLI:
         self._app = app  # Store reference for clarify_callback
 
         # ── Fix ghost status-bar lines on terminal resize ──────────────
-        # When the terminal shrinks (e.g. un-maximize), the emulator reflows
-        # the previously-rendered full-width rows (status bar, input rules)
-        # into multiple narrower rows.  prompt_toolkit's _on_resize handler
-        # only cursor_up()s by the stored layout height, missing the extra
-        # rows created by reflow — leaving ghost duplicates visible.
+        # When the terminal resizes (shrink, grow, or height change), the
+        # emulator may reflow previously-rendered full-width rows into
+        # multiple narrower/taller rows, leaving ghost duplicates visible.
+        # prompt_toolkit's _on_resize only cursor_up()s by the stored
+        # layout height, missing extra rows from reflow.
         #
-        # Fix: before the standard erase, inflate _cursor_pos.y so the
-        # cursor moves up far enough to cover the reflowed ghost content.
+        # Fix: Force erase_screen() + cursor_goto(0,0) BEFORE the standard
+        # resize handler to completely clear any ghost content from the
+        # previous render. This handles ALL resize types: shrinking,
+        # growing, height changes, and SIGWINCH-less multiplexer resizes.
         _original_on_resize = app._on_resize
 
         def _resize_clear_ghosts():
-            from prompt_toolkit.data_structures import Point as _Pt
-            renderer = app.renderer
             try:
-                old_size = renderer._last_size
-                new_size = renderer.output.get_size()
-                if (
-                    old_size
-                    and new_size.columns < old_size.columns
-                    and new_size.columns > 0
-                ):
-                    reflow_factor = (
-                        (old_size.columns + new_size.columns - 1)
-                        // new_size.columns
-                    )
-                    last_h = (
-                        renderer._last_screen.height
-                        if renderer._last_screen
-                        else 0
-                    )
-                    extra = last_h * (reflow_factor - 1)
-                    if extra > 0:
-                        renderer._cursor_pos = _Pt(
-                            x=renderer._cursor_pos.x,
-                            y=renderer._cursor_pos.y + extra,
-                        )
+                output = app.renderer.output
+                output.erase_screen()
+                output.cursor_goto(0, 0)
+                output.flush()
             except Exception:
                 pass  # never break resize handling
             _original_on_resize()
