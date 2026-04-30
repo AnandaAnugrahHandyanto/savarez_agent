@@ -245,7 +245,11 @@ class MemoryStore:
 
             # Reject exact duplicates
             if content in entries:
-                return self._success_response(target, "Entry already exists (no duplicate added).")
+                return self._success_response(
+                    target,
+                    "Entry already exists (no duplicate added).",
+                    mutated=False,
+                )
 
             # Calculate what the new total would be
             new_entries = entries + [content]
@@ -366,7 +370,7 @@ class MemoryStore:
         """Return the current live entries for a target without mutating them."""
         with self._file_lock(self._path_for(target)):
             self._reload_target(target)
-            return self._success_response(target, "Entries read.")
+            return self._success_response(target, "Entries read.", mutated=False)
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """
@@ -383,7 +387,13 @@ class MemoryStore:
 
     # -- Internal helpers --
 
-    def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
+    def _success_response(
+        self,
+        target: str,
+        message: str = None,
+        *,
+        mutated: bool = True,
+    ) -> Dict[str, Any]:
         entries = self._entries_for(target)
         current = self._char_count(target)
         limit = self._char_limit(target)
@@ -391,6 +401,7 @@ class MemoryStore:
 
         resp = {
             "success": True,
+            "mutated": mutated,
             "target": target,
             "entries": entries,
             "usage": f"{pct}% — {current:,}/{limit:,} chars",

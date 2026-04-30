@@ -3601,6 +3601,19 @@ class AIAgent:
             metadata["tool_call_id"] = tool_call_id
         return {k: v for k, v in metadata.items() if v not in (None, "")}
 
+    @staticmethod
+    def _memory_tool_result_succeeded(result: str) -> bool:
+        """Return True only when the built-in memory tool actually accepted a write."""
+        try:
+            payload = json.loads(result)
+        except Exception:
+            return False
+        return (
+            isinstance(payload, dict)
+            and payload.get("success") is True
+            and payload.get("mutated") is not False
+        )
+
     def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
         """Rewrite the current-turn user message before persistence/return.
 
@@ -9086,7 +9099,11 @@ class AIAgent:
                 store=self._memory_store,
             )
             # Bridge: notify external memory provider of built-in memory writes
-            if self._memory_manager and function_args.get("action") in ("add", "replace"):
+            if (
+                self._memory_manager
+                and function_args.get("action") in ("add", "replace")
+                and self._memory_tool_result_succeeded(result)
+            ):
                 try:
                     self._memory_manager.on_memory_write(
                         function_args.get("action", ""),
@@ -9628,7 +9645,11 @@ class AIAgent:
                     store=self._memory_store,
                 )
                 # Bridge: notify external memory provider of built-in memory writes
-                if self._memory_manager and function_args.get("action") in ("add", "replace"):
+                if (
+                    self._memory_manager
+                    and function_args.get("action") in ("add", "replace")
+                    and self._memory_tool_result_succeeded(function_result)
+                ):
                     try:
                         self._memory_manager.on_memory_write(
                             function_args.get("action", ""),

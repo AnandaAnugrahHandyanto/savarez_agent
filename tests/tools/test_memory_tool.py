@@ -105,6 +105,7 @@ class TestMemoryStoreAdd:
     def test_add_entry(self, store):
         result = store.add("memory", "Python 3.12 project")
         assert result["success"] is True
+        assert result["mutated"] is True
         assert "Python 3.12 project" in result["entries"]
 
     def test_add_to_user(self, store):
@@ -120,6 +121,7 @@ class TestMemoryStoreAdd:
         store.add("memory", "fact A")
         result = store.add("memory", "fact A")
         assert result["success"] is True  # No error, just a note
+        assert result["mutated"] is False
         assert len(store.memory_entries) == 1  # Not duplicated
 
     def test_add_exceeding_limit_rejected(self, store):
@@ -265,6 +267,7 @@ class TestMemoryToolDispatcher:
         result = json.loads(memory_tool(action="read", target="memory", store=store))
 
         assert result["success"] is True
+        assert result["mutated"] is False
         assert result["entries"] == ["fact visible to read"]
         assert result["entry_count"] == 1
 
