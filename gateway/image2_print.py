@@ -56,9 +56,10 @@ def pixels_for_mm(mm: int, dpi: int) -> int:
     return int(round(float(mm) / 25.4 * int(dpi)))
 
 
-def parse_print_spec(text: str, *, image_size_px: tuple[int, int] | None = None) -> dict[str, Any]:
+def parse_print_spec(text: str, *, image_size_px: tuple[int, int] | None = None, allow_size_only: bool = False) -> dict[str, Any]:
     raw = str(text or "")
-    if not should_handle_print_request(raw):
+    has_print_action = should_handle_print_request(raw)
+    if not has_print_action and not allow_size_only:
         return {"status": "not_print_request"}
 
     width_mm: int | None = None

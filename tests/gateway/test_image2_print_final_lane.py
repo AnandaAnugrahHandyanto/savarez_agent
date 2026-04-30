@@ -6,6 +6,8 @@ import json
 import sqlite3
 import pytest
 from pathlib import Path
+
+import gateway.image2_feishu_ingress as ingress
 from types import SimpleNamespace
 
 from gateway.image2_feishu_ingress import Image2IngressSettings, handle_image2_feishu_ingress_event
@@ -114,6 +116,80 @@ def test_print_request_enqueues_from_latest_verified_preview_in_same_thread(tmp_
     assert payload["print_request"]["approved_image_sha256"] == approved_sha
     assert payload["print_request"]["spec"]["dpi"] == 150
     assert payload["print_request"]["spec"]["output_psd_type"] == "flat_single_layer"
+
+
+def test_print_request_can_use_quoted_or_thread_user_image_as_direct_print_source(tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    db_path = runtime / "image2_jobs.sqlite"
+    source = tmp_path / "source.jpg"
+    source.write_bytes(b"user-uploaded-approved-print-source")
+    settings = Image2IngressSettings(enabled=True, runtime_root=runtime, db_path=db_path, launch_worker=True)
+    launched: list[str] = []
+
+    def fake_thread_image(_event, destination, **_kwargs):
+        return {
+            "path": str(source),
+            "mime_type": "image/jpeg",
+            "source": "feishu_thread_root_image",
+            "parent_message_id": "om_user_image",
+        }
+
+    monkeypatch.setattr(ingress, "resolve_feishu_thread_image", fake_thread_image)
+
+    ack = handle_image2_feishu_ingress_event(
+        _event("你帮我把这个图生成印刷稿，80×120 厘米的", message_id="om_print", root_id="om_root"),
+        settings=settings,
+        launch_func=lambda _settings, *, task_id: launched.append(task_id) or {"pid": 123},
+    )
+
+    assert "印刷定稿队列" in ack
+    assert launched
+    print_job = _row(db_path, launched[0])
+    payload = json.loads(str(print_job["payload_json"]))
+    assert payload["print_request"]["approved_task_id"] == "feishu_source:om_user_image"
+    assert payload["print_request"]["approved_image_path"] == str(source)
+    assert payload["print_request"]["approved_image_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert payload["print_request"]["feishu_image_message_id"] == "om_user_image"
+    assert payload["print_request"]["spec"]["target_width_px"] == 4724
+    assert payload["print_request"]["spec"]["target_height_px"] == 7087
+    assert payload["source_files"][0]["source"] == "feishu_thread_root_image"
+
+
+def test_size_only_reply_in_image_thread_routes_to_direct_print_source(tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    db_path = runtime / "image2_jobs.sqlite"
+    source = tmp_path / "thread-root-source.png"
+    source.write_bytes(b"ready-design-draft")
+    settings = Image2IngressSettings(enabled=True, runtime_root=runtime, db_path=db_path, launch_worker=True)
+    launched: list[str] = []
+
+    def fake_thread_image(_event, destination, **_kwargs):
+        return {
+            "path": str(source),
+            "mime_type": "image/png",
+            "source": "feishu_thread_root_image",
+            "parent_message_id": "om_root_image",
+        }
+
+    monkeypatch.setattr(ingress, "resolve_feishu_thread_image", fake_thread_image)
+
+    ack = handle_image2_feishu_ingress_event(
+        _event("80×120厘米", message_id="om_size_only", root_id="om_root_image"),
+        settings=settings,
+        launch_func=lambda _settings, *, task_id: launched.append(task_id) or {"pid": 123},
+    )
+
+    assert "印刷定稿队列" in ack
+    assert launched
+    print_job = _row(db_path, launched[0])
+    payload = json.loads(str(print_job["payload_json"]))
+    assert payload["print_request"]["approved_task_id"] == "feishu_source:om_root_image"
+    assert payload["print_request"]["approved_image_path"] == str(source)
+    assert payload["print_request"]["spec"]["width_mm"] == 800
+    assert payload["print_request"]["spec"]["height_mm"] == 1200
+    assert payload["print_request"]["spec"]["dpi"] == 150
+    assert payload["print_request"]["spec"]["target_width_px"] == 4724
+    assert payload["print_request"]["spec"]["target_height_px"] == 7087
 
 
 def test_print_request_without_thread_does_not_pick_random_chat_preview(tmp_path):

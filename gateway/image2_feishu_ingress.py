@@ -1101,6 +1101,73 @@ def find_latest_verified_image2_preview(
     return None
 
 
+def print_approved_from_source_files(source_files: Iterable[Any]) -> Optional[Dict[str, Any]]:
+    """Treat a user-provided Feishu image as the already-approved print source.
+
+    This is intentionally narrow: it only accepts local files already downloaded
+    by the Feishu ingress resolvers and hashes the exact bytes before enqueueing
+    the print-final lane.  Signed URLs or unmaterialised remote records are not
+    enough for a print source.
+    """
+    for item in source_files or []:
+        record = dict(item) if isinstance(item, Mapping) else {}
+        path_value = record.get("path") or record.get("file") or record.get("file_path") or record.get("local_path") or record.get("abs_path")
+        if not path_value:
+            continue
+        path = Path(str(path_value)).expanduser()
+        if not path.is_file():
+            continue
+        try:
+            digest = str(record.get("sha256") or _sha256_local_file(path))
+        except OSError:
+            continue
+        if not digest:
+            continue
+        parent_message_id = str(record.get("parent_message_id") or record.get("message_id") or "")
+        identity = parent_message_id or digest[:16]
+        return {
+            "task_id": f"feishu_source:{identity}",
+            "job_dir": "",
+            "approved_image_path": str(path),
+            "approved_image_sha256": digest,
+            "feishu_image_message_id": parent_message_id,
+            "chatgpt_url": "",
+            "generation_title": "Feishu direct print source",
+        }
+    return None
+
+
+def _print_payload_for_approved_source(
+    *,
+    event: Any,
+    chat_id: str,
+    root_id: str | None,
+    thread_id: str | None,
+    raw_text: str,
+    approved: Mapping[str, Any],
+    spec: Mapping[str, Any],
+    source_files: Iterable[Any] | None = None,
+) -> Dict[str, Any]:
+    return {
+        "source_platform": "feishu",
+        "feishu_message_id": str(getattr(event, "message_id", "") or ""),
+        "chat_id": chat_id,
+        "root_id": root_id or "",
+        "thread_id": thread_id or root_id or "",
+        "text": raw_text,
+        "source_files": list(source_files or []),
+        "print_request": {
+            "approved_task_id": approved["task_id"],
+            "approved_image_path": approved["approved_image_path"],
+            "approved_image_sha256": approved.get("approved_image_sha256", ""),
+            "feishu_image_message_id": approved.get("feishu_image_message_id", ""),
+            "chatgpt_url": approved.get("chatgpt_url", ""),
+            "generation_title": approved.get("generation_title", ""),
+            "spec": dict(spec),
+        },
+    }
+
+
 def enqueue_feishu_job(
     settings: Image2IngressSettings,
     message_payload: Mapping[str, Any],
@@ -1228,45 +1295,62 @@ def handle_image2_feishu_ingress_event(
     source = getattr(event, "source", None)
     raw_text = str(getattr(event, "text", "") or "")
     chat_id, root_id, thread_id = canonical_image2_thread_identity(event, settings=loaded)
-    if should_handle_print_request(raw_text):
-        spec = parse_print_spec(raw_text)
-        if spec.get("status") == "need_clarification":
-            return str(spec.get("message") or "要出最终印刷稿，需要先补尺寸。")
-        if spec.get("status") == "ok":
-            approved = find_latest_verified_image2_preview(loaded, chat_id=chat_id, root_id=root_id, thread_id=thread_id)
-            if not approved:
-                return "⚠️ 还没有找到同一飞书话题里已发出并通过回读的预览图。请先定好设计稿，再回复：定稿，出印刷版，尺寸 例如 100×150cm。"
-            payload = {
-                "source_platform": "feishu",
-                "feishu_message_id": str(getattr(event, "message_id", "") or ""),
-                "chat_id": chat_id,
-                "root_id": root_id or "",
-                "thread_id": thread_id or root_id or "",
-                "text": raw_text,
-                "source_files": [],
-                "print_request": {
-                    "approved_task_id": approved["task_id"],
-                    "approved_image_path": approved["approved_image_path"],
-                    "approved_image_sha256": approved.get("approved_image_sha256", ""),
-                    "feishu_image_message_id": approved.get("feishu_image_message_id", ""),
-                    "chatgpt_url": approved.get("chatgpt_url", ""),
-                    "generation_title": approved.get("generation_title", ""),
-                    "spec": spec,
-                },
-            }
+    print_source_payload: Optional[Dict[str, Any]] = None
+    explicit_print_request = should_handle_print_request(raw_text)
+    spec = parse_print_spec(raw_text) if explicit_print_request else {"status": "not_print_request"}
+
+    if explicit_print_request and spec.get("status") == "need_clarification":
+        return str(spec.get("message") or "要出最终印刷稿，需要先补尺寸。")
+
+    if not explicit_print_request:
+        size_only_spec = parse_print_spec(raw_text, allow_size_only=True)
+        if size_only_spec.get("status") == "ok":
             try:
-                job = dict(enqueue_func(loaded, payload))
+                print_source_payload = build_feishu_message_payload(event, settings=loaded)
             except Exception as exc:
-                logger.warning("[Image2Ingress] Failed to enqueue Feishu print request: %s", exc.__class__.__name__)
-                return "⚠️ 印刷定稿任务入队失败：已停止普通聊天兜底，请稍后重试或联系维护。"
-            task_id = str(job.get("task_id") or "")
-            if loaded.launch_worker and task_id and not job.get("already_existed"):
+                logger.warning("[Image2Ingress] Failed to collect Feishu direct print source files: %s", exc.__class__.__name__)
+                print_source_payload = None
+            if print_source_payload and print_approved_from_source_files(print_source_payload.get("source_files") or []):
+                spec = size_only_spec
+                explicit_print_request = True
+
+    if explicit_print_request and spec.get("status") == "ok":
+        approved = find_latest_verified_image2_preview(loaded, chat_id=chat_id, root_id=root_id, thread_id=thread_id)
+        direct_source_files: list[Any] = []
+        if not approved:
+            if print_source_payload is None:
                 try:
-                    launcher = launch_func or (lambda s, *, task_id: launch_image2_worker(s, task_id=task_id))
-                    launcher(loaded, task_id=task_id)
-                except Exception:
-                    logger.exception("[Image2Ingress] Enqueued print %s but failed to launch Image2 worker", task_id)
-            return f"✅ 已进入印刷定稿队列 `{task_id}`。我会按 {spec['width_mm']}×{spec['height_mm']}mm / {spec['dpi']}DPI 生成扁平单层 PSD 和 PDF proof，并回传飞书文件。"
+                    print_source_payload = build_feishu_message_payload(event, settings=loaded)
+                except Exception as exc:
+                    logger.warning("[Image2Ingress] Failed to collect Feishu direct print source files: %s", exc.__class__.__name__)
+                    print_source_payload = None
+            direct_source_files = list((print_source_payload or {}).get("source_files") or [])
+            approved = print_approved_from_source_files(direct_source_files)
+        if not approved:
+            return "⚠️ 还没有找到同一飞书话题里已发出并通过回读的预览图，也没有拿到可直接作为定稿的飞书图片。请先定好设计稿，再回复：定稿，出印刷版，尺寸 例如 100×150cm。"
+        payload = _print_payload_for_approved_source(
+            event=event,
+            chat_id=chat_id,
+            root_id=root_id,
+            thread_id=thread_id,
+            raw_text=raw_text,
+            approved=approved,
+            spec=spec,
+            source_files=direct_source_files,
+        )
+        try:
+            job = dict(enqueue_func(loaded, payload))
+        except Exception as exc:
+            logger.warning("[Image2Ingress] Failed to enqueue Feishu print request: %s", exc.__class__.__name__)
+            return "⚠️ 印刷定稿任务入队失败：已停止普通聊天兜底，请稍后重试或联系维护。"
+        task_id = str(job.get("task_id") or "")
+        if loaded.launch_worker and task_id and not job.get("already_existed"):
+            try:
+                launcher = launch_func or (lambda s, *, task_id: launch_image2_worker(s, task_id=task_id))
+                launcher(loaded, task_id=task_id)
+            except Exception:
+                logger.exception("[Image2Ingress] Enqueued print %s but failed to launch Image2 worker", task_id)
+        return f"✅ 已进入印刷定稿队列 `{task_id}`。我会按 {spec['width_mm']}×{spec['height_mm']}mm / {spec['dpi']}DPI 生成扁平单层 PSD 和 PDF proof，并回传飞书文件。"
 
     is_visual_request = should_handle_feishu_visual_request(
         platform=getattr(source, "platform", None),
