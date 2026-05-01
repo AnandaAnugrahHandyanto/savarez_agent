@@ -591,7 +591,26 @@ class TestNewEndpoints:
         resp = self.client.get("/api/cron/jobs/nonexistent-id")
         assert resp.status_code == 404
 
-    def test_conductor_named_cron_job_launches_immediate_supervisor(self, monkeypatch):
+    def test_conductor_named_cron_job_stays_cron_job(self):
+        """Cron job names should not change the Cron API response shape."""
+        resp = self.client.post(
+            "/api/cron/jobs",
+            json={
+                "name": "conductor-123",
+                "prompt": "start a new mission",
+                "schedule": "5m",
+                "deliver": "local",
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "conductor-123"
+        assert data["state"] == "scheduled"
+        assert data["schedule"]["kind"] == "once"
+        assert "type" not in data
+
+    def test_conductor_mission_endpoint_launches_immediate_supervisor(self, monkeypatch):
         """Dashboard Conductor must not depend on gateway cron ticks to start work."""
         import hermes_cli.web_server as web_server
 
@@ -611,12 +630,10 @@ class TestNewEndpoints:
         monkeypatch.setattr(web_server.subprocess, "Popen", fake_popen)
 
         resp = self.client.post(
-            "/api/cron/jobs",
+            "/api/conductor/missions",
             json={
                 "name": "conductor-123",
                 "prompt": "start a new mission",
-                "schedule": "5s",
-                "deliver": "local",
             },
         )
 
@@ -630,6 +647,42 @@ class TestNewEndpoints:
         assert "chat" in captured["cmd"]
         assert "start a new mission" in captured["cmd"]
         assert captured["kwargs"]["stdin"] is web_server.subprocess.DEVNULL
+
+    def test_conductor_duplicate_names_get_unique_mission_ids(self, monkeypatch):
+        """Starting the same named mission twice must keep both workers manageable."""
+        import hermes_cli.web_server as web_server
+
+        class FakeProc:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def poll(self):
+                return None
+
+        next_pid = {"value": 5000}
+
+        def fake_popen(cmd, **kwargs):
+            next_pid["value"] += 1
+            return FakeProc(next_pid["value"])
+
+        monkeypatch.setattr(web_server.subprocess, "Popen", fake_popen)
+
+        first = self.client.post(
+            "/api/conductor/missions",
+            json={"name": "conductor-repeat", "prompt": "start first mission"},
+        )
+        second = self.client.post(
+            "/api/conductor/missions",
+            json={"name": "conductor-repeat", "prompt": "start second mission"},
+        )
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        first_data = first.json()
+        second_data = second.json()
+        assert first_data["id"] != second_data["id"]
+        assert first_data["log_path"] != second_data["log_path"]
+        assert first_data["pid"] != second_data["pid"]
 
     def test_conductor_status_reports_missing_worker_as_failed(self):
         """A stale Conductor record without a live process must be visibly failed, not active."""

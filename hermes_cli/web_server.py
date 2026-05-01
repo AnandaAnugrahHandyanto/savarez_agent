@@ -705,12 +705,6 @@ def _extract_conductor_session_id(log_path: Optional[str]) -> Optional[str]:
     return None
 
 
-def _is_conductor_job_name(name: str) -> bool:
-    """Return True for dashboard Conductor's historical cron-wrapper jobs."""
-    normalized = (name or "").strip().lower()
-    return normalized == "conductor" or normalized.startswith("conductor-")
-
-
 def _pid_is_running(pid: Optional[int]) -> bool:
     if not pid or pid <= 0:
         return False
@@ -727,6 +721,24 @@ def _write_conductor_status(mission: Dict[str, Any]) -> None:
     _get_conductor_dir().mkdir(parents=True, exist_ok=True)
     path = _get_conductor_dir() / f"{mission['id']}.json"
     path.write_text(json.dumps(mission, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _allocate_conductor_mission_id(name: str) -> str:
+    raw_id = name.strip() if name.strip() else f"conductor-{uuid.uuid4().hex[:12]}"
+    safe_base = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in raw_id)[:96]
+    if not safe_base:
+        safe_base = f"conductor-{uuid.uuid4().hex[:12]}"
+
+    missions_dir = _get_conductor_dir()
+    if safe_base not in _CONDUCTOR_PROCS and not (missions_dir / f"{safe_base}.json").exists():
+        return safe_base
+
+    prefix = safe_base[:83].rstrip("._-") or "conductor"
+    for _ in range(20):
+        candidate = f"{prefix}-{uuid.uuid4().hex[:12]}"
+        if candidate not in _CONDUCTOR_PROCS and not (missions_dir / f"{candidate}.json").exists():
+            return candidate
+    return f"conductor-{uuid.uuid4().hex}"
 
 
 def _read_conductor_status(mission_id: str) -> Optional[Dict[str, Any]]:
@@ -771,17 +783,12 @@ def _read_conductor_status(mission_id: str) -> Optional[Dict[str, Any]]:
 def _launch_conductor_mission(prompt: str, name: str = "") -> Dict[str, Any]:
     """Launch a dashboard Conductor mission immediately as a durable process.
 
-    Older dashboard bundles created one-shot cron jobs named ``conductor-*``.
-    That made mission startup depend on the gateway cron ticker, so work could
-    sit stale for minutes. Intercept those jobs and start a subprocess now,
-    with PID/log/status artifacts the dashboard can verify.
+    The workspace dashboard calls this dedicated endpoint so mission startup
+    does not depend on the gateway cron ticker. PID/log/status artifacts let the
+    dashboard verify the worker and stop it later.
     """
-    mission_id = name.strip() if name.strip() else f"conductor-{uuid.uuid4().hex[:12]}"
-    safe_id = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in mission_id)[:96]
-    if not safe_id:
-        safe_id = f"conductor-{uuid.uuid4().hex[:12]}"
-
     _get_conductor_dir().mkdir(parents=True, exist_ok=True)
+    safe_id = _allocate_conductor_mission_id(name)
     log_path = _get_conductor_dir() / f"{safe_id}.log"
     prompt_path = _get_conductor_dir() / f"{safe_id}.prompt.md"
     prompt_path.write_text(prompt, encoding="utf-8")
@@ -2534,13 +2541,6 @@ async def get_cron_job(job_id: str):
 
 @app.post("/api/cron/jobs")
 async def create_cron_job(body: CronJobCreate):
-    if _is_conductor_job_name(body.name):
-        try:
-            return _launch_conductor_mission(prompt=body.prompt, name=body.name)
-        except Exception as e:
-            _log.exception("POST /api/cron/jobs conductor launch failed")
-            raise HTTPException(status_code=500, detail=f"Failed to launch conductor mission: {e}")
-
     from cron.jobs import create_job
     try:
         job = create_job(prompt=body.prompt, schedule=body.schedule,
