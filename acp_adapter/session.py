@@ -588,6 +588,17 @@ class SessionManager:
         except Exception:
             logger.debug("ACP session falling back to default provider resolution", exc_info=True)
 
+        # Keep ACP behavior aligned with CLI/gateway: honor configured fallback
+        # chains so editor integrations can fail over on transient provider errors.
+        try:
+            fb = config.get("fallback_providers") or config.get("fallback_model") or []
+            if isinstance(fb, dict):
+                fb = [fb] if fb.get("provider") and fb.get("model") else []
+            if fb:
+                kwargs["fallback_model"] = fb
+        except Exception:
+            logger.debug("Could not load fallback_providers for ACP agent", exc_info=True)
+
         _register_task_cwd(session_id, cwd)
         agent = AIAgent(**kwargs)
         # ACP stdio transport requires stdout to remain protocol-only JSON-RPC.
