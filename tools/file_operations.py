@@ -1168,9 +1168,9 @@ class ShellFileOperations(FileOperations):
         """Fallback search using grep."""
         cmd_parts = ["grep", "-rnH"]  # -H forces filename even for single-file searches
         
-        # Exclude hidden directories (matching ripgrep's default behavior).
-        # This prevents searching inside .hub/index-cache/, .git/, etc.
-        cmd_parts.append("--exclude-dir='.*'")
+        # Exclude hidden subdirectories under the search root (but not the
+        # root path itself, which may legitimately be hidden like ~/.hermes).
+        cmd_parts.append("--exclude-dir='*/.*'")
         
         # Add context if requested
         if context > 0:
