@@ -1942,18 +1942,18 @@ def _judge_output(
 
 def _judge_best_of_n(
     results: List[Dict[str, Any]],
-    evaluator: str,
-) -> Optional[int]:
-    """Run competitive evaluation on N parallel outputs and return best index.
+    judge: str,
+) -> tuple:
+    """Run competitive evaluation on N parallel outputs and return (winner_index, reasoning).
 
     Returns the task_index of the winning entry, or None if evaluation
     fails (in which case all results are preserved and the caller decides).
     """
     if not results or len(results) < 2:
-        return None
+        return None, ""
 
-    if not evaluator or not evaluator.strip():
-        return None
+    if not judge or not judge.strip():
+        return None, ""
 
     summaries: List[str] = []
     for entry in results:
@@ -1965,7 +1965,7 @@ def _judge_best_of_n(
 
     comparison_prompt = (
         f"Evaluate the following {len(results)} implementations of the same task.\n\n"
-        f"Evaluation criteria: {evaluator}\n\n"
+        f"Evaluation criteria: {judge}\n\n"
         + "\n".join(summaries)
         + "\n\nSelect the BEST implementation based on the criteria above. "
         "Respond ONLY with valid JSON — no markdown, no backticks, no preamble:\n"
@@ -1995,7 +1995,7 @@ def _judge_best_of_n(
         raw = resp.choices[0].message.content.strip() if resp and resp.choices else ""
     except Exception as exc:
         logger.warning("Best-of-N judge call failed: %s", exc)
-        return None
+        return None, ""
 
     # Strip optional markdown code fences
     raw = re.sub(r"^```(?:json)?\s*\n?", "", raw, flags=re.IGNORECASE)
@@ -2008,12 +2008,12 @@ def _judge_best_of_n(
         reasoning = str(parsed.get("reasoning", "")).strip()
         if 0 <= winner < len(results):
             logger.debug("Best-of-N winner: index %d (%s)", winner, reasoning[:100])
-            return winner
+            return winner, reasoning
         logger.warning("Best-of-N returned invalid winner_index: %d", winner)
     except (json.JSONDecodeError, TypeError, ValueError):
         logger.warning("Best-of-N returned non-JSON: %s", raw[:200])
 
-    return None
+    return None, ""
 
 def delegate_task(
     goal: Optional[str] = None,
@@ -2023,7 +2023,7 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
-    evaluator: Optional[str] = None,
+    judge: Optional[str] = None,
     role: Optional[str] = None,
     parent_agent=None,
 ) -> str:
@@ -2304,13 +2304,14 @@ def delegate_task(
         results.sort(key=lambda r: r["task_index"])
 
     # Best-of-N competitive evaluation (#479 Phase 1)
-    if evaluator and len(results) > 1:
-        winner_idx = _judge_best_of_n(results, evaluator)
+    best_of_n_winner = None
+    if judge and len(results) > 1:
+        winner_idx, winner_reasoning = _judge_best_of_n(results, judge)
         if winner_idx is not None and 0 <= winner_idx < len(results):
-            for entry in results:
-                entry["best_of_n_winner"] = (
-                    entry["task_index"] == winner_idx
-                )
+            best_of_n_winner = {
+                "task_index": winner_idx,
+                "reasoning": winner_reasoning,
+            }
 
     # Notify parent's memory provider of delegation outcomes
     if (
@@ -2400,13 +2401,14 @@ def delegate_task(
 
     total_duration = round(time.monotonic() - overall_start, 2)
 
-    return json.dumps(
-        {
-            "results": results,
-            "total_duration_seconds": total_duration,
-        },
-        ensure_ascii=False,
-    )
+    result_payload = {
+        "results": results,
+        "total_duration_seconds": total_duration,
+    }
+    if best_of_n_winner is not None:
+        result_payload["winner"] = best_of_n_winner
+
+    return json.dumps(result_payload, ensure_ascii=False)
 
 
 def _resolve_child_credential_pool(effective_provider: Optional[str], parent_agent):
@@ -2726,7 +2728,7 @@ DELEGATE_TASK_SCHEMA = {
                     "Only used when acp_command is set."
                 ),
             },
-            "evaluator": {
+            "judge": {
                 "type": "string",
                 "description": (
                     "Optional evaluation rubric for competitive Best-of-N selection. "
