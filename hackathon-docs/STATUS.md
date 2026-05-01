@@ -67,14 +67,15 @@ Added `video-caption` as an optional toolset (NOT in `_HERMES_CORE_TOOLS`) so it
 ```python
 "video-caption": {
     "description": "Bilingual video captioning — ...",
-    "tools": ["video-caption"],
+  "tools": ["video-caption"],
     "includes": []
 }
 ```
 
 Enable per-instance via `~/.hermes/config.yaml`:
 ```yaml
-enabled_toolsets:
+toolsets:
+  - hermes-cli
   - video-caption
 ```
 
@@ -103,9 +104,9 @@ Users can override any field in `~/.hermes/config.yaml`. The tool reads this at 
 
 ---
 
-### 5. Teaching Caption Skill — `skills/video/phonetic_captions/SKILL.md` ✅
+### 5. Teaching Caption Skill — `skills/video/phonetic-captions/SKILL.md` ✅
 
-Renamed (1 May) from `bilingual_captions` to `phonetic_captions` for clarity and scalability.
+Renamed (1 May) from `bilingual_captions` to `phonetic-captions` for clarity and scalability.
 Updated to match the teaching phonetics workflow:
 - Receive video → call `caption` → present numbered `[EN]`/`[VI]` segments with phonetics
 - Handle correction requests (text, phonetic, or lang field) → call `reburn`
@@ -130,7 +131,7 @@ gateway/run.py  ←  video path injection (NEW)
   ↓
 AIAgent receives: "[The user sent a video... saved at /path/video.mp4]"
   ↓
-skills/video/bilingual_captions/SKILL.md  ←  guides the agent (NEW)
+skills/video/phonetic-captions/SKILL.md  ←  guides the agent (NEW)
   ↓
 tools/video_caption.py  ←  core tool (NEW, registered as `video-caption`)
   ├─ faster-whisper (local, auto language detect)
@@ -164,7 +165,7 @@ Next video: saved preferences auto-applied
 | End-to-end smoke test | Send a real short video via Telegram, verify: path injection fires → transcription runs → translation fires → video returned |
 | Set `NVIDIA_API_KEY` | Add to `~/.hermes/.env` to enable Kimi translation |
 | Enable toolset | Add `video-caption` to `toolsets` in `~/.hermes/config.yaml`: `toolsets: ["hermes-cli", "video-caption"]` |
-| Load skill | Run `hermes skills install skills/video/phonetic_captions` or add to active skills |
+| Load skill | Run `hermes skills install skills/video/phonetic-captions` or add to active skills |
 
 ### P1 — Important for demo quality
 
@@ -227,11 +228,12 @@ echo "NVIDIA_API_KEY=nvapi-YOUR_KEY_HERE" >> ~/.hermes/.env
 
 # 5. Enable the toolset in config
 # Add to ~/.hermes/config.yaml:
-#   enabled_toolsets:
-#     - video_caption
+#   toolsets:
+#     - hermes-cli
+#     - video-caption
 
 # 6. Install the skill
-hermes skills install skills/video/bilingual_captions
+hermes skills install skills/video/phonetic-captions
 
 # 7. Quick smoke test from CLI
 python -c "
@@ -278,8 +280,8 @@ Send the same clip through Telegram so we can verify the gateway path injection 
 - [ ] Python 3.11+ virtualenv active
 - [ ] faster-whisper + openai installed
 - [ ] NVIDIA_API_KEY set in `~/.hermes/.env`
-- [ ] `video_caption` toolset enabled
-- [ ] Bilingual captions skill loaded
+- [ ] `video-caption` toolset enabled
+- [ ] `phonetic-captions` skill loaded
 - [ ] Demo video 1 recorded: show video → captions → corrections → final output
 - [ ] Demo video 2 recorded: show memory auto-applied from Video 1
 - [ ] Kimi proof: show NVIDIA_API_KEY in config / API call in logs
