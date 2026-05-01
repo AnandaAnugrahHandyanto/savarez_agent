@@ -8314,6 +8314,7 @@ class AIAgent:
         )
         _is_tokenhub = base_url_host_matches(self._base_url_lower, "tokenhub.tencentmaas.com")
         _is_lmstudio = (self.provider or "").strip().lower() == "lmstudio"
+        _is_deepseek = base_url_host_matches(self._base_url_lower, "api.deepseek.com")
 
         # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
         # sentinel (temperature omitted entirely), a numeric override, or None.
@@ -8388,6 +8389,7 @@ class AIAgent:
             is_kimi=_is_kimi,
             is_tokenhub=_is_tokenhub,
             is_lmstudio=_is_lmstudio,
+            is_deepseek=_is_deepseek,
             is_custom_provider=self.provider == "custom",
             ollama_num_ctx=self._ollama_num_ctx,
             provider_preferences=_prefs or None,
@@ -8428,6 +8430,9 @@ class AIAgent:
             opts = self._lmstudio_reasoning_options_cached()
             # "off-only" (or absent) means no real reasoning capability.
             return any(opt and opt != "off" for opt in opts)
+        # DeepSeek direct API supports thinking/reasoning_effort natively
+        if base_url_host_matches(self._base_url_lower, "api.deepseek.com"):
+            return True
         if "openrouter" not in self._base_url_lower:
             return False
         if "api.mistral.ai" in self._base_url_lower:

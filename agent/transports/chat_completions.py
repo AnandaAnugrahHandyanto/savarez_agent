@@ -353,6 +353,24 @@ class ChatCompletionsTransport(ProviderTransport):
                 "type": "enabled" if _kimi_thinking_enabled else "disabled",
             }
 
+        # DeepSeek extra_body.thinking + reasoning_effort
+        is_deepseek = params.get("is_deepseek", False)
+        if is_deepseek:
+            _ds_thinking_enabled = True
+            _ds_effort = "medium"
+            if reasoning_config and isinstance(reasoning_config, dict):
+                _ds_enabled = reasoning_config.get("enabled", True)
+                if _ds_enabled is False:
+                    _ds_thinking_enabled = False
+                _ds_e = (reasoning_config.get("effort") or "").strip().lower()
+                if _ds_e in ("low", "medium", "high"):
+                    _ds_effort = _ds_e
+            if _ds_thinking_enabled:
+                extra_body["thinking"] = {"type": "enabled"}
+                extra_body["reasoning_effort"] = _ds_effort
+            else:
+                extra_body["thinking"] = {"type": "disabled"}
+
         # Reasoning. LM Studio is handled above via top-level reasoning_effort,
         # so skip emitting extra_body.reasoning for it.
         if params.get("supports_reasoning", False) and not params.get("is_lmstudio", False):
