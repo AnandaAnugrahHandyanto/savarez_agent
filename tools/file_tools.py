@@ -1083,7 +1083,7 @@ PATCH_SCHEMA = {
         "Returns a unified diff. Auto-runs syntax checks after editing.\n\n"
         "Replace mode (default): find a unique string and replace it.\n"
         "Patch mode: apply V4A multi-file patches for bulk changes.\n"
-        "Hashline mode: edit using content-hash anchors from read_file(hashline=True). "
+        "Hashline mode: edit using content-hash anchors (4-char base36 content hashes). "
         "More reliable than replace mode because anchors don't depend on exact whitespace matching."
     ),
     "parameters": {
@@ -1095,7 +1095,7 @@ PATCH_SCHEMA = {
             "new_string": {"type": "string", "description": "Replacement text (required for 'replace' mode). Can be empty string to delete the matched text."},
             "replace_all": {"type": "boolean", "description": "Replace all occurrences instead of requiring a unique match (default: false)", "default": False},
             "patch": {"type": "string", "description": "V4A format patch content (required for 'patch' mode). Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch"},
-            "anchor_range": {"type": "string", "description": "Hashline anchor range (required for 'hashline' mode). Format: 'start_hash:end_hash' (e.g. 'k7m2:a9f1'). Both hashes come from read_file(hashline=True) output."},
+            "anchor_range": {"type": "string", "description": "Hashline anchor range (required for 'hashline' mode). Format: 'start_hash:end_hash' (e.g. 'k7m2:a9f1'). Hashes are 4-char base36 content hashes from the file's current content."},
             "new_content": {"type": "string", "description": "Replacement content for 'hashline' mode. Empty string deletes the anchored range."}
         },
         "required": ["mode"]
