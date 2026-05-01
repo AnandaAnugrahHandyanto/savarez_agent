@@ -5488,6 +5488,56 @@ class GatewayRunner:
             except Exception as e:
                 logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
 
+        # Per-topic model/provider override (Telegram DM Topics with "model"/"provider" fields).
+        # Applied as a session model override so /model shows it and it persists within the session.
+        # Unlike auto_skill (first message only), model overrides apply on EVERY message
+        # because the override dict is in-memory and lost on gateway restart.
+        _auto_model = getattr(event, "auto_model", None)
+        if _auto_model:
+            _override_entry = {}
+            if _auto_model.get("model"):
+                _override_entry["model"] = _auto_model["model"]
+            if _auto_model.get("provider"):
+                _override_entry["provider"] = _auto_model["provider"]
+            if _override_entry:
+                # Only set if user hasn't manually overridden via /model in this session
+                _existing = self._session_model_overrides.get(session_key)
+                if not _existing or _is_new_session:
+                    self._session_model_overrides[session_key] = _override_entry
+                    if _is_new_session:
+                        logger.info(
+                            "[Gateway] Per-topic model override for session %s: %s",
+                            session_key, _override_entry,
+                        )
+            # Personality override is applied via channel_prompt (per-event, not global).
+            # This piggybacks on the existing channel_prompt mechanism which is already
+            # per-message and combined at API call time.
+            if _auto_model.get("personality"):
+                _personality_name = _auto_model["personality"]
+                try:
+                    _user_cfg = _load_gateway_config()
+                    _personalities = cfg_get(_user_cfg, "agent", "personalities", default={})
+                    if _personality_name in _personalities:
+                        _p_value = _personalities[_personality_name]
+                        if isinstance(_p_value, dict):
+                            _p_prompt = _p_value.get("system_prompt", "")
+                        else:
+                            _p_prompt = str(_p_value)
+                        if _p_prompt:
+                            # Prepend to existing channel_prompt (if any)
+                            _existing_cp = event.channel_prompt or ""
+                            event.channel_prompt = (_p_prompt + "\n\n" + _existing_cp).strip()
+                            if _is_new_session:
+                                logger.info(
+                                    "[Gateway] Per-topic personality '%s' applied for session %s",
+                                    _personality_name, session_key,
+                                )
+                except Exception as e:
+                    logger.warning(
+                        "[Gateway] Failed to apply per-topic personality '%s': %s",
+                        _auto_model.get("personality"), e,
+                    )
+
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
         

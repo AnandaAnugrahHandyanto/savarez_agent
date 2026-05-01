@@ -906,6 +906,11 @@ class MessageEvent:
     # Discord channel_skill_bindings).  A single name or ordered list.
     auto_skill: Optional[str | list[str]] = None
 
+    # Per-topic model/provider override (e.g., Telegram DM Topics with a "model" field).
+    # Applied as a session model override on new sessions.
+    # Dict with optional keys: model, provider, personality
+    auto_model: Optional[dict] = None
+
     # Per-channel ephemeral system prompt (e.g. Discord channel_prompts).
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None

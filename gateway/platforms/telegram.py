@@ -761,6 +761,20 @@ class TelegramAdapter(BasePlatformAdapter):
                     # Persist thread_id to config so we don't recreate on next restart
                     self._persist_dm_topic_thread_id(int(chat_id), topic_name, thread_id)
 
+                    # Send a seed message so the topic is visible in Telegram's client.
+                    # Empty topics are hidden by the client UI until they contain a message.
+                    try:
+                        await self._bot.send_message(
+                            chat_id=int(chat_id),
+                            message_thread_id=thread_id,
+                            text=f"\U0001f4cc {topic_name}",
+                        )
+                    except Exception as seed_err:
+                        logger.debug(
+                            "[%s] Could not send seed message to topic '%s': %s",
+                            self.name, topic_name, seed_err,
+                        )
+
     async def connect(self) -> bool:
         """Connect to Telegram via polling or webhook.
 
@@ -3413,12 +3427,25 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id_str = self._GENERAL_TOPIC_THREAD_ID
         chat_topic = None
         topic_skill = None
+        topic_model_override = None
 
         if chat_type == "dm" and thread_id_str:
             topic_info = self._get_dm_topic_info(str(chat.id), thread_id_str)
             if topic_info:
                 chat_topic = topic_info.get("name")
                 topic_skill = topic_info.get("skill")
+                # Per-topic model/provider/personality override
+                _topic_model = topic_info.get("model")
+                _topic_provider = topic_info.get("provider")
+                _topic_personality = topic_info.get("personality")
+                if _topic_model or _topic_provider or _topic_personality:
+                    topic_model_override = {}
+                    if _topic_model:
+                        topic_model_override["model"] = _topic_model
+                    if _topic_provider:
+                        topic_model_override["provider"] = _topic_provider
+                    if _topic_personality:
+                        topic_model_override["personality"] = _topic_personality
 
             # Also check forum_topic_created service message for topic discovery
             if hasattr(message, "forum_topic_created") and message.forum_topic_created:
@@ -3478,6 +3505,7 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
             auto_skill=topic_skill,
+            auto_model=topic_model_override,
             channel_prompt=_channel_prompt,
             timestamp=message.date,
         )
