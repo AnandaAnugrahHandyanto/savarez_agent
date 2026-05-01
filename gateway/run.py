@@ -4782,6 +4782,105 @@ class GatewayRunner:
                     canonical = _cmd_def.name if _cmd_def else command
                     break
 
+        # ── Quick command aliases (bypass agent loop) ───────────────────────
+        # Must be checked BEFORE built-in command handlers so that expanded
+        # aliases dispatch directly to their native handlers (e.g. /model).
+        # After alias expansion, event.text is rewritten; we re-extract the
+        # command and call the appropriate handler directly, then return.
+        # Load quick_commands from config (supports both dict-style and
+        # attribute-style config objects).
+        if isinstance(self.config, dict):
+            quick_commands = self.config.get("quick_commands", {}) or {}
+        else:
+            quick_commands = getattr(self.config, "quick_commands", {}) or {}
+        if not isinstance(quick_commands, dict):
+            quick_commands = {}
+        if command in quick_commands:
+            qcmd = quick_commands[command]
+            if qcmd.get("type") == "alias":
+                target = qcmd.get("target", "").strip()
+                if target:
+                    if not target.startswith("/"):
+                        target = "/" + target
+                    target_without_slash = target.lstrip("/")
+                    parts = target_without_slash.split(None, 1)
+                    command_name = parts[0] if parts else ""
+                    fixed_args = parts[1] if len(parts) > 1 else ""
+                    user_args = event.get_command_args().strip()
+                    all_args = (fixed_args + " " + user_args).strip()
+                    if all_args:
+                        event.text = f"/{command_name} {all_args}"
+                    else:
+                        event.text = f"/{command_name}"
+                    # Re-extract the expanded command
+                    expanded_cmd = event.get_command()
+                    _expanded_def = _resolve_cmd(expanded_cmd) if expanded_cmd else None
+                    expanded_canonical = _expanded_def.name if _expanded_def else expanded_cmd
+                    # If the alias target is a known gateway command, call its
+                    # handler directly — this is the key fix that prevents
+                    # expanded aliases from falling through to the agent.
+                    if expanded_cmd and is_gateway_known_command(expanded_canonical):
+                        _expanded_args = event.get_command_args().strip()
+                        _hook_ctx = {
+                            "platform": source.platform.value if source.platform else "",
+                            "user_id": source.user_id,
+                            "command": expanded_canonical,
+                            "raw_command": expanded_cmd,
+                            "args": _expanded_args,
+                            "raw_args": _expanded_args,
+                        }
+                        try:
+                            _hq_results = await self.hooks.emit_collect(
+                                f"command:{expanded_canonical}", _hook_ctx
+                            )
+                        except Exception:
+                            _hq_results = []
+                        for _hq in _hq_results:
+                            if not isinstance(_hq, dict):
+                                continue
+                            _hq_decision = str(_hq.get("decision", "")).strip().lower()
+                            if _hq_decision == "deny":
+                                _hq_msg = _hq.get("message")
+                                if isinstance(_hq_msg, str) and _hq_msg:
+                                    return _hq_msg
+                                return f"Command `/{expanded_cmd}` was blocked by a hook."
+                            if _hq_decision == "handled":
+                                _hq_msg = _hq.get("message")
+                                return _hq_msg if isinstance(_hq_msg, str) and _hq_msg else None
+                        # No rewrite — dispatch directly to built-in handler via
+                        # getattr to avoid duplicating the full if/elif chain.
+                        _handler_name = f"_handle_{expanded_canonical.replace('-', '_')}_command"
+                        _handler = getattr(self, _handler_name, None)
+                        if callable(_handler):
+                            return await _handler(event)
+                        return f"Internal error: no handler for command '/{expanded_cmd}'"
+                    # Not a known command — continue to normal dispatch with
+                    # the rewritten event.text so the agent can handle it.
+                    command = expanded_cmd
+                    canonical = expanded_canonical
+                else:
+                    return f"Quick command '/{command}' has no target defined."
+            elif qcmd.get("type") == "exec":
+                exec_cmd = qcmd.get("command", "")
+                if exec_cmd:
+                    try:
+                        proc = await asyncio.create_subprocess_shell(
+                            exec_cmd,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                        )
+                        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                        output = (stdout or stderr).decode().strip()
+                        return output if output else "Command returned no output."
+                    except asyncio.TimeoutError:
+                        return "Quick command timed out (30s)."
+                    except Exception as e:
+                        return f"Quick command error: {e}"
+                else:
+                    return f"Quick command '/{command}' has no command defined."
+            else:
+                return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
+
         if canonical == "new":
             return await self._handle_reset_command(event)
         
@@ -4901,48 +5000,6 @@ class GatewayRunner:
 
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
-
-        # User-defined quick commands (bypass agent loop, no LLM call)
-        if command:
-            if isinstance(self.config, dict):
-                quick_commands = self.config.get("quick_commands", {}) or {}
-            else:
-                quick_commands = getattr(self.config, "quick_commands", {}) or {}
-            if not isinstance(quick_commands, dict):
-                quick_commands = {}
-            if command in quick_commands:
-                qcmd = quick_commands[command]
-                if qcmd.get("type") == "exec":
-                    exec_cmd = qcmd.get("command", "")
-                    if exec_cmd:
-                        try:
-                            proc = await asyncio.create_subprocess_shell(
-                                exec_cmd,
-                                stdout=asyncio.subprocess.PIPE,
-                                stderr=asyncio.subprocess.PIPE,
-                            )
-                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-                            output = (stdout or stderr).decode().strip()
-                            return output if output else "Command returned no output."
-                        except asyncio.TimeoutError:
-                            return "Quick command timed out (30s)."
-                        except Exception as e:
-                            return f"Quick command error: {e}"
-                    else:
-                        return f"Quick command '/{command}' has no command defined."
-                elif qcmd.get("type") == "alias":
-                    target = qcmd.get("target", "").strip()
-                    if target:
-                        target = target if target.startswith("/") else f"/{target}"
-                        target_command = target.lstrip("/")
-                        user_args = event.get_command_args().strip()
-                        event.text = f"{target} {user_args}".strip()
-                        command = target_command
-                        # Fall through to normal command dispatch below
-                    else:
-                        return f"Quick command '/{command}' has no target defined."
-                else:
-                    return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
 
         # Plugin-registered slash commands
         if command:
@@ -11989,8 +12046,6 @@ class GatewayRunner:
                     f"```\n{cmd_preview}\n```\n"
                     f"Reason: {desc}\n"
                 )
-                if justification:
-                    msg += "\n**Agent justification:** " + str(justification) + "\n"
                 if justification:
                     msg += f"\n**Agent justification:** {justification}\n"
                 msg += (
