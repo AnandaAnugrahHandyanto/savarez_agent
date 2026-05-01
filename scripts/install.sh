@@ -175,7 +175,7 @@ detect_os() {
             OS="windows"
             DISTRO="windows"
             log_error "Windows detected. Please use the PowerShell installer:"
-            log_info "  irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex"
+            log_info "  irm https://raw.githubusercontent.com/SIUNCT/hermes-agent/main/scripts/install.ps1 | iex"
             exit 1
             ;;
         *)
