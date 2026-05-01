@@ -40,13 +40,22 @@ def _import_audio():
     return sd, np
 
 
-def _audio_available() -> bool:
-    """Return True if audio libraries can be imported."""
+def _audio_import_status() -> tuple[bool, str | None]:
+    """Return (available, reason) for local audio capture imports."""
     try:
         _import_audio()
-        return True
-    except (ImportError, OSError):
-        return False
+        return True, None
+    except ImportError:
+        return False, "missing_python_packages"
+    except OSError:
+        # sounddevice installed but PortAudio shared lib missing/misconfigured.
+        return False, "missing_portaudio_runtime"
+
+
+def _audio_available() -> bool:
+    """Return True if audio libraries can be imported."""
+    ok, _ = _audio_import_status()
+    return ok
 
 
 from hermes_constants import is_termux as _is_termux_environment
@@ -54,8 +63,8 @@ from hermes_constants import is_termux as _is_termux_environment
 
 def _voice_capture_install_hint() -> str:
     if _is_termux_environment():
-        return "pkg install python-numpy portaudio && python -m pip install sounddevice"
-    return "pip install sounddevice numpy"
+        return "pkg install python-numpy portaudio && uv pip install sounddevice"
+    return "uv pip install sounddevice numpy"
 
 
 def _termux_microphone_command() -> Optional[str]:
@@ -937,9 +946,10 @@ def check_voice_requirements() -> Dict[str, Any]:
 
     missing: List[str] = []
     termux_capture = _termux_voice_capture_available()
-    has_audio = _audio_available() or termux_capture
+    audio_ok, audio_reason = _audio_import_status()
+    has_audio = audio_ok or termux_capture
 
-    if not has_audio:
+    if not has_audio and audio_reason == "missing_python_packages":
         missing.extend(["sounddevice", "numpy"])
 
     # Environment detection
@@ -953,7 +963,10 @@ def check_voice_requirements() -> Dict[str, Any]:
     elif has_audio:
         details_parts.append("Audio capture: OK")
     else:
-        details_parts.append(f"Audio capture: MISSING ({_voice_capture_install_hint()})")
+        if audio_reason == "missing_portaudio_runtime":
+            details_parts.append("Audio capture: FAILED (PortAudio runtime not found)")
+        else:
+            details_parts.append(f"Audio capture: MISSING ({_voice_capture_install_hint()})")
 
     if not stt_enabled:
         details_parts.append("STT provider: DISABLED in config (stt.enabled: false)")
