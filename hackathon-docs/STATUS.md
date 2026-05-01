@@ -162,8 +162,8 @@ Next video: saved preferences auto-applied
 |---|---|
 | Install dependencies | `pip install faster-whisper openai` in `.venv` |
 | End-to-end smoke test | Send a real short video via Telegram, verify: path injection fires → transcription runs → translation fires → video returned |
-| Enable toolset | ✅ Added `video_caption` to `toolsets` in `DEFAULT_CONFIG` (hermes_cli/config.py) |
 | Set `NVIDIA_API_KEY` | Add to `~/.hermes/.env` to enable Kimi translation |
+| Enable toolset | Add `video_caption` to `toolsets` in `~/.hermes/config.yaml`: `toolsets: ["hermes-cli", "video_caption"]` |
 | Load skill | Run `hermes skills install skills/video/phonetic_captions` or add to active skills |
 
 ### P1 — Important for demo quality
