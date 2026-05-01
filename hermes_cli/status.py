@@ -304,8 +304,23 @@ def show_status(args):
         print(f"  Daytona Image: {daytona_image}")
     
     sudo_password = os.getenv("SUDO_PASSWORD", "")
-    print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")
-    
+    passwordless_sudo = False
+    if not sudo_password:
+        try:
+            result = subprocess.run(
+                ["sudo", "-n", "true"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+            )
+            passwordless_sudo = result.returncode == 0
+        except Exception:
+            passwordless_sudo = False
+
+    sudo_enabled = bool(sudo_password) or passwordless_sudo
+    sudo_label = "enabled" if bool(sudo_password) else ("enabled (passwordless)" if passwordless_sudo else "disabled")
+    print(f"  Sudo:         {check_mark(sudo_enabled)} {sudo_label}")
+
     # =========================================================================
     # Messaging Platforms
     # =========================================================================
