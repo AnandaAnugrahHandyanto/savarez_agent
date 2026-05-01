@@ -849,7 +849,13 @@ def _get_platform_tools(
     # checklist or in a user-saved config.  Must run in BOTH branches —
     # otherwise saving via `hermes tools` (which flips has_explicit_config
     # to True) silently drops them.
-    platform_tool_universe = set(resolve_toolset(PLATFORMS[platform]["default_toolset"]))
+    # Plugin platforms aren't in the hardcoded PLATFORMS dict — fall back
+    # to the conventional `hermes-<platform>` toolset name (same fallback
+    # used at line 789 above).
+    _plat_default = (PLATFORMS.get(platform) or {}).get(
+        "default_toolset", f"hermes-{platform}"
+    )
+    platform_tool_universe = set(resolve_toolset(_plat_default))
     configurable_tool_universe = set()
     for ck in configurable_keys:
         configurable_tool_universe.update(resolve_toolset(ck))
