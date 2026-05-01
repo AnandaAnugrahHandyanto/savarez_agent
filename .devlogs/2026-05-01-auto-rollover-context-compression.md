@@ -9,6 +9,9 @@ Prevent long-running Hermes gateway sessions from degrading through repeated los
 ## Plan/spec
 `.hermes/plans/2026-05-01-auto-rollover-after-compaction.md`
 
+## Pull request
+https://github.com/NousResearch/hermes-agent/pull/18563
+
 ## No-ADR rationale
 This is a tactical reliability guard in existing gateway session/reset behavior, not a new architecture or cross-cutting design. The plan/spec plus regression tests document the decision.
 
@@ -42,4 +45,4 @@ GREEN:
 - A future operator command like `/session status` could expose compression count and impending rollover.
 
 ## Session-quality notes
-The work followed worktree/spec/TDD discipline. No commit was created per user preference.
+The work followed worktree/spec/TDD/review discipline. Commit created and PR opened at https://github.com/NousResearch/hermes-agent/pull/18563.
