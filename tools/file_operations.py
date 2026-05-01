@@ -440,9 +440,13 @@ class ShellFileOperations(FileOperations):
         if not path:
             return path
         
-        # Handle ~ and ~user
+        # Use Python expansion first (cross-platform, shell-independent).
+        expanded = os.path.expanduser(path)
+        if expanded != path:
+            return expanded
+
+        # Fallback for environments where ~ expansion may be delegated to shell.
         if path.startswith('~'):
-            # Get home directory via the terminal environment
             result = self._exec("echo $HOME")
             if result.exit_code == 0 and result.stdout.strip():
                 home = result.stdout.strip()
@@ -504,17 +508,13 @@ class ShellFileOperations(FileOperations):
         
         offset, limit = normalize_read_pagination(offset, limit)
         
-        # Check if file exists and get size (wc -c is POSIX, works on Linux + macOS)
-        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
-        stat_result = self._exec(stat_cmd)
-        
-        if stat_result.exit_code != 0:
-            # File not found - try to suggest similar files
+        # Cross-platform existence + size check (works on Windows too).
+        if not os.path.exists(path):
             return self._suggest_similar_files(path)
-        
+
         try:
-            file_size = int(stat_result.stdout.strip())
-        except ValueError:
+            file_size = os.path.getsize(path)
+        except OSError:
             file_size = 0
         
         # Check if file is too large
@@ -535,32 +535,34 @@ class ShellFileOperations(FileOperations):
             )
         
         # Read a sample to check for binary content
-        sample_cmd = f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null"
-        sample_result = self._exec(sample_cmd)
-        
-        if self._is_likely_binary(path, sample_result.stdout):
+        try:
+            with open(path, "rb") as fh:
+                sample_bytes = fh.read(1000)
+            sample_text = sample_bytes.decode("utf-8", errors="ignore")
+        except OSError as exc:
+            return ReadResult(error=f"Failed to read file sample: {exc}")
+
+        if self._is_likely_binary(path, sample_text):
             return ReadResult(
                 is_binary=True,
                 file_size=file_size,
                 error="Binary file - cannot display as text. Use appropriate tools to handle this file type."
             )
         
-        # Read with pagination using sed
+        # Read with pagination (cross-platform Python implementation)
         end_line = offset + limit - 1
-        read_cmd = f"sed -n '{offset},{end_line}p' {self._escape_shell_arg(path)}"
-        read_result = self._exec(read_cmd)
-        
-        if read_result.exit_code != 0:
-            return ReadResult(error=f"Failed to read file: {read_result.stdout}")
-        
-        # Get total line count
-        wc_cmd = f"wc -l < {self._escape_shell_arg(path)}"
-        wc_result = self._exec(wc_cmd)
         try:
-            total_lines = int(wc_result.stdout.strip())
-        except ValueError:
-            total_lines = 0
-        
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                all_lines = fh.read().splitlines()
+        except OSError as exc:
+            return ReadResult(error=f"Failed to read file: {exc}")
+
+        total_lines = len(all_lines)
+        selected = all_lines[offset - 1:end_line]
+        read_content = "\n".join(selected)
+        if selected:
+            read_content += "\n"
+
         # Check if truncated
         truncated = total_lines > end_line
         hint = None
@@ -568,7 +570,7 @@ class ShellFileOperations(FileOperations):
             hint = f"Use offset={end_line + 1} to continue reading (showing {offset}-{end_line} of {total_lines} lines)"
         
         return ReadResult(
-            content=self._add_line_numbers(read_result.stdout, offset),
+            content=self._add_line_numbers(read_content, offset),
             total_lines=total_lines,
             file_size=file_size,
             truncated=truncated,
@@ -583,41 +585,42 @@ class ShellFileOperations(FileOperations):
         ext = os.path.splitext(filename)[1].lower()
         lower_name = filename.lower()
 
-        # List files in the target directory
-        ls_cmd = f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null | head -50"
-        ls_result = self._exec(ls_cmd)
-
+        # List files in the target directory (cross-platform)
         scored: list = []  # (score, filepath) — higher is better
-        if ls_result.exit_code == 0 and ls_result.stdout.strip():
-            for f in ls_result.stdout.strip().split('\n'):
-                if not f:
-                    continue
-                lf = f.lower()
-                score = 0
+        try:
+            entries = os.listdir(dir_path)
+        except OSError:
+            entries = []
 
-                # Exact match (shouldn't happen, but guard)
-                if lf == lower_name:
-                    score = 100
-                # Same base name, different extension (e.g. config.yml vs config.yaml)
-                elif os.path.splitext(f)[0].lower() == basename_no_ext.lower():
-                    score = 90
-                # Target is prefix of candidate or vice-versa
-                elif lf.startswith(lower_name) or lower_name.startswith(lf):
-                    score = 70
-                # Substring match (candidate contains query)
-                elif lower_name in lf:
-                    score = 60
-                # Reverse substring (query contains candidate name)
-                elif lf in lower_name and len(lf) > 2:
-                    score = 40
-                # Same extension with some overlap
-                elif ext and os.path.splitext(f)[1].lower() == ext:
-                    common = set(lower_name) & set(lf)
-                    if len(common) >= max(len(lower_name), len(lf)) * 0.4:
-                        score = 30
+        for f in entries[:200]:
+            if not f:
+                continue
+            lf = f.lower()
+            score = 0
 
-                if score > 0:
-                    scored.append((score, os.path.join(dir_path, f)))
+            # Exact match (shouldn't happen, but guard)
+            if lf == lower_name:
+                score = 100
+            # Same base name, different extension (e.g. config.yml vs config.yaml)
+            elif os.path.splitext(f)[0].lower() == basename_no_ext.lower():
+                score = 90
+            # Target is prefix of candidate or vice-versa
+            elif lf.startswith(lower_name) or lower_name.startswith(lf):
+                score = 70
+            # Substring match (candidate contains query)
+            elif lower_name in lf:
+                score = 60
+            # Reverse substring (query contains candidate name)
+            elif lf in lower_name and len(lf) > 2:
+                score = 40
+            # Same extension with some overlap
+            elif ext and os.path.splitext(f)[1].lower() == ext:
+                common = set(lower_name) & set(lf)
+                if len(common) >= max(len(lower_name), len(lf)) * 0.4:
+                    score = 30
+
+            if score > 0:
+                scored.append((score, os.path.join(dir_path, f)))
 
         scored.sort(key=lambda x: -x[0])
         similar = [fp for _, fp in scored[:5]]
