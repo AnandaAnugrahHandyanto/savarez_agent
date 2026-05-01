@@ -505,7 +505,7 @@ class InkboxAdapter(BasePlatformAdapter):
                     to=[to_addr],
                     subject=subject,
                     body_text=content,
-                    in_reply_to=reply_to,
+                    in_reply_to_message_id=reply_to,
                 )
                 return SendResult(success=True, message_id=str(getattr(msg, "id", "")))
             except Exception as exc:
