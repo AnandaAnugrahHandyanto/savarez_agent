@@ -477,6 +477,61 @@ def test_admit_mentioned_topic_activates_thread_follow_for_later_unmentioned_mes
     )
 
 
+def test_admit_thread_follow_ttl_does_not_refresh_without_mention(monkeypatch):
+    from gateway.platforms import feishu
+
+    now = [100.0]
+    monkeypatch.setattr(feishu.time, "monotonic", lambda: now[0])
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_self",
+        require_mention=True,
+        group_policy="open",
+        thread_follow_enabled=True,
+        thread_follow_ttl_seconds=60,
+    )
+    sender = make_sender(sender_type="user", open_id="ou_human")
+    message = make_message(chat_type="group", chat_id="oc_1", thread_id="omt_1")
+
+    stub_mention(adapter, True)
+    assert adapter._admit(sender, message) is None
+    assert adapter._active_thread_follows[("oc_1", "omt_1")] == 160.0
+
+    now[0] = 150.0
+    stub_mention(adapter, False)
+    assert adapter._admit(sender, message) is None
+    assert adapter._active_thread_follows[("oc_1", "omt_1")] == 160.0
+
+    now[0] = 161.0
+    assert adapter._admit(sender, message) == "group_policy_rejected"
+
+
+def test_activate_thread_follow_prunes_expired_topics(monkeypatch):
+    from gateway.platforms import feishu
+
+    monkeypatch.setattr(feishu.time, "monotonic", lambda: 100.0)
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_self",
+        require_mention=True,
+        group_policy="open",
+        thread_follow_enabled=True,
+        thread_follow_ttl_seconds=60,
+    )
+    adapter._active_thread_follows.update(
+        {
+            ("oc_1", "omt_expired_1"): 10.0,
+            ("oc_1", "omt_active"): 120.0,
+            ("oc_2", "omt_expired_2"): 99.0,
+        }
+    )
+
+    adapter._activate_thread_follow(make_message(chat_type="group", chat_id="oc_new", thread_id="omt_new"))
+
+    assert adapter._active_thread_follows == {
+        ("oc_1", "omt_active"): 120.0,
+        ("oc_new", "omt_new"): 160.0,
+    }
+
+
 def test_admit_thread_follow_does_not_bypass_group_policy():
     adapter = make_adapter_skeleton(
         bot_open_id="ou_self",

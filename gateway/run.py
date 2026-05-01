@@ -8252,7 +8252,12 @@ class GatewayRunner:
 
         # Fire-and-forget the background task
         _task = asyncio.create_task(
-            self._run_background_task(prompt, source, task_id)
+            self._run_background_task(
+                prompt,
+                source,
+                task_id,
+                reply_to_message_id=event.message_id,
+            )
         )
         self._background_tasks.add(_task)
         _task.add_done_callback(self._background_tasks.discard)
@@ -8261,7 +8266,12 @@ class GatewayRunner:
         return f'🔄 Background task started: "{preview}"\nTask ID: {task_id}\nYou can keep chatting — results will appear when done.'
 
     async def _run_background_task(
-        self, prompt: str, source: "SessionSource", task_id: str
+        self,
+        prompt: str,
+        source: "SessionSource",
+        task_id: str,
+        *,
+        reply_to_message_id: Optional[str] = None,
     ) -> None:
         """Execute a background agent task and deliver the result to the chat."""
         from run_agent import AIAgent
@@ -8271,7 +8281,10 @@ class GatewayRunner:
             logger.warning("No adapter for platform %s in background task %s", source.platform, task_id)
             return
 
-        _thread_metadata = self._thread_metadata_for_source(source)
+        _thread_metadata = self._thread_metadata_for_source(
+            source,
+            reply_to_message_id=reply_to_message_id,
+        )
 
         try:
             user_config = _load_gateway_config()
@@ -9622,7 +9635,7 @@ class GatewayRunner:
         group message outside the topic.
         """
         resolved_thread_id = thread_id if thread_id is not None else getattr(source, "thread_id", None)
-        if resolved_thread_id is None:
+        if not resolved_thread_id:
             return None
         metadata: Dict[str, Any] = {"thread_id": resolved_thread_id}
         if getattr(source, "platform", None) == Platform.FEISHU and reply_to_message_id:

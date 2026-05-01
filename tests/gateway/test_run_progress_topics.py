@@ -304,6 +304,70 @@ async def test_run_agent_progress_does_not_use_event_message_id_for_telegram_dm(
 
 
 @pytest.mark.asyncio
+async def test_background_task_includes_reply_message_for_feishu_topic(monkeypatch, tmp_path):
+    class BackgroundFakeAgent:
+        def __init__(self, **kwargs):
+            self.tools = []
+
+        def run_conversation(self, **kwargs):
+            return {
+                "final_response": "done",
+                "messages": [],
+                "api_calls": 1,
+            }
+
+    async def run_inline(fn):
+        return fn()
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = BackgroundFakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.FEISHU)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(
+        runner,
+        "_resolve_session_agent_runtime",
+        lambda **kwargs: ("fake", {"api_key": "fake"}),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_resolve_turn_agent_config",
+        lambda *args, **kwargs: {"model": "fake", "runtime": {"api_key": "fake"}},
+    )
+    monkeypatch.setattr(runner, "_resolve_session_reasoning_config", lambda **kwargs: None)
+    monkeypatch.setattr(runner, "_load_service_tier", lambda: None)
+    monkeypatch.setattr(runner, "_run_in_executor_with_context", run_inline)
+
+    source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_chat",
+        chat_type="group",
+        thread_id="omt-thread",
+    )
+
+    await runner._run_background_task(
+        "summarize this",
+        source,
+        "bg_test",
+        reply_to_message_id="om_origin",
+    )
+
+    assert adapter.sent
+    assert adapter.sent[0]["metadata"] == {
+        "thread_id": "omt-thread",
+        "reply_to_message_id": "om_origin",
+    }
+
+
+@pytest.mark.asyncio
 async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch, tmp_path):
     """Slack DM progress should keep event ts fallback threading."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")

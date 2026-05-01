@@ -3787,7 +3787,6 @@ class FeishuAdapter(BasePlatformAdapter):
                 self._activate_thread_follow(message)
                 return None
             if self._is_thread_follow_active(message):
-                self._activate_thread_follow(message)
                 return None
             return "group_policy_rejected"
         return None
@@ -3808,11 +3807,12 @@ class FeishuAdapter(BasePlatformAdapter):
     def _activate_thread_follow(self, message: Any) -> None:
         if not self._thread_follow_enabled:
             return
+        self._prune_thread_follows()
         key = self._thread_follow_key(message)
         if key is None:
             return
         ttl = max(1, int(getattr(self, "_thread_follow_ttl_seconds", 1800) or 1800))
-        self._active_thread_follows[key] = time.time() + ttl
+        self._active_thread_follows[key] = time.monotonic() + ttl
 
     def _is_thread_follow_active(self, message: Any) -> bool:
         if not self._thread_follow_enabled:
@@ -3823,10 +3823,19 @@ class FeishuAdapter(BasePlatformAdapter):
         expire_at = self._active_thread_follows.get(key)
         if expire_at is None:
             return False
-        if expire_at <= time.time():
+        if expire_at <= time.monotonic():
             self._active_thread_follows.pop(key, None)
             return False
         return True
+
+    def _prune_thread_follows(self) -> None:
+        now = time.monotonic()
+        expired = [
+            key for key, expire_at in self._active_thread_follows.items()
+            if expire_at <= now
+        ]
+        for key in expired:
+            self._active_thread_follows.pop(key, None)
 
     # --- Group policy ---------------------------------------------------------
 
