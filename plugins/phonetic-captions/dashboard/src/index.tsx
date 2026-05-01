@@ -7,7 +7,14 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Download, RefreshCw, Play, ChevronLeft, FileText } from "lucide-react";
+import {
+  Download,
+  RefreshCw,
+  Play,
+  ChevronLeft,
+  VideoOff,
+  AlertCircle,
+} from "lucide-react";
 
 // ---------------------------------------------------------------------------
 // SDK access
@@ -39,7 +46,7 @@ interface CaptionSegment {
   start: number;
   end: number;
   text: string;
-  lang: "en" | "vi";
+  lang: "en" | "vi" | "";  // may be "" on pre-phonetics jobs
   phonetic: string;
 }
 
@@ -106,33 +113,106 @@ function JobListView({ onSelect }: { onSelect: (id: string) => void }) {
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <div className="flex justify-center p-12"><Spinner /></div>;
-  if (error) return <div className="p-6 text-red-500">{error}</div>;
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center p-16 text-zinc-400">
+        <Spinner className="w-5 h-5 mr-3" />
+        <span className="text-sm">Loading jobs…</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="p-6 flex items-start gap-3 text-red-500">
+        <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+        <div>
+          <p className="font-medium text-sm">Failed to load caption jobs</p>
+          <p className="text-xs mt-1 text-red-400">{error}</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="p-6 max-w-3xl">
-      <h1 className="text-xl font-semibold mb-4">Caption Jobs</h1>
+    <div className="p-6 max-w-2xl">
+      <h1 className="text-xl font-semibold mb-1">Caption Jobs</h1>
+      <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-5">
+        Jobs are created when Hermes captions a video. Click a job to edit segments and re-burn.
+      </p>
       {jobs.length === 0 ? (
-        <p className="text-zinc-500 dark:text-zinc-400">
-          No caption jobs yet. Send a video via Telegram and Hermes will create one.
-        </p>
+        <div className="flex flex-col items-center justify-center py-16 text-zinc-400 border border-dashed border-zinc-300 dark:border-zinc-700 rounded-xl">
+          <VideoOff className="w-10 h-10 mb-3 opacity-40" />
+          <p className="text-sm font-medium">No caption jobs yet</p>
+          <p className="text-xs mt-1 text-zinc-500">Send a video via Telegram and Hermes will create one.</p>
+        </div>
       ) : (
         <div className="space-y-2">
           {jobs.map((job) => (
             <button
               key={job.id}
               onClick={() => onSelect(job.id)}
-              className="w-full flex items-center justify-between rounded-lg border border-zinc-200 dark:border-zinc-700 p-4 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors text-left"
+              className="w-full flex items-center justify-between rounded-lg border border-zinc-200 dark:border-zinc-700 p-4 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors text-left group"
             >
-              <div>
-                <div className="font-medium">{job.video_filename || job.id}</div>
-                <div className="text-sm text-zinc-500 dark:text-zinc-400">
-                  {job.segment_count} segments · {job.created_at ? new Date(job.created_at).toLocaleString() : ""}
+              <div className="min-w-0">
+                <div className="font-medium text-sm truncate">{job.video_filename || job.id}</div>
+                <div className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
+                  {job.segment_count} segment{job.segment_count !== 1 ? "s" : ""}
+                  {job.created_at ? ` · ${new Date(job.created_at).toLocaleString()}` : ""}
                 </div>
               </div>
-              <Play className="w-4 h-4 text-zinc-400" />
+              <Play className="w-4 h-4 text-zinc-400 group-hover:text-zinc-600 dark:group-hover:text-zinc-200 shrink-0 ml-4 transition-colors" />
             </button>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Video Player with error / loading states
+// ---------------------------------------------------------------------------
+
+function VideoPlayer({
+  src,
+}: {
+  src: string;
+}) {
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+
+  useEffect(() => {
+    setState("loading");
+  }, [src]);
+
+  return (
+    <div
+      className="relative w-full rounded-lg overflow-hidden bg-zinc-900"
+      style={{ maxHeight: "40vh", minHeight: "120px" }}
+    >
+      {state === "error" ? (
+        <div className="flex flex-col items-center justify-center gap-2 py-10 px-4 text-zinc-400">
+          <VideoOff className="w-8 h-8 opacity-40" />
+          <p className="text-sm font-medium">Video not available</p>
+          <p className="text-xs text-zinc-500 text-center">
+            The output file may not exist yet.{" "}
+            <span className="font-medium">Re-burn</span> to generate it.
+          </p>
+        </div>
+      ) : (
+        <video
+          key={src}
+          src={src}
+          controls
+          className="w-full h-full object-contain"
+          style={{ maxHeight: "40vh", display: state === "loading" ? "none" : "block" }}
+          onCanPlay={() => setState("ready")}
+          onError={() => setState("error")}
+        />
+      )}
+      {state === "loading" && (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <Spinner className="w-5 h-5 text-zinc-400" />
         </div>
       )}
     </div>
@@ -151,6 +231,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [burning, setBurning] = useState(false);
   const [burnError, setBurnError] = useState<string | null>(null);
+  const [burnSuccess, setBurnSuccess] = useState(false);
   const [burnTimestamp, setBurnTimestamp] = useState(Date.now());
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -174,9 +255,11 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
 
   const toggleLang = useCallback((idx: number) => {
     setSegments((prev) =>
-      prev.map((s, i) =>
-        i === idx ? { ...s, lang: s.lang === "en" ? "vi" : "en", phonetic: s.lang === "en" ? s.phonetic : "" } : s
-      )
+      prev.map((s, i) => {
+        if (i !== idx) return s;
+        const wasVi = (s.lang || "en") === "vi";
+        return { ...s, lang: wasVi ? "en" : "vi", phonetic: wasVi ? "" : s.phonetic };
+      })
     );
   }, []);
 
@@ -184,6 +267,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
     if (!style) return;
     setBurning(true);
     setBurnError(null);
+    setBurnSuccess(false);
 
     try {
       await fetchJSON(`${API}/jobs/${jobId}/segments`, {
@@ -198,7 +282,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
       });
       await fetchJSON(`${API}/jobs/${jobId}/burn`, { method: "POST" });
       setBurnTimestamp(Date.now());
-      if (videoRef.current) videoRef.current.load();
+      setBurnSuccess(true);
     } catch (e: any) {
       setBurnError(String(e));
     } finally {
@@ -207,120 +291,179 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
   };
 
   const handleDownload = async () => {
-    const res = await fetch(`${API}/jobs/${jobId}/download`);
-    if (!res.ok) return;
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `captioned_${jobId}.mp4`;
-    a.click();
-    URL.revokeObjectURL(url);
+    setBurnError(null);
+    try {
+      const res = await fetch(`${API}/jobs/${jobId}/download`);
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `captioned_${jobId}.mp4`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setBurnError(`Download failed: ${e}`);
+    }
   };
 
-  if (loading) return <div className="flex justify-center p-12"><Spinner /></div>;
-  if (error) return <div className="p-6 text-red-500">Error: {error}</div>;
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-full text-zinc-400">
+        <Spinner className="w-5 h-5 mr-3" />
+        <span className="text-sm">Loading job…</span>
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="p-8 flex items-start gap-3 text-red-500">
+        <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+        <div>
+          <p className="font-medium">Failed to load job</p>
+          <p className="text-sm mt-1 text-red-400">{error}</p>
+        </div>
+      </div>
+    );
+  }
   if (!job || !style) return null;
 
+  const filename = job.video_path.split("/").pop() ?? job.id;
+
   return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-center gap-3 px-6 py-3 border-b border-zinc-200 dark:border-zinc-700">
-        <button onClick={onBack} className="flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">
+    <div className="flex flex-col h-full overflow-hidden">
+      {/* ── Header ── */}
+      <div className="flex items-center gap-2 px-5 py-3 border-b border-zinc-200 dark:border-zinc-800 shrink-0">
+        <button
+          onClick={onBack}
+          className="flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
+        >
           <ChevronLeft className="w-4 h-4" />
           All jobs
         </button>
-        <span className="text-zinc-400">/</span>
-        <span className="text-sm font-medium truncate">{job.video_path.split("/").pop()}</span>
+        <span className="text-zinc-300 dark:text-zinc-600">/</span>
+        <span className="text-sm font-medium truncate">{filename}</span>
+        <span className="ml-auto text-xs text-zinc-400 shrink-0">
+          {segments.length} segment{segments.length !== 1 ? "s" : ""}
+        </span>
       </div>
 
-      {/* Main two-column layout */}
+      {/* ── Body ── */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Left: video player */}
-        <div className="w-2/5 min-w-0 flex flex-col gap-3 p-4 border-r border-zinc-200 dark:border-zinc-700">
-          <video
-            ref={videoRef}
-            key={burnTimestamp}
-            controls
-            className="w-full rounded-lg bg-black"
-            src={`${API}/jobs/${jobId}/video?t=${burnTimestamp}`}
-          />
-          <div className="flex gap-2">
+
+        {/* ── Left: video + actions + style ── */}
+        <div className="w-[360px] shrink-0 flex flex-col border-r border-zinc-200 dark:border-zinc-800 overflow-y-auto">
+          <div className="p-4">
+            <VideoPlayer src={`${API}/jobs/${jobId}/video?t=${burnTimestamp}`} />
+          </div>
+
+          {/* Actions */}
+          <div className="px-4 pb-3 flex gap-2">
             <button
               onClick={handleReburn}
               disabled={burning}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-md bg-zinc-900 text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300 disabled:opacity-50 transition-colors text-sm font-medium"
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-zinc-900 text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300 disabled:opacity-50 transition-colors text-sm font-medium"
             >
               {burning ? <Spinner className="w-4 h-4" /> : <RefreshCw className="w-4 h-4" />}
-              {burning ? "Re-burning…" : "Re-burn"}
+              {burning ? "Burning…" : "Re-burn"}
             </button>
             <button
               onClick={handleDownload}
-              className="flex items-center gap-2 px-4 py-2 rounded-md border border-zinc-300 dark:border-zinc-600 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors text-sm font-medium"
+              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-zinc-300 dark:border-zinc-600 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors text-sm font-medium"
             >
               <Download className="w-4 h-4" />
               Download
             </button>
           </div>
-          {burnError && <p className="text-sm text-red-500">{burnError}</p>}
 
-          {/* Style panel */}
-          <details className="group">
-            <summary className="cursor-pointer text-sm font-medium text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 py-1">
-              Style settings
-            </summary>
-            <div className="mt-2 space-y-2 text-sm">
+          {/* Feedback */}
+          {burnError && (
+            <div className="mx-4 mb-3 flex items-start gap-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-3 py-2">
+              <AlertCircle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
+              <p className="text-xs text-red-600 dark:text-red-400 break-words">{burnError}</p>
+            </div>
+          )}
+          {burnSuccess && !burnError && (
+            <div className="mx-4 mb-3 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 px-3 py-2">
+              <p className="text-xs text-green-700 dark:text-green-400">✓ Video re-burned successfully.</p>
+            </div>
+          )}
+
+          {/* Style settings */}
+          <div className="border-t border-zinc-200 dark:border-zinc-800 mx-4 pt-4 pb-6">
+            <p className="text-xs font-semibold uppercase tracking-wide text-zinc-400 dark:text-zinc-500 mb-3">Caption Style</p>
+            <div className="space-y-2.5">
               <StyleField label="Font" value={style.font} onChange={(v) => setStyle((s) => s && ({ ...s, font: v }))} />
               <StyleNumberField label="Font size" value={style.font_size} onChange={(v) => setStyle((s) => s && ({ ...s, font_size: v }))} />
               <StyleColorField label="Text color" value={style.primary_color} onChange={(v) => setStyle((s) => s && ({ ...s, primary_color: v }))} />
-              <StyleColorField label="Outline color" value={style.outline_color} onChange={(v) => setStyle((s) => s && ({ ...s, outline_color: v }))} />
+              <StyleColorField label="Outline" value={style.outline_color} onChange={(v) => setStyle((s) => s && ({ ...s, outline_color: v }))} />
               <StyleNumberField label="Outline width" value={style.outline_width} onChange={(v) => setStyle((s) => s && ({ ...s, outline_width: v }))} />
-              <StyleNumberField label="Margin bottom" value={style.margin_bottom} onChange={(v) => setStyle((s) => s && ({ ...s, margin_bottom: v }))} />
+              <StyleNumberField label="Bottom margin" value={style.margin_bottom} onChange={(v) => setStyle((s) => s && ({ ...s, margin_bottom: v }))} />
             </div>
-          </details>
+            <p className="text-xs text-zinc-400 mt-3">Style changes apply on the next Re-burn.</p>
+          </div>
         </div>
 
-        {/* Right: segment editor */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-2">
-          <h2 className="text-lg font-medium mb-3">
-            Segments ({segments.length})
-          </h2>
-          {segments.map((seg, idx) => (
-            <div key={seg.id} className="rounded-lg border border-zinc-200 dark:border-zinc-700 p-3 space-y-2 text-sm">
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-zinc-500 w-16 shrink-0">
-                  {formatTime(seg.start)}–{formatTime(seg.end)}
-                </span>
-                <button
-                  onClick={() => toggleLang(idx)}
-                  className={`px-2 py-0.5 rounded text-xs font-medium shrink-0 transition-colors ${
-                    seg.lang === "vi"
-                      ? "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
-                      : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
-                  }`}
-                >
-                  {seg.lang.toUpperCase()}
-                </button>
-                <input
-                  className="flex-1 min-w-0 bg-transparent border-b border-transparent hover:border-zinc-300 focus:border-blue-500 dark:hover:border-zinc-600 dark:focus:border-blue-400 outline-none px-1"
-                  value={seg.text}
-                  onChange={(e) => updateSegment(idx, "text", e.target.value)}
-                  placeholder="Caption text"
-                />
-              </div>
-              {seg.lang === "vi" && (
-                <div className="flex items-center gap-2 pl-[4.5rem]">
-                  <span className="text-xs text-zinc-500 shrink-0">phonetic</span>
-                  <input
-                    className="flex-1 min-w-0 bg-transparent border-b border-transparent hover:border-zinc-300 focus:border-blue-500 dark:hover:border-zinc-600 dark:focus:border-blue-400 outline-none px-1 italic text-zinc-500"
-                    value={seg.phonetic}
-                    onChange={(e) => updateSegment(idx, "phonetic", e.target.value)}
-                    placeholder="[pronunciation guide]"
-                  />
-                </div>
-              )}
+        {/* ── Right: segment editor ── */}
+        <div className="flex-1 overflow-y-auto p-5">
+          <div className="flex items-baseline gap-2 mb-4">
+            <h2 className="text-base font-semibold">Segments</h2>
+            <span className="text-xs text-zinc-400">{segments.length} total · edits are saved on Re-burn</span>
+          </div>
+
+          {segments.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 text-zinc-400 border border-dashed border-zinc-300 dark:border-zinc-700 rounded-xl">
+              <p className="text-sm">No segments in this job.</p>
+              <p className="text-xs mt-1 text-zinc-500">The transcription may have returned nothing.</p>
             </div>
-          ))}
+          ) : (
+            <div className="space-y-2">
+              {segments.map((seg, idx) => {
+                const lang = (seg.lang === "vi" ? "vi" : "en") as "en" | "vi";
+                return (
+                  <div
+                    key={`${seg.id}-${idx}`}
+                    className="rounded-lg border border-zinc-200 dark:border-zinc-700 p-3 space-y-2 text-sm hover:border-zinc-300 dark:hover:border-zinc-600 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-mono text-zinc-400 w-7 shrink-0 text-right">#{idx + 1}</span>
+                      <span className="text-xs tabular-nums text-zinc-400 shrink-0 w-[5.5rem]">
+                        {formatTime(seg.start)}–{formatTime(seg.end)}
+                      </span>
+                      <button
+                        onClick={() => toggleLang(idx)}
+                        title="Toggle EN / VI"
+                        className={`px-2 py-0.5 rounded text-xs font-semibold shrink-0 transition-colors ${
+                          lang === "vi"
+                            ? "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-800/60"
+                            : "bg-zinc-100 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-600"
+                        }`}
+                      >
+                        {lang.toUpperCase()}
+                      </button>
+                      <input
+                        className="flex-1 min-w-0 bg-transparent border-b border-transparent hover:border-zinc-300 focus:border-blue-500 dark:hover:border-zinc-600 dark:focus:border-blue-400 outline-none px-1 py-0.5 transition-colors"
+                        value={seg.text}
+                        onChange={(e) => updateSegment(idx, "text", e.target.value)}
+                        placeholder="(no text)"
+                      />
+                    </div>
+                    {lang === "vi" && (
+                      <div className="flex items-center gap-2 pl-[calc(1.75rem+5.5rem+3rem+0.75rem)]">
+                        <span className="text-xs text-zinc-400 shrink-0">phonetic</span>
+                        <input
+                          className="flex-1 min-w-0 bg-transparent border-b border-transparent hover:border-zinc-300 focus:border-blue-500 dark:hover:border-zinc-600 dark:focus:border-blue-400 outline-none px-1 py-0.5 italic text-zinc-500 dark:text-zinc-400 transition-colors"
+                          value={seg.phonetic}
+                          onChange={(e) => updateSegment(idx, "phonetic", e.target.value)}
+                          placeholder="[pronunciation guide]"
+                        />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -334,9 +477,9 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
 function StyleField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
   return (
     <div className="flex items-center gap-2">
-      <span className="w-28 shrink-0 text-zinc-500">{label}</span>
+      <span className="w-24 shrink-0 text-xs text-zinc-500">{label}</span>
       <input
-        className="flex-1 bg-transparent border border-zinc-300 dark:border-zinc-600 rounded px-2 py-0.5 text-sm outline-none focus:border-blue-500"
+        className="flex-1 min-w-0 bg-transparent border border-zinc-300 dark:border-zinc-600 rounded px-2 py-1 text-xs outline-none focus:border-blue-500 transition-colors"
         value={value}
         onChange={(e) => onChange(e.target.value)}
       />
@@ -347,10 +490,10 @@ function StyleField({ label, value, onChange }: { label: string; value: string; 
 function StyleNumberField({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
   return (
     <div className="flex items-center gap-2">
-      <span className="w-28 shrink-0 text-zinc-500">{label}</span>
+      <span className="w-24 shrink-0 text-xs text-zinc-500">{label}</span>
       <input
         type="number"
-        className="w-24 bg-transparent border border-zinc-300 dark:border-zinc-600 rounded px-2 py-0.5 text-sm outline-none focus:border-blue-500"
+        className="w-20 bg-transparent border border-zinc-300 dark:border-zinc-600 rounded px-2 py-1 text-xs outline-none focus:border-blue-500 transition-colors"
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
       />
@@ -374,14 +517,16 @@ function StyleColorField({ label, value, onChange }: { label: string; value: str
 
   return (
     <div className="flex items-center gap-2">
-      <span className="w-28 shrink-0 text-zinc-500">{label}</span>
-      <input
-        type="color"
-        className="w-8 h-6 rounded cursor-pointer border border-zinc-300 dark:border-zinc-600"
-        value={toHex(value)}
-        onChange={(e) => onChange(toAss(e.target.value))}
-      />
-      <span className="text-xs text-zinc-400">{toHex(value)}</span>
+      <span className="w-24 shrink-0 text-xs text-zinc-500">{label}</span>
+      <div className="flex items-center gap-2">
+        <input
+          type="color"
+          className="w-7 h-6 rounded cursor-pointer border border-zinc-300 dark:border-zinc-600 p-0"
+          value={toHex(value)}
+          onChange={(e) => onChange(toAss(e.target.value))}
+        />
+        <span className="text-xs font-mono text-zinc-400">{toHex(value)}</span>
+      </div>
     </div>
   );
 }
@@ -391,8 +536,10 @@ function StyleColorField({ label, value, onChange }: { label: string; value: str
 // ---------------------------------------------------------------------------
 
 function formatTime(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = (seconds % 60).toFixed(1).padStart(4, "0");
+  if (seconds == null || isNaN(Number(seconds))) return "?:??";
+  const n = Number(seconds);
+  const m = Math.floor(n / 60);
+  const s = (n % 60).toFixed(1).padStart(4, "0");
   return `${m}:${s}`;
 }
 
