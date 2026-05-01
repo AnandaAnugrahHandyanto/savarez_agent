@@ -496,9 +496,9 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
             <button
               onClick={handleReburn}
               disabled={burning}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-zinc-900 text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300 disabled:opacity-50 transition-colors text-sm font-medium"
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white shadow-sm hover:shadow-md hover:shadow-orange-500/30 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none transition-all duration-200 text-sm font-semibold"
             >
-              {burning ? <Spinner className="w-4 h-4" /> : <RefreshCw className="w-4 h-4" />}
+              {burning ? <Spinner className="w-4 h-4" /> : <RefreshCw className="w-4 h-4 transition-transform group-hover:rotate-180 duration-300" />}
               {burning ? "Burning…" : "Re-burn"}
             </button>
             <button
@@ -652,14 +652,30 @@ function StyleField({ label, value, onChange, placeholder }: { label: string; va
 }
 
 function StyleNumberField({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+  const [raw, setRaw] = useState(String(value));
+
+  // Sync if parent value changes externally (e.g. job load)
+  useEffect(() => {
+    setRaw(String(value));
+  }, [value]);
+
   return (
     <div className="flex items-center gap-2">
       <span className="w-24 shrink-0 text-xs text-muted-foreground">{label}</span>
       <input
         type="number"
         className="w-20 bg-card border border-border rounded px-2 py-1 text-xs text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring/30 transition-colors"
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
+        value={raw}
+        onChange={(e) => {
+          setRaw(e.target.value);
+          const n = Number(e.target.value);
+          if (e.target.value !== "" && !Number.isNaN(n)) onChange(n);
+        }}
+        onBlur={() => {
+          // On blur, snap back to the committed numeric value if field is empty/invalid
+          const n = Number(raw);
+          if (raw === "" || Number.isNaN(n)) setRaw(String(value));
+        }}
       />
     </div>
   );
