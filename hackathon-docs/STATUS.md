@@ -62,12 +62,12 @@ This block is inserted in `_preprocess_inbound_text()` after the document block,
 
 ### 3. Toolset Registration — `toolsets.py` ✅
 
-Added `video_caption` as an optional toolset (NOT in `_HERMES_CORE_TOOLS`) so it doesn't affect platforms that don't have faster-whisper installed:
+Added `video-caption` as an optional toolset (NOT in `_HERMES_CORE_TOOLS`) so it doesn't affect platforms that don't have faster-whisper installed:
 
 ```python
-"video_caption": {
+"video-caption": {
     "description": "Bilingual video captioning — ...",
-    "tools": ["video_caption"],
+    "tools": ["video-caption"],
     "includes": []
 }
 ```
@@ -75,7 +75,7 @@ Added `video_caption` as an optional toolset (NOT in `_HERMES_CORE_TOOLS`) so it
 Enable per-instance via `~/.hermes/config.yaml`:
 ```yaml
 enabled_toolsets:
-  - video_caption
+  - video-caption
 ```
 
 ---
@@ -132,7 +132,7 @@ AIAgent receives: "[The user sent a video... saved at /path/video.mp4]"
   ↓
 skills/video/bilingual_captions/SKILL.md  ←  guides the agent (NEW)
   ↓
-tools/video_caption.py  ←  core tool (NEW)
+tools/video_caption.py  ←  core tool (NEW, registered as `video-caption`)
   ├─ faster-whisper (local, auto language detect)
   │     → raw segments {text, start, end}
   ├─ Kimi K2.5 via NVIDIA NIM
@@ -163,7 +163,7 @@ Next video: saved preferences auto-applied
 | Install dependencies | `pip install faster-whisper openai` in `.venv` |
 | End-to-end smoke test | Send a real short video via Telegram, verify: path injection fires → transcription runs → translation fires → video returned |
 | Set `NVIDIA_API_KEY` | Add to `~/.hermes/.env` to enable Kimi translation |
-| Enable toolset | Add `video_caption` to `toolsets` in `~/.hermes/config.yaml`: `toolsets: ["hermes-cli", "video_caption"]` |
+| Enable toolset | Add `video-caption` to `toolsets` in `~/.hermes/config.yaml`: `toolsets: ["hermes-cli", "video-caption"]` |
 | Load skill | Run `hermes skills install skills/video/phonetic_captions` or add to active skills |
 
 ### P1 — Important for demo quality

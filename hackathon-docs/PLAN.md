@@ -135,7 +135,7 @@ CLI is useful for:
 |---|---|---|
 | `gateway/run.py` | Modify | Fix `_preprocess_inbound_text` to inject video file paths (~5 lines) |
 | `tools/video_caption.py` | Create | Core tool: transcribe, translate, build_ass, burn, reburn operations |
-| `toolsets.py` | Modify | Register `video_caption` toolset |
+| `toolsets.py` | Modify | Register `video-caption` toolset |
 | `hermes_cli/config.py` | Modify | Add `caption_style` key to `DEFAULT_CONFIG` |
 | `skills/video/bilingual_captions/SKILL.md` | Create | Skill wrapping the full conversational workflow |
 

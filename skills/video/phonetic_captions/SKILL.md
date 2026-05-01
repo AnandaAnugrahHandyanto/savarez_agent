@@ -30,7 +30,7 @@ Today we're learning how to say "I don't know"
 
 ## Tools
 
-Always use the `video_caption` tool. Never attempt to transcribe or generate phonetics manually.
+Always use the `video-caption` tool. Never attempt to transcribe or generate phonetics manually.
 
 ## Workflow
 

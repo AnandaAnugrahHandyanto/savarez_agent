@@ -157,9 +157,9 @@ TOOLSETS = {
         "includes": []
     },
 
-    "video_caption": {
+    "video-caption": {
         "description": "Bilingual video captioning — transcribes English audio, translates to Vietnamese with Kimi K2.5, and burns EN+VI stacked captions into the video. Requires: faster-whisper, ffmpeg, NVIDIA_API_KEY.",
-        "tools": ["video_caption"],
+        "tools": ["video-caption"],
         "includes": []
     },
 

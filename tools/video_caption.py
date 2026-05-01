@@ -495,7 +495,7 @@ def _handle_caption(args: dict, **kw: Any) -> str:
 # ---------------------------------------------------------------------------
 
 _SCHEMA = {
-    "name": "video_caption",
+    "name": "video-caption",
     "description": (
         "Caption a Vietnamese language teaching video. Transcribes mixed EN/VI audio (auto language detect), "
         "classifies each segment as English or Vietnamese, corrects Vietnamese diacritics, and generates "
@@ -549,8 +549,8 @@ _SCHEMA = {
 }
 
 registry.register(
-    name="video_caption",
-    toolset="video_caption",
+    name="video-caption",
+    toolset="video-caption",
     schema=_SCHEMA,
     handler=lambda args, **kw: _handle_caption(args, **kw),
     check_fn=check_requirements,

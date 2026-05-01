@@ -955,7 +955,7 @@ DEFAULT_CONFIG = {
         },
     },
 
-    # Bilingual video caption settings (used by the video_caption toolset).
+    # Bilingual video caption settings (used by the video-caption toolset).
     # Add NVIDIA_API_KEY to ~/.hermes/.env to enable Kimi K2.5 translation.
     "caption": {
         "style": {
