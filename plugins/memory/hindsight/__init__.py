@@ -1924,7 +1924,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
                 aux_bypassed = self._is_aux_breaker_open()
                 use_main = False
-                if aux_bypassed and (needs_classification or self._retain_dedup):
+                if aux_bypassed and (needs_classification or self._retain_dedup or self._retain_extract):
                     if self._aux_fallback_to_main:
                         use_main = True
                         aux_bypassed = False
@@ -1932,6 +1932,72 @@ class HindsightMemoryProvider(MemoryProvider):
                     else:
                         logger.info("Tool retain: aux breaker open — bypassing smart pipeline for %d chars", len(content))
 
+                # ── Extract pipeline (same as _do_retain Phase 4) ─────
+                if self._retain_extract and not aux_bypassed:
+                    points = self._extract_points(content, use_main=use_main)
+                    if points:
+                        classified = self._classify_points(points, use_main=use_main)
+                        retained_points = [c for c in classified if c["verdict"] == "RETAIN"]
+                        if not retained_points:
+                            logger.info("Tool retain extract: all %d points classified as SKIP", len(classified))
+                            return json.dumps({"result": "Memory filtered (all points noise/irrelevant). Not stored."})
+
+                        if self._retain_dedup:
+                            novel_points = []
+                            for rp in retained_points:
+                                if not self._check_dedup(rp["point"], use_main=use_main):
+                                    novel_points.append(rp)
+                                else:
+                                    logger.debug("Tool retain extract: dedup DUPLICATE — %s", rp["point"][:80])
+                            if not novel_points:
+                                logger.info("Tool retain extract: all %d retained points are duplicates", len(retained_points))
+                                return json.dumps({"result": "Memory filtered (all points duplicate). Not stored."})
+                            retained_points = novel_points
+
+                        extra_tags_base = list(_normalize_retain_tags(args.get("tags")))
+                        items = []
+                        for rp in retained_points:
+                            point_tags = list(extra_tags_base)
+                            if self._retain_context_tagging == "on":
+                                scope_tag = self._build_scope_tag()
+                                if scope_tag not in point_tags:
+                                    point_tags.append(scope_tag)
+                            elif self._retain_context_tagging == "smart":
+                                if rp.get("scope") == "SCOPED":
+                                    scope_tag = self._build_scope_tag()
+                                    if scope_tag not in point_tags:
+                                        point_tags.append(scope_tag)
+                                else:
+                                    if "scope:general" not in point_tags:
+                                        point_tags.append("scope:general")
+
+                            item = self._build_retain_kwargs(
+                                rp["point"],
+                                context=context,
+                                tags=point_tags or None,
+                            )
+                            item.pop("bank_id", None)
+                            item.pop("retain_async", None)
+                            items.append(item)
+
+                        logger.info("Tool retain extract: retaining %d points (%d extracted, %d after classify, %d after dedup)",
+                                    len(items), len(points), sum(1 for c in classified if c["verdict"] == "RETAIN"), len(items))
+
+                        bank_id = self._bank_id
+                        retain_async_flag = self._retain_async
+                        self._run_hindsight_operation(
+                            lambda client: client.aretain_batch(
+                                bank_id=bank_id,
+                                items=items,
+                                retain_async=retain_async_flag,
+                            )
+                        )
+                        return json.dumps({"result": f"Memory stored: {len(items)} points extracted and retained."})
+                    else:
+                        logger.info("Tool retain extract: no points extracted from %d chars", len(content))
+                        return json.dumps({"result": "No extractable facts found. Not stored."})
+
+                # ── Non-extract path: classify/dedup whole blob ────────
                 if needs_classification and not aux_bypassed:
                     classification = self._classify_for_retain(content, use_main=use_main)
                     if self._retain_prefilter and classification == "SKIP":
