@@ -52,6 +52,24 @@ logger = logging.getLogger(__name__)
 SKILL_CUSTOM_ID_PREFIX = "skill_"
 
 
+# Phase 0.5 token-leak instrumentation: per-decision counters for inbound
+# Discord events. Single-event-loop access (discord.py) means a plain dict
+# is safe — no asyncio.Lock needed. Mention counters are pre-declared here
+# but wiring is deferred to PR-B (the mention hook does not yet exist).
+_event_counters: dict[str, int] = {
+    "discord.reactions.skipped_non_bot_author": 0,
+    "discord.reactions.skipped_no_match": 0,
+    "discord.reactions.invoked": 0,
+    "discord.mentions.skipped_no_match": 0,
+    "discord.mentions.invoked": 0,
+}
+
+
+def get_event_counters() -> dict[str, int]:
+    """Return an immutable snapshot of the inbound-event decision counters."""
+    return dict(_event_counters)
+
+
 def make_skill_custom_id(skill_name: str, action: str) -> str:
     """Build a canonical custom_id for skill-routed button interactions.
 
@@ -172,6 +190,8 @@ class DiscordInteractionsHandler:
             return
         client = self._adapter._client  # type: ignore[attr-defined]
         if client is not None and client.user is not None and payload.user_id == client.user.id:
+            # Bot's own reactions are skipped (Vector 2 author filter).
+            _event_counters["discord.reactions.skipped_non_bot_author"] += 1
             return  # ignore the bot's own reactions
 
         try:
@@ -184,10 +204,12 @@ class DiscordInteractionsHandler:
         resolver_payload = self._build_reaction_payload(payload, emoji_str, action)
         matched = resolve_event_skills("reaction", resolver_payload, skills)
         if not matched:
+            _event_counters["discord.reactions.skipped_no_match"] += 1
             return
 
         # Reactions don't carry interaction objects; build a synthetic event
         # via a fabricated channel/message context.
+        _event_counters["discord.reactions.invoked"] += 1
         synthetic_text = f"[reaction:{action}] {emoji_str} on message {payload.message_id}"
         await self._dispatch_reaction_synthetic(
             payload=payload,
