@@ -22,6 +22,12 @@ import pytest
 
 from tools.environments.local import LocalEnvironment
 
+# POSIX process groups — os.getpgid/os.killpg (not available on Windows CPython).
+pytestmark = pytest.mark.skipif(
+    not getattr(os, "getpgid", None) or not getattr(os, "killpg", None),
+    reason="POSIX process-group APIs required (Linux/macOS CI / WSL); skipped on native Windows.",
+)
+
 
 @pytest.fixture(autouse=True)
 def _isolate_hermes_home(tmp_path, monkeypatch):

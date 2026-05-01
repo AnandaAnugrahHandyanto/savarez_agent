@@ -42,12 +42,15 @@ def _no_dashboard_kill_scan_during_update(monkeypatch):
     """
     import hermes_cli.main as main_mod
 
+    def _noop(*args, **kwargs):
+        return None
+
     monkeypatch.setattr(main_mod, "_find_stale_dashboard_pids", lambda: [])
-    monkeypatch.setattr(
-        main_mod,
-        "_kill_stale_dashboard_processes",
-        lambda *args, **kwargs: None,
-    )
+    monkeypatch.setattr(main_mod, "_kill_stale_dashboard_processes", _noop)
+    # Alias established at import time keeps a reference to the original
+    # function object; patching only _kill_* leaves back-compat callers using
+    # _warn_* on the live implementation unless we overwrite both bindings.
+    monkeypatch.setattr(main_mod, "_warn_stale_dashboard_processes", _noop)
 
 
 @pytest.fixture(autouse=True)
