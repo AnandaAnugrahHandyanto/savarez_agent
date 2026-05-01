@@ -6,6 +6,9 @@ rather than leaving zombie processes or telling users to manually restart
 when launchd will auto-respawn.
 """
 
+import os
+import signal
+import sys
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -20,6 +23,11 @@ from hermes_cli.main import cmd_update
 # ---------------------------------------------------------------------------
 # Skip the real-time sleeps inside cmd_update's restart-verification path
 # ---------------------------------------------------------------------------
+
+
+def _norm_path_segments(s: str) -> str:
+    """Normalize slashes for plist PATH asserts (Windows-safe)."""
+    return s.replace("\\", "/")
 
 
 @pytest.fixture(autouse=True)
@@ -171,7 +179,9 @@ class TestLaunchdPlistPath:
                 path_value = path_value.replace("<string>", "").replace("</string>", "")
                 detected = gateway_cli._detect_venv_dir()
                 venv_bin = str(detected / "bin") if detected else str(gateway_cli.PROJECT_ROOT / "venv" / "bin")
-                assert path_value.startswith(venv_bin + ":")
+                pv = _norm_path_segments(path_value)
+                want = _norm_path_segments(venv_bin).rstrip("/")
+                assert pv.startswith(want), f"{pv!r} does not start with {want!r}"
                 break
         else:
             raise AssertionError("PATH key not found in plist")
@@ -179,12 +189,19 @@ class TestLaunchdPlistPath:
     def test_plist_path_includes_node_modules_bin(self):
         plist = gateway_cli.generate_launchd_plist()
         node_bin = str(gateway_cli.PROJECT_ROOT / "node_modules" / ".bin")
+        want_nb = _norm_path_segments(node_bin).rstrip("/")
         lines = plist.splitlines()
         for i, line in enumerate(lines):
             if "<key>PATH</key>" in line.strip():
                 path_value = lines[i + 1].strip()
                 path_value = path_value.replace("<string>", "").replace("</string>", "")
-                assert node_bin in path_value.split(":")
+                pv = _norm_path_segments(path_value)
+                detected = gateway_cli._detect_venv_dir()
+                vwant = _norm_path_segments(
+                    str(detected / "bin") if detected else str(gateway_cli.PROJECT_ROOT / "venv" / "bin")
+                ).rstrip("/")
+                assert want_nb in pv
+                assert pv.index(vwant) < pv.index(want_nb), "venv bin must precede node_modules/.bin"
                 break
         else:
             raise AssertionError("PATH key not found in plist")
@@ -197,15 +214,19 @@ class TestLaunchdPlistPath:
     def test_plist_path_deduplicates_venv_bin_when_already_in_path(self, monkeypatch):
         detected = gateway_cli._detect_venv_dir()
         venv_bin = str(detected / "bin") if detected else str(gateway_cli.PROJECT_ROOT / "venv" / "bin")
-        monkeypatch.setenv("PATH", f"{venv_bin}:/usr/bin:/bin")
+        monkeypatch.setenv(
+            "PATH",
+            os.pathsep.join([venv_bin, "/usr/bin", "/bin"]),
+        )
         plist = gateway_cli.generate_launchd_plist()
         lines = plist.splitlines()
         for i, line in enumerate(lines):
             if "<key>PATH</key>" in line.strip():
                 path_value = lines[i + 1].strip()
                 path_value = path_value.replace("<string>", "").replace("</string>", "")
-                parts = path_value.split(":")
-                assert parts.count(venv_bin) == 1
+                pv = _norm_path_segments(path_value)
+                want = _norm_path_segments(venv_bin).rstrip("/")
+                assert pv.count(want) == 1
                 break
         else:
             raise AssertionError("PATH key not found in plist")
@@ -509,6 +530,8 @@ class TestCmdUpdateLaunchdRestart:
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        if not hasattr(signal, "SIGUSR1"):
+            monkeypatch.setattr(signal, "SIGUSR1", 30, raising=False)
 
         # Track state: before kill → "active" (old PID),
         # after kill + exit → briefly inactive, then "active" again (new PID).

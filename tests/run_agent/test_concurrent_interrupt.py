@@ -7,6 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.tool_guardrails import ToolGuardrailDecision
+
 
 @pytest.fixture(autouse=True)
 def _isolate_hermes(tmp_path, monkeypatch):
@@ -43,6 +45,7 @@ def _make_agent(monkeypatch):
         _iters_since_skill = 0
         _current_tool = None
         _last_activity = 0
+        _tool_guardrail_halt_decision = None
         _print_fn = print
         # Worker-thread tracking state mirrored from AIAgent.__init__ so the
         # real interrupt() method can fan out to concurrent-tool workers.
@@ -73,6 +76,15 @@ def _make_agent(monkeypatch):
             return False
 
     stub = _Stub()
+    _gr = MagicMock()
+    _gr.before_call = MagicMock(return_value=ToolGuardrailDecision())
+    _gr.after_call = MagicMock(return_value=ToolGuardrailDecision())
+    stub._tool_guardrails = _gr
+    stub._guardrail_block_result = MagicMock(return_value='{"error":"blocked_by_guardrail"}')
+    stub._set_tool_guardrail_halt = _ra.AIAgent._set_tool_guardrail_halt.__get__(stub)
+    stub._append_guardrail_observation = _ra.AIAgent._append_guardrail_observation.__get__(
+        stub
+    )
     # Bind the real methods under test
     stub._execute_tool_calls_concurrent = _ra.AIAgent._execute_tool_calls_concurrent.__get__(stub)
     stub.interrupt = _ra.AIAgent.interrupt.__get__(stub)
@@ -107,7 +119,7 @@ def test_concurrent_interrupt_cancels_pending(monkeypatch):
 
     original_invoke = agent._invoke_tool
 
-    def slow_tool(name, args, task_id, call_id=None):
+    def slow_tool(name, args, task_id, call_id=None, **kwargs):
         if name == "slow_one":
             # Block until the test sets the interrupt
             barrier.wait(timeout=10)
@@ -184,7 +196,7 @@ def test_running_concurrent_worker_sees_is_interrupted(monkeypatch):
     observed = {"saw_true": False, "poll_count": 0, "worker_tid": None}
     worker_started = threading.Event()
 
-    def polling_tool(name, args, task_id, call_id=None, messages=None):
+    def polling_tool(name, args, task_id, call_id=None, messages=None, **kwargs):
         observed["worker_tid"] = threading.current_thread().ident
         worker_started.set()
         deadline = time.monotonic() + 5.0
