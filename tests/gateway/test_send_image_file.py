@@ -57,6 +57,14 @@ class TestExtractMediaImages:
         assert "/audio.ogg" in paths
         assert "/screenshot.png" in paths
 
+    def test_placeholder_path_is_ignored_and_stripped(self):
+        content = "Here is the screenshot:\nMEDIA:<screenshot_path>"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "MEDIA:" not in cleaned
+        assert "<screenshot_path>" not in cleaned
+        assert "Here is the screenshot" in cleaned
+
 
 # ---------------------------------------------------------------------------
 # Telegram send_image_file tests

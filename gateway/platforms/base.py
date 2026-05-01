@@ -1370,16 +1370,21 @@ class BasePlatformAdapter(ABC):
         media_pattern = re.compile(
             r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
+        matched_media_tag = False
         for match in media_pattern.finditer(content):
+            matched_media_tag = True
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+            if re.fullmatch(r"<[^>\n]+>", path):
+                logger.warning("Ignoring MEDIA placeholder that was not replaced with a real file path: %s", path)
+                continue
             if path:
                 media.append((os.path.expanduser(path), has_voice_tag))
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
-        if media:
+        if matched_media_tag:
             cleaned = media_pattern.sub('', cleaned)
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
