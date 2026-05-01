@@ -153,11 +153,13 @@ _MARKDOWN_HINT_RE = re.compile(
     re.MULTILINE,
 )
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
-_MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
-_MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
+_MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*(?:\(\d+/\d+\))?\s*$")
+_MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*(?:\(\d+/\d+\))?\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+# Matches chunk indicators like " (1/3)" appended by truncate_message
+_CHUNK_INDICATOR_RE = re.compile(r"\s*\(\d+/\d+\)\s*$")
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -486,6 +488,66 @@ def _strip_markdown_to_plain_text(text: str) -> str:
     return plain
 
 
+def _strip_unsafe_markdown(text: str) -> str:
+    """Strip only Feishu-unsafe markdown while preserving readability.
+
+    Unlike ``_strip_markdown_to_plain_text`` which removes *all* formatting,
+    this keeps safe visual cues (lists, numbered items, indentation) and only
+    removes patterns that the Feishu text renderer cannot handle or would
+    misinterpret:
+
+    * Fenced code blocks → replace with indented plain-text code
+    * Bold / italic markers → removed but text kept
+    * Link syntax → ``label (url)`` (same as _strip_markdown_to_plain_text)
+    * HTML tags (``<u>``, ``<br>``) → stripped
+    * Blockquote prefixes → removed
+    * Heading markers → removed
+
+    The result is a plain-text string that is still readable and structured
+    but safe for the Feishu ``text`` msg_type.
+    """
+    result = text.replace("\r\n", "\n")
+
+    # 1. Replace fenced code blocks with indented plain-text
+    #    so code content is preserved as readable text.
+    def _replace_fence(m: re.Match) -> str:
+        code = m.group(1)
+        return "\n".join("    " + line if line.strip() else "" for line in code.splitlines())
+
+    result = re.sub(r"```[^\n]*\n([\s\S]*?)```", _replace_fence, result)
+    # Orphaned opening fence (no close) — strip the fence line only
+    result = re.sub(r"^```[^\n]*$", "", result, flags=re.MULTILINE)
+
+    # 2. Links: [label](url) → label (url)
+    result = _MARKDOWN_LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2).strip()})", result)
+
+    # 3. Bold/italic markers — keep text, remove markers
+    result = re.sub(r"\*\*\*(.+?)\*\*\*", r"\1", result)   # bold+italic
+    result = re.sub(r"\*\*(.+?)\*\*", r"\1", result)        # bold
+    result = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"\1", result)  # italic
+
+    # 4. Strikethrough
+    result = re.sub(r"~~([^~\n]+)~~", r"\1", result)
+
+    # 5. HTML tags
+    result = re.sub(r"<u>([\s\S]*?)</u>", r"\1", result)
+    result = re.sub(r"<br\s*/?>", "\n", result, flags=re.IGNORECASE)
+
+    # 6. Blockquote prefix
+    result = re.sub(r"^>\s?", "", result, flags=re.MULTILINE)
+
+    # 7. Heading markers
+    result = re.sub(r"^#{1,6}\s+", "", result, flags=re.MULTILINE)
+
+    # 8. Horizontal rules → plain separator
+    result = re.sub(r"^\s*---+\s*$", "---", result, flags=re.MULTILINE)
+
+    # 9. Inline code — keep content, strip backticks
+    result = re.sub(r"`([^`\n]+)`", r"\1", result)
+
+    return result
+
+
 def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -> Optional[int]:
     """Coerce value to int with optional default and minimum constraint."""
     try:
@@ -524,6 +586,10 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     appears inside one large markdown element. Split the reply at real fence
     lines so prose before/after the code block remains visible while code stays
     in a dedicated row.
+
+    Handles the case where ``truncate_message`` appends a chunk indicator
+    like ``(1/3)`` to the closing fence line (e.g. ```` ``` (1/3) ````) by
+    stripping the indicator so the fence is properly recognised.
     """
     if not content:
         return [[{"tag": "md", "text": ""}]]
@@ -554,10 +620,22 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
         if is_fence:
             if not in_code_block:
                 _flush_current()
-            current.append(raw_line)
+            # If the fence line carries a chunk indicator like (1/3),
+            # strip it so the Feishu md renderer gets a clean fence.
+            # Preserve the indicator as a separate prose element after
+            # the code block so the user can see which part they are reading.
+            indicator_match = _CHUNK_INDICATOR_RE.search(raw_line)
+            clean_line = _CHUNK_INDICATOR_RE.sub("", raw_line).rstrip()
+            current.append(clean_line)
             in_code_block = not in_code_block
             if not in_code_block:
                 _flush_current()
+                # Emit the chunk indicator as a standalone prose row so
+                # it appears after the code block rather than inside it.
+                if indicator_match:
+                    indicator_text = indicator_match.group(0).strip()
+                    if indicator_text:
+                        rows.append([{"tag": "md", "text": indicator_text}])
             continue
 
         current.append(raw_line)
@@ -1364,8 +1442,11 @@ class FeishuAdapter(BasePlatformAdapter):
         self._approval_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
         # Feishu reaction deletion requires the opaque reaction_id returned
-        # by create, so we cache it per message_id.
+        # by create, so we cache it per message.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
+        # Track msg_type per message_id so edit_message can preserve the
+        # original type (Feishu API rejects cross-type edits, e.g. post→text).
+        self._sent_msg_types: Dict[str, str] = {}  # message_id → "post"|"text"
         self._load_seen_message_ids()
 
     @staticmethod
@@ -1638,17 +1719,27 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a Feishu message."""
+        """Send a Feishu message.
+
+        Each chunk is sent independently with per-chunk error handling so that
+        a failure on one chunk does **not** discard the remaining chunks.
+        The msg_type used for each message is recorded so that subsequent
+        ``edit_message`` calls preserve the original type (Feishu rejects
+        cross-type edits).
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
+        last_error: Optional[str] = None
+        any_success = False
 
-        try:
-            for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk)
+        for chunk_idx, chunk in enumerate(chunks):
+            msg_type, payload = self._build_outbound_payload(chunk)
+            response = None
+            try:
                 try:
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
@@ -1660,33 +1751,59 @@ class FeishuAdapter(BasePlatformAdapter):
                 except Exception as exc:
                     if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
                         raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                    # Post payload rejected — fallback to text with lightweight
+                    # formatting instead of full markdown stripping so the
+                    # message remains readable.
+                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to lightweight text")
+                    fallback_text = _strip_unsafe_markdown(chunk)
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                        payload=json.dumps({"text": fallback_text}, ensure_ascii=False),
                         reply_to=reply_to,
                         metadata=metadata,
                     )
+                    msg_type = "text"  # record the actual type used
                 if (
                     msg_type == "post"
                     and not self._response_succeeded(response)
                     and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
                 ):
-                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
+                    logger.warning("[Feishu] Post payload rejected by API response; falling back to lightweight text")
+                    fallback_text = _strip_unsafe_markdown(chunk)
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                        payload=json.dumps({"text": fallback_text}, ensure_ascii=False),
                         reply_to=reply_to,
                         metadata=metadata,
                     )
+                    msg_type = "text"
                 last_response = response
+                if self._response_succeeded(response):
+                    any_success = True
+                    # Record msg_type for this message so edit_message can
+                    # preserve the original type.
+                    mid = self._extract_response_field(response, "message_id")
+                    if mid:
+                        self._sent_msg_types[mid] = msg_type
+                else:
+                    # Use the same error formatting as _response_error_result
+                    code = getattr(response, "code", "unknown")
+                    msg = getattr(response, "msg", "send failed")
+                    last_error = f"[{code}] {msg}"
+            except Exception as exc:
+                logger.error(
+                    "[Feishu] Chunk %d/%d send failed: %s",
+                    chunk_idx + 1, len(chunks), exc, exc_info=True,
+                )
+                last_error = str(exc)
+                # Continue sending remaining chunks — a single chunk failure
+                # should not discard the rest of the message.
 
+        if any_success:
             return self._finalize_send_result(last_response, "send failed")
-        except Exception as exc:
-            logger.error("[Feishu] Send error: %s", exc, exc_info=True)
-            return SendResult(success=False, error=str(exc))
+        return SendResult(success=False, error=last_error or "all chunks failed")
 
     async def edit_message(
         self,
@@ -1696,26 +1813,51 @@ class FeishuAdapter(BasePlatformAdapter):
         *,
         finalize: bool = False,
     ) -> SendResult:
-        """Edit a previously sent Feishu text/post message."""
+        """Edit a previously sent Feishu text/post message.
+
+        Preserves the original ``msg_type`` (``post`` or ``text``) for the
+        message being edited — the Feishu API rejects cross-type edits (e.g.
+        updating a ``post`` message with a ``text`` body), so we look up the
+        type that was used when the message was first sent and force the edit
+        to use the same type.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
         content = self.format_message(content)
+        # Determine the msg_type to use.  We MUST preserve the original type
+        # because Feishu rejects cross-type edits (e.g. post → text).
+        original_type = self._sent_msg_types.get(message_id)
+        new_type, new_payload = self._build_outbound_payload(content)
+        if original_type and original_type != new_type:
+            # Force the edit to use the original type to avoid API rejection.
+            msg_type = original_type
+            if original_type == "post":
+                payload = _build_markdown_post_payload(content)
+            else:
+                payload = json.dumps({"text": content}, ensure_ascii=False)
+        else:
+            msg_type = new_type
+            payload = new_payload
+
         try:
-            msg_type, payload = self._build_outbound_payload(content)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await asyncio.to_thread(self._client.im.v1.message.update, request)
             result = self._finalize_send_result(response, "update failed")
             if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
-                logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
+                logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to lightweight text")
+                fallback_text = _strip_unsafe_markdown(content)
                 fallback_body = self._build_update_message_body(
                     msg_type="text",
-                    content=json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
+                    content=json.dumps({"text": fallback_text}, ensure_ascii=False),
                 )
                 fallback_request = self._build_update_message_request(message_id=message_id, request_body=fallback_body)
                 fallback_response = await asyncio.to_thread(self._client.im.v1.message.update, fallback_request)
                 result = self._finalize_send_result(fallback_response, "update failed")
+                # Update the recorded type since we fell back to text
+                if result.success:
+                    self._sent_msg_types[message_id] = "text"
             if result.success:
                 result.message_id = message_id
             return result

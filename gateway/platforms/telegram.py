@@ -1099,104 +1099,122 @@ class TelegramAdapter(BasePlatformAdapter):
             except (ImportError, AttributeError):
                 _TimedOut = None  # type: ignore[assignment,misc]
 
+            last_chunk_error: Optional[str] = None
             for i, chunk in enumerate(chunks):
                 should_thread = self._should_thread_reply(reply_to, i)
                 reply_to_id = int(reply_to) if should_thread else None
                 effective_thread_id = self._message_thread_id_for_send(thread_id)
 
                 msg = None
-                for _send_attempt in range(3):
-                    try:
-                        # Try Markdown first, fall back to plain text if it fails
+                try:
+                    for _send_attempt in range(3):
                         try:
-                            msg = await self._bot.send_message(
-                                chat_id=int(chat_id),
-                                text=chunk,
-                                parse_mode=ParseMode.MARKDOWN_V2,
-                                reply_to_message_id=reply_to_id,
-                                message_thread_id=effective_thread_id,
-                                **self._link_preview_kwargs(),
-                            )
-                        except Exception as md_error:
-                            # Markdown parsing failed, try plain text
-                            if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
-                                logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
-                                plain_chunk = _strip_mdv2(chunk)
+                            # Try Markdown first, fall back to plain text if it fails
+                            try:
                                 msg = await self._bot.send_message(
                                     chat_id=int(chat_id),
-                                    text=plain_chunk,
-                                    parse_mode=None,
+                                    text=chunk,
+                                    parse_mode=ParseMode.MARKDOWN_V2,
                                     reply_to_message_id=reply_to_id,
                                     message_thread_id=effective_thread_id,
                                     **self._link_preview_kwargs(),
                                 )
+                            except Exception as md_error:
+                                # Markdown parsing failed, try plain text
+                                if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
+                                    logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
+                                    plain_chunk = _strip_mdv2(chunk)
+                                    msg = await self._bot.send_message(
+                                        chat_id=int(chat_id),
+                                        text=plain_chunk,
+                                        parse_mode=None,
+                                        reply_to_message_id=reply_to_id,
+                                        message_thread_id=effective_thread_id,
+                                        **self._link_preview_kwargs(),
+                                    )
+                                else:
+                                    raise
+                            break  # success
+                        except _NetErr as send_err:
+                            # BadRequest is a subclass of NetworkError in
+                            # python-telegram-bot but represents permanent errors
+                            # (not transient network issues). Detect and handle
+                            # specific cases instead of blindly retrying.
+                            if _BadReq and isinstance(send_err, _BadReq):
+                                if self._is_thread_not_found_error(send_err) and effective_thread_id is not None:
+                                    # Thread doesn't exist — retry without
+                                    # message_thread_id so the message still
+                                    # reaches the chat.
+                                    logger.warning(
+                                        "[%s] Thread %s not found, retrying without message_thread_id",
+                                        self.name, effective_thread_id,
+                                    )
+                                    effective_thread_id = None
+                                    continue
+                                err_lower = str(send_err).lower()
+                                if "message to be replied not found" in err_lower and reply_to_id is not None:
+                                    # Original message was deleted before we
+                                    # could reply — clear reply target and retry
+                                    # so the response is still delivered.
+                                    logger.warning(
+                                        "[%s] Reply target deleted, retrying without reply_to: %s",
+                                        self.name, send_err,
+                                    )
+                                    reply_to_id = None
+                                    continue
+                                # Other BadRequest errors are permanent — don't retry
+                                raise
+                            # TimedOut is also a subclass of NetworkError but
+                            # indicates the request may have reached the server —
+                            # retrying risks duplicate message delivery.
+                            if _TimedOut and isinstance(send_err, _TimedOut):
+                                raise
+                            if _send_attempt < 2:
+                                wait = 2 ** _send_attempt
+                                logger.warning("[%s] Network error on send (attempt %d/3), retrying in %ds: %s",
+                                               self.name, _send_attempt + 1, wait, send_err)
+                                await asyncio.sleep(wait)
                             else:
                                 raise
-                        break  # success
-                    except _NetErr as send_err:
-                        # BadRequest is a subclass of NetworkError in
-                        # python-telegram-bot but represents permanent errors
-                        # (not transient network issues). Detect and handle
-                        # specific cases instead of blindly retrying.
-                        if _BadReq and isinstance(send_err, _BadReq):
-                            if self._is_thread_not_found_error(send_err) and effective_thread_id is not None:
-                                # Thread doesn't exist — retry without
-                                # message_thread_id so the message still
-                                # reaches the chat.
-                                logger.warning(
-                                    "[%s] Thread %s not found, retrying without message_thread_id",
-                                    self.name, effective_thread_id,
-                                )
-                                effective_thread_id = None
-                                continue
-                            err_lower = str(send_err).lower()
-                            if "message to be replied not found" in err_lower and reply_to_id is not None:
-                                # Original message was deleted before we
-                                # could reply — clear reply target and retry
-                                # so the response is still delivered.
-                                logger.warning(
-                                    "[%s] Reply target deleted, retrying without reply_to: %s",
-                                    self.name, send_err,
-                                )
-                                reply_to_id = None
-                                continue
-                            # Other BadRequest errors are permanent — don't retry
+                        except Exception as send_err:
+                            retry_after = getattr(send_err, "retry_after", None)
+                            if retry_after is not None or "retry after" in str(send_err).lower():
+                                if _send_attempt < 2:
+                                    wait = float(retry_after) if retry_after is not None else 1.0
+                                    logger.warning(
+                                        "[%s] Telegram flood control on send (attempt %d/3), retrying in %.1fs: %s",
+                                        self.name,
+                                        _send_attempt + 1,
+                                        wait,
+                                        send_err,
+                                    )
+                                    await asyncio.sleep(wait)
+                                    continue
                             raise
-                        # TimedOut is also a subclass of NetworkError but
-                        # indicates the request may have reached the server —
-                        # retrying risks duplicate message delivery.
-                        if _TimedOut and isinstance(send_err, _TimedOut):
-                            raise
-                        if _send_attempt < 2:
-                            wait = 2 ** _send_attempt
-                            logger.warning("[%s] Network error on send (attempt %d/3), retrying in %ds: %s",
-                                           self.name, _send_attempt + 1, wait, send_err)
-                            await asyncio.sleep(wait)
-                        else:
-                            raise
-                    except Exception as send_err:
-                        retry_after = getattr(send_err, "retry_after", None)
-                        if retry_after is not None or "retry after" in str(send_err).lower():
-                            if _send_attempt < 2:
-                                wait = float(retry_after) if retry_after is not None else 1.0
-                                logger.warning(
-                                    "[%s] Telegram flood control on send (attempt %d/3), retrying in %.1fs: %s",
-                                    self.name,
-                                    _send_attempt + 1,
-                                    wait,
-                                    send_err,
-                                )
-                                await asyncio.sleep(wait)
-                                continue
-                        raise
-                message_ids.append(str(msg.message_id))
+                    if msg is not None:
+                        message_ids.append(str(msg.message_id))
+                except Exception as chunk_err:
+                    # Per-chunk resilience: a failure on one chunk should not
+                    # discard the remaining chunks.  Log and continue.
+                    logger.error(
+                        "[%s] Chunk %d/%d send failed: %s",
+                        self.name, i + 1, len(chunks), chunk_err, exc_info=True,
+                    )
+                    last_chunk_error = str(chunk_err)
+                    # TimedOut is non-retryable but other chunks may succeed
+                    # so we continue rather than aborting the entire send.
             
-            return SendResult(
-                success=True,
-                message_id=message_ids[0] if message_ids else None,
-                raw_response={"message_ids": message_ids}
-            )
-            
+            if message_ids:
+                return SendResult(
+                    success=True,
+                    message_id=message_ids[0] if message_ids else None,
+                    raw_response={"message_ids": message_ids}
+                )
+            # All chunks failed
+            err_str = last_chunk_error or "all chunks failed"
+            is_timeout = "timed out" in err_str.lower()
+            return SendResult(success=False, error=err_str, retryable=not is_timeout)
+
         except Exception as e:
             logger.error("[%s] Failed to send Telegram message: %s", self.name, e, exc_info=True)
             # TimedOut means the request may have reached Telegram —
