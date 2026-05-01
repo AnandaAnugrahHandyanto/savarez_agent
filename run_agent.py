@@ -3676,6 +3676,7 @@ class AIAgent:
                 msg["content"] = override
 
     def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
+        if not getattr(self, "persist_session", True): return
         """Save session state to both JSON log and SQLite on any exit path.
 
         Ensures conversations are never lost, even on errors or early returns.
