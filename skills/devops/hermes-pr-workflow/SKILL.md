@@ -1,6 +1,18 @@
 ---
 name: hermes-pr-workflow
 description: Use when creating pull requests for hermes-agent or any GitHub fork-based project. Covers branch creation, conventional commits, pushing to fork, and creating PRs with gh CLI.
+version: 1.0.0
+author: Hermes
+license: Apache-2.0
+metadata:
+  hermes:
+    tags:
+      - github
+      - pull-requests
+      - git
+      - gh-cli
+      - workflow
+    related_skills: []
 ---
 
 # GitHub Fork PR Workflow
