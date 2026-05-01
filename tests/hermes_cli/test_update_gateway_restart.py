@@ -6,6 +6,7 @@ rather than leaving zombie processes or telling users to manually restart
 when launchd will auto-respawn.
 """
 
+import signal
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -415,7 +416,7 @@ class TestCmdUpdateLaunchdRestart:
             pid=12345,
         )
 
-        with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
+        with patch.object(gateway_cli, "find_gateway_pids", side_effect=[[12345], []]), \
              patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
              patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
              patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=True) as graceful, \
@@ -425,7 +426,7 @@ class TestCmdUpdateLaunchdRestart:
         captured = capsys.readouterr().out
         restart.assert_called_once_with("coder", 12345)
         graceful.assert_called_once()
-        # Graceful drain succeeded — no SIGTERM fallback needed.
+        # Graceful drain succeeded and the post-restart survivor sweep found no stale PID.
         kill.assert_not_called()
         assert "Restarting manual gateway profile(s): coder" in captured
         assert "Restart manually: hermes gateway run" not in captured
@@ -463,8 +464,9 @@ class TestCmdUpdateLaunchdRestart:
         captured = capsys.readouterr().out
         restart.assert_called_once_with("coder", 12345)
         graceful.assert_called_once()
-        # Graceful drain returned False → SIGTERM fallback.
-        kill.assert_called_once()
+        # Graceful drain returned False → SIGTERM fallback, then survivor sweep force-kills
+        # the same stale pre-update PID if it still appears alive.
+        assert [call.args[1] for call in kill.call_args_list] == [signal.SIGTERM, signal.SIGKILL]
         assert "Restarting manual gateway profile(s): coder" in captured
 
     @patch("shutil.which", return_value=None)
@@ -885,9 +887,10 @@ class TestServicePidExclusion:
 
         captured = capsys.readouterr().out
         assert "Restarted" in captured
-        # Manual PID should be killed
+        # Manual PID should be killed; if it still survives the post-restart sweep,
+        # the update path escalates only that same manual PID to SIGKILL.
         manual_kills = [c for c in mock_kill.call_args_list if c.args[0] == MANUAL_PID]
-        assert len(manual_kills) == 1
+        assert [c.args[1] for c in manual_kills] == [signal.SIGTERM, signal.SIGKILL]
         # Service PID should NOT be killed
         service_kills = [c for c in mock_kill.call_args_list if c.args[0] == SERVICE_PID]
         assert len(service_kills) == 0
