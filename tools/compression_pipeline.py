@@ -25,6 +25,10 @@ Architecture (every layer has a guaranteed fallback):
 
 Enable with HERMES_COMPRESS=1 (default: off).
 Stats are tracked regardless (atomically incremented).
+
+LLM summarization: requires ``agent.auxiliary_client`` to expose a model
+aliased as ``"fast"``.  If the model is unavailable or the call fails,
+the layer silently falls through to raw output (no error raised).
 """
 
 from __future__ import annotations
