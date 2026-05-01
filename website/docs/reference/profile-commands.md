@@ -76,8 +76,8 @@ Creates a new profile.
 | Argument / Option | Description |
 |-------------------|-------------|
 | `<name>` | Name for the new profile. Must be a valid directory name (alphanumeric, hyphens, underscores). |
-| `--clone` | Copy `config.yaml`, `.env`, and `SOUL.md` from the current profile. |
-| `--clone-all` | Copy everything (config, memories, skills, sessions, state) from the current profile. |
+| `--clone` | Copy `config.yaml`, `.env`, `SOUL.md`, and built-in memory files (`memories/MEMORY.md` / `memories/USER.md`) from the current profile. Useful for multi-agent setups because it preserves core identity and `.env`-based keys, but it is not a full auth/session clone. |
+| `--clone-all` | Copy nearly all profile state (config, memories, skills, sessions, state, and provider auth), then strip transient runtime files like gateway PID/process artifacts. |
 | `--clone-from <profile>` | Clone from a specific profile instead of the current one. Used with `--clone` or `--clone-all`. |
 | `--no-alias` | Skip wrapper script creation. |
 

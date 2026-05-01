@@ -11,7 +11,7 @@ zero migration needed.
 Usage::
 
     hermes profile create coder          # fresh profile + bundled skills
-    hermes profile create coder --clone  # also copy config, .env, SOUL.md
+    hermes profile create coder --clone  # also copy config, .env, SOUL.md, and built-in memory files
     hermes profile create coder --clone-all  # full copy of source profile
     coder chat                           # use via wrapper alias
     hermes -p coder chat                 # or via flag
@@ -388,7 +388,8 @@ def create_profile(
     clone_all:
         If True, do a full copytree of the source (all state).
     clone_config:
-        If True, copy only config files (config.yaml, .env, SOUL.md).
+        If True, copy config files plus built-in memory files
+        (config.yaml, .env, SOUL.md, memories/MEMORY.md, memories/USER.md).
     no_alias:
         If True, skip wrapper script creation.
 

@@ -38,7 +38,7 @@ Creates a fresh profile with bundled skills seeded. Run `mybot setup` to configu
 hermes profile create work --clone
 ```
 
-Copies your current profile's `config.yaml`, `.env`, and `SOUL.md` into the new profile. Same API keys and model, but fresh sessions and memory. Edit `~/.hermes/profiles/work/.env` for different API keys, or `~/.hermes/profiles/work/SOUL.md` for a different personality.
+Copies your current profile's `config.yaml`, `.env`, `SOUL.md`, and built-in memory files (`memories/MEMORY.md` and `memories/USER.md`) into the new profile. `.env`-based API keys and baseline identity context come over, but this is not a full auth/session clone: providers backed by `auth.json` may still require re-authentication, and the new profile starts with fresh sessions/state. Edit `~/.hermes/profiles/work/.env` for different API keys, or `~/.hermes/profiles/work/SOUL.md` for a different personality.
 
 ### Clone everything (`--clone-all`)
 
@@ -46,7 +46,7 @@ Copies your current profile's `config.yaml`, `.env`, and `SOUL.md` into the new 
 hermes profile create backup --clone-all
 ```
 
-Copies **everything** — config, API keys, personality, all memories, full session history, skills, cron jobs, plugins. A complete snapshot. Useful for backups or forking an agent that already has context.
+Copies nearly all profile state — config, API keys, personality, memories, session history, skills, cron jobs, and plugins — then strips transient runtime files like `gateway.pid`, `gateway_state.json`, and `processes.json`. Useful for backups or forking an agent that already has context.
 
 ### Clone from a specific profile
 
