@@ -15,6 +15,7 @@ import re
 import sys
 import threading
 import time
+import hashlib
 import unicodedata
 from typing import Optional
 from hermes_cli.config import cfg_get
@@ -355,6 +356,9 @@ _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
 _permanent_approved: set = set()
+_pending_approvals: dict[tuple[str, str], dict] = {}
+_pending_justifications: dict[tuple[str, str], str] = {}
+_MAX_JUSTIFICATION_RETRIES = 3
 
 # =========================================================================
 # Blocking gateway approval (mirrors CLI's synchronous input() flow)
@@ -467,6 +471,19 @@ def disable_session_yolo(session_key: str) -> None:
         _session_yolo.discard(session_key)
 
 
+def _get_pending_justification(session_key: str, cmd_hash: str) -> tuple:
+    """Retrieve pending justification for a session and command hash.
+
+    Returns:
+        tuple: (_, effective_justification, _, _) where effective_justification is the
+        stored justification string or None if not found.
+    """
+    with _lock:
+        key = (session_key, cmd_hash)
+        stored = _pending_justifications.get(key)
+        return (None, stored, None, None)
+
+
 def clear_session(session_key: str) -> None:
     """Remove all approval and yolo state for a given session."""
     if not session_key:
@@ -476,6 +493,15 @@ def clear_session(session_key: str) -> None:
         _session_yolo.discard(session_key)
         _pending.pop(session_key, None)
         _gateway_queues.pop(session_key, None)
+        # Clean up any pending justification/approval entries for this session
+        # (entries are keyed by (session_key, cmd_hash) tuples)
+        global _pending_approvals, _pending_justifications
+        _pending_approvals = {
+            k: v for k, v in _pending_approvals.items() if k[0] != session_key
+        }
+        _pending_justifications = {
+            k: v for k, v in _pending_justifications.items() if k[0] != session_key
+        }
 
 
 def is_session_yolo_enabled(session_key: str) -> bool:
@@ -768,7 +794,8 @@ Respond with exactly one word: APPROVE, DENY, or ESCALATE"""
 
 
 def check_dangerous_command(command: str, env_type: str,
-                            approval_callback=None) -> dict:
+                            approval_callback=None,
+                            justification: str = None) -> dict:
     """Check if a command is dangerous and handle approval.
 
     This is the main entry point called by terminal_tool before executing
@@ -828,6 +855,11 @@ def check_dangerous_command(command: str, env_type: str,
         return {"approved": True, "message": None}
 
     if is_gateway or os.getenv("HERMES_EXEC_ASK"):
+        # Store justification when provided so subsequent retries can use it
+        if justification:
+            cmd_hash = hashlib.sha256(command.encode()).hexdigest()[:16]
+            with _lock:
+                _pending_justifications[(session_key, cmd_hash)] = justification
         submit_pending(session_key, {
             "command": command,
             "pattern_key": pattern_key,

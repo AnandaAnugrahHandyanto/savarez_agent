@@ -319,10 +319,12 @@ from tools.approval import (
 )
 
 
-def _check_all_guards(command: str, env_type: str) -> dict:
+def _check_all_guards(command: str, env_type: str,
+                       justification: str = None) -> dict:
     """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
     return _check_all_guards_impl(command, env_type,
-                                  approval_callback=_get_approval_callback())
+                                  approval_callback=_get_approval_callback(),
+                                  justification=justification)
 
 
 # Allowlist: characters that can legitimately appear in directory paths.
@@ -1600,6 +1602,7 @@ def terminal_tool(
     pty: bool = False,
     notify_on_complete: bool = False,
     watch_patterns: Optional[List[str]] = None,
+    justification: Optional[str] = None,
 ) -> str:
     """
     Execute a command in the configured terminal environment.
@@ -1793,7 +1796,8 @@ def terminal_tool(
         # Skip check if force=True (user has confirmed they want to run it)
         approval_note = None
         if not force:
-            approval = _check_all_guards(command, env_type)
+            approval = _check_all_guards(command, env_type,
+                                              justification=justification)
             if not approval["approved"]:
                 # Check if this is an approval_required (gateway ask mode)
                 if approval.get("status") == "approval_required":
@@ -1805,6 +1809,18 @@ def terminal_tool(
                         "command": approval.get("command", command),
                         "description": approval.get("description", "command flagged"),
                         "pattern_key": approval.get("pattern_key", ""),
+                    }, ensure_ascii=False)
+                # Handle justification_required / justification_denied
+                if approval.get("status") in ("justification_required", "justification_denied"):
+                    return json.dumps({
+                        "output": "",
+                        "exit_code": -1,
+                        "error": approval.get("message", "Justification required before approval"),
+                        "status": approval.get("status"),
+                        "command": approval.get("command", command),
+                        "description": approval.get("description", "command flagged"),
+                        "pattern_key": approval.get("pattern_key", ""),
+                        "pattern_keys": approval.get("pattern_keys", []),
                     }, ensure_ascii=False)
                 # Command was blocked
                 desc = approval.get("description", "command flagged")
@@ -2293,6 +2309,7 @@ def _handle_terminal(args, **kw):
         pty=args.get("pty", False),
         notify_on_complete=args.get("notify_on_complete", False),
         watch_patterns=args.get("watch_patterns"),
+        justification=args.get("justification"),
     )
 
 
