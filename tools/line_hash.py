@@ -32,7 +32,8 @@ def compute_line_hash(line: str) -> str:
     The hash is deterministic and stable across platforms.  It is derived
     from the first 8 hex digits of SHA-256, converted to base36.
     """
-    digest = hashlib.sha256(line.encode("utf-8")).hexdigest()
+    normalized = " ".join(line.split())
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
     num = int(digest[:8], 16)
     chars: list[str] = []
     for _ in range(_HASH_LEN):

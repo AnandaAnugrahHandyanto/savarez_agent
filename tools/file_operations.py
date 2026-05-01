@@ -115,7 +115,11 @@ class PatchResult:
     files_deleted: List[str] = field(default_factory=list)
     lint: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
-    
+    old_text: Optional[str] = None
+    new_text: Optional[str] = None
+    replacement_count: int = 0
+    strategy: Optional[str] = None
+
     def to_dict(self) -> dict:
         result = {"success": self.success}
         if self.diff:
@@ -130,6 +134,14 @@ class PatchResult:
             result["lint"] = self.lint
         if self.error:
             result["error"] = self.error
+        if self.old_text:
+            result["old_text"] = self.old_text
+        if self.new_text is not None and self.strategy == "hashline":
+            result["new_text"] = self.new_text
+        if self.replacement_count:
+            result["replacement_count"] = self.replacement_count
+        if self.strategy:
+            result["strategy"] = self.strategy
         return result
 
 
@@ -974,13 +986,12 @@ class ShellFileOperations(FileOperations):
 
         return PatchResult(
             success=True,
-            file_path=path,
             old_text=format_hash_lines(old_lines[start_line - 1 : end_line], offset=start_line - 1),
             new_text=new_content,
             replacement_count=1,
             strategy="hashline",
             diff=diff,
-            lint_result=lint,
+            lint=lint.to_dict() if lint else None,
         )
 
     def _check_lint(self, path: str) -> LintResult:

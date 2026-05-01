@@ -40,8 +40,11 @@ class TestComputeLineHash:
         h = compute_line_hash("你好世界")
         assert len(h) == 4
 
-    def test_whitespace_sensitive(self):
-        assert compute_line_hash("  x") != compute_line_hash(" x")
+    def test_whitespace_invariant(self):
+        """Whitespace differences (tabs, multiple spaces, trailing) produce the same hash."""
+        assert compute_line_hash("  x") == compute_line_hash(" x")
+        assert compute_line_hash("a\tb") == compute_line_hash("a b")
+        assert compute_line_hash("x  ") == compute_line_hash("x")
 
 
 # =========================================================================
