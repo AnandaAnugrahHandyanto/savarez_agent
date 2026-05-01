@@ -304,12 +304,14 @@ def generate_phonetics(segments: list[dict], api_key: str | None = None) -> list
         return [{**s, "lang": "en", "phonetic": ""} for s in segments]
 
     # Strip markdown code fences if present
+    logger.debug("Kimi raw response (first 500 chars): %s", raw[:500])
     clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
     try:
         kimi_results = json.loads(clean)
     except json.JSONDecodeError:
         logger.warning(
-            "Kimi returned non-JSON — treating all segments as English. Raw: %s", raw[:300]
+            "Kimi returned non-JSON — treating all segments as English.\n"
+            "Raw output was:\n%s", raw[:1000]
         )
         return [{**s, "lang": "en", "phonetic": ""} for s in segments]
 
