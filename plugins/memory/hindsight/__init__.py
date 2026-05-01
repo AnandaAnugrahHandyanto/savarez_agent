@@ -509,6 +509,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # classification is skipped.  Matches Mem0 plugin pattern.
         self._aux_consecutive_failures = 0
         self._aux_breaker_open_until = 0.0
+        self._aux_fallback_to_main = False  # use main model when aux breaker trips
         self._retain_mode = "full"  # "full" or "delta"
         self._retain_overlap_turns = 2
         self._last_retain_index = 0  # tracks where the last delta ended
@@ -791,6 +792,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "retain_mode", "description": "What to send on each retain cycle: 'full' (entire session, replaces previous) or 'delta' (only new turns + overlap, creates independent memories)", "default": "full", "choices": ["full", "delta"]},
             {"key": "retain_overlap_turns", "description": "When retain_mode is 'delta', how many previous turns to include for context continuity", "default": 2},
             {"key": "retain_context_tagging", "description": "Scope-tag retained memories: 'off' (no tags), 'on' (always tag by platform:chat_id), 'smart' (classify general vs scoped via auxiliary LLM)", "default": "off", "choices": ["off", "on", "smart"]},
+            {"key": "aux_fallback_to_main", "description": "When auxiliary LLM circuit breaker trips, fall back to the main model for smart pipeline instead of bypassing", "default": False},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
@@ -1057,6 +1059,7 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._retain_mode not in ("full", "delta"):
             self._retain_mode = "full"
         self._retain_overlap_turns = max(0, int(self._config.get("retain_overlap_turns", 2)))
+        self._aux_fallback_to_main = bool(self._config.get("aux_fallback_to_main", False))
         raw_tagging = self._config.get("retain_context_tagging", "off")
         # Backward compat: treat True as "smart", False as "off"
         if raw_tagging is True:
@@ -1343,19 +1346,25 @@ class HindsightMemoryProvider(MemoryProvider):
             kwargs["tags"] = merged_tags
         return kwargs
 
-    def _classify_for_retain(self, content: str) -> str:
+    def _classify_for_retain(self, content: str, *, use_main: bool = False) -> str:
         """Classify content relevance using auxiliary LLM.
 
         Returns one of: SKIP, GENERAL, SCOPED.
         - SKIP: noise (greetings, acks, meta-commentary) — don't retain
         - GENERAL: knowledge useful across all contexts
         - SCOPED: knowledge specific to the current platform/channel context
+
+        When use_main=True, falls back to the main model instead of auxiliary.
         """
         try:
             from agent.auxiliary_client import get_text_auxiliary_client
 
             task = "memory_retain_filter"
-            client, model = get_text_auxiliary_client(task)
+            if use_main:
+                client, model = get_text_auxiliary_client("")  # "" = main model
+                logger.debug("Classify using main model fallback (model=%s)", model)
+            else:
+                client, model = get_text_auxiliary_client(task)
 
             if not client:
                 logger.debug("No auxiliary client for %s; fail-open to GENERAL", task)
@@ -1458,11 +1467,13 @@ class HindsightMemoryProvider(MemoryProvider):
             tags.append(f"scope:{self._platform}:{self._chat_id}")
         return tags
 
-    def _check_dedup(self, content: str) -> bool:
+    def _check_dedup(self, content: str, *, use_main: bool = False) -> bool:
         """Check if content is a duplicate of existing memories via recall + auxiliary LLM.
 
         Returns True if content is DUPLICATE (should skip retain), False if NOVEL.
         Fails open (returns False) on any error so retain proceeds.
+
+        When use_main=True, falls back to the main model instead of auxiliary.
         """
         try:
             # Truncate content for recall query
@@ -1504,7 +1515,11 @@ class HindsightMemoryProvider(MemoryProvider):
             from agent.auxiliary_client import get_text_auxiliary_client
 
             task = "memory_retain_filter"
-            client, model = get_text_auxiliary_client(task)
+            if use_main:
+                client, model = get_text_auxiliary_client("")  # "" = main model
+                logger.debug("Dedup using main model fallback (model=%s)", model)
+            else:
+                client, model = get_text_auxiliary_client(task)
 
             if not client:
                 logger.debug("Dedup check: no auxiliary client for %s; skipping (NOVEL)", task)
@@ -1610,21 +1625,28 @@ class HindsightMemoryProvider(MemoryProvider):
             needs_classification = self._retain_prefilter or self._retain_context_tagging == "smart"
             classification = None
 
-            # Circuit breaker: if aux LLM has been failing, bypass the
-            # smart pipeline entirely.  Retains still happen — just raw.
+            # Circuit breaker: if aux LLM has been failing, either fall back
+            # to the main model (if aux_fallback_to_main is on) or bypass the
+            # smart pipeline entirely.  Retains still happen either way.
             aux_bypassed = self._is_aux_breaker_open()
+            use_main = False
             if aux_bypassed and (needs_classification or self._retain_dedup):
-                logger.info("Auxiliary circuit breaker open — bypassing smart pipeline for %d chars", len(content))
+                if self._aux_fallback_to_main:
+                    use_main = True
+                    aux_bypassed = False  # not bypassed — using main model instead
+                    logger.info("Auxiliary circuit breaker open — falling back to main model for %d chars", len(content))
+                else:
+                    logger.info("Auxiliary circuit breaker open — bypassing smart pipeline for %d chars", len(content))
 
             if needs_classification and not aux_bypassed:
-                classification = self._classify_for_retain(content)
+                classification = self._classify_for_retain(content, use_main=use_main)
                 if self._retain_prefilter and classification == "SKIP":
                     logger.info("Smart retain: SKIP — not retaining %d chars", len(content))
                     return
 
             # Dedup check: query existing memories and skip if content is redundant
             if self._retain_dedup and not aux_bypassed:
-                if self._check_dedup(content):
+                if self._check_dedup(content, use_main=use_main):
                     logger.info("Dedup check: DUPLICATE — skipping retain of %d chars", len(content))
                     return
 
