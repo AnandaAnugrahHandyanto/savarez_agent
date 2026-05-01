@@ -501,6 +501,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_prefilter = False
         self._retain_context_tagging = "off"  # "off", "on", or "smart"
         self._retain_dedup = False
+        self._retain_extract = False  # client-side extraction before classify/dedup
 
         # Circuit breaker for auxiliary LLM calls (smart pipeline).
         # After _AUX_BREAKER_THRESHOLD consecutive failures, bypass the
@@ -789,6 +790,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
             {"key": "retain_prefilter", "description": "Classify content with auxiliary LLM before retaining (requires bank_retain_mission)", "default": False},
             {"key": "retain_dedup", "description": "Check for duplicate content via recall before retaining", "default": False},
+            {"key": "retain_extract", "description": "Extract individual discussion points client-side before classify/dedup. Reduces retain payload and API cost by sending pre-extracted facts instead of raw transcripts", "default": False},
             {"key": "retain_mode", "description": "What to send on each retain cycle: 'full' (entire session, replaces previous) or 'delta' (only new turns + overlap, creates independent memories)", "default": "full", "choices": ["full", "delta"]},
             {"key": "retain_overlap_turns", "description": "When retain_mode is 'delta', how many previous turns to include for context continuity", "default": 2},
             {"key": "retain_context_tagging", "description": "Scope-tag retained memories: 'off' (no tags), 'on' (always tag by platform:chat_id), 'smart' (classify general vs scoped via auxiliary LLM)", "default": "off", "choices": ["off", "on", "smart"]},
@@ -1055,6 +1057,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # Smart retain
         self._retain_prefilter = self._config.get("retain_prefilter", False)
         self._retain_dedup = self._config.get("retain_dedup", False)
+        self._retain_extract = self._config.get("retain_extract", False)
         self._retain_mode = self._config.get("retain_mode", "full")
         if self._retain_mode not in ("full", "delta"):
             self._retain_mode = "full"
@@ -1119,9 +1122,9 @@ class HindsightMemoryProvider(MemoryProvider):
                          self._bank_id_template, self._agent_identity, self._agent_workspace,
                          self._platform, self._user_id, self._bank_id)
         logger.debug("Hindsight config: auto_retain=%s, auto_recall=%s, retain_every_n=%d, "
-                     "retain_async=%s, retain_mode=%s, retain_overlap=%d, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
+                     "retain_async=%s, retain_mode=%s, retain_overlap=%d, retain_extract=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
                      self._auto_retain, self._auto_recall, self._retain_every_n_turns,
-                     self._retain_async, self._retain_mode, self._retain_overlap_turns, self._retain_context, self._recall_max_tokens, self._recall_max_input_chars,
+                     self._retain_async, self._retain_mode, self._retain_overlap_turns, self._retain_extract, self._retain_context, self._recall_max_tokens, self._recall_max_input_chars,
                      self._tags, self._recall_tags)
 
         # For local mode, start the embedded daemon in the background so it
@@ -1552,6 +1555,155 @@ class HindsightMemoryProvider(MemoryProvider):
             logger.warning("Dedup check failed (proceeding with retain): %s", exc)
             return False
 
+    def _extract_points(self, content: str, *, use_main: bool = False) -> list[str]:
+        """Extract distinct discussion points from conversation transcript using auxiliary LLM.
+
+        Returns a list of short factual statements. On failure, returns an empty list
+        (caller should fall back to blob-level retain).
+        """
+        try:
+            from agent.auxiliary_client import get_text_auxiliary_client
+
+            task = "memory_retain_filter"
+            if use_main:
+                client, model = get_text_auxiliary_client("")
+                logger.debug("Extract points using main model fallback (model=%s)", model)
+            else:
+                client, model = get_text_auxiliary_client(task)
+
+            if not client:
+                logger.debug("No auxiliary client for %s; skipping extraction", task)
+                return []
+
+            # Truncate from the end (most recent = most relevant)
+            truncated = content[-6000:] if len(content) > 6000 else content
+
+            mission_ctx = ""
+            if self._bank_retain_mission:
+                mission_ctx = f"\nRETAIN MISSION (what matters):\n{self._bank_retain_mission}\n"
+
+            prompt = (
+                f"Extract distinct discussion points from this conversation.{mission_ctx}\n"
+                f"CONVERSATION:\n{truncated}\n\n"
+                f"Rules:\n"
+                f"- Each point should be a short factual statement (1-2 sentences)\n"
+                f"- Include: decisions, architectural choices, facts learned, action items, "
+                f"preferences, bug fixes, configuration changes\n"
+                f"- Exclude: greetings, acknowledgments, CI pass/fail notifications, "
+                f"PR merge confirmations, status pings, meta-commentary about the conversation\n"
+                f"- When in doubt, include the point (conservative extraction)\n\n"
+                f"Return ONLY a JSON array of strings. No markdown, no explanation.\n"
+                f"Example: [\"Decided to use PostgreSQL for the auth service\", "
+                f"\"API rate limit set to 100 requests per minute\"]"
+            )
+
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=2000,
+                temperature=0,
+            )
+            raw = response.choices[0].message.content.strip()
+
+            # Parse JSON array — handle markdown code fences
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+            points = json.loads(raw)
+            if not isinstance(points, list):
+                logger.warning("Extract points: expected list, got %s", type(points).__name__)
+                return []
+
+            points = [str(p).strip() for p in points if p and str(p).strip()]
+            logger.info("Extract points: %d points from %d chars of conversation", len(points), len(content))
+            self._record_aux_success()
+            return points
+
+        except Exception as exc:
+            self._record_aux_failure()
+            logger.warning("Extract points failed (%s); falling back to blob retain", exc)
+            return []
+
+    def _classify_points(self, points: list[str], *, use_main: bool = False) -> list[dict]:
+        """Classify an array of extracted points in a single batched LLM call.
+
+        Returns a list of dicts: [{"point": str, "verdict": "RETAIN"|"SKIP", "scope": "GENERAL"|"SCOPED"}, ...]
+        On failure, returns all points as RETAIN+SCOPED (fail-open).
+        """
+        if not points:
+            return []
+
+        try:
+            from agent.auxiliary_client import get_text_auxiliary_client
+
+            task = "memory_retain_filter"
+            if use_main:
+                client, model = get_text_auxiliary_client("")
+                logger.debug("Classify points using main model fallback (model=%s)", model)
+            else:
+                client, model = get_text_auxiliary_client(task)
+
+            if not client:
+                logger.debug("No auxiliary client for %s; fail-open all points", task)
+                return [{"point": p, "verdict": "RETAIN", "scope": "SCOPED"} for p in points]
+
+            numbered = "\n".join(f"{i+1}. {p}" for i, p in enumerate(points))
+
+            mission_ctx = ""
+            if self._bank_retain_mission:
+                mission_ctx = f"\nRETAIN MISSION:\n{self._bank_retain_mission}\n"
+
+            prompt = (
+                f"Classify each discussion point for memory retention.{mission_ctx}\n"
+                f"POINTS:\n{numbered}\n\n"
+                f"For each point, decide:\n"
+                f"- verdict: RETAIN (worth saving) or SKIP (noise, trivial, CI/PR status)\n"
+                f"- scope: GENERAL (useful across all projects) or SCOPED (specific to one project/channel)\n\n"
+                f"Return ONLY a JSON array with one object per point, in order.\n"
+                f"Example: [{{\"verdict\": \"RETAIN\", \"scope\": \"SCOPED\"}}, {{\"verdict\": \"SKIP\", \"scope\": \"\"}}]"
+            )
+
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1000,
+                temperature=0,
+            )
+            raw = response.choices[0].message.content.strip()
+
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+            results = json.loads(raw)
+            if not isinstance(results, list):
+                logger.warning("Classify points: expected list, got %s", type(results).__name__)
+                return [{"point": p, "verdict": "RETAIN", "scope": "SCOPED"} for p in points]
+
+            # Merge with original points and normalize
+            classified = []
+            for i, p in enumerate(points):
+                if i < len(results) and isinstance(results[i], dict):
+                    verdict = str(results[i].get("verdict", "RETAIN")).upper()
+                    scope = str(results[i].get("scope", "SCOPED")).upper()
+                    if verdict not in ("RETAIN", "SKIP"):
+                        verdict = "RETAIN"
+                    if scope not in ("GENERAL", "SCOPED"):
+                        scope = "SCOPED"
+                    classified.append({"point": p, "verdict": verdict, "scope": scope})
+                else:
+                    classified.append({"point": p, "verdict": "RETAIN", "scope": "SCOPED"})
+
+            retained = sum(1 for c in classified if c["verdict"] == "RETAIN")
+            skipped = len(classified) - retained
+            logger.info("Classify points: %d RETAIN, %d SKIP out of %d points", retained, skipped, len(classified))
+            self._record_aux_success()
+            return classified
+
+        except Exception as exc:
+            self._record_aux_failure()
+            logger.warning("Classify points failed (%s); fail-open all %d points", exc, len(points))
+            return [{"point": p, "verdict": "RETAIN", "scope": "SCOPED"} for p in points]
+
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Enqueue a retain for the current turn. Non-blocking.
 
@@ -1630,7 +1782,7 @@ class HindsightMemoryProvider(MemoryProvider):
             # smart pipeline entirely.  Retains still happen either way.
             aux_bypassed = self._is_aux_breaker_open()
             use_main = False
-            if aux_bypassed and (needs_classification or self._retain_dedup):
+            if aux_bypassed and (needs_classification or self._retain_dedup or self._retain_extract):
                 if self._aux_fallback_to_main:
                     use_main = True
                     aux_bypassed = False  # not bypassed — using main model instead
@@ -1638,6 +1790,74 @@ class HindsightMemoryProvider(MemoryProvider):
                 else:
                     logger.info("Auxiliary circuit breaker open — bypassing smart pipeline for %d chars", len(content))
 
+            # ── Phase 4: Client-side extraction pipeline ──────────────
+            # Extract individual points, classify+dedup at point level,
+            # retain only clean pre-extracted facts.
+            if self._retain_extract and not aux_bypassed:
+                points = self._extract_points(content, use_main=use_main)
+                if points:
+                    # Classify all points in one batched call
+                    classified = self._classify_points(points, use_main=use_main)
+
+                    # Filter to RETAIN points only
+                    retained_points = [c for c in classified if c["verdict"] == "RETAIN"]
+                    if not retained_points:
+                        logger.info("Extract pipeline: all %d points classified as SKIP", len(classified))
+                        return
+
+                    # Dedup each surviving point individually
+                    if self._retain_dedup:
+                        novel_points = []
+                        for rp in retained_points:
+                            if not self._check_dedup(rp["point"], use_main=use_main):
+                                novel_points.append(rp)
+                            else:
+                                logger.debug("Extract pipeline: dedup DUPLICATE — %s", rp["point"][:80])
+                        if not novel_points:
+                            logger.info("Extract pipeline: all %d retained points are duplicates", len(retained_points))
+                            return
+                        retained_points = novel_points
+
+                    # Build retain items for each point with appropriate scope tags
+                    items = []
+                    for rp in retained_points:
+                        point_tags = list(lineage_tags) if lineage_tags else []
+                        if self._retain_context_tagging == "on":
+                            point_tags.append(self._build_scope_tag())
+                        elif self._retain_context_tagging == "smart":
+                            if rp.get("scope") == "SCOPED":
+                                point_tags.append(self._build_scope_tag())
+                            else:
+                                point_tags.append("scope:general")
+
+                        item = self._build_retain_kwargs(
+                            rp["point"],
+                            context=retain_context,
+                            metadata=metadata_snapshot,
+                            tags=point_tags or None,
+                        )
+                        item.pop("bank_id", None)
+                        item.pop("retain_async", None)
+                        items.append(item)
+
+                    logger.info("Extract pipeline: retaining %d points (%d extracted, %d after classify, %d after dedup)",
+                                len(items), len(points), sum(1 for c in classified if c["verdict"] == "RETAIN"),
+                                len(items))
+
+                    # Batch retain — no document_id, each extraction cycle is additive
+                    self._run_hindsight_operation(
+                        lambda client: client.aretain_batch(
+                            bank_id=bank_id,
+                            items=items,
+                            retain_async=retain_async_flag,
+                        )
+                    )
+                    logger.debug("Extract pipeline retain succeeded")
+                    return
+                else:
+                    logger.info("Extract pipeline: extraction failed or empty, falling back to blob retain")
+
+            # ── Blob-level pipeline (original / fallback) ─────────────
             if needs_classification and not aux_bypassed:
                 classification = self._classify_for_retain(content, use_main=use_main)
                 if self._retain_prefilter and classification == "SKIP":
