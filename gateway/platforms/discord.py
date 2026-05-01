@@ -532,6 +532,19 @@ class DiscordAdapter(BasePlatformAdapter):
         # Per-message active reaction tracking for persona/tool emoji swapping.
         # Key: message.id (int), Value: currently active reaction emoji (str).
         self._active_tool_reactions: Dict[int, str] = {}
+        # Timestamp of last reaction swap per message — hysteresis to avoid
+        # Discord rate limits (reaction endpoints: ~1 req/0.25s per channel).
+        # Default cooldown: 1 second between swaps per message.
+        self._last_reaction_swap: Dict[int, float] = {}
+        self._reaction_cooldown: float = float(
+            self.config.extra.get("reaction_cooldown",
+                                  1.0)
+        )
+        # Cache resolved config values at init to avoid disk reads on every
+        # tool call.  Persona emoji and dynamic-reactions flag are stable for
+        # the lifetime of the adapter.
+        self._cached_persona_emoji: str = self._resolve_persona_emoji()
+        self._cached_dynamic_reactions: bool = self._resolve_dynamic_reactions()
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -1049,8 +1062,8 @@ class DiscordAdapter(BasePlatformAdapter):
         return os.getenv("DISCORD_REACTIONS", "true").lower() not in ("false", "0", "no") \
             and self.config.extra.get("reactions", True)
 
-    def _dynamic_reactions_enabled(self) -> bool:
-        """Check if per-tool reaction swapping is enabled.
+    def _resolve_dynamic_reactions(self) -> bool:
+        """Resolve dynamic reactions flag once at init.
 
         Resolution order:
         1. ``discord.dynamic_reactions`` in config.yaml (platform override)
@@ -1065,8 +1078,12 @@ class DiscordAdapter(BasePlatformAdapter):
         from hermes_cli.config import load_config
         return bool(load_config().get("dynamic_reactions", True))
 
-    def _persona_emoji(self) -> str:
-        """Return the agent's persona emoji.
+    def _dynamic_reactions_enabled(self) -> bool:
+        """Check if per-tool reaction swapping is enabled (cached)."""
+        return self._cached_dynamic_reactions
+
+    def _resolve_persona_emoji(self) -> str:
+        """Resolve the agent's persona emoji once at init.
 
         Resolution order:
         1. ``discord.persona_emoji`` in config.yaml (platform override)
@@ -1078,6 +1095,10 @@ class DiscordAdapter(BasePlatformAdapter):
         from hermes_cli.config import load_config
         return load_config().get("persona_emoji") or "👀"
 
+    def _persona_emoji(self) -> str:
+        """Return the agent's persona emoji (cached)."""
+        return self._cached_persona_emoji
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add the agent's persona emoji when processing begins."""
         if not self._reactions_enabled():
@@ -1087,6 +1108,7 @@ class DiscordAdapter(BasePlatformAdapter):
             emoji = self._persona_emoji()
             await self._add_reaction(message, emoji)
             self._active_tool_reactions[message.id] = emoji
+
     async def on_tool_call_start(self, event: MessageEvent, tool_name: str) -> None:
         """Swap the active reaction to the tool-specific emoji.
 
@@ -1094,19 +1116,32 @@ class DiscordAdapter(BasePlatformAdapter):
         event. Removes the previous reaction (persona or prior tool) and
         adds the emoji that represents the current tool, so the message
         always shows exactly one reaction reflecting what the agent is doing.
+
+        A per-message cooldown (default 1s) prevents hitting Discord's
+        reaction rate limits (~1 req/0.25s per channel, but remove+add = 2
+        calls per swap).
         """
         if not self._dynamic_reactions_enabled():
             return
         message = event.raw_message
         if not hasattr(message, "add_reaction"):
             return
+
+        # Hysteresis: skip if last swap was too recent
+        now = time.monotonic()
+        last = self._last_reaction_swap.get(message.id, 0.0)
+        if now - last < self._reaction_cooldown:
+            return
+
         from agent.display import get_tool_emoji
         tool_emoji = get_tool_emoji(tool_name, default="⚙️")
         current = self._active_tool_reactions.get(message.id)
         if current and current != tool_emoji:
             await self._remove_reaction(message, current)
-        await self._add_reaction(message, tool_emoji)
+        if current != tool_emoji:
+            await self._add_reaction(message, tool_emoji)
         self._active_tool_reactions[message.id] = tool_emoji
+        self._last_reaction_swap[message.id] = now
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Replace the active reaction with the persona emoji (success) or ❌ (failure)."""
@@ -1115,6 +1150,7 @@ class DiscordAdapter(BasePlatformAdapter):
         message = event.raw_message
         if hasattr(message, "add_reaction"):
             current = self._active_tool_reactions.pop(message.id, self._persona_emoji())
+            self._last_reaction_swap.pop(message.id, None)
             await self._remove_reaction(message, current)
             if outcome == ProcessingOutcome.SUCCESS:
                 await self._add_reaction(message, self._persona_emoji())
