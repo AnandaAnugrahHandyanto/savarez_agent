@@ -1547,6 +1547,14 @@ class TestTitleUniqueness:
         with pytest.raises(ValueError, match="already in use"):
             db.set_session_title("s2", "my project")
 
+    def test_duplicate_title_case_insensitive(self, db):
+        """A differently-cased duplicate title is also blocked."""
+        db.create_session("s1", "cli")
+        db.create_session("s2", "cli")
+        db.set_session_title("s1", "My Project")
+        with pytest.raises(ValueError, match="already in use"):
+            db.set_session_title("s2", "my project")
+
     def test_same_session_can_keep_title(self, db):
         """A session can re-set its own title without error."""
         db.create_session("s1", "cli")
@@ -1675,6 +1683,84 @@ class TestTitleSqlWildcards:
         db.set_session_title("s2", "testXproject #2")
         # Only "test_project" exists, so next should be "test_project #2"
         assert db.get_next_title_in_lineage("test_project") == "test_project #2"
+
+
+class TestTitleCaseInsensitive:
+    """resolve_session_by_title matches titles regardless of case."""
+
+    def test_resolve_case_insensitive(self, db):
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "My Project")
+        assert db.resolve_session_by_title("my project") == "s1"
+        assert db.resolve_session_by_title("MY PROJECT") == "s1"
+        assert db.resolve_session_by_title("My Project") == "s1"
+
+    def test_resolve_numbered_case_insensitive(self, db):
+        import time
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "Weekly Sync")
+        time.sleep(0.01)
+        db.create_session("s2", "cli")
+        db.set_session_title("s2", "Weekly Sync #2")
+        # Querying with different case still resolves to latest numbered
+        assert db.resolve_session_by_title("weekly sync") == "s2"
+
+    def test_get_session_by_title_case_insensitive(self, db):
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "Hello World")
+        result = db.get_session_by_title("hello world")
+        assert result is not None
+        assert result["id"] == "s1"
+
+
+class TestTitleFuzzyMatch:
+    """resolve_session_by_title has a difflib fallback for minor typos."""
+
+    def test_single_char_typo(self, db):
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "my project")
+        # One letter off — should still match via fuzzy fallback
+        assert db.resolve_session_by_title("my poject") == "s1"
+
+    def test_transposition_typo(self, db):
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "session notes")
+        # Transposed characters
+        assert db.resolve_session_by_title("sesion notes") == "s1"
+
+    def test_fuzzy_does_not_match_unrelated(self, db):
+        """Very different titles should not fuzzy match."""
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "project alpha")
+        db.create_session("s2", "cli")
+        db.set_session_title("s2", "completely different")
+        assert db.resolve_session_by_title("banana pizza") is None
+
+    def test_fuzzy_prefers_exact_over_numbered(self, db):
+        """Fuzzy match still respects the numbered-variant preference."""
+        import time
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "Standup")
+        time.sleep(0.01)
+        db.create_session("s2", "cli")
+        db.set_session_title("s2", "Standup #2")
+        # Case-insensitive exact match finds both; numbered takes precedence
+        assert db.resolve_session_by_title("standup") == "s2"
+
+    def test_fuzzy_with_case_and_typo(self, db):
+        """Combination of wrong case AND typo still works."""
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "Morning Standup")
+        assert db.resolve_session_by_title("moring stadup") == "s1"
+
+    def test_fuzzy_with_multiple_similar_titles(self, db):
+        """When multiple titles are similar, pick the closest match."""
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "Morning Standup")
+        db.create_session("s2", "cli")
+        db.set_session_title("s2", "Night Standup")
+        # Typo is closer to "Morning" than "Night"
+        assert db.resolve_session_by_title("mornin standup") == "s1"
 
 
 class TestListSessionsRich:

@@ -789,9 +789,11 @@ class SessionDB:
         title = self.sanitize_title(title)
         def _do(conn):
             if title:
-                # Check uniqueness (allow the same session to keep its own title)
+                # Check uniqueness (allow the same session to keep its own title).
+                # Use COLLATE NOCASE to match the case-insensitive lookups in
+                # get_session_by_title / resolve_session_by_title.
                 cursor = conn.execute(
-                    "SELECT id FROM sessions WHERE title = ? AND id != ?",
+                    "SELECT id FROM sessions WHERE title = ? COLLATE NOCASE AND id != ?",
                     (title, session_id),
                 )
                 conflict = cursor.fetchone()
@@ -817,10 +819,10 @@ class SessionDB:
         return row["title"] if row else None
 
     def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
-        """Look up a session by exact title. Returns session dict or None."""
+        """Look up a session by title (case-insensitive). Returns session dict or None."""
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT * FROM sessions WHERE title = ?", (title,)
+                "SELECT * FROM sessions WHERE title = ? COLLATE NOCASE", (title,)
             )
             row = cursor.fetchone()
         return dict(row) if row else None
@@ -828,12 +830,17 @@ class SessionDB:
     def resolve_session_by_title(self, title: str) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest in a lineage.
 
-        If the exact title exists, returns that session's ID.
-        If not, searches for "title #N" variants and returns the latest one.
-        If the exact title exists AND numbered variants exist, returns the
-        latest numbered variant (the most recent continuation).
+        Matching is case-insensitive and tolerant of minor typos:
+
+        1. Case-insensitive exact match (COLLATE NOCASE).
+        2. Numbered variants: "title #N" — returns the latest one.
+        3. Fuzzy fallback via difflib for single-character typos.
+
+        Returns the session ID or None.
         """
-        # First try exact match
+        import difflib as _difflib
+
+        # First try case-insensitive exact match
         exact = self.get_session_by_title(title)
 
         # Also search for numbered variants: "title #2", "title #3", etc.
@@ -842,16 +849,33 @@ class SessionDB:
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT id, title, started_at FROM sessions "
-                "WHERE title LIKE ? ESCAPE '\\' ORDER BY started_at DESC",
+                "WHERE title LIKE ? ESCAPE '\\' COLLATE NOCASE ORDER BY started_at DESC",
                 (f"{escaped} #%",),
             )
             numbered = cursor.fetchall()
 
         if numbered:
-            # Return the most recent numbered variant
             return numbered[0]["id"]
         elif exact:
             return exact["id"]
+
+        # Fuzzy fallback: if no match, try difflib against all titled sessions.
+        # Only accept very close matches (ratio >= 0.85) to avoid false positives.
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT id, title FROM sessions WHERE title IS NOT NULL"
+            )
+            candidates = [(row["id"], row["title"]) for row in cursor.fetchall()]
+
+        if candidates:
+            cands = [t for _, t in candidates]
+            close = _difflib.get_close_matches(
+                title.lower(), [t.lower() for t in cands], n=1, cutoff=0.85
+            )
+            if close:
+                orig_title = next(t for t in cands if t.lower() == close[0])
+                return next(sid for sid, t in candidates if t == orig_title)
+
         return None
 
     def get_next_title_in_lineage(self, base_title: str) -> str:
