@@ -188,7 +188,7 @@ function VideoPlayer({
   return (
     <div
       className="relative w-full rounded-lg overflow-hidden bg-zinc-900"
-      style={{ maxHeight: "40vh", minHeight: "120px" }}
+      style={{ maxHeight: "55vh", minHeight: "160px" }}
     >
       {state === "error" ? (
         <div className="flex flex-col items-center justify-center gap-2 py-10 px-4 text-zinc-400">
@@ -205,7 +205,7 @@ function VideoPlayer({
           src={src}
           controls
           className="w-full h-full object-contain"
-          style={{ maxHeight: "40vh", display: state === "loading" ? "none" : "block" }}
+          style={{ maxHeight: "55vh", display: state === "loading" ? "none" : "block" }}
           onCanPlay={() => setState("ready")}
           onError={() => setState("error")}
         />
@@ -239,6 +239,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
     setLoading(true);
     fetchJSON(`${API}/jobs/${jobId}`)
       .then((data: CaptionJob) => {
+        console.log("[captions] job loaded", data.id, "segments:", data.segments?.length, data.segments?.[0]);
         setJob(data);
         setSegments(data.segments);
         setStyle(data.style);
@@ -351,8 +352,8 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
       {/* ── Body ── */}
       <div className="flex flex-1 overflow-hidden">
 
-        {/* ── Left: video + actions + style ── */}
-        <div className="w-[360px] shrink-0 flex flex-col border-r border-zinc-200 dark:border-zinc-800 overflow-y-auto">
+        {/* ── Left: video + actions ── */}
+        <div className="w-[420px] shrink-0 flex flex-col border-r border-zinc-200 dark:border-zinc-800 overflow-y-auto">
           <div className="p-4">
             <VideoPlayer src={`${API}/jobs/${jobId}/video?t=${burnTimestamp}`} />
           </div>
@@ -389,23 +390,11 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
             </div>
           )}
 
-          {/* Style settings */}
-          <div className="border-t border-zinc-200 dark:border-zinc-800 mx-4 pt-4 pb-6">
-            <p className="text-xs font-semibold uppercase tracking-wide text-zinc-400 dark:text-zinc-500 mb-3">Caption Style</p>
-            <div className="space-y-2.5">
-              <StyleField label="Font" value={style.font} onChange={(v) => setStyle((s) => s && ({ ...s, font: v }))} />
-              <StyleNumberField label="Font size" value={style.font_size} onChange={(v) => setStyle((s) => s && ({ ...s, font_size: v }))} />
-              <StyleColorField label="Text color" value={style.primary_color} onChange={(v) => setStyle((s) => s && ({ ...s, primary_color: v }))} />
-              <StyleColorField label="Outline" value={style.outline_color} onChange={(v) => setStyle((s) => s && ({ ...s, outline_color: v }))} />
-              <StyleNumberField label="Outline width" value={style.outline_width} onChange={(v) => setStyle((s) => s && ({ ...s, outline_width: v }))} />
-              <StyleNumberField label="Bottom margin" value={style.margin_bottom} onChange={(v) => setStyle((s) => s && ({ ...s, margin_bottom: v }))} />
-            </div>
-            <p className="text-xs text-zinc-400 mt-3">Style changes apply on the next Re-burn.</p>
-          </div>
         </div>
 
-        {/* ── Right: segment editor ── */}
+        {/* ── Right: segment editor + style settings ── */}
         <div className="flex-1 overflow-y-auto p-5">
+          <div className="max-w-2xl mx-auto">
           <div className="flex items-baseline gap-2 mb-4">
             <h2 className="text-base font-semibold">Segments</h2>
             <span className="text-xs text-zinc-400">{segments.length} total · edits are saved on Re-burn</span>
@@ -417,7 +406,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
               <p className="text-xs mt-1 text-zinc-500">The transcription may have returned nothing.</p>
             </div>
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-2 pb-2">
               {segments.map((seg, idx) => {
                 const lang = (seg.lang === "vi" ? "vi" : "en") as "en" | "vi";
                 return (
@@ -442,7 +431,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                         {lang.toUpperCase()}
                       </button>
                       <input
-                        className="flex-1 min-w-0 bg-transparent border-b border-transparent hover:border-zinc-300 focus:border-blue-500 dark:hover:border-zinc-600 dark:focus:border-blue-400 outline-none px-1 py-0.5 transition-colors"
+                        className="flex-1 min-w-0 bg-transparent border-b border-transparent hover:border-zinc-300 focus:border-blue-500 dark:hover:border-zinc-600 dark:focus:border-blue-400 outline-none px-1 py-0.5 transition-colors text-zinc-900 dark:text-zinc-100"
                         value={seg.text}
                         onChange={(e) => updateSegment(idx, "text", e.target.value)}
                         placeholder="(no text)"
@@ -452,7 +441,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                       <div className="flex items-center gap-2 pl-[calc(1.75rem+5.5rem+3rem+0.75rem)]">
                         <span className="text-xs text-zinc-400 shrink-0">phonetic</span>
                         <input
-                          className="flex-1 min-w-0 bg-transparent border-b border-transparent hover:border-zinc-300 focus:border-blue-500 dark:hover:border-zinc-600 dark:focus:border-blue-400 outline-none px-1 py-0.5 italic text-zinc-500 dark:text-zinc-400 transition-colors"
+                          className="flex-1 min-w-0 bg-transparent border-b border-transparent hover:border-zinc-300 focus:border-blue-500 dark:hover:border-zinc-600 dark:focus:border-blue-400 outline-none px-1 py-0.5 italic text-zinc-600 dark:text-zinc-300 transition-colors"
                           value={seg.phonetic}
                           onChange={(e) => updateSegment(idx, "phonetic", e.target.value)}
                           placeholder="[pronunciation guide]"
@@ -464,6 +453,21 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
               })}
             </div>
           )}
+
+          {/* ── Style settings (below segments) ── */}
+          <div className="border-t border-zinc-200 dark:border-zinc-800 mt-6 pt-5 pb-8">
+            <p className="text-xs font-semibold uppercase tracking-wide text-zinc-400 dark:text-zinc-500 mb-3">Caption Style</p>
+            <div className="space-y-2.5">
+              <StyleField label="Font" value={style.font} onChange={(v) => setStyle((s) => s && ({ ...s, font: v }))} />
+              <StyleNumberField label="Font size" value={style.font_size} onChange={(v) => setStyle((s) => s && ({ ...s, font_size: v }))} />
+              <StyleColorField label="Text color" value={style.primary_color} onChange={(v) => setStyle((s) => s && ({ ...s, primary_color: v }))} />
+              <StyleColorField label="Outline" value={style.outline_color} onChange={(v) => setStyle((s) => s && ({ ...s, outline_color: v }))} />
+              <StyleNumberField label="Outline width" value={style.outline_width} onChange={(v) => setStyle((s) => s && ({ ...s, outline_width: v }))} />
+              <StyleNumberField label="Bottom margin" value={style.margin_bottom} onChange={(v) => setStyle((s) => s && ({ ...s, margin_bottom: v }))} />
+            </div>
+            <p className="text-xs text-zinc-400 mt-3">Style changes apply on the next Re-burn.</p>
+          </div>
+          </div>
         </div>
       </div>
     </div>
@@ -479,7 +483,7 @@ function StyleField({ label, value, onChange }: { label: string; value: string; 
     <div className="flex items-center gap-2">
       <span className="w-24 shrink-0 text-xs text-zinc-500">{label}</span>
       <input
-        className="flex-1 min-w-0 bg-transparent border border-zinc-300 dark:border-zinc-600 rounded px-2 py-1 text-xs outline-none focus:border-blue-500 transition-colors"
+        className="flex-1 min-w-0 bg-transparent border border-zinc-300 dark:border-zinc-600 rounded px-2 py-1 text-xs outline-none focus:border-blue-500 transition-colors text-zinc-900 dark:text-zinc-100"
         value={value}
         onChange={(e) => onChange(e.target.value)}
       />
@@ -493,7 +497,7 @@ function StyleNumberField({ label, value, onChange }: { label: string; value: nu
       <span className="w-24 shrink-0 text-xs text-zinc-500">{label}</span>
       <input
         type="number"
-        className="w-20 bg-transparent border border-zinc-300 dark:border-zinc-600 rounded px-2 py-1 text-xs outline-none focus:border-blue-500 transition-colors"
+        className="w-20 bg-transparent border border-zinc-300 dark:border-zinc-600 rounded px-2 py-1 text-xs outline-none focus:border-blue-500 transition-colors text-zinc-900 dark:text-zinc-100"
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
       />
