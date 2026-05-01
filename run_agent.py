@@ -899,7 +899,7 @@ class AIAgent:
         provider_sort: str = None,
         provider_require_parameters: bool = False,
         provider_data_collection: str = None,
-        provider_zdr: bool = None,
+        provider_zdr: bool = False,
         session_id: str = None,
         tool_progress_callback: callable = None,
         tool_start_callback: callable = None,
