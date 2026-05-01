@@ -71,6 +71,49 @@ def _no_restart_verify_sleep(monkeypatch):
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _cmd_update_os_kill_side_effect_tracker(
+    *,
+    absorb_all_signals_to_pids: frozenset[int] | None = None,
+    escalate_guard_pids: frozenset[int] | None = None,
+):
+    """Build ``os.kill`` side_effect + call log for fragile cmd_update kill asserts.
+
+    Some production paths SIGTERM then, if the PID still looks alive, escalate to
+    SIGKILL (dashboard sweep, PID-file wait helpers, ``terminate_pid``, …).  In
+    these tests nothing is truly running — we must emulate "process vanished
+    after SIGTERM" by **not recording** follow-up SIGKILL to the same PID after
+    we have seen SIGTERM, so assertions stay coupled to gateway logic only.
+
+    *absorb_all_signals_to_pids*: swallow every ``os.kill`` to those PIDs without
+        recording — for tests expecting **no** ``os.kill`` at all.
+    *escalate_guard_pids*: record SIGTERM; subsequent SIGKILL to the same PID
+        is swallowed (simulated graceful exit completed).
+    """
+    calls: list[tuple[int, int]] = []
+    term_seen: set[int] = set()
+    escalate_guard_pids = escalate_guard_pids or frozenset()
+    absorb = absorb_all_signals_to_pids or frozenset()
+
+    sigterm = signal.SIGTERM
+    sigkill = getattr(signal, "SIGKILL", 9)
+
+    def _kill(pid, sig, *args, **kwargs):
+        spid = int(pid)
+
+        if spid in absorb:
+            return None
+        if spid in escalate_guard_pids and sig == sigterm:
+            term_seen.add(spid)
+            calls.append((spid, sig))
+            return None
+        if spid in escalate_guard_pids and sig == sigkill and spid in term_seen:
+            return None
+        calls.append((spid, sig))
+        return None
+
+    return _kill, calls
+
+
 def _make_run_side_effect(
     branch="main",
     verify_ok=True,
@@ -461,19 +504,22 @@ class TestCmdUpdateLaunchdRestart:
 
         # PID file probing in ``launchd_restart`` / ``_wait_for_gateway_exit`` is
         # real; keep it empty so nothing escalates via gateway.status helpers.
+        _kill_se, kill_calls = _cmd_update_os_kill_side_effect_tracker(
+            absorb_all_signals_to_pids=frozenset({12345}),
+        )
         with patch("gateway.status.get_running_pid", return_value=None):
             with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
                  patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
                  patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
                  patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=True) as graceful, \
-                 patch("os.kill") as kill:
+                 patch("os.kill", side_effect=_kill_se):
                 cmd_update(mock_args)
 
         captured = capsys.readouterr().out
         restart.assert_called_once_with("coder", 12345)
         graceful.assert_called_once()
         # Graceful drain succeeded — no SIGTERM fallback needed.
-        kill.assert_not_called()
+        assert kill_calls == [], f"unexpected os.kill audit trail: {kill_calls!r}"
         assert "Restarting manual gateway profile(s): coder" in captured
         assert "Restart manually: hermes gateway run" not in captured
 
@@ -500,19 +546,22 @@ class TestCmdUpdateLaunchdRestart:
             pid=12345,
         )
 
+        _kill_se, kill_calls = _cmd_update_os_kill_side_effect_tracker(
+            escalate_guard_pids=frozenset({12345}),
+        )
         with patch("gateway.status.get_running_pid", return_value=None):
             with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
                  patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
                  patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
                  patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=False) as graceful, \
-                 patch("os.kill") as kill:
+                 patch("os.kill", side_effect=_kill_se):
                 cmd_update(mock_args)
 
         captured = capsys.readouterr().out
         restart.assert_called_once_with("coder", 12345)
         graceful.assert_called_once()
-        # Graceful drain returned False → SIGTERM fallback.
-        kill.assert_called_once()
+        # Graceful drain returned False → SIGTERM fallback (never record spurious SIGKILL).
+        assert kill_calls == [(12345, signal.SIGTERM)]
         assert "Restarting manual gateway profile(s): coder" in captured
 
     @patch("shutil.which", return_value=None)
@@ -926,21 +975,25 @@ class TestServicePidExclusion:
             _exclude = exclude_pids or set()
             return [p for p in [SERVICE_PID, MANUAL_PID] if p not in _exclude]
 
+        _kill_se, kill_calls = _cmd_update_os_kill_side_effect_tracker(
+            escalate_guard_pids=frozenset({MANUAL_PID}),
+        )
         with patch("gateway.status.get_running_pid", return_value=None):
             with patch.object(
                 gateway_cli, "_get_service_pids", return_value={SERVICE_PID}
             ), patch.object(
                 gateway_cli, "find_gateway_pids", side_effect=fake_find,
-            ), patch("os.kill") as mock_kill:
+            ), patch("os.kill", side_effect=_kill_se):
                 cmd_update(mock_args)
 
         captured = capsys.readouterr().out
         assert "Restarted" in captured
         # Manual PID should be killed
-        manual_kills = [c for c in mock_kill.call_args_list if c.args[0] == MANUAL_PID]
+        manual_kills = [c for c in kill_calls if c[0] == MANUAL_PID]
         assert len(manual_kills) == 1
+        assert manual_kills[0][1] == signal.SIGTERM
         # Service PID should NOT be killed
-        service_kills = [c for c in mock_kill.call_args_list if c.args[0] == SERVICE_PID]
+        service_kills = [c for c in kill_calls if c[0] == SERVICE_PID]
         assert len(service_kills) == 0
         # Should show manual stop message since manual PID was killed
         assert "Stopped 1 manual gateway" in captured
