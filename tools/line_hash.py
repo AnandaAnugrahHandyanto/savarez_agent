@@ -96,7 +96,7 @@ def strip_hash_prefix(hashline: str) -> str:
 # ── Anchor parsing ───────────────────────────────────────────────────────────
 
 _ANCHOR_RE = re.compile(
-    r"^(?P<hash>[0-9a-z]{4})(?:#(?P<disambig>\d+))?$"
+    r"^(?P<hash>[0-9a-z]{4})(?:#(?P<disambig>[1-9]\d*))?$"
 )
 
 
