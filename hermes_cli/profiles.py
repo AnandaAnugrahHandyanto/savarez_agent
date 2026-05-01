@@ -190,6 +190,24 @@ def validate_profile_name(name: str) -> None:
         )
 
 
+def normalize_profile_name(name: str | None) -> str | None:
+    """Lowercase a profile name so mixed-case inputs resolve correctly.
+
+    The dashboard UI and CLI may pass title-cased or upper-cased profile
+    names (e.g. ``Jules``, ``LIBRARIAN``), but profile directories and
+    the validation regex are strictly lowercase.  This helper normalizes
+    the name before validation / storage so the dispatcher does not hit
+    ``Invalid profile name`` errors at runtime.
+
+    * ``"default"`` is preserved as-is (special alias for ``~/.hermes``).
+    * ``None`` passes through (used for unassign).
+    * Empty string passes through (caller handles).
+    """
+    if name is None or name == "" or name == "default":
+        return name
+    return name.lower()
+
+
 def get_profile_dir(name: str) -> Path:
     """Resolve a profile name to its HERMES_HOME directory."""
     if name == "default":

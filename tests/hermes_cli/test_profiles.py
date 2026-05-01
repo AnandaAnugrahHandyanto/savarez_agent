@@ -16,6 +16,7 @@ import pytest
 
 from hermes_cli.profiles import (
     validate_profile_name,
+    normalize_profile_name,
     get_profile_dir,
     create_profile,
     delete_profile,
@@ -88,6 +89,34 @@ class TestValidateProfileName:
     def test_empty_string_rejected(self):
         with pytest.raises(ValueError):
             validate_profile_name("")
+
+
+class TestNormalizeProfileName:
+    """Tests for normalize_profile_name()."""
+
+    def test_lowercase_unchanged(self):
+        assert normalize_profile_name("jules") == "jules"
+
+    def test_title_case_lowered(self):
+        assert normalize_profile_name("Jules") == "jules"
+
+    def test_uppercase_lowered(self):
+        assert normalize_profile_name("LIBRARIAN") == "librarian"
+
+    def test_mixed_case_lowered(self):
+        assert normalize_profile_name("MyAgent") == "myagent"
+
+    def test_default_preserved(self):
+        assert normalize_profile_name("default") == "default"
+
+    def test_none_passthrough(self):
+        assert normalize_profile_name(None) is None
+
+    def test_empty_string_passthrough(self):
+        assert normalize_profile_name("") == ""
+
+    def test_hyphenated_preserved(self):
+        assert normalize_profile_name("Work-Bot") == "work-bot"
 
 
 # ===================================================================

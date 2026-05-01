@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from hermes_cli.profiles import normalize_profile_name
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -818,7 +820,12 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
 
     Refuses to reassign a task that's currently running (claim_lock set).
     Reassign after the current run completes if needed.
+
+    Profile names are normalized to lowercase before storage so that
+    mixed-case inputs from the dashboard UI (e.g. ``Jules``) resolve
+    correctly during dispatch.  See GH #18498.
     """
+    profile = normalize_profile_name(profile)
     with write_txn(conn):
         row = conn.execute(
             "SELECT status, claim_lock FROM tasks WHERE id = ?", (task_id,)

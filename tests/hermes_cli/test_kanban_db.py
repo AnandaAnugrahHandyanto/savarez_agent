@@ -436,3 +436,56 @@ def test_tenant_propagates_to_events(kanban_home):
     # The "created" event should have tenant in its payload.
     created = [e for e in events if e.kind == "created"]
     assert created and created[0].payload.get("tenant") == "biz-a"
+
+
+# ---------------------------------------------------------------------------
+# Profile name normalization in assign_task
+# ---------------------------------------------------------------------------
+
+def test_assign_task_normalizes_profile_to_lowercase(kanban_home):
+    """assign_task() should normalize mixed-case profile names to lowercase.
+
+    Regression test for https://github.com/NousResearch/hermes-agent/issues/18498
+    The dashboard UI may pass title-cased profile names (e.g. 'Jules'), but
+    the profile validation regex only accepts lowercase.  Normalizing on write
+    prevents the dispatcher from hitting 'Invalid profile name' errors.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x")
+        # Assign with mixed case
+        assert kb.assign_task(conn, t, "Jules")
+        task = kb.get_task(conn, t)
+        # Should be normalized to lowercase
+        assert task.assignee == "jules"
+
+
+def test_assign_task_normalizes_title_case_profile(kanban_home):
+    """Title-cased profile names like 'Librarian' become 'librarian'."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x")
+        assert kb.assign_task(conn, t, "Librarian")
+        assert kb.get_task(conn, t).assignee == "librarian"
+
+
+def test_assign_task_preserves_already_lowercase(kanban_home):
+    """Already-lowercase names should pass through unchanged."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x")
+        assert kb.assign_task(conn, t, "jules")
+        assert kb.get_task(conn, t).assignee == "jules"
+
+
+def test_assign_task_preserves_default_special_case(kanban_home):
+    """'default' should not be lowercased (it's a special alias)."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x")
+        assert kb.assign_task(conn, t, "default")
+        assert kb.get_task(conn, t).assignee == "default"
+
+
+def test_assign_task_normalizes_none_passthrough(kanban_home):
+    """Unassigning (None) should still work after normalization."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="someone")
+        assert kb.assign_task(conn, t, None)
+        assert kb.get_task(conn, t).assignee is None
