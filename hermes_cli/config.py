@@ -4355,14 +4355,27 @@ def reload_env() -> int:
 
 
 def get_env_value(key: str) -> Optional[str]:
-    """Get a value from ~/.hermes/.env or environment."""
-    # Check environment first
-    if key in os.environ:
-        return os.environ[key]
-    
-    # Then check .env file
+    """Get a value from ~/.hermes/.env or environment.
+
+    ``~/.hermes/.env`` is checked **first** so that changes made there after
+    the process has started (e.g. replacing a stale API key) are picked up on
+    the next load rather than being shadowed by a potentially stale value that
+    a parent shell process exported into ``os.environ`` at launch time.
+
+    ``os.environ`` is used as a fallback so that CI/CD pipelines and Docker
+    environments that inject keys purely via environment variables continue to
+    work unchanged.  The only scenario where the old behaviour differed is
+    when a key exists in **both** sources; ``~/.hermes/.env`` now wins in that
+    case, which matches the documented intent of the file being the
+    authoritative Hermes secrets store (#18254).
+    """
+    # ~/.hermes/.env is the authoritative source; check it first.
     env_vars = load_env()
-    return env_vars.get(key)
+    if key in env_vars:
+        return env_vars[key]
+
+    # Fall back to the process environment for CI/Docker/shell-injected keys.
+    return os.environ.get(key)
 
 
 # =============================================================================
