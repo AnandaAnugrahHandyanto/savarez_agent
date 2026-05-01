@@ -1,5 +1,4 @@
-import { Button, ListItem } from "@nous-research/ui";
-import { Spinner } from "@/components/ui/spinner";
+import { Button, ListItem, Spinner } from "@nous-research/ui";
 import { Input } from "@/components/ui/input";
 import type { GatewayClient } from "@/lib/gatewayClient";
 import { Check, Search, X } from "lucide-react";

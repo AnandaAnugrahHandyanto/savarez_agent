@@ -8,8 +8,7 @@ import type {
   AnalyticsSkillEntry,
 } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
-import { Button, Stats } from "@nous-research/ui";
-import { Spinner } from "@/components/ui/spinner";
+import { Button, Spinner, Stats } from "@nous-research/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@nous-research/ui";
 import { usePageHeader } from "@/contexts/usePageHeader";
