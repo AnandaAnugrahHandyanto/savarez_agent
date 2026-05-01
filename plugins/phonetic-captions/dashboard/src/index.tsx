@@ -144,7 +144,7 @@ function JobListView({ onSelect }: { onSelect: (id: string) => void }) {
 
   return (
     <div className="p-6 max-w-2xl">
-      <h1 className="text-xl font-semibold mb-1">Caption Jobs</h1>
+      <h1 className="text-xl font-semibold mb-1 text-zinc-900 dark:text-zinc-100">Caption Jobs</h1>
       <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-5">
         Jobs are created when Hermes captions a video. Click a job to edit segments and re-burn.
       </p>
@@ -160,7 +160,7 @@ function JobListView({ onSelect }: { onSelect: (id: string) => void }) {
             <button
               key={job.id}
               onClick={() => onSelect(job.id)}
-              className="w-full flex items-center justify-between rounded-lg border border-zinc-200 dark:border-zinc-700 p-4 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors text-left group"
+              className="w-full flex items-center justify-between rounded-lg border border-zinc-200 dark:border-zinc-700 p-4 bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors text-left group"
             >
               <div className="min-w-0">
                 <div className="font-medium text-sm truncate text-zinc-900 dark:text-zinc-100">{job.video_filename || job.id}</div>
