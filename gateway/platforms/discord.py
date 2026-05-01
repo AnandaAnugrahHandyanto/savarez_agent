@@ -2840,7 +2840,7 @@ class DiscordAdapter(BasePlatformAdapter):
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
 
     def _discord_free_response_channels(self) -> set:
-        """Return Discord channel IDs where no bot mention is required.
+        """Return Discord channel references where no bot mention is required.
 
         A single ``"*"`` entry (either from a list or a comma-separated
         string) is preserved in the returned set so callers can short-circuit
@@ -2849,11 +2849,7 @@ class DiscordAdapter(BasePlatformAdapter):
         raw = self.config.extra.get("free_response_channels")
         if raw is None:
             raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
-        if isinstance(raw, list):
-            return {str(part).strip() for part in raw if str(part).strip()}
-        if isinstance(raw, str) and raw.strip():
-            return {part.strip() for part in raw.split(",") if part.strip()}
-        return set()
+        return self._channel_reference_set(raw)
 
     def _thread_parent_channel(self, channel: Any) -> Any:
         """Return the parent text channel when invoked from a thread."""
@@ -3178,6 +3174,66 @@ class DiscordAdapter(BasePlatformAdapter):
             return str(parent_id)
         return None
 
+    def _channel_match_keys(self, channel: Any) -> set[str]:
+        """Return ID/name aliases that can match channel policy config values."""
+        keys: set[str] = set()
+        if channel is None:
+            return keys
+
+        channel_id = getattr(channel, "id", None)
+        if channel_id is not None:
+            keys.add(str(channel_id))
+
+        name = getattr(channel, "name", None)
+        if name:
+            normalized = str(name).strip().lower()
+            if normalized:
+                keys.add(normalized)
+                keys.add(f"#{normalized}")
+
+        parent = getattr(channel, "parent", None)
+        if parent is not None:
+            parent_name = getattr(parent, "name", None)
+            if parent_name:
+                normalized_parent = str(parent_name).strip().lower()
+                if normalized_parent:
+                    keys.add(normalized_parent)
+                    keys.add(f"#{normalized_parent}")
+            parent_id = getattr(parent, "id", None)
+            if parent_id is not None:
+                keys.add(str(parent_id))
+
+        return keys
+
+    def _channel_reference_set(self, raw_value: Any) -> set[str]:
+        """Normalize comma-separated or list-based channel references."""
+        refs: set[str] = set()
+        if raw_value is None:
+            return refs
+        if isinstance(raw_value, str):
+            items = raw_value.split(",")
+        elif isinstance(raw_value, (list, tuple, set)):
+            items = list(raw_value)
+        else:
+            items = [raw_value]
+        for item in items:
+            token = str(item).strip()
+            if not token:
+                continue
+            if token.startswith("#"):
+                token = token[1:].strip()
+            token = token.lower()
+            if token:
+                refs.add(token)
+        return refs
+
+    def _matches_channel_reference(self, channel_keys: set[str], raw_value: Any) -> bool:
+        """Check whether a channel matches a configured list of IDs or names."""
+        refs = self._channel_reference_set(raw_value)
+        if not refs:
+            return False
+        return bool(channel_keys & refs)
+
     def _is_forum_parent(self, channel: Any) -> bool:
         """Best-effort check for whether a Discord channel is a forum channel."""
         if channel is None:
@@ -3372,19 +3428,19 @@ class DiscordAdapter(BasePlatformAdapter):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
+            channel_keys = self._channel_match_keys(message.channel)
 
             # Check allowed channels - if set, only respond in these channels
             allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
-            if allowed_channels_raw:
-                allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
-                if "*" not in allowed_channels and not (channel_ids & allowed_channels):
-                    logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_ids)
-                    return
+            allowed_channel_refs = self._channel_reference_set(allowed_channels_raw)
+            if allowed_channel_refs and "*" not in allowed_channel_refs and not self._matches_channel_reference(channel_keys, allowed_channel_refs):
+                logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_ids)
+                return
 
             # Check ignored channels - never respond even when mentioned
             ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
-            ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
-            if "*" in ignored_channels or (channel_ids & ignored_channels):
+            ignored_channel_refs = self._channel_reference_set(ignored_channels_raw)
+            if "*" in ignored_channel_refs or self._matches_channel_reference(channel_keys, ignored_channel_refs):
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_ids)
                 return
 
@@ -3401,6 +3457,7 @@ class DiscordAdapter(BasePlatformAdapter):
             is_free_channel = (
                 "*" in free_channels
                 or bool(channel_ids & free_channels)
+                or self._matches_channel_reference(channel_keys, free_channels)
                 or is_voice_linked_channel
             )
 
@@ -3418,8 +3475,7 @@ class DiscordAdapter(BasePlatformAdapter):
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
-            no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
+            skip_thread = self._matches_channel_reference(channel_keys, no_thread_channels_raw) or is_free_channel
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
