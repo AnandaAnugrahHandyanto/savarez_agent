@@ -173,6 +173,58 @@ SESSION_SEARCH_GUIDANCE = (
     "asking them to repeat themselves."
 )
 
+SOURCE_ROUTING_GUIDANCE = (
+    "# Source-first routing\n"
+    "When the user provides an explicit URL, prefer the native tool path for that "
+    "domain instead of searching for it:\n"
+    "- x.com / twitter.com URLs → use `xurl read <url>` directly. Do NOT search first.\n"
+    "- youtube.com / youtu.be URLs → prefer the transcript / media extraction path directly.\n"
+    "- github.com URLs → prefer native git/GitHub tools (gh CLI, git commands) directly.\n"
+    "- Direct PDF or document URLs → prefer web_extract or direct document extraction.\n"
+    "General rule: if you have a direct URL and a native tool for that domain, use the "
+    "native tool first. Do not search when you already have the exact target."
+)
+
+
+def build_source_routing_guidance() -> str:
+    """Build source-routing guidance from config.
+
+    Reads ``routing.domain_rules`` from the active config.yaml.  Returns an
+    empty string when routing is disabled.  Falls back to a minimal default
+    set (x.com, youtube, github) when config cannot be loaded.
+    """
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        routing = config.get("routing", {})
+        if not routing.get("enabled", True):
+            return ""
+        domain_rules = routing.get("domain_rules", {})
+    except Exception:
+        domain_rules = {
+            "x.com": {"tool": "xurl read"},
+            "youtube.com": {"tool": "transcript extraction"},
+            "github.com": {"tool": "gh CLI / git"},
+        }
+
+    if not domain_rules:
+        return ""
+
+    lines = [
+        "# Source-first routing",
+        "When the user provides an explicit URL, prefer the native tool for that domain instead of searching:",
+        "",
+    ]
+    for domain, rule in domain_rules.items():
+        tool = rule.get("tool", "native tool")
+        lines.append(f"- {domain} URLs → use {tool} directly, do not search first")
+
+    lines.append("")
+    lines.append("General rule: if you have a direct URL and a native tool for that domain, use the native tool first.")
+    lines.append("Do not search when you already have the exact target.")
+
+    return "\n".join(lines)
+
 SKILLS_GUIDANCE = (
     "After completing a complex task (5+ tool calls), fixing a tricky error, "
     "or discovering a non-trivial workflow, save the approach as a "
@@ -253,6 +305,15 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "Every response should either (a) contain tool calls that make progress, or "
     "(b) deliver a final result to the user. Responses that only describe intentions "
     "without acting are not acceptable."
+)
+
+# Strategy guidance — injected into ephemeral_system_prompt when promoted
+# strategies exist in the registry.  Bounded, reviewable, never persisted.
+STRATEGY_GUIDANCE_HEADER = (
+    "# Promoted strategies\n"
+    "The following behavioral strategies have been promoted based on observed "
+    "performance data. Follow them as defaults; they can be overridden by "
+    "explicit user instructions."
 )
 
 # Model name substrings that trigger tool-use enforcement guidance.
