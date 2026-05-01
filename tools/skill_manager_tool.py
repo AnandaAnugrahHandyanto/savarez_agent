@@ -42,8 +42,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home, display_hermes_home
 from typing import Dict, Any, Optional, Tuple
 
-from utils import atomic_replace, is_truthy_value
-from hermes_cli.config import cfg_get
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +67,7 @@ def _guard_agent_created_enabled() -> bool:
         from hermes_cli.config import load_config
         cfg = load_config()
         return is_truthy_value(
-            cfg_get(cfg, "skills", "guard_agent_created"),
+            (cfg.get("skills") or {}).get("guard_agent_created"),
             default=False,
         )
     except Exception:
@@ -102,6 +101,7 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
     return None
 
 import yaml
+import hermes_cli.config  # Ensure hermes_cli.config is importable for patching/tests.
 
 
 # All skills live in ~/.hermes/skills/ (single source of truth)
@@ -350,7 +350,7 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
     try:
         with os.fdopen(fd, "w", encoding=encoding) as f:
             f.write(content)
-        atomic_replace(temp_path, file_path)
+        os.replace(temp_path, file_path)
     except Exception:
         # Clean up temp file on error
         try:

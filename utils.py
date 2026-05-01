@@ -58,6 +58,15 @@ def _restore_file_mode(path: Path, mode: "int | None") -> None:
         pass
 
 
+def atomic_replace(src: Union[str, Path], dst: Union[str, Path]) -> None:
+    """Atomically replace ``dst`` with ``src`` while preserving dst mode when present."""
+    src_path = Path(src)
+    dst_path = Path(dst)
+    original_mode = _preserve_file_mode(dst_path)
+    os.replace(src_path, dst_path)
+    _restore_file_mode(dst_path, original_mode)
+
+
 def atomic_json_write(
     path: Union[str, Path],
     data: Any,
