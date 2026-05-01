@@ -31,6 +31,21 @@ def _norm_path_segments(s: str) -> str:
 
 
 @pytest.fixture(autouse=True)
+def _no_dashboard_kill_scan_during_update(monkeypatch):
+    """Avoid real ``ps``-based stale-dashboard killing at end of ``cmd_update``.
+
+    Those tests assert on ``os.kill`` call counts for gateway PIDs. On busy CI
+    runners, ``_find_stale_dashboard_pids()`` can return unrelated processes
+    whose cmdlines happen to match the substring patterns, or PIDs can collide
+    with the small integers used as test fixtures — producing spurious
+    SIGTERM/SIGKILL and breaking assertions.
+    """
+    import hermes_cli.main as main_mod
+
+    monkeypatch.setattr(main_mod, "_find_stale_dashboard_pids", lambda: [])
+
+
+@pytest.fixture(autouse=True)
 def _no_restart_verify_sleep(monkeypatch):
     """hermes_cli/main.py uses time.sleep(3) after systemctl restart to
     verify the service survived. Tests mock subprocess.run — nothing

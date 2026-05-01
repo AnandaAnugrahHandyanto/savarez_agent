@@ -148,6 +148,11 @@ def _windows_store_bash_shim(path: str) -> bool:
     """True if *path* is the Win32 / Store ``bash.exe`` stub (often exit 126), not Git Bash."""
     if not path:
         return False
+    # ``Path.parts`` splits on OS-native separators. Win32-looking paths tested
+    # on POSIX CI (escaped backslashes) collapse into one segment otherwise.
+    normalized = Path(path).expanduser().as_posix().replace("\\", "/").lower()
+    if "microsoft/windowsapps" in normalized:
+        return True
     lowered = tuple(x.lower() for x in Path(path).expanduser().parts)
     return "windowsapps" in lowered
 
