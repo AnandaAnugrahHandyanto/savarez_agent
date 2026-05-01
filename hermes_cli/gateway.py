@@ -682,11 +682,13 @@ from hermes_constants import is_container, is_termux, is_wsl
 
 
 def _wsl_systemd_operational() -> bool:
-    """Check if systemd is actually running as PID 1 on WSL.
+    """Check whether systemd is usable on WSL.
 
-    WSL2 with ``systemd=true`` in wsl.conf has working systemd.
-    WSL2 without it (or WSL1) does not — systemctl commands fail.
+    Prefer user-scope first (common when user services are active), then
+    fall back to system scope for distros where only that probe succeeds.
     """
+    if _systemd_operational(system=False):
+        return True
     return _systemd_operational(system=True)
 
 
