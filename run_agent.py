@@ -4773,12 +4773,19 @@ class AIAgent:
         except Exception:
             pass
 
-        # Close the OpenAI/httpx client to release sockets immediately.
+        # Close the OpenAI/httpx client and any session-scoped Codex WebSocket
+        # transport state. A rebuilt agent gets fresh network credentials and
+        # should not inherit stale sockets.
         try:
             client = getattr(self, "client", None)
             if client is not None:
                 self._close_openai_client(client, reason="cache_evict", shared=True)
                 self.client = None
+        except Exception:
+            pass
+        try:
+            from agent.codex_websocket_transport import cleanup_codex_websocket_session
+            cleanup_codex_websocket_session(getattr(self, "session_id", None))
         except Exception:
             pass
 
@@ -4829,12 +4836,18 @@ class AIAgent:
         except Exception:
             pass
 
-        # 5. Close the OpenAI/httpx client
+        # 5. Close the OpenAI/httpx client and session-scoped Codex WebSocket
+        # transport state
         try:
             client = getattr(self, "client", None)
             if client is not None:
                 self._close_openai_client(client, reason="agent_close", shared=True)
                 self.client = None
+        except Exception:
+            pass
+        try:
+            from agent.codex_websocket_transport import cleanup_codex_websocket_session
+            cleanup_codex_websocket_session(getattr(self, "session_id", None))
         except Exception:
             pass
 
@@ -9238,6 +9251,11 @@ class AIAgent:
                 self.commit_memory_session(messages)
                 self._session_db.end_session(self.session_id, "compression")
                 old_session_id = self.session_id
+                try:
+                    from agent.codex_websocket_transport import cleanup_codex_websocket_session
+                    cleanup_codex_websocket_session(old_session_id)
+                except Exception:
+                    pass
                 self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
                 # Update session_log_file to point to the new session's JSON file
                 self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
