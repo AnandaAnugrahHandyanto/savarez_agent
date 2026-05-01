@@ -193,6 +193,8 @@ class ChatCompletionsTransport(ProviderTransport):
             # Temperature
             fixed_temperature: Any — from _fixed_temperature_for_model()
             omit_temperature: bool
+            # Custom OpenAI-compatible servers (llama.cpp, vLLM, …)
+            custom_openai_request_options: dict | None
             # Reasoning
             supports_reasoning: bool
             github_reasoning_extra: dict | None
@@ -249,6 +251,15 @@ class ChatCompletionsTransport(ProviderTransport):
             api_kwargs.pop("temperature", None)
         elif fixed_temp is not None:
             api_kwargs["temperature"] = fixed_temp
+        elif params.get("is_custom_provider"):
+            compat = params.get("custom_openai_request_options") or {}
+            if compat.get("omit_temperature"):
+                pass
+            elif isinstance(compat.get("temperature"), (int, float)):
+                api_kwargs["temperature"] = float(compat["temperature"])
+            else:
+                # Local stacks often default to temperature=1.0 when omitted (#18470).
+                api_kwargs["temperature"] = 0.2
 
         # Qwen metadata (caller precomputes {sessionId, promptId})
         qwen_meta = params.get("qwen_session_metadata")
@@ -263,6 +274,14 @@ class ChatCompletionsTransport(ProviderTransport):
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools
+            # Many OpenAI-compat locals require explicit parallel_tool_calls to batch
+            # tool rounds; OpenRouter-style hosts keep their own defaults (#18470).
+            if params.get("is_custom_provider"):
+                compat_pt = params.get("custom_openai_request_options") or {}
+                if isinstance(compat_pt.get("parallel_tool_calls"), bool):
+                    api_kwargs["parallel_tool_calls"] = compat_pt["parallel_tool_calls"]
+                else:
+                    api_kwargs["parallel_tool_calls"] = True
 
         # max_tokens resolution — priority: ephemeral > user > provider default
         max_tokens_fn = params.get("max_tokens_param_fn")

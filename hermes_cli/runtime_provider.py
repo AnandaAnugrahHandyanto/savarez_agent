@@ -36,6 +36,22 @@ def _normalize_custom_provider_name(value: str) -> str:
     return value.strip().lower().replace(" ", "-")
 
 
+def _compat_options_from_custom_provider_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract chat_completions knobs for bare-metal OpenAI-compatible servers (#18470)."""
+    out: Dict[str, Any] = {}
+    if not isinstance(entry, dict):
+        return out
+    if entry.get("omit_temperature") is True:
+        out["omit_temperature"] = True
+    temp = entry.get("temperature")
+    if isinstance(temp, (int, float)):
+        out["temperature"] = float(temp)
+    ptc = entry.get("parallel_tool_calls")
+    if isinstance(ptc, bool):
+        out["parallel_tool_calls"] = ptc
+    return out
+
+
 def _loopback_hostname(host: str) -> bool:
     h = (host or "").lower().rstrip(".")
     return h in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
@@ -528,6 +544,9 @@ def _resolve_named_custom_runtime(
         model_name = custom_provider.get("model")
         if model_name:
             pool_result["model"] = model_name
+        _compat = _compat_options_from_custom_provider_entry(custom_provider)
+        if _compat:
+            pool_result["custom_openai_request_options"] = _compat
         return pool_result
 
     api_key_candidates = [
@@ -552,6 +571,9 @@ def _resolve_named_custom_runtime(
     # provider name differs from the actual model string the API expects.
     if custom_provider.get("model"):
         result["model"] = custom_provider["model"]
+    _compat_opts = _compat_options_from_custom_provider_entry(custom_provider)
+    if _compat_opts:
+        result["custom_openai_request_options"] = _compat_opts
     return result
 
 
