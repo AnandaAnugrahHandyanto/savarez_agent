@@ -535,6 +535,10 @@ def resolve_billing_route(
         return BillingRoute(provider="anthropic", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name == "openai":
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    if provider_name in {"gemini", "google", "google-gemini", "google-ai-studio"}:
+        return BillingRoute(provider="google", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    if provider_name == "deepseek" or base_url_host_matches(base_url or "", "api.deepseek.com"):
+        return BillingRoute(provider="deepseek", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"minimax", "minimax-cn"}:
         return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and "localhost" in base):
@@ -560,18 +564,24 @@ def _normalize_anthropic_model_name(model: str) -> str:
 
 
 def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:
-    model = route.model.lower()
+    model_lower = route.model.lower()
     # Direct lookup first
-    entry = _OFFICIAL_DOCS_PRICING.get((route.provider, model))
-    if entry:
+    entry = _OFFICIAL_DOCS_PRICING.get((route.provider, model_lower))
+    if entry is not None:
         return entry
     # Try normalized name for Anthropic (handles dot-notation like opus-4.7)
     if route.provider == "anthropic":
-        normalized = _normalize_anthropic_model_name(model)
-        if normalized != model:
+        normalized = _normalize_anthropic_model_name(model_lower)
+        if normalized != model_lower:
             entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
-            if entry:
+            if entry is not None:
                 return entry
+    # Fallback: match unversioned model aliases (e.g. "claude-sonnet-4"
+    # matches "claude-sonnet-4-20250514").  Only consider entries for the
+    # same provider whose canonical name starts with the requested model.
+    for (p, m), candidate in _OFFICIAL_DOCS_PRICING.items():
+        if p == route.provider and m.startswith(model_lower + "-"):
+            return candidate
     return None
 
 
