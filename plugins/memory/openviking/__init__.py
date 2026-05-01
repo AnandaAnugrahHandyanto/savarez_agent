@@ -259,6 +259,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._client: Optional[_VikingClient] = None
         self._endpoint = ""
         self._api_key = ""
+        self._account = "default"
+        self._user = "default"
+        self._agent = "hermes"
         self._session_id = ""
         self._turn_count = 0
         self._sync_thread: Optional[threading.Thread] = None
@@ -318,21 +321,28 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._session_id = session_id
         self._turn_count = 0
 
-        try:
-            self._client = _VikingClient(
-                self._endpoint, self._api_key,
-                account=self._account, user=self._user, agent=self._agent,
-            )
-            if not self._client.health():
-                logger.warning("OpenViking server at %s is not reachable", self._endpoint)
-                self._client = None
-        except ImportError:
-            logger.warning("httpx not installed — OpenViking plugin disabled")
-            self._client = None
+        self._connect()
 
         # Register as the last active provider for atexit safety net
         global _last_active_provider
         _last_active_provider = self
+
+    def _connect(self) -> bool:
+        try:
+            client = _VikingClient(
+                self._endpoint, self._api_key,
+                account=self._account, user=self._user, agent=self._agent,
+            )
+            if not client.health():
+                logger.warning("OpenViking server at %s is not reachable", self._endpoint)
+                self._client = None
+                return False
+            self._client = client
+            return True
+        except ImportError:
+            logger.warning("httpx not installed — OpenViking plugin disabled")
+            self._client = None
+            return False
 
     def system_prompt_block(self) -> str:
         if not self._client:
@@ -498,7 +508,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return [SEARCH_SCHEMA, READ_SCHEMA, BROWSE_SCHEMA, REMEMBER_SCHEMA, ADD_RESOURCE_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
-        if not self._client:
+        if not self._client and not self._connect():
             return tool_error("OpenViking server not connected")
 
         try:
