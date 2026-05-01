@@ -2521,8 +2521,13 @@ class SlackAdapter(BasePlatformAdapter):
                 text = "/help"
         else:
             # Native slash — /<slash_name> [args].  Route directly through the
-            # gateway command dispatcher by prepending the slash.
-            text = f"/{slash_name} {text}".strip()
+            # gateway command dispatcher by prepending the slash. Some Slack-
+            # visible names are renamed away from reserved Slack command names;
+            # map those back to Hermes' internal command before dispatch.
+            from hermes_cli.commands import slack_native_command_map
+            command_map = slack_native_command_map()
+            route_command = command_map.get(slash_name, f"/{slash_name}")
+            text = f"{route_command} {text}".strip()
 
         source = self.build_source(
             chat_id=channel_id,

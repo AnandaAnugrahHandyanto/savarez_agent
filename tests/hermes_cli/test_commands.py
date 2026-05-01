@@ -21,6 +21,7 @@ from hermes_cli.commands import (
     gateway_help_lines,
     resolve_command,
     slack_app_manifest,
+    slack_native_command_map,
     slack_native_slashes,
     slack_subcommand_map,
     telegram_bot_commands,
@@ -107,6 +108,9 @@ class TestResolveCommand:
         assert resolve_command("set-home").name == "sethome"
         assert resolve_command("reload_mcp").name == "reload-mcp"
         assert resolve_command("tasks").name == "agents"
+
+    def test_slack_safe_status_name_is_not_global_alias(self):
+        assert resolve_command("status1") is None
 
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"
@@ -251,6 +255,10 @@ class TestSlackSubcommandMap:
         assert "bg" in mapping
         assert "reset" in mapping
 
+    def test_includes_slack_safe_status_alias(self):
+        mapping = slack_subcommand_map()
+        assert mapping["status1"] == "/status"
+
     def test_excludes_cli_only_without_config_gate(self):
         mapping = slack_subcommand_map()
         for cmd in COMMAND_REGISTRY:
@@ -299,8 +307,14 @@ class TestSlackNativeSlashes:
     def test_includes_canonical_commands(self):
         names = {n for n, _d, _h in slack_native_slashes()}
         # Sample of gateway-available canonical commands
-        for expected in ("new", "stop", "background", "model", "help", "status"):
+        for expected in ("new", "stop", "background", "model", "help"):
             assert expected in names, f"missing canonical /{expected}"
+
+    def test_renames_reserved_status_command(self):
+        names = {n for n, _d, _h in slack_native_slashes()}
+        assert "status" not in names
+        assert "status1" in names
+        assert slack_native_command_map()["status1"] == "/status"
 
     def test_includes_aliases_as_first_class_slashes(self):
         """Aliases (/btw, /bg, /reset, /q) must be registered as standalone
@@ -320,14 +334,14 @@ class TestSlackNativeSlashes:
         test fails loudly so we can curate the list rather than silently
         dropping parity.
         """
-        slack_names = {n for n, _d, _h in slack_native_slashes()}
+        slack_routes = {route.lstrip("/") for route in slack_native_command_map().values()}
         tg_names = {n for n, _d in telegram_bot_commands()}
         # Some Telegram names have underscores where Slack uses hyphens
         # (e.g. set_home vs sethome). Normalize both sides for comparison.
         def _norm(s: str) -> str:
             return s.replace("-", "_").replace("__", "_").strip("_")
 
-        slack_norm = {_norm(n) for n in slack_names}
+        slack_norm = {_norm(n) for n in slack_routes}
         tg_norm = {_norm(n) for n in tg_names}
         missing = tg_norm - slack_norm
         assert not missing, (
@@ -360,6 +374,12 @@ class TestSlackAppManifest:
         m = slack_app_manifest()
         commands = [c["command"] for c in m["features"]["slash_commands"]]
         assert "/btw" in commands
+
+    def test_manifest_uses_slack_safe_status_name(self):
+        m = slack_app_manifest()
+        commands = [c["command"] for c in m["features"]["slash_commands"]]
+        assert "/status" not in commands
+        assert "/status1" in commands
 
     def test_custom_request_url(self):
         m = slack_app_manifest(request_url="https://example.com/slack")

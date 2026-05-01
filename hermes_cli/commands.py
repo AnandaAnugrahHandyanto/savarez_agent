@@ -838,6 +838,12 @@ def discord_skill_commands_by_category(
 _SLACK_MAX_SLASH_COMMANDS = 50
 _SLACK_NAME_LIMIT = 32
 _SLACK_INVALID_CHARS = re.compile(r"[^a-z0-9_\-]")
+_SLACK_RESERVED_COMMAND_RENAMES: dict[str, str] = {
+    # Slack rejects /status in some workspaces because it conflicts with
+    # Slack's reserved command namespace. Keep Hermes' internal command name
+    # as "status", but expose a Slack-safe native slash.
+    "status": "status1",
+}
 
 
 def _sanitize_slack_name(raw: str) -> str:
@@ -850,6 +856,54 @@ def _sanitize_slack_name(raw: str) -> str:
     name = _SLACK_INVALID_CHARS.sub("", name)
     name = name.strip("-_")
     return name[:_SLACK_NAME_LIMIT]
+
+
+def _slack_public_name(raw: str) -> str:
+    """Return the Slack-visible slash name for an internal command name."""
+    name = _sanitize_slack_name(raw)
+    return _SLACK_RESERVED_COMMAND_RENAMES.get(name, name)
+
+
+def _slack_native_entries() -> list[tuple[str, str, str, str]]:
+    """Return (slash_name, route_name, description, usage_hint) entries."""
+    overrides = _resolve_config_gates()
+    entries: list[tuple[str, str, str, str]] = []
+    seen: set[str] = set()
+
+    # Reserve /hermes as the catch-all top-level command.
+    entries.append(("hermes", "hermes", "Talk to Hermes or run a subcommand", "[subcommand] [args]"))
+    seen.add("hermes")
+
+    def _add(name: str, route_name: str, desc: str, hint: str) -> None:
+        slack_name = _slack_public_name(name)
+        if not slack_name or slack_name in seen:
+            return
+        if len(entries) >= _SLACK_MAX_SLASH_COMMANDS:
+            return
+        # Slack description cap is 2000 chars; keep it short.
+        entries.append((slack_name, route_name, desc[:140], hint[:100]))
+        seen.add(slack_name)
+
+    # First pass: canonical names (so they win slots if we hit the cap).
+    for cmd in COMMAND_REGISTRY:
+        if not _is_gateway_available(cmd, overrides):
+            continue
+        _add(cmd.name, cmd.name, cmd.description, cmd.args_hint or "")
+
+    # Second pass: aliases.
+    for cmd in COMMAND_REGISTRY:
+        if not _is_gateway_available(cmd, overrides):
+            continue
+        for alias in cmd.aliases:
+            # Skip aliases that only differ from canonical by case/punctuation
+            # normalization (already covered by _add dedup).
+            _add(alias, alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
+
+    # Third pass: plugin commands.
+    for name, description, args_hint in _iter_plugin_command_entries():
+        _add(name, name, description, args_hint or "")
+
+    return entries
 
 
 def slack_native_slashes() -> list[tuple[str, str, str]]:
@@ -869,44 +923,18 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     legacy ``/hermes <subcommand>`` form keeps working for anything that
     gets dropped by the clamp or for free-form questions.
     """
-    overrides = _resolve_config_gates()
-    entries: list[tuple[str, str, str]] = []
-    seen: set[str] = set()
+    return [
+        (slash_name, desc, hint)
+        for slash_name, _route_name, desc, hint in _slack_native_entries()
+    ]
 
-    # Reserve /hermes as the catch-all top-level command.
-    entries.append(("hermes", "Talk to Hermes or run a subcommand", "[subcommand] [args]"))
-    seen.add("hermes")
 
-    def _add(name: str, desc: str, hint: str) -> None:
-        slack_name = _sanitize_slack_name(name)
-        if not slack_name or slack_name in seen:
-            return
-        if len(entries) >= _SLACK_MAX_SLASH_COMMANDS:
-            return
-        # Slack description cap is 2000 chars; keep it short.
-        entries.append((slack_name, desc[:140], hint[:100]))
-        seen.add(slack_name)
-
-    # First pass: canonical names (so they win slots if we hit the cap).
-    for cmd in COMMAND_REGISTRY:
-        if not _is_gateway_available(cmd, overrides):
-            continue
-        _add(cmd.name, cmd.description, cmd.args_hint or "")
-
-    # Second pass: aliases.
-    for cmd in COMMAND_REGISTRY:
-        if not _is_gateway_available(cmd, overrides):
-            continue
-        for alias in cmd.aliases:
-            # Skip aliases that only differ from canonical by case/punctuation
-            # normalization (already covered by _add dedup).
-            _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
-
-    # Third pass: plugin commands.
-    for name, description, args_hint in _iter_plugin_command_entries():
-        _add(name, description, args_hint or "")
-
-    return entries
+def slack_native_command_map() -> dict[str, str]:
+    """Return Slack-visible slash name -> internal Hermes command mapping."""
+    return {
+        slash_name: f"/{route_name}"
+        for slash_name, route_name, _desc, _hint in _slack_native_entries()
+    }
 
 
 def slack_app_manifest(request_url: str = "https://hermes-agent.local/slack/commands") -> dict[str, Any]:
@@ -951,6 +979,9 @@ def slack_subcommand_map() -> dict[str, str]:
         if not _is_gateway_available(cmd, overrides):
             continue
         mapping[cmd.name] = f"/{cmd.name}"
+        slack_name = _slack_public_name(cmd.name)
+        if slack_name and slack_name != cmd.name:
+            mapping[slack_name] = f"/{cmd.name}"
         for alias in cmd.aliases:
             mapping[alias] = f"/{alias}"
     for name, _description, _args_hint in _iter_plugin_command_entries():
