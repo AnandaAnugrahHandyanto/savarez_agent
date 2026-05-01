@@ -3,9 +3,20 @@
 import concurrent.futures
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+def _permissive_decision(*_args, **_kwargs):
+    """Build a `ToolGuardrailDecision`-shaped object that allows execution."""
+    return SimpleNamespace(
+        action="allow",
+        allows_execution=True,
+        should_halt=False,
+        message=None,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -32,6 +43,13 @@ def _make_agent(monkeypatch):
         verbose_logging = False
         log_prefix_chars = 200
         _checkpoint_mgr = MagicMock(enabled=False)
+        # Permissive guardrail stub — every before_call/after_call returns a
+        # decision that allows execution and never halts.  These tests
+        # exercise interrupt fanout, not guardrail behaviour.
+        _tool_guardrails = MagicMock(
+            before_call=MagicMock(side_effect=_permissive_decision),
+            after_call=MagicMock(side_effect=_permissive_decision),
+        )
         _subdirectory_hints = MagicMock()
         tool_progress_callback = None
         tool_start_callback = None
@@ -77,6 +95,12 @@ def _make_agent(monkeypatch):
     stub._execute_tool_calls_concurrent = _ra.AIAgent._execute_tool_calls_concurrent.__get__(stub)
     stub.interrupt = _ra.AIAgent.interrupt.__get__(stub)
     stub.clear_interrupt = _ra.AIAgent.clear_interrupt.__get__(stub)
+    # Concurrent execution wraps tool results in a guardrail observation
+    # before appending to messages.  Bind the production helper so the stub
+    # exercises the same code path; our `_tool_guardrails` MagicMock returns
+    # permissive `SimpleNamespace` decisions, so this is a no-op.
+    stub._append_guardrail_observation = _ra.AIAgent._append_guardrail_observation.__get__(stub)
+    stub._set_tool_guardrail_halt = MagicMock()
     # /steer injection (added in PR #12116) fires after every concurrent
     # tool batch. Stub it as a no-op — this test exercises interrupt
     # fanout, not steer injection.
@@ -107,7 +131,7 @@ def test_concurrent_interrupt_cancels_pending(monkeypatch):
 
     original_invoke = agent._invoke_tool
 
-    def slow_tool(name, args, task_id, call_id=None):
+    def slow_tool(name, args, task_id, call_id=None, **kwargs):
         if name == "slow_one":
             # Block until the test sets the interrupt
             barrier.wait(timeout=10)
@@ -184,7 +208,7 @@ def test_running_concurrent_worker_sees_is_interrupted(monkeypatch):
     observed = {"saw_true": False, "poll_count": 0, "worker_tid": None}
     worker_started = threading.Event()
 
-    def polling_tool(name, args, task_id, call_id=None, messages=None):
+    def polling_tool(name, args, task_id, call_id=None, messages=None, **kwargs):
         observed["worker_tid"] = threading.current_thread().ident
         worker_started.set()
         deadline = time.monotonic() + 5.0

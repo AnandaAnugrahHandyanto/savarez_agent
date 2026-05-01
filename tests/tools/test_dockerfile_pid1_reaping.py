@@ -107,7 +107,14 @@ def test_dockerfile_entrypoint_routes_through_the_init(dockerfile_text):
 
 def test_dockerfile_installs_tui_dependencies(dockerfile_text):
     assert "ui-tui/package.json" in dockerfile_text
-    assert "ui-tui/packages/hermes-ink/package-lock.json" in dockerfile_text
+    # The bundled @hermes/ink workspace lives under ui-tui/packages/hermes-ink
+    # and is referenced as a `file:` dep from ui-tui/package.json.  The
+    # Dockerfile must copy that subtree into the build context (either as the
+    # whole directory or as the manifest pair) so npm can resolve it.
+    assert (
+        "ui-tui/packages/hermes-ink/" in dockerfile_text
+        or "ui-tui/packages/hermes-ink/package-lock.json" in dockerfile_text
+    )
     assert any(
         "ui-tui" in step and "npm" in step and (" install" in step or " ci" in step)
         for step in _run_steps(dockerfile_text)
@@ -122,7 +129,16 @@ def test_dockerfile_builds_tui_assets(dockerfile_text):
 
 
 def test_dockerfile_materializes_local_tui_ink_package(dockerfile_text):
-    assert any(
+    # The bundled @hermes/ink workspace must reach node_modules/@hermes/ink at
+    # runtime.  Two approaches are accepted: an explicit cp/install materialize
+    # block, or `npm_config_install_links=false` which makes npm resolve
+    # `file:` deps as symlinks even on older npm versions.
+    instructions = _dockerfile_instructions(dockerfile_text)
+    install_links_off = any(
+        "npm_config_install_links=false" in instruction
+        for instruction in instructions
+    )
+    explicit_materialize = any(
         "ui-tui" in step
         and "node_modules/@hermes/ink" in step
         and "packages/hermes-ink" in step
@@ -132,6 +148,12 @@ def test_dockerfile_materializes_local_tui_ink_package(dockerfile_text):
         and "rm -rf node_modules/@hermes/ink/node_modules/react" in step
         and "await import('@hermes/ink')" in step
         for step in _run_steps(dockerfile_text)
+    )
+    assert install_links_off or explicit_materialize, (
+        "Dockerfile must materialize the bundled @hermes/ink package — either "
+        "via an explicit cp/install RUN step, or by setting "
+        "npm_config_install_links=false so npm resolves the `file:` dep as a "
+        "symlink into ui-tui/packages/hermes-ink/."
     )
 
 

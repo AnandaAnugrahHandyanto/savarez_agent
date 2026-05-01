@@ -15,6 +15,24 @@ from unittest.mock import patch
 from hermes_cli.main import cmd_update
 
 
+# `cmd_update` wraps `_cmd_update_impl` in `_install_hangup_protection`, which
+# replaces ``sys.stdout`` / ``sys.stderr`` with ``_UpdateOutputStream`` mirrors
+# during the update.  In tests that patch ``hermes_cli.main.sys`` to make
+# isatty() return True, that wrapping subverts the patch on stdout: the
+# wrapper stores the original (still-mocked) stream as ``_original`` but
+# replaces ``sys.stdout`` with itself, so subsequent ``sys.stdout.isatty()``
+# calls go through the wrapper's ``isatty()``, whose return value depends on
+# whether earlier writes flagged ``_original_broken`` — flaky under xdist.
+# Bypass the wrapping with a no-op state so isatty() answers the mock
+# directly.
+_HANGUP_PROTECTION_NOOP_STATE = {
+    "prev_stdout": None,
+    "prev_stderr": None,
+    "log_file": None,
+    "installed": False,
+}
+
+
 def _make_run_side_effect(
     branch="main", verify_ok=True, commit_count="1", dirty=False
 ):
@@ -50,6 +68,11 @@ def _make_run_side_effect(
 class TestUpdateYesConfigMigration:
     """--yes auto-answers the config-migration prompt and skips API-key prompts."""
 
+    @patch("hermes_cli.main._finalize_update_output")
+    @patch(
+        "hermes_cli.main._install_hangup_protection",
+        return_value=dict(_HANGUP_PROTECTION_NOOP_STATE),
+    )
     @patch("hermes_cli.config.migrate_config")
     @patch("hermes_cli.config.check_config_version", return_value=(1, 2))
     @patch("hermes_cli.config.get_missing_config_fields", return_value=[])
@@ -64,6 +87,8 @@ class TestUpdateYesConfigMigration:
         _mock_missing_cfg,
         _mock_version,
         mock_migrate,
+        _mock_install_hangup,
+        _mock_finalize,
         capsys,
     ):
         mock_run.side_effect = _make_run_side_effect(
@@ -89,6 +114,11 @@ class TestUpdateYesConfigMigration:
         # The "Would you like to configure them now?" prompt text never appears.
         assert "Would you like to configure them now?" not in out
 
+    @patch("hermes_cli.main._finalize_update_output")
+    @patch(
+        "hermes_cli.main._install_hangup_protection",
+        return_value=dict(_HANGUP_PROTECTION_NOOP_STATE),
+    )
     @patch("hermes_cli.config.migrate_config")
     @patch("hermes_cli.config.check_config_version", return_value=(1, 2))
     @patch("hermes_cli.config.get_missing_config_fields", return_value=[])
@@ -103,6 +133,8 @@ class TestUpdateYesConfigMigration:
         _mock_missing_cfg,
         _mock_version,
         mock_migrate,
+        _mock_install_hangup,
+        _mock_finalize,
         capsys,
     ):
         """Regression guard: without --yes, the TTY prompt path still fires."""
@@ -128,6 +160,11 @@ class TestUpdateYesConfigMigration:
 class TestUpdateYesStashRestore:
     """--yes auto-restores the pre-update autostash without prompting."""
 
+    @patch("hermes_cli.main._finalize_update_output")
+    @patch(
+        "hermes_cli.main._install_hangup_protection",
+        return_value=dict(_HANGUP_PROTECTION_NOOP_STATE),
+    )
     @patch("hermes_cli.main._restore_stashed_changes")
     @patch(
         "hermes_cli.main._stash_local_changes_if_needed",
@@ -147,6 +184,8 @@ class TestUpdateYesStashRestore:
         _mock_version,
         _mock_stash,
         mock_restore,
+        _mock_install_hangup,
+        _mock_finalize,
         capsys,
     ):
         # Not on main → cmd_update switches to main → autostash fires.

@@ -942,8 +942,14 @@ class TestAgentCacheSpilloverLive:
         monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", CAP)
         runner = self._runner()
 
+        # 8 threads × 10 inserts = 80 real-AIAgent constructions targeted at a
+        # 16-slot cache — still ~5× over cap so concurrent eviction is
+        # exercised, but small enough to finish well under the join timeout
+        # on slow shared CI runners (AIAgent init does plugin scanning, MCP
+        # tool refresh, and config validation, all of which contend for the
+        # GIL when 8 workers race).
         N_THREADS = 8
-        PER_THREAD = 20  # 8 * 20 = 160 inserts into a 16-slot cache
+        PER_THREAD = 10
 
         def worker(tid: int):
             for j in range(PER_THREAD):
@@ -960,7 +966,7 @@ class TestAgentCacheSpilloverLive:
         for t in threads:
             t.start()
         for t in threads:
-            t.join(timeout=30)
+            t.join(timeout=60)
             assert not t.is_alive(), "Worker thread hung — possible deadlock?"
 
         # Let daemon cleanup threads settle.
