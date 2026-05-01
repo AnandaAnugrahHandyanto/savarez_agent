@@ -155,7 +155,13 @@ def _find_bash() -> str:
 
     found = shutil.which("bash")
     if found:
-        return found
+        # On Windows without Git Bash, `where bash` can resolve to the
+        # WindowsApps WSL shim (..\\Microsoft\\WindowsApps\\bash.exe), which
+        # is not executable in our non-interactive subprocess flow and causes
+        # every command to fail with exit code 126. Ignore that stub and keep
+        # searching for real Git Bash candidates.
+        if "windowsapps" not in found.lower():
+            return found
 
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
