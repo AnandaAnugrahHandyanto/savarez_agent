@@ -141,6 +141,19 @@ class TestGeneratedSystemdUnits:
         assert "WantedBy=multi-user.target" in unit
 
 
+class TestRunGatewayExitCode:
+    def test_run_gateway_uses_service_restart_exit_code_on_startup_failure(self, monkeypatch):
+        async def fake_start_gateway(*args, **kwargs):
+            return False
+
+        monkeypatch.setattr("gateway.run.start_gateway", fake_start_gateway)
+
+        with pytest.raises(SystemExit) as exc:
+            gateway_cli.run_gateway(verbose=0, quiet=True, replace=False)
+
+        assert exc.value.code == GATEWAY_SERVICE_RESTART_EXIT_CODE
+
+
 class TestGatewayStopCleanup:
     def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):
         """Without --all, stop uses systemd (if available) and does NOT call
