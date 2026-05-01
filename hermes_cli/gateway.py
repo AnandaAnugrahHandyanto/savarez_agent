@@ -826,6 +826,63 @@ _SERVICE_BASE = "hermes-gateway"
 SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 
 
+def _find_other_gateway_services(system: bool = False) -> list[str]:
+    """Return service names of other installed hermes-gateway systemd units.
+
+    Scans the systemd unit directory for ``hermes-gateway*.service`` files
+    and returns those that don't match the current profile's service name.
+    This enables automatic ``Conflicts=`` / ``Before=`` generation so that
+    only one gateway profile can run at a time (they share the same Matrix
+    device ID, ports, and state).
+
+    Args:
+        system: When ``True``, scan ``/etc/systemd/system/`` (system scope).
+            When ``False``, scan ``~/.config/systemd/user/`` (user scope).
+
+    Returns:
+        Sorted list of service names (without ``.service`` suffix) for other
+        gateway unit files found on disk.
+    """
+    if system:
+        unit_dir = Path("/etc/systemd/system")
+    else:
+        unit_dir = Path.home() / ".config" / "systemd" / "user"
+
+    if not unit_dir.is_dir():
+        return []
+
+    current_name = get_service_name()
+    others: list[str] = []
+
+    for entry in sorted(unit_dir.iterdir()):
+        if not entry.name.startswith(_SERVICE_BASE) or not entry.name.endswith(".service"):
+            continue
+        svc_name = entry.name.removesuffix(".service")
+        if svc_name == current_name:
+            continue
+        others.append(svc_name)
+
+    return others
+
+
+def _format_conflict_directives(system: bool = False) -> str:
+    """Build ``Conflicts=`` and ``Before=`` lines for other gateway services.
+
+    Returns a string to insert into the ``[Unit]`` section, or an empty
+    string if no conflicting services exist.
+    """
+    others = _find_other_gateway_services(system=system)
+    if not others:
+        return ""
+
+    lines: list[str] = []
+    for svc in others:
+        lines.append(f"Conflicts={svc}.service")
+    for svc in others:
+        lines.append(f"Before={svc}.service")
+    return "\n".join(lines) + "\n"
+
+
 def _profile_suffix() -> str:
     """Derive a service-name suffix from the current HERMES_HOME.
 
@@ -1651,11 +1708,12 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
         path_entries.extend(common_bin_paths)
         sane_path = ":".join(path_entries)
+        conflict_directives = _format_conflict_directives(system=True)
         return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
 Wants=network-online.target
-StartLimitIntervalSec=600
+{conflict_directives}StartLimitIntervalSec=600
 StartLimitBurst=5
 
 [Service]
@@ -1689,10 +1747,11 @@ WantedBy=multi-user.target
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(common_bin_paths)
     sane_path = ":".join(path_entries)
+    conflict_directives = _format_conflict_directives(system=False)
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network.target
-StartLimitIntervalSec=600
+{conflict_directives}StartLimitIntervalSec=600
 StartLimitBurst=5
 
 [Service]
@@ -1718,6 +1777,29 @@ WantedBy=default.target
 
 def _normalize_service_definition(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.strip().splitlines())
+
+
+def _normalize_systemd_unit_for_comparison(text: str) -> str:
+    """Normalize a systemd unit for staleness comparison.
+
+    Like :func:`_normalize_service_definition` but also strips dynamic
+    ``Conflicts=`` and ``Before=`` directives for other gateway services.
+    These are injected at generation time based on which other gateway unit
+    files exist on disk, so they change as profiles are added/removed.
+    Stripping them means the staleness check only considers the stable parts
+    of the unit, avoiding spurious repairs whenever a new profile is created.
+    """
+    import re
+    normalized = _normalize_service_definition(text)
+    # Strip Conflicts= and Before= lines that reference other gateway/api services
+    # (they are dynamic, regenerated at install time)
+    normalized = re.sub(
+        r"^(Conflicts|Before)=hermes-(gateway|api)[^\n]*\n?",
+        "",
+        normalized,
+        flags=re.MULTILINE,
+    )
+    return normalized
 
 
 def _normalize_launchd_plist_for_comparison(text: str) -> str:
@@ -1747,7 +1829,101 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     installed = unit_path.read_text(encoding="utf-8")
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
-    return _normalize_service_definition(installed) == _normalize_service_definition(expected)
+    return _normalize_systemd_unit_for_comparison(installed) == _normalize_systemd_unit_for_comparison(expected)
+
+
+def _refresh_other_gateway_units(system: bool = False) -> int:
+    """Regenerate other gateway unit files so their Conflicts= stay in sync.
+
+    After installing or updating one gateway unit, the *other* gateway units
+    on the same machine need their ``Conflicts=`` and ``Before=`` directives
+    updated to include the newly-installed service.  This function scans for
+    other gateway units and rewrites them with the latest generated content.
+
+    Returns the number of units that were updated.
+    """
+    if system:
+        unit_dir = Path("/etc/systemd/system")
+    else:
+        unit_dir = Path.home() / ".config" / "systemd" / "user"
+
+    if not unit_dir.is_dir():
+        return 0
+
+    current_name = get_service_name()
+    updated = 0
+
+    for entry in sorted(unit_dir.iterdir()):
+        if not entry.name.startswith(_SERVICE_BASE) or not entry.name.endswith(".service"):
+            continue
+        svc_name = entry.name.removesuffix(".service")
+        if svc_name == current_name:
+            continue
+
+        # Read the HERMES_HOME and User from the installed unit to
+        # reconstruct the profile context for generation.
+        try:
+            installed_text = entry.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        # Extract HERMES_HOME and User from the installed unit
+        import re
+        hermes_home_match = None
+        run_as_user = None
+        for line in installed_text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("Environment=") and "HERMES_HOME=" in stripped:
+                m = re.search(r'HERMES_HOME=([^\s"]+|"[^"]*")', stripped)
+                if m:
+                    hermes_home_match = m.group(1).strip('"')
+            if stripped.startswith("User="):
+                run_as_user = stripped.split("=", 1)[1].strip()
+
+        if not hermes_home_match:
+            continue
+
+        # Generate the updated unit by temporarily switching HERMES_HOME
+        original_home = os.environ.get("HERMES_HOME")
+        try:
+            os.environ["HERMES_HOME"] = hermes_home_match
+            # For system units, pass the extracted run_as_user to avoid
+            # the "Refusing to install as root" guard in _system_service_identity.
+            new_unit = generate_systemd_unit(system=system, run_as_user=run_as_user)
+            try:
+                entry.write_text(new_unit, encoding="utf-8")
+                updated += 1
+            except PermissionError:
+                # Ask the user for permission to retry with elevated privileges
+                from hermes_cli.setup import prompt_yes_no
+                print(f"  ⚠ Cannot write {entry.name} (permission denied)")
+                if prompt_yes_no(f"  Retry with sudo?", default=True):
+                    try:
+                        subprocess.run(
+                            ["sudo", "tee", str(entry)] if not system else ["tee", str(entry)],
+                            input=new_unit.encode("utf-8"),
+                            check=True,
+                            timeout=10,
+                        )
+                        updated += 1
+                    except Exception as retry_exc:
+                        print(f"  ⚠ Retry also failed: {retry_exc}")
+                else:
+                    print(f"  ↷ Skipped {entry.name} — conflict directives may be incomplete")
+        except Exception as exc:
+            print(f"  ⚠ Failed to refresh {entry.name}: {exc}")
+        finally:
+            # Restore original HERMES_HOME
+            if original_home is not None:
+                os.environ["HERMES_HOME"] = original_home
+            elif "HERMES_HOME" in os.environ:
+                del os.environ["HERMES_HOME"]
+
+    if updated > 0:
+        _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
+        print(f"  ↻ Refreshed {updated} other gateway unit(s) with updated conflict directives")
+
+    return updated
 
 
 
