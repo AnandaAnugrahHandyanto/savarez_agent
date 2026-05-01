@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import requests
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -372,7 +374,13 @@ def extract_locations(
 ) -> List[ToolCallLocation]:
     """Extract file-system locations from tool arguments."""
     locations: List[ToolCallLocation] = []
-    path = arguments.get("path")
+    try:
+        path = arguments.get("path")
+        if path:
+            line = arguments.get("offset") or arguments.get("line")
+            locations.append(ToolCallLocation(path=path, line=line))
+    except Exception as e:
+        logging.error(f"BlueTuba Fix: Location extraction failed - {e}")
     if path:
         line = arguments.get("offset") or arguments.get("line")
         locations.append(ToolCallLocation(path=path, line=line))
