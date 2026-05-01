@@ -31,8 +31,10 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 
 ## Quick Install
 
+Use auto installer from this repo:
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/TrueConf/trueconf-hermes-agent/main/scripts/install.sh | bash
 ```
 
 Works on Linux, macOS, WSL2, and Android via Termux. The installer handles the platform-specific setup for you.
