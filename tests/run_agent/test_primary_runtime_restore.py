@@ -168,6 +168,46 @@ class TestRestorePrimaryRuntime:
 
         assert agent._fallback_index == 0  # reset for next turn
 
+    def test_resets_fallback_index_after_failed_activation(self):
+        """Regression for #16677: when every fallback entry fails to resolve,
+        _try_activate_fallback() walks _fallback_index to len(chain) without
+        ever flipping _fallback_activated. _restore_primary_runtime() at the
+        top of the next turn must still reset the index, otherwise
+        subsequent fallback attempts short-circuit at the bounds check
+        and the caller emits "trying fallback..." then aborts immediately.
+        """
+        agent = _make_agent(
+            fallback_model=[{"provider": "openrouter", "model": "google/gemini-2.0-flash-001"}],
+        )
+
+        # Turn 1: fallback resolution returns None (e.g. exhausted credential
+        # pool, unconfigured provider). Activation never succeeds.
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(None, None),
+        ):
+            assert agent._try_activate_fallback() is False
+
+        assert agent._fallback_index == 1
+        assert agent._fallback_activated is False
+
+        # Start of turn 2: run_conversation() calls _restore_primary_runtime().
+        # The early-return branch (not _fallback_activated) must still reset
+        # the chain pointer so subsequent activations can attempt the chain.
+        assert agent._restore_primary_runtime() is False
+        assert agent._fallback_index == 0
+
+        # Turn 2: fallback would now resolve fine. Activation must succeed
+        # instead of short-circuiting at the bounds check.
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_resolve(), "google/gemini-2.0-flash-001"),
+        ):
+            assert agent._try_activate_fallback() is True
+        assert agent._fallback_activated is True
+        assert agent.model == "google/gemini-2.0-flash-001"
+        assert agent.provider == "openrouter"
+
     def test_restores_compressor_state(self):
         agent = _make_agent(
             fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},

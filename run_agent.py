@@ -7624,6 +7624,15 @@ class AIAgent:
         ``gateway/run.py``), so this restoration IS needed there too.
         """
         if not self._fallback_activated:
+            # _try_activate_fallback() advances _fallback_index *before* the
+            # activation can fail.  When every entry fails to resolve (e.g.
+            # exhausted credential pool, unconfigured provider) the recursion
+            # walks the index to len(chain) without ever flipping
+            # _fallback_activated.  Without this reset, the next turn's
+            # _try_activate_fallback() short-circuits at the bounds check and
+            # the caller emits "trying fallback..." then aborts immediately.
+            # See #16677.
+            self._fallback_index = 0
             return False
 
         if getattr(self, "_rate_limited_until", 0) > time.monotonic():
