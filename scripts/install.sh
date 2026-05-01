@@ -591,7 +591,12 @@ install_node() {
 
     mkdir -p "$HOME/.local/bin"
     ln -sf "$HERMES_HOME/node/bin/node" "$HOME/.local/bin/node"
-    ln -sf "$HERMES_HOME/node/bin/npm"  "$HOME/.local/bin/npm"
+    # Do NOT symlink npm into ~/.local/bin — this would hijack the user's
+    # global npm prefix, causing unrelated 'npm install -g' commands to
+    # land in ~/.hermes/node/lib/node_modules instead of the system location.
+    # Fix: set npm prefix explicitly so Hermes's npm always writes to its own
+    # directory, regardless of which npm ends up in the user's PATH.
+    "$HERMES_HOME/node/bin/npm" config set prefix "$HERMES_HOME/node" 2>/dev/null || true
     ln -sf "$HERMES_HOME/node/bin/npx"  "$HOME/.local/bin/npx"
 
     export PATH="$HERMES_HOME/node/bin:$PATH"
