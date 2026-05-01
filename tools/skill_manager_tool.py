@@ -42,6 +42,9 @@ from pathlib import Path
 from hermes_constants import get_hermes_home, display_hermes_home
 from typing import Dict, Any, Optional, Tuple
 
+from utils import atomic_replace, is_truthy_value
+from hermes_cli.config import cfg_get
+
 logger = logging.getLogger(__name__)
 
 # Import security scanner — external hub installs always get scanned;
@@ -64,7 +67,10 @@ def _guard_agent_created_enabled() -> bool:
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-        return bool(cfg.get("skills", {}).get("guard_agent_created", False))
+        return is_truthy_value(
+            cfg_get(cfg, "skills", "guard_agent_created"),
+            default=False,
+        )
     except Exception:
         return False
 
@@ -106,16 +112,51 @@ MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
 
 
-def _is_local_skill(skill_path: Path) -> bool:
-    """Check if a skill path is within the local SKILLS_DIR.
+def _containing_skills_root(skill_path: Path) -> Path:
+    """Return the skills root directory (local or external_dirs entry) that
+    contains ``skill_path``.  Falls back to the local ``SKILLS_DIR`` if no
+    match is found (defensive — callers should have located the skill via
+    ``_find_skill`` first).
+    """
+    from agent.skill_utils import get_all_skills_dirs
 
-    Skills found in external_dirs are read-only from the agent's perspective.
+    try:
+        resolved = skill_path.resolve()
+    except OSError:
+        resolved = skill_path
+
+    for root in get_all_skills_dirs():
+        try:
+            resolved.relative_to(root.resolve())
+            return root
+        except (ValueError, OSError):
+            continue
+    return SKILLS_DIR
+
+
+def _pinned_guard(name: str, action: str = "modify") -> Optional[str]:
+    """Return a refusal message when a pinned skill is being deleted.
+
+    Pinned skills are protected from deletion/removal operations, but they can
+    still be patched/edited so maintenance does not require unpin/re-pin cycles.
+
+    Best-effort: if the sidecar is unreadable we let the write through
+    rather than block on a broken telemetry file.
     """
     try:
-        skill_path.resolve().relative_to(SKILLS_DIR.resolve())
-        return True
-    except ValueError:
-        return False
+        from tools import skill_usage
+        rec = skill_usage.get_record(name)
+        if rec.get("pinned") and action in {"delete", "remove_file"}:
+            return (
+                f"Skill '{name}' is pinned and cannot be deleted by "
+                f"skill_manage. Ask the user to run "
+                f"`hermes curator unpin {name}` if they want the deletion."
+            )
+    except Exception:
+        logger.debug("pinned-guard lookup failed for %s", name, exc_info=True)
+    return None
+
+
 MAX_SKILL_CONTENT_CHARS = 100_000   # ~36k tokens at 2.75 chars/token
 MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
 
@@ -309,7 +350,7 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
     try:
         with os.fdopen(fd, "w", encoding=encoding) as f:
             f.write(content)
-        os.replace(temp_path, file_path)
+        atomic_replace(temp_path, file_path)
     except Exception:
         # Clean up temp file on error
         try:
@@ -394,8 +435,9 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Use skills_list() to see available skills."}
 
-    if not _is_local_skill(existing["path"]):
-        return {"success": False, "error": f"Skill '{name}' is in an external directory and cannot be modified. Copy it to your local skills directory first."}
+    pinned_err = _pinned_guard(name)
+    if pinned_err:
+        return {"success": False, "error": pinned_err}
 
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
@@ -437,8 +479,9 @@ def _patch_skill(
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
 
-    if not _is_local_skill(existing["path"]):
-        return {"success": False, "error": f"Skill '{name}' is in an external directory and cannot be modified. Copy it to your local skills directory first."}
+    pinned_err = _pinned_guard(name)
+    if pinned_err:
+        return {"success": False, "error": pinned_err}
 
     skill_dir = existing["path"]
 
@@ -519,15 +562,17 @@ def _delete_skill(name: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
 
-    if not _is_local_skill(existing["path"]):
-        return {"success": False, "error": f"Skill '{name}' is in an external directory and cannot be deleted."}
+    pinned_err = _pinned_guard(name, action="delete")
+    if pinned_err:
+        return {"success": False, "error": pinned_err}
 
     skill_dir = existing["path"]
+    skills_root = _containing_skills_root(skill_dir)
     shutil.rmtree(skill_dir)
 
-    # Clean up empty category directories (don't remove SKILLS_DIR itself)
+    # Clean up empty category directories (don't remove the skills root itself)
     parent = skill_dir.parent
-    if parent != SKILLS_DIR and parent.exists() and not any(parent.iterdir()):
+    if parent != skills_root and parent.exists() and not any(parent.iterdir()):
         parent.rmdir()
 
     return {
@@ -564,8 +609,9 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Create it first with action='create'."}
 
-    if not _is_local_skill(existing["path"]):
-        return {"success": False, "error": f"Skill '{name}' is in an external directory and cannot be modified. Copy it to your local skills directory first."}
+    pinned_err = _pinned_guard(name)
+    if pinned_err:
+        return {"success": False, "error": pinned_err}
 
     target, err = _resolve_skill_target(existing["path"], file_path)
     if err:
@@ -601,8 +647,9 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
 
-    if not _is_local_skill(existing["path"]):
-        return {"success": False, "error": f"Skill '{name}' is in an external directory and cannot be modified."}
+    pinned_err = _pinned_guard(name, action="remove_file")
+    if pinned_err:
+        return {"success": False, "error": pinned_err}
 
     skill_dir = existing["path"]
 
@@ -698,6 +745,17 @@ def skill_manage(
             clear_skills_system_prompt_cache(clear_snapshot=True)
         except Exception:
             pass
+        # Curator telemetry: bump patch_count on edit/patch/write_file (the actions
+        # that mutate an existing skill's guidance), drop the record on delete.
+        # Best-effort; telemetry failures never break the tool.
+        try:
+            from tools.skill_usage import bump_patch, forget
+            if action in ("patch", "edit", "write_file", "remove_file"):
+                bump_patch(name)
+            elif action == "delete":
+                forget(name)
+        except Exception:
+            pass
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -725,7 +783,10 @@ SKILL_MANAGE_SCHEMA = {
         "After difficult/iterative tasks, offer to save as a skill. "
         "Skip for simple one-offs. Confirm with user before creating/deleting.\n\n"
         "Good skills: trigger conditions, numbered steps with exact commands, "
-        "pitfalls section, verification steps. Use skill_view() to see format examples."
+        "pitfalls section, verification steps. Use skill_view() to see format examples.\n\n"
+        "Pinned skills are deletion-protected — delete/remove_file actions refuse "
+        "with a message pointing the user to `hermes curator unpin <name>`. "
+        "Edits/patches are allowed so pinned skills can still be maintained."
     ),
     "parameters": {
         "type": "object",
