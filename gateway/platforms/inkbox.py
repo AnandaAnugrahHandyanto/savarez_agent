@@ -650,10 +650,9 @@ class InkboxAdapter(BasePlatformAdapter):
         if not from_address:
             return web.Response(status=200, text="ok")
 
-        contact_id, contact_name = await self._resolve_contact(
-            kind="email", value=from_address,
-        )
-        chat_id = contact_id or from_address
+        contact = await self._resolve_contact_full(kind="email", value=from_address)
+        chat_id = (contact["id"] if contact else from_address)
+        contact_name = contact["name"] if contact and contact.get("name") else None
         thread_id = message.get("thread_id")
         rfc_message_id = message.get("message_id")  # RFC 5322 Message-ID for threading
         subject = message.get("subject") or ""
@@ -683,12 +682,15 @@ class InkboxAdapter(BasePlatformAdapter):
             message_id=rfc_message_id or message.get("id"),
         )
         body_text = message.get("snippet") or subject or ""
-        # Modality marker so the LLM knows the message arrived as email
-        # (not SMS or live voice).  PLATFORM_HINTS["inkbox"] tells the
-        # agent to use this as a register cue and never echo it.
+        # Modality marker — every inbound is prefixed with one line that
+        # tells the agent which modality + which Inkbox Contact (if any)
+        # this message belongs to.  PLATFORM_HINTS["inkbox"] explains how
+        # the agent should use this and tells it never to echo the line.
+        contact_block = self._contact_marker(contact)
         tagged = (
             f"[inkbox:email from={from_address}"
-            f"{f' subject={subject!r}' if subject else ''}]\n{body_text}"
+            f"{f' subject={subject!r}' if subject else ''}"
+            f" | {contact_block}]\n{body_text}"
         )
         event = MessageEvent(
             text=tagged,
@@ -696,6 +698,10 @@ class InkboxAdapter(BasePlatformAdapter):
             source=source,
             raw_message=envelope,
             message_id=rfc_message_id or str(message.get("id") or ""),
+            # Auto-load the Inkbox SDK skill on the first turn of every new
+            # session so the agent has the SDK reference (texts.list,
+            # iter_emails, contacts.create, etc.) in conversation history.
+            auto_skill="inkbox-python",
         )
         await self._enqueue(event)
         return web.Response(status=200, text="ok")
@@ -706,10 +712,9 @@ class InkboxAdapter(BasePlatformAdapter):
         if not remote:
             return web.Response(status=200, text="ok")
 
-        contact_id, contact_name = await self._resolve_contact(
-            kind="phone", value=remote,
-        )
-        chat_id = contact_id or remote
+        contact = await self._resolve_contact_full(kind="phone", value=remote)
+        chat_id = (contact["id"] if contact else remote)
+        contact_name = contact["name"] if contact and contact.get("name") else None
 
         source = self.build_source(
             chat_id=str(chat_id),
@@ -720,13 +725,15 @@ class InkboxAdapter(BasePlatformAdapter):
             message_id=text_msg.get("id"),
         )
         body = text_msg.get("text") or ""
-        tagged = f"[inkbox:sms from={remote}]\n{body}"
+        contact_block = self._contact_marker(contact)
+        tagged = f"[inkbox:sms from={remote} | {contact_block}]\n{body}"
         event = MessageEvent(
             text=tagged,
             message_type=MessageType.TEXT,
             source=source,
             raw_message=envelope,
             message_id=str(text_msg.get("id") or ""),
+            auto_skill="inkbox-python",
         )
         await self._enqueue(event)
         return web.Response(status=200, text="ok")
@@ -740,9 +747,9 @@ class InkboxAdapter(BasePlatformAdapter):
         before the contact is resolved).
         """
         remote = (envelope.get("remote_phone_number") or "").strip()
-        contact_id, contact_name = await self._resolve_contact(
-            kind="phone", value=remote,
-        )
+        contact = await self._resolve_contact_full(kind="phone", value=remote)
+        contact_id = contact["id"] if contact else None
+        contact_name = contact["name"] if contact and contact.get("name") else None
         # Stash the resolved identity under the call_id so the WS handler
         # can pick it up via the ``client_websocket_url`` query string.
         call_id = envelope.get("id")
@@ -751,6 +758,7 @@ class InkboxAdapter(BasePlatformAdapter):
                 "call_id": str(call_id),
                 "contact_id": str(contact_id or remote),
                 "contact_name": contact_name or remote,
+                "contact": contact,
                 "remote_phone_number": remote,
             }
 
@@ -808,13 +816,17 @@ class InkboxAdapter(BasePlatformAdapter):
                         chat_topic="voice_call",
                         message_id=payload.get("turn_id"),
                     )
-                    tagged = f"[inkbox:voice_call call_id={call_id}]\n{text}"
+                    contact_block = self._contact_marker(meta.get("contact"))
+                    tagged = (
+                        f"[inkbox:voice_call call_id={call_id} | {contact_block}]\n{text}"
+                    )
                     event = MessageEvent(
                         text=tagged,
                         message_type=MessageType.TEXT,
                         source=source,
                         raw_message=payload,
                         message_id=f"call:{call_id}:{payload.get('turn_id') or ''}",
+                        auto_skill="inkbox-python",
                     )
                     await self._enqueue(event)
                 elif ev == "stop":
@@ -836,44 +848,96 @@ class InkboxAdapter(BasePlatformAdapter):
     async def _resolve_contact(
         self, *, kind: str, value: str,
     ) -> Tuple[Optional[str], Optional[str]]:
-        """Return ``(contact_id, display_name)`` for an email/phone, or ``(None, None)``.
+        """Thin wrapper that returns just ``(contact_id, display_name)``.
 
-        Cached for ``CONTACT_CACHE_TTL_SECONDS``. A ``lookup()`` that returns
-        zero or more than one contact caches the negative result so we don't
-        re-query on every event from an unknown sender.
+        Kept for the call-sites that only need the chat-routing pair.  New
+        code that wants emails / phones / company / notes should use
+        :meth:`_resolve_contact_full` instead.
+        """
+        details = await self._resolve_contact_full(kind=kind, value=value)
+        if details is None:
+            return (None, None)
+        return (details.get("id"), details.get("name"))
+
+    async def _resolve_contact_full(
+        self, *, kind: str, value: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return a serialisable summary of the Inkbox Contact matched by *value*.
+
+        Shape::
+
+            {
+                "id":       "<uuid>",
+                "name":     "Dima Vremenko",
+                "emails":   ["dima@vectorly.app", ...],   # primary first
+                "phones":   ["+15167251294", ...],         # primary first
+                "company":  "Inkbox",
+                "job_title": "Cofounder",
+                "notes":    "...",
+            }
+
+        ``None`` when the lookup returns 0 or >1 matches.  Cached for
+        ``CONTACT_CACHE_TTL_SECONDS`` (positive *and* negative results).
         """
         if not value:
-            return (None, None)
+            return None
         cache_key = (kind, value.lower())
         now = time.time()
         cached = self._contact_cache.get(cache_key)
-        if cached and cached[2] > now:
-            return (cached[0], cached[1])
+        if cached and cached[1] > now:
+            return cached[0]
 
         if self._inkbox is None:
-            return (None, None)
+            return None
 
         kwargs = {kind: value}
         try:
             contacts = await asyncio.to_thread(self._inkbox.contacts.lookup, **kwargs)
         except Exception as exc:
             logger.debug("[Inkbox] contacts.lookup(%s=%s) failed: %s", kind, value, exc)
-            self._contact_cache[cache_key] = (None, None, now + CONTACT_CACHE_TTL_SECONDS)
-            return (None, None)
+            self._contact_cache[cache_key] = (None, now + CONTACT_CACHE_TTL_SECONDS)
+            return None
 
         if len(contacts) != 1:
-            self._contact_cache[cache_key] = (None, None, now + CONTACT_CACHE_TTL_SECONDS)
-            return (None, None)
+            self._contact_cache[cache_key] = (None, now + CONTACT_CACHE_TTL_SECONDS)
+            return None
 
         contact = contacts[0]
-        cid = str(getattr(contact, "id", ""))
-        name = (
-            getattr(contact, "preferred_name", None)
-            or getattr(contact, "given_name", None)
-            or None
-        )
-        self._contact_cache[cache_key] = (cid, name, now + CONTACT_CACHE_TTL_SECONDS)
-        return (cid, name)
+        emails_raw = list(getattr(contact, "emails", None) or [])
+        phones_raw = list(getattr(contact, "phones", None) or [])
+        emails_raw.sort(key=lambda e: not getattr(e, "is_primary", False))
+        phones_raw.sort(key=lambda p: not getattr(p, "is_primary", False))
+        details: Dict[str, Any] = {
+            "id": str(getattr(contact, "id", "")),
+            "name": (
+                getattr(contact, "preferred_name", None)
+                or getattr(contact, "given_name", None)
+                or None
+            ),
+            "emails": [getattr(e, "value", "") for e in emails_raw if getattr(e, "value", "")],
+            "phones": [getattr(p, "value", "") for p in phones_raw if getattr(p, "value", "")],
+            "company": getattr(contact, "company_name", None) or None,
+            "job_title": getattr(contact, "job_title", None) or None,
+            "notes": ((getattr(contact, "notes", None) or "")[:200].strip() or None),
+        }
+        self._contact_cache[cache_key] = (details, now + CONTACT_CACHE_TTL_SECONDS)
+        return details
+
+    @staticmethod
+    def _contact_marker(details: Optional[Dict[str, Any]]) -> str:
+        """Render a one-line contact summary for embedding in MessageEvent text."""
+        if not details:
+            return "contact=unknown_in_inkbox"
+        parts = [f"contact_id={details['id']}"]
+        if details.get("name"):
+            parts.append(f"contact_name={details['name']!r}")
+        if details.get("company"):
+            parts.append(f"contact_company={details['company']!r}")
+        if details.get("emails"):
+            parts.append(f"contact_emails={details['emails']}")
+        if details.get("phones"):
+            parts.append(f"contact_phones={details['phones']}")
+        return " ".join(parts)
 
     def _lookup_contact_email(self, contact_id: str) -> Optional[str]:
         """Fetch the primary email address for a contact (sync helper)."""
