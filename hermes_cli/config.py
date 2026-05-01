@@ -4034,14 +4034,16 @@ def reload_env() -> int:
 
 
 def get_env_value(key: str) -> Optional[str]:
-    """Get a value from ~/.hermes/.env or environment."""
-    # Check environment first
-    if key in os.environ:
-        return os.environ[key]
-    
-    # Then check .env file
+    """Get a value from ~/.hermes/.env or environment.
+
+    Hermes treats ~/.hermes/.env as the authoritative user-managed source.
+    Process-level environment variables are a fallback for ephemeral overrides.
+    """
     env_vars = load_env()
-    return env_vars.get(key)
+    if key in env_vars:
+        return env_vars[key]
+
+    return os.environ.get(key)
 
 
 # =============================================================================
