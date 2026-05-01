@@ -350,7 +350,7 @@ def ensure_hermes_home():
     else:
         home.mkdir(parents=True, exist_ok=True)
         _secure_dir(home)
-        for subdir in ("cron", "sessions", "logs", "memories"):
+        for subdir in ("cron", "sessions", "logs", "logs/curator", "memories"):
             d = home / subdir
             d.mkdir(parents=True, exist_ok=True)
             _secure_dir(d)
@@ -371,6 +371,10 @@ def _ensure_hermes_home_managed(home: Path):
                 f"{d} does not exist. "
                 "Run 'sudo nixos-rebuild switch' first."
             )
+    # Curator reports dir is a sub-path of logs/; create it if missing.
+    # In managed mode the activation script may not know about this subdir,
+    # so we mkdir it ourselves (it's inside an already-secured logs/ dir).
+    (home / "logs" / "curator").mkdir(parents=True, exist_ok=True)
     # Inside umask(0o007) scope — SOUL.md will be created as 0660
     _ensure_default_soul_md(home)
 
@@ -453,6 +457,7 @@ DEFAULT_CONFIG = {
         # remains available as a tool regardless of this setting — the routing
         # only controls how inbound user images are presented.
         "image_input_mode": "auto",
+        "disabled_toolsets": [],
     },
     
     "terminal": {
@@ -600,6 +605,24 @@ DEFAULT_CONFIG = {
         "max_bytes": 50_000,
         "max_lines": 2000,
         "max_line_length": 2000,
+    },
+
+    # Tool loop guardrails nudge models when they repeat failed or
+    # non-progressing tool calls. Soft warnings are always-on by default;
+    # hard stops are opt-in so interactive CLI/TUI sessions keep flowing.
+    "tool_loop_guardrails": {
+        "warnings_enabled": True,
+        "hard_stop_enabled": False,
+        "warn_after": {
+            "exact_failure": 2,
+            "same_tool_failure": 3,
+            "idempotent_no_progress": 2,
+        },
+        "hard_stop_after": {
+            "exact_failure": 5,
+            "same_tool_failure": 8,
+            "idempotent_no_progress": 5,
+        },
     },
 
     "compression": {
@@ -1100,6 +1123,24 @@ DEFAULT_CONFIG = {
         "max_parallel_jobs": None,
     },
 
+    # Kanban multi-agent coordination — controls the dispatcher loop that
+    # spawns workers for ready tasks. The dispatcher ticks every N seconds
+    # (default 60), reclaims stale claims, promotes dependency-satisfied
+    # todos to ready, and fires `hermes -p <assignee> chat -q ...` for
+    # each claimable ready task. One dispatcher per profile is sufficient;
+    # running more than one on the same kanban.db will race for claims.
+    "kanban": {
+        # Run the dispatcher inside the gateway process. On by default —
+        # the cost is ~300µs every `dispatch_interval_seconds` when idle,
+        # and gateway is the supervisor users already have. Set to false
+        # only if you run the dispatcher as a separate systemd unit or
+        # don't want the gateway to spawn workers.
+        "dispatch_in_gateway": True,
+        # Seconds between dispatcher ticks (idle or not). Lower = snappier
+        # pickup of newly-ready tasks; higher = less SQL pressure.
+        "dispatch_interval_seconds": 60,
+    },
+
     # execute_code settings — controls the tool used for programmatic tool calls.
     "code_execution": {
         # Execution mode:
@@ -1201,7 +1242,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 22,
+    "_config_version": 23,
 }
 
 # =============================================================================
@@ -3272,6 +3313,90 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     print(
                         "  ✓ Plugins now opt-in: no existing plugins to grandfather. "
                         "Use `hermes plugins enable <name>` to activate."
+                    )
+
+    # ── Version 22 → 23: seed curator defaults + create logs/curator/ ──
+    # The curator (background skill maintenance) was added in PR #16049, but
+    # existing configs from before that PR (or before the April 2026
+    # unification under `auxiliary.curator`) never wrote the curator section
+    # to disk. The runtime deep-merge in `load_config()` fills defaults at
+    # read time, so the curator *functions*; but users can't see/edit the
+    # settings in their `config.yaml`, and `hermes curator status` has no
+    # stable logs dir to point at until the first run mkdir's it.
+    #
+    # This migration:
+    #   1. Writes the `curator` top-level section to config.yaml (enabled,
+    #      interval_hours, min_idle_hours, stale_after_days, archive_after_days)
+    #      — only keys the user hasn't already overridden.
+    #   2. Writes the `auxiliary.curator` aux-task slot (provider, model,
+    #      base_url, api_key, timeout, extra_body) — canonical slot for
+    #      routing the curator fork to a cheaper aux model.
+    #   3. Creates `~/.hermes/logs/curator/` if missing (belt-and-suspenders
+    #      on top of ensure_hermes_home() — old profiles that predate this
+    #      migration still benefit).
+    if current_ver < 23:
+        try:
+            curator_dir = get_hermes_home() / "logs" / "curator"
+            curator_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            results["warnings"].append(f"Could not create {curator_dir}: {e}")
+
+        config = read_raw_config()
+        touched = False
+
+        # (1) Top-level curator section — only add missing keys
+        _curator_defaults = DEFAULT_CONFIG.get("curator", {})
+        raw_curator = config.get("curator")
+        if not isinstance(raw_curator, dict):
+            raw_curator = {}
+        added_curator: List[str] = []
+        for k, v in _curator_defaults.items():
+            if k not in raw_curator:
+                raw_curator[k] = copy.deepcopy(v)
+                added_curator.append(k)
+        if added_curator:
+            config["curator"] = raw_curator
+            touched = True
+
+        # (2) auxiliary.curator task slot
+        _aux_curator_defaults = (
+            DEFAULT_CONFIG.get("auxiliary", {}).get("curator", {})
+        )
+        raw_aux = config.get("auxiliary")
+        if not isinstance(raw_aux, dict):
+            raw_aux = {}
+        raw_aux_curator = raw_aux.get("curator")
+        if not isinstance(raw_aux_curator, dict):
+            raw_aux_curator = {}
+        added_aux: List[str] = []
+        for k, v in _aux_curator_defaults.items():
+            if k not in raw_aux_curator:
+                raw_aux_curator[k] = copy.deepcopy(v)
+                added_aux.append(k)
+        if added_aux:
+            raw_aux["curator"] = raw_aux_curator
+            config["auxiliary"] = raw_aux
+            touched = True
+
+        if touched:
+            save_config(config)
+            if added_curator:
+                results["config_added"].append(
+                    f"curator ({len(added_curator)} default key(s))"
+                )
+                if not quiet:
+                    print(
+                        "  ✓ Seeded curator defaults in config.yaml: "
+                        f"{', '.join(added_curator)}"
+                    )
+            if added_aux:
+                results["config_added"].append(
+                    f"auxiliary.curator ({len(added_aux)} default key(s))"
+                )
+                if not quiet:
+                    print(
+                        "  ✓ Seeded auxiliary.curator defaults in config.yaml: "
+                        f"{', '.join(added_aux)}"
                     )
 
     if current_ver < latest_ver and not quiet:

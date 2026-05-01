@@ -33,6 +33,8 @@ except ImportError:
             node = node[key]
         return node
 
+from utils import is_truthy_value
+
 logger = logging.getLogger(__name__)
 
 # Per-thread/per-task gateway session identity.
@@ -414,8 +416,8 @@ def unregister_gateway_notify(session_key: str) -> None:
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
-        for entry in entries:
-            entry.event.set()
+    for entry in entries:
+        entry.event.set()
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
@@ -489,7 +491,12 @@ def clear_session(session_key: str) -> None:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
         _pending.pop(session_key, None)
-        _gateway_queues.pop(session_key, None)
+        entries = _gateway_queues.pop(session_key, [])
+    for entry in entries:
+        # Session-boundary cleanup should cancel any blocked approval waits
+        # immediately so the old run can unwind instead of idling until timeout.
+        entry.result = "deny"
+        entry.event.set()
 
 
 def is_session_yolo_enabled(session_key: str) -> bool:
@@ -811,7 +818,7 @@ def check_dangerous_command(command: str, env_type: str,
 
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
-    if os.getenv("HERMES_YOLO_MODE") or is_current_session_yolo_enabled():
+    if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled():
         return {"approved": True, "message": None}
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
@@ -936,7 +943,7 @@ def check_all_command_guards(command: str, env_type: str,
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
-    if os.getenv("HERMES_YOLO_MODE") or is_current_session_yolo_enabled() or approval_mode == "off":
+    if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled() or approval_mode == "off":
         return {"approved": True, "message": None}
 
     is_cli = os.getenv("HERMES_INTERACTIVE")

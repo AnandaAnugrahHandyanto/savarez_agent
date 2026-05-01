@@ -42,7 +42,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home, display_hermes_home
 from typing import Dict, Any, Optional, Tuple
 
-from utils import atomic_replace
+from utils import atomic_replace, is_truthy_value
 try:
     from hermes_cli.config import cfg_get
 except ImportError:
@@ -81,7 +81,10 @@ def _guard_agent_created_enabled() -> bool:
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-        return bool(cfg_get(cfg, "skills", "guard_agent_created", default=False))
+        return is_truthy_value(
+            cfg_get(cfg, "skills", "guard_agent_created"),
+            default=False,
+        )
     except Exception:
         return False
 
