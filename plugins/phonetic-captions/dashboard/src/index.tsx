@@ -458,7 +458,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
           <div className="border-t border-zinc-200 dark:border-zinc-800 mt-6 pb-8">
             <h2 className="text-base font-semibold mt-6 mb-4">Caption Style</h2>
             <div className="space-y-2.5">
-              <StyleField label="Font" value={style.font} onChange={(v) => setStyle((s) => s && ({ ...s, font: v }))} />
+              <StyleField label="Font" value={style.font} onChange={(v) => setStyle((s) => s && ({ ...s, font: v }))} placeholder="e.g. Arial, Impact, Trebuchet MS" />
               <StyleNumberField label="Font size" value={style.font_size} onChange={(v) => setStyle((s) => s && ({ ...s, font_size: v }))} />
               <StyleColorField label="Text color" value={style.primary_color} onChange={(v) => setStyle((s) => s && ({ ...s, primary_color: v }))} />
               <StyleColorField label="Outline" value={style.outline_color} onChange={(v) => setStyle((s) => s && ({ ...s, outline_color: v }))} />
@@ -478,14 +478,15 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
 // Style field helpers
 // ---------------------------------------------------------------------------
 
-function StyleField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+function StyleField({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string }) {
   return (
     <div className="flex items-center gap-2">
       <span className="w-24 shrink-0 text-xs text-zinc-500">{label}</span>
       <input
-        className="flex-1 min-w-0 bg-transparent border border-zinc-300 dark:border-zinc-600 rounded px-2 py-1 text-xs outline-none focus:border-blue-500 transition-colors text-zinc-900 dark:text-zinc-100"
+        className="flex-1 min-w-0 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-600 rounded px-2 py-1 text-xs outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-colors text-zinc-900 dark:text-zinc-100"
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
       />
     </div>
   );
@@ -497,7 +498,7 @@ function StyleNumberField({ label, value, onChange }: { label: string; value: nu
       <span className="w-24 shrink-0 text-xs text-zinc-500">{label}</span>
       <input
         type="number"
-        className="w-20 bg-transparent border border-zinc-300 dark:border-zinc-600 rounded px-2 py-1 text-xs outline-none focus:border-blue-500 transition-colors text-zinc-900 dark:text-zinc-100"
+        className="w-20 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-600 rounded px-2 py-1 text-xs outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-colors text-zinc-900 dark:text-zinc-100"
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
       />
