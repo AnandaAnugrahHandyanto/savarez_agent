@@ -280,7 +280,7 @@ def _notify_session_boundary(event_type: str, session_id: str | None) -> None:
         pass
 
 
-def _finalize_session(session: dict | None) -> None:
+def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> None:
     """Best-effort finalize hook + memory commit for a session."""
     if not session or session.get("_finalized"):
         return
@@ -301,6 +301,18 @@ def _finalize_session(session: dict | None) -> None:
 
     session_id = getattr(agent, "session_id", None) or session.get("session_key")
     _notify_session_boundary("on_session_finalize", session_id)
+
+    # Mark the session as ended in the DB so it does not appear as an orphaned
+    # open entry in /resume.  CLI already does this in end_session() calls;
+    # TUI was missing equivalent end_session() coverage (#18269).
+    key = session.get("session_key")
+    if key:
+        try:
+            db = _get_db()
+            if db is not None:
+                db.end_session(key, end_reason)
+        except Exception:
+            pass
 
 
 def _shutdown_sessions() -> None:
