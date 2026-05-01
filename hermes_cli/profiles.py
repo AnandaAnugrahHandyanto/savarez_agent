@@ -158,6 +158,7 @@ def _get_wrapper_dir() -> Path:
 
 def validate_profile_name(name: str) -> None:
     """Raise ``ValueError`` if *name* is not a valid profile identifier."""
+    name = normalize_profile_name(name)
     if name == "default":
         return  # special alias for ~/.hermes
     if not _PROFILE_ID_RE.match(name):
@@ -169,6 +170,7 @@ def validate_profile_name(name: str) -> None:
 
 def get_profile_dir(name: str) -> Path:
     """Resolve a profile name to its HERMES_HOME directory."""
+    name = normalize_profile_name(name)
     if name == "default":
         return _get_default_hermes_home()
     return _get_profiles_root() / name
@@ -176,9 +178,20 @@ def get_profile_dir(name: str) -> Path:
 
 def profile_exists(name: str) -> bool:
     """Check whether a profile directory exists."""
+    name = normalize_profile_name(name)
     if name == "default":
         return True
     return get_profile_dir(name).is_dir()
+
+
+def normalize_profile_name(name: str) -> str:
+    """Canonicalize profile names for case-insensitive UI inputs.
+
+    ``default`` remains a special alias; all other names are lowercased.
+    """
+    if not isinstance(name, str):
+        return name
+    return "default" if name.lower() == "default" else name.lower()
 
 
 # ---------------------------------------------------------------------------
