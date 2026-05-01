@@ -1,13 +1,24 @@
-"""Bilingual video captioning tool for Hermes Agent.
+"""Vietnamese language teaching video caption tool for Hermes Agent.
 
-Transcribes English audio with faster-whisper, translates to Vietnamese via
-Kimi K2.5 (NVIDIA NIM), builds a styled ASS subtitle file, and burns the
-captions into the video with FFmpeg.
+For short teaching videos (YouTube Shorts style) that mix English narration
+with Vietnamese words/phrases being taught:
 
-Required dependencies (install in the Hermes venv):
-    pip install faster-whisper
+  - Vietnamese segments → main text (Vietnamese with diacritics) on top,
+    English phonetic guide in brackets below  e.g.  không biết
+                                                      [humm biet]
+  - English segments    → English text only, no second line
 
-Required env var for Kimi translation (add to ~/.hermes/.env):
+Pipeline:
+  1. faster-whisper transcribes audio (auto language detect, fully local)
+  2. Kimi K2.5 via NVIDIA NIM: corrects Vietnamese diacritics, classifies
+     each segment as "en" or "vi", and generates English phonetic guides
+  3. ASS subtitle file built with MAIN + PHONETIC styles
+  4. FFmpeg burns captions into the video
+
+Required dependencies:
+    pip install faster-whisper openai
+
+Required env var for phonetic generation (add to ~/.hermes/.env):
     NVIDIA_API_KEY=nvapi-...
 
 FFmpeg must be installed system-wide:
@@ -58,17 +69,15 @@ def _load_style() -> dict:
         from hermes_cli.config import load_config
         cfg = load_config()
         user_style = cfg.get("caption", {}).get("style", {})
-        style = {**_DEFAULT_STYLE, **{k: v for k, v in user_style.items() if v is not None}}
+        return {**_DEFAULT_STYLE, **{k: v for k, v in user_style.items() if v is not None}}
     except Exception:
-        style = dict(_DEFAULT_STYLE)
-    return style
+        return dict(_DEFAULT_STYLE)
 
 
 def _ass_color(hex_color: str) -> str:
     """Ensure hex_color is in ASS &HAABBGGRR format; pass through if already valid."""
     if _ASS_COLOR_RE.match(hex_color):
         return hex_color
-    # Accept #RRGGBB shorthand — convert to &H00BBGGRR
     m = re.match(r"^#([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})$", hex_color)
     if m:
         r, g, b = m.group(1), m.group(2), m.group(3)
@@ -108,10 +117,15 @@ def _wrap_text(text: str, max_len: int) -> str:
 
 
 def _build_ass_content(segments: list[dict], style: dict) -> str:
-    """Build a complete ASS subtitle file with stacked EN (top) + VI (bottom) lines."""
+    """Build ASS subtitle file for teaching layout.
+
+    Vietnamese segment: MAIN line (Vietnamese text, bold, larger)
+                        PHONETIC line ([english guide], italic, smaller, below)
+    English segment:    MAIN line only (English text)
+    """
     font = style["font"]
-    size_en = int(style["font_size"])
-    size_vi = max(int(size_en * 0.9), 28)
+    size_main = int(style["font_size"])
+    size_phonetic = max(int(size_main * 0.75), 24)
     primary = _ass_color(style.get("primary_color", "&H00FFFFFF"))
     outline = _ass_color(style.get("outline_color", "&H00000000"))
     outline_w = int(style.get("outline_width", 3))
@@ -119,7 +133,10 @@ def _build_ass_content(segments: list[dict], style: dict) -> str:
     margin_v = int(style.get("margin_bottom", 80))
     max_len = int(style.get("max_line_length", 42))
 
-    # Script header
+    # PHONETIC sits at the base margin; MAIN sits directly above it
+    phonetic_margin = margin_v
+    main_margin = margin_v + size_phonetic + 8
+
     header = (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
@@ -133,16 +150,16 @@ def _build_ass_content(segments: list[dict], style: dict) -> str:
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
     )
 
-    # English style — sits above Vietnamese
-    en_margin_v = margin_v + size_vi + 12
-    style_en = (
-        f"Style: EN,{font},{size_en},{primary},&H000000FF,{outline},&H80000000,"
-        f"-1,0,0,0,100,100,0,0,1,{outline_w},1,{alignment},10,10,{en_margin_v},1\n"
+    # MAIN: bold, full-size — used for both EN and VI main text
+    style_main = (
+        f"Style: MAIN,{font},{size_main},{primary},&H000000FF,{outline},&H80000000,"
+        f"-1,0,0,0,100,100,0,0,1,{outline_w},1,{alignment},10,10,{main_margin},1\n"
     )
-    # Vietnamese style — sits at the base
-    style_vi = (
-        f"Style: VI,{font},{size_vi},{primary},&H000000FF,{outline},&H80000000,"
-        f"0,0,0,0,100,100,0,0,1,{outline_w},1,{alignment},10,10,{margin_v},1\n"
+    # PHONETIC: smaller, italic, slightly transparent — only for VI segments
+    phonetic_color = "&H99FFFFFF"  # 60% alpha white for visual hierarchy
+    style_phonetic = (
+        f"Style: PHONETIC,{font},{size_phonetic},{phonetic_color},&H000000FF,{outline},&H80000000,"
+        f"0,1,0,0,100,100,0,0,1,{outline_w},1,{alignment},10,10,{phonetic_margin},1\n"
     )
 
     events_header = (
@@ -154,14 +171,22 @@ def _build_ass_content(segments: list[dict], style: dict) -> str:
     for seg in segments:
         start = _seconds_to_ass_time(float(seg["start"]))
         end = _seconds_to_ass_time(float(seg["end"]))
-        en_text = _wrap_text(seg.get("en", "").strip(), max_len)
-        vi_text = _wrap_text(seg.get("vi", "").strip(), max_len)
-        if en_text:
-            dialogue_lines.append(f"Dialogue: 0,{start},{end},EN,,0,0,0,,{en_text}")
-        if vi_text:
-            dialogue_lines.append(f"Dialogue: 0,{start},{end},VI,,0,0,0,,{vi_text}")
+        text = _wrap_text((seg.get("text") or "").strip(), max_len)
+        phonetic = _wrap_text((seg.get("phonetic") or "").strip(), max_len)
+        lang = seg.get("lang", "en")
 
-    return header + style_en + style_vi + events_header + "\n".join(dialogue_lines) + "\n"
+        if not text:
+            continue
+
+        if lang == "vi" and phonetic:
+            # Vietnamese: main text on top + phonetic guide below
+            dialogue_lines.append(f"Dialogue: 0,{start},{end},MAIN,,0,0,0,,{text}")
+            dialogue_lines.append(f"Dialogue: 0,{start},{end},PHONETIC,,0,0,0,,{phonetic}")
+        else:
+            # English (or Vietnamese with no phonetics yet): main text only
+            dialogue_lines.append(f"Dialogue: 0,{start},{end},MAIN,,0,0,0,,{text}")
+
+    return header + style_main + style_phonetic + events_header + "\n".join(dialogue_lines) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -169,33 +194,32 @@ def _build_ass_content(segments: list[dict], style: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def transcribe(video_path: str) -> list[dict]:
-    """Transcribe English audio from *video_path* using faster-whisper.
+    """Transcribe audio with auto language detection using faster-whisper.
 
-    Returns a list of segment dicts: {start, end, en}.
+    Fully local — no internet required after model download. No rate limits.
+    Returns segments: {id, start, end, text, lang, phonetic}
+    lang and phonetic are blank — filled in by generate_phonetics().
     """
     try:
         from faster_whisper import WhisperModel  # type: ignore
     except ImportError:
         raise RuntimeError(
-            "faster-whisper is not installed. "
-            "Run: pip install faster-whisper"
+            "faster-whisper is not installed. Run: pip install faster-whisper"
         )
 
-    # Use medium model by default — good balance of speed and accuracy.
-    # Override with HERMES_WHISPER_MODEL env var for large-v3 or tiny.
     model_name = os.getenv("HERMES_WHISPER_MODEL", "medium")
-    device = "cpu"
-    compute = "int8"
-
     logger.info("Loading faster-whisper model: %s", model_name)
-    model = WhisperModel(model_name, device=device, compute_type=compute)
+    model = WhisperModel(model_name, device="cpu", compute_type="int8")
 
     logger.info("Transcribing: %s", video_path)
-    segments_raw, _info = model.transcribe(
+    segments_raw, info = model.transcribe(
         video_path,
-        language="en",
+        language=None,        # auto-detect — works for mixed EN/VI
         vad_filter=True,
         word_timestamps=False,
+    )
+    logger.info(
+        "Detected language: %s (prob %.2f)", info.language, info.language_probability
     )
 
     segments: list[dict] = []
@@ -206,44 +230,57 @@ def transcribe(video_path: str) -> list[dict]:
                 "id": len(segments),
                 "start": round(float(seg.start), 3),
                 "end": round(float(seg.end), 3),
-                "en": text,
-                "vi": "",
+                "text": text,
+                "lang": "",       # filled by generate_phonetics()
+                "phonetic": "",
             })
     return segments
 
 
-def translate_to_vietnamese(segments: list[dict], api_key: str | None = None) -> list[dict]:
-    """Translate English captions to Vietnamese using Kimi K2.5 via NVIDIA NIM.
+def generate_phonetics(segments: list[dict], api_key: str | None = None) -> list[dict]:
+    """Use Kimi K2.5 to classify, correct, and add phonetics to segments.
 
-    Falls back to returning empty VI strings if the API key is not available,
-    so the pipeline can still produce English-only output.
+    For each segment Kimi will:
+      - Decide if it is English narration ("en") or a Vietnamese teaching moment ("vi")
+      - Correct Vietnamese diacritics if garbled by Whisper
+      - Generate an English phonetic guide for Vietnamese segments  e.g. [humm biet]
+
+    Falls back to all-English (no phonetics) if NVIDIA_API_KEY is not set.
     """
     _api_key = api_key or os.getenv("NVIDIA_API_KEY", "")
     if not _api_key:
         logger.warning(
-            "NVIDIA_API_KEY not set — skipping Vietnamese translation. "
-            "Add it to ~/.hermes/.env to enable Kimi K2.5 translation."
+            "NVIDIA_API_KEY not set — skipping phonetic generation. "
+            "All segments treated as English. Add key to ~/.hermes/.env to enable."
         )
-        return segments
-
-    # Build numbered list of lines to translate in one call
-    lines = [f"{i+1}. {seg['en']}" for i, seg in enumerate(segments)]
-    source_text = "\n".join(lines)
-
-    prompt = (
-        "You are a professional subtitler translating English captions to Vietnamese "
-        "for a bilingual video. Translate each numbered line, preserving the same "
-        "numbering format. Keep the translations natural and concise — these are "
-        "captions, not subtitles for speech, so brevity matters. "
-        "Output ONLY the numbered Vietnamese translations, one per line.\n\n"
-        f"{source_text}"
-    )
+        return [{**s, "lang": "en", "phonetic": ""} for s in segments]
 
     try:
         import openai  # type: ignore
     except ImportError:
-        logger.warning("openai package not installed — skipping translation. Run: pip install openai")
-        return segments
+        logger.warning("openai not installed — skipping phonetics. Run: pip install openai")
+        return [{**s, "lang": "en", "phonetic": ""} for s in segments]
+
+    input_lines = "\n".join(
+        f'{{"id": {s["id"]}, "text": {json.dumps(s["text"])}}}'
+        for s in segments
+    )
+
+    prompt = (
+        "You are captioning a Vietnamese language teaching short video. "
+        "The audio is mostly English narration with Vietnamese words and phrases being taught. "
+        "Whisper (the speech transcriber) may have garbled Vietnamese words into approximate English spellings.\n\n"
+        "For each segment below, return a JSON array where every item has exactly these fields:\n"
+        '- "id": same integer as input\n'
+        '- "text": if English narration → corrected English text. '
+        'If the segment contains Vietnamese being taught (even if garbled) → rewrite with correct Vietnamese spelling and diacritics.\n'
+        '- "lang": "en" for English narration, "vi" for Vietnamese words/phrases being taught.\n'
+        '- "phonetic": if lang is "vi" → a simple English pronunciation guide in square brackets '
+        '(e.g. "[humm biet]", "[zuh yee]", "[toh-ee ten la]"). '
+        'If lang is "en" → empty string "".\n\n'
+        "Return ONLY a valid JSON array, no markdown, no explanation.\n\n"
+        f"Segments:\n{input_lines}"
+    )
 
     try:
         client = openai.OpenAI(
@@ -253,38 +290,44 @@ def translate_to_vietnamese(segments: list[dict], api_key: str | None = None) ->
         response = client.chat.completions.create(
             model="moonshotai/kimi-k2.5",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
+            temperature=0.2,
             max_tokens=2048,
         )
-
-        # Handle the known NVIDIA NIM quirk where Kimi puts output in
-        # reasoning_content instead of content when extended thinking is on.
         choice = response.choices[0]
         raw = getattr(choice.message, "content", None) or ""
+        # Kimi NVIDIA NIM quirk: output sometimes in reasoning_content
         if not raw.strip():
             raw = getattr(choice.message, "reasoning_content", None) or ""
 
     except Exception as e:
-        logger.warning("Kimi translation API call failed: %s — continuing without translation", e)
-        return segments
+        logger.warning("Kimi API call failed: %s — treating all segments as English", e)
+        return [{**s, "lang": "en", "phonetic": ""} for s in segments]
 
-    # Parse numbered lines back into the segments list
-    result_segments = [dict(s) for s in segments]
-    for line in raw.strip().splitlines():
-        m = re.match(r"^(\d+)\.\s+(.+)$", line.strip())
-        if m:
-            idx = int(m.group(1)) - 1
-            if 0 <= idx < len(result_segments):
-                result_segments[idx]["vi"] = m.group(2).strip()
+    # Strip markdown code fences if present
+    clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
+    try:
+        kimi_results = json.loads(clean)
+    except json.JSONDecodeError:
+        logger.warning(
+            "Kimi returned non-JSON — treating all segments as English. Raw: %s", raw[:300]
+        )
+        return [{**s, "lang": "en", "phonetic": ""} for s in segments]
 
+    result_map = {item["id"]: item for item in kimi_results if isinstance(item, dict)}
+    result_segments = []
+    for seg in segments:
+        kimi = result_map.get(seg["id"], {})
+        result_segments.append({
+            **seg,
+            "text": kimi.get("text", seg["text"]),
+            "lang": kimi.get("lang", "en"),
+            "phonetic": kimi.get("phonetic", ""),
+        })
     return result_segments
 
 
 def build_ass(segments: list[dict], output_path: str | None = None) -> str:
-    """Build an ASS subtitle file from *segments* and write it to *output_path*.
-
-    Returns the path to the written file.
-    """
+    """Build an ASS subtitle file from *segments* and write it to *output_path*."""
     style = _load_style()
     content = _build_ass_content(segments, style)
 
@@ -299,10 +342,7 @@ def build_ass(segments: list[dict], output_path: str | None = None) -> str:
 
 
 def burn(video_path: str, ass_path: str, output_path: str | None = None) -> str:
-    """Burn ASS subtitles into *video_path* using FFmpeg.
-
-    Returns the path to the output video.
-    """
+    """Burn ASS subtitles into *video_path* using FFmpeg."""
     _check_ffmpeg()
 
     if output_path is None:
@@ -311,9 +351,7 @@ def burn(video_path: str, ass_path: str, output_path: str | None = None) -> str:
         cache_dir.mkdir(parents=True, exist_ok=True)
         output_path = str(cache_dir / f"{base}_captioned_{uuid.uuid4().hex[:8]}.mp4")
 
-    # Escape the ASS path for FFmpeg's subtitle filter (colons and backslashes)
     escaped_ass = ass_path.replace("\\", "/").replace(":", "\\:")
-
     cmd = [
         "ffmpeg", "-y",
         "-i", video_path,
@@ -332,26 +370,21 @@ def burn(video_path: str, ass_path: str, output_path: str | None = None) -> str:
         raise RuntimeError(
             f"FFmpeg burn failed (exit {result.returncode}):\n{result.stderr[-2000:]}"
         )
-
     return output_path
 
 
 # ---------------------------------------------------------------------------
-# Tool handler
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _check_ffmpeg() -> None:
-    """Raise RuntimeError if ffmpeg is not on PATH."""
     if subprocess.run(["which", "ffmpeg"], capture_output=True).returncode != 0:
         raise RuntimeError(
-            "FFmpeg is not installed or not on PATH.\n"
-            "  macOS: brew install ffmpeg\n"
-            "  Linux: sudo apt install ffmpeg"
+            "FFmpeg not found.\n  macOS: brew install ffmpeg\n  Linux: sudo apt install ffmpeg"
         )
 
 
 def check_requirements() -> bool:
-    """Return True when the minimum dependencies are present."""
     try:
         import faster_whisper  # noqa: F401  # type: ignore
         return True
@@ -359,8 +392,11 @@ def check_requirements() -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# Tool handler
+# ---------------------------------------------------------------------------
+
 def _handle_caption(args: dict, **kw: Any) -> str:
-    """Dispatch tool calls to the appropriate caption operation."""
     operation = args.get("operation", "caption")
     video_path = args.get("video_path", "")
     segments_raw = args.get("segments")
@@ -368,34 +404,40 @@ def _handle_caption(args: dict, **kw: Any) -> str:
 
     if not video_path and operation not in ("build_ass",):
         return json.dumps({"error": "video_path is required"})
-
     if video_path and not os.path.exists(video_path):
         return json.dumps({"error": f"Video file not found: {video_path}"})
 
     try:
         if operation == "caption":
-            # Full pipeline: transcribe → translate → build ASS → burn
             _check_ffmpeg()
             segments = transcribe(video_path)
             if not segments:
                 return json.dumps({"error": "No speech detected in video"})
-            segments = translate_to_vietnamese(segments)
+            segments = generate_phonetics(segments)
             ass_path = build_ass(segments)
             out = burn(video_path, ass_path, output_path)
+
+            vi_count = sum(1 for s in segments if s.get("lang") == "vi")
+            en_count = sum(1 for s in segments if s.get("lang") == "en")
+            caption_display = "\n".join(
+                (
+                    f"{i+1}. [{'VI' if s.get('lang') == 'vi' else 'EN'}] {s['text']}"
+                    + (f"\n    {s['phonetic']}" if s.get("phonetic") else "")
+                )
+                for i, s in enumerate(segments)
+            )
             return json.dumps({
                 "success": True,
                 "output_video": out,
                 "ass_file": ass_path,
                 "segments": segments,
                 "segment_count": len(segments),
+                "vi_segments": vi_count,
+                "en_segments": en_count,
                 "message": (
-                    f"Done! {len(segments)} caption segments generated. "
-                    f"Output saved to {out}\n"
-                    "Here are the captions — let me know what to fix:\n"
-                    + "\n".join(
-                        f"{i+1}. EN: {s['en']} | VI: {s['vi']}"
-                        for i, s in enumerate(segments)
-                    )
+                    f"Done! {len(segments)} segments ({vi_count} Vietnamese, {en_count} English).\n"
+                    f"Output: MEDIA:{out}\n\n"
+                    f"Review the captions below — tell me what to fix:\n\n{caption_display}"
                 ),
             })
 
@@ -403,40 +445,39 @@ def _handle_caption(args: dict, **kw: Any) -> str:
             segments = transcribe(video_path)
             return json.dumps({"success": True, "segments": segments, "count": len(segments)})
 
-        elif operation == "translate":
+        elif operation == "generate_phonetics":
             if not segments_raw:
-                return json.dumps({"error": "segments is required for translate operation"})
-            segments = translate_to_vietnamese(segments_raw)
+                return json.dumps({"error": "segments is required"})
+            segments = generate_phonetics(segments_raw)
             return json.dumps({"success": True, "segments": segments})
 
         elif operation == "build_ass":
             if not segments_raw:
-                return json.dumps({"error": "segments is required for build_ass operation"})
+                return json.dumps({"error": "segments is required"})
             ass_path = build_ass(segments_raw, output_path)
             return json.dumps({"success": True, "ass_file": ass_path})
 
         elif operation == "burn":
             ass_path = args.get("ass_path")
             if not ass_path:
-                return json.dumps({"error": "ass_path is required for burn operation"})
+                return json.dumps({"error": "ass_path is required"})
             if not os.path.exists(ass_path):
                 return json.dumps({"error": f"ASS file not found: {ass_path}"})
             out = burn(video_path, ass_path, output_path)
             return json.dumps({"success": True, "output_video": out})
 
         elif operation == "reburn":
-            # Apply user corrections then re-burn
             if not segments_raw:
-                return json.dumps({"error": "segments is required for reburn operation"})
+                return json.dumps({"error": "segments is required"})
             _check_ffmpeg()
-            ass_path = build_ass(segments_raw, output_path=None)
-            original_video = args.get("original_video_path", video_path)
-            out = burn(original_video, ass_path, output_path)
+            original = args.get("original_video_path", video_path)
+            ass_path = build_ass(segments_raw)
+            out = burn(original, ass_path, output_path)
             return json.dumps({
                 "success": True,
                 "output_video": out,
                 "ass_file": ass_path,
-                "message": f"Re-burned with corrections. Output: MEDIA:{out}",
+                "message": f"Re-burned with corrections. MEDIA:{out}",
             })
 
         else:
@@ -456,27 +497,29 @@ def _handle_caption(args: dict, **kw: Any) -> str:
 _SCHEMA = {
     "name": "video_caption",
     "description": (
-        "Bilingual video caption tool. Transcribes English speech, translates to Vietnamese "
-        "using Kimi K2.5, and burns styled EN+VI captions (stacked) into the video.\n\n"
+        "Caption a Vietnamese language teaching video. Transcribes mixed EN/VI audio (auto language detect), "
+        "classifies each segment as English or Vietnamese, corrects Vietnamese diacritics, and generates "
+        "English phonetic guides (e.g. [humm biet]) for Vietnamese segments via Kimi K2.5. "
+        "Burns EN/VI-aware captions into the video.\n\n"
+        "Caption layout:\n"
+        "  Vietnamese segment: Vietnamese text on top + [phonetic guide] below\n"
+        "  English segment:    English text only\n\n"
         "Operations:\n"
-        "- caption (default): full pipeline — transcribe + translate + burn. Returns output video path + numbered captions.\n"
-        "- transcribe: transcribe only, returns segments.\n"
-        "- translate: translate a list of segments to Vietnamese.\n"
+        "- caption (default): full pipeline — transcribe + classify + phonetics + burn.\n"
+        "- transcribe: transcribe audio only, returns raw segments.\n"
+        "- generate_phonetics: classify segments and generate phonetics via Kimi.\n"
         "- build_ass: build ASS subtitle file from segments.\n"
-        "- burn: burn an existing ASS file into a video.\n"
+        "- burn: burn an existing ASS file into video.\n"
         "- reburn: apply corrected segments and re-burn (use after user edits).\n\n"
-        "After captioning, present the numbered captions to the user for review. "
-        "When the user corrects a line, update the segment and call reburn. "
-        "After the user approves, save corrections to memory.\n\n"
-        "Requirements: faster-whisper (pip install faster-whisper), ffmpeg (brew/apt install ffmpeg). "
-        "Translation requires NVIDIA_API_KEY in ~/.hermes/.env."
+        "Segment format: {id, start, end, text, lang ('en'|'vi'), phonetic}\n"
+        "Requirements: faster-whisper, ffmpeg. NVIDIA_API_KEY for phonetics."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "operation": {
                 "type": "string",
-                "enum": ["caption", "transcribe", "translate", "build_ass", "burn", "reburn"],
+                "enum": ["caption", "transcribe", "generate_phonetics", "build_ass", "burn", "reburn"],
                 "description": "Operation to perform. Default: caption (full pipeline).",
             },
             "video_path": {
@@ -485,7 +528,7 @@ _SCHEMA = {
             },
             "segments": {
                 "type": "array",
-                "description": "Caption segments for translate/build_ass/reburn operations. Each item: {id, start, end, en, vi}.",
+                "description": "Caption segments. Each item: {id, start, end, text, lang, phonetic}.",
                 "items": {"type": "object"},
             },
             "ass_path": {
@@ -494,7 +537,7 @@ _SCHEMA = {
             },
             "original_video_path": {
                 "type": "string",
-                "description": "Original video path for reburn when video_path differs.",
+                "description": "Original video path for reburn when video_path is the captioned output.",
             },
             "output_path": {
                 "type": "string",
