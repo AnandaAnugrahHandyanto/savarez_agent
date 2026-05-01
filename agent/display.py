@@ -158,6 +158,49 @@ def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
     return default
 
 
+def _format_token_count(value: int) -> str:
+    if value >= 1000 and value % 1000 == 0:
+        return f"{value // 1000}k"
+    return str(value)
+
+
+def _build_context_pressure_bar(progress: float, width: int = 20) -> str:
+    capped = max(0.0, min(float(progress), 1.0))
+    filled = min(width, max(0, int(round(capped * width))))
+    return '▰' * filled + '▱' * (width - filled)
+
+
+def format_context_pressure(
+    progress: float,
+    threshold_tokens: int,
+    threshold_ratio: float,
+    *,
+    compression_enabled: bool = True,
+) -> str:
+    capped = max(0.0, min(float(progress), 1.0))
+    pct = int(round(capped * 100))
+    threshold_pct = int(round(float(threshold_ratio) * 100))
+    icon = '⚠' if capped >= 0.8 else 'ℹ'
+    status = 'compaction approaching' if compression_enabled else 'no auto-compaction'
+    return (
+        f"{icon} [{_build_context_pressure_bar(capped)}] {pct}% to compaction "
+        f"(threshold {threshold_pct}%, {_format_token_count(int(threshold_tokens))} tokens; {status})"
+    )
+
+
+def format_context_pressure_gateway(
+    progress: float,
+    threshold_ratio: float,
+    *,
+    compression_enabled: bool = True,
+) -> str:
+    capped = max(0.0, min(float(progress), 1.0))
+    pct = int(round(capped * 100))
+    threshold_pct = int(round(float(threshold_ratio) * 100))
+    status = 'compaction approaching' if compression_enabled else 'auto-compaction disabled'
+    return f"[{_build_context_pressure_bar(capped)}] {pct}% to compaction (threshold {threshold_pct}%; {status})"
+
+
 # =========================================================================
 # Tool preview (one-line summary of a tool call's primary argument)
 # =========================================================================
@@ -225,9 +268,11 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
             content = _oneline(args.get("content", ""))
             return f"+{target}: \"{content[:25]}{'...' if len(content) > 25 else ''}\""
         elif action == "replace":
-            return f"~{target}: \"{_oneline(args.get('old_text', '')[:20])}\""
+            old = _oneline(args.get("old_text") or "") or "<missing old_text>"
+            return f"~{target}: \"{old[:20]}\""
         elif action == "remove":
-            return f"-{target}: \"{_oneline(args.get('old_text', '')[:20])}\""
+            old = _oneline(args.get("old_text") or "") or "<missing old_text>"
+            return f"-{target}: \"{old[:20]}\""
         return action
 
     if tool_name == "send_message":
@@ -600,6 +645,45 @@ class KawaiiSpinner:
         "analyzing", "computing", "synthesizing", "formulating", "brainstorming",
     ]
 
+    @classmethod
+    def get_waiting_faces(cls) -> list:
+        """Return waiting faces from the active skin, falling back to KAWAII_WAITING."""
+        try:
+            skin = _get_skin()
+            if skin:
+                faces = skin.spinner.get("waiting_faces", [])
+                if faces:
+                    return faces
+        except Exception:
+            pass
+        return cls.KAWAII_WAITING
+
+    @classmethod
+    def get_thinking_faces(cls) -> list:
+        """Return thinking faces from the active skin, falling back to KAWAII_THINKING."""
+        try:
+            skin = _get_skin()
+            if skin:
+                faces = skin.spinner.get("thinking_faces", [])
+                if faces:
+                    return faces
+        except Exception:
+            pass
+        return cls.KAWAII_THINKING
+
+    @classmethod
+    def get_thinking_verbs(cls) -> list:
+        """Return thinking verbs from the active skin, falling back to THINKING_VERBS."""
+        try:
+            skin = _get_skin()
+            if skin:
+                verbs = skin.spinner.get("thinking_verbs", [])
+                if verbs:
+                    return verbs
+        except Exception:
+            pass
+        return cls.THINKING_VERBS
+
     def __init__(self, message: str = "", spinner_type: str = 'dots', print_fn=None):
         self.message = message
         self.spinner_frames = self.SPINNERS.get(spinner_type, self.SPINNERS['dots'])
@@ -900,9 +984,13 @@ def get_cute_tool_message(
         if action == "add":
             return _wrap(f"┊ 🧠 memory    +{target}: \"{_trunc(args.get('content', ''), 30)}\"  {dur}")
         elif action == "replace":
-            return _wrap(f"┊ 🧠 memory    ~{target}: \"{_trunc(args.get('old_text', ''), 20)}\"  {dur}")
+            old = args.get("old_text") or ""
+            old = old if old else "<missing old_text>"
+            return _wrap(f"┊ 🧠 memory    ~{target}: \"{_trunc(old, 20)}\"  {dur}")
         elif action == "remove":
-            return _wrap(f"┊ 🧠 memory    -{target}: \"{_trunc(args.get('old_text', ''), 20)}\"  {dur}")
+            old = args.get("old_text") or ""
+            old = old if old else "<missing old_text>"
+            return _wrap(f"┊ 🧠 memory    -{target}: \"{_trunc(old, 20)}\"  {dur}")
         return _wrap(f"┊ 🧠 memory    {action}  {dur}")
     if tool_name == "skills_list":
         return _wrap(f"┊ 📚 skills    list {args.get('category', 'all')}  {dur}")
@@ -954,84 +1042,4 @@ def get_cute_tool_message(
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
 
-_DIM = "\033[2m"
-_SKY_BLUE = "\033[38;5;117m"
-_ANSI_RESET = "\033[0m"
 
-
-# =========================================================================
-# Context pressure display (CLI user-facing warnings)
-# =========================================================================
-
-# ANSI color codes for context pressure tiers
-_CYAN = "\033[36m"
-_YELLOW = "\033[33m"
-_BOLD = "\033[1m"
-_DIM_ANSI = "\033[2m"
-
-# Bar characters
-_BAR_FILLED = "▰"
-_BAR_EMPTY = "▱"
-_BAR_WIDTH = 20
-
-
-def format_context_pressure(
-    compaction_progress: float,
-    threshold_tokens: int,
-    threshold_percent: float,
-    compression_enabled: bool = True,
-) -> str:
-    """Build a formatted context pressure line for CLI display.
-
-    The bar and percentage show progress toward the compaction threshold,
-    NOT the raw context window.  100% = compaction fires.
-
-    Args:
-        compaction_progress: How close to compaction (0.0–1.0, 1.0 = fires).
-        threshold_tokens: Compaction threshold in tokens.
-        threshold_percent: Compaction threshold as a fraction of context window.
-        compression_enabled: Whether auto-compression is active.
-    """
-    pct_int = min(int(compaction_progress * 100), 100)
-    filled = min(int(compaction_progress * _BAR_WIDTH), _BAR_WIDTH)
-    bar = _BAR_FILLED * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
-
-    threshold_k = f"{threshold_tokens // 1000}k" if threshold_tokens >= 1000 else str(threshold_tokens)
-    threshold_pct_int = int(threshold_percent * 100)
-
-    color = f"{_BOLD}{_YELLOW}"
-    icon = "⚠"
-    if compression_enabled:
-        hint = "compaction approaching"
-    else:
-        hint = "no auto-compaction"
-
-    return (
-        f"  {color}{icon} context {bar} {pct_int}% to compaction{_ANSI_RESET}"
-        f"  {_DIM_ANSI}{threshold_k} threshold ({threshold_pct_int}%) · {hint}{_ANSI_RESET}"
-    )
-
-
-def format_context_pressure_gateway(
-    compaction_progress: float,
-    threshold_percent: float,
-    compression_enabled: bool = True,
-) -> str:
-    """Build a plain-text context pressure notification for messaging platforms.
-
-    No ANSI — just Unicode and plain text suitable for Telegram/Discord/etc.
-    The percentage shows progress toward the compaction threshold.
-    """
-    pct_int = min(int(compaction_progress * 100), 100)
-    filled = min(int(compaction_progress * _BAR_WIDTH), _BAR_WIDTH)
-    bar = _BAR_FILLED * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
-
-    threshold_pct_int = int(threshold_percent * 100)
-
-    icon = "⚠️"
-    if compression_enabled:
-        hint = f"Context compaction approaching (threshold: {threshold_pct_int}% of window)."
-    else:
-        hint = "Auto-compaction is disabled — context may be truncated."
-
-    return f"{icon} Context: {bar} {pct_int}% to compaction\n{hint}"

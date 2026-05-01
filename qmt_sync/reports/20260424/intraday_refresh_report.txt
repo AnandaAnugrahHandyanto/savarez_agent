@@ -1,0 +1,18 @@
+# QMT 盘中二次刷新报告
+
+- 上一版：C:\Users\mac\Desktop\qmt_runtime\exports\20260424\auction_candidates_main_board_non_st_1400.json
+- 当前版：C:\Users\mac\Desktop\qmt_runtime\exports\20260424\auction_candidates_main_board_non_st_1440.json
+- 当前环境：分歧日
+
+> 当前无主攻，继续回避/空仓。
+
+## 一、变化
+- 601138.SH 工业富联：总分 8 → 9
+
+## 二、当前最强候选
+- 002384.SZ 东山精密：动作=回避，角色=主线龙头候选，题材=未知题材，总分=9
+- 指标：开盘=3.66%，现涨幅=1.47%，成交额=20348608500，买卖比=0.0128
+- 风险：竞价承接弱、交易题材不清晰
+
+## 三、动作建议
+- 当前继续回避，不勉强开仓。

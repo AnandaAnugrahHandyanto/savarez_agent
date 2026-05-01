@@ -1,0 +1,69 @@
+{
+  "trade_date": "20260423",
+  "next_date": "20260424",
+  "candidate_count": 3,
+  "limit_hit_count": 0,
+  "pos5_count": 0,
+  "pos_count": 0,
+  "neg_count": 3,
+  "results": [
+    {
+      "action": "观察",
+      "priority": "B1",
+      "code": "000811.SZ",
+      "name": "冰轮环境",
+      "open_pct": 1.87,
+      "vr": 2.96,
+      "theme": "AI算力",
+      "buy_price": 22.83,
+      "d1_pct": -0.9362,
+      "d1_limit": null,
+      "d1_open_pct": 0.0,
+      "sell_price": 22.43,
+      "sell_action": "D+1竞价未涨停卖出",
+      "auction_return_pct": -1.75,
+      "missing": false
+    },
+    {
+      "action": "观察",
+      "priority": "B2",
+      "code": "603618.SH",
+      "name": "杭电股份",
+      "open_pct": 1.09,
+      "vr": 3.46,
+      "theme": "一季报增长",
+      "buy_price": 28.86,
+      "d1_pct": -2.7061,
+      "d1_limit": null,
+      "d1_open_pct": 0.8,
+      "sell_price": 31.66,
+      "sell_action": "D+1竞价未涨停卖出",
+      "auction_return_pct": 9.7,
+      "missing": false
+    },
+    {
+      "action": "放量观察",
+      "priority": "B3",
+      "code": "600815.SH",
+      "name": "厦工股份",
+      "open_pct": 1.55,
+      "vr": 8.81,
+      "theme": "工程装备",
+      "buy_price": 4.59,
+      "d1_pct": -4.6683,
+      "d1_limit": null,
+      "d1_open_pct": -3.44,
+      "sell_price": 3.93,
+      "sell_action": "D+1竞价未涨停卖出",
+      "auction_return_pct": -14.38,
+      "missing": false
+    }
+  ],
+  "auction_trade_summary": {
+    "rule": "D日集合竞价买入；D+1集合竞价未涨停卖出",
+    "sold_count": 3,
+    "positive_return_count": 1,
+    "negative_return_count": 2,
+    "avg_return_pct": -2.14
+  }
+}

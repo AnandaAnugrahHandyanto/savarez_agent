@@ -1,0 +1,75 @@
+{
+  "status": "OK",
+  "trade_date": "20260429",
+  "base_fetch_output": "[retry] stk_auction_o attempt=1 rows=0 below min_rows=1; sleeping 20.0s\n[retry] stk_auction_o exhausted retries; last_count=0\nSTATUS=OK\nTRADE_DATE=20260429\nPRETRADE_DATE=20260428\nAUCTION_SOURCE=tushare\nPREV_FIRST_BOARD_COUNT=37\nCANDIDATE_COUNT=37\nACTIONABLE_COUNT=2\nOBSERVE_COUNT=3\nREPORT_PATH=qmt_sync/reports/20260429/tushare_auction_0927_report.txt\nBRIEF_PATH=qmt_sync/reports/20260429/tushare_auction_0927_brief.txt\nBRIEF_IM_PATH=qmt_sync/reports/20260429/tushare_auction_0927_im.txt\nBRIEF_IM_TOP3_PATH=qmt_sync/reports/20260429/tushare_auction_0927_im_top3.txt\nEXECUTION_CARD_PATH=qmt_sync/reports/20260429/tushare_auction_0927_execution_card.txt\nCANDIDATES_PATH=qmt_sync/reports/20260429/tushare_auction_0927_candidates.json\nTOP_PICK=603629.SH 利通电子 可打 开=9.75% 额=294295233 量比=6.26 题材=AI算力",
+  "confirm_im_path": "qmt_sync/reports/20260429/tushare_auction_0932_confirm_im.txt",
+  "qmt_meta": {
+    "ok": true,
+    "source": "remote_qmt_vm",
+    "path": "qmt_sync/reports/20260429/auction_candidates_main_board_non_st_qmt_live.json",
+    "generated_at": "2026-04-29T09:32:08.358183",
+    "candidate_count": 3001,
+    "limit_up_count": 13,
+    "error": ""
+  },
+  "confirmations": [
+    {
+      "priority": "A1",
+      "ts_code": "603629.SH",
+      "name": "利通电子",
+      "primary_theme": "AI算力",
+      "auction_price": 130.99,
+      "auction_open_pct": 9.75,
+      "tushare": {
+        "trade_time": "2026-04-29 09:32:49",
+        "status": "承接在",
+        "status_reason": "现价不破竞价价，且买盘未明显失衡。 开盘后未继续走弱。",
+        "action": "继续盯回踩不破竞价价，不追高。",
+        "price": 131.29,
+        "current_pct": 10.0,
+        "bid_ask_ratio": 99.99,
+        "open_price": 130.99
+      },
+      "qmt": {
+        "present": true,
+        "status": "承接走弱",
+        "status_reason": "现价偏离竞价价或卖压转强。",
+        "action": "跌破竞价价/盘口弱，先删。",
+        "price": 131.24,
+        "current_pct": 9.96,
+        "bid_ask_ratio": 0.0058,
+        "open_price": 130.99
+      },
+      "cross_label": "T/Q分歧"
+    },
+    {
+      "priority": "A2",
+      "ts_code": "603259.SH",
+      "name": "药明康德",
+      "primary_theme": "一季报大增",
+      "auction_price": 111.0,
+      "auction_open_pct": 0.39,
+      "tushare": {
+        "trade_time": "2026-04-29 09:32:48",
+        "status": "承接在",
+        "status_reason": "现价不破竞价价，且买盘未明显失衡。 开盘后未继续走弱。",
+        "action": "继续盯回踩不破竞价价，不追高。",
+        "price": 111.47,
+        "current_pct": 0.81,
+        "bid_ask_ratio": 1.83,
+        "open_price": 111.0
+      },
+      "qmt": {
+        "present": true,
+        "status": "承接在",
+        "status_reason": "现价不破竞价价，且买盘未明显失衡。 开盘后未继续走弱。",
+        "action": "继续盯回踩不破竞价价，不追高。",
+        "price": 111.22,
+        "current_pct": 0.59,
+        "bid_ask_ratio": 7.3333,
+        "open_price": 111.0
+      },
+      "cross_label": "双源强"
+    }
+  ]
+}

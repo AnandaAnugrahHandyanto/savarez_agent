@@ -1,0 +1,104 @@
+{
+  "status": "OK",
+  "trade_date": "20260430",
+  "base_fetch_output": "[retry] stk_auction_o attempt=1 rows=0 below min_rows=1; sleeping 20.0s\n[retry] stk_auction_o exhausted retries; last_count=0\nSTATUS=OK\nTRADE_DATE=20260430\nPRETRADE_DATE=20260429\nAUCTION_SOURCE=tushare\nPREV_FIRST_BOARD_COUNT=73\nCANDIDATE_COUNT=73\nACTIONABLE_COUNT=3\nOBSERVE_COUNT=6\nREPORT_PATH=qmt_sync/reports/20260430/tushare_auction_0927_report.txt\nBRIEF_PATH=qmt_sync/reports/20260430/tushare_auction_0927_brief.txt\nBRIEF_IM_PATH=qmt_sync/reports/20260430/tushare_auction_0927_im.txt\nBRIEF_IM_TOP3_PATH=qmt_sync/reports/20260430/tushare_auction_0927_im_top3.txt\nEXECUTION_CARD_PATH=qmt_sync/reports/20260430/tushare_auction_0927_execution_card.txt\nCANDIDATES_PATH=qmt_sync/reports/20260430/tushare_auction_0927_candidates.json\nTOP_PICK=002645.SZ 华宏科技 可打 开=6.19% 额=40016992 量比=4.59 题材=有色资源",
+  "confirm_im_path": "qmt_sync/reports/20260430/tushare_auction_0932_confirm_im.txt",
+  "qmt_meta": {
+    "ok": true,
+    "source": "remote_qmt_vm",
+    "path": "qmt_sync/reports/20260430/auction_candidates_main_board_non_st_qmt_live.json",
+    "generated_at": "2026-04-30T09:32:09.001585",
+    "candidate_count": 2976,
+    "limit_up_count": 14,
+    "error": ""
+  },
+  "confirmations": [
+    {
+      "priority": "A1",
+      "ts_code": "002645.SZ",
+      "name": "华宏科技",
+      "primary_theme": "有色资源",
+      "auction_price": 24.88,
+      "auction_open_pct": 6.19,
+      "tushare": {
+        "trade_time": "2026-04-30 09:32:33",
+        "status": "承接在",
+        "status_reason": "现价不破竞价价，且买盘未明显失衡。 开盘后未继续走弱。",
+        "action": "继续盯回踩不破竞价价，不追高。",
+        "price": 25.77,
+        "current_pct": 9.99,
+        "bid_ask_ratio": 99.99,
+        "open_price": 24.88
+      },
+      "qmt": {
+        "present": true,
+        "status": "承接一般",
+        "status_reason": "仍在竞价价附近，但盘口优势不强。 开盘后未继续走弱。",
+        "action": "只观察，不抢第一下。",
+        "price": 25.63,
+        "current_pct": 9.39,
+        "bid_ask_ratio": 0.7778,
+        "open_price": 24.88
+      },
+      "cross_label": "T/Q分歧"
+    },
+    {
+      "priority": "A2",
+      "ts_code": "002851.SZ",
+      "name": "麦格米特",
+      "primary_theme": "一季报增长",
+      "auction_price": 121.39,
+      "auction_open_pct": 5.0,
+      "tushare": {
+        "trade_time": "2026-04-30 09:32:33",
+        "status": "承接走弱",
+        "status_reason": "现价偏离竞价价或卖压转强。",
+        "action": "跌破竞价价/盘口弱，先删。",
+        "price": 123.0,
+        "current_pct": 6.39,
+        "bid_ask_ratio": 0.07,
+        "open_price": 121.39
+      },
+      "qmt": {
+        "present": true,
+        "status": "承接走弱",
+        "status_reason": "现价偏离竞价价或卖压转强。",
+        "action": "跌破竞价价/盘口弱，先删。",
+        "price": 124.01,
+        "current_pct": 7.27,
+        "bid_ask_ratio": 0.2,
+        "open_price": 121.39
+      },
+      "cross_label": "双源一致"
+    },
+    {
+      "priority": "A3",
+      "ts_code": "002655.SZ",
+      "name": "共达电声",
+      "primary_theme": "增持",
+      "auction_price": 30.71,
+      "auction_open_pct": 0.03,
+      "tushare": {
+        "trade_time": "2026-04-30 09:32:33",
+        "status": "承接走弱",
+        "status_reason": "现价偏离竞价价或卖压转强。 开盘后有回落。",
+        "action": "跌破竞价价/盘口弱，先删。",
+        "price": 30.39,
+        "current_pct": -1.01,
+        "bid_ask_ratio": 1.36,
+        "open_price": 30.71
+      },
+      "qmt": {
+        "present": true,
+        "status": "承接走弱",
+        "status_reason": "现价偏离竞价价或卖压转强。 开盘后有回落。",
+        "action": "跌破竞价价/盘口弱，先删。",
+        "price": 29.89,
+        "current_pct": -2.64,
+        "bid_ask_ratio": 0.2222,
+        "open_price": 30.71
+      },
+      "cross_label": "双源一致"
+    }
+  ]
+}

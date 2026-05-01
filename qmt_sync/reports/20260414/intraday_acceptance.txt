@@ -1,0 +1,8 @@
+# QMT 盘中同步验收
+
+- 日期：20260414
+- 总体结论：FAIL
+- intraday_refresh_last.json：OK
+- status_panel.txt：FAIL
+- 最新标签：2200
+- 缺失文件：status_panel.txt

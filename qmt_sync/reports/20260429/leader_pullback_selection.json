@@ -1,0 +1,53 @@
+{
+  "date": "20260429",
+  "generated_at": "2026-04-29T19:01:26.082137",
+  "can_enter": [
+    {
+      "code": "600961.SH",
+      "name": "株冶集团",
+      "price": 27.71,
+      "pct_chg": 1.1683,
+      "max_consecutive": 4,
+      "strategy_score": 82,
+      "entry_score": 53
+    }
+  ],
+  "need_wait": [
+    {
+      "code": "002364.SZ",
+      "name": "中恒电气",
+      "price": 39.75,
+      "pct_chg": -0.625,
+      "max_consecutive": 4,
+      "strategy_score": 83,
+      "entry_score": 16
+    },
+    {
+      "code": "002990.SZ",
+      "name": "盛视科技",
+      "price": 48.94,
+      "pct_chg": -0.3259,
+      "max_consecutive": 4,
+      "strategy_score": 72,
+      "entry_score": 21
+    },
+    {
+      "code": "003018.SZ",
+      "name": "金富科技",
+      "price": 55.06,
+      "pct_chg": -0.2717,
+      "max_consecutive": 4,
+      "strategy_score": 70,
+      "entry_score": 16
+    },
+    {
+      "code": "603950.SH",
+      "name": "长源东谷",
+      "price": 56.24,
+      "pct_chg": -1.9526,
+      "max_consecutive": 4,
+      "strategy_score": 70,
+      "entry_score": -2
+    }
+  ]
+}

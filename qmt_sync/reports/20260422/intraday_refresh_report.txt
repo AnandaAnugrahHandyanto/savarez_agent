@@ -1,0 +1,18 @@
+# QMT 盘中二次刷新报告
+
+- 上一版：C:\Users\mac\Desktop\qmt_runtime\exports\20260422\auction_candidates_main_board_non_st_1400.json
+- 当前版：C:\Users\mac\Desktop\qmt_runtime\exports\20260422\auction_candidates_main_board_non_st_1440.json
+- 当前环境：分歧日
+
+> 当前无主攻，最强备选：002384.SZ 东山精密（未知题材）
+
+## 一、变化
+- 002837.SZ 英维克：总分 9 → 8
+
+## 二、当前最强候选
+- 002384.SZ 东山精密：动作=备选，角色=主线龙头候选，题材=未知题材，总分=10
+- 指标：开盘=1.57%，现涨幅=10.0%，成交额=14938358600，买卖比=None
+- 风险：交易题材不清晰
+
+## 三、动作建议
+- 当前只保留备选，不提前给主攻仓位；若分时承接增强再升级。

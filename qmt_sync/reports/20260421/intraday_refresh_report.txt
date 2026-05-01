@@ -1,0 +1,18 @@
+# QMT 盘中二次刷新报告
+
+- 上一版：C:\Users\mac\Desktop\qmt_runtime\exports\20260421\auction_candidates_main_board_non_st_1100.json
+- 当前版：C:\Users\mac\Desktop\qmt_runtime\exports\20260421\auction_candidates_main_board_non_st_1315.json
+- 当前环境：分歧日
+
+> 当前无主攻，继续回避/空仓。
+
+## 一、变化
+- 关键候选无显著升级/降级变化
+
+## 二、当前最强候选
+- 603601.SH 再升科技：动作=回避，角色=跟风前排，题材=泛市场，总分=9
+- 指标：开盘=0.0%，现涨幅=2.76%，成交额=3213526700，买卖比=3.8595
+- 风险：交易题材不清晰
+
+## 三、动作建议
+- 当前继续回避，不勉强开仓。

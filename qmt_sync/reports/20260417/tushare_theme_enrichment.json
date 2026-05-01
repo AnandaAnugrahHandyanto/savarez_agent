@@ -1,0 +1,1222 @@
+{
+  "success": true,
+  "trade_date": "20260417",
+  "concept_count": 879,
+  "ths_index_count": 1724,
+  "theme_money_rank": [
+    {
+      "theme": "通信设备",
+      "lead_stock": "利尔达",
+      "net_amount": 92.0,
+      "pct_change": 2.38,
+      "pct_change_stock": 16.89,
+      "company_num": 90.0
+    },
+    {
+      "theme": "元件",
+      "lead_stock": "则成电子",
+      "net_amount": 90.0,
+      "pct_change": 2.58,
+      "pct_change_stock": 15.14,
+      "company_num": 61.0
+    },
+    {
+      "theme": "消费电子",
+      "lead_stock": "利通电子",
+      "net_amount": 25.0,
+      "pct_change": 1.21,
+      "pct_change_stock": 10.01,
+      "company_num": 98.0
+    },
+    {
+      "theme": "光学光电子",
+      "lead_stock": "茂莱光学",
+      "net_amount": 21.0,
+      "pct_change": 1.67,
+      "pct_change_stock": 16.33,
+      "company_num": 108.0
+    },
+    {
+      "theme": "自动化设备",
+      "lead_stock": "快克智能",
+      "net_amount": 14.0,
+      "pct_change": 1.75,
+      "pct_change_stock": 10.01,
+      "company_num": 92.0
+    },
+    {
+      "theme": "半导体",
+      "lead_stock": "创达新材",
+      "net_amount": 12.0,
+      "pct_change": 1.89,
+      "pct_change_stock": 30.0,
+      "company_num": 176.0
+    },
+    {
+      "theme": "房地产",
+      "lead_stock": "衢州发展",
+      "net_amount": 9.0,
+      "pct_change": 0.46,
+      "pct_change_stock": 10.15,
+      "company_num": 86.0
+    },
+    {
+      "theme": "专用设备",
+      "lead_stock": "泰金新能",
+      "net_amount": 8.0,
+      "pct_change": 1.17,
+      "pct_change_stock": 15.71,
+      "company_num": 197.0
+    },
+    {
+      "theme": "其他电子",
+      "lead_stock": "赛英电子",
+      "net_amount": 7.0,
+      "pct_change": 1.9,
+      "pct_change_stock": 14.7,
+      "company_num": 35.0
+    },
+    {
+      "theme": "通用设备",
+      "lead_stock": "优利德",
+      "net_amount": 7.0,
+      "pct_change": 1.33,
+      "pct_change_stock": 20.01,
+      "company_num": 249.0
+    },
+    {
+      "theme": "电子化学品",
+      "lead_stock": "唯特偶",
+      "net_amount": 6.0,
+      "pct_change": 2.06,
+      "pct_change_stock": 20.0,
+      "company_num": 40.0
+    },
+    {
+      "theme": "军工电子",
+      "lead_stock": "国博电子",
+      "net_amount": 6.0,
+      "pct_change": 1.27,
+      "pct_change_stock": 6.43,
+      "company_num": 62.0
+    },
+    {
+      "theme": "风电设备",
+      "lead_stock": "大金重工",
+      "net_amount": 4.0,
+      "pct_change": 1.98,
+      "pct_change_stock": 10.0,
+      "company_num": 31.0
+    },
+    {
+      "theme": "金属新材料",
+      "lead_stock": "族兴新材",
+      "net_amount": 4.0,
+      "pct_change": 1.62,
+      "pct_change_stock": 10.32,
+      "company_num": 33.0
+    },
+    {
+      "theme": "塑料制品",
+      "lead_stock": "斯迪克",
+      "net_amount": 3.0,
+      "pct_change": 2.17,
+      "pct_change_stock": 20.0,
+      "company_num": 79.0
+    },
+    {
+      "theme": "文化传媒",
+      "lead_stock": "蓝色光标",
+      "net_amount": 3.0,
+      "pct_change": -0.25,
+      "pct_change_stock": 4.65,
+      "company_num": 85.0
+    },
+    {
+      "theme": "影视院线",
+      "lead_stock": "博纳影业",
+      "net_amount": 2.0,
+      "pct_change": 1.26,
+      "pct_change_stock": 10.03,
+      "company_num": 20.0
+    },
+    {
+      "theme": "非金属材料",
+      "lead_stock": "天马新材",
+      "net_amount": 1.0,
+      "pct_change": 3.72,
+      "pct_change_stock": 16.67,
+      "company_num": 14.0
+    },
+    {
+      "theme": "黑色家电",
+      "lead_stock": "兆驰股份",
+      "net_amount": 1.0,
+      "pct_change": 1.04,
+      "pct_change_stock": 4.92,
+      "company_num": 9.0
+    },
+    {
+      "theme": "包装印刷",
+      "lead_stock": "金富科技",
+      "net_amount": 1.0,
+      "pct_change": 0.56,
+      "pct_change_stock": 10.01,
+      "company_num": 46.0
+    }
+  ],
+  "theme_strength_rank": [
+    {
+      "theme": "电池",
+      "lead_stock": "尚水智能",
+      "strength_score": 181.09,
+      "pct_change": 2.03,
+      "pct_change_stock": 286.72,
+      "net_amount": -39.0,
+      "company_num": 104.0
+    },
+    {
+      "theme": "半导体",
+      "lead_stock": "创达新材",
+      "strength_score": 27.38,
+      "pct_change": 1.89,
+      "pct_change_stock": 30.0,
+      "net_amount": 12.0,
+      "company_num": 176.0
+    },
+    {
+      "theme": "通信设备",
+      "lead_stock": "利尔达",
+      "strength_score": 23.99,
+      "pct_change": 2.38,
+      "pct_change_stock": 16.89,
+      "net_amount": 92.0,
+      "company_num": 90.0
+    },
+    {
+      "theme": "元件",
+      "lead_stock": "则成电子",
+      "strength_score": 21.79,
+      "pct_change": 2.58,
+      "pct_change_stock": 15.14,
+      "net_amount": 90.0,
+      "company_num": 61.0
+    },
+    {
+      "theme": "塑料制品",
+      "lead_stock": "斯迪克",
+      "strength_score": 20.44,
+      "pct_change": 2.17,
+      "pct_change_stock": 20.0,
+      "net_amount": 3.0,
+      "company_num": 79.0
+    },
+    {
+      "theme": "通用设备",
+      "lead_stock": "优利德",
+      "strength_score": 20.02,
+      "pct_change": 1.33,
+      "pct_change_stock": 20.01,
+      "net_amount": 7.0,
+      "company_num": 249.0
+    },
+    {
+      "theme": "光学光电子",
+      "lead_stock": "茂莱光学",
+      "strength_score": 19.19,
+      "pct_change": 1.67,
+      "pct_change_stock": 16.33,
+      "net_amount": 21.0,
+      "company_num": 108.0
+    },
+    {
+      "theme": "电子化学品",
+      "lead_stock": "唯特偶",
+      "strength_score": 18.42,
+      "pct_change": 2.06,
+      "pct_change_stock": 20.0,
+      "net_amount": 6.0,
+      "company_num": 40.0
+    },
+    {
+      "theme": "非金属材料",
+      "lead_stock": "天马新材",
+      "strength_score": 18.19,
+      "pct_change": 3.72,
+      "pct_change_stock": 16.67,
+      "net_amount": 1.0,
+      "company_num": 14.0
+    },
+    {
+      "theme": "光伏设备",
+      "lead_stock": "帝尔激光",
+      "strength_score": 17.9,
+      "pct_change": 1.1,
+      "pct_change_stock": 20.0,
+      "net_amount": -21.0,
+      "company_num": 74.0
+    },
+    {
+      "theme": "专用设备",
+      "lead_stock": "泰金新能",
+      "strength_score": 17.17,
+      "pct_change": 1.17,
+      "pct_change_stock": 15.71,
+      "net_amount": 8.0,
+      "company_num": 197.0
+    },
+    {
+      "theme": "IT服务",
+      "lead_stock": "品高股份",
+      "strength_score": 16.94,
+      "pct_change": -0.03,
+      "pct_change_stock": 20.0,
+      "net_amount": -37.0,
+      "company_num": 128.0
+    },
+    {
+      "theme": "汽车零部件",
+      "lead_stock": "建邦科技",
+      "strength_score": 16.54,
+      "pct_change": 0.86,
+      "pct_change_stock": 16.37,
+      "net_amount": -8.0,
+      "company_num": 270.0
+    },
+    {
+      "theme": "化学纤维",
+      "lead_stock": "宝丽迪",
+      "strength_score": 15.14,
+      "pct_change": 0.85,
+      "pct_change_stock": 19.99,
+      "net_amount": -5.0,
+      "company_num": 29.0
+    },
+    {
+      "theme": "自动化设备",
+      "lead_stock": "快克智能",
+      "strength_score": 14.81,
+      "pct_change": 1.75,
+      "pct_change_stock": 10.01,
+      "net_amount": 14.0,
+      "company_num": 92.0
+    },
+    {
+      "theme": "其他电子",
+      "lead_stock": "赛英电子",
+      "strength_score": 14.72,
+      "pct_change": 1.9,
+      "pct_change_stock": 14.7,
+      "net_amount": 7.0,
+      "company_num": 35.0
+    },
+    {
+      "theme": "消费电子",
+      "lead_stock": "利通电子",
+      "strength_score": 14.58,
+      "pct_change": 1.21,
+      "pct_change_stock": 10.01,
+      "net_amount": 25.0,
+      "company_num": 98.0
+    },
+    {
+      "theme": "电网设备",
+      "lead_stock": "良信股份",
+      "strength_score": 11.91,
+      "pct_change": 0.45,
+      "pct_change_stock": 10.01,
+      "net_amount": -36.0,
+      "company_num": 138.0
+    },
+    {
+      "theme": "环境治理",
+      "lead_stock": "大地海洋",
+      "strength_score": 11.9,
+      "pct_change": -0.35,
+      "pct_change_stock": 12.66,
+      "net_amount": -9.0,
+      "company_num": 111.0
+    },
+    {
+      "theme": "房地产",
+      "lead_stock": "衢州发展",
+      "strength_score": 11.76,
+      "pct_change": 0.46,
+      "pct_change_stock": 10.15,
+      "net_amount": 9.0,
+      "company_num": 86.0
+    }
+  ],
+  "hot_theme_rank": [
+    {
+      "theme": "商业航天",
+      "hot_count": 8,
+      "lead_stock": "凯盛科技"
+    },
+    {
+      "theme": "光模块",
+      "hot_count": 5,
+      "lead_stock": "泰晶科技"
+    },
+    {
+      "theme": "CPO",
+      "hot_count": 5,
+      "lead_stock": "快克智能"
+    },
+    {
+      "theme": "算力租赁",
+      "hot_count": 4,
+      "lead_stock": "华升股份"
+    },
+    {
+      "theme": "机器人",
+      "hot_count": 4,
+      "lead_stock": "春兴精工"
+    },
+    {
+      "theme": "PCB",
+      "hot_count": 3,
+      "lead_stock": "斯迪克"
+    },
+    {
+      "theme": "人形机器人",
+      "hot_count": 3,
+      "lead_stock": "泰晶科技"
+    },
+    {
+      "theme": "先进封装",
+      "hot_count": 3,
+      "lead_stock": "唯特偶"
+    },
+    {
+      "theme": "年报增长",
+      "hot_count": 3,
+      "lead_stock": "博杰股份"
+    },
+    {
+      "theme": "半导体设备",
+      "hot_count": 3,
+      "lead_stock": "先导基电"
+    },
+    {
+      "theme": "储能",
+      "hot_count": 2,
+      "lead_stock": "ST华西"
+    },
+    {
+      "theme": "光芯片",
+      "hot_count": 2,
+      "lead_stock": "三安光电"
+    },
+    {
+      "theme": "液冷服务器",
+      "hot_count": 2,
+      "lead_stock": "江顺科技"
+    },
+    {
+      "theme": "ST板块",
+      "hot_count": 2,
+      "lead_stock": "ST起步"
+    },
+    {
+      "theme": "固态电池",
+      "hot_count": 2,
+      "lead_stock": "铁流股份"
+    },
+    {
+      "theme": "BC电池",
+      "hot_count": 2,
+      "lead_stock": "明冠新材"
+    },
+    {
+      "theme": "央企",
+      "hot_count": 2,
+      "lead_stock": "中瓷电子"
+    },
+    {
+      "theme": "光通信测试",
+      "hot_count": 2,
+      "lead_stock": "优利德"
+    },
+    {
+      "theme": "玻璃基板",
+      "hot_count": 2,
+      "lead_stock": "彩虹股份"
+    },
+    {
+      "theme": "消费电子",
+      "hot_count": 2,
+      "lead_stock": "和顺科技"
+    }
+  ],
+  "canonical_hot_theme_rank": [
+    {
+      "theme": "CPO",
+      "hot_count": 17,
+      "lead_stock": "世嘉科技"
+    },
+    {
+      "theme": "AI算力",
+      "hot_count": 11,
+      "lead_stock": "华升股份"
+    },
+    {
+      "theme": "机器人",
+      "hot_count": 9,
+      "lead_stock": "春兴精工"
+    },
+    {
+      "theme": "半导体",
+      "hot_count": 9,
+      "lead_stock": "唯特偶"
+    },
+    {
+      "theme": "商业航天",
+      "hot_count": 8,
+      "lead_stock": "凯盛科技"
+    },
+    {
+      "theme": "固态电池",
+      "hot_count": 7,
+      "lead_stock": "传艺科技"
+    },
+    {
+      "theme": "有色资源",
+      "hot_count": 7,
+      "lead_stock": "江顺科技"
+    },
+    {
+      "theme": "PCB",
+      "hot_count": 5,
+      "lead_stock": "传艺科技"
+    },
+    {
+      "theme": "消费电子",
+      "hot_count": 3,
+      "lead_stock": "斯迪克"
+    },
+    {
+      "theme": "年报增长",
+      "hot_count": 3,
+      "lead_stock": "博杰股份"
+    },
+    {
+      "theme": "储能",
+      "hot_count": 2,
+      "lead_stock": "ST华西"
+    },
+    {
+      "theme": "ST板块",
+      "hot_count": 2,
+      "lead_stock": "ST起步"
+    },
+    {
+      "theme": "BC电池",
+      "hot_count": 2,
+      "lead_stock": "明冠新材"
+    },
+    {
+      "theme": "央企",
+      "hot_count": 2,
+      "lead_stock": "中瓷电子"
+    },
+    {
+      "theme": "玻璃基板",
+      "hot_count": 2,
+      "lead_stock": "彩虹股份"
+    },
+    {
+      "theme": "年报预增",
+      "hot_count": 2,
+      "lead_stock": "利通电子"
+    },
+    {
+      "theme": "国企",
+      "hot_count": 2,
+      "lead_stock": "鲁北化工"
+    },
+    {
+      "theme": "燃气轮机",
+      "hot_count": 1,
+      "lead_stock": "福鞍股份"
+    },
+    {
+      "theme": "核电铸件",
+      "hot_count": 1,
+      "lead_stock": "福鞍股份"
+    },
+    {
+      "theme": "水电转轮",
+      "hot_count": 1,
+      "lead_stock": "福鞍股份"
+    }
+  ],
+  "code_theme_map": {
+    "603315.SH": [
+      "燃气轮机",
+      "核电铸件",
+      "水电转轮"
+    ],
+    "600156.SH": [
+      "AI算力",
+      "拟收购易信科技",
+      "湖南国资"
+    ],
+    "002706.SZ": [
+      "AI算力",
+      "低压电器",
+      "智算中心"
+    ],
+    "002630.SZ": [
+      "ST摘帽预期",
+      "储能",
+      "高效环保锅炉"
+    ],
+    "002796.SZ": [
+      "CPO",
+      "精密箱体",
+      "移动通信"
+    ],
+    "002866.SZ": [
+      "固态电池",
+      "PCB",
+      "年报扭亏为盈"
+    ],
+    "600552.SH": [
+      "UTG量产",
+      "TGV玻璃技术",
+      "球形硅微粉",
+      "商业航天"
+    ],
+    "600703.SH": [
+      "CPO",
+      "碳化硅",
+      "商业航天"
+    ],
+    "002940.SZ": [
+      "医药",
+      "克立硼罗",
+      "原料药"
+    ],
+    "002547.SZ": [
+      "机器人",
+      "特斯拉概念",
+      "通信结构件",
+      "新能源汽车"
+    ],
+    "001400.SZ": [
+      "AI算力",
+      "商业航天",
+      "3D打印",
+      "有色资源"
+    ],
+    "300806.SZ": [
+      "消费电子",
+      "PCB",
+      "储能",
+      "泰国设厂"
+    ],
+    "603738.SH": [
+      "625MHz晶振",
+      "CPO",
+      "石英晶体",
+      "机器人"
+    ],
+    "001330.SZ": [
+      "影视院线",
+      "AI短剧",
+      "三星堆IP"
+    ],
+    "603557.SH": [
+      "ST板块",
+      "三胎概念",
+      "童装童鞋"
+    ],
+    "603063.SH": [
+      "风电设备",
+      "氢能",
+      "股权激励"
+    ],
+    "603926.SH": [
+      "机器人",
+      "固态电池",
+      "离合器龙头"
+    ],
+    "301319.SZ": [
+      "半导体",
+      "锡膏龙头",
+      "国产替代"
+    ],
+    "688560.SH": [
+      "有色资源",
+      "固态电池",
+      "BC电池",
+      "越南产能"
+    ],
+    "003031.SZ": [
+      "CPO",
+      "半导体",
+      "电子陶瓷",
+      "央企"
+    ],
+    "688628.SH": [
+      "CPO",
+      "拟收购",
+      "测试仪器"
+    ],
+    "000711.SZ": [
+      "铟靶材",
+      "固危废资源化",
+      "ST炒作"
+    ],
+    "601619.SH": [
+      "风电运营",
+      "绿氢醇项目",
+      "不赎回转债"
+    ],
+    "600152.SH": [
+      "钠电储能龙头",
+      "有色资源",
+      "电池项目投资"
+    ],
+    "002975.SZ": [
+      "AI算力",
+      "机器人",
+      "年报增长"
+    ],
+    "600707.SH": [
+      "玻璃基板",
+      "ITC胜诉",
+      "国企改革"
+    ],
+    "301237.SZ": [
+      "聚酯薄膜",
+      "碳纤维",
+      "消费电子"
+    ],
+    "002990.SZ": [
+      "AI算力",
+      "机器人",
+      "智慧口岸"
+    ],
+    "002580.SZ": [
+      "AI算力",
+      "储能电池",
+      "固态电池"
+    ],
+    "000936.SZ": [
+      "创投",
+      "索尔思光电交割",
+      "涤纶化纤"
+    ],
+    "603203.SH": [
+      "PCB",
+      "CPO"
+    ],
+    "001389.SZ": [
+      "PCB",
+      "CPO",
+      "业绩增长"
+    ],
+    "688807.SH": [
+      "CPO",
+      "半导体",
+      "年报增长",
+      "次新股"
+    ],
+    "002281.SZ": [
+      "CPO",
+      "央企重组"
+    ],
+    "603629.SH": [
+      "AI算力",
+      "英伟达合作",
+      "年报预增"
+    ],
+    "600641.SH": [
+      "半导体",
+      "离子注入机",
+      "员工持股完成"
+    ],
+    "600962.SH": [
+      "重组推进",
+      "半导体",
+      "果汁龙头",
+      "央企"
+    ],
+    "002108.SZ": [
+      "有色资源",
+      "固态电池",
+      "广州国资入主"
+    ],
+    "603052.SH": [
+      "CPO",
+      "消费电子"
+    ],
+    "603031.SH": [
+      "CPO",
+      "南孚电池",
+      "增持计划"
+    ],
+    "002980.SZ": [
+      "CPO",
+      "拟收购伽蓝特",
+      "AI眼镜",
+      "仪器仪表"
+    ],
+    "603922.SH": [
+      "新能源电池托盘",
+      "汽车零部件",
+      "控制权变更风险"
+    ],
+    "600520.SH": [
+      "半导体",
+      "合肥国资"
+    ],
+    "003018.SZ": [
+      "AI算力",
+      "瓶盖龙头",
+      "饮料供应链"
+    ],
+    "002418.SZ": [
+      "AI算力",
+      "家电制冷",
+      "扭亏预增"
+    ],
+    "002528.SZ": [
+      "庭外重组",
+      "深圳国资",
+      "智慧城市",
+      "AI安防"
+    ],
+    "605298.SH": [
+      "轨交配套",
+      "业绩高增"
+    ],
+    "002217.SZ": [
+      "AI算力",
+      "电子纸",
+      "福建国资"
+    ],
+    "002428.SZ": [
+      "磷化铟扩产",
+      "光纤级锗",
+      "商业航天"
+    ],
+    "600208.SH": [
+      "拟并购先导电科",
+      "半导体",
+      "回购",
+      "衢州国资"
+    ],
+    "002628.SZ": [
+      "机器人",
+      "萤石矿",
+      "路桥基建"
+    ],
+    "603773.SH": [
+      "玻璃基板",
+      "CPO",
+      "商业航天"
+    ],
+    "300776.SZ": [
+      "TGV封装",
+      "PCB",
+      "BC电池",
+      "H股上市"
+    ],
+    "603278.SH": [
+      "机器人",
+      "腱绳",
+      "商业航天",
+      "胎圈钢丝"
+    ],
+    "600696.SH": [
+      "退市博弈",
+      "酱香型白酒",
+      "ST板块"
+    ],
+    "600727.SH": [
+      "一季报预增",
+      "钛白粉",
+      "氯化法扩产",
+      "国企"
+    ],
+    "603178.SH": [
+      "低空经济",
+      "机器人",
+      "新能源电驱"
+    ],
+    "002259.SZ": [
+      "天然气",
+      "LNG重卡",
+      "2025年报增长"
+    ],
+    "002957.SZ": [
+      "CPO",
+      "半导体",
+      "精密零部件制造",
+      "业绩预增"
+    ],
+    "603118.SH": [
+      "CPO",
+      "机器人",
+      "唐山国资"
+    ],
+    "600234.SH": [
+      "建筑工程",
+      "抖音概念",
+      "数字营销",
+      "定增"
+    ],
+    "002802.SZ": [
+      "特种氯乙烯共聚物",
+      "风电",
+      "回购注销",
+      "国企"
+    ],
+    "603083.SH": [
+      "CPO",
+      "Meta审厂传闻"
+    ],
+    "002297.SZ": [
+      "一季报业绩预增",
+      "商业航天",
+      "硬质合金"
+    ],
+    "600683.SH": [
+      "拟剥离地产",
+      "TOD轨道物业",
+      "北京国资"
+    ],
+    "300905.SZ": [
+      "COFs验证",
+      "固态电池",
+      "纤维母粒",
+      "年报预增"
+    ],
+    "002081.SZ": [
+      "洁净室",
+      "城市更新",
+      "建筑装饰"
+    ],
+    "002203.SZ": [
+      "沙特建厂",
+      "有色资源",
+      "固态电池"
+    ],
+    "000037.SZ": [
+      "电力",
+      "储能盈利",
+      "年报高增",
+      "综合能源"
+    ],
+    "688227.SH": [
+      "AI算力",
+      "AI一体机",
+      "半导体"
+    ],
+    "605388.SH": [
+      "益生菌",
+      "味动力",
+      "扭亏预期"
+    ],
+    "002487.SZ": [
+      "欧洲风电出口",
+      "深远海基地",
+      "全产业链出海",
+      "年报增长"
+    ],
+    "600330.SH": [
+      "有色资源",
+      "CPO",
+      "商业航天"
+    ],
+    "600961.SH": [
+      "一季报增长",
+      "锌铅冶炼",
+      "有色资源",
+      "央企控股"
+    ]
+  },
+  "market_money_summary": {
+    "trade_date": "20260417",
+    "close_sh": 4051.43,
+    "pct_change_sh": -0.1,
+    "close_sz": 14885.42,
+    "pct_change_sz": 0.6,
+    "net_amount": -45263659008.0,
+    "net_amount_rate": -1.87,
+    "buy_elg_amount": -22492729344.0,
+    "buy_elg_amount_rate": -0.93,
+    "buy_lg_amount": -22770929664.0,
+    "buy_lg_amount_rate": -0.94,
+    "buy_md_amount": 7027335168.0,
+    "buy_md_amount_rate": 0.29,
+    "buy_sm_amount": 38236327936.0,
+    "buy_sm_amount_rate": 1.58
+  },
+  "market_sentiment": {
+    "limit_up_count": 74,
+    "first_board_count": 52,
+    "multi_board_count": 22,
+    "highest_board": 30,
+    "first_board_ratio": 0.7027,
+    "multi_board_ratio": 0.2973
+  },
+  "strongest_limit_stocks": [
+    {
+      "ts_code": "002580.SZ",
+      "name": "圣阳股份",
+      "tag": "7天7板",
+      "limit": null,
+      "open_num": 30,
+      "lu_desc": "液冷储能+储能电池+固态电池+算力"
+    },
+    {
+      "ts_code": "600703.SH",
+      "name": "三安光电",
+      "tag": "首板",
+      "limit": null,
+      "open_num": 19,
+      "lu_desc": "光芯片+碳化硅+商业航天"
+    },
+    {
+      "ts_code": "603063.SH",
+      "name": "禾望电气",
+      "tag": "3天2板",
+      "limit": null,
+      "open_num": 19,
+      "lu_desc": "风电设备+氢能+股权激励"
+    },
+    {
+      "ts_code": "603315.SH",
+      "name": "福鞍股份",
+      "tag": "2天2板",
+      "limit": null,
+      "open_num": 17,
+      "lu_desc": "燃气轮机+核电铸件+水电转轮"
+    },
+    {
+      "ts_code": "002990.SZ",
+      "name": "盛视科技",
+      "tag": "4天4板",
+      "limit": null,
+      "open_num": 11,
+      "lu_desc": "算力采购+人形机器人+智慧口岸"
+    },
+    {
+      "ts_code": "000711.SZ",
+      "name": "ST京蓝",
+      "tag": "4天3板",
+      "limit": null,
+      "open_num": 10,
+      "lu_desc": "铟靶材+固危废资源化+ST炒作"
+    },
+    {
+      "ts_code": "300776.SZ",
+      "name": "帝尔激光",
+      "tag": "首板",
+      "limit": null,
+      "open_num": 10,
+      "lu_desc": "TGV封装+PCB+BC电池+H股上市"
+    },
+    {
+      "ts_code": "688560.SH",
+      "name": "明冠新材",
+      "tag": "首板",
+      "limit": null,
+      "open_num": 8,
+      "lu_desc": "铝塑膜（可用于固态、钠离子电池）+BC电池+越南产能"
+    },
+    {
+      "ts_code": "301319.SZ",
+      "name": "唯特偶",
+      "tag": "首板",
+      "limit": null,
+      "open_num": 6,
+      "lu_desc": "先进封装+锡膏龙头+国产替代"
+    },
+    {
+      "ts_code": "002428.SZ",
+      "name": "云南锗业",
+      "tag": "首板",
+      "limit": null,
+      "open_num": 5,
+      "lu_desc": "磷化铟扩产+光纤级锗+商业航天"
+    }
+  ],
+  "lhb_focus": [
+    {
+      "ts_code": "002281.SZ",
+      "name": null,
+      "net_buy": 581298542.88,
+      "amount": 0.0,
+      "buy": 825147648.8,
+      "sell": 243849105.92
+    },
+    {
+      "ts_code": "002281.SZ",
+      "name": null,
+      "net_buy": 581298542.88,
+      "amount": 0.0,
+      "buy": 825147648.8,
+      "sell": 243849105.92
+    },
+    {
+      "ts_code": "601778.SH",
+      "name": null,
+      "net_buy": 420132541.2,
+      "amount": 0.0,
+      "buy": 420132541.2,
+      "sell": 0.0
+    },
+    {
+      "ts_code": "002428.SZ",
+      "name": null,
+      "net_buy": 309451414.05,
+      "amount": 0.0,
+      "buy": 442088531.16,
+      "sell": 132637117.11
+    },
+    {
+      "ts_code": "002428.SZ",
+      "name": null,
+      "net_buy": 309451414.05,
+      "amount": 0.0,
+      "buy": 442088531.16,
+      "sell": 132637117.11
+    },
+    {
+      "ts_code": "002281.SZ",
+      "name": null,
+      "net_buy": 223376506.57,
+      "amount": 0.0,
+      "buy": 223376506.57,
+      "sell": 0.0
+    },
+    {
+      "ts_code": "002428.SZ",
+      "name": null,
+      "net_buy": 222059246.0,
+      "amount": 0.0,
+      "buy": 225440423.0,
+      "sell": 3381177.0
+    },
+    {
+      "ts_code": "600666.SH",
+      "name": null,
+      "net_buy": 213530669.38,
+      "amount": 0.0,
+      "buy": 213530669.38,
+      "sell": 0.0
+    },
+    {
+      "ts_code": "002428.SZ",
+      "name": null,
+      "net_buy": 211705366.0,
+      "amount": 0.0,
+      "buy": 213885264.0,
+      "sell": 2179898.0
+    },
+    {
+      "ts_code": "002281.SZ",
+      "name": null,
+      "net_buy": 209425992.0,
+      "amount": 0.0,
+      "buy": 210567153.0,
+      "sell": 1141161.0
+    }
+  ],
+  "stock_moneyflow_focus": [
+    {
+      "ts_code": "300476.SZ",
+      "buy_sm_amount": 286914.64,
+      "buy_md_amount": 447871.23,
+      "buy_lg_amount": 551093.86,
+      "buy_elg_amount": 872343.31,
+      "net_mf_amount": 403535.93
+    },
+    {
+      "ts_code": "002384.SZ",
+      "buy_sm_amount": 216122.55,
+      "buy_md_amount": 417814.63,
+      "buy_lg_amount": 576390.02,
+      "buy_elg_amount": 689173.76,
+      "net_mf_amount": 253273.78
+    },
+    {
+      "ts_code": "300502.SZ",
+      "buy_sm_amount": 0.0,
+      "buy_md_amount": 701771.12,
+      "buy_lg_amount": 700612.42,
+      "buy_elg_amount": 984980.52,
+      "net_mf_amount": 237344.38
+    },
+    {
+      "ts_code": "300308.SZ",
+      "buy_sm_amount": 0.0,
+      "buy_md_amount": 871173.55,
+      "buy_lg_amount": 934592.6,
+      "buy_elg_amount": 1557237.29,
+      "net_mf_amount": 143523.55
+    },
+    {
+      "ts_code": "601138.SH",
+      "buy_sm_amount": 353706.88,
+      "buy_md_amount": 382897.04,
+      "buy_lg_amount": 263833.65,
+      "buy_elg_amount": 139129.57,
+      "net_mf_amount": 143360.46
+    },
+    {
+      "ts_code": "300136.SZ",
+      "buy_sm_amount": 133384.47,
+      "buy_md_amount": 266735.65,
+      "buy_lg_amount": 271101.12,
+      "buy_elg_amount": 214061.87,
+      "net_mf_amount": 127635.38
+    },
+    {
+      "ts_code": "300058.SZ",
+      "buy_sm_amount": 299033.3,
+      "buy_md_amount": 416895.46,
+      "buy_lg_amount": 337770.78,
+      "buy_elg_amount": 248553.95,
+      "net_mf_amount": 96837.44
+    },
+    {
+      "ts_code": "300450.SZ",
+      "buy_sm_amount": 102548.93,
+      "buy_md_amount": 165581.91,
+      "buy_lg_amount": 153007.36,
+      "buy_elg_amount": 118253.92,
+      "net_mf_amount": 91265.11
+    },
+    {
+      "ts_code": "300394.SZ",
+      "buy_sm_amount": 307738.41,
+      "buy_md_amount": 366536.96,
+      "buy_lg_amount": 475675.27,
+      "buy_elg_amount": 557985.61,
+      "net_mf_amount": 90200.13
+    },
+    {
+      "ts_code": "002281.SZ",
+      "buy_sm_amount": 112951.71,
+      "buy_md_amount": 159720.44,
+      "buy_lg_amount": 169485.26,
+      "buy_elg_amount": 269503.59,
+      "net_mf_amount": 89759.07
+    }
+  ],
+  "sources": {
+    "concept": true,
+    "ths_index": true,
+    "moneyflow_ind_ths": true,
+    "limit_list_ths": true,
+    "moneyflow_mkt_dc": true,
+    "top_inst": true,
+    "moneyflow": true
+  }
+}

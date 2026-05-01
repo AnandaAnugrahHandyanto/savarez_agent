@@ -1,0 +1,16 @@
+{
+  "status": "OK",
+  "trade_date": "20260430",
+  "pretrade_date": "20260429",
+  "candidate_count": 73,
+  "prev_first_board_count": 73,
+  "actionable_count": 3,
+  "observe_count": 6,
+  "auction_source": "tushare",
+  "report_path": "qmt_sync/reports/20260430/tushare_auction_0927_report.txt",
+  "brief_path": "qmt_sync/reports/20260430/tushare_auction_0927_brief.txt",
+  "brief_im_path": "qmt_sync/reports/20260430/tushare_auction_0927_im.txt",
+  "brief_im_top3_path": "qmt_sync/reports/20260430/tushare_auction_0927_im_top3.txt",
+  "execution_card_path": "qmt_sync/reports/20260430/tushare_auction_0927_execution_card.txt",
+  "candidates_path": "qmt_sync/reports/20260430/tushare_auction_0927_candidates.json"
+}

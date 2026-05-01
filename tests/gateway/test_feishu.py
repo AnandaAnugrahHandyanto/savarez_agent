@@ -69,6 +69,31 @@ class TestConfigEnvOverrides(unittest.TestCase):
         self.assertIsNotNone(home)
         self.assertEqual(home.chat_id, "oc_xxx")
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_hydrate_bot_identity_logs_permission_gap_at_debug_not_warning(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"app_id": "cli_test", "app_secret": "secret"}))
+        adapter._client = SimpleNamespace(
+            request=Mock(return_value=SimpleNamespace(content=json.dumps({"code": 1, "msg": "no bot info"}))),
+            application=SimpleNamespace(
+                v6=SimpleNamespace(
+                    application=SimpleNamespace(
+                        get=Mock(return_value=SimpleNamespace(success=lambda: False, code=99991672))
+                    )
+                )
+            ),
+        )
+        adapter._build_get_application_request = Mock(return_value=object())
+
+        with self.assertLogs("gateway.platforms.feishu", level="DEBUG") as logs:
+            asyncio.run(adapter._hydrate_bot_identity())
+
+        output = "\n".join(logs.output)
+        self.assertIn("DEBUG:gateway.platforms.feishu:[Feishu] Unable to hydrate bot name", output)
+        self.assertNotIn("WARNING:gateway.platforms.feishu:[Feishu] Unable to hydrate bot name", output)
+
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_xxx",
         "FEISHU_APP_SECRET": "secret_xxx",

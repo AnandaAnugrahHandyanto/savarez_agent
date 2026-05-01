@@ -1,0 +1,6 @@
+# QMT 自动化状态面板
+
+- auction_export_last.json: OK @ 2026-04-27T14:52:02
+- daily_report_last.json: OK @ 2026-04-27T14:51:02
+- intraday_refresh_last.json: OK @ 2026-04-27T14:40:02 | tag=1440 ; report_dir=C:\Users\mac\Desktop\qmt_runtime\reports\20260427
+- end_of_day_timeline_last.json: OK @ 2026-04-27T14:50:02 | report_dir=C:\Users\mac\Desktop\qmt_runtime\reports\20260427

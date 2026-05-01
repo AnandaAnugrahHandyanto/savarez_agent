@@ -1,0 +1,17 @@
+# QMT 盘中二次刷新报告
+
+- 上一版：qmt_sync/reports/20260414/auction_candidates_main_board_non_st_vm_new.json
+- 当前版：qmt_sync/reports/20260414/auction_candidates_main_board_non_st_vm_prev.json
+- 当前环境：分歧日
+
+> 当前无主攻，继续回避/空仓。
+
+## 一、变化
+- 600183.SH 生益科技：备选/主线前排 → 回避/主线前排
+
+## 二、当前最强候选
+- 603799.SH 华友钴业：动作=回避，角色=主线前排，题材=有色资源，总分=12
+- 指标：开盘=1.87%，现涨幅=3.03%，成交额=7986436400，买卖比=16.3433
+
+## 三、动作建议
+- 当前继续回避，不勉强开仓。

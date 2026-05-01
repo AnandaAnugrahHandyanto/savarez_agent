@@ -1,0 +1,15 @@
+{
+  "ts": "2026-04-27T14:40:02",
+  "ok": true,
+  "tag": "1440",
+  "export_dir": "C:\\Users\\mac\\Desktop\\qmt_runtime\\exports\\20260427",
+  "report_dir": "C:\\Users\\mac\\Desktop\\qmt_runtime\\reports\\20260427",
+  "snapshot_path": "C:\\Users\\mac\\Desktop\\qmt_runtime\\exports\\20260427\\auction_candidates_main_board_non_st_1440.json",
+  "latest_pair": [
+    "C:\\Users\\mac\\Desktop\\qmt_runtime\\exports\\20260427\\auction_candidates_main_board_non_st_1400.json",
+    "C:\\Users\\mac\\Desktop\\qmt_runtime\\exports\\20260427\\auction_candidates_main_board_non_st_1440.json"
+  ],
+  "refresh_report": "C:\\Users\\mac\\Desktop\\qmt_runtime\\reports\\20260427\\intraday_refresh_report.txt",
+  "timeline_report": "C:\\Users\\mac\\Desktop\\qmt_runtime\\reports\\20260427\\intraday_timeline_report.txt",
+  "matrix_report": "C:\\Users\\mac\\Desktop\\qmt_runtime\\reports\\20260427\\intraday_state_matrix_report.txt"
+}

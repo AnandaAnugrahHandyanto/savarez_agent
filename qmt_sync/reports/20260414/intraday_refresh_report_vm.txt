@@ -1,0 +1,18 @@
+# QMT 盘中二次刷新报告
+
+- 上一版：C:\Users\mac\Desktop\qmt_runtime\exports\20260414\auction_candidates_main_board_non_st.json
+- 当前版：C:\Users\mac\Desktop\qmt_runtime\exports\20260414\auction_candidates_main_board_non_st_0926.json
+- 当前环境：分歧日
+
+> 当前无主攻，最强备选：600010.SH 包钢股份（有色资源）
+
+## 一、变化
+- 关键候选无显著升级/降级变化
+
+## 二、当前最强候选
+- 600010.SH 包钢股份：动作=备选，角色=主线前排，题材=有色资源，总分=10
+- 指标：开盘=-0.67%，现涨幅=-4.03%，成交额=5259858800，买卖比=2.7801
+- 风险：日内走势偏弱
+
+## 三、动作建议
+- 当前只保留备选，不提前给主攻仓位；若分时承接增强再升级。

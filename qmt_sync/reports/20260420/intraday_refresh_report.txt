@@ -1,0 +1,18 @@
+# QMT 盘中二次刷新报告
+
+- 上一版：C:\Users\mac\Desktop\qmt_runtime\exports\20260420\auction_candidates_main_board_non_st_1400.json
+- 当前版：C:\Users\mac\Desktop\qmt_runtime\exports\20260420\auction_candidates_main_board_non_st_1440.json
+- 当前环境：强势日
+
+> 当前无主攻，最强备选：600522.SH 中天科技（铜缆高速连接）
+
+## 一、变化
+- 601318.SH 中国平安：总分 8 → 7
+- 603799.SH 华友钴业：备选/主线前排 → 回避/主线前排
+
+## 二、当前最强候选
+- 600522.SH 中天科技：动作=备选，角色=主线前排，题材=铜缆高速连接，总分=10
+- 指标：开盘=2.7%，现涨幅=9.99%，成交额=6761778900，买卖比=None
+
+## 三、动作建议
+- 当前只保留备选，不提前给主攻仓位；若分时承接增强再升级。

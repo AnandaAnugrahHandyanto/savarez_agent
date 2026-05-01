@@ -1,0 +1,53 @@
+{
+  "date": "20260430",
+  "generated_at": "2026-05-01T19:01:37.507407",
+  "can_enter": [
+    {
+      "code": "600743.SH",
+      "name": "华远控股",
+      "price": 2.47,
+      "pct_chg": 2.9167,
+      "max_consecutive": 6,
+      "strategy_score": 69,
+      "entry_score": 55
+    }
+  ],
+  "need_wait": [
+    {
+      "code": "002364.SZ",
+      "name": "中恒电气",
+      "price": 40.79,
+      "pct_chg": 2.6164,
+      "max_consecutive": 4,
+      "strategy_score": 79,
+      "entry_score": 47
+    },
+    {
+      "code": "600726.SH",
+      "name": "华电能源",
+      "price": 6.59,
+      "pct_chg": -7.1831,
+      "max_consecutive": 4,
+      "strategy_score": 79,
+      "entry_score": 6
+    },
+    {
+      "code": "600961.SH",
+      "name": "株冶集团",
+      "price": 26.49,
+      "pct_chg": -4.4027,
+      "max_consecutive": 4,
+      "strategy_score": 74,
+      "entry_score": 5
+    },
+    {
+      "code": "002580.SZ",
+      "name": "圣阳股份",
+      "price": 27.48,
+      "pct_chg": -3.9161,
+      "max_consecutive": 7,
+      "strategy_score": 64,
+      "entry_score": -17
+    }
+  ]
+}

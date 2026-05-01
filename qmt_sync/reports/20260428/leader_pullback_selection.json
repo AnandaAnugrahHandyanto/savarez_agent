@@ -1,0 +1,43 @@
+{
+  "date": "20260428",
+  "generated_at": "2026-04-28T19:01:33.793590",
+  "can_enter": [],
+  "need_wait": [
+    {
+      "code": "002364.SZ",
+      "name": "中恒电气",
+      "price": 40.0,
+      "pct_chg": -2.7947,
+      "max_consecutive": 4,
+      "strategy_score": 76,
+      "entry_score": -10
+    },
+    {
+      "code": "003018.SZ",
+      "name": "金富科技",
+      "price": 55.21,
+      "pct_chg": -0.5763,
+      "max_consecutive": 4,
+      "strategy_score": 73,
+      "entry_score": 13
+    },
+    {
+      "code": "600961.SH",
+      "name": "株冶集团",
+      "price": 27.39,
+      "pct_chg": -5.7467,
+      "max_consecutive": 4,
+      "strategy_score": 69,
+      "entry_score": -10
+    },
+    {
+      "code": "002990.SZ",
+      "name": "盛视科技",
+      "price": 49.1,
+      "pct_chg": 0.8214,
+      "max_consecutive": 4,
+      "strategy_score": 66,
+      "entry_score": 32
+    }
+  ]
+}

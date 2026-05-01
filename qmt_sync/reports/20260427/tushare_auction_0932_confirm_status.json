@@ -1,0 +1,16 @@
+{
+  "status": "OK",
+  "trade_date": "20260427",
+  "base_fetch_output": "[retry] stk_auction_o attempt=1 rows=0 below min_rows=1; sleeping 20.0s\n[retry] stk_auction_o exhausted retries; last_count=0\nSTATUS=OK\nTRADE_DATE=20260427\nPRETRADE_DATE=20260424\nAUCTION_SOURCE=tushare\nPREV_FIRST_BOARD_COUNT=42\nCANDIDATE_COUNT=42\nACTIONABLE_COUNT=0\nOBSERVE_COUNT=4\nREPORT_PATH=qmt_sync/reports/20260427/tushare_auction_0927_report.txt\nBRIEF_PATH=qmt_sync/reports/20260427/tushare_auction_0927_brief.txt\nBRIEF_IM_PATH=qmt_sync/reports/20260427/tushare_auction_0927_im.txt\nBRIEF_IM_TOP3_PATH=qmt_sync/reports/20260427/tushare_auction_0927_im_top3.txt\nEXECUTION_CARD_PATH=qmt_sync/reports/20260427/tushare_auction_0927_execution_card.txt\nCANDIDATES_PATH=qmt_sync/reports/20260427/tushare_auction_0927_candidates.json\nTOP_PICK=600338.SH 西藏珠峰 观察 开=1.02% 额=145217760 量比=6.60 题材=有色资源",
+  "confirm_im_path": "qmt_sync/reports/20260427/tushare_auction_0932_confirm_im.txt",
+  "qmt_meta": {
+    "ok": true,
+    "source": "remote_qmt_vm",
+    "path": "qmt_sync/reports/20260427/auction_candidates_main_board_non_st_qmt_live.json",
+    "generated_at": "2026-04-27T09:32:08.013139",
+    "candidate_count": 3017,
+    "limit_up_count": 9,
+    "error": ""
+  },
+  "confirmations": []
+}

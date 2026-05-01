@@ -1,0 +1,8 @@
+# QMT 盘中同步验收
+
+- 日期：20260418
+- 总体结论：PASS
+- intraday_refresh_last.json：OK
+- status_panel.txt：OK
+- 最新标签：2009
+- 缺失文件：无

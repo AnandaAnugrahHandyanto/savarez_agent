@@ -1,0 +1,13 @@
+{
+  "generated_at": "2026-04-28T20:33:03",
+  "universe_count": 264,
+  "qualified_variant_count": 0,
+  "baseline": {
+    "n": 12,
+    "win_rate": 50.0,
+    "avg": 4.6426,
+    "worst": -8.0,
+    "loss_sum": -40.183
+  },
+  "top_results": []
+}

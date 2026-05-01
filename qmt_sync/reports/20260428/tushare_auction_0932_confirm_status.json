@@ -1,0 +1,46 @@
+{
+  "status": "OK",
+  "trade_date": "20260428",
+  "base_fetch_output": "[retry] stk_auction_o attempt=1 rows=0 below min_rows=1; sleeping 20.0s\n[retry] stk_auction_o exhausted retries; last_count=0\nSTATUS=OK\nTRADE_DATE=20260428\nPRETRADE_DATE=20260427\nAUCTION_SOURCE=tushare\nPREV_FIRST_BOARD_COUNT=44\nCANDIDATE_COUNT=44\nACTIONABLE_COUNT=1\nOBSERVE_COUNT=5\nREPORT_PATH=qmt_sync/reports/20260428/tushare_auction_0927_report.txt\nBRIEF_PATH=qmt_sync/reports/20260428/tushare_auction_0927_brief.txt\nBRIEF_IM_PATH=qmt_sync/reports/20260428/tushare_auction_0927_im.txt\nBRIEF_IM_TOP3_PATH=qmt_sync/reports/20260428/tushare_auction_0927_im_top3.txt\nEXECUTION_CARD_PATH=qmt_sync/reports/20260428/tushare_auction_0927_execution_card.txt\nCANDIDATES_PATH=qmt_sync/reports/20260428/tushare_auction_0927_candidates.json\nTOP_PICK=002217.SZ 合力泰 可打 开=10.14% 额=247450952 量比=9.25 题材=AI算力",
+  "confirm_im_path": "qmt_sync/reports/20260428/tushare_auction_0932_confirm_im.txt",
+  "qmt_meta": {
+    "ok": true,
+    "source": "remote_qmt_vm",
+    "path": "qmt_sync/reports/20260428/auction_candidates_main_board_non_st_qmt_live.json",
+    "generated_at": "2026-04-28T09:32:08.405001",
+    "candidate_count": 3010,
+    "limit_up_count": 8,
+    "error": ""
+  },
+  "confirmations": [
+    {
+      "priority": "A1",
+      "ts_code": "002217.SZ",
+      "name": "合力泰",
+      "primary_theme": "AI算力",
+      "auction_price": 3.26,
+      "auction_open_pct": 10.14,
+      "tushare": {
+        "trade_time": "2026-04-28 09:32:42",
+        "status": "承接一般",
+        "status_reason": "仍在竞价价附近，但盘口优势不强。 开盘后有回落。",
+        "action": "只观察，不抢第一下。",
+        "price": 3.25,
+        "current_pct": 9.8,
+        "bid_ask_ratio": 2.52,
+        "open_price": 3.26
+      },
+      "qmt": {
+        "present": true,
+        "status": "承接走弱",
+        "status_reason": "现价偏离竞价价或卖压转强。 开盘后有回落。",
+        "action": "跌破竞价价/盘口弱，先删。",
+        "price": 3.23,
+        "current_pct": 9.12,
+        "bid_ask_ratio": 20.7976,
+        "open_price": 3.26
+      },
+      "cross_label": "T/Q分歧"
+    }
+  ]
+}

@@ -1,0 +1,104 @@
+{
+  "status": "OK",
+  "trade_date": "20260420",
+  "base_fetch_output": "STATUS=OK\nTRADE_DATE=20260420\nPRETRADE_DATE=20260417\nPREV_FIRST_BOARD_COUNT=42\nCANDIDATE_COUNT=42\nACTIONABLE_COUNT=11\nOBSERVE_COUNT=15\nREPORT_PATH=qmt_sync/reports/20260420/tushare_auction_0927_report.txt\nBRIEF_PATH=qmt_sync/reports/20260420/tushare_auction_0927_brief.txt\nBRIEF_IM_PATH=qmt_sync/reports/20260420/tushare_auction_0927_im.txt\nBRIEF_IM_TOP3_PATH=qmt_sync/reports/20260420/tushare_auction_0927_im_top3.txt\nEXECUTION_CARD_PATH=qmt_sync/reports/20260420/tushare_auction_0927_execution_card.txt\nCANDIDATES_PATH=qmt_sync/reports/20260420/tushare_auction_0927_candidates.json\nTOP_PICK=600703.SH 三安光电 可打 开=1.2% 额=167317650 量比=4.66 题材=CPO",
+  "confirm_im_path": "qmt_sync/reports/20260420/tushare_auction_0932_confirm_im.txt",
+  "qmt_meta": {
+    "ok": true,
+    "source": "remote_qmt_vm",
+    "path": "qmt_sync/reports/20260420/auction_candidates_main_board_non_st_qmt_live.json",
+    "generated_at": "2026-04-20T09:32:09.382951",
+    "candidate_count": 300,
+    "limit_up_count": 14,
+    "error": ""
+  },
+  "confirmations": [
+    {
+      "priority": "A1",
+      "ts_code": "600703.SH",
+      "name": "三安光电",
+      "primary_theme": "CPO",
+      "auction_price": 13.5,
+      "auction_open_pct": 1.2,
+      "tushare": {
+        "trade_time": "2026-04-20 09:32:44",
+        "status": "承接走弱",
+        "status_reason": "现价偏离竞价价或卖压转强。",
+        "action": "跌破竞价价/盘口弱，先删。",
+        "price": 13.57,
+        "current_pct": 1.72,
+        "bid_ask_ratio": 0.06,
+        "open_price": 13.5
+      },
+      "qmt": {
+        "present": false,
+        "status": "未入QMT池",
+        "status_reason": "QMT live 候选池未命中该票。",
+        "action": "记录口径差异，以 Tushare 为主。",
+        "price": 0.0,
+        "current_pct": 0.0,
+        "bid_ask_ratio": 0.0,
+        "open_price": 0.0
+      },
+      "cross_label": "仅T确认"
+    },
+    {
+      "priority": "A2",
+      "ts_code": "002108.SZ",
+      "name": "沧州明珠",
+      "primary_theme": "有色资源",
+      "auction_price": 5.71,
+      "auction_open_pct": 2.33,
+      "tushare": {
+        "trade_time": "2026-04-20 09:32:45",
+        "status": "承接在",
+        "status_reason": "现价不破竞价价，且买盘未明显失衡。 开盘后未继续走弱。",
+        "action": "继续盯回踩不破竞价价，不追高。",
+        "price": 5.77,
+        "current_pct": 3.41,
+        "bid_ask_ratio": 1.08,
+        "open_price": 5.71
+      },
+      "qmt": {
+        "present": false,
+        "status": "未入QMT池",
+        "status_reason": "QMT live 候选池未命中该票。",
+        "action": "记录口径差异，以 Tushare 为主。",
+        "price": 0.0,
+        "current_pct": 0.0,
+        "bid_ask_ratio": 0.0,
+        "open_price": 0.0
+      },
+      "cross_label": "仅T确认"
+    },
+    {
+      "priority": "A3",
+      "ts_code": "603278.SH",
+      "name": "大业股份",
+      "primary_theme": "机器人",
+      "auction_price": 12.29,
+      "auction_open_pct": 2.33,
+      "tushare": {
+        "trade_time": "2026-04-20 09:32:44",
+        "status": "承接在",
+        "status_reason": "现价不破竞价价，且买盘未明显失衡。 开盘后未继续走弱。",
+        "action": "继续盯回踩不破竞价价，不追高。",
+        "price": 12.35,
+        "current_pct": 2.83,
+        "bid_ask_ratio": 3.94,
+        "open_price": 12.29
+      },
+      "qmt": {
+        "present": false,
+        "status": "未入QMT池",
+        "status_reason": "QMT live 候选池未命中该票。",
+        "action": "记录口径差异，以 Tushare 为主。",
+        "price": 0.0,
+        "current_pct": 0.0,
+        "bid_ask_ratio": 0.0,
+        "open_price": 0.0
+      },
+      "cross_label": "仅T确认"
+    }
+  ]
+}

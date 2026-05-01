@@ -1,0 +1,2 @@
+name: obsidian
+description: Local Obsidian vault memory sink for long-form session artifacts, compaction handoffs, and optional mirrored durable writes.

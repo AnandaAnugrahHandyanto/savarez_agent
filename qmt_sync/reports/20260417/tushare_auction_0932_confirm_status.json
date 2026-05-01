@@ -1,0 +1,104 @@
+{
+  "status": "OK",
+  "trade_date": "20260417",
+  "base_fetch_output": "STATUS=OK\nTRADE_DATE=20260417\nPRETRADE_DATE=20260416\nPREV_FIRST_BOARD_COUNT=55\nCANDIDATE_COUNT=55\nACTIONABLE_COUNT=11\nOBSERVE_COUNT=23\nREPORT_PATH=qmt_sync/reports/20260417/tushare_auction_0927_report.txt\nBRIEF_PATH=qmt_sync/reports/20260417/tushare_auction_0927_brief.txt\nBRIEF_IM_PATH=qmt_sync/reports/20260417/tushare_auction_0927_im.txt\nBRIEF_IM_TOP3_PATH=qmt_sync/reports/20260417/tushare_auction_0927_im_top3.txt\nEXECUTION_CARD_PATH=qmt_sync/reports/20260417/tushare_auction_0927_execution_card.txt\nCANDIDATES_PATH=qmt_sync/reports/20260417/tushare_auction_0927_candidates.json\nTOP_PICK=603985.SH 恒润股份 可打 开=2.28% 额=44083883 量比=3.15 题材=AI算力\n\n/Users/zezesun/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020\n  warnings.warn(",
+  "confirm_im_path": "qmt_sync/reports/20260417/tushare_auction_0932_confirm_im.txt",
+  "qmt_meta": {
+    "ok": true,
+    "source": "remote_qmt_vm",
+    "path": "qmt_sync/reports/20260417/auction_candidates_main_board_non_st_qmt_live.json",
+    "generated_at": "2026-04-17T23:57:09.233269",
+    "candidate_count": 300,
+    "limit_up_count": 58,
+    "error": ""
+  },
+  "confirmations": [
+    {
+      "priority": "A1",
+      "ts_code": "603985.SH",
+      "name": "恒润股份",
+      "primary_theme": "AI算力",
+      "auction_price": 25.1,
+      "auction_open_pct": 2.28,
+      "tushare": {
+        "trade_time": "2026-04-17 16:29:32",
+        "status": "承接走弱",
+        "status_reason": "现价偏离竞价价或卖压转强。 开盘后有回落。",
+        "action": "跌破竞价价/盘口弱，先删。",
+        "price": 24.6,
+        "current_pct": 0.24,
+        "bid_ask_ratio": 6.72,
+        "open_price": 25.1
+      },
+      "qmt": {
+        "present": false,
+        "status": "未入QMT池",
+        "status_reason": "QMT live 候选池未命中该票。",
+        "action": "记录口径差异，以 Tushare 为主。",
+        "price": 0.0,
+        "current_pct": 0.0,
+        "bid_ask_ratio": 0.0,
+        "open_price": 0.0
+      },
+      "cross_label": "仅T确认"
+    },
+    {
+      "priority": "A2",
+      "ts_code": "603322.SH",
+      "name": "超讯通信",
+      "primary_theme": "AI算力",
+      "auction_price": 36.8,
+      "auction_open_pct": 1.49,
+      "tushare": {
+        "trade_time": "2026-04-17 16:29:57",
+        "status": "承接走弱",
+        "status_reason": "现价偏离竞价价或卖压转强。",
+        "action": "跌破竞价价/盘口弱，先删。",
+        "price": 38.09,
+        "current_pct": 5.05,
+        "bid_ask_ratio": 0.03,
+        "open_price": 36.8
+      },
+      "qmt": {
+        "present": false,
+        "status": "未入QMT池",
+        "status_reason": "QMT live 候选池未命中该票。",
+        "action": "记录口径差异，以 Tushare 为主。",
+        "price": 0.0,
+        "current_pct": 0.0,
+        "bid_ask_ratio": 0.0,
+        "open_price": 0.0
+      },
+      "cross_label": "仅T确认"
+    },
+    {
+      "priority": "A3",
+      "ts_code": "000657.SZ",
+      "name": "中钨高新",
+      "primary_theme": "钨全产业链",
+      "auction_price": 53.5,
+      "auction_open_pct": 3.08,
+      "tushare": {
+        "trade_time": "2026-04-17 16:59:57",
+        "status": "承接在",
+        "status_reason": "现价不破竞价价，且买盘未明显失衡。 开盘后未继续走弱。",
+        "action": "继续盯回踩不破竞价价，不追高。",
+        "price": 56.12,
+        "current_pct": 8.13,
+        "bid_ask_ratio": 14.23,
+        "open_price": 53.5
+      },
+      "qmt": {
+        "present": false,
+        "status": "未入QMT池",
+        "status_reason": "QMT live 候选池未命中该票。",
+        "action": "记录口径差异，以 Tushare 为主。",
+        "price": 0.0,
+        "current_pct": 0.0,
+        "bid_ask_ratio": 0.0,
+        "open_price": 0.0
+      },
+      "cross_label": "仅T确认"
+    }
+  ]
+}

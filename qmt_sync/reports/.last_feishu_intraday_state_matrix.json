@@ -1,0 +1,9 @@
+{
+  "date": "20260420",
+  "report_path": "qmt_sync/reports/20260420/intraday_state_matrix_report.txt",
+  "normalized_hash": "08061f3d2e13f0ddfe150f1baf1f28acd7716c6b54a2adacb048fa41668fc3e7",
+  "updated_at": "2026-04-20T21:46:47",
+  "decision_hash": "642ebe221e5591659b6cc1df29b82abdbd9dcdb1a737b6f5256cf145c29bbe47",
+  "content_changed": true,
+  "decision_changed": true
+}

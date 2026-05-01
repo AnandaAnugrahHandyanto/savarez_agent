@@ -1,0 +1,53 @@
+{
+  "date": "20260427",
+  "generated_at": "2026-04-27T22:16:22.904779",
+  "can_enter": [
+    {
+      "code": "002580.SZ",
+      "name": "圣阳股份",
+      "price": 28.82,
+      "pct_chg": 4.0433,
+      "max_consecutive": 7,
+      "strategy_score": 69,
+      "entry_score": 52
+    }
+  ],
+  "need_wait": [
+    {
+      "code": "600961.SH",
+      "name": "株冶集团",
+      "price": 29.06,
+      "pct_chg": -3.8385,
+      "max_consecutive": 4,
+      "strategy_score": 75,
+      "entry_score": 15
+    },
+    {
+      "code": "002364.SZ",
+      "name": "中恒电气",
+      "price": 41.15,
+      "pct_chg": -1.2953,
+      "max_consecutive": 4,
+      "strategy_score": 74,
+      "entry_score": 5
+    },
+    {
+      "code": "003018.SZ",
+      "name": "金富科技",
+      "price": 55.53,
+      "pct_chg": -3.0552,
+      "max_consecutive": 4,
+      "strategy_score": 71,
+      "entry_score": 25
+    },
+    {
+      "code": "603538.SH",
+      "name": "美诺华",
+      "price": 56.4,
+      "pct_chg": -2.0493,
+      "max_consecutive": 5,
+      "strategy_score": 69,
+      "entry_score": 18
+    }
+  ]
+}
