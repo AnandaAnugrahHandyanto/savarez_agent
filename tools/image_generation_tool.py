@@ -56,7 +56,6 @@ def _load_fal_client() -> Any:
     fal_client = _fal_client
     return fal_client
 
-
 from tools.debug_helpers import DebugSession
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
@@ -66,6 +65,13 @@ from tools.tool_backend_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _require_fal_client() -> Any:
+    try:
+        return _load_fal_client()
+    except ImportError as exc:
+        raise ImportError("fal_client is not installed. Install with: pip install fal-client") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -364,14 +370,12 @@ class _ManagedFalSyncClient:
     """Small per-instance wrapper around fal_client.SyncClient for managed queue hosts."""
 
     def __init__(self, *, key: str, queue_run_origin: str):
-        # Trigger the lazy import on first construction. Idempotent — the
-        # placeholder is overwritten with the real module on first call.
-        _load_fal_client()
-        sync_client_class = getattr(fal_client, "SyncClient", None)
+        fal_mod = _require_fal_client()
+        sync_client_class = getattr(fal_mod, "SyncClient", None)
         if sync_client_class is None:
             raise RuntimeError("fal_client.SyncClient is required for managed FAL gateway mode")
 
-        client_module = getattr(fal_client, "client", None)
+        client_module = getattr(fal_mod, "client", None)
         if client_module is None:
             raise RuntimeError("fal_client.client is required for managed FAL gateway mode")
 
@@ -464,12 +468,11 @@ def _get_managed_fal_client(managed_gateway):
 
 def _submit_fal_request(model: str, arguments: Dict[str, Any]):
     """Submit a FAL request using direct credentials or the managed queue gateway."""
-    # Trigger the lazy import on first call. Idempotent.
-    _load_fal_client()
     request_headers = {"x-idempotency-key": str(uuid.uuid4())}
+    fal_mod = _require_fal_client()
     managed_gateway = _resolve_managed_fal_gateway()
     if managed_gateway is None:
-        return fal_client.submit(model, arguments=arguments, headers=request_headers)
+        return fal_mod.submit(model, arguments=arguments, headers=request_headers)
 
     managed_client = _get_managed_fal_client(managed_gateway)
     try:
@@ -823,7 +826,7 @@ def check_image_generation_requirements() -> bool:
             # check. Raises ImportError if the optional ``fal-client``
             # package isn't installed; the caller's except ImportError
             # below catches that and continues to plugin probing.
-            _load_fal_client()
+            _require_fal_client()
             return True
     except ImportError:
         pass
@@ -861,7 +864,7 @@ if __name__ == "__main__":
     print("✅ FAL.ai API key found")
 
     try:
-        import fal_client  # noqa: F401
+        _require_fal_client()
         print("✅ fal_client library available")
     except ImportError:
         print("❌ fal_client library not found — pip install fal-client")
