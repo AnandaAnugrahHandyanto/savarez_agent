@@ -181,6 +181,11 @@ class InkboxAdapter(BasePlatformAdapter):
         # In-Reply-To header so replies thread into the original conversation
         # in the recipient's mail client.
         self._last_inbound_email: Dict[str, Dict[str, str]] = {}
+        # chat_id → modality of the most-recent inbound message ('email',
+        # 'sms', or 'voice').  Critical when chat_id is a Contact UUID (no
+        # `+` or `@` to disambiguate) — without this, send() defaults the
+        # mode by chat_id shape and would email an SMS reply.
+        self._last_inbound_modality: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -462,8 +467,15 @@ class InkboxAdapter(BasePlatformAdapter):
         except Exception as exc:
             return SendResult(success=False, error=f"get_identity failed: {exc}")
 
-        # Default mode resolution: prefer SMS if the chat target looks like an
-        # E.164 number, else fall back to email if the contact has one.
+        # Default mode resolution.  Order of preference:
+        # 1. The modality of the most-recent inbound from this chat — this
+        #    is what carries SMS-conversations on contact-UUID chat_ids,
+        #    where the chat_id shape doesn't reveal which channel inbound
+        #    actually came in on.
+        # 2. SMS if the chat target itself looks like an E.164 number.
+        # 3. Email otherwise (contact UUIDs, raw email addresses).
+        if not mode:
+            mode = self._last_inbound_modality.get(str(chat_id), "")
         if not mode:
             mode = "sms" if str(chat_id).startswith("+") else "email"
 
@@ -666,6 +678,7 @@ class InkboxAdapter(BasePlatformAdapter):
             "rfc_message_id": rfc_message_id or "",
             "from_address": from_address,
         }
+        self._last_inbound_modality[str(chat_id)] = "email"
 
         source = self.build_source(
             chat_id=str(chat_id),
@@ -727,6 +740,7 @@ class InkboxAdapter(BasePlatformAdapter):
         body = text_msg.get("text") or ""
         contact_block = self._contact_marker(contact)
         tagged = f"[inkbox:sms from={remote} | {contact_block}]\n{body}"
+        self._last_inbound_modality[str(chat_id)] = "sms"
         event = MessageEvent(
             text=tagged,
             message_type=MessageType.TEXT,
