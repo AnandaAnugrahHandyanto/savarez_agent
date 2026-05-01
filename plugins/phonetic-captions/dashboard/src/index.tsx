@@ -455,8 +455,8 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
           )}
 
           {/* ── Style settings (below segments) ── */}
-          <div className="border-t border-zinc-200 dark:border-zinc-800 mt-6 pt-6 pb-8">
-            <h2 className="text-base font-semibold mb-4">Caption Style</h2>
+          <div className="border-t border-zinc-200 dark:border-zinc-800 mt-6 pb-8">
+            <h2 className="text-base font-semibold mt-6 mb-4">Caption Style</h2>
             <div className="space-y-2.5">
               <StyleField label="Font" value={style.font} onChange={(v) => setStyle((s) => s && ({ ...s, font: v }))} />
               <StyleNumberField label="Font size" value={style.font_size} onChange={(v) => setStyle((s) => s && ({ ...s, font_size: v }))} />
