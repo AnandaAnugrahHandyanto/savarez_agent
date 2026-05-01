@@ -159,9 +159,8 @@ async def test_counters_accumulate_across_calls():
     assert counters["discord.reactions.invoked"] == 3
 
 
-class TestMentionCountersUnwired:
-    """Mention counters are pre-declared but PR-B will wire them. Until then,
-    they MUST stay zero — this test pins the contract."""
+class TestMentionCountersUnaffectedByReactions:
+    """Reaction-only flows must not touch the mention counters."""
 
     @pytest.mark.asyncio
     async def test_mention_counters_remain_zero_after_reactions(self):
@@ -175,3 +174,60 @@ class TestMentionCountersUnwired:
         counters = get_event_counters()
         assert counters["discord.mentions.skipped_no_match"] == 0
         assert counters["discord.mentions.invoked"] == 0
+
+
+# ── handle_inbound_mention decision branches ─────────────────────────────
+
+
+def _mention_message(text_channel_name: str = "general", channel_id: int = 100) -> SimpleNamespace:
+    """Build a fake Message with the channel attributes used by the mention payload builder."""
+    channel = SimpleNamespace(id=channel_id, name=text_channel_name)
+    return SimpleNamespace(channel=channel)
+
+
+@pytest.mark.asyncio
+async def test_mention_no_match_increments_skipped_no_match():
+    handler, _ = _make_handler(
+        [_entry("ping", {"type": "mention", "regex": r"\bdeploy\b"})]
+    )
+    msg = _mention_message()
+    matched = await handler.handle_inbound_mention(msg, "hello world")
+
+    assert matched is None
+    counters = get_event_counters()
+    assert counters["discord.mentions.skipped_no_match"] == 1
+    assert counters["discord.mentions.invoked"] == 0
+
+
+@pytest.mark.asyncio
+async def test_mention_match_increments_invoked_and_returns_skill_names():
+    handler, _ = _make_handler(
+        [_entry("deployer", {"type": "mention", "regex": r"\bdeploy\b"})]
+    )
+    msg = _mention_message()
+    matched = await handler.handle_inbound_mention(msg, "please deploy now")
+
+    assert matched == ["deployer"]
+    counters = get_event_counters()
+    assert counters["discord.mentions.invoked"] == 1
+    assert counters["discord.mentions.skipped_no_match"] == 0
+
+
+@pytest.mark.asyncio
+async def test_mention_skill_provider_failure_returns_none_no_counter():
+    """Fail-safe: if the skill provider raises, return None and increment nothing."""
+    def raising_provider():
+        raise RuntimeError("snapshot failed")
+
+    adapter = MagicMock()
+    adapter._client = MagicMock()
+    adapter._client.user = SimpleNamespace(id=1)
+    handler = DiscordInteractionsHandler(adapter=adapter, skill_provider=raising_provider)
+
+    msg = _mention_message()
+    matched = await handler.handle_inbound_mention(msg, "anything")
+
+    assert matched is None
+    counters = get_event_counters()
+    assert counters["discord.mentions.skipped_no_match"] == 0
+    assert counters["discord.mentions.invoked"] == 0
