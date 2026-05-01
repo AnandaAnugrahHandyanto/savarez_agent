@@ -280,8 +280,12 @@ def _notify_session_boundary(event_type: str, session_id: str | None) -> None:
         pass
 
 
-def _finalize_session(session: dict | None) -> None:
-    """Best-effort finalize hook + memory commit for a session."""
+def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> None:
+    """Best-effort finalize hook + memory commit for a session.
+
+    Also marks the session as ended in state.db so that empty/abandoned
+    sessions don't linger as ghost rows in ``/resume``.
+    """
     if not session or session.get("_finalized"):
         return
     session["_finalized"] = True
@@ -299,13 +303,25 @@ def _finalize_session(session: dict | None) -> None:
         except Exception:
             pass
 
-    session_id = getattr(agent, "session_id", None) or session.get("session_key")
+    session_key = session.get("session_key")
+    session_id = getattr(agent, "session_id", None) or session_key
     _notify_session_boundary("on_session_finalize", session_id)
+
+    # Mark the session as ended in the DB so it doesn't appear as a ghost
+    # row in /resume.  CLI already does this (cli.py end_session calls);
+    # TUI was missing the equivalent.  See #18269.
+    if session_key:
+        try:
+            db = _get_db()
+            if db is not None:
+                db.end_session(session_key, end_reason)
+        except Exception:
+            pass
 
 
 def _shutdown_sessions() -> None:
     for session in list(_sessions.values()):
-        _finalize_session(session)
+        _finalize_session(session, end_reason="tui_shutdown")
         try:
             worker = session.get("slash_worker")
             if worker:
@@ -2512,6 +2528,11 @@ def _(rid, params: dict) -> dict:
         )
     except Exception as e:
         return _err(rid, 5000, f"agent init failed on branch: {e}")
+    # End the old session in DB — mirrors CLI behavior (cli.py "branched").
+    try:
+        db.end_session(old_key, "branched")
+    except Exception:
+        pass
     return _ok(rid, {"session_id": new_sid, "title": title, "parent": old_key})
 
 
