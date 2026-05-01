@@ -130,13 +130,14 @@ class TestSessionLifecycle:
 
     def test_get_session_token_totals_sums_all_columns(self, db):
         db.create_session(session_id="s1", source="cli")
-        db.set_token_counts(
+        db.update_token_counts(
             "s1",
             input_tokens=10,
             output_tokens=20,
             cache_read_tokens=3,
             cache_write_tokens=4,
             reasoning_tokens=5,
+            absolute=True,
         )
 
         totals = db.get_session_token_totals("s1")
