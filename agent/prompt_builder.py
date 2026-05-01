@@ -11,9 +11,11 @@ import re
 import threading
 from collections import OrderedDict
 from pathlib import Path
+from typing import Optional, Set
+
+import yaml as _yaml
 
 from hermes_constants import get_hermes_home
-from typing import Optional
 
 from agent.skill_utils import (
     extract_skill_conditions,
@@ -834,10 +836,64 @@ def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE
     return head + marker + tail
 
 
-def load_soul_md() -> Optional[str]:
-    """Load SOUL.md from HERMES_HOME and return its content, or None.
+def _read_user_profile(user_id: str) -> dict:
+    """Read profile.json for user_id from the Artemis data dir.
 
-    Used as the agent identity (slot #1 in the system prompt).  When this
+    Returns {} if the file does not exist or is unreadable. Kept as a
+    thin shim so tests can monkeypatch it.
+    """
+    if not user_id:
+        return {}
+    artemis_dir = get_hermes_home() / "artemis"
+    profile_path = artemis_dir / user_id / "profile.json"
+    if not profile_path.exists():
+        return {}
+    try:
+        return json.loads(profile_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _load_valid_personas() -> Set[str]:
+    """Load the persona registry from $HERMES_HOME/personas/registry.yaml."""
+    registry_path = get_hermes_home() / "personas" / "registry.yaml"
+    if not registry_path.exists():
+        return set()
+    data = _yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
+    personas = data.get("personas")
+    if not isinstance(personas, list):
+        return set()
+    return set(personas)
+
+
+def _load_persona_overlay(user_id: Optional[str]) -> str:
+    """Return the persona overlay text for this user, or '' if no overlay applies.
+
+    Raises ValueError for an unknown persona name in profile.persona.
+    Raises FileNotFoundError if the persona is in the registry but the
+    overlay file is missing.
+    """
+    if not user_id:
+        return ""
+    profile = _read_user_profile(user_id)
+    persona_name = profile.get("persona", "peer-mentor")
+    valid = _load_valid_personas()
+    if not valid:
+        # Registry missing or malformed — no overlay system in place; return ""
+        return ""
+    if persona_name not in valid:
+        raise ValueError(f"Unknown persona: {persona_name!r}; valid={sorted(valid)}")
+    overlay_path = get_hermes_home() / "personas" / f"{persona_name}.md"
+    if not overlay_path.exists():
+        raise FileNotFoundError(f"Persona overlay missing: {overlay_path}")
+    return overlay_path.read_text(encoding="utf-8").strip()
+
+
+def load_soul_md(user_id: Optional[str] = None) -> Optional[str]:
+    """Load SOUL.md from HERMES_HOME and return its content (with persona
+    overlay appended when user_id resolves to a profile.persona), or None.
+
+    Used as the agent identity (slot #1 in the system prompt). When this
     returns content, ``build_context_files_prompt`` should be called with
     ``skip_soul=True`` so SOUL.md isn't injected twice.
     """
@@ -856,10 +912,15 @@ def load_soul_md() -> Optional[str]:
             return None
         content = _scan_context_content(content, "SOUL.md")
         content = _truncate_content(content, "SOUL.md")
-        return content
     except Exception as e:
         logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
         return None
+
+    # Append persona overlay if user_id resolves to one
+    overlay = _load_persona_overlay(user_id)
+    if overlay:
+        return f"{content}\n\n{overlay}"
+    return content
 
 
 def _load_hermes_md(cwd_path: Path) -> str:
