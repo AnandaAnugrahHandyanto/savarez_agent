@@ -1,5 +1,5 @@
 ---
-name: bilingual_captions
+name: bilingual-captions
 description: Create bilingual EN+VI stacked captions for short videos. Transcribes English audio, translates to Vietnamese with Kimi K2.5, burns captions into the video, and iteratively refines them based on user feedback.
 version: 1.0.0
 platforms: [macos, linux]

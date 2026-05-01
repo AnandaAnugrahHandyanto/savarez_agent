@@ -1,6 +1,6 @@
 # Hackathon Build Status
 
-**Last updated**: 30 April 2026  
+**Last updated**: 1 May 2026  
 **Deadline**: EOD Sunday 3 May 2026 (3 days remaining)
 
 ---
@@ -142,7 +142,7 @@ Next video: corrections auto-applied
 
 | Task | Notes |
 |---|---|
-| Install dependencies | `pip install faster-whisper openai` in `.venv` — **ffmpeg not found** (exit 127 seen in terminal — needs `brew install ffmpeg`) |
+| Install dependencies | `pip install faster-whisper openai` in `.venv` |
 | End-to-end smoke test | Send a real short video via Telegram, verify: path injection fires → transcription runs → translation fires → video returned |
 | Enable toolset | Add `video_caption` to `enabled_toolsets` in `~/.hermes/config.yaml` |
 | Set `NVIDIA_API_KEY` | Add to `~/.hermes/.env` to enable Kimi translation |
@@ -175,7 +175,7 @@ Next video: corrections auto-applied
 
 | Issue | Severity | Status |
 |---|---|---|
-| `ffmpeg` not found (exit 127) | P0 | Install: `brew install ffmpeg` |
+| `ffmpeg` path was stale | Fixed | Current binary now resolves to `/opt/homebrew/bin/ffmpeg` |
 | Kimi `reasoning_content` quirk | Handled | Fallback guard in `translate_to_vietnamese()` |
 | faster-whisper not yet installed | P0 | `pip install faster-whisper` |
 | CPU transcription speed | Medium | 20s video takes ~15–30s on CPU — acceptable for demo, mention it in video |
@@ -197,6 +197,13 @@ brew install ffmpeg
 # 3. Verify ffmpeg is on PATH
 ffmpeg -version
 
+# 3a. Confirm Hermes can load the tool module
+python - <<'PY'
+from tools.video_caption import _DEFAULT_STYLE
+print('video_caption import OK')
+print(_DEFAULT_STYLE['font'])
+PY
+
 # 4. Add NVIDIA API key
 echo "NVIDIA_API_KEY=nvapi-YOUR_KEY_HERE" >> ~/.hermes/.env
 
@@ -213,13 +220,44 @@ python -c "
 from tools.video_caption import transcribe, translate_to_vietnamese
 print('Import OK')
 "
+
+# 8. First real test
+# Run captioning against a 10-20s local video with spoken English and
+# verify the tool returns: transcription, English+Vietnamese pairs, ASS file,
+# and a burned output video.
 ```
+
+---
+
+## Testing Start Plan
+
+### Immediate checks
+
+1. Confirm `ffmpeg -version` works from the shell. This is already green.
+2. Use Python 3.11+ for the repo. The current shell Python is 3.8.11, which blocks importing `tools.registry` because the codebase uses newer typing syntax.
+3. Install `faster-whisper` in a 3.11 virtualenv and verify `tools.video_caption` imports.
+4. Add `NVIDIA_API_KEY` if you want Vietnamese translation in the first run.
+5. Run the first smoke test on a short local clip before trying Telegram.
+
+### First smoke test
+
+Use a 10-20 second video with clear English speech and no complicated music bed. The goal is to prove the full loop, not caption quality yet:
+
+1. Transcription completes.
+2. Kimi translation returns Vietnamese.
+3. ASS output is written.
+4. FFmpeg burns the subtitles into a new video.
+
+### Next test after that
+
+Send the same clip through Telegram so we can verify the gateway path injection and the end-to-end agent flow, not just the local tool.
 
 ---
 
 ## Submission Checklist
 
 - [ ] ffmpeg installed and working
+- [ ] Python 3.11+ virtualenv active
 - [ ] faster-whisper + openai installed
 - [ ] NVIDIA_API_KEY set in `~/.hermes/.env`
 - [ ] `video_caption` toolset enabled
