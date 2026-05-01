@@ -494,6 +494,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_prefilter = False
         self._retain_context_tagging = "off"  # "off", "on", or "smart"
         self._retain_dedup = False
+        self._retain_mode = "full"  # "full" or "delta"
+        self._retain_overlap_turns = 2
+        self._last_retain_index = 0  # tracks where the last delta ended
 
     @property
     def name(self) -> str:
@@ -770,6 +773,8 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
             {"key": "retain_prefilter", "description": "Classify content with auxiliary LLM before retaining (requires bank_retain_mission)", "default": False},
             {"key": "retain_dedup", "description": "Check for duplicate content via recall before retaining", "default": False},
+            {"key": "retain_mode", "description": "What to send on each retain cycle: 'full' (entire session, replaces previous) or 'delta' (only new turns + overlap, creates independent memories)", "default": "full", "choices": ["full", "delta"]},
+            {"key": "retain_overlap_turns", "description": "When retain_mode is 'delta', how many previous turns to include for context continuity", "default": 2},
             {"key": "retain_context_tagging", "description": "Scope-tag retained memories: 'off' (no tags), 'on' (always tag by platform:chat_id), 'smart' (classify general vs scoped via auxiliary LLM)", "default": "off", "choices": ["off", "on", "smart"]},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
@@ -1033,6 +1038,10 @@ class HindsightMemoryProvider(MemoryProvider):
         # Smart retain
         self._retain_prefilter = self._config.get("retain_prefilter", False)
         self._retain_dedup = self._config.get("retain_dedup", False)
+        self._retain_mode = self._config.get("retain_mode", "full")
+        if self._retain_mode not in ("full", "delta"):
+            self._retain_mode = "full"
+        self._retain_overlap_turns = max(0, int(self._config.get("retain_overlap_turns", 2)))
         raw_tagging = self._config.get("retain_context_tagging", "off")
         # Backward compat: treat True as "smart", False as "off"
         if raw_tagging is True:
@@ -1092,9 +1101,9 @@ class HindsightMemoryProvider(MemoryProvider):
                          self._bank_id_template, self._agent_identity, self._agent_workspace,
                          self._platform, self._user_id, self._bank_id)
         logger.debug("Hindsight config: auto_retain=%s, auto_recall=%s, retain_every_n=%d, "
-                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
+                     "retain_async=%s, retain_mode=%s, retain_overlap=%d, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
                      self._auto_retain, self._auto_recall, self._retain_every_n_turns,
-                     self._retain_async, self._retain_context, self._recall_max_tokens, self._recall_max_input_chars,
+                     self._retain_async, self._retain_mode, self._retain_overlap_turns, self._retain_context, self._recall_max_tokens, self._recall_max_input_chars,
                      self._tags, self._recall_tags)
 
         # For local mode, start the embedded daemon in the background so it
@@ -1505,7 +1514,21 @@ class HindsightMemoryProvider(MemoryProvider):
 
         logger.debug("sync_turn: retaining %d turns, total session content %d chars",
                      len(self._session_turns), sum(len(t) for t in self._session_turns))
-        content = "[" + ",".join(self._session_turns) + "]"
+
+        # Build content based on retain_mode
+        if self._retain_mode == "delta":
+            # Delta mode: only send new turns since last retain, plus overlap for context
+            overlap = min(self._retain_overlap_turns, self._last_retain_index)
+            start = max(0, self._last_retain_index - overlap)
+            delta_turns = self._session_turns[start:]
+            content = "[" + ",".join(delta_turns) + "]"
+            self._last_retain_index = len(self._session_turns)
+            logger.debug("sync_turn delta: sending turns %d-%d (%d new + %d overlap)",
+                         start, len(self._session_turns) - 1,
+                         len(self._session_turns) - (start + overlap), overlap)
+        else:
+            # Full mode (default): send entire session, replace previous via document_id
+            content = "[" + ",".join(self._session_turns) + "]"
 
         lineage_tags: list[str] = []
         if self._session_id:
@@ -1520,7 +1543,9 @@ class HindsightMemoryProvider(MemoryProvider):
             turn_index=self._turn_index,
         )
         num_turns = len(self._session_turns)
-        document_id = self._document_id
+        # In delta mode, don't use document_id — each delta creates independent memories.
+        # In full mode, document_id enables replacement of previous extraction.
+        document_id = self._document_id if self._retain_mode == "full" else None
         bank_id = self._bank_id
         retain_async_flag = self._retain_async
         retain_context = self._retain_context
@@ -1740,7 +1765,17 @@ class HindsightMemoryProvider(MemoryProvider):
                 scope_tag = self._build_scope_tag()
                 if scope_tag not in old_lineage_tags:
                     old_lineage_tags.append(scope_tag)
-            old_content = "[" + ",".join(old_turns) + "]"
+
+            # In delta mode, only flush unsent turns (since last retain + overlap)
+            if self._retain_mode == "delta":
+                overlap = min(self._retain_overlap_turns, self._last_retain_index)
+                start = max(0, self._last_retain_index - overlap)
+                flush_turns = old_turns[start:]
+                old_content = "[" + ",".join(flush_turns) + "]"
+                flush_document_id = None  # delta creates independent memories
+            else:
+                old_content = "[" + ",".join(old_turns) + "]"
+                flush_document_id = old_document_id
 
             def _flush():
                 try:
@@ -1760,7 +1795,7 @@ class HindsightMemoryProvider(MemoryProvider):
                         lambda client: client.aretain_batch(
                             bank_id=self._bank_id,
                             items=[item],
-                            document_id=old_document_id,
+                            document_id=flush_document_id,
                             retain_async=self._retain_async,
                         )
                     )
@@ -1794,6 +1829,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._session_turns = []
         self._turn_counter = 0
         self._turn_index = 0
+        self._last_retain_index = 0
         logger.debug(
             "Hindsight on_session_switch: new_session=%s parent=%s reset=%s doc=%s",
             self._session_id, self._parent_session_id, reset, self._document_id,
