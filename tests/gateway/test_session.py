@@ -30,6 +30,7 @@ class TestSessionSourceRoundtrip:
             user_id="99",
             user_name="alice",
             thread_id="t1",
+            is_bot=True,
         )
         d = source.to_dict()
         restored = SessionSource.from_dict(d)
@@ -41,6 +42,7 @@ class TestSessionSourceRoundtrip:
         assert restored.user_id == "99"
         assert restored.user_name == "alice"
         assert restored.thread_id == "t1"
+        assert restored.is_bot is True
 
     def test_full_roundtrip_with_chat_topic(self):
         """chat_topic should survive to_dict/from_dict roundtrip."""

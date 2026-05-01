@@ -892,6 +892,7 @@ class MessageEvent:
     # ("Error while calling `get_updates` one more time to mark all fetched
     # updates" in gateway.log).
     platform_update_id: Optional[int] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
     
     # Media attachments
     # media_urls: local file paths (for vision tool access)

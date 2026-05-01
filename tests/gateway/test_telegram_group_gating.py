@@ -1,8 +1,10 @@
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
-from gateway.config import Platform, PlatformConfig, load_gateway_config
+import pytest
+
+from gateway.config import GatewayConfig, Platform, PlatformConfig, load_gateway_config
 
 
 def _make_adapter(
@@ -12,6 +14,11 @@ def _make_adapter(
     ignored_threads=None,
     allow_from=None,
     group_allow_from=None,
+    allow_bots=None,
+    hq_aliases=None,
+    hq_bot_id=None,
+    hq_assignment=None,
+    hq_escalation=None,
 ):
     from gateway.platforms.telegram import TelegramAdapter
 
@@ -28,6 +35,14 @@ def _make_adapter(
         extra["allow_from"] = allow_from
     if group_allow_from is not None:
         extra["group_allow_from"] = group_allow_from
+    if allow_bots is not None:
+        extra["allow_bots"] = allow_bots
+    if hq_aliases is not None:
+        extra["hq_aliases"] = hq_aliases
+    if hq_bot_id is not None:
+        extra["hq_bot_id"] = hq_bot_id
+    extra["hq_assignment"] = hq_assignment or {}
+    extra["hq_escalation"] = hq_escalation or {}
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -46,6 +61,8 @@ def _group_message(
     *,
     chat_id=-100,
     from_user_id=111,
+    from_user_username=None,
+    from_user_is_bot=False,
     thread_id=None,
     reply_to_bot=False,
     entities=None,
@@ -62,7 +79,7 @@ def _group_message(
         caption_entities=caption_entities or [],
         message_thread_id=thread_id,
         chat=SimpleNamespace(id=chat_id, type="group"),
-        from_user=SimpleNamespace(id=from_user_id),
+        from_user=SimpleNamespace(id=from_user_id, username=from_user_username, is_bot=from_user_is_bot),
         reply_to_message=reply_to_message,
     )
 
@@ -279,3 +296,558 @@ def test_config_bridges_telegram_ignored_threads(monkeypatch, tmp_path):
 
     assert config is not None
     assert __import__("os").environ["TELEGRAM_IGNORED_THREADS"] == "31,42"
+
+def _trusted_assignment_config(**overrides):
+    config = {
+        "enabled": True,
+        "allowed_chat_ids": ["-5166431570"],
+        "trusted_sender_usernames": ["Awoo999_bot"],
+        "max_turns_default": 1,
+        "max_turns_max": 3,
+        "strip_header": True,
+    }
+    config.update(overrides)
+    return config
+
+def test_bot_senders_are_ignored_by_default():
+    adapter = _make_adapter(require_mention=True)
+
+    assert adapter._should_process_message(
+        _group_message(
+            "hi @hermes_bot",
+            entities=[_mention_entity("hi @hermes_bot")],
+            from_user_id=222,
+            from_user_is_bot=True,
+        )
+    ) is False
+
+def test_bot_senders_can_be_opted_in_for_mentions():
+    adapter = _make_adapter(require_mention=True, allow_bots="mentions")
+
+    assert adapter._should_process_message(
+        _group_message(
+            "hi @hermes_bot",
+            entities=[_mention_entity("hi @hermes_bot")],
+            from_user_id=222,
+            from_user_is_bot=True,
+        )
+    ) is True
+    assert adapter._should_process_message(
+        _group_message("hello everyone", from_user_id=222, from_user_is_bot=True)
+    ) is False
+
+def test_own_bot_sender_is_never_processed():
+    adapter = _make_adapter(require_mention=True, allow_bots="all")
+
+    assert adapter._should_process_message(
+        _group_message(
+            "hi @hermes_bot",
+            entities=[_mention_entity("hi @hermes_bot")],
+            from_user_id=999,
+            from_user_is_bot=True,
+        )
+    ) is False
+
+def test_hq_aliases_trigger_this_bot_when_require_mention_enabled():
+    adapter = _make_adapter(require_mention=True, hq_aliases=["小礫", "rubble"])
+
+    assert adapter._should_process_message(_group_message("小礫 盤查 gateway")) is True
+    assert adapter._should_process_message(_group_message("rubble 盤查 gateway")) is True
+    assert adapter._should_process_message(_group_message("小礫：盤查 gateway")) is True
+
+def test_other_bot_alias_does_not_trigger_this_bot():
+    adapter = _make_adapter(require_mention=True, hq_aliases=["小礫", "rubble"])
+
+    assert adapter._should_process_message(_group_message("阿奇 盤查 gateway")) is False
+    assert adapter._should_process_message(_group_message("rubblefish 盤查 gateway")) is False
+
+def test_hq_assignment_for_this_bot_is_processed():
+    adapter = _make_adapter(require_mention=True, hq_bot_id="rubble")
+
+    assert adapter._should_process_message(
+        _group_message("[HQ_ASSIGN target=rubble max_turns=1]\n盤查 gateway")
+    ) is True
+    assert adapter._should_process_message(
+        _group_message("[HQ_ASSIGN target=RUBBLE max_turns=1]\n盤查 gateway")
+    ) is True
+    assert adapter._should_process_message(
+        _group_message("[HQ_ASSIGN target=chase max_turns=1]\n盤查 gateway")
+    ) is False
+
+def test_hq_assignment_from_bot_still_hits_loop_guard():
+    adapter = _make_adapter(require_mention=True, hq_bot_id="rubble")
+
+    assert adapter._should_process_message(
+        _group_message(
+            "[HQ_ASSIGN target=rubble max_turns=1]\n盤查 gateway",
+            from_user_id=222,
+            from_user_is_bot=True,
+        )
+    ) is False
+
+def test_trusted_architect_bot_assignment_is_processed_when_enabled():
+    adapter = _make_adapter(
+        require_mention=True,
+        hq_bot_id="rubble",
+        hq_assignment=_trusted_assignment_config(),
+    )
+
+    assert adapter._should_process_message(
+        _group_message(
+            "[HQ_ASSIGN target=rubble max_turns=1]\n盤查 gateway",
+            chat_id=-5166431570,
+            from_user_id=999001,
+            from_user_username="Awoo999_bot",
+            from_user_is_bot=True,
+        )
+    ) is True
+
+def test_bot_assignment_still_ignored_when_hq_assignment_disabled():
+    adapter = _make_adapter(require_mention=True, hq_bot_id="rubble")
+
+    assert adapter._should_process_message(
+        _group_message(
+            "[HQ_ASSIGN target=rubble max_turns=1]\n盤查 gateway",
+            chat_id=-5166431570,
+            from_user_id=999001,
+            from_user_username="Awoo999_bot",
+            from_user_is_bot=True,
+        )
+    ) is False
+
+def test_untrusted_bot_assignment_is_ignored():
+    adapter = _make_adapter(
+        require_mention=True,
+        hq_bot_id="rubble",
+        hq_assignment=_trusted_assignment_config(),
+    )
+
+    assert adapter._should_process_message(
+        _group_message(
+            "[HQ_ASSIGN target=rubble max_turns=1]\n盤查 gateway",
+            chat_id=-5166431570,
+            from_user_id=123,
+            from_user_username="RandomBot",
+            from_user_is_bot=True,
+        )
+    ) is False
+
+def test_trusted_bot_assignment_in_wrong_chat_is_ignored():
+    adapter = _make_adapter(
+        require_mention=True,
+        hq_bot_id="rubble",
+        hq_assignment=_trusted_assignment_config(),
+    )
+
+    assert adapter._should_process_message(
+        _group_message(
+            "[HQ_ASSIGN target=rubble max_turns=1]\n盤查 gateway",
+            chat_id=-111,
+            from_user_id=999001,
+            from_user_username="Awoo999_bot",
+            from_user_is_bot=True,
+        )
+    ) is False
+
+def test_trusted_bot_assignment_for_other_target_is_ignored():
+    adapter = _make_adapter(
+        require_mention=True,
+        hq_bot_id="rubble",
+        hq_assignment=_trusted_assignment_config(),
+    )
+
+    assert adapter._should_process_message(
+        _group_message(
+            "[HQ_ASSIGN target=zuma max_turns=1]\n做圖",
+            chat_id=-5166431570,
+            from_user_id=999001,
+            from_user_username="Awoo999_bot",
+            from_user_is_bot=True,
+        )
+    ) is False
+
+def test_own_bot_assignment_is_never_processed_even_if_trusted():
+    adapter = _make_adapter(
+        require_mention=True,
+        hq_bot_id="rubble",
+        hq_assignment=_trusted_assignment_config(trusted_sender_usernames=["hermes_bot"]),
+    )
+
+    assert adapter._should_process_message(
+        _group_message(
+            "[HQ_ASSIGN target=rubble max_turns=1]\n盤查 gateway",
+            chat_id=-5166431570,
+            from_user_id=999,
+            from_user_username="hermes_bot",
+            from_user_is_bot=True,
+        )
+    ) is False
+
+def test_hq_assignment_header_is_stripped_and_metadata_attached():
+    from gateway.platforms.base import MessageEvent, MessageType
+
+    adapter = _make_adapter(
+        require_mention=True,
+        hq_bot_id="rubble",
+        hq_assignment=_trusted_assignment_config(),
+    )
+    msg = _group_message(
+        "[HQ_ASSIGN target=rubble max_turns=2 trace_id=smoke-001]\n盤查 gateway",
+        chat_id=-5166431570,
+        from_user_id=999001,
+        from_user_username="Awoo999_bot",
+        from_user_is_bot=True,
+    )
+    event = MessageEvent(text=msg.text, message_type=MessageType.TEXT)
+
+    updated = adapter._apply_hq_assignment_to_event(msg, event)
+
+    assert updated.text == "盤查 gateway"
+    assert updated.metadata["hq_assignment"]["target"] == "rubble"
+    assert updated.metadata["hq_assignment"]["max_turns"] == 2
+    assert updated.metadata["hq_assignment"]["trace_id"] == "smoke-001"
+
+def test_hq_assignment_max_turns_is_clamped_to_config_cap():
+    adapter = _make_adapter(
+        require_mention=True,
+        hq_bot_id="rubble",
+        hq_assignment=_trusted_assignment_config(max_turns_max=3),
+    )
+    msg = _group_message(
+        "[HQ_ASSIGN target=rubble max_turns=99]\n盤查 gateway",
+        chat_id=-5166431570,
+        from_user_id=999001,
+        from_user_username="Awoo999_bot",
+        from_user_is_bot=True,
+    )
+
+    assignment = adapter._parse_hq_assignment(msg)
+
+    assert assignment["max_turns"] == 3
+
+def test_gateway_runner_uses_assignment_max_turns_when_lower_than_default():
+    from gateway.platforms.base import MessageEvent
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    event = MessageEvent(text="task", metadata={"hq_assignment": {"max_turns": 1}})
+
+    assert runner._effective_max_iterations_for_event(event, 90) == 1
+
+def test_gateway_runner_does_not_raise_iterations_above_default():
+    from gateway.platforms.base import MessageEvent
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    event = MessageEvent(text="task", metadata={"hq_assignment": {"max_turns": 999}})
+
+    assert runner._effective_max_iterations_for_event(event, 90) == 90
+
+def _architect_escalation_config(**overrides):
+    config = {
+        "enabled": True,
+        "allowed_chat_ids": ["-5166431570"],
+        "trusted_worker_usernames": ["Awoo008_bot", "Awoo001_bot"],
+        "accepted_types": ["HQ_ESCALATE", "HQ_RESULT"],
+        "statuses": ["done", "blocked", "failed", "needs_human"],
+        "max_turns_default": 1,
+        "max_turns_max": 3,
+        "strip_header": True,
+    }
+    config.update(overrides)
+    return config
+
+
+def test_trusted_worker_escalation_to_architect_is_processed_when_enabled():
+    adapter = _make_adapter(
+        require_mention=True,
+        allow_bots="none",
+        hq_bot_id="architect",
+        hq_escalation=_architect_escalation_config(),
+    )
+
+    assert adapter._should_process_message(
+        _group_message(
+            "[HQ_ESCALATE target=architect from=rubble ticket=T20260502-rubble-smoke severity=urgent max_turns=2]\n卡點內容",
+            chat_id=-5166431570,
+            from_user_id=999008,
+            from_user_username="Awoo008_bot",
+            from_user_is_bot=True,
+        )
+    ) is True
+
+def test_hq_escalation_rejects_wrong_chat_untrusted_sender_wrong_target_and_human_bypass():
+    adapter = _make_adapter(
+        require_mention=True,
+        allow_bots="none",
+        hq_bot_id="architect",
+        hq_escalation=_architect_escalation_config(),
+    )
+
+    assert adapter._should_process_message(
+        _group_message(
+            "[HQ_ESCALATE target=architect from=rubble ticket=T20260502-rubble-smoke]\n卡點內容",
+            chat_id=-1,
+            from_user_username="Awoo008_bot",
+            from_user_is_bot=True,
+        )
+    ) is False
+    assert adapter._should_process_message(
+        _group_message(
+            "[HQ_ESCALATE target=architect from=rubble ticket=T20260502-rubble-smoke]\n卡點內容",
+            chat_id=-5166431570,
+            from_user_username="untrusted_bot",
+            from_user_is_bot=True,
+        )
+    ) is False
+    assert adapter._should_process_message(
+        _group_message(
+            "[HQ_ESCALATE target=rubble from=rubble ticket=T20260502-rubble-smoke]\n卡點內容",
+            chat_id=-5166431570,
+            from_user_username="Awoo008_bot",
+            from_user_is_bot=True,
+        )
+    ) is False
+    assert adapter._should_process_message(
+        _group_message(
+            "[HQ_ESCALATE target=architect from=rubble ticket=T20260502-rubble-smoke]\n卡點內容",
+            chat_id=-5166431570,
+            from_user_username="human_user",
+            from_user_is_bot=False,
+        )
+    ) is False
+
+def test_trusted_worker_result_to_architect_requires_from_ticket_and_allowed_status():
+    adapter = _make_adapter(
+        require_mention=True,
+        allow_bots="none",
+        hq_bot_id="architect",
+        hq_escalation=_architect_escalation_config(),
+    )
+
+    assert adapter._should_process_message(
+        _group_message(
+            "[HQ_RESULT target=architect from=factory ticket=T20260502-rubble-smoke status=done max_turns=2]\n已查完",
+            chat_id=-5166431570,
+            from_user_username="Awoo001_bot",
+            from_user_is_bot=True,
+        )
+    ) is True
+    assert adapter._should_process_message(
+        _group_message(
+            "[HQ_RESULT target=architect ticket=T20260502-rubble-smoke status=done]\nmissing from",
+            chat_id=-5166431570,
+            from_user_username="Awoo001_bot",
+            from_user_is_bot=True,
+        )
+    ) is False
+    assert adapter._should_process_message(
+        _group_message(
+            "[HQ_RESULT target=architect from=factory status=done]\nmissing ticket",
+            chat_id=-5166431570,
+            from_user_username="Awoo001_bot",
+            from_user_is_bot=True,
+        )
+    ) is False
+    assert adapter._should_process_message(
+        _group_message(
+            "[HQ_RESULT target=architect from=factory ticket=T20260502-rubble-smoke status=lol]\nbad status",
+            chat_id=-5166431570,
+            from_user_username="Awoo001_bot",
+            from_user_is_bot=True,
+        )
+    ) is False
+
+def test_hq_escalation_event_strips_header_and_attaches_metadata():
+    from gateway.platforms.base import MessageEvent, MessageType
+
+    adapter = _make_adapter(
+        require_mention=True,
+        hq_bot_id="architect",
+        hq_escalation=_architect_escalation_config(),
+    )
+    msg = _group_message(
+        "[HQ_ESCALATE target=architect from=rubble ticket=T20260502-rubble-smoke severity=urgent max_turns=9 trace_id=t3]\n卡點內容",
+        chat_id=-5166431570,
+        from_user_username="Awoo008_bot",
+        from_user_is_bot=True,
+    )
+    event = MessageEvent(text=msg.text, message_type=MessageType.TEXT)
+
+    updated = adapter._apply_hq_escalation_to_event(msg, event)
+
+    assert updated.text == "卡點內容"
+    assert updated.metadata["hq_escalation"]["type"] == "HQ_ESCALATE"
+    assert updated.metadata["hq_escalation"]["target"] == "architect"
+    assert updated.metadata["hq_escalation"]["from"] == "rubble"
+    assert updated.metadata["hq_escalation"]["ticket"] == "T20260502-rubble-smoke"
+    assert updated.metadata["hq_escalation"]["severity"] == "urgent"
+    assert updated.metadata["hq_escalation"]["max_turns"] == 3
+    assert updated.metadata["hq_escalation"]["trace_id"] == "t3"
+
+def test_gateway_runner_clamps_hq_escalation_max_turns():
+    from gateway.platforms.base import MessageEvent
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    assert runner._effective_max_iterations_for_event(
+        MessageEvent(text="task", metadata={"hq_escalation": {"max_turns": 2}}),
+        90,
+    ) == 2
+    assert runner._effective_max_iterations_for_event(
+        MessageEvent(text="task", metadata={"hq_escalation": {"max_turns": 999}}),
+        90,
+    ) == 90
+
+
+@pytest.mark.asyncio
+async def test_hq_escalation_metadata_bypasses_human_user_allowlist(monkeypatch):
+    from gateway.platforms.base import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "1926710271")
+    monkeypatch.delenv("TELEGRAM_GROUP_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("TELEGRAM_GROUP_ALLOWED_CHATS", raising=False)
+    monkeypatch.delenv("TELEGRAM_ALLOW_ALL_USERS", raising=False)
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True)})
+    runner.adapters = {Platform.TELEGRAM: SimpleNamespace(send=AsyncMock())}
+    runner.pairing_store = MagicMock()
+    runner.pairing_store.is_approved.return_value = False
+    runner.session_store = MagicMock()
+    runner._running_agents = {}
+    runner._update_prompt_pending = {}
+
+    async def _capture(event, source, _quick_key, _run_generation=None):
+        return f"processed:{event.metadata['hq_escalation']['ticket']}"
+
+    runner._handle_message_with_agent = _capture
+
+    event = MessageEvent(
+        text="smoke",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-5166431570",
+            chat_name="HQ",
+            chat_type="group",
+            user_id="8761586079",
+            user_name="小礫",
+            is_bot=True,
+        ),
+        metadata={"hq_escalation": {"ticket": "T20260502-rubble-smoke"}},
+    )
+
+    assert await runner._handle_message(event) == "processed:T20260502-rubble-smoke"
+
+def test_config_bridges_telegram_allow_bots(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "telegram:\n"
+        "  allow_bots: mentions\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TELEGRAM_ALLOW_BOTS", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    assert __import__("os").environ["TELEGRAM_ALLOW_BOTS"] == "mentions"
+
+def test_config_bridges_telegram_hq_aliases(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "telegram:\n"
+        "  hq_aliases:\n"
+        "    - 小礫\n"
+        "    - rubble\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TELEGRAM_HQ_ALIASES", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    assert __import__("os").environ["TELEGRAM_HQ_ALIASES"] == "小礫,rubble"
+
+def test_config_bridges_telegram_hq_bot_id(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "telegram:\n"
+        "  hq_bot_id: Rubble\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TELEGRAM_HQ_BOT_ID", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    assert __import__("os").environ["TELEGRAM_HQ_BOT_ID"] == "rubble"
+
+def test_config_bridges_telegram_hq_escalation(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "telegram:\n"
+        "  hq_escalation:\n"
+        "    enabled: true\n"
+        "    allowed_chat_ids:\n"
+        "      - \"-5166431570\"\n"
+        "    trusted_worker_usernames:\n"
+        "      - Awoo008_bot\n"
+        "    accepted_types:\n"
+        "      - HQ_ESCALATE\n"
+        "      - HQ_RESULT\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TELEGRAM_HQ_ESCALATION", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    payload = json.loads(__import__("os").environ["TELEGRAM_HQ_ESCALATION"])
+    assert payload["enabled"] is True
+    assert payload["allowed_chat_ids"] == ["-5166431570"]
+    assert payload["trusted_worker_usernames"] == ["Awoo008_bot"]
+    assert payload["accepted_types"] == ["HQ_ESCALATE", "HQ_RESULT"]
+
+def test_config_bridges_telegram_hq_assignment(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "telegram:\n"
+        "  hq_assignment:\n"
+        "    enabled: true\n"
+        "    allowed_chat_ids:\n"
+        "      - \"-5166431570\"\n"
+        "    trusted_sender_usernames:\n"
+        "      - Awoo999_bot\n"
+        "    max_turns_default: 1\n"
+        "    max_turns_max: 3\n"
+        "    strip_header: true\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TELEGRAM_HQ_ASSIGNMENT", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    bridged = json.loads(__import__("os").environ["TELEGRAM_HQ_ASSIGNMENT"])
+    assert bridged["enabled"] is True
+    assert bridged["allowed_chat_ids"] == ["-5166431570"]
+    assert bridged["trusted_sender_usernames"] == ["Awoo999_bot"]
+    assert bridged["max_turns_max"] == 3
