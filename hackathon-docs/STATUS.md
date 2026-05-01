@@ -103,9 +103,10 @@ Users can override any field in `~/.hermes/config.yaml`. The tool reads this at 
 
 ---
 
-### 5. Teaching Caption Skill — `skills/video/bilingual_captions/SKILL.md` ✅
+### 5. Teaching Caption Skill — `skills/video/phonetic_captions/SKILL.md` ✅
 
-Updated (1 May) to match the teaching phonetics workflow:
+Renamed (1 May) from `bilingual_captions` to `phonetic_captions` for clarity and scalability.
+Updated to match the teaching phonetics workflow:
 - Receive video → call `caption` → present numbered `[EN]`/`[VI]` segments with phonetics
 - Handle correction requests (text, phonetic, or lang field) → call `reburn`
 - Save phonetic preferences and vocabulary to Hermes memory after approval
@@ -161,9 +162,9 @@ Next video: saved preferences auto-applied
 |---|---|
 | Install dependencies | `pip install faster-whisper openai` in `.venv` |
 | End-to-end smoke test | Send a real short video via Telegram, verify: path injection fires → transcription runs → translation fires → video returned |
-| Enable toolset | Add `video_caption` to `enabled_toolsets` in `~/.hermes/config.yaml` |
+| Enable toolset | ✅ Added `video_caption` to `toolsets` in `DEFAULT_CONFIG` (hermes_cli/config.py) |
 | Set `NVIDIA_API_KEY` | Add to `~/.hermes/.env` to enable Kimi translation |
-| Load skill | Run `hermes skills install skills/video/bilingual_captions` or add to active skills |
+| Load skill | Run `hermes skills install skills/video/phonetic_captions` or add to active skills |
 
 ### P1 — Important for demo quality
 
