@@ -212,6 +212,31 @@ The adapter monitors the SSE connection and automatically reconnects if:
 
 ---
 
+## Message Reactions
+
+The bot can add emoji reactions to messages as visual processing feedback:
+
+- 👀 when the bot starts processing your message
+- ✅ when the response is delivered successfully
+- ❌ if an error occurs during processing
+
+Reactions are **disabled by default**. Enable them in `config.yaml`:
+
+```yaml
+signal:
+  reactions: true
+```
+
+Or via environment variable:
+
+```bash
+SIGNAL_REACTIONS=true
+```
+
+:::note
+Unlike Discord (where reactions are additive), Signal's API first removes-then-adds reactions to change it. The transition from 👀 to ✅/❌ happens atomically — you won't see both at once.
+:::
+
 ## Troubleshooting
 
 | Problem | Solution |

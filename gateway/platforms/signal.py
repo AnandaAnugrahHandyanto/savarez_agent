@@ -1352,6 +1352,9 @@ class SignalAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Reactions
     # ------------------------------------------------------------------
+    def _reactions_enabled(self) -> bool:
+        """Check if message reactions are enabled via config/env."""
+        return os.getenv("SIGNAL_REACTIONS", "false").lower() not in ("false", "0", "no")
 
     async def send_reaction(
         self,
@@ -1430,6 +1433,9 @@ class SignalAdapter(BasePlatformAdapter):
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """React with 👀 when processing begins."""
+        if not self._reactions_enabled():
+            return
+
         target = self._extract_reaction_target(event)
         if target:
             await self.send_reaction(event.source.chat_id, "👀", *target)
@@ -1440,6 +1446,9 @@ class SignalAdapter(BasePlatformAdapter):
         On CANCELLED we leave the 👀 in place — no terminal outcome means
         the reaction should keep reflecting "in progress" (matches Telegram).
         """
+        if not self._reactions_enabled():
+            return
+
         if outcome == ProcessingOutcome.CANCELLED:
             return
         target = self._extract_reaction_target(event)

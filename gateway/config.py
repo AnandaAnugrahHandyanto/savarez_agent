@@ -814,6 +814,12 @@ def load_gateway_config() -> GatewayConfig:
                         if yaml_key in allow_mentions_cfg and not os.getenv(env_key):
                             os.environ[env_key] = str(allow_mentions_cfg[yaml_key]).lower()
 
+            # Signal settings → env vars (env vars take precedence)
+            signal_cfg = yaml_cfg.get("signal", {})
+            if isinstance(signal_cfg, dict):
+                if "reactions" in signal_cfg and not os.getenv("SIGNAL_REACTIONS"):
+                    os.environ["SIGNAL_REACTIONS"] = str(signal_cfg["reactions"]).lower()
+
             # Telegram settings → env vars (env vars take precedence)
             telegram_cfg = yaml_cfg.get("telegram", {})
             if isinstance(telegram_cfg, dict):
