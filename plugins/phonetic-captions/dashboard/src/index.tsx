@@ -496,7 +496,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
             <button
               onClick={handleReburn}
               disabled={burning}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white font-semibold text-sm disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-150"
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-primary text-primary-foreground font-semibold text-sm hover:opacity-90 active:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity duration-150"
             >
               {burning ? <Spinner className="w-4 h-4" /> : <RefreshCw className="w-4 h-4" />}
               {burning ? "Burning…" : "Re-burn"}
