@@ -111,11 +111,17 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[text | remove N | clear]"),
     CommandDef("status", "Show session info", "Session"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
+    CommandDef("capy", "Show Capy capability dashboard", "Info",
+               aliases=("capabilities", "dashboard", "health"), gateway_only=True),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
+    CommandDef("workspace", "Show or set this gateway session workspace", "Session",
+               aliases=("ws", "workdir", "cwd", "workspaces"),
+               args_hint="[path|list|clear]", gateway_only=True,
+               subcommands=("list", "clear")),
 
     # Configuration
     CommandDef("sessions", "Browse and resume previous sessions", "Session"),

@@ -60,6 +60,7 @@ _SESSION_ID: ContextVar = ContextVar("HERMES_SESSION_ID", default=_UNSET)
 # so background-process notifications stay inside the originating Telegram
 # private-chat topic (those lanes route only with thread id + reply anchor).
 _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", default=_UNSET)
+_TERMINAL_CWD: ContextVar = ContextVar("TERMINAL_CWD", default=_UNSET)
 
 # Cron auto-delivery vars — set per-job in run_job() so concurrent jobs
 # don't clobber each other's delivery targets.
@@ -77,6 +78,7 @@ _VAR_MAP = {
     "HERMES_SESSION_KEY": _SESSION_KEY,
     "HERMES_SESSION_ID": _SESSION_ID,
     "HERMES_SESSION_MESSAGE_ID": _SESSION_MESSAGE_ID,
+    "TERMINAL_CWD": _TERMINAL_CWD,
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
     "HERMES_CRON_AUTO_DELIVER_THREAD_ID": _CRON_AUTO_DELIVER_THREAD_ID,
@@ -109,6 +111,7 @@ def set_session_vars(
     session_id: str = "",
     message_id: str = "",
     cwd: str = "",
+    terminal_cwd: str | None = None,
 ) -> list:
     """Set all session context variables and return reset tokens.
 
@@ -118,7 +121,9 @@ def set_session_vars(
     helpers are not nestable/stack-safe, and the returned tokens are accepted
     only for API compatibility.
 
-    ``cwd`` pins the logical working directory for this context.
+    ``cwd``/``terminal_cwd`` pins the logical working directory for this context.
+    ``terminal_cwd`` is the explicit ContextVar value; ``cwd`` is retained for
+    TUI/runtime-cwd compatibility.
     """
     tokens = [
         _SESSION_PLATFORM.set(platform),
@@ -131,10 +136,19 @@ def set_session_vars(
         _SESSION_ID.set(session_id),
         _SESSION_MESSAGE_ID.set(message_id),
     ]
+    effective_cwd = terminal_cwd if terminal_cwd is not None else cwd
+    if terminal_cwd is not None:
+        tokens.append(_TERMINAL_CWD.set(terminal_cwd))
+    else:
+        import os
+        env_cwd = os.environ.get("TERMINAL_CWD")
+        if env_cwd is not None:
+            tokens.append(_TERMINAL_CWD.set(env_cwd))
+            effective_cwd = env_cwd if not effective_cwd else effective_cwd
     try:
         from agent.runtime_cwd import set_session_cwd
 
-        set_session_cwd(cwd)
+        set_session_cwd(effective_cwd)
     except Exception:
         pass
     return tokens
@@ -161,6 +175,7 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_KEY,
         _SESSION_ID,
         _SESSION_MESSAGE_ID,
+        _TERMINAL_CWD,
     ):
         var.set("")
     try:
