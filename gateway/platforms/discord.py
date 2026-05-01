@@ -1942,6 +1942,16 @@ class DiscordAdapter(BasePlatformAdapter):
         free callers like the ``/skill`` autocomplete callback, which must
         return an empty list for unauthorized users instead of leaking an
         ephemeral rejection per-keystroke.
+
+        Fail-closed semantics for malformed payloads: when an allowlist is
+        configured but the interaction is missing the data needed to
+        evaluate it (no channel id with channel policy active, no user
+        with user/role policy active), the gate REJECTS rather than
+        falling through. Without these guards a guild interaction that
+        happens to deserialize without a channel id would silently bypass
+        ``DISCORD_ALLOWED_CHANNELS`` and a payload missing ``user`` would
+        raise ``AttributeError`` in the user check below, surfacing as
+        an opaque interaction failure rather than a clean rejection.
         """
         chan_obj = getattr(interaction, "channel", None)
         in_dm = isinstance(chan_obj, discord.DMChannel) if chan_obj is not None else False
@@ -1953,8 +1963,9 @@ class DiscordAdapter(BasePlatformAdapter):
             chan_id_raw = getattr(interaction, "channel_id", None) or getattr(
                 chan_obj, "id", None,
             )
+            channel_ids: set = set()
             if chan_id_raw is not None:
-                channel_ids = {str(chan_id_raw)}
+                channel_ids.add(str(chan_id_raw))
                 # Mirror on_message: also test the parent channel for threads
                 # so per-channel allow/deny lists work consistently.
                 if isinstance(chan_obj, discord.Thread):
@@ -1962,21 +1973,44 @@ class DiscordAdapter(BasePlatformAdapter):
                     if parent_id:
                         channel_ids.add(str(parent_id))
 
-                allowed_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
-                if allowed_raw:
-                    allowed = {c.strip() for c in allowed_raw.split(",") if c.strip()}
-                    if "*" not in allowed and not (channel_ids & allowed):
+            allowed_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
+            if allowed_raw:
+                allowed = {c.strip() for c in allowed_raw.split(",") if c.strip()}
+                if "*" not in allowed:
+                    if not channel_ids:
+                        # Channel policy is configured but the interaction
+                        # has no resolvable channel id. Fail closed.
+                        return (
+                            False,
+                            "channel id missing with DISCORD_ALLOWED_CHANNELS configured",
+                        )
+                    if not (channel_ids & allowed):
                         return (False, "channel not in DISCORD_ALLOWED_CHANNELS")
 
-                ignored_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
-                if ignored_raw:
-                    ignored = {c.strip() for c in ignored_raw.split(",") if c.strip()}
-                    if "*" in ignored or (channel_ids & ignored):
-                        return (False, "channel in DISCORD_IGNORED_CHANNELS")
+            # Ignored beats allowed: even when a thread's parent channel
+            # is on the allowlist, an explicit DISCORD_IGNORED_CHANNELS
+            # entry on the thread or its parent rejects the interaction.
+            ignored_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
+            if ignored_raw and channel_ids:
+                ignored = {c.strip() for c in ignored_raw.split(",") if c.strip()}
+                if "*" in ignored or (channel_ids & ignored):
+                    return (False, "channel in DISCORD_IGNORED_CHANNELS")
 
         # ── User / role allowlist (mirrors on_message line 681) ──
-        user_id = str(interaction.user.id)
-        if not self._is_allowed_user(user_id, author=interaction.user):
+        user = getattr(interaction, "user", None)
+        allowed_users = getattr(self, "_allowed_user_ids", set()) or set()
+        allowed_roles = getattr(self, "_allowed_role_ids", set()) or set()
+        if user is None or getattr(user, "id", None) is None:
+            # No identifiable user. With any user/role allowlist
+            # configured, fail closed rather than raise AttributeError
+            # on ``interaction.user.id`` below. With no allowlist this
+            # is the existing "no allowlist = everyone" backwards-compat.
+            if allowed_users or allowed_roles:
+                return (False, "missing interaction.user with allowlist configured")
+            return (True, None)
+
+        user_id = str(user.id)
+        if not self._is_allowed_user(user_id, author=user):
             return (
                 False,
                 "user not in DISCORD_ALLOWED_USERS / DISCORD_ALLOWED_ROLES",
@@ -2004,9 +2038,21 @@ class DiscordAdapter(BasePlatformAdapter):
     async def _reject_slash(
         self, interaction: "discord.Interaction", command_text: str, *, reason: str,
     ) -> bool:
-        """Send ephemeral reject + log warning + schedule admin alert. Returns False."""
-        user_id = str(interaction.user.id)
-        user_name = getattr(interaction.user, "name", "?")
+        """Send ephemeral reject + log warning + schedule admin alert. Returns False.
+
+        Tolerates a missing ``interaction.user`` -- the fail-closed branch
+        in ``_evaluate_slash_authorization`` deliberately routes here for
+        malformed payloads (no user) when an allowlist is configured, and
+        ``str(interaction.user.id)`` would raise AttributeError before the
+        ephemeral rejection could be sent.
+        """
+        user = getattr(interaction, "user", None)
+        if user is not None:
+            user_id = str(getattr(user, "id", "?"))
+            user_name = getattr(user, "name", "?")
+        else:
+            user_id = "?"
+            user_name = "?"
         chan_id = getattr(interaction, "channel_id", None) or getattr(
             getattr(interaction, "channel", None), "id", None,
         )
