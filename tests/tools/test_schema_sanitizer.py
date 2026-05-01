@@ -203,3 +203,50 @@ def test_empty_tools_list_returns_empty():
 
 def test_none_tools_returns_none():
     assert sanitize_tool_schemas(None) is None
+
+
+def test_string_pattern_stripped():
+    """llama.cpp's grammar converter chokes on regex escapes like \\d."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "date": {"type": "string", "pattern": "\\d{4,4}-\\d{2,2}-\\d{2,2}"},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["date"]
+    assert "pattern" not in prop
+    assert prop["type"] == "string"
+
+
+def test_string_format_stripped():
+    """Format fields are also stripped — safe because runtime validation catches them."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "ts": {"type": "string", "format": "date-time"},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["ts"]
+    assert "format" not in prop
+
+
+def test_nested_pattern_in_anyof_stripped():
+    """Pattern inside anyOf variants is also stripped."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "value": {
+                "anyOf": [
+                    {"type": "string", "pattern": "[A-Z]+"},
+                    {"type": "integer"},
+                ],
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    variants = out[0]["function"]["parameters"]["properties"]["value"]["anyOf"]
+    assert "pattern" not in variants[0]
+    assert variants[0]["type"] == "string"
+

@@ -235,6 +235,18 @@ def _sanitize_node(node: Any, path: str) -> Any:
             # literal strings like "path" as bare-string schemas and replace
             # them with {"type": "object"} dicts. Pass through unchanged.
             out[key] = copy.deepcopy(value) if isinstance(value, (list, dict)) else value
+        elif key in {"pattern", "format"}:
+            # Strip JSON Schema ``pattern`` and ``format`` fields entirely.
+            # llama.cpp's json-schema-to-grammar converter chokes on regex
+            # escapes in pattern strings (e.g. "\\d{4,4}") — it doesn't
+            # support standard PCRE/ECMAScript escape sequences.  These
+            # fields are purely descriptive hints for LLM prompting; the
+            # actual runtime validation happens on the Python side via the
+            # MCP tool's own type checking, so dropping them is safe.
+            logger.debug(
+                "schema_sanitizer[%s]: stripping %r (llama.cpp grammar incompatibility)",
+                path, key,
+            )
         else:
             out[key] = _sanitize_node(value, f"{path}.{key}") if isinstance(value, (dict, list)) else value
 
