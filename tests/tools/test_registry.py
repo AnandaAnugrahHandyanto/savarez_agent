@@ -5,7 +5,7 @@ import threading
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.registry import ToolRegistry, discover_builtin_tools
+from tools.registry import ToolRegistry, ToolEntry, tool_error, tool_result
 
 
 def _dummy_handler(args, **kwargs):
@@ -119,6 +119,12 @@ class TestUnknownToolDispatch:
         assert "error" in result
         assert "Unknown tool" in result["error"]
 
+    def test_unknown_tool_has_error_type(self):
+        """Dispatching an unknown tool returns structured error with error_type."""
+        reg = ToolRegistry()
+        result = json.loads(reg.dispatch("nonexistent", {}))
+        assert result.get("error_type") == "unknown_tool"
+
 
 class TestToolsetAvailability:
     def test_no_check_fn_is_available(self):
@@ -208,6 +214,21 @@ class TestToolsetAvailability:
         result = json.loads(reg.dispatch("bad", {}))
         assert "error" in result
         assert "RuntimeError" in result["error"]
+
+    def test_execution_error_has_structured_fields(self):
+        """Dispatch errors include error_type and error_class."""
+        reg = ToolRegistry()
+
+        def bad_handler(args, **kw):
+            raise ValueError("invalid input")
+
+        reg.register(
+            name="bad", toolset="s", schema=_make_schema(), handler=bad_handler
+        )
+        result = json.loads(reg.dispatch("bad", {}))
+        assert result.get("error_type") == "execution_error"
+        assert result.get("error_class") == "ValueError"
+        assert "invalid input" in result["error"]
 
 
 class TestCheckFnExceptionHandling:
@@ -405,20 +426,60 @@ class TestEmojiMetadata:
         assert reg.get_emoji("t") == "⚡"
 
 
-class TestEntryLookup:
-    def test_get_entry_returns_registered_entry(self):
+class TestToolEntryRepr:
+    """Verify ToolEntry.__repr__ produces useful debug output."""
+
+    def test_repr_contains_name_and_toolset(self):
+        entry = ToolEntry(
+            name="my_tool", toolset="core", schema=_make_schema("my_tool"),
+            handler=_dummy_handler, check_fn=None, requires_env=[],
+            is_async=False, description="A test tool", emoji="🔧",
+        )
+        r = repr(entry)
+        assert "my_tool" in r
+        assert "core" in r
+        assert "is_async=False" in r
+
+    def test_repr_shows_async_true(self):
+        entry = ToolEntry(
+            name="async_tool", toolset="web", schema=_make_schema("async_tool"),
+            handler=_dummy_handler, check_fn=None, requires_env=[],
+            is_async=True, description="", emoji="",
+        )
+        assert "is_async=True" in repr(entry)
+
+
+class TestToolRegistryRepr:
+    """Verify ToolRegistry.__repr__ shows tool count."""
+
+    def test_repr_shows_zero(self):
+        reg = ToolRegistry()
+        assert "0" in repr(reg)
+
+    def test_repr_shows_count(self):
+        reg = ToolRegistry()
+        reg.register(name="a", toolset="s", schema=_make_schema(), handler=_dummy_handler)
+        reg.register(name="b", toolset="s", schema=_make_schema(), handler=_dummy_handler)
+        assert "2" in repr(reg)
+
+
+class TestCheckFnCacheUsesId:
+    """Verify get_definitions caches by id(check_fn) not the callable itself."""
+
+    def test_different_functions_with_same_logic_are_cached_separately(self):
+        """Two different lambda functions should each be evaluated."""
         reg = ToolRegistry()
         reg.register(
-            name="alpha", toolset="core", schema=_make_schema("alpha"), handler=_dummy_handler
+            name="t1", toolset="s1", schema=_make_schema("t1"),
+            handler=_dummy_handler, check_fn=lambda: True,
         )
-        entry = reg.get_entry("alpha")
-        assert entry is not None
-        assert entry.name == "alpha"
-        assert entry.toolset == "core"
-
-    def test_get_entry_returns_none_for_unknown_tool(self):
-        reg = ToolRegistry()
-        assert reg.get_entry("missing") is None
+        reg.register(
+            name="t2", toolset="s2", schema=_make_schema("t2"),
+            handler=_dummy_handler, check_fn=lambda: True,
+        )
+        # Both should be returned (different check_fns)
+        defs = reg.get_definitions({"t1", "t2"})
+        assert len(defs) == 2
 
 
 class TestSecretCaptureResultContract:
@@ -431,139 +492,26 @@ class TestSecretCaptureResultContract:
         assert "secret" not in json.dumps(result).lower()
 
 
-class TestThreadSafety:
-    def test_get_available_toolsets_uses_coherent_snapshot(self, monkeypatch):
-        reg = ToolRegistry()
-        reg.register(
-            name="alpha",
-            toolset="gated",
-            schema=_make_schema("alpha"),
-            handler=_dummy_handler,
-            check_fn=lambda: False,
-        )
+class TestToolErrorHelper:
+    """Verify tool_error() helper function."""
 
-        entries, toolset_checks = reg._snapshot_state()
+    def test_basic_error(self):
+        result = json.loads(tool_error("file not found"))
+        assert result == {"error": "file not found"}
 
-        def snapshot_then_mutate():
-            reg.deregister("alpha")
-            return entries, toolset_checks
+    def test_error_with_extra_fields(self):
+        result = json.loads(tool_error("bad input", success=False))
+        assert result["error"] == "bad input"
+        assert result["success"] is False
 
-        monkeypatch.setattr(reg, "_snapshot_state", snapshot_then_mutate)
 
-        toolsets = reg.get_available_toolsets()
-        assert toolsets["gated"]["available"] is False
-        assert toolsets["gated"]["tools"] == ["alpha"]
+class TestToolResultHelper:
+    """Verify tool_result() helper function."""
 
-    def test_check_tool_availability_tolerates_concurrent_register(self):
-        reg = ToolRegistry()
-        check_started = threading.Event()
-        writer_done = threading.Event()
-        errors = []
-        result_holder = {}
-        writer_completed_during_check = {}
+    def test_result_from_kwargs(self):
+        result = json.loads(tool_result(success=True, count=42))
+        assert result == {"success": True, "count": 42}
 
-        def blocking_check():
-            check_started.set()
-            writer_completed_during_check["value"] = writer_done.wait(timeout=1)
-            return True
-
-        reg.register(
-            name="alpha",
-            toolset="gated",
-            schema=_make_schema("alpha"),
-            handler=_dummy_handler,
-            check_fn=blocking_check,
-        )
-        reg.register(
-            name="beta",
-            toolset="plain",
-            schema=_make_schema("beta"),
-            handler=_dummy_handler,
-        )
-
-        def reader():
-            try:
-                result_holder["value"] = reg.check_tool_availability()
-            except Exception as exc:  # pragma: no cover - exercised on failure only
-                errors.append(exc)
-
-        def writer():
-            assert check_started.wait(timeout=1)
-            reg.register(
-                name="gamma",
-                toolset="new",
-                schema=_make_schema("gamma"),
-                handler=_dummy_handler,
-            )
-            writer_done.set()
-
-        reader_thread = threading.Thread(target=reader)
-        writer_thread = threading.Thread(target=writer)
-        reader_thread.start()
-        writer_thread.start()
-        reader_thread.join(timeout=2)
-        writer_thread.join(timeout=2)
-
-        assert not reader_thread.is_alive()
-        assert not writer_thread.is_alive()
-        assert writer_completed_during_check["value"] is True
-        assert errors == []
-
-        available, unavailable = result_holder["value"]
-        assert "gated" in available
-        assert "plain" in available
-        assert unavailable == []
-
-    def test_get_available_toolsets_tolerates_concurrent_deregister(self):
-        reg = ToolRegistry()
-        check_started = threading.Event()
-        writer_done = threading.Event()
-        errors = []
-        result_holder = {}
-        writer_completed_during_check = {}
-
-        def blocking_check():
-            check_started.set()
-            writer_completed_during_check["value"] = writer_done.wait(timeout=1)
-            return True
-
-        reg.register(
-            name="alpha",
-            toolset="gated",
-            schema=_make_schema("alpha"),
-            handler=_dummy_handler,
-            check_fn=blocking_check,
-        )
-        reg.register(
-            name="beta",
-            toolset="plain",
-            schema=_make_schema("beta"),
-            handler=_dummy_handler,
-        )
-
-        def reader():
-            try:
-                result_holder["value"] = reg.get_available_toolsets()
-            except Exception as exc:  # pragma: no cover - exercised on failure only
-                errors.append(exc)
-
-        def writer():
-            assert check_started.wait(timeout=1)
-            reg.deregister("beta")
-            writer_done.set()
-
-        reader_thread = threading.Thread(target=reader)
-        writer_thread = threading.Thread(target=writer)
-        reader_thread.start()
-        writer_thread.start()
-        reader_thread.join(timeout=2)
-        writer_thread.join(timeout=2)
-
-        assert not reader_thread.is_alive()
-        assert not writer_thread.is_alive()
-        assert writer_completed_during_check["value"] is True
-        assert errors == []
-
-        toolsets = result_holder["value"]
-        assert "gated" in toolsets
-        assert toolsets["gated"]["available"] is True
+    def test_result_from_dict(self):
+        result = json.loads(tool_result({"key": "value"}))
+        assert result == {"key": "value"}

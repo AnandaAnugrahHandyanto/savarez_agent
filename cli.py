@@ -303,6 +303,12 @@ def load_cli_config() -> Dict[str, Any]:
             "enabled": True,      # Auto-compress when approaching context limit
             "threshold": 0.50,    # Compress at 50% of model's context limit
         },
+        "smart_model_routing": {
+            "enabled": False,
+            "max_simple_chars": 160,
+            "max_simple_words": 28,
+            "cheap_model": {},
+        },
         "agent": {
             "max_turns": 90,  # Default max tool-calling iterations (shared with subagents)
             "verbose": False,
@@ -3699,8 +3705,8 @@ class HermesCLI:
 
         model_name = getattr(self, "model", "") or ""
         if is_nous_hermes_non_agentic(model_name):
-            self._console_print()
-            self._console_print(
+            self.console.print()
+            self.console.print(
                 "[bold yellow]⚠  Nous Research Hermes 3 & 4 models are NOT agentic and are not "
                 "designed for use with Hermes Agent.[/]"
             )
@@ -6450,8 +6456,6 @@ class HermesCLI:
             self._show_usage()
         elif canonical == "insights":
             self._show_insights(cmd_original)
-        elif canonical == "copy":
-            self._handle_copy_command(cmd_original)
         elif canonical == "debug":
             self._handle_debug_command()
         elif canonical == "paste":
@@ -7569,6 +7573,14 @@ class HermesCLI:
 
             except Exception as e:
                 print(f"  ❌ Compression failed: {e}")
+
+    def _handle_debug_command(self):
+        """Handle /debug — upload debug report + logs and print paste URLs."""
+        from hermes_cli.debug import run_debug_share
+        from types import SimpleNamespace
+
+        args = SimpleNamespace(lines=200, expire=7, local=False)
+        run_debug_share(args)
 
     def _handle_debug_command(self):
         """Handle /debug — upload debug report + logs and print paste URLs."""
@@ -9253,10 +9265,6 @@ class HermesCLI:
             # Start agent in background thread (daemon so it cannot keep the
             # process alive when the user closes the terminal tab — SIGHUP
             # exits the main thread and daemon threads are reaped automatically).
-            # Start per-prompt elapsed timer — frozen after the agent thread
-            # finishes; reset on the next turn.
-            self._prompt_start_time = time.time()
-            self._prompt_duration = 0.0
             agent_thread = threading.Thread(target=run_agent, daemon=True)
             agent_thread.start()
 
@@ -11627,8 +11635,6 @@ class HermesCLI:
                 return  # silently suppress
             if isinstance(exc, KeyError) and "is not registered" in str(exc):
                 return  # suppress selector registration failures (#6393)
-            if isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.EIO:
-                return  # suppress I/O errors from broken stdout on interrupt (#13710)
             # Fall back to default handler for everything else
             loop.default_exception_handler(context)
 
@@ -11636,7 +11642,8 @@ class HermesCLI:
         # uv-managed Python, fd 0 can be invalid or unregisterable with the
         # asyncio selector, causing "KeyError: '0 is not registered'" (#6393).
         try:
-            os.fstat(0)
+            import os as _os
+            _os.fstat(0)
         except OSError:
             print(
                 "Error: stdin (fd 0) is not available.\n"
@@ -11661,11 +11668,9 @@ class HermesCLI:
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
             pass
         except (KeyError, OSError) as _stdin_err:
-            # Catch selector registration failures from broken stdin (#6393)
-            # and I/O errors from broken stdout during interrupt (#13710).
-            if isinstance(_stdin_err, OSError) and getattr(_stdin_err, "errno", None) == errno.EIO:
-                pass  # suppress broken-stdout I/O errors on interrupt (#13710)
-            elif "is not registered" in str(_stdin_err) or "Bad file descriptor" in str(_stdin_err):
+            # Catch selector registration failures from broken stdin (#6393).
+            # This is the fallback for cases that slip past the fstat() guard.
+            if "is not registered" in str(_stdin_err) or "Bad file descriptor" in str(_stdin_err):
                 print(
                     f"\nError: stdin is not usable ({_stdin_err}).\n"
                     "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"
@@ -11680,6 +11685,12 @@ class HermesCLI:
             # process will exit once the main thread finishes, but interrupting
             # avoids wasted API calls and lets run_conversation clean up).
             if self.agent and getattr(self, '_agent_running', False):
+                try:
+                    self.agent.interrupt()
+                except Exception:
+                    pass
+            # Flush memories before exit (only for substantial conversations)
+            if self.agent and self.conversation_history:
                 try:
                     self.agent.interrupt()
                 except Exception:

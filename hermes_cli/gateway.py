@@ -800,7 +800,9 @@ def _container_systemd_operational() -> bool:
 
 
 def supports_systemd_services() -> bool:
-    if not is_linux() or is_termux():
+    if not is_linux() or is_termux() or is_container():
+        return False
+    if shutil.which("systemctl") is None:
         return False
     if shutil.which("systemctl") is None:
         return False
@@ -1988,16 +1990,6 @@ def systemd_restart(system: bool = False):
         )
         _wait_for_systemd_service_restart(system=system, previous_pid=pid)
         return
-
-    if _recover_pending_systemd_restart(system=system, previous_pid=pid):
-        return
-
-    _run_systemctl(
-        ["reset-failed", get_service_name()],
-        system=system,
-        check=False,
-        timeout=30,
-    )
     _run_systemctl(["reload-or-restart", get_service_name()], system=system, check=True, timeout=90)
     print(f"✓ {_service_scope_label(system).capitalize()} service restarted")
 
@@ -2026,12 +2018,8 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         print(f"  Run: {'sudo ' if system else ''}hermes gateway restart{scope_flag}  # auto-refreshes the unit")
         print()
 
-    status_cmd = ["status", get_service_name(), "--no-pager"]
-    if full:
-        status_cmd.append("-l")
-
     _run_systemctl(
-        status_cmd,
+        ["status", get_service_name(), "--no-pager"],
         system=system,
         capture_output=False,
         timeout=10,
@@ -3132,52 +3120,6 @@ def _setup_dingtalk():
     print()
     print(color(f"  ─── {emoji} {label} Setup ───", Colors.CYAN))
 
-    existing = get_env_value("DINGTALK_CLIENT_ID")
-    if existing:
-        print()
-        print_success(f"{label} is already configured (Client ID: {existing}).")
-        if not prompt_yes_no(f"  Reconfigure {label}?", False):
-            return
-
-    print()
-    method = prompt_choice(
-        "  Choose setup method",
-        [
-            "QR Code Scan (Recommended, auto-obtain Client ID and Client Secret)",
-            "Manual Input (Client ID and Client Secret)",
-        ],
-        default=0,
-    )
-
-    if method == 0:
-        # ── QR-code device-flow authorization ──
-        try:
-            from hermes_cli.dingtalk_auth import dingtalk_qr_auth
-        except ImportError as exc:
-            print_warning(f"  QR auth module failed to load ({exc}), falling back to manual input.")
-            _setup_standard_platform(dingtalk_platform)
-            return
-
-        result = dingtalk_qr_auth()
-        if result is None:
-            print_warning("  QR auth incomplete, falling back to manual input.")
-            _setup_standard_platform(dingtalk_platform)
-            return
-
-        client_id, client_secret = result
-        save_env_value("DINGTALK_CLIENT_ID", client_id)
-        save_env_value("DINGTALK_CLIENT_SECRET", client_secret)
-        save_env_value("DINGTALK_ALLOW_ALL_USERS", "true")
-        print()
-        print_success(f"{emoji} {label} configured via QR scan!")
-    else:
-        # ── Manual entry ──
-        _setup_standard_platform(dingtalk_platform)
-        # Also enable allow-all by default for convenience
-        if get_env_value("DINGTALK_CLIENT_ID"):
-            save_env_value("DINGTALK_ALLOW_ALL_USERS", "true")
-
-
 def _setup_wecom():
     """Interactive setup for WeCom — scan QR code or manual credential input."""
     print()
@@ -3657,113 +3599,6 @@ def _setup_feishu():
         print_info(f"  Bot: {bot_name}")
 
 
-def _setup_qqbot():
-    """Interactive setup for QQ Bot — scan-to-configure or manual credentials."""
-    print()
-    print(color("  ─── 🐧 QQ Bot Setup ───", Colors.CYAN))
-
-    existing_app_id = get_env_value("QQ_APP_ID")
-    existing_secret = get_env_value("QQ_CLIENT_SECRET")
-    if existing_app_id and existing_secret:
-        print()
-        print_success("QQ Bot is already configured.")
-        if not prompt_yes_no("  Reconfigure QQ Bot?", False):
-            return
-
-    # ── Choose setup method ──
-    print()
-    method_choices = [
-        "Scan QR code to add bot automatically (recommended)",
-        "Enter existing App ID and App Secret manually",
-    ]
-    method_idx = prompt_choice("  How would you like to set up QQ Bot?", method_choices, 0)
-
-    credentials = None
-
-    if method_idx == 0:
-        # ── QR scan-to-configure ──
-        try:
-            from gateway.platforms.qqbot import qr_register
-            credentials = qr_register()
-        except KeyboardInterrupt:
-            print()
-            print_warning("  QQ Bot setup cancelled.")
-            return
-        if not credentials:
-            print_info("  QR setup did not complete. Continuing with manual input.")
-
-    # ── Manual credential input ──
-    if not credentials:
-        print()
-        print_info("  Go to https://q.qq.com to register a QQ Bot application.")
-        print_info("  Note your App ID and App Secret from the application page.")
-        print()
-        app_id = prompt("  App ID", password=False)
-        if not app_id:
-            print_warning("  Skipped — QQ Bot won't work without an App ID.")
-            return
-        app_secret = prompt("  App Secret", password=True)
-        if not app_secret:
-            print_warning("  Skipped — QQ Bot won't work without an App Secret.")
-            return
-        credentials = {"app_id": app_id.strip(), "client_secret": app_secret.strip(), "user_openid": ""}
-
-    # ── Save core credentials ──
-    save_env_value("QQ_APP_ID", credentials["app_id"])
-    save_env_value("QQ_CLIENT_SECRET", credentials["client_secret"])
-
-    user_openid = credentials.get("user_openid", "")
-
-    # ── DM security policy ──
-    print()
-    access_choices = [
-        "Use DM pairing approval (recommended)",
-        "Allow all direct messages",
-        "Only allow listed user OpenIDs",
-    ]
-    access_idx = prompt_choice("  How should direct messages be authorized?", access_choices, 0)
-    if access_idx == 0:
-        save_env_value("QQ_ALLOW_ALL_USERS", "false")
-        if user_openid:
-            print()
-            if prompt_yes_no(f"  Add yourself ({user_openid}) to the allow list?", True):
-                save_env_value("QQ_ALLOWED_USERS", user_openid)
-                print_success(f"  Allow list set to {user_openid}")
-            else:
-                save_env_value("QQ_ALLOWED_USERS", "")
-        else:
-            save_env_value("QQ_ALLOWED_USERS", "")
-        print_success("  DM pairing enabled.")
-        print_info("  Unknown users can request access; approve with `hermes pairing approve`.")
-    elif access_idx == 1:
-        save_env_value("QQ_ALLOW_ALL_USERS", "true")
-        save_env_value("QQ_ALLOWED_USERS", "")
-        print_warning("  Open DM access enabled for QQ Bot.")
-    else:
-        default_allow = user_openid or ""
-        allowlist = prompt("  Allowed user OpenIDs (comma-separated)", default_allow, password=False).replace(" ", "")
-        save_env_value("QQ_ALLOW_ALL_USERS", "false")
-        save_env_value("QQ_ALLOWED_USERS", allowlist)
-        print_success("  Allowlist saved.")
-
-    # ── Home channel ──
-    if user_openid:
-        print()
-        if prompt_yes_no(f"  Use your QQ user ID ({user_openid}) as the home channel?", True):
-            save_env_value("QQBOT_HOME_CHANNEL", user_openid)
-            print_success(f"  Home channel set to {user_openid}")
-    else:
-        print()
-        home_channel = prompt("  Home channel OpenID (for cron/notifications, or empty)", password=False)
-        if home_channel:
-            save_env_value("QQBOT_HOME_CHANNEL", home_channel.strip())
-            print_success(f"  Home channel set to {home_channel.strip()}")
-
-    print()
-    print_success("🐧 QQ Bot configured!")
-    print_info(f"  App ID: {credentials['app_id']}")
-
-
 def _setup_signal():
     """Interactive setup for Signal messenger."""
     import shutil
@@ -4007,7 +3842,18 @@ def gateway_setup():
         if choice == len(platforms):
             break
 
-        _configure_platform(platforms[choice])
+        platform = _PLATFORMS[choice]
+
+        if platform["key"] == "whatsapp":
+            _setup_whatsapp()
+        elif platform["key"] == "signal":
+            _setup_signal()
+        elif platform["key"] == "weixin":
+            _setup_weixin()
+        elif platform["key"] == "feishu":
+            _setup_feishu()
+        else:
+            _setup_standard_platform(platform)
 
     # ── Post-setup: offer to install/restart gateway ──
     # Consider any platform (built-in or plugin) where the user has made

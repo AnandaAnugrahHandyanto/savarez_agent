@@ -498,6 +498,77 @@ class TestExplicitProviderRouting:
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
 
+    def test_openrouter_takes_priority(self, monkeypatch, codex_auth_dir):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client()
+        assert model == "google/gemini-3-flash-preview"
+        mock_openai.assert_called_once()
+        call_kwargs = mock_openai.call_args
+        assert call_kwargs.kwargs["api_key"] == "or-key"
+
+    def test_nous_takes_priority_over_codex(self, monkeypatch, codex_auth_dir):
+        with patch("agent.auxiliary_client._read_nous_auth") as mock_nous, \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_nous.return_value = {"access_token": "nous-tok"}
+            client, model = get_text_auxiliary_client()
+        assert model == "google/gemini-3-flash-preview"
+
+    def test_custom_endpoint_over_codex(self, monkeypatch, codex_auth_dir):
+        config = {
+            "model": {
+                "provider": "custom",
+                "base_url": "http://localhost:1234/v1",
+                "default": "my-local-model",
+            }
+        }
+        monkeypatch.setenv("OPENAI_API_KEY", "lm-studio-key")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
+        # Override the autouse monkeypatch for codex
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_codex_access_token",
+            lambda: "codex-test-token-abc123",
+        )
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client()
+        assert model == "my-local-model"
+        call_kwargs = mock_openai.call_args
+        assert call_kwargs.kwargs["base_url"] == "http://localhost:1234/v1"
+
+    def test_custom_endpoint_uses_config_saved_base_url(self, monkeypatch):
+        config = {
+            "model": {
+                "provider": "custom",
+                "base_url": "http://localhost:1234/v1",
+                "default": "my-local-model",
+            }
+        }
+        monkeypatch.setenv("OPENAI_API_KEY", "lm-studio-key")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
+
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client()
+
+        assert client is not None
+        assert model == "my-local-model"
+        call_kwargs = mock_openai.call_args
+        assert call_kwargs.kwargs["base_url"] == "http://localhost:1234/v1"
+
+    def test_codex_fallback_when_nothing_else(self, codex_auth_dir):
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client()
+        assert model == "gpt-5.2-codex"
+        # Returns a CodexAuxiliaryClient wrapper, not a raw OpenAI client
+        from agent.auxiliary_client import CodexAuxiliaryClient
+        assert isinstance(client, CodexAuxiliaryClient)
+
     def test_codex_pool_entry_takes_priority_over_auth_store(self):
         class _Entry:
             access_token = "pooled-codex-token"
@@ -634,27 +705,200 @@ class TestAuxiliaryPoolAwareness:
             patch("hermes_cli.models.get_nous_recommended_aux_model", return_value="google/gemini-3-flash-preview") as mock_rec,
             patch("agent.auxiliary_client.OpenAI"),
         ):
-            from agent.auxiliary_client import _try_nous
-            client, model = _try_nous(vision=True)
+            client, model = resolve_provider_client("copilot", model="gpt-5.4-mini")
+
+        from agent.auxiliary_client import CodexAuxiliaryClient
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-5.4-mini"
+
+    def test_copilot_chat_completions_model_not_wrapped(self, monkeypatch):
+        """Copilot models using Chat Completions are returned as plain OpenAI clients."""
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        with (
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={
+                    "provider": "copilot",
+                    "api_key": "test-token",
+                    "base_url": "https://api.githubcopilot.com",
+                    "source": "gh auth token",
+                },
+            ),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            client, model = resolve_provider_client("copilot", model="gpt-4.1-mini")
+
+        from agent.auxiliary_client import CodexAuxiliaryClient
+        assert not isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-4.1-mini"
+        # Should be the raw mock OpenAI client
+        assert client is mock_openai.return_value
+
+    def test_vision_auto_uses_active_provider_as_fallback(self, monkeypatch):
+        """When no OpenRouter/Nous available, vision auto falls back to active provider."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "***")
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("agent.auxiliary_client._read_main_provider", return_value="anthropic"),
+            patch("agent.auxiliary_client._read_main_model", return_value="claude-sonnet-4"),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="***"),
+        ):
+            client, model = get_vision_auxiliary_client()
+
+        assert client is not None
+        assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
+
+    def test_vision_auto_prefers_active_provider_over_openrouter(self, monkeypatch):
+        """Active provider is tried before OpenRouter in vision auto."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "***")
+
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("agent.auxiliary_client._read_main_provider", return_value="anthropic"),
+            patch("agent.auxiliary_client._read_main_model", return_value="claude-sonnet-4"),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="***"),
+        ):
+            provider, client, model = resolve_vision_provider_client()
+
+        # Active provider should win over OpenRouter
+        assert provider == "anthropic"
+
+    def test_vision_auto_uses_named_custom_as_active_provider(self, monkeypatch):
+        """Named custom provider works as active provider fallback in vision auto."""
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("agent.auxiliary_client._read_main_provider", return_value="custom:local"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="my-local-model"), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(MagicMock(), "my-local-model")) as mock_resolve:
+            provider, client, model = resolve_vision_provider_client()
+        assert client is not None
+        assert provider == "custom:local"
+
+    def test_vision_config_google_provider_uses_gemini_credentials(self, monkeypatch):
+        config = {
+            "auxiliary": {
+                "vision": {
+                    "provider": "google",
+                    "model": "gemini-3.1-pro-preview",
+                }
+            }
+        }
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        with (
+            patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
+                "api_key": "gemini-key",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+            }),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            resolved_provider, client, model = resolve_vision_provider_client()
+
+        assert resolved_provider == "gemini"
+        assert client is not None
+        assert model == "gemini-3.1-pro-preview"
+        assert mock_openai.call_args.kwargs["api_key"] == "gemini-key"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
+
+
+
+class TestTaskSpecificOverrides:
+    """Integration tests for per-task provider routing via get_text_auxiliary_client(task=...)."""
+
+    def test_task_direct_endpoint_from_config(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            """auxiliary:
+  web_extract:
+    base_url: http://localhost:3456/v1
+    api_key: config-key
+    model: config-model
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client("web_extract")
+        assert model == "config-model"
+        assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:3456/v1"
+        assert mock_openai.call_args.kwargs["api_key"] == "config-key"
+
+    def test_task_without_override_uses_auto(self, monkeypatch):
+        """A task with no provider env var falls through to auto chain."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client.OpenAI"):
+            client, model = get_text_auxiliary_client("compression")
+        assert model == "google/gemini-3-flash-preview"  # auto → OpenRouter
+
+    def test_resolve_auto_prefers_live_main_runtime_over_persisted_config(self, monkeypatch, tmp_path):
+        """Session-only live model switches should override persisted config for auto routing."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            """model:
+  default: glm-5.1
+  provider: opencode-go
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        calls = []
+
+        def _fake_resolve(provider, model=None, *args, **kwargs):
+            calls.append((provider, model, kwargs))
+            return MagicMock(), model or "resolved-model"
+
+        with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_fake_resolve):
+            client, model = _resolve_auto(
+                main_runtime={
+                    "provider": "openai-codex",
+                    "model": "gpt-5.4",
+                    "api_mode": "codex_responses",
+                }
+            )
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        assert calls[0][0] == "openai-codex"
+        assert calls[0][1] == "gpt-5.4"
+        assert calls[0][2]["api_mode"] == "codex_responses"
+
+    def test_explicit_compression_pin_still_wins_over_live_main_runtime(self, monkeypatch, tmp_path):
+        """Task-level compression config should beat a live session override."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            """auxiliary:
+  compression:
+    provider: openrouter
+    model: google/gemini-3-flash-preview
+model:
+  default: glm-5.1
+  provider: opencode-go
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(MagicMock(), "google/gemini-3-flash-preview")) as mock_resolve:
+            client, model = get_text_auxiliary_client(
+                "compression",
+                main_runtime={
+                    "provider": "openai-codex",
+                    "model": "gpt-5.4",
+                },
+            )
 
         assert client is not None
         assert model == "google/gemini-3-flash-preview"
         assert mock_rec.call_args.kwargs["vision"] is True
 
-    def test_try_nous_falls_back_when_recommendation_lookup_raises(self):
-        """If the Portal lookup throws, we must still return a usable model."""
-        fresh_base = "https://inference-api.nousresearch.com/v1"
-        with (
-            patch("agent.auxiliary_client._read_nous_auth", return_value={"access_token": "***"}),
-            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", fresh_base)),
-            patch("hermes_cli.models.get_nous_recommended_aux_model", side_effect=RuntimeError("portal down")),
-            patch("agent.auxiliary_client.OpenAI"),
-        ):
-            from agent.auxiliary_client import _try_nous
-            client, model = _try_nous()
-
-        assert client is not None
-        assert model == "google/gemini-3-flash-preview"
 
     def test_call_llm_retries_nous_after_401(self):
         class _Auth401(Exception):

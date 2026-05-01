@@ -2647,8 +2647,7 @@ def resolve_vision_provider_client(
             else:
                 rpc_client, rpc_model = resolve_provider_client(
                     main_provider, vision_model,
-                    api_mode=resolved_api_mode,
-                    is_vision=True)
+                    api_mode=resolved_api_mode)
                 if rpc_client is not None:
                     logger.info(
                         "Vision auto-detect: using main provider %s (%s)",
@@ -2676,8 +2675,7 @@ def resolve_vision_provider_client(
         return _finalize(requested, sync_client, default_model)
 
     client, final_model = _get_cached_client(requested, resolved_model, async_mode,
-                                             api_mode=resolved_api_mode,
-                                             is_vision=True)
+                                             api_mode=resolved_api_mode)
     if client is None:
         return requested, None, None
     return requested, client, final_model

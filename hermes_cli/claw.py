@@ -610,6 +610,28 @@ def _cmd_cleanup(args):
                 print_info("Aborted. Stop OpenClaw first, then re-run: hermes claw cleanup")
                 return
 
+    # Warn if OpenClaw is still running — archiving while the service is
+    # active causes it to recreate an empty skeleton directory (#8502).
+    running = _detect_openclaw_processes()
+    if running:
+        print()
+        print_error("OpenClaw appears to be still running:")
+        for detail in running:
+            print_info(f"  * {detail}")
+        print_info(
+            "Archiving .openclaw/ while the service is active may cause it to "
+            "immediately recreate an empty skeleton directory, destroying your config."
+        )
+        print_info("Stop OpenClaw first: systemctl --user stop openclaw-gateway.service")
+        print()
+        if not auto_yes:
+            if not sys.stdin.isatty():
+                print_info("Non-interactive session — aborting. Stop OpenClaw and re-run.")
+                return
+            if not prompt_yes_no("Proceed anyway?", default=False):
+                print_info("Aborted. Stop OpenClaw first, then re-run: hermes claw cleanup")
+                return
+
     total_archived = 0
 
     for source_dir in dirs_to_check:

@@ -1393,48 +1393,12 @@ def list_authenticated_providers(
             models_list = []
             if default_model:
                 models_list.append(default_model)
-            # Also include the full models list from config.
-            # Hermes writes ``models:`` as a dict keyed by model id
-            # (see hermes_cli/main.py::_save_custom_provider); older
-            # configs or hand-edited files may still use a list.
+            # Also include the full models list from config
             cfg_models = ep_cfg.get("models", [])
-            if isinstance(cfg_models, dict):
+            if isinstance(cfg_models, list):
                 for m in cfg_models:
                     if m and m not in models_list:
                         models_list.append(m)
-            elif isinstance(cfg_models, list):
-                for m in cfg_models:
-                    if m and m not in models_list:
-                        models_list.append(m)
-
-            # Official OpenAI API rows in providers: often have base_url but no
-            # explicit models: dict — avoid a misleading zero count in /model.
-            if not models_list:
-                url_lower = str(api_url).strip().lower()
-                if "api.openai.com" in url_lower:
-                    fb = curated.get("openai") or []
-                    if fb:
-                        models_list = list(fb)
-
-            # Prefer the endpoint's live /models list when credentials are
-            # available, unless the provider explicitly opts out via
-            # discover_models: false (e.g. dedicated endpoints that expose
-            # the entire aggregator catalog via /models).
-            api_key = str(ep_cfg.get("api_key", "") or "").strip()
-            if not api_key:
-                key_env = str(ep_cfg.get("key_env", "") or "").strip()
-                api_key = os.environ.get(key_env, "").strip() if key_env else ""
-            discover = ep_cfg.get("discover_models", True)
-            if isinstance(discover, str):
-                discover = discover.lower() not in ("false", "no", "0")
-            if api_url and api_key and discover:
-                try:
-                    from hermes_cli.models import fetch_api_models
-                    live_models = fetch_api_models(api_key, api_url)
-                    if live_models:
-                        models_list = live_models
-                except Exception:
-                    pass
 
             results.append({
                 "slug": ep_name,

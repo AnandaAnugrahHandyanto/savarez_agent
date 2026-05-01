@@ -1038,13 +1038,8 @@ class MatrixAdapter(BasePlatformAdapter):
             # Try aiohttp first (always available), fall back to httpx
             try:
                 import aiohttp as _aiohttp
-                _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(self._proxy_url)
-                async with _aiohttp.ClientSession(**_sess_kw) as http:
-                    async with http.get(
-                        image_url,
-                        timeout=_aiohttp.ClientTimeout(total=30),
-                        **_req_kw,
-                    ) as resp:
+                async with _aiohttp.ClientSession(trust_env=True) as http:
+                    async with http.get(image_url, timeout=_aiohttp.ClientTimeout(total=30)) as resp:
                         resp.raise_for_status()
                         data = await resp.read()
                         ct = resp.content_type or "image/png"
@@ -1552,9 +1547,7 @@ class MatrixAdapter(BasePlatformAdapter):
         formatted_body = source_content.get("formatted_body")
         # m.mentions.user_ids (MSC3952 / Matrix v1.7) — authoritative mention signal.
         mentions_block = source_content.get("m.mentions") or {}
-        mention_user_ids = (
-            mentions_block.get("user_ids") if isinstance(mentions_block, dict) else None
-        )
+        mention_user_ids = mentions_block.get("user_ids") if isinstance(mentions_block, dict) else None
         is_mentioned = self._is_bot_mentioned(body, formatted_body, mention_user_ids)
 
         # Require-mention gating.
@@ -2330,77 +2323,6 @@ class MatrixAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Mention detection helpers
     # ------------------------------------------------------------------
-
-    def _build_text_message_content(self, text: str, msgtype: str = "m.text") -> Dict[str, Any]:
-        """Build Matrix text content with HTML and outbound mention metadata."""
-        msg_content: Dict[str, Any] = {"msgtype": msgtype, "body": text}
-        mention_user_ids = self._extract_outbound_mentions(text)
-        if mention_user_ids:
-            msg_content["m.mentions"] = {"user_ids": mention_user_ids}
-
-        html_source = self._inject_outbound_mention_links(text)
-        html = self._markdown_to_html(html_source)
-        if html and html != text:
-            msg_content["format"] = "org.matrix.custom.html"
-            msg_content["formatted_body"] = html
-
-        return msg_content
-
-    def _extract_outbound_mentions(self, text: str) -> list[str]:
-        """Return unique Matrix user IDs mentioned in outbound text."""
-        protected, _ = self._protect_outbound_mention_regions(text)
-        seen: Set[str] = set()
-        mentions: list[str] = []
-        for match in _OUTBOUND_MENTION_RE.finditer(protected):
-            user_id = match.group(1)
-            if user_id not in seen:
-                seen.add(user_id)
-                mentions.append(user_id)
-        return mentions
-
-    def _inject_outbound_mention_links(self, text: str) -> str:
-        """Wrap outbound Matrix mentions in markdown links outside code spans."""
-        if not text:
-            return text
-
-        protected, placeholders = self._protect_outbound_mention_regions(text)
-
-        linked = _OUTBOUND_MENTION_RE.sub(
-            lambda match: f"[{match.group(1)}](https://matrix.to/#/{match.group(1)})",
-            protected,
-        )
-
-        for idx, original in enumerate(placeholders):
-            linked = linked.replace(f"\x00MENTION_PROTECTED{idx}\x00", original)
-
-        return linked
-
-    def _protect_outbound_mention_regions(self, text: str) -> tuple[str, list[str]]:
-        """Protect markdown regions where outbound mentions should stay literal."""
-        placeholders: list[str] = []
-
-        def _protect(fragment: str) -> str:
-            idx = len(placeholders)
-            placeholders.append(fragment)
-            return f"\x00MENTION_PROTECTED{idx}\x00"
-
-        protected = re.sub(
-            r"```[\s\S]*?```",
-            lambda match: _protect(match.group(0)),
-            text or "",
-        )
-        protected = re.sub(
-            r"`[^`\n]+`",
-            lambda match: _protect(match.group(0)),
-            protected,
-        )
-        protected = re.sub(
-            r"\[[^\]]+\]\([^)]+\)",
-            lambda match: _protect(match.group(0)),
-            protected,
-        )
-
-        return protected, placeholders
 
     def _is_bot_mentioned(
         self,
