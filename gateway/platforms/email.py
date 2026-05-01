@@ -94,8 +94,12 @@ def _decode_header_value(raw: str) -> str:
     for part, charset in parts:
         if isinstance(part, bytes):
             decoded.append(part.decode(charset or "utf-8", errors="replace"))
-        else:
+        elif isinstance(part, str):
             decoded.append(part)
+        else:
+            # Some IMAP servers can surface non-string header chunks
+            # (e.g. integers). Normalize defensively instead of crashing.
+            decoded.append(str(part))
     return " ".join(decoded)
 
 
