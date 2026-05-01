@@ -144,6 +144,17 @@ def test_report_md_is_human_readable(curator_env):
     """REPORT.md should be a valid markdown doc with the key sections visible."""
     curator = curator_env["curator"]
     start = datetime.now(timezone.utc)
+    home = curator_env["home"]
+    refs_dir = home / "skills" / "foo-umbrella" / "references"
+    refs_dir.mkdir(parents=True)
+    (home / "skills" / "foo-umbrella" / "SKILL.md").write_text(
+        "# foo-umbrella\n\n- [foo](references/foo.md)\n",
+        encoding="utf-8",
+    )
+    (refs_dir / "foo.md").write_text(
+        "# foo\nContent absorbed from the old foo skill.\n",
+        encoding="utf-8",
+    )
 
     run_dir = curator._write_run_report(
         started_at=start,

@@ -224,6 +224,12 @@ def test_report_md_splits_consolidated_and_pruned_sections(curator_env):
     """End-to-end: REPORT.md shows both sections distinctly."""
     curator = curator_env
     start = datetime.now(timezone.utc)
+    umbrella_dir = Path.home() / ".hermes" / "skills" / "umbrella"
+    umbrella_dir.mkdir(parents=True)
+    (umbrella_dir / "SKILL.md").write_text(
+        "# umbrella\n\nAbsorbed absorbed-skill.\n",
+        encoding="utf-8",
+    )
 
     before = [
         {"name": "absorbed-skill", "state": "active", "pinned": False},
@@ -490,6 +496,12 @@ def test_reconcile_model_block_visible_in_full_report(curator_env):
     from datetime import datetime as _dt, timezone as _tz
 
     start = _dt.now(_tz.utc)
+    umbrella_dir = Path.home() / ".hermes" / "skills" / "llm-providers"
+    umbrella_dir.mkdir(parents=True)
+    (umbrella_dir / "SKILL.md").write_text(
+        "# llm-providers\nIncludes anthropic-api",
+        encoding="utf-8",
+    )
     before = [
         {"name": "anthropic-api", "state": "active", "pinned": False},
         {"name": "stale-thing", "state": "stale", "pinned": False},
@@ -548,3 +560,118 @@ def test_reconcile_model_block_visible_in_full_report(curator_env):
     md = (run_dir / "REPORT.md").read_text()
     assert "duplicate content, now a subsection" in md
     assert "pre-curator junk" in md
+
+
+def test_hollow_umbrella_reference_marks_run_incomplete(curator_env):
+    """A stub umbrella with a missing references file is not safe consolidation."""
+    import json as _json
+    from datetime import datetime as _dt, timezone as _tz
+
+    start = _dt.now(_tz.utc)
+    umbrella_dir = Path.home() / ".hermes" / "skills" / "research-tools"
+    umbrella_dir.mkdir(parents=True)
+    (umbrella_dir / "SKILL.md").write_text(
+        "# research-tools\n\n- [readwise-cli](references/readwise-cli.md)\n",
+        encoding="utf-8",
+    )
+
+    before = [{"name": "readwise-cli", "state": "active", "pinned": False}]
+    after = [{"name": "research-tools", "state": "active", "pinned": False}]
+
+    run_dir = curator_env._write_run_report(
+        started_at=start,
+        elapsed_seconds=12.0,
+        auto_counts={"checked": 1, "marked_stale": 0, "archived": 0, "reactivated": 0},
+        auto_summary="none",
+        before_report=before,
+        before_names={"readwise-cli"},
+        after_report=after,
+        llm_meta={
+            "final": "Created research-tools and demoted readwise-cli.",
+            "summary": "created umbrella",
+            "model": "m",
+            "provider": "p",
+            "error": None,
+            "tool_calls": [
+                {"name": "skill_manage", "arguments": _json.dumps({
+                    "action": "create",
+                    "name": "research-tools",
+                    "content": "# research-tools\n\n- [readwise-cli](references/readwise-cli.md)\n",
+                })},
+            ],
+        },
+    )
+
+    payload = _json.loads((run_dir / "run.json").read_text())
+    assert payload["incomplete"] is True
+    assert payload["consolidated"] == []
+    assert payload["unsafe_consolidations"][0]["name"] == "readwise-cli"
+    assert payload["pruned"][0]["source"] == "unverified consolidation"
+    assert any("references/readwise-cli.md" in r for r in payload["incomplete_reasons"])
+
+    md = (run_dir / "REPORT.md").read_text()
+    assert "Curator run marked incomplete" in md
+    assert "references/readwise-cli.md" in md
+
+
+def test_write_file_support_artifact_verifies_consolidation(curator_env):
+    """A real support file written under the umbrella remains valid evidence."""
+    import json as _json
+    from datetime import datetime as _dt, timezone as _tz
+
+    start = _dt.now(_tz.utc)
+    umbrella_dir = Path.home() / ".hermes" / "skills" / "research-tools"
+    refs_dir = umbrella_dir / "references"
+    refs_dir.mkdir(parents=True)
+    (umbrella_dir / "SKILL.md").write_text(
+        "# research-tools\n\n- [readwise-cli](references/readwise-cli.md)\n",
+        encoding="utf-8",
+    )
+    (refs_dir / "readwise-cli.md").write_text(
+        "# Readwise CLI\nMigrated details.\n",
+        encoding="utf-8",
+    )
+
+    before = [{"name": "readwise-cli", "state": "active", "pinned": False}]
+    after = [{"name": "research-tools", "state": "active", "pinned": False}]
+
+    llm_final_text = (
+        "## Structured summary (required)\n"
+        "```yaml\n"
+        "consolidations:\n"
+        "  - from: readwise-cli\n"
+        "    into: research-tools\n"
+        "    reason: moved into the research umbrella\n"
+        "prunings: []\n"
+        "```\n"
+    )
+    run_dir = curator_env._write_run_report(
+        started_at=start,
+        elapsed_seconds=12.0,
+        auto_counts={"checked": 1, "marked_stale": 0, "archived": 0, "reactivated": 0},
+        auto_summary="none",
+        before_report=before,
+        before_names={"readwise-cli"},
+        after_report=after,
+        llm_meta={
+            "final": llm_final_text,
+            "summary": "created umbrella",
+            "model": "m",
+            "provider": "p",
+            "error": None,
+            "tool_calls": [
+                {"name": "skill_manage", "arguments": _json.dumps({
+                    "action": "write_file",
+                    "name": "research-tools",
+                    "file_path": "references/readwise-cli.md",
+                    "file_content": "# Readwise CLI\nMigrated details.\n",
+                })},
+            ],
+        },
+    )
+
+    payload = _json.loads((run_dir / "run.json").read_text())
+    assert payload["incomplete"] is False
+    assert payload["consolidated"][0]["name"] == "readwise-cli"
+    assert payload["consolidated"][0]["into"] == "research-tools"
+    assert payload["pruned"] == []

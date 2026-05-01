@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
@@ -398,6 +399,38 @@ def _reports_root() -> Path:
     return root
 
 
+def _support_path_pattern() -> re.Pattern[str]:
+    return re.compile(
+        r"(?<![\w./-])((?:references|templates|scripts)/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+)"
+    )
+
+
+def _trim_support_path(path: str) -> str:
+    return path.strip().rstrip(".,;:)]}>\"'")
+
+
+def _extract_support_paths(text: str) -> List[str]:
+    if not text:
+        return []
+    paths: List[str] = []
+    seen: Set[str] = set()
+    for match in _support_path_pattern().finditer(text):
+        rel = _trim_support_path(match.group(1))
+        if rel and rel not in seen:
+            seen.add(rel)
+            paths.append(rel)
+    return paths
+
+
+def _name_variants(name: str) -> Set[str]:
+    return {name, name.replace("-", "_"), name.replace("_", "-")}
+
+
+def _support_path_mentions_name(path: str, name: str) -> bool:
+    hay = path.lower()
+    return any(needle.lower() in hay for needle in _name_variants(name) if needle)
+
+
 def _classify_removed_skills(
     removed: List[str],
     added: List[str],
@@ -460,7 +493,7 @@ def _classify_removed_skills(
         evidence: Optional[str] = None
 
         # Normalise name variants we'll search for in path/content strings.
-        needles = {name, name.replace("-", "_"), name.replace("_", "-")}
+        needles = _name_variants(name)
 
         for args in parsed_calls:
             target = args.get("name")
@@ -495,20 +528,43 @@ def _classify_removed_skills(
                 if hit:
                     break
             if hit:
+                action = str(args.get("action", "?") or "?")
+                support_paths = []
+                for hay in haystacks:
+                    support_paths.extend(_extract_support_paths(hay))
+                matching_support_paths = [
+                    p for p in support_paths if _support_path_mentions_name(p, name)
+                ]
+                evidence_kind = "content_reference"
+                evidence_path = ""
+                if action == "write_file":
+                    evidence_kind = "support_file_write"
+                    fp = args.get("file_path")
+                    evidence_path = fp if isinstance(fp, str) else ""
+                elif matching_support_paths:
+                    evidence_kind = "support_link"
+                    evidence_path = matching_support_paths[0]
                 into = target
                 break
 
         if into:
-            consolidated.append({"name": name, "into": into, "evidence": evidence})
+            consolidated.append({
+                "name": name,
+                "into": into,
+                "evidence": evidence,
+                "evidence_kind": evidence_kind,
+                "evidence_path": evidence_path,
+                "action": action,
+            })
         else:
             pruned.append({"name": name})
 
     return {"consolidated": consolidated, "pruned": pruned}
 
 
-def _parse_structured_summary(
+def _parse_structured_summary_detailed(
     llm_final: str,
-) -> Dict[str, List[Dict[str, str]]]:
+) -> tuple[Dict[str, List[Dict[str, str]]], Dict[str, Any]]:
     """Extract the structured YAML block from the curator's final response.
 
     The curator prompt requires a fenced ```yaml block under
@@ -522,22 +578,29 @@ def _parse_structured_summary(
     Returns ``{"consolidations": [{"from", "into", "reason"}, ...],
                "prunings":       [{"name", "reason"}, ...]}``.
     """
-    empty = {"consolidations": [], "prunings": []}
+    empty: Dict[str, List[Dict[str, str]]] = {"consolidations": [], "prunings": []}
+    meta: Dict[str, Any] = {
+        "present": False,
+        "valid": False,
+        "error": "",
+    }
     if not llm_final or not isinstance(llm_final, str):
-        return empty
+        meta["error"] = "missing structured summary block"
+        return empty, meta
 
     # Find the YAML fenced block. We look for ```yaml ... ``` specifically
     # rather than any fenced block so we don't accidentally pick up a code
     # sample the model quoted elsewhere.
-    import re
     match = re.search(
         r"```ya?ml\s*\n(.*?)\n```",
         llm_final,
         re.DOTALL | re.IGNORECASE,
     )
     if not match:
-        return empty
+        meta["error"] = "missing structured summary block"
+        return empty, meta
 
+    meta["present"] = True
     body = match.group(1)
 
     # Prefer PyYAML when available — every hermes install already has it
@@ -545,12 +608,17 @@ def _parse_structured_summary(
     try:
         import yaml  # type: ignore
         data = yaml.safe_load(body)
-    except Exception:
-        return empty
+    except Exception as e:
+        meta["error"] = f"malformed structured summary YAML: {e}"
+        return empty, meta
 
     if not isinstance(data, dict):
-        return empty
+        meta["error"] = "structured summary YAML did not parse to a mapping"
+        return empty, meta
 
+    missing_required_keys = [
+        key for key in ("consolidations", "prunings") if key not in data
+    ]
     out: Dict[str, List[Dict[str, str]]] = {"consolidations": [], "prunings": []}
     cons_raw = data.get("consolidations") or []
     prun_raw = data.get("prunings") or []
@@ -584,7 +652,21 @@ def _parse_structured_summary(
                 "reason": (reason or "").strip() if isinstance(reason, str) else "",
             })
 
-    return out
+    if missing_required_keys:
+        meta["error"] = (
+            "structured summary YAML missing required key(s): "
+            + ", ".join(missing_required_keys)
+        )
+    else:
+        meta["valid"] = True
+    return out, meta
+
+
+def _parse_structured_summary(
+    llm_final: str,
+) -> Dict[str, List[Dict[str, str]]]:
+    block, _meta = _parse_structured_summary_detailed(llm_final)
+    return block
 
 
 def _reconcile_classification(
@@ -634,6 +716,9 @@ def _reconcile_classification(
             }
             if hc and hc.get("evidence"):
                 entry["evidence"] = hc["evidence"]
+                entry["evidence_kind"] = hc.get("evidence_kind", "")
+                entry["evidence_path"] = hc.get("evidence_path", "")
+                entry["action"] = hc.get("action", "")
             consolidated.append(entry)
             continue
 
@@ -647,6 +732,9 @@ def _reconcile_classification(
                     "source": "tool-call audit (model named missing umbrella)",
                     "reason": "",
                     "evidence": hc.get("evidence", ""),
+                    "evidence_kind": hc.get("evidence_kind", ""),
+                    "evidence_path": hc.get("evidence_path", ""),
+                    "action": hc.get("action", ""),
                     "model_claimed_into": mc["into"],
                 })
             else:
@@ -665,6 +753,9 @@ def _reconcile_classification(
                 "source": "tool-call audit (model omitted from structured block)",
                 "reason": "",
                 "evidence": hc.get("evidence", ""),
+                "evidence_kind": hc.get("evidence_kind", ""),
+                "evidence_path": hc.get("evidence_path", ""),
+                "action": hc.get("action", ""),
             })
             continue
 
@@ -677,6 +768,158 @@ def _reconcile_classification(
         })
 
     return {"consolidated": consolidated, "pruned": pruned}
+
+
+def _read_skill_md(skill_name: str) -> str:
+    path = get_hermes_home() / "skills" / skill_name / "SKILL.md"
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _support_file_exists(skill_name: str, rel_path: str) -> bool:
+    if not rel_path:
+        return False
+    try:
+        root = (get_hermes_home() / "skills" / skill_name).resolve()
+        candidate = (root / rel_path).resolve()
+        candidate.relative_to(root)
+    except (OSError, ValueError):
+        return False
+    return candidate.is_file()
+
+
+def _existing_support_paths_for_skill(skill_name: str) -> List[str]:
+    skill_dir = get_hermes_home() / "skills" / skill_name
+    out: List[str] = []
+    for subdir in ("references", "templates", "scripts"):
+        root = skill_dir / subdir
+        if not root.exists():
+            continue
+        try:
+            for path in root.rglob("*"):
+                if path.is_file():
+                    out.append(path.relative_to(skill_dir).as_posix())
+        except OSError:
+            continue
+    return out
+
+
+def _find_broken_support_links(skill_names: Set[str]) -> List[Dict[str, str]]:
+    broken: List[Dict[str, str]] = []
+    for skill_name in sorted(n for n in skill_names if n):
+        skill_md = _read_skill_md(skill_name)
+        for rel_path in _extract_support_paths(skill_md):
+            if not _support_file_exists(skill_name, rel_path):
+                broken.append({
+                    "skill": skill_name,
+                    "path": rel_path,
+                    "reason": f"`{skill_name}` references missing `{rel_path}`",
+                })
+    return broken
+
+
+def _consolidation_artifact_missing(entry: Dict[str, Any]) -> str:
+    """Return a reason when a consolidation lacks a surviving artifact."""
+    old_name = str(entry.get("name") or "")
+    into = str(entry.get("into") or "")
+    if not old_name or not into:
+        return "consolidation entry is missing source or destination"
+
+    skill_dir = get_hermes_home() / "skills" / into
+    if not skill_dir.exists():
+        return f"destination umbrella `{into}` does not exist"
+
+    evidence_kind = str(entry.get("evidence_kind") or "")
+    evidence_path = str(entry.get("evidence_path") or "")
+
+    if evidence_kind == "support_file_write":
+        if evidence_path and _support_file_exists(into, evidence_path):
+            return ""
+        return (
+            f"`{old_name}` was classified from a support-file write, but "
+            f"`{into}/{evidence_path or '<missing path>'}` does not exist"
+        )
+
+    if evidence_kind == "support_link":
+        if evidence_path and _support_file_exists(into, evidence_path):
+            return ""
+        return (
+            f"`{old_name}` was classified from a support-file link, but "
+            f"`{into}/{evidence_path or '<missing path>'}` does not exist"
+        )
+
+    matching_support = [
+        path for path in _existing_support_paths_for_skill(into)
+        if _support_path_mentions_name(path, old_name)
+    ]
+    if matching_support:
+        return ""
+
+    if evidence_kind == "content_reference":
+        # A direct patch/create/edit can legitimately embed the old skill's
+        # content into SKILL.md instead of a support file. Broken support links
+        # are checked separately, so do not reject content evidence here.
+        return ""
+
+    return (
+        f"`{old_name}` was declared consolidated into `{into}`, but the run "
+        "left no matching support file or tool-call artifact"
+    )
+
+
+def _verify_curator_consolidations(
+    consolidated: List[Dict[str, Any]],
+    pruned: List[Dict[str, Any]],
+    *,
+    structured_summary_meta: Dict[str, Any],
+    removed: List[str],
+    destination_names: Set[str],
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str]]:
+    """Fail closed when the curator archives skills without real artifacts."""
+    incomplete_reasons: List[str] = []
+    unsafe: List[Dict[str, Any]] = []
+
+    if removed and not structured_summary_meta.get("present"):
+        incomplete_reasons.append("missing required structured YAML summary block")
+    elif removed and not structured_summary_meta.get("valid"):
+        err = structured_summary_meta.get("error") or "invalid structured YAML summary block"
+        incomplete_reasons.append(str(err))
+
+    broken_links = _find_broken_support_links(destination_names)
+    for link in broken_links:
+        incomplete_reasons.append(link["reason"])
+
+    verified: List[Dict[str, Any]] = []
+    next_pruned = list(pruned)
+    for entry in consolidated:
+        reason = _consolidation_artifact_missing(entry)
+        if not reason:
+            verified.append(entry)
+            continue
+
+        unsafe_entry = dict(entry)
+        unsafe_entry["reason"] = reason
+        unsafe.append(unsafe_entry)
+        incomplete_reasons.append(reason)
+        next_pruned.append({
+            "name": entry.get("name", "?"),
+            "source": "unverified consolidation",
+            "reason": reason,
+            "claimed_into": entry.get("into", ""),
+        })
+
+    # Keep the report readable when the same missing link causes multiple
+    # archived skills to fail verification.
+    deduped: List[str] = []
+    seen: Set[str] = set()
+    for reason in incomplete_reasons:
+        if reason not in seen:
+            seen.add(reason)
+            deduped.append(reason)
+
+    return verified, next_pruned, unsafe, deduped
 
 
 def _write_run_report(
@@ -756,7 +999,9 @@ def _write_run_report(
         after_names=after_names,
         tool_calls=llm_meta.get("tool_calls", []) or [],
     )
-    model_block = _parse_structured_summary(llm_meta.get("final", "") or "")
+    model_block, structured_summary_meta = _parse_structured_summary_detailed(
+        llm_meta.get("final", "") or ""
+    )
     destinations = set(after_names) | set(added or [])
     classification = _reconcile_classification(
         removed=removed,
@@ -766,6 +1011,20 @@ def _write_run_report(
     )
     consolidated = classification["consolidated"]
     pruned = classification["pruned"]
+    destination_names = {
+        str(entry.get("into"))
+        for entry in consolidated
+        if isinstance(entry, dict) and entry.get("into")
+    } | set(added or [])
+    consolidated, pruned, unsafe_consolidations, incomplete_reasons = (
+        _verify_curator_consolidations(
+            consolidated,
+            pruned,
+            structured_summary_meta=structured_summary_meta,
+            removed=removed,
+            destination_names=destination_names,
+        )
+    )
 
     # Rewrite cron job skill references. When the curator consolidates
     # skill X into umbrella Y, any cron job that lists X fails to load
@@ -823,6 +1082,10 @@ def _write_run_report(
         "consolidated": consolidated,
         "pruned": pruned,
         "pruned_names": [p["name"] for p in pruned],
+        "unsafe_consolidations": unsafe_consolidations,
+        "incomplete": bool(incomplete_reasons),
+        "incomplete_reasons": incomplete_reasons,
+        "structured_summary": structured_summary_meta,
         "added": added,
         "state_transitions": transitions,
         "cron_rewrites": cron_rewrites,
@@ -883,6 +1146,22 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
     error = p.get("llm_error")
     if error:
         lines.append(f"> ⚠ LLM pass error: `{error}`\n")
+
+    if p.get("incomplete"):
+        reasons = p.get("incomplete_reasons") or []
+        lines.append("> ⚠ Curator run marked incomplete.\n")
+        lines.append(
+            "> Some archived skills could not be verified as safely consolidated. "
+            "Restore affected skills with `hermes curator restore <name>` before "
+            "depending on this run's umbrella output.\n"
+        )
+        if reasons:
+            lines.append("### Incomplete run reasons\n")
+            for reason in reasons[:50]:
+                lines.append(f"- {reason}")
+            if len(reasons) > 50:
+                lines.append(f"- … and {len(reasons) - 50} more (see `run.json`)")
+            lines.append("")
 
     # Auto-transitions (pure, no LLM)
     auto = p.get("auto_transitions") or {}
@@ -949,8 +1228,9 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
     if pruned:
         lines.append(f"### Pruned — archived for staleness ({len(pruned)})\n")
         lines.append(
-            "_These skills were archived without being merged into an umbrella "
-            "(e.g. stale, unused, or judged irrelevant). "
+            "_These skills were archived without a verified umbrella artifact "
+            "(e.g. stale, unused, judged irrelevant, or an attempted "
+            "consolidation that failed verification). "
             "Directories live under `~/.hermes/skills/.archive/`. "
             "Restore any via `hermes curator restore <name>`._\n"
         )
@@ -965,6 +1245,8 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
                 line = f"- `{name}`"
                 if reason:
                     line += f" — {reason}"
+                if entry.get("claimed_into"):
+                    line += f" _(claimed umbrella: `{entry['claimed_into']}`)_"
                 lines.append(line)
             else:
                 lines.append(f"- `{entry}`")
