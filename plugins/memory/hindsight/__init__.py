@@ -36,6 +36,7 @@ import logging
 import os
 import queue
 import threading
+import time
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -53,6 +54,12 @@ _MIN_CLIENT_VERSION = "0.4.22"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 _VALID_BUDGETS = {"low", "mid", "high"}
+
+# Circuit breaker for auxiliary LLM calls in the smart retain pipeline.
+# Matches Mem0 plugin pattern: after N consecutive failures, bypass smart
+# steps for a cooldown period, then allow one probe request to recover.
+_AUX_BREAKER_THRESHOLD = 5
+_AUX_BREAKER_COOLDOWN_SECS = 120
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
@@ -494,6 +501,14 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_prefilter = False
         self._retain_context_tagging = "off"  # "off", "on", or "smart"
         self._retain_dedup = False
+
+        # Circuit breaker for auxiliary LLM calls (smart pipeline).
+        # After _AUX_BREAKER_THRESHOLD consecutive failures, bypass the
+        # smart pipeline (prefilter/dedup/smart-tagging) and retain raw
+        # with scope:general.  Retains still happen — only the aux-dependent
+        # classification is skipped.  Matches Mem0 plugin pattern.
+        self._aux_consecutive_failures = 0
+        self._aux_breaker_open_until = 0.0
         self._retain_mode = "full"  # "full" or "delta"
         self._retain_overlap_turns = 2
         self._last_retain_index = 0  # tracks where the last delta ended
@@ -1382,8 +1397,10 @@ class HindsightMemoryProvider(MemoryProvider):
                 else:
                     result = "GENERAL"  # fail-open
             logger.info("Smart retain classification: %s (content_len=%d)", result, len(content))
+            self._record_aux_success()
             return result
         except Exception as exc:
+            self._record_aux_failure()
             logger.warning("Smart retain classification failed (%s); fail-open to GENERAL", exc)
             return "GENERAL"
 
@@ -1392,6 +1409,40 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._platform and self._chat_id:
             return f"scope:{self._platform}:{self._chat_id}"
         return "scope:general"
+
+    # ── Auxiliary circuit breaker ──────────────────────────────────────
+    # Tracks consecutive failures of the auxiliary LLM used by the smart
+    # retain pipeline (classify, dedup).  When tripped, the smart steps
+    # are bypassed — retains still happen, just without classification.
+
+    def _is_aux_breaker_open(self) -> bool:
+        """Return True if the aux circuit breaker is tripped."""
+        if self._aux_consecutive_failures < _AUX_BREAKER_THRESHOLD:
+            return False
+        if time.monotonic() >= self._aux_breaker_open_until:
+            # Cooldown expired — reset and allow a probe request
+            self._aux_consecutive_failures = 0
+            logger.info("Auxiliary circuit breaker cooldown expired; allowing probe request")
+            return False
+        return True
+
+    def _record_aux_success(self):
+        """Reset the aux breaker on a successful auxiliary call."""
+        if self._aux_consecutive_failures > 0:
+            logger.info("Auxiliary LLM recovered after %d consecutive failures",
+                        self._aux_consecutive_failures)
+        self._aux_consecutive_failures = 0
+
+    def _record_aux_failure(self):
+        """Record an aux failure; trip the breaker if threshold reached."""
+        self._aux_consecutive_failures += 1
+        if self._aux_consecutive_failures >= _AUX_BREAKER_THRESHOLD:
+            self._aux_breaker_open_until = time.monotonic() + _AUX_BREAKER_COOLDOWN_SECS
+            logger.warning(
+                "Auxiliary circuit breaker tripped after %d consecutive failures. "
+                "Bypassing smart retain pipeline for %ds.",
+                self._aux_consecutive_failures, _AUX_BREAKER_COOLDOWN_SECS,
+            )
 
     def _build_recall_scope_tags(self) -> list[str] | None:
         """Build scope tags for recall filtering when context tagging is active.
@@ -1478,9 +1529,11 @@ class HindsightMemoryProvider(MemoryProvider):
 
             logger.info("Dedup check: %s — %d chars against %d existing memories",
                         "DUPLICATE" if is_dup else "NOVEL", len(content), num_results)
+            self._record_aux_success()
             return is_dup
 
         except Exception as exc:
+            self._record_aux_failure()
             logger.warning("Dedup check failed (proceeding with retain): %s", exc)
             return False
 
@@ -1557,14 +1610,20 @@ class HindsightMemoryProvider(MemoryProvider):
             needs_classification = self._retain_prefilter or self._retain_context_tagging == "smart"
             classification = None
 
-            if needs_classification:
+            # Circuit breaker: if aux LLM has been failing, bypass the
+            # smart pipeline entirely.  Retains still happen — just raw.
+            aux_bypassed = self._is_aux_breaker_open()
+            if aux_bypassed and (needs_classification or self._retain_dedup):
+                logger.info("Auxiliary circuit breaker open — bypassing smart pipeline for %d chars", len(content))
+
+            if needs_classification and not aux_bypassed:
                 classification = self._classify_for_retain(content)
                 if self._retain_prefilter and classification == "SKIP":
                     logger.info("Smart retain: SKIP — not retaining %d chars", len(content))
                     return
 
             # Dedup check: query existing memories and skip if content is redundant
-            if self._retain_dedup:
+            if self._retain_dedup and not aux_bypassed:
                 if self._check_dedup(content):
                     logger.info("Dedup check: DUPLICATE — skipping retain of %d chars", len(content))
                     return
