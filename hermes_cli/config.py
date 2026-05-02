@@ -4529,12 +4529,56 @@ def show_config():
     # Messaging
     print()
     print(color("◆ Messaging Platforms", Colors.CYAN, Colors.BOLD))
-    
-    telegram_token = get_env_value('TELEGRAM_BOT_TOKEN')
-    discord_token = get_env_value('DISCORD_BOT_TOKEN')
-    
-    print(f"  Telegram:     {'configured' if telegram_token else color('not configured', Colors.DIM)}")
-    print(f"  Discord:      {'configured' if discord_token else color('not configured', Colors.DIM)}")
+
+    platforms = {
+        "Telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL"),
+        "Discord": ("DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL"),
+        "WhatsApp": ("WHATSAPP_ENABLED", None),
+        "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
+        "Slack": ("SLACK_BOT_TOKEN", "SLACK_HOME_CHANNEL"),
+        "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
+        "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"),
+        "DingTalk": ("DINGTALK_CLIENT_ID", None),
+        "Feishu": ("FEISHU_APP_ID", "FEISHU_HOME_CHANNEL"),
+        "WeCom": ("WECOM_BOT_ID", "WECOM_HOME_CHANNEL"),
+        "WeCom Callback": ("WECOM_CALLBACK_CORP_ID", None),
+        "Weixin": ("WEIXIN_ACCOUNT_ID", "WEIXIN_HOME_CHANNEL"),
+        "BlueBubbles": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_HOME_CHANNEL"),
+        "QQBot": ("QQ_APP_ID", "QQ_HOME_CHANNEL"),
+        "Yuanbao": ("YUANBAO_APP_ID", "YUANBAO_HOME_CHANNEL"),
+    }
+
+    for name, (token_var, home_var) in platforms.items():
+        token = get_env_value(token_var)
+        has_token = bool(token)
+
+        home_channel = ""
+        if home_var:
+            home_channel = get_env_value(home_var) or ""
+        # Back-compat: QQBot home channel renamed from QQ_HOME_CHANNEL to QQBOT_HOME_CHANNEL
+        if not home_channel and home_var == "QQBOT_HOME_CHANNEL":
+            home_channel = get_env_value("QQ_HOME_CHANNEL") or ""
+
+        if has_token:
+            if home_channel:
+                print(f"  {name:<14} configured (home: {home_channel})")
+            else:
+                print(f"  {name:<14} configured")
+        else:
+            print(f"  {name:<14} {color('not configured', Colors.DIM)}")
+
+    # Plugin-registered platforms
+    try:
+        from gateway.platform_registry import platform_registry
+        for entry in platform_registry.plugin_entries():
+            configured = entry.check_fn()
+            label = entry.label
+            if configured:
+                print(f"  {label:<14} configured (plugin)")
+            else:
+                print(f"  {label:<14} {color('not configured', Colors.DIM)} (plugin)")
+    except Exception:
+        pass
     
     # Skill config
     try:
