@@ -1953,6 +1953,43 @@ class GatewayRunner:
                     "next_retry": time.monotonic() + 30,
                 }
         
+        # Plugin-registered platforms (after the in-tree loop above —
+        # in-tree wins on name collision because it ran first). Plugin
+        # platforms are NOT in the Platform enum, so they don't get the
+        # full reconnection-queue + status-tracking treatment yet —
+        # that's a v1 simplification. If a plugin platform fails on
+        # connect we log + skip without queueing.
+        for plugin_name, platform_config in self.config.plugin_platforms.items():
+            if not platform_config.enabled:
+                continue
+            enabled_platform_count += 1
+            adapter = self._create_plugin_adapter(plugin_name, platform_config)
+            if not adapter:
+                logger.warning("No adapter available for plugin platform %s", plugin_name)
+                continue
+            adapter.set_message_handler(self._handle_message)
+            adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
+            adapter.set_session_store(self.session_store)
+            adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+            logger.info("Connecting to plugin platform %s...", plugin_name)
+            try:
+                success = await adapter.connect()
+                if success:
+                    # Plugin platforms keyed by string in self.adapters
+                    # (built-ins use the Platform enum). Downstream code
+                    # treats both as opaque dict keys for routing.
+                    self.adapters[plugin_name] = adapter
+                    connected_count += 1
+                    logger.info("✓ %s (plugin) connected", plugin_name)
+                else:
+                    logger.warning("✗ %s (plugin) failed to connect", plugin_name)
+                    startup_retryable_errors.append(
+                        f"{plugin_name}: failed to connect"
+                    )
+            except Exception as e:
+                logger.exception("Plugin platform %s: connect raised", plugin_name)
+                startup_retryable_errors.append(f"{plugin_name}: {e}")
+
         if connected_count == 0:
             if startup_nonretryable_errors:
                 reason = "; ".join(startup_nonretryable_errors)
@@ -2421,9 +2458,50 @@ class GatewayRunner:
         """Wait for shutdown signal."""
         await self._shutdown_event.wait()
     
+    def _create_plugin_adapter(
+        self,
+        name: str,
+        config: Any,
+    ) -> Optional[BasePlatformAdapter]:
+        """Create an adapter from a plugin-registered platform.
+
+        Looks up the plugin's registered (adapter_class, requirements_check)
+        tuple via PluginContext.register_platform_adapter, validates
+        requirements, and instantiates. Returns None on any failure
+        (logs the cause).
+
+        Distinct from _create_adapter to keep the in-tree if/elif chain
+        free of plugin concerns; plugin platforms always go through this
+        path.
+        """
+        from hermes_cli.plugins import get_plugin_platform_adapter
+        entry = get_plugin_platform_adapter(name)
+        if entry is None:
+            logger.warning(
+                "Plugin platform %s: no plugin claims this name. "
+                "Did the plugin's register() function call "
+                "ctx.register_platform_adapter(name=%r, ...)?",
+                name, name,
+            )
+            return None
+        adapter_class, req_check = entry
+        if req_check and not req_check():
+            logger.warning(
+                "Plugin platform %s: requirements_check returned False",
+                name,
+            )
+            return None
+        try:
+            return adapter_class(config)
+        except Exception:
+            logger.exception(
+                "Plugin platform %s: adapter __init__ raised", name,
+            )
+            return None
+
     def _create_adapter(
-        self, 
-        platform: Platform, 
+        self,
+        platform: Platform,
         config: Any
     ) -> Optional[BasePlatformAdapter]:
         """Create the appropriate adapter for a platform."""

@@ -222,11 +222,25 @@ class StreamingConfig:
 class GatewayConfig:
     """
     Main gateway configuration.
-    
+
     Manages all platform connections, session policies, and delivery settings.
     """
     # Platform configurations
     platforms: Dict[Platform, PlatformConfig] = field(default_factory=dict)
+
+    # Plugin-registered platform configurations.
+    #
+    # Keyed by string platform name (matching what
+    # PluginContext.register_platform_adapter was called with). Populated
+    # by from_dict() when a platform name in config.yaml doesn't map to
+    # a built-in Platform enum value but IS claimed by a loaded plugin.
+    # The gateway runner iterates this dict alongside `platforms` and
+    # creates adapters via _create_plugin_adapter.
+    #
+    # Held as a separate dict (rather than mixing with `platforms`) so
+    # the closed Platform enum stays closed — no synthetic enum members,
+    # no string-vs-enum sniffing throughout the codebase.
+    plugin_platforms: Dict[str, PlatformConfig] = field(default_factory=dict)
     
     # Session reset policies by type
     default_reset_policy: SessionResetPolicy = field(default_factory=SessionResetPolicy)
@@ -361,13 +375,31 @@ class GatewayConfig:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "GatewayConfig":
+        # Trigger plugin discovery so register_platform_adapter calls
+        # have populated the plugin manager's adapter registry by the
+        # time we look up unknown platform names below. Idempotent.
+        # Imported inside the method to avoid pulling hermes_cli into
+        # gateway.config's import-time dep graph.
+        try:
+            from hermes_cli.plugins import discover_plugins, get_plugin_platform_adapter
+            discover_plugins()
+        except Exception:
+            # Plugin discovery is optional. If hermes_cli isn't on the
+            # path (e.g. some embedded test scenarios), silently fall
+            # back to the original "skip unknown" behavior.
+            get_plugin_platform_adapter = lambda _name: None  # type: ignore[assignment]
+
         platforms = {}
+        plugin_platforms: Dict[str, PlatformConfig] = {}
         for platform_name, platform_data in data.get("platforms", {}).items():
             try:
                 platform = Platform(platform_name)
                 platforms[platform] = PlatformConfig.from_dict(platform_data)
             except ValueError:
-                pass  # Skip unknown platforms
+                # Not a built-in platform. Check if a plugin claims it.
+                if get_plugin_platform_adapter(platform_name) is not None:
+                    plugin_platforms[platform_name] = PlatformConfig.from_dict(platform_data)
+                # Else: silently skip — original behavior preserved.
         
         reset_by_type = {}
         for type_name, policy_data in data.get("reset_by_type", {}).items():
@@ -406,6 +438,7 @@ class GatewayConfig:
 
         return cls(
             platforms=platforms,
+            plugin_platforms=plugin_platforms,
             default_reset_policy=default_policy,
             reset_by_type=reset_by_type,
             reset_by_platform=reset_by_platform,
