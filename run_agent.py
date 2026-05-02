@@ -40,7 +40,7 @@ import threading
 from types import SimpleNamespace
 import urllib.request
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from urllib.parse import urlparse, parse_qs, urlunparse
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
@@ -10342,7 +10342,7 @@ class AIAgent:
 
     def run_conversation(
         self,
-        user_message: str,
+        user_message: Union[str, List[Dict[str, Any]]],
         system_message: str = None,
         conversation_history: List[Dict[str, Any]] = None,
         task_id: str = None,

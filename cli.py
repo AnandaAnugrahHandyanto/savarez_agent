@@ -9229,17 +9229,25 @@ class HermesCLI:
                 except Exception:
                     pass
                 agent_message = _voice_prefix + message if _voice_prefix else message
-                # Prepend pending model switch note so the model knows about the switch
+                # Prepend pending model switch note so the model knows about the switch.
+                # When agent_message is a list (multipart content e.g. image+text),
+                # prepend the note as a leading text block instead of string-concat.
                 _msn = getattr(self, '_pending_model_switch_note', None)
                 if _msn:
-                    agent_message = _msn + "\n\n" + agent_message
+                    if isinstance(agent_message, list):
+                        agent_message = [{"type": "text", "text": _msn}] + agent_message
+                    else:
+                        agent_message = _msn + "\n\n" + agent_message
                     self._pending_model_switch_note = None
                 # Prepend pending /reload-skills note so the model sees which
                 # skills were added/removed before handling this turn. Same
                 # one-shot queue pattern as the model-switch note above.
                 _srn = getattr(self, '_pending_skills_reload_note', None)
                 if _srn:
-                    agent_message = _srn + "\n\n" + agent_message
+                    if isinstance(agent_message, list):
+                        agent_message = [{"type": "text", "text": _srn}] + agent_message
+                    else:
+                        agent_message = _srn + "\n\n" + agent_message
                     self._pending_skills_reload_note = None
                 try:
                     result = self.agent.run_conversation(
