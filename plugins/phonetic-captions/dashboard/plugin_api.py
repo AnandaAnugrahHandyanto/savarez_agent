@@ -5,9 +5,11 @@ Auth is bypassed for /api/plugins/* (dashboard binds localhost only).
 """
 
 import asyncio
+import importlib.util
 import json
 import logging
 import os
+import sys
 import traceback
 import uuid
 from datetime import datetime
@@ -21,6 +23,22 @@ from pydantic import BaseModel
 from hermes_constants import get_hermes_home
 
 _log = logging.getLogger(__name__)
+
+# Load pipeline.py by absolute path — relative imports don't work here because
+# the dashboard loader imports this file by path (not as a package module).
+_PLUGIN_ROOT = Path(__file__).parent.parent
+
+
+def _get_pipeline():
+    """Return the pipeline module, importing it by file path if necessary."""
+    mod_name = "phonetic_captions_pipeline"
+    if mod_name in sys.modules:
+        return sys.modules[mod_name]
+    spec = importlib.util.spec_from_file_location(mod_name, _PLUGIN_ROOT / "pipeline.py")
+    mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    sys.modules[mod_name] = mod
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod
 
 router = APIRouter()
 
@@ -140,7 +158,9 @@ def _update_job_status(
 
 def _run_pipeline(job_id: str, video_path: str) -> None:
     """Transcribe + generate phonetics for a newly uploaded video (blocking, run in thread)."""
-    from ..pipeline import generate_phonetics, transcribe
+    pipeline = _get_pipeline()
+    generate_phonetics = pipeline.generate_phonetics
+    transcribe = pipeline.transcribe
 
     try:
         _update_job_status(job_id, "transcribing", "Transcribing audio…")
@@ -263,7 +283,9 @@ async def save_style(job_id: str, payload: StylePayload):
 @router.post("/jobs/{job_id}/burn")
 async def reburn_job(job_id: str):
     """Re-burn captions into video with current segments + style."""
-    from ..pipeline import _build_ass_content, burn
+    pipeline = _get_pipeline()
+    _build_ass_content = pipeline._build_ass_content
+    burn = pipeline.burn
 
     data = _load_caption_job(job_id)
     segments = data.get("segments", [])
