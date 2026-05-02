@@ -30,6 +30,7 @@ import {
   Clapperboard,
   Pen,
   FlaskConical,
+  CheckCircle2,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -110,6 +111,7 @@ type NLPatch =
 
 interface QAFlag {
   segment_id: number;
+  type?: "issue" | "praise";
   issue: string;
   suggestion: string;
 }
@@ -756,13 +758,17 @@ function NLEditPanel({
   const [patches, setPatches] = useState<NLPatch[] | null>(null);
   const [checked, setChecked] = useState<Set<number>>(new Set());
 
-  // Sync prefill from QA "Fix with AI"
+  // Sync prefill from QA "Fix with AI" — also auto-submit so the fix is triggered immediately
   useEffect(() => {
-    if (prefillInstruction !== undefined) setInstruction(prefillInstruction);
-  }, [prefillInstruction]);
+    if (prefillInstruction !== undefined) {
+      setInstruction(prefillInstruction);
+      if (prefillInstruction.trim()) handleSubmit(prefillInstruction);
+    }
+  }, [prefillInstruction]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleSubmit = async () => {
-    if (!instruction.trim()) return;
+  const handleSubmit = async (instructionOverride?: string) => {
+    const inst = instructionOverride ?? instruction;
+    if (!inst.trim()) return;
     setLoading(true);
     setError(null);
     setPatches(null);
@@ -770,7 +776,7 @@ function NLEditPanel({
       const res = await fetchJSON(`${API}/jobs/${jobId}/nl-edit`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ instruction }),
+        body: JSON.stringify({ instruction: inst }),
       });
       const ps: NLPatch[] = res.patches ?? [];
       setPatches(ps);
@@ -809,7 +815,7 @@ function NLEditPanel({
           disabled={loading}
         />
         <button
-          onClick={handleSubmit}
+          onClick={() => handleSubmit()}
           disabled={!instruction.trim() || loading}
           className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-primary text-primary-foreground text-xs font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
         >
@@ -1229,35 +1235,62 @@ function HermesPanel({
           {qaFlags.length === 0 && !qaLoading && (
             <p className="text-xs text-muted-foreground">No issues found. Run Review to check.</p>
           )}
-          {qaFlags.length > 0 && (
-            <div className="space-y-2">
-              <div className="flex items-center gap-1 text-xs text-amber-500 mb-1">
-                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                {qaFlags.length} issue{qaFlags.length !== 1 ? "s" : ""} — amber segments in list
-                <button onClick={onClearQA} className="ml-auto text-muted-foreground hover:text-foreground">
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-              {qaFlags.map((f, i) => (
-                <div key={i} className="rounded-lg border border-amber-400/30 bg-amber-400/5 p-2.5 space-y-1">
-                  <button
-                    onClick={() => onFlagClick(f.segment_id)}
-                    className="text-xs font-semibold text-amber-400 hover:underline text-left w-full"
-                  >
-                    Segment #{f.segment_id + 1}
-                  </button>
-                  <p className="text-xs text-foreground">{f.issue}</p>
-                  <p className="text-xs text-muted-foreground">{f.suggestion}</p>
-                  <button
-                    onClick={() => onFixWithAI(f.suggestion)}
-                    className="text-xs text-primary hover:underline"
-                  >
-                    Fix →
+          {qaFlags.length > 0 && (() => {
+            const issues = qaFlags.filter(f => (f.type ?? "issue") === "issue");
+            const praises = qaFlags.filter(f => f.type === "praise");
+            return (
+              <div className="space-y-2">
+                <div className="flex items-center gap-1 text-xs mb-1">
+                  {issues.length > 0 && (
+                    <span className="flex items-center gap-1 text-amber-500">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      {issues.length} issue{issues.length !== 1 ? "s" : ""}
+                    </span>
+                  )}
+                  {issues.length > 0 && praises.length > 0 && <span className="text-muted-foreground mx-1">·</span>}
+                  {praises.length > 0 && (
+                    <span className="flex items-center gap-1 text-emerald-500">
+                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                      {praises.length} good
+                    </span>
+                  )}
+                  {issues.length > 0 && <span className="text-muted-foreground text-xs ml-1">— amber in list</span>}
+                  <button onClick={onClearQA} className="ml-auto text-muted-foreground hover:text-foreground">
+                    <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
-              ))}
-            </div>
-          )}
+                {qaFlags.map((f, i) => {
+                  const isIssue = (f.type ?? "issue") === "issue";
+                  return (
+                    <div key={i} className={`rounded-lg border p-2.5 space-y-1 ${
+                      isIssue
+                        ? "border-amber-400/30 bg-amber-400/5"
+                        : "border-emerald-400/30 bg-emerald-400/5"
+                    }`}>
+                      <button
+                        onClick={() => onFlagClick(f.segment_id)}
+                        className={`text-xs font-semibold hover:underline text-left w-full ${
+                          isIssue ? "text-amber-400" : "text-emerald-400"
+                        }`}
+                      >
+                        Segment #{f.segment_id + 1}
+                      </button>
+                      <p className="text-xs text-foreground">{f.issue}</p>
+                      {f.suggestion && <p className="text-xs text-muted-foreground">{f.suggestion}</p>}
+                      {isIssue && f.suggestion && (
+                        <button
+                          onClick={() => onFixWithAI(f.suggestion)}
+                          className="text-xs text-primary hover:underline"
+                        >
+                          Fix →
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
         </section>
 
         {/* ── Style presets ── */}
@@ -1284,6 +1317,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
   const [burning, setBurning] = useState(false);
   const [burnError, setBurnError] = useState<string | null>(null);
   const [burnSuccess, setBurnSuccess] = useState(false);
+  const [burnStyleUsed, setBurnStyleUsed] = useState<{ alignment?: number; margin_bottom?: number } | null>(null);
   const [burnTimestamp, setBurnTimestamp] = useState(Date.now());
   const [splitState, setSplitState] = useState<{ segIdx: number; splitBefore: Set<number> } | null>(null);
 
@@ -1446,6 +1480,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
     setBurning(true);
     setBurnError(null);
     setBurnSuccess(false);
+    setBurnStyleUsed(null);
 
     try {
       await fetchJSON(`${API}/jobs/${jobId}/segments`, {
@@ -1458,9 +1493,10 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
         body: JSON.stringify({ style }),
         headers: { "Content-Type": "application/json" },
       });
-      await fetchJSON(`${API}/jobs/${jobId}/burn`, { method: "POST" });
+      const burnResult = await fetchJSON(`${API}/jobs/${jobId}/burn`, { method: "POST" });
       setBurnTimestamp(Date.now());
       setBurnSuccess(true);
+      setBurnStyleUsed(burnResult?.style_used ?? null);
     } catch (e: any) {
       setBurnError(String(e));
     } finally {
@@ -1561,6 +1597,11 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
           {burnSuccess && !burnError && (
             <div className="mx-4 mb-3 rounded-lg bg-success/10 border border-success/30 px-3 py-2">
               <p className="text-xs text-success">✓ Video re-burned successfully.</p>
+              {burnStyleUsed && (
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {ALIGNMENT_NAMES[burnStyleUsed.alignment!] ?? `align ${burnStyleUsed.alignment}`} · margin {burnStyleUsed.margin_bottom}px
+                </p>
+              )}
             </div>
           )}
         </div>

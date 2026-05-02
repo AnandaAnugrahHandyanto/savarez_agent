@@ -282,9 +282,14 @@ async def save_segments(job_id: str, payload: SegmentsPayload):
 async def save_style(job_id: str, payload: StylePayload):
     """Save style changes back to the job."""
     data = _load_caption_job(job_id)
-    data["style"] = payload.model_dump()["style"]
+    new_style = payload.model_dump()["style"]
+    _log.info(
+        "save_style job=%s alignment=%s margin_bottom=%s",
+        job_id, new_style.get("alignment"), new_style.get("margin_bottom"),
+    )
+    data["style"] = new_style
     _save_caption_job_data(job_id, data)
-    return {"ok": True}
+    return {"ok": True, "saved": {"alignment": new_style.get("alignment"), "margin_bottom": new_style.get("margin_bottom")}}
 
 
 @router.post("/jobs/{job_id}/burn")
@@ -298,6 +303,11 @@ async def reburn_job(job_id: str):
     segments = data.get("segments", [])
     style = data.get("style", {})
     video_path = data.get("video_path", "")
+
+    _log.info(
+        "reburn_job job=%s alignment=%s margin_bottom=%s video=%s",
+        job_id, style.get("alignment"), style.get("margin_bottom"), video_path,
+    )
 
     if not video_path or not os.path.exists(video_path):
         raise HTTPException(status_code=400, detail=f"Source video not found: {video_path}")
@@ -333,7 +343,35 @@ async def reburn_job(job_id: str):
     except Exception:
         _log.debug("Style memory write failed (non-fatal)", exc_info=True)
 
-    return {"ok": True, "output_path": result_path}
+    return {
+        "ok": True,
+        "output_path": result_path,
+        "style_used": {
+            "alignment": style.get("alignment"),
+            "margin_bottom": style.get("margin_bottom"),
+            "font_size": style.get("font_size"),
+        },
+    }
+
+
+@router.get("/jobs/{job_id}/ass")
+async def get_ass_content(job_id: str):
+    """Return the last generated ASS subtitle file for this job (debug)."""
+    cache_dir = get_hermes_home() / "cache" / "captions"
+    ass_path = cache_dir / f"reburn_{job_id}.ass"
+    if not ass_path.exists():
+        raise HTTPException(status_code=404, detail="No ASS file found for this job — burn first")
+    content = ass_path.read_text(encoding="utf-8")
+    # Extract just the Style lines and first few Dialogue lines for readability
+    lines = content.splitlines()
+    style_lines = [l for l in lines if l.startswith(("Style:", "PlayRes", "ScaledBorder"))]
+    dialogue_lines = [l for l in lines if l.startswith("Dialogue:")][:3]
+    return {
+        "ass_path": str(ass_path),
+        "style_lines": style_lines,
+        "first_dialogues": dialogue_lines,
+        "full_content": content,
+    }
 
 
 @router.get("/jobs/{job_id}/video")
@@ -345,11 +383,15 @@ async def stream_video(job_id: str, request: Request):
     if not output_path or not os.path.exists(output_path):
         raise HTTPException(status_code=404, detail="Output video not found — run burn first")
 
-    return FileResponse(
+    resp = FileResponse(
         output_path,
         media_type="video/mp4",
         filename=Path(output_path).name,
     )
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 
 
 @router.get("/jobs/{job_id}/download")
@@ -528,15 +570,16 @@ async def nl_edit_segments(job_id: str, payload: NLEditPayload):
 # ---------------------------------------------------------------------------
 
 _QA_SYSTEM_PROMPT = """You are a quality reviewer for bilingual EN/VI caption segments.
-Review the provided segments and return ONLY a JSON array of issue flags — no prose, no markdown fences.
+Review the provided segments and return ONLY a JSON array of flags — no prose, no markdown fences.
 
 Each segment has a "num" field (1-based display number) and an "id" field (0-based internal id).
 Use the "id" value as "segment_id" in every flag you emit.
 
-Each flag:
-  {"segment_id":<int>, "issue":"<one-line description>", "suggestion":"<one-line fix>"}
+Each flag must have a "type" field — either "issue" or "praise":
+  Issue:  {"segment_id":<int>, "type":"issue",  "issue":"<one-line description>", "suggestion":"<one-line fix>"}
+  Praise: {"segment_id":<int>, "type":"praise", "issue":"<one-line note on what is correct>", "suggestion":""}
 
-Check for:
+Check for issues:
 1. Wrong language classification (e.g. Vietnamese text labelled "en" or vice versa)
 2. Mangled Vietnamese diacritics (Whisper artifacts: missing tones, malformed characters)
 3. Phonetic guide that does not phonetically match the Vietnamese text
@@ -544,7 +587,11 @@ Check for:
 5. Very long duration (>8 s) — likely should be split
 6. Empty text field
 
-Return [] if no issues found. Return ONLY the JSON array.
+Also add a praise flag for any segment that is clearly well-formed — correct language label,
+clean diacritics, accurate phonetic guide, and good timing. Only praise segments that genuinely
+stand out as correct; do not praise every segment.
+
+Return [] if there is nothing noteworthy. Return ONLY the JSON array.
 """
 
 
