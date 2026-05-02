@@ -96,6 +96,7 @@ export interface SetupStatusResponse {
 export interface SessionCreateResponse {
   info?: SessionInfo & { config_warning?: string; credential_warning?: string }
   session_id: string
+  session_key?: string
 }
 
 export interface SessionResumeResponse {
