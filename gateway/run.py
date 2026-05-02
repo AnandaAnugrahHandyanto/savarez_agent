@@ -5343,6 +5343,17 @@ class GatewayRunner:
             source.chat_id or "unknown", _msg_preview,
         )
 
+        # Preserve the triggering platform message id on the current source so
+        # async side channels (background-process/watch notifications) can use
+        # Feishu/Lark's reply API later.  A topic id (omt_...) alone is not
+        # enough to reply inside a Feishu topic; the outbound path also needs a
+        # real message id (om_...) as reply_to_message_id.
+        if getattr(event, "message_id", None):
+            try:
+                source.message_id = event.message_id
+            except Exception:
+                pass
+
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
@@ -10271,6 +10282,7 @@ class GatewayRunner:
             chat_id=context.source.chat_id,
             chat_name=context.source.chat_name or "",
             thread_id=str(context.source.thread_id) if context.source.thread_id else "",
+            message_id=str(context.source.message_id) if getattr(context.source, "message_id", None) else "",
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
@@ -10471,9 +10483,12 @@ class GatewayRunner:
         Falling back to the currently active foreground event is what causes
         cross-topic bleed, so don't do that.
         """
+        from dataclasses import replace
+
         from gateway.session import SessionSource
 
         session_key = str(evt.get("session_key") or "").strip()
+        message_id = str(evt.get("message_id") or evt.get("reply_to_message_id") or "").strip()
         derived_platform = ""
         derived_chat_type = ""
         derived_chat_id = ""
@@ -10483,6 +10498,8 @@ class GatewayRunner:
                 self.session_store._ensure_loaded()
                 entry = self.session_store._entries.get(session_key)
                 if entry and getattr(entry, "origin", None):
+                    if message_id:
+                        return replace(entry.origin, message_id=message_id)
                     return entry.origin
             except Exception as exc:
                 logger.debug(
@@ -10529,6 +10546,7 @@ class GatewayRunner:
             thread_id=str(evt.get("thread_id") or "").strip() or None,
             user_id=str(evt.get("user_id") or "").strip() or None,
             user_name=str(evt.get("user_name") or "").strip() or None,
+            message_id=message_id or None,
         )
 
     async def _inject_watch_notification(self, synth_text: str, evt: dict) -> None:
@@ -10557,6 +10575,7 @@ class GatewayRunner:
                 text=synth_text,
                 message_type=MessageType.TEXT,
                 source=source,
+                message_id=getattr(source, "message_id", None),
                 internal=True,
             )
             logger.info(
@@ -10590,6 +10609,7 @@ class GatewayRunner:
         platform_name = watcher.get("platform", "")
         chat_id = watcher.get("chat_id", "")
         thread_id = watcher.get("thread_id", "")
+        message_id = watcher.get("message_id", "") or watcher.get("reply_to_message_id", "")
         user_id = watcher.get("user_id", "")
         user_name = watcher.get("user_name", "")
         agent_notify = watcher.get("notify_on_complete", False)
@@ -10640,6 +10660,7 @@ class GatewayRunner:
                         "platform": platform_name,
                         "chat_id": chat_id,
                         "thread_id": thread_id,
+                        "message_id": message_id,
                         "user_id": user_id,
                         "user_name": user_name,
                     })
@@ -10661,6 +10682,7 @@ class GatewayRunner:
                                 text=synth_text,
                                 message_type=MessageType.TEXT,
                                 source=source,
+                                message_id=getattr(source, "message_id", None),
                                 internal=True,
                             )
                             logger.info(
@@ -10695,6 +10717,9 @@ class GatewayRunner:
                     if adapter and chat_id:
                         try:
                             send_meta = {"thread_id": thread_id} if thread_id else None
+                            if platform_name == Platform.FEISHU.value and message_id:
+                                send_meta = send_meta or {}
+                                send_meta["reply_to_message_id"] = message_id
                             await adapter.send(chat_id, message_text, metadata=send_meta)
                         except Exception as e:
                             logger.error("Watcher delivery error: %s", e)
@@ -10716,6 +10741,9 @@ class GatewayRunner:
                 if adapter and chat_id:
                     try:
                         send_meta = {"thread_id": thread_id} if thread_id else None
+                        if platform_name == Platform.FEISHU.value and message_id:
+                            send_meta = send_meta or {}
+                            send_meta["reply_to_message_id"] = message_id
                         await adapter.send(chat_id, message_text, metadata=send_meta)
                     except Exception as e:
                         logger.error("Watcher delivery error: %s", e)
