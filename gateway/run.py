@@ -5928,7 +5928,19 @@ class GatewayRunner:
                     current_model = model_cfg.get("default", "")
                     current_provider = model_cfg.get("provider", current_provider)
                     current_base_url = model_cfg.get("base_url", "")
+                    current_api_key = str(model_cfg.get("api_key", "") or "")
                 user_provs = cfg.get("providers")
+                # Gateway /model requires the current provider API key to verify
+                # model listings on custom endpoints. Resolve from provider config
+                # (key_env -> api_key fallback) when model.api_key is not set.
+                if not current_api_key and isinstance(user_provs, dict):
+                    _pentry = user_provs.get(current_provider)
+                    if isinstance(_pentry, dict):
+                        _key_env = str(_pentry.get("key_env", "") or "").strip()
+                        if _key_env:
+                            current_api_key = str(os.getenv(_key_env, "") or "")
+                        if not current_api_key:
+                            current_api_key = str(_pentry.get("api_key", "") or "")
                 try:
                     from hermes_cli.config import get_compatible_custom_providers
                     custom_provs = get_compatible_custom_providers(cfg)
