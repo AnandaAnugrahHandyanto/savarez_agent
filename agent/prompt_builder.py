@@ -34,14 +34,27 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _CONTEXT_THREAT_PATTERNS = [
+    # Direct instruction override
     (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
-    (r'system\s+prompt\s+override', "sys_prompt_override"),
     (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
+    # Synonyms for "ignore / override" not covered by the patterns above.
+    # Attackers commonly substitute words like "overlook", "forget", "set aside",
+    # "bypass", or "discard" to evade keyword-based detection.  The middle
+    # section (.{0,40}) absorbs optional qualifiers like "all prior" or "your"
+    # without requiring a fixed vocabulary match.
+    (r'(overlook|forget|set\s+aside|bypass|discard|omit)\s+.{0,40}(directive|instruction|rule|guideline|constraint|restriction|limitation)s?\b', "prompt_injection_synonym"),
+    # Privilege / mode escalation
+    (r'system\s+prompt\s+override', "sys_prompt_override"),
     (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
+    (r'\b(developer|jailbreak|unrestricted|dan|do\s+anything\s+now)\s+mode\b', "mode_escalation"),
+    # Deception / hiding
+    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
+    # HTML / CSS injection in markdown files
     (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->', "html_comment_injection"),
     (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none', "hidden_div"),
+    # Indirect execution tricks
     (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)', "translate_execute"),
+    # Credential exfiltration patterns
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
 ]
@@ -53,17 +66,31 @@ _CONTEXT_INVISIBLE_CHARS = {
 
 
 def _scan_context_content(content: str, filename: str) -> str:
-    """Scan context file content for injection. Returns sanitized content."""
+    """Scan context file content for injection. Returns sanitized content.
+
+    Applies NFKC Unicode normalisation before pattern matching so that
+    full-width characters (e.g. ｃａｔ) and compatibility equivalents are
+    folded to their ASCII counterparts before the regex engine sees them.
+    Invisible-character detection runs on the *original* content so that
+    those characters are still caught even after normalisation would remove
+    them.
+    """
+    import unicodedata
     findings = []
 
-    # Check invisible unicode
+    # Check invisible unicode on the raw content before normalisation.
     for char in _CONTEXT_INVISIBLE_CHARS:
         if char in content:
             findings.append(f"invisible unicode U+{ord(char):04X}")
 
-    # Check threat patterns
+    # Normalise to NFKC so full-width / compatibility Unicode variants
+    # (e.g. ｃａｔ → cat, Ａ → A) are folded before pattern matching.
+    # This prevents homograph substitution from bypassing keyword checks.
+    normalised = unicodedata.normalize("NFKC", content)
+
+    # Check threat patterns against the normalised text.
     for pattern, pid in _CONTEXT_THREAT_PATTERNS:
-        if re.search(pattern, content, re.IGNORECASE):
+        if re.search(pattern, normalised, re.IGNORECASE):
             findings.append(pid)
 
     if findings:
