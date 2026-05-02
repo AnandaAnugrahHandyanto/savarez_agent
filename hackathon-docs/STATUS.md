@@ -1,6 +1,6 @@
 # Hackathon Build Status
 
-**Last updated**: 2 May 2026 (night)  
+**Last updated**: 2 May 2026 (night — v6 positioning)  
 **Deadline**: EOD Sunday 3 May 2026 (1 day remaining)
 
 ---
@@ -334,7 +334,37 @@ curl http://localhost:9119/api/dashboard/plugins | python -m json.tool
 - `PLAN_v2.md` — dashboard core-edit approach (archived)
 - `PLAN_v3.md` — plugin architecture, editor + burn (executed)
 - `PLAN_v4.md` — Hermes-integrated dashboard: upload, NL edits, QA, style memory (executed)
-- `PLAN.md` — v5: 3-column layout, named preset library, AI style creation (current)
+- `PLAN_v5.md` — 3-column layout, named preset library, AI style creation (executed)
+- `PLAN.md` — v6: alignment picker + drag-to-position overlay (current)
+
+---
+
+### 10. Caption Positioning — Alignment Picker + Drag-to-Position ✅ (2 May — plan v6)
+
+#### a) Alignment Picker
+- 3×3 grid of arrow buttons (↖↑↗ / ←·→ / ↙↓↘) replacing the previously hidden `alignment` int field
+- Clicking any button sets `style.alignment` (1–9 ASS numpad); active button highlighted amber
+- Wired into Caption Style section in Col 2 between Outline width and Margin from edge
+
+#### b) Drag-to-Position Overlay
+- 160×90 thumbnail widget in the Caption Style section with a reference grid
+- Click or drag anywhere on the thumbnail to pin the caption anchor to a normalised `{x, y}` position (0.0–1.0)
+- Amber dot tracks the pinned position; "× Reset position" clears the override
+- Position persists in `style.position` and is sent with `PUT /jobs/{id}/style` on re-burn
+
+#### c) Burn-side injection (`tools/video_caption.py`)
+- When `style["position"]` is set, every Dialogue line is prefixed with `{\anN\pos(x,y)}`
+  - `x = position.x × 1920`, `y = position.y × 1080` (hardcoded 1920×1080 canvas matches PlayResX/Y)
+  - `N` = `style.alignment` — alignment sets the text anchor point at the pinned pixel
+- Jobs without `position` in style burn identically to v5 (no regression)
+
+#### d) Label rename
+- "Bottom margin" → "Margin from edge" in the UI (backend field name `margin_bottom` unchanged)
+
+#### e) Data model
+- `CaptionStyle` TypeScript interface gains `position?: { x: number; y: number } | null`
+- No backend model changes — `position` flows through the existing `style: dict[str, Any]` payload
+- No new API routes
 
 ---
 
@@ -355,6 +385,9 @@ curl http://localhost:9119/api/dashboard/plugins | python -m json.tool
 | Preset gallery smoke test | Save current style → card appears → click to apply → delete |
 | AI style creation test | "Create with AI" → describe style → preview → save → card in gallery |
 | Learned card test | Burn 3+ jobs with non-default style → amber Learned card appears |
+| Alignment picker test | Click top-center button → re-burn → captions at top-center |
+| Drag position test | Drag thumbnail → re-burn → captions at pinned position |
+| Position reset test | "× Reset position" → re-burn uses alignment+margin only |
 | Telegram flow test | Send video via Telegram → path injection → captions → dashboard link |
 
 ### P1 — Important for demo quality
@@ -476,6 +509,9 @@ Send the same clip through Telegram so we can verify the gateway path injection 
 - [ ] NL edit: instruction → diff shown → apply → segments updated + saved
 - [ ] QA review: flagged segments visible, "Fix with AI" pre-fills NL panel
 - [ ] Style memory: 3+ burns done, "Suggest style" appears and applies correctly
+- [ ] Alignment picker: top-center button → re-burn shows captions at top
+- [ ] Drag position: pin position on thumbnail → re-burn respects \pos coordinates
+- [ ] Position reset: "× Reset position" reverts to alignment+margin burn
 - [ ] Hard refresh: `/captions/{id}` reloads correctly (not redirected to `/sessions`)
 - [ ] Demo video 1 recorded: raw video → Telegram → captions → dashboard editor → NL correction → re-burn
 - [ ] Demo video 2 recorded: show style suggestion applied from memory

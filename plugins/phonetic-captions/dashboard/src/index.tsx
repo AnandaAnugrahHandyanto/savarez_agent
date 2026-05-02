@@ -82,6 +82,7 @@ interface CaptionStyle {
   alignment: number;
   margin_bottom: number;
   max_line_length: number;
+  position?: { x: number; y: number } | null;
 }
 
 interface CaptionJob {
@@ -1576,7 +1577,9 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                 <StyleColorField label="Text color" value={style.primary_color} onChange={(v) => setStyle((s) => s && ({ ...s, primary_color: v }))} />
                 <StyleColorField label="Outline" value={style.outline_color} onChange={(v) => setStyle((s) => s && ({ ...s, outline_color: v }))} />
                 <StyleNumberField label="Outline width" value={style.outline_width} onChange={(v) => setStyle((s) => s && ({ ...s, outline_width: v }))} />
-                <StyleNumberField label="Bottom margin" value={style.margin_bottom} onChange={(v) => setStyle((s) => s && ({ ...s, margin_bottom: v }))} />
+                <AlignmentPicker value={style.alignment} onChange={(v) => setStyle((s) => s && ({ ...s, alignment: v }))} />
+                <StyleNumberField label="Margin from edge" value={style.margin_bottom} onChange={(v) => setStyle((s) => s && ({ ...s, margin_bottom: v }))} />
+                <PositionPicker position={style.position} onChange={(p) => setStyle((s) => s && ({ ...s, position: p }))} />
               </div>
               <p className="text-xs text-muted-foreground mt-3">Style changes apply on the next Re-burn.</p>
             </div>
@@ -1683,6 +1686,130 @@ function StyleColorField({ label, value, onChange }: { label: string; value: str
           onChange={(e) => onChange(toAss(e.target.value))}
         />
         <span className="text-xs font-mono text-muted-foreground">{toHex(value)}</span>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Caption style — alignment picker + position picker
+// ---------------------------------------------------------------------------
+
+const ALIGNMENT_GRID = [7, 8, 9, 4, 5, 6, 1, 2, 3] as const;
+const ALIGNMENT_ICONS: Record<number, string> = {
+  7: "↖", 8: "↑", 9: "↗",
+  4: "←", 5: "·", 6: "→",
+  1: "↙", 2: "↓", 3: "↘",
+};
+
+function AlignmentPicker({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="w-24 shrink-0 text-xs text-muted-foreground">Alignment</span>
+      <div className="grid grid-cols-3 gap-0.5">
+        {ALIGNMENT_GRID.map((n) => (
+          <button
+            key={n}
+            type="button"
+            onClick={() => onChange(n)}
+            title={`Position ${n}`}
+            className={`h-7 w-7 rounded text-xs border transition-colors ${
+              value === n
+                ? "bg-amber-500 text-white border-amber-500"
+                : "bg-muted text-muted-foreground border-border hover:bg-accent"
+            }`}
+          >
+            {ALIGNMENT_ICONS[n]}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PositionPicker({
+  position,
+  onChange,
+}: {
+  position: { x: number; y: number } | null | undefined;
+  onChange: (p: { x: number; y: number } | null) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
+  const getPos = (e: MouseEvent): { x: number; y: number } => {
+    const rect = containerRef.current!.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
+      y: Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height)),
+    };
+  };
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!draggingRef.current) return;
+      onChangeRef.current(getPos(e));
+    };
+    const onUp = () => { draggingRef.current = false; };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+
+  const dotX = position ? `${position.x * 100}%` : "50%";
+  const dotY = position ? `${position.y * 100}%` : "50%";
+
+  return (
+    <div className="flex items-start gap-2">
+      <span className="w-24 shrink-0 text-xs text-muted-foreground pt-1.5">Position</span>
+      <div className="flex flex-col gap-1">
+        <div
+          ref={containerRef}
+          className="relative w-40 rounded border border-border bg-zinc-900 cursor-crosshair overflow-hidden select-none"
+          style={{ height: 90 }}
+          onMouseDown={(e) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            draggingRef.current = true;
+            const rect = containerRef.current!.getBoundingClientRect();
+            onChangeRef.current({
+              x: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
+              y: Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height)),
+            });
+          }}
+        >
+          {/* Reference grid */}
+          <div className="absolute inset-0 pointer-events-none" style={{ opacity: 0.15 }}>
+            <div className="absolute inset-x-0" style={{ top: "33.3%", borderTop: "1px solid white" }} />
+            <div className="absolute inset-x-0" style={{ top: "66.6%", borderTop: "1px solid white" }} />
+            <div className="absolute inset-y-0" style={{ left: "33.3%", borderLeft: "1px solid white" }} />
+            <div className="absolute inset-y-0" style={{ left: "66.6%", borderLeft: "1px solid white" }} />
+          </div>
+          {position ? (
+            <div
+              className="absolute w-3 h-3 rounded-full bg-amber-500 border-2 border-white shadow pointer-events-none"
+              style={{ left: dotX, top: dotY, transform: "translate(-50%, -50%)" }}
+            />
+          ) : (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <span className="text-white/30 text-[10px] text-center leading-snug">drag to<br/>pin position</span>
+            </div>
+          )}
+        </div>
+        {position && (
+          <button
+            type="button"
+            onClick={() => onChange(null)}
+            className="text-[10px] text-muted-foreground hover:text-foreground transition-colors self-start"
+          >
+            × Reset position
+          </button>
+        )}
       </div>
     </div>
   );
