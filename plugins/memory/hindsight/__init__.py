@@ -495,6 +495,8 @@ class HindsightMemoryProvider(MemoryProvider):
         # Bank
         self._bank_mission = ""
         self._bank_retain_mission: str | None = None
+        self._bank_reflect_mission: str | None = None
+        self._bank_observations_mission: str | None = None
         self._bank_id_template = ""
 
         # Smart retain (pre-filter + context tagging)
@@ -847,6 +849,63 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._client = Hindsight(**kwargs)
         return self._client
 
+    def _fetch_bank_config(self) -> None:
+        """Fetch bank config from Hindsight API and cache reflect/observations/retain missions.
+
+        This pulls the server-side bank configuration (reflect_mission, observations_mission,
+        retain_mission) so the client-side smart pipeline can use the same framing the bank
+        uses for extraction.  If the API call fails, local config.json values are kept as-is.
+        """
+        if self._mode not in ("cloud",) or not self._api_key or not self._api_url:
+            return
+        import urllib.request
+        import urllib.error
+        url = f"{self._api_url.rstrip('/')}/v1/default/banks/{self._bank_id}/config"
+        req = urllib.request.Request(url, headers={
+            "Authorization": f"Bearer {self._api_key}",
+            "Accept": "application/json",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=min(self._timeout, 10)) as resp:
+                data = json.loads(resp.read().decode())
+            config = data.get("config") or data  # API wraps in {"config": {...}} or flat
+            # Server-side retain_mission overrides local if present
+            api_retain = (config.get("retain_mission") or "").strip()
+            if api_retain:
+                if self._bank_retain_mission and self._bank_retain_mission != api_retain:
+                    logger.info("Bank retain_mission from API overrides local config.json value")
+                self._bank_retain_mission = api_retain
+            # Reflect and observations — only from API (no local equivalent)
+            self._bank_reflect_mission = (config.get("reflect_mission") or "").strip() or None
+            self._bank_observations_mission = (config.get("observations_mission") or "").strip() or None
+            logger.info(
+                "Fetched bank config for '%s': reflect=%s, observations=%s, retain=%s",
+                self._bank_id,
+                bool(self._bank_reflect_mission),
+                bool(self._bank_observations_mission),
+                bool(self._bank_retain_mission),
+            )
+        except Exception as exc:
+            logger.warning("Failed to fetch bank config for '%s': %s — using local config", self._bank_id, exc)
+
+    def _build_bank_prompt_context(self) -> str:
+        """Compose bank config fields into a prompt preamble for the smart pipeline.
+
+        Order: reflect (persona) → observations (what to look for) → retain_mission (what matters).
+        This gives the classification/extraction LLM a proper frame before it sees the conversation.
+        Returns empty string if no bank config fields are set.
+        """
+        parts = []
+        if self._bank_reflect_mission:
+            parts.append(f"PERSONA:\n{self._bank_reflect_mission}")
+        if self._bank_observations_mission:
+            parts.append(f"OBSERVATIONS (what patterns to look for):\n{self._bank_observations_mission}")
+        if self._bank_retain_mission:
+            parts.append(f"RETAIN MISSION (what to keep vs ignore):\n{self._bank_retain_mission}")
+        if not parts:
+            return ""
+        return "\n\n".join(parts) + "\n"
+
     def _run_sync(self, coro):
         """Schedule *coro* on the shared loop using the configured timeout."""
         return _run_sync(coro, timeout=self._timeout)
@@ -1054,6 +1113,11 @@ class HindsightMemoryProvider(MemoryProvider):
         self._bank_mission = self._config.get("bank_mission", "")
         self._bank_retain_mission = self._config.get("bank_retain_mission") or None
 
+        # Fetch server-side bank config (reflect/observations/retain missions).
+        # This overrides local bank_retain_mission if the API has one set,
+        # and populates reflect + observations missions for richer prompt framing.
+        self._fetch_bank_config()
+
         # Smart retain
         self._retain_prefilter = self._config.get("retain_prefilter", False)
         self._retain_dedup = self._config.get("retain_dedup", False)
@@ -1072,9 +1136,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_context_tagging = raw_tagging if raw_tagging in ("off", "on", "smart") else "off"
         if self._retain_prefilter and not self._bank_retain_mission:
             logger.warning(
-                "Hindsight retain_prefilter enabled but no bank_retain_mission set — "
-                "pre-filtering disabled (will retain all content). Set bank_retain_mission "
-                "or configure it on the bank via the Hindsight API."
+                "Hindsight retain_prefilter enabled but no retain_mission found — "
+                "checked local config.json and bank API. Pre-filtering disabled "
+                "(will retain all content). Set retain_mission on the bank via the Hindsight API."
             )
             self._retain_prefilter = False
 
@@ -1378,7 +1442,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
             prompt = (
                 f"Classify this conversation for memory retention.\n\n"
-                f"RETAIN MISSION (what to keep vs ignore):\n{self._bank_retain_mission}\n\n"
+                f"{self._build_bank_prompt_context()}\n"
                 f"CONVERSATION:\n{truncated}\n\n"
                 f"Rules:\n"
                 f"- SKIP = content the mission says to ignore, OR pure noise "
@@ -1578,12 +1642,11 @@ class HindsightMemoryProvider(MemoryProvider):
             # Truncate from the end (most recent = most relevant)
             truncated = content[-6000:] if len(content) > 6000 else content
 
-            mission_ctx = ""
-            if self._bank_retain_mission:
-                mission_ctx = f"\nRETAIN MISSION (what matters):\n{self._bank_retain_mission}\n"
+            bank_ctx = self._build_bank_prompt_context()
 
             prompt = (
-                f"Extract distinct discussion points from this conversation.{mission_ctx}\n"
+                f"Extract distinct discussion points from this conversation.\n\n"
+                f"{bank_ctx}\n"
                 f"CONVERSATION:\n{truncated}\n\n"
                 f"Rules:\n"
                 f"- Each point should be a short factual statement (1-2 sentences)\n"
@@ -1649,12 +1712,9 @@ class HindsightMemoryProvider(MemoryProvider):
 
             numbered = "\n".join(f"{i+1}. {p}" for i, p in enumerate(points))
 
-            mission_ctx = ""
-            if self._bank_retain_mission:
-                mission_ctx = f"\nRETAIN MISSION:\n{self._bank_retain_mission}\n"
-
             prompt = (
-                f"Classify each discussion point for memory retention.{mission_ctx}\n"
+                f"Classify each discussion point for memory retention.\n\n"
+                f"{self._build_bank_prompt_context()}\n"
                 f"POINTS:\n{numbered}\n\n"
                 f"For each point, decide:\n"
                 f"- verdict: RETAIN (worth saving) or SKIP (noise, trivial, CI/PR status)\n"
