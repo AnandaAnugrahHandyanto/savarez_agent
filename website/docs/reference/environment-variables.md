@@ -30,7 +30,7 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `GLM_API_KEY` | z.ai / ZhipuAI GLM API key ([z.ai](https://z.ai)) |
 | `ZAI_API_KEY` | Alias for `GLM_API_KEY` |
 | `Z_AI_API_KEY` | Alias for `GLM_API_KEY` |
-| `GLM_BASE_URL` | Override z.ai base URL (default: `https://api.z.ai/api/paas/v4`) |
+| `GLM_BASE_URL` | Override z.ai base URL (default: `https://api.z.ai/api/anthropic`) |
 | `KIMI_API_KEY` | Kimi / Moonshot AI API key ([moonshot.ai](https://platform.moonshot.ai)) |
 | `KIMI_BASE_URL` | Override Kimi base URL (default: `https://api.moonshot.ai/v1`) |
 | `KIMI_CN_API_KEY` | Kimi / Moonshot China API key ([moonshot.cn](https://platform.moonshot.cn)) |

@@ -120,7 +120,7 @@ class TestProviderRegistry:
     def test_base_urls(self):
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
-        assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
+        assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/anthropic"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["stepfun"].inference_base_url == STEPFUN_STEP_PLAN_INTL_BASE_URL
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
@@ -409,7 +409,7 @@ class TestResolveApiKeyProviderCredentials:
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["provider"] == "zai"
         assert creds["api_key"] == "glm-secret-key"
-        assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
+        assert creds["base_url"] == "https://api.z.ai/api/anthropic"
         assert creds["source"] == "GLM_API_KEY"
 
     def test_resolve_copilot_with_github_token(self, monkeypatch):
@@ -578,7 +578,7 @@ class TestRuntimeProviderResolution:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         result = resolve_runtime_provider(requested="zai")
         assert result["provider"] == "zai"
-        assert result["api_mode"] == "chat_completions"
+        assert result["api_mode"] == "anthropic_messages"
         assert result["api_key"] == "glm-key"
         assert "z.ai" in result["base_url"] or "api.z.ai" in result["base_url"]
 
@@ -952,7 +952,7 @@ class TestKimiCodeCredentialAutoDetect:
         monkeypatch.setenv("GLM_API_KEY", "sk-kim...isnt")
         monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
         creds = resolve_api_key_provider_credentials("zai")
-        assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
+        assert creds["base_url"] == "https://api.z.ai/api/anthropic"
 
 
 class TestZaiEndpointAutoDetect:
@@ -976,7 +976,7 @@ class TestZaiEndpointAutoDetect:
         monkeypatch.setenv("GLM_API_KEY", "glm-key")
         monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
         creds = resolve_api_key_provider_credentials("zai")
-        assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
+        assert creds["base_url"] == "https://api.z.ai/api/anthropic"
 
     def test_env_override_skips_probe(self, monkeypatch):
         """GLM_BASE_URL should always win without probing."""
