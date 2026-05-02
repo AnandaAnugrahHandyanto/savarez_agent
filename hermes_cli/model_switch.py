@@ -1165,14 +1165,14 @@ def list_authenticated_providers(
         pcfg = _reg.get(slug)
         if not pcfg:
             return
-        url = ""
+        urls: list[str] = []
         if getattr(pcfg, "base_url_env_var", ""):
-            url = _env_value(pcfg.base_url_env_var) or ""
-        if not url:
-            url = getattr(pcfg, "inference_base_url", "") or ""
-        normed = _norm_url(url)
-        if normed:
-            _builtin_endpoints.add(normed)
+            urls.append(_env_value(pcfg.base_url_env_var) or "")
+        urls.append(getattr(pcfg, "inference_base_url", "") or "")
+        for url in urls:
+            normed = _norm_url(url)
+            if normed:
+                _builtin_endpoints.add(normed)
 
     data = fetch_models_dev()
 
