@@ -851,6 +851,7 @@ def skill_view(
     file_path: str = None,
     task_id: str = None,
     preprocess: bool = True,
+    detail: str = None,
 ) -> str:
     """
     View the content of a skill or a specific file within a skill directory.
@@ -863,6 +864,9 @@ def skill_view(
         preprocess: Apply configured SKILL.md template and inline shell rendering
             to main skill content. Internal slash/preload callers disable this
             because they render the skill message themselves.
+        detail: Optional detail level. "summary" = frontmatter + first H2 section only
+            (~70-85% token savings for the "just checking" case). "frontmatter_only" =
+            metadata fields only. Omit (default) for full SKILL.md content.
 
     Returns:
         JSON string with skill content or error message
@@ -1315,8 +1319,10 @@ def skill_view(
                     exc_info=True,
                 )
 
+        # Skip preprocess when detail is set — we re-parse body anyway for summary,
+        # and frontmatter_only discards content entirely.
         rendered_content = content
-        if preprocess:
+        if preprocess and detail is None:
             try:
                 from agent.skill_preprocessing import preprocess_skill_content
 
@@ -1329,6 +1335,28 @@ def skill_view(
                 logger.debug(
                     "Could not preprocess skill content for %s", skill_name, exc_info=True
                 )
+
+        # ── Optional detail levels for "just checking" case ──────────────
+        if detail == "frontmatter_only":
+            rendered_content = ""
+        elif detail == "summary":
+            # Extract first ## H2 section: saves ~70-85% tokens per load.
+            # Re-parse frontmatter since we discarded the body above.
+            _, body = _parse_frontmatter(content)
+            # Strip markdown top-level title (# Skill Name) if present
+            body = re.sub(r"^#[^\n]*\n+", "", body, count=1).lstrip("\n")
+            # Find first H2 section: content after the H2 title line, up to next H2 or end.
+            # H2 line pattern: '## Title' optionally preceded by newline, followed by newline.
+            h2_pattern = re.search(r"(?:^|\n)(##[^\n]*)(?=\n)", body)
+            if h2_pattern:
+                h2_end_pos = h2_pattern.end()  # position after trailing newline of H2 line
+                first_section = body[h2_end_pos:].lstrip("\n")
+                next_h2 = re.search(r"(?:^|\n)##\s+", first_section)
+                body = first_section[: next_h2.start()].rstrip() if next_h2 else first_section.rstrip()
+            else:
+                # No H2 found — use full body (still avoids preprocess cost)
+                body = body.rstrip()
+            rendered_content = body
 
         result = {
             "success": True,
@@ -1456,7 +1484,7 @@ SKILLS_LIST_SCHEMA = {
 
 SKILL_VIEW_SCHEMA = {
     "name": "skill_view",
-    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
+    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter. Use detail='summary' for a lightweight view (~45 tokens vs full content).",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1467,6 +1495,11 @@ SKILL_VIEW_SCHEMA = {
             "file_path": {
                 "type": "string",
                 "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
+            },
+            "detail": {
+                "type": "string",
+                "enum": ["summary", "frontmatter_only"],
+                "description": "OPTIONAL: Level of detail to return. 'summary' = frontmatter + first H2 section only (~70-85% token savings for 'just checking' case). 'frontmatter_only' = metadata only. Omit for full content (default).",
             },
         },
         "required": ["name"],
@@ -1488,7 +1521,11 @@ def _skill_view_with_bump(args, **kw):
     telemetry failure never breaks the tool call."""
     name = args.get("name", "")
     result = skill_view(
-        name, file_path=args.get("file_path"), task_id=kw.get("task_id")
+        name,
+        file_path=args.get("file_path"),
+        task_id=kw.get("task_id"),
+        preprocess=args.get("preprocess", True),
+        detail=args.get("detail"),
     )
     try:
         parsed = json.loads(result)
