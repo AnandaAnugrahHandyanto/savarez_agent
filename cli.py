@@ -52,6 +52,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.widgets import TextArea
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
 try:
@@ -74,6 +75,12 @@ from agent.usage_pricing import (
 from hermes_cli.banner import _format_context_length, format_banner_version_label
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
+# prompt_toolkit does not map xterm focus-reporting sequences by default.
+# Teach its VT100 parser to surface them as private-use single-character keys
+# so Hermes can bind handlers that auto-heal cmux/tmux tab-switch drift.
+_PT_FOCUS_IN_KEY = ANSI_SEQUENCES.setdefault("\x1b[I", "\ue000")
+_PT_FOCUS_OUT_KEY = ANSI_SEQUENCES.setdefault("\x1b[O", "\ue001")
 
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
@@ -2245,6 +2252,10 @@ class HermesCLI:
         self._history_file = _hermes_home / ".hermes_history"
         self._last_invalidate: float = 0.0  # throttle UI repaints
         self._app = None
+        self._focus_reporting_enabled = False
+        self._focus_redraw_pending = False
+        self._focus_reporting_started_at = 0.0
+        self._last_focus_redraw = 0.0
 
         # State shared by interactive run() and single-query chat mode.
         # These must exist before any direct chat() call because single-query
@@ -2337,6 +2348,54 @@ class HermesCLI:
             app.invalidate()
         except Exception:
             pass
+
+    def _set_terminal_focus_reporting(self, enabled: bool) -> None:
+        """Best-effort toggle for xterm focus-reporting mode (CSI ?1004 h/l).
+
+        When enabled, compatible terminals send ``CSI I`` on focus-in and
+        ``CSI O`` on focus-out. Hermes maps those escape sequences into private
+        keys and uses them to auto-heal prompt_toolkit's non-full-screen UI
+        after cmux/tmux tab switches that repaint the viewport without
+        delivering SIGWINCH.
+        """
+        app = getattr(self, "_app", None)
+        out = getattr(getattr(app, "renderer", None), "output", None)
+        if not out or getattr(self, "_focus_reporting_enabled", False) == enabled:
+            return
+        try:
+            out.write_raw("\x1b[?1004h" if enabled else "\x1b[?1004l")
+            out.flush()
+        except Exception:
+            return
+        self._focus_reporting_enabled = enabled
+        if enabled:
+            self._focus_reporting_started_at = time.monotonic()
+        else:
+            self._focus_redraw_pending = False
+
+    def _handle_terminal_focus_out(self) -> None:
+        """Mark that the next focus-in should force a clean repaint."""
+        self._focus_redraw_pending = True
+
+    def _handle_terminal_focus_in(self) -> None:
+        """Auto-heal duplicated UI after an external terminal repaint.
+
+        We only redraw when a focus-out happened first, which avoids a noisy
+        full-screen clear on the initial startup focus event. A small startup
+        grace window prevents terminals that emit an immediate focus handshake
+        on launch from triggering an unnecessary repaint.
+        """
+        if not getattr(self, "_focus_redraw_pending", False):
+            return
+        now = time.monotonic()
+        if (now - getattr(self, "_focus_reporting_started_at", 0.0)) < 0.25:
+            return
+        if (now - getattr(self, "_last_focus_redraw", 0.0)) < 0.1:
+            self._focus_redraw_pending = False
+            return
+        self._focus_redraw_pending = False
+        self._last_focus_redraw = now
+        self._force_full_redraw()
 
     def _status_bar_context_style(self, percent_used: Optional[int]) -> str:
         if percent_used is None:
@@ -10333,6 +10392,18 @@ class HermesCLI:
             """
             self._force_full_redraw()
 
+        @kb.add(_PT_FOCUS_OUT_KEY, record_in_macro=False)
+        def handle_terminal_focus_out(event):
+            """Track terminal focus loss so focus return can trigger a repaint."""
+            self._handle_terminal_focus_out()
+            return NotImplemented
+
+        @kb.add(_PT_FOCUS_IN_KEY, record_in_macro=False)
+        def handle_terminal_focus_in(event):
+            """Auto-heal cmux/tmux viewport drift on terminal focus restore."""
+            self._handle_terminal_focus_in()
+            return NotImplemented
+
         @kb.add('c-c')
         def handle_ctrl_c(event):
             """Handle Ctrl+C - cancel interactive prompts, interrupt agent, or exit.
@@ -11677,6 +11748,7 @@ class HermesCLI:
                     _loop.set_exception_handler(_suppress_closed_loop_errors)
                 except Exception:
                     pass
+                self._set_terminal_focus_reporting(True)
                 app.run()
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
             pass
@@ -11695,6 +11767,7 @@ class HermesCLI:
                 raise
         finally:
             self._should_exit = True
+            self._set_terminal_focus_reporting(False)
             # Interrupt the agent immediately so its daemon thread stops making
             # API calls and exits promptly (agent_thread is daemon, so the
             # process will exit once the main thread finishes, but interrupting

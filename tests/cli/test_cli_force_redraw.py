@@ -9,7 +9,7 @@ objects — we're asserting the escape sequences the CLI sends, not that
 the terminal physically repainted.
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -71,3 +71,71 @@ class TestForceFullRedraw:
         bare_cli._app = app
 
         bare_cli._force_full_redraw()  # must not raise
+
+
+class TestFocusReporting:
+    def test_enable_focus_reporting_writes_escape_sequence(self, bare_cli):
+        app = MagicMock()
+        bare_cli._app = app
+        bare_cli._focus_reporting_enabled = False
+
+        with patch("cli.time.monotonic", return_value=123.0):
+            bare_cli._set_terminal_focus_reporting(True)
+
+        app.renderer.output.write_raw.assert_called_once_with("\x1b[?1004h")
+        app.renderer.output.flush.assert_called_once()
+        assert bare_cli._focus_reporting_enabled is True
+        assert bare_cli._focus_reporting_started_at == 123.0
+
+    def test_disable_focus_reporting_writes_escape_sequence(self, bare_cli):
+        app = MagicMock()
+        bare_cli._app = app
+        bare_cli._focus_reporting_enabled = True
+        bare_cli._focus_redraw_pending = True
+
+        bare_cli._set_terminal_focus_reporting(False)
+
+        app.renderer.output.write_raw.assert_called_once_with("\x1b[?1004l")
+        app.renderer.output.flush.assert_called_once()
+        assert bare_cli._focus_reporting_enabled is False
+        assert bare_cli._focus_redraw_pending is False
+
+    def test_focus_in_after_focus_out_forces_redraw(self, bare_cli):
+        bare_cli._focus_redraw_pending = False
+        bare_cli._focus_reporting_started_at = 0.0
+        bare_cli._last_focus_redraw = 0.0
+        bare_cli._force_full_redraw = MagicMock()
+
+        with patch("cli.time.monotonic", return_value=10.0):
+            bare_cli._handle_terminal_focus_out()
+        assert bare_cli._focus_redraw_pending is True
+
+        with patch("cli.time.monotonic", return_value=11.0):
+            bare_cli._handle_terminal_focus_in()
+
+        bare_cli._force_full_redraw.assert_called_once()
+        assert bare_cli._focus_redraw_pending is False
+        assert bare_cli._last_focus_redraw == 11.0
+
+    def test_focus_in_without_pending_focus_out_is_noop(self, bare_cli):
+        bare_cli._focus_redraw_pending = False
+        bare_cli._focus_reporting_started_at = 0.0
+        bare_cli._last_focus_redraw = 0.0
+        bare_cli._force_full_redraw = MagicMock()
+
+        with patch("cli.time.monotonic", return_value=11.0):
+            bare_cli._handle_terminal_focus_in()
+
+        bare_cli._force_full_redraw.assert_not_called()
+
+    def test_startup_focus_handshake_does_not_redraw(self, bare_cli):
+        bare_cli._focus_redraw_pending = True
+        bare_cli._focus_reporting_started_at = 10.0
+        bare_cli._last_focus_redraw = 0.0
+        bare_cli._force_full_redraw = MagicMock()
+
+        with patch("cli.time.monotonic", return_value=10.1):
+            bare_cli._handle_terminal_focus_in()
+
+        bare_cli._force_full_redraw.assert_not_called()
+        assert bare_cli._focus_redraw_pending is True
