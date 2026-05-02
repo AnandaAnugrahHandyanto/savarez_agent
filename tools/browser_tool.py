@@ -339,6 +339,8 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
          and config-set overrides.
       2. ``_active_sessions[task_id]["cdp_url"]`` — covers Browserbase + any
          other cloud provider whose ``create_session`` returns a raw CDP URL.
+      3. ``_active_sessions[task_id]["supervisor_cdp_url"]`` — covers local
+         agent-browser sessions after ``agent-browser get cdp-url`` discovery.
 
     Swallows all errors — failing to attach the supervisor must not break
     the browser session itself.  The agent simply won't see
@@ -347,10 +349,17 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     cdp_url = _get_cdp_override()
     if not cdp_url:
         # Fallback: active session may carry a per-session CDP URL from a
-        # cloud provider (Browserbase sets this).
+        # cloud provider (Browserbase sets this) or a local supervisor-only
+        # URL discovered via ``agent-browser get cdp-url``.  Keep those keys
+        # separate: ``cdp_url`` controls the main agent-browser backend args,
+        # while ``supervisor_cdp_url`` only attaches the Python supervisor.
         with _cleanup_lock:
             session_info = _active_sessions.get(task_id, {})
-        maybe = str(session_info.get("cdp_url") or "")
+        maybe = str(
+            session_info.get("cdp_url")
+            or session_info.get("supervisor_cdp_url")
+            or ""
+        )
         if maybe:
             cdp_url = _resolve_cdp_override(maybe)
     if not cdp_url:
@@ -371,6 +380,52 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
             task_id,
             exc,
         )
+
+
+def _discover_local_supervisor_cdp_url(task_id: str) -> Optional[str]:
+    """Discover and cache the supervisor-only CDP URL for a local session.
+
+    agent-browser 0.26+ exposes ``get cdp-url`` for its managed local Chrome.
+    Hermes uses that URL only for the persistent Python CDP supervisor so the
+    normal browser commands continue to use ``--session`` and keep the
+    agent-browser daemon's lifecycle / idle timeout accounting intact.
+    """
+    with _cleanup_lock:
+        session_info = _active_sessions.get(task_id, {})
+        existing = str(session_info.get("supervisor_cdp_url") or "")
+        if existing:
+            return existing
+        if session_info.get("cdp_url"):
+            return str(session_info.get("cdp_url") or "")
+        features = session_info.get("features") or {}
+        is_local_session = bool(isinstance(features, dict) and features.get("local"))
+    if not is_local_session:
+        return None
+
+    try:
+        result = _run_browser_command(task_id, "get", ["cdp-url"], timeout=10)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.debug("local CDP URL discovery for task=%s failed: %s", task_id, exc)
+        return None
+    if not result.get("success"):
+        logger.debug(
+            "local CDP URL discovery for task=%s unavailable: %s",
+            task_id,
+            result.get("error"),
+        )
+        return None
+
+    data = result.get("data") or {}
+    cdp_url = str(data.get("cdpUrl") or data.get("cdp_url") or data.get("url") or "")
+    if not cdp_url.startswith(("ws://", "wss://")):
+        logger.debug("local CDP URL discovery for task=%s returned unusable URL: %r", task_id, cdp_url)
+        return None
+
+    with _cleanup_lock:
+        session_info = _active_sessions.get(task_id)
+        if isinstance(session_info, dict):
+            session_info["supervisor_cdp_url"] = cdp_url
+    return cdp_url
 
 
 def _stop_cdp_supervisor(task_id: str) -> None:
@@ -1777,6 +1832,20 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         data = result.get("data", {})
         title = data.get("title", "")
         final_url = data.get("url", url)
+
+        # In local agent-browser mode, the CDP endpoint only exists after the
+        # browser process has launched.  Discover it now and attach the
+        # persistent Python supervisor so subsequent snapshots can surface
+        # frame_tree / dialog state without changing normal --session routing.
+        try:
+            if _discover_local_supervisor_cdp_url(nav_session_key):
+                _ensure_cdp_supervisor(nav_session_key)
+        except Exception as exc:
+            logger.debug(
+                "local CDP supervisor discovery for task=%s failed (non-fatal): %s",
+                nav_session_key,
+                exc,
+            )
 
         # Post-redirect SSRF check — if the browser followed a redirect to a
         # private/internal address, block the result so the model can't read
