@@ -419,7 +419,7 @@ class TestCmdUpdateLaunchdRestart:
         _find_call_count = [0]
         def _find_pids_side_effect(*args, **kwargs):
             _find_call_count[0] += 1
-            if _find_call_count[0] <= 2:
+            if _find_call_count[0] <= 1:
                 return [12345]
             return []  # Survivor sweep finds nothing
 
@@ -464,7 +464,7 @@ class TestCmdUpdateLaunchdRestart:
         _find_call_count = [0]
         def _find_pids_side_effect(*args, **kwargs):
             _find_call_count[0] += 1
-            if _find_call_count[0] <= 2:
+            if _find_call_count[0] <= 1:
                 return [12345]
             return []  # Survivor sweep finds nothing
 
@@ -892,7 +892,7 @@ class TestServicePidExclusion:
         def fake_find(exclude_pids=None, all_profiles=False):
             _exclude = exclude_pids or set()
             _find_call_count[0] += 1
-            if _find_call_count[0] <= 2:
+            if _find_call_count[0] <= 1:
                 return [p for p in [SERVICE_PID, MANUAL_PID] if p not in _exclude]
             return []  # Survivor sweep finds nothing
 
