@@ -127,7 +127,7 @@ class DynamicReactionMixin:
             return "👀"
 
     def _rxn_resolve_dynamic_reactions(self) -> bool:
-        """Resolve dynamic_reactions flag from platform → global → True."""
+        """Resolve dynamic_reactions flag from platform → global → False."""
         if not self._rxn_reactions_enabled():
             return False
         extra = getattr(getattr(self, "config", None), "extra", {}) or {}
@@ -135,9 +135,9 @@ class DynamicReactionMixin:
             return bool(extra["dynamic_reactions"])
         try:
             from hermes_cli.config import load_config
-            return bool(load_config().get("dynamic_reactions", True))
+            return bool(load_config().get("dynamic_reactions", False))
         except Exception:
-            return True
+            return False
 
     def _rxn_resolve_cooldown(self) -> float:
         """Resolve reaction_cooldown from platform config → default 1.0s."""
