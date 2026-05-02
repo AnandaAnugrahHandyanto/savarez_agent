@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 TOOLSET = "vibe-trading"
 DEFAULT_BASE_URL = "http://192.168.1.58:8899"
 DEFAULT_TIMEOUT_SECONDS = 20.0
-DEFAULT_AGENT_TIMEOUT_SECONDS = 180.0
+DEFAULT_AGENT_TIMEOUT_SECONDS = 300.0
 DEFAULT_AGENT_POLL_SECONDS = 3.0
 
 
@@ -123,7 +123,7 @@ def _latest_assistant_message(messages: Any) -> str | None:
 
 def _clean_agent_answer(content: str) -> str:
     text = content.strip()
-    return re.sub(r"^<think>\s*</think>\s*", "", text, flags=re.IGNORECASE).strip()
+    return re.sub(r"^(?:<think>.*?</think>\s*)+", "", text, flags=re.IGNORECASE | re.DOTALL).strip()
 
 
 def _vibe_agent_ask(question: str, *, title: str, instruction: str | None = None) -> str:
@@ -153,16 +153,21 @@ def _vibe_agent_ask(question: str, *, title: str, instruction: str | None = None
         return _json_dumps(send_payload)
     attempt_id = send_payload.get("attempt_id")
 
+    messages_path = f"/sessions/{urllib.parse.quote(session_id, safe='')}/messages"
+
+    def read_answer() -> tuple[str | None, Any]:
+        messages_payload = json.loads(_request_json(
+            "GET",
+            messages_path,
+            query={"limit": 50},
+        ))
+        return _latest_assistant_message(messages_payload), messages_payload
+
     deadline = time.monotonic() + _agent_timeout_seconds()
     last_messages: Any = None
     while time.monotonic() < deadline:
-        messages_payload = json.loads(_request_json(
-            "GET",
-            f"/sessions/{urllib.parse.quote(session_id, safe='')}/messages",
-            query={"limit": 50},
-        ))
+        answer, messages_payload = read_answer()
         last_messages = messages_payload
-        answer = _latest_assistant_message(messages_payload)
         if answer:
             return _json_dumps({
                 "success": True,
@@ -171,6 +176,16 @@ def _vibe_agent_ask(question: str, *, title: str, instruction: str | None = None
                 "answer": answer,
             })
         time.sleep(_agent_poll_seconds())
+
+    answer, messages_payload = read_answer()
+    last_messages = messages_payload
+    if answer:
+        return _json_dumps({
+            "success": True,
+            "session_id": session_id,
+            "attempt_id": attempt_id,
+            "answer": answer,
+        })
 
     return _json_dumps({
         "success": False,

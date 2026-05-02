@@ -214,3 +214,59 @@ def test_vibe_ask_strips_empty_think_tags(monkeypatch):
     result = json.loads(plugin._vibe_ask({"question": "分析 600219.SH"}))
 
     assert result["answer"] == "最终报告"
+
+
+def test_vibe_ask_strips_leading_think_block_with_reasoning(monkeypatch):
+    plugin = _load_plugin()
+
+    def fake_request_json(method, path, payload=None, query=None):
+        if method == "POST" and path == "/sessions":
+            return json.dumps({"session_id": "s5"})
+        if method == "POST" and path == "/sessions/s5/messages":
+            return json.dumps({"message_id": "m5", "attempt_id": "a5"})
+        if method == "GET" and path == "/sessions/s5/messages":
+            return json.dumps([
+                {"role": "assistant", "content": "<think>\n内部推理\n</think>\n\n# 最终报告"},
+            ], ensure_ascii=False)
+        raise AssertionError(f"Unexpected call: {method} {path}")
+
+    monkeypatch.setattr(plugin, "_request_json", fake_request_json)
+
+    result = json.loads(plugin._vibe_ask({"question": "分析 600219.SH"}))
+
+    assert result["answer"] == "# 最终报告"
+
+
+def test_vibe_ask_checks_once_more_at_timeout_boundary(monkeypatch):
+    plugin = _load_plugin()
+    get_calls = 0
+    now = {"value": 0.0}
+
+    def fake_request_json(method, path, payload=None, query=None):
+        nonlocal get_calls
+        if method == "POST" and path == "/sessions":
+            return json.dumps({"session_id": "s4"})
+        if method == "POST" and path == "/sessions/s4/messages":
+            return json.dumps({"message_id": "m4", "attempt_id": "a4"})
+        if method == "GET" and path == "/sessions/s4/messages":
+            get_calls += 1
+            if get_calls < 2:
+                return json.dumps([{"role": "user", "content": "分析 600219.SH"}])
+            return json.dumps([{"role": "assistant", "content": "边界完成报告"}], ensure_ascii=False)
+        raise AssertionError(f"Unexpected call: {method} {path}")
+
+    def fake_monotonic():
+        return now["value"]
+
+    def fake_sleep(seconds):
+        now["value"] += 181.0
+
+    monkeypatch.setattr(plugin, "_request_json", fake_request_json)
+    monkeypatch.setattr(plugin.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(plugin.time, "sleep", fake_sleep)
+
+    result = json.loads(plugin._vibe_ask({"question": "分析 600219.SH"}))
+
+    assert result["success"] is True
+    assert result["answer"] == "边界完成报告"
+    assert get_calls == 2
