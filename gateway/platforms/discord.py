@@ -45,6 +45,7 @@ from gateway.config import Platform, PlatformConfig
 import re
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
+from gateway.platforms.reaction_mixin import DynamicReactionMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -470,7 +471,7 @@ class VoiceReceiver:
                 pass
 
 
-class DiscordAdapter(BasePlatformAdapter):
+class DiscordAdapter(DynamicReactionMixin, BasePlatformAdapter):
     """
     Discord bot adapter.
 
@@ -529,6 +530,12 @@ class DiscordAdapter(BasePlatformAdapter):
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
+        # Cache raw Discord message objects by session key so on_tool_call_start
+        # can resolve them from a SessionSource (which lacks raw_message).
+        # Populated in on_processing_start, cleaned up in on_processing_complete.
+        self._session_raw_messages: Dict[str, Any] = {}
+        # Initialize the platform-agnostic dynamic reaction mixin.
+        self._init_reaction_mixin()
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -1043,27 +1050,57 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def _reactions_enabled(self) -> bool:
         """Check if message reactions are enabled via config/env."""
-        return os.getenv("DISCORD_REACTIONS", "true").lower() not in ("false", "0", "no")
+        return os.getenv("DISCORD_REACTIONS", "true").lower() not in ("false", "0", "no") \
+            and self.config.extra.get("reactions", True)
+
+    def _session_key_from_source(self, source) -> str:
+        """Derive a stable session key from a SessionSource or MessageEvent."""
+        if hasattr(source, "source") and source.source is not None:
+            source = source.source  # MessageEvent → inner SessionSource
+        return f"{source.platform}:{source.chat_id}:{source.thread_id or ''}"
+
+    # ── DynamicReactionMixin primitives ──────────────────────────────────
+
+    async def _reaction_add(self, msg_ref: Any, emoji: str) -> bool:
+        """Add an emoji reaction to a Discord message."""
+        return await self._add_reaction(msg_ref, emoji)
+
+    async def _reaction_remove(self, msg_ref: Any, emoji: str) -> bool:
+        """Remove the bot's own emoji reaction from a Discord message."""
+        return await self._remove_reaction(msg_ref, emoji)
+
+    def _reaction_resolve_message(self, event: Any) -> Any:
+        """Extract the raw Discord message from the event or session cache."""
+        message = getattr(event, "raw_message", None)
+        if message and hasattr(message, "add_reaction"):
+            return message
+        # Fall back to session cache (when called with a SessionSource)
+        sk = self._session_key_from_source(event)
+        return self._session_raw_messages.get(sk)
+
+    def _reaction_msg_key(self, event: Any) -> Optional[int]:
+        """Return message.id as the tracking key."""
+        msg = self._reaction_resolve_message(event)
+        return getattr(msg, "id", None)
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction for normal Discord message events."""
-        if not self._reactions_enabled():
-            return
+        """Add persona emoji and cache the raw message for tool-call lookups."""
         message = event.raw_message
         if hasattr(message, "add_reaction"):
-            await self._add_reaction(message, "👀")
+            sk = self._session_key_from_source(event)
+            self._session_raw_messages[sk] = message
+        await self._rxn_on_processing_start(event)
+
+    async def on_tool_call_start(self, event, tool_name: str) -> None:
+        """Swap the active reaction to the tool-specific emoji."""
+        await self._rxn_on_tool_call_start(event, tool_name)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction."""
-        if not self._reactions_enabled():
-            return
-        message = event.raw_message
-        if hasattr(message, "add_reaction"):
-            await self._remove_reaction(message, "👀")
-            if outcome == ProcessingOutcome.SUCCESS:
-                await self._add_reaction(message, "✅")
-            elif outcome == ProcessingOutcome.FAILURE:
-                await self._add_reaction(message, "❌")
+        """Replace the active reaction with the persona emoji or ❌."""
+        # Clean up cached raw message for this session
+        sk = self._session_key_from_source(event)
+        self._session_raw_messages.pop(sk, None)
+        await self._rxn_on_processing_complete(event, outcome)
 
     async def send(
         self,
