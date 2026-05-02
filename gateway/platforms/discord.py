@@ -608,6 +608,19 @@ class DiscordAdapter(BasePlatformAdapter):
             if proxy_url:
                 logger.info("[%s] Using proxy for Discord: %s", self.name, proxy_url)
 
+            # Ensure we don't leave a previous websocket client alive across
+            # reconnect/restart cycles. A stale client can keep receiving the
+            # same inbound event and produce duplicate responses.
+            if self._client is not None:
+                try:
+                    if not self._client.is_closed():
+                        await self._client.close()
+                except Exception as exc:
+                    logger.debug("[%s] Failed to close previous Discord client: %s", self.name, exc)
+                finally:
+                    self._client = None
+                    self._ready_event.clear()
+
             # Create bot — proxy= for HTTP, connector= for SOCKS.
             # allowed_mentions is set with safe defaults (no @everyone/roles)
             # so LLM output or echoed user content can't ping the whole
