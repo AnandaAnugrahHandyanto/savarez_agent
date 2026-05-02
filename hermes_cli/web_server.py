@@ -2602,6 +2602,16 @@ class SkillToggle(BaseModel):
     enabled: bool
 
 
+class SkillSave(BaseModel):
+    name: str
+    category: Optional[str] = None
+    content: str
+
+
+class SkillDelete(BaseModel):
+    name: str
+
+
 @app.get("/api/skills")
 async def get_skills():
     from tools.skills_tool import _find_all_skills
@@ -2625,6 +2635,49 @@ async def toggle_skill(body: SkillToggle):
         disabled.add(body.name)
     save_disabled_skills(config, disabled)
     return {"ok": True, "name": body.name, "enabled": body.enabled}
+
+
+@app.post("/api/skills/save")
+async def save_skill_endpoint(body: SkillSave):
+    from tools.skill_manager_tool import skill_manage
+
+    try:
+        result = json.loads(skill_manage(
+            action="create",
+            name=body.name,
+            category=body.category,
+            content=body.content,
+        ))
+        if not result.get("success") and "already exists" in str(result.get("error", "")).lower():
+            result = json.loads(skill_manage(
+                action="edit",
+                name=body.name,
+                content=body.content,
+            ))
+    except Exception as e:
+        _log.exception("POST /api/skills/save failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=str(result.get("error", "Could not save skill")))
+
+    return {"ok": True, **result}
+
+
+@app.post("/api/skills/delete")
+async def delete_skill_endpoint(body: SkillDelete):
+    from tools.skill_manager_tool import skill_manage
+
+    try:
+        result = json.loads(skill_manage(action="delete", name=body.name))
+    except Exception as e:
+        _log.exception("POST /api/skills/delete failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=str(result.get("error", "Could not delete skill")))
+
+    return {"ok": True, **result}
 
 
 @app.get("/api/tools/toolsets")
