@@ -13200,6 +13200,13 @@ class GatewayRunner:
                         break
                 return
 
+            # Check config: auto_delete_tool_progress (default: True)
+            try:
+                from hermes_cli.config import load_config as _lc
+                _auto_delete = cfg_get(_lc(), "display", "auto_delete_tool_progress", default=True)
+            except Exception:
+                _auto_delete = True
+
             progress_lines = []      # Accumulated tool lines
             progress_msg_id = None   # ID of the progress message to edit
             can_edit = True          # False once an edit fails (platform doesn't support it)
@@ -13252,7 +13259,7 @@ class GatewayRunner:
 
                         # Delete the closed-off progress bubble if the adapter
                         # supports it — keeps Discord chats clean
-                        if can_edit and progress_lines and progress_msg_id:
+                        if _auto_delete and can_edit and progress_lines and progress_msg_id:
                             try:
                                 if type(adapter).delete_message is not BasePlatformAdapter.delete_message:
                                     _progress_chat_id = _progress_thread_id if _progress_thread_id else source.chat_id
@@ -13351,14 +13358,15 @@ class GatewayRunner:
                                         pass
                                     # Delete the closed-off progress bubble if the
                                     # adapter supports it — keeps Discord chats clean
-                                    try:
-                                        if type(adapter).delete_message is not BasePlatformAdapter.delete_message:
-                                            _progress_chat_id = _progress_thread_id if _progress_thread_id else source.chat_id
-                                            logger.info("Deleting progress bubble %s in chat %s (__reset__)", progress_msg_id, _progress_chat_id)
-                                            result = await adapter.delete_message(_progress_chat_id, progress_msg_id)
-                                            logger.info("Delete result: %s", result)
-                                    except Exception as e:
-                                        logger.warning("Delete error: %s", e)
+                                    if _auto_delete:
+                                        try:
+                                            if type(adapter).delete_message is not BasePlatformAdapter.delete_message:
+                                                _progress_chat_id = _progress_thread_id if _progress_thread_id else source.chat_id
+                                                logger.info("Deleting progress bubble %s in chat %s (__reset__)", progress_msg_id, _progress_chat_id)
+                                                result = await adapter.delete_message(_progress_chat_id, progress_msg_id)
+                                                logger.info("Delete result: %s", result)
+                                        except Exception as e:
+                                            logger.warning("Delete error: %s", e)
                                 progress_msg_id = None
                                 progress_lines = []
                                 last_progress_msg[0] = None
@@ -13381,13 +13389,15 @@ class GatewayRunner:
 
                     # Delete the progress bubble after final edit if the
                     # adapter supports it — keeps Discord chats clean
-                    if progress_msg_id:
+                    if _auto_delete and progress_msg_id:
                         try:
                             if type(adapter).delete_message is not BasePlatformAdapter.delete_message:
                                 _progress_chat_id = _progress_thread_id if _progress_thread_id else source.chat_id
-                                await adapter.delete_message(_progress_chat_id, progress_msg_id)
-                        except Exception:
-                            pass
+                                logger.info("Deleting progress bubble %s in chat %s (final-drain)", progress_msg_id, _progress_chat_id)
+                                result = await adapter.delete_message(_progress_chat_id, progress_msg_id)
+                                logger.info("Delete result: %s", result)
+                        except Exception as e:
+                            logger.warning("Delete error in final drain: %s", e)
                     return
                 except Exception as e:
                     logger.error("Progress message error: %s", e)
