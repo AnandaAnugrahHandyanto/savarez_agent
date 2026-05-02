@@ -273,7 +273,9 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                 except Exception:
                     continue
     except Exception:
-        pass
+        return _skill_commands
+
+    _skill_commands = new_commands
     return _skill_commands
 
 
