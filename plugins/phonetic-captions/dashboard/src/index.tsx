@@ -82,7 +82,6 @@ interface CaptionStyle {
   alignment: number;
   margin_bottom: number;
   max_line_length: number;
-  position?: { x: number; y: number } | null;
 }
 
 interface CaptionJob {
@@ -131,6 +130,27 @@ interface CaptionPreset {
 // ---------------------------------------------------------------------------
 
 const API = "/api/plugins/phonetic-captions";
+
+// ---------------------------------------------------------------------------
+// Style defaults + merge helper
+// Ensures every preset/AI style applied always contains every field,
+// preventing uncontrolled→controlled jumps in the Caption Style inputs.
+// ---------------------------------------------------------------------------
+
+const STYLE_DEFAULTS: CaptionStyle = {
+  font: "Arial",
+  font_size: 48,
+  primary_color: "&H00FFFFFF",
+  outline_color: "&H00000000",
+  outline_width: 3,
+  alignment: 2,
+  margin_bottom: 80,
+  max_line_length: 42,
+};
+
+function mergeStyle(incoming: Partial<CaptionStyle>): CaptionStyle {
+  return { ...STYLE_DEFAULTS, ...incoming };
+}
 
 // ---------------------------------------------------------------------------
 // Spinner (local component — not in SDK)
@@ -973,7 +993,7 @@ function PresetGallery({
           )}
           <div className="flex gap-2">
             <button
-              onClick={() => onApply(suggestion.style!)}
+              onClick={() => onApply(mergeStyle(suggestion.style!))}
               className="flex-1 px-2 py-1 rounded bg-amber-400/20 text-amber-400 text-xs font-medium hover:bg-amber-400/30 transition-colors"
             >
               Apply
@@ -1006,7 +1026,7 @@ function PresetGallery({
               className="flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-lg border border-border bg-card text-xs text-foreground group hover:border-ring/50 transition-colors"
             >
               <button
-                onClick={() => onApply(p.style)}
+                onClick={() => onApply(mergeStyle(p.style))}
                 className="font-medium hover:text-primary transition-colors"
                 title={`Apply preset: ${p.name}`}
               >
@@ -1095,12 +1115,18 @@ function PresetGallery({
           {genPreview && (
             <div className="rounded border border-border bg-card p-2 space-y-1">
               <p className="text-xs font-semibold text-foreground mb-1.5">Preview:</p>
-              {(Object.entries(genPreview) as [string, string | number | null][]).filter(([k]) => k !== "position").map(([k, v]) => (
-                <div key={k} className="flex gap-2 text-xs">
-                  <span className="text-muted-foreground w-28 shrink-0">{{ font: "Font", font_size: "Font size", primary_color: "Text color", outline_color: "Outline color", outline_width: "Outline width", alignment: "Alignment", margin_bottom: "Margin from edge", max_line_length: "Max line length" }[k as string] ?? k}</span>
-                  <span className="text-foreground font-mono">{String(v)}</span>
-                </div>
-              ))}
+              {(Object.entries(genPreview) as [string, string | number | null][]).map(([k, v]) => {
+                const LABELS: Record<string, string> = { font: "Font", font_size: "Font size", primary_color: "Text color", outline_color: "Outline color", outline_width: "Outline width", alignment: "Alignment", margin_bottom: "Margin from edge", max_line_length: "Line length" };
+                const displayValue = k === "alignment" && typeof v === "number"
+                  ? `${ALIGNMENT_ICONS[v] ?? ""} ${ALIGNMENT_NAMES[v] ?? v}`
+                  : String(v);
+                return (
+                  <div key={k} className="flex gap-2 text-xs">
+                    <span className="text-muted-foreground w-28 shrink-0">{LABELS[k] ?? k}</span>
+                    <span className="text-foreground font-mono">{displayValue}</span>
+                  </div>
+                );
+              })}
               <div className="flex gap-2 mt-2 pt-2 border-t border-border">
                 <input
                   className="flex-1 min-w-0 bg-card border border-border rounded px-2 py-1 text-xs text-foreground outline-none focus:border-ring placeholder:text-muted-foreground"
@@ -1116,7 +1142,7 @@ function PresetGallery({
                   Save
                 </button>
                 <button
-                  onClick={() => { onApply(genPreview); }}
+                  onClick={() => { onApply(mergeStyle(genPreview)); }}
                   className="px-2 py-1 rounded border border-border text-xs text-foreground hover:bg-accent transition-colors"
                 >
                   Apply
@@ -1279,7 +1305,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
         console.log("[captions] job loaded", data.id, "segments:", data.segments?.length, data.segments?.[0]);
         setJob(data);
         setSegments(data.segments);
-        setStyle(data.style);
+        setStyle(mergeStyle(data.style));
       })
       .catch((e: any) => setError(String(e)))
       .finally(() => setLoading(false));
@@ -1640,14 +1666,9 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                 <StyleColorField label="Text color" value={style.primary_color} onChange={(v) => setStyle((s) => s && ({ ...s, primary_color: v }))} />
                 <StyleColorField label="Outline" value={style.outline_color} onChange={(v) => setStyle((s) => s && ({ ...s, outline_color: v }))} />
                 <StyleNumberField label="Outline width" value={style.outline_width} onChange={(v) => setStyle((s) => s && ({ ...s, outline_width: v }))} />
-                <PositionControl
-                  alignment={style.alignment}
-                  marginBottom={style.margin_bottom}
-                  position={style.position}
-                  onAlignmentChange={(v) => setStyle((s) => s && ({ ...s, alignment: v }))}
-                  onMarginChange={(v) => setStyle((s) => s && ({ ...s, margin_bottom: v }))}
-                  onPositionChange={(p) => setStyle((s) => s && ({ ...s, position: p }))}
-                />
+                <AlignmentPicker value={style.alignment} onChange={(v) => setStyle((s) => s && ({ ...s, alignment: v }))} />
+                <StyleNumberField label="Margin from edge" value={style.margin_bottom} onChange={(v) => setStyle((s) => s && ({ ...s, margin_bottom: v }))} />
+                <StyleNumberField label="Line length" value={style.max_line_length} onChange={(v) => setStyle((s) => s && ({ ...s, max_line_length: v }))} />
               </div>
               <p className="text-xs text-muted-foreground mt-3">Style changes apply on the next Re-burn.</p>
             </div>
@@ -1672,7 +1693,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
               if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
             }}
             onFixWithAI={(suggestion) => setNlPrefill(suggestion)}
-            onApplyStyle={(s) => setStyle(s)}
+            onApplyStyle={(s) => setStyle(mergeStyle(s))}
           />
         </div>
 
@@ -1760,7 +1781,7 @@ function StyleColorField({ label, value, onChange }: { label: string; value: str
 }
 
 // ---------------------------------------------------------------------------
-// Caption style — unified position control
+// Caption style — alignment picker
 // ---------------------------------------------------------------------------
 
 const ALIGNMENT_GRID = [7, 8, 9, 4, 5, 6, 1, 2, 3] as const;
@@ -1769,140 +1790,35 @@ const ALIGNMENT_ICONS: Record<number, string> = {
   4: "←", 5: "·", 6: "→",
   1: "↙", 2: "↓", 3: "↘",
 };
+const ALIGNMENT_NAMES: Record<number, string> = {
+  7: "top-left", 8: "top-center", 9: "top-right",
+  4: "mid-left", 5: "mid-center", 6: "mid-right",
+  1: "btm-left", 2: "btm-center", 3: "btm-right",
+};
 
-/**
- * Single compound control that unifies alignment zone, margin, and drag-to-pin.
- *
- * Zone mode (no pin): 3×3 grid on left, thumbnail on right, margin sub-row below.
- * Pin mode (position set): thumbnail on left (prominent), 3×3 anchor grid on right
- *   (dimmed, relabelled "Anchor"), margin hidden, Reset link below.
- */
-function PositionControl({
-  alignment,
-  marginBottom,
-  position,
-  onAlignmentChange,
-  onMarginChange,
-  onPositionChange,
-}: {
-  alignment: number;
-  marginBottom: number;
-  position: { x: number; y: number } | null | undefined;
-  onAlignmentChange: (v: number) => void;
-  onMarginChange: (v: number) => void;
-  onPositionChange: (p: { x: number; y: number } | null) => void;
-}) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const draggingRef = useRef(false);
-  const onPosRef = useRef(onPositionChange);
-  onPosRef.current = onPositionChange;
-
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      if (!draggingRef.current || !containerRef.current) return;
-      const rect = containerRef.current.getBoundingClientRect();
-      onPosRef.current({
-        x: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
-        y: Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height)),
-      });
-    };
-    const onUp = () => { draggingRef.current = false; };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
-  }, []);
-
-  const pinned = !!position;
-
-  const thumbnail = (
-    <div
-      ref={containerRef}
-      title="Click or drag to pin caption position"
-      className={`relative rounded border cursor-crosshair overflow-hidden select-none shrink-0 ${
-        pinned ? "border-amber-500/60" : "border-border"
-      } bg-zinc-900`}
-      style={{ width: 112, height: 63 }}
-      onMouseDown={(e) => {
-        if (e.button !== 0) return;
-        e.preventDefault();
-        draggingRef.current = true;
-        const rect = containerRef.current!.getBoundingClientRect();
-        onPosRef.current({
-          x: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
-          y: Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height)),
-        });
-      }}
-    >
-      <div className="absolute inset-0 pointer-events-none" style={{ opacity: 0.12 }}>
-        <div className="absolute inset-x-0" style={{ top: "33.3%", borderTop: "1px solid white" }} />
-        <div className="absolute inset-x-0" style={{ top: "66.6%", borderTop: "1px solid white" }} />
-        <div className="absolute inset-y-0" style={{ left: "33.3%", borderLeft: "1px solid white" }} />
-        <div className="absolute inset-y-0" style={{ left: "66.6%", borderLeft: "1px solid white" }} />
-      </div>
-      {pinned ? (
-        <div
-          className="absolute w-2.5 h-2.5 rounded-full bg-amber-500 border-2 border-white shadow pointer-events-none"
-          style={{ left: `${position!.x * 100}%`, top: `${position!.y * 100}%`, transform: "translate(-50%, -50%)" }}
-        />
-      ) : (
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <span className="text-white/30 text-[9px] text-center leading-snug">drag to<br/>pin</span>
-        </div>
-      )}
-    </div>
-  );
-
-  const alignGrid = (
-    <div className="flex flex-col gap-1">
-      {pinned && <span className="text-[10px] text-muted-foreground leading-none">Anchor</span>}
-      <div className="grid grid-cols-3 gap-0.5">
-        {ALIGNMENT_GRID.map((n) => (
-          <button
-            key={n}
-            type="button"
-            onClick={() => onAlignmentChange(n)}
-            title={`${pinned ? "Anchor" : "Zone"} ${n}`}
-            className={`h-6 w-6 rounded text-[10px] border transition-colors ${
-              alignment === n
-                ? "bg-amber-500 text-white border-amber-500"
-                : `bg-muted border-border hover:bg-accent text-muted-foreground ${
-                    pinned ? "opacity-50 hover:opacity-100" : ""
-                  }`
-            }`}
-          >
-            {ALIGNMENT_ICONS[n]}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-
+function AlignmentPicker({ value, onChange }: { value: number; onChange: (v: number) => void }) {
   return (
-    <div className="flex items-start gap-2">
-      <span className="w-24 shrink-0 text-xs text-muted-foreground pt-1">Position</span>
-      <div className="flex flex-col gap-2">
-        <div className="flex items-start gap-3">
-          {pinned ? (<>{thumbnail}{alignGrid}</>) : (<>{alignGrid}{thumbnail}</>)}
+    <div className="flex items-center gap-2">
+      <span className="w-24 shrink-0 text-xs text-muted-foreground">Alignment</span>
+      <div className="flex items-center gap-2">
+        <div className="grid grid-cols-3 gap-0.5">
+          {ALIGNMENT_GRID.map((n) => (
+            <button
+              key={n}
+              type="button"
+              onClick={() => onChange(n)}
+              title={ALIGNMENT_NAMES[n]}
+              className={`h-7 w-7 rounded text-xs border transition-colors ${
+                value === n
+                  ? "bg-amber-500 text-white border-amber-500"
+                  : "bg-muted text-muted-foreground border-border hover:bg-accent"
+              }`}
+            >
+              {ALIGNMENT_ICONS[n]}
+            </button>
+          ))}
         </div>
-        {pinned ? (
-          <button
-            type="button"
-            onClick={() => onPositionChange(null)}
-            className="text-[10px] text-muted-foreground hover:text-foreground transition-colors self-start"
-          >
-            × Reset to zone
-          </button>
-        ) : (
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] text-muted-foreground w-14 shrink-0">Margin</span>
-            <input
-              type="number"
-              className="w-16 bg-card border border-border rounded px-2 py-0.5 text-xs text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring/30 transition-colors"
-              value={marginBottom}
-              onChange={(e) => { const n = Number(e.target.value); if (!Number.isNaN(n)) onMarginChange(n); }}
-            />
-          </div>
-        )}
+        <span className="text-xs text-muted-foreground">{ALIGNMENT_NAMES[value] ?? value}</span>
       </div>
     </div>
   );

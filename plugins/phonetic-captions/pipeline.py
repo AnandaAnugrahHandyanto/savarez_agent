@@ -171,15 +171,6 @@ def _build_ass_content(segments: list[dict], style: dict) -> str:
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
 
-    # Build per-line position tag if style has an absolute position override
-    pos = style.get("position")
-    if pos:
-        px = int(float(pos["x"]) * 1920)
-        py = int(float(pos["y"]) * 1080)
-        position_tag = f"{{\\an{alignment}\\pos({px},{py})}}"
-    else:
-        position_tag = ""
-
     dialogue_lines: list[str] = []
     for seg in segments:
         start = _seconds_to_ass_time(float(seg["start"]))
@@ -193,11 +184,11 @@ def _build_ass_content(segments: list[dict], style: dict) -> str:
 
         if lang == "vi" and phonetic:
             # Vietnamese: main text on top + phonetic guide below
-            dialogue_lines.append(f"Dialogue: 0,{start},{end},MAIN,,0,0,0,,{position_tag}{text}")
-            dialogue_lines.append(f"Dialogue: 0,{start},{end},PHONETIC,,0,0,0,,{position_tag}{phonetic}")
+            dialogue_lines.append(f"Dialogue: 0,{start},{end},MAIN,,0,0,0,,{text}")
+            dialogue_lines.append(f"Dialogue: 0,{start},{end},PHONETIC,,0,0,0,,{phonetic}")
         else:
             # English (or Vietnamese with no phonetics yet): main text only
-            dialogue_lines.append(f"Dialogue: 0,{start},{end},MAIN,,0,0,0,,{position_tag}{text}")
+            dialogue_lines.append(f"Dialogue: 0,{start},{end},MAIN,,0,0,0,,{text}")
 
     return header + style_main + style_phonetic + events_header + "\n".join(dialogue_lines) + "\n"
 
