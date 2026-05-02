@@ -990,6 +990,57 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             
             self.assertEqual(creds["api_key"], "app-lUeqweqweqweHiGvBil")
 
+    def test_custom_provider_uses_provider_config_model(self):
+        """Test that when a custom provider is found, it uses the model from provider config."""
+        parent = _make_mock_parent(depth=0)
+        # Request the matching model
+        cfg = {
+            "model": "deepseek-v4-pro",
+        }
+        
+        with patch("hermes_cli.config.load_config") as mock_load_config:
+            mock_load_config.return_value = {
+                "custom_providers": [
+                    {
+                        "name": "Finna deepseek-v4-pro",
+                        "base_url": "https://www.finna.com.cn/v1",
+                        "api_key": "app-lUeqweqweqweHiGvBil",
+                        "model": "deepseek-v4-pro",
+                    }
+                ]
+            }
+            
+            creds = _resolve_delegation_credentials(cfg, parent)
+            
+            # Verify that the model from provider config is used
+            self.assertEqual(creds["model"], "deepseek-v4-pro")
+            self.assertEqual(creds["base_url"], "https://www.finna.com.cn/v1")
+            self.assertEqual(creds["api_key"], "app-lUeqweqweqweHiGvBil")
+
+    def test_custom_provider_uses_default_model(self):
+        """Test that when a custom provider uses default_model, it's picked up correctly."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "deepseek-v4-pro",
+        }
+        
+        with patch("hermes_cli.config.load_config") as mock_load_config:
+            mock_load_config.return_value = {
+                "providers": {
+                    "finna-deepseek-pro": {
+                        "name": "Finna deepseek-v4-pro",
+                        "api": "https://www.finna.com.cn/v1",
+                        "api_key": "app-lUeqweqweqweHiGvBil",
+                        "model": "deepseek-v4-pro",
+                        "default_model": "deepseek-v4-pro",
+                    }
+                }
+            }
+            
+            creds = _resolve_delegation_credentials(cfg, parent)
+            
+            self.assertEqual(creds["model"], "deepseek-v4-pro")
+
 
 class TestDelegationProviderIntegration(unittest.TestCase):
     """Integration tests: delegation config → _run_single_child → AIAgent construction."""

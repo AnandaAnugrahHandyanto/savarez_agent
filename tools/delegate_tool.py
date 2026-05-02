@@ -2387,8 +2387,11 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent, task_override: Opti
             if detected_api_mode:
                 api_mode = detected_api_mode
 
+        # Use the model from provider config if available, otherwise use effective_model
+        final_model = found_provider_data.get("model") or found_provider_data.get("default_model") or effective_model
+        
         return {
-            "model": effective_model,
+            "model": final_model,
             "provider": provider,
             "base_url": effective_base_url,
             "api_key": api_key,
