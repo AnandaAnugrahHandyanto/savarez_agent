@@ -26,6 +26,10 @@ import {
   Trash2,
   Plus,
   ChevronDown,
+  MessageSquare,
+  Clapperboard,
+  Pen,
+  FlaskConical,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -145,6 +149,92 @@ function Spinner({ className = "" }: { className?: string }) {
 // Job List
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Info Sidebar — shown on the job list page
+// ---------------------------------------------------------------------------
+
+function InfoSidebar() {
+  const steps = [
+    {
+      icon: <MessageSquare className="w-4 h-4" />,
+      title: "Send a video",
+      body: "Send any video file via Telegram (or upload directly here). Hermes transcribes it with Whisper and generates phonetic captions automatically.",
+    },
+    {
+      icon: <Clapperboard className="w-4 h-4" />,
+      title: "Review & edit",
+      body: "Open the job to see the segment list. Correct text, phonetics, or timing — one segment at a time, or describe changes in plain English and let AI apply them.",
+    },
+    {
+      icon: <FlaskConical className="w-4 h-4" />,
+      title: "Style it",
+      body: "Adjust font, size, colour, and outline in the Caption Style section. Save named presets to reuse across videos, or describe a look and generate one with AI.",
+    },
+    {
+      icon: <Play className="w-4 h-4" />,
+      title: "Re-burn & download",
+      body: "Hit Re-burn to bake the final captions into the video, then download the finished file. Hermes also replies with the download link in Telegram.",
+    },
+  ];
+
+  const features = [
+    { icon: <ShieldCheck className="w-3.5 h-3.5" />, label: "AI QA review — flags awkward phrasing or timing issues" },
+    { icon: <Pen className="w-3.5 h-3.5" />, label: 'Natural-language edits — "merge segments 3 and 4"' },
+    { icon: <Sparkles className="w-3.5 h-3.5" />, label: "Style presets — save and reuse your favourite looks" },
+    { icon: <MessageSquare className="w-3.5 h-3.5" />, label: "Telegram-native — full pipeline from a single message" },
+  ];
+
+  return (
+    <div className="space-y-6">
+      {/* How it works */}
+      <div>
+        <h2 className="text-sm font-semibold text-foreground mb-4">How it works</h2>
+        <ol className="space-y-4">
+          {steps.map((s, i) => (
+            <li key={i} className="flex gap-3">
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+                {s.icon}
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-foreground mb-0.5">{s.title}</p>
+                <p className="text-xs text-muted-foreground leading-relaxed">{s.body}</p>
+              </div>
+            </li>
+          ))}
+        </ol>
+      </div>
+
+      {/* Divider */}
+      <div className="border-t border-border" />
+
+      {/* Key features */}
+      <div>
+        <h2 className="text-sm font-semibold text-foreground mb-3">Key features</h2>
+        <ul className="space-y-2">
+          {features.map((f, i) => (
+            <li key={i} className="flex items-start gap-2 text-xs text-muted-foreground">
+              <span className="text-primary mt-0.5 shrink-0">{f.icon}</span>
+              {f.label}
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {/* Divider */}
+      <div className="border-t border-border" />
+
+      {/* Tip */}
+      <div className="rounded-lg bg-muted/50 border border-border p-3 text-xs text-muted-foreground leading-relaxed">
+        <span className="font-semibold text-foreground">Tip:</span> You can skip the auto-pipeline and paste your own segments JSON directly in the upload modal — useful when you already have a transcript.
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Job List View
+// ---------------------------------------------------------------------------
+
 function JobListView({ onSelect }: { onSelect: (id: string) => void }) {
   const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -183,74 +273,82 @@ function JobListView({ onSelect }: { onSelect: (id: string) => void }) {
   }
 
   return (
-    <div className="p-6 max-w-2xl">
-      <div className="flex items-center justify-between mb-1">
-        <h1 className="text-xl font-semibold text-foreground">Caption Jobs</h1>
-        <button
-          onClick={() => setShowUpload(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-semibold hover:opacity-90 transition-opacity"
-        >
-          <Upload className="w-3.5 h-3.5" />
-          New Job
-        </button>
-      </div>
-      <p className="text-sm text-muted-foreground mb-5">
-        Click a job to edit segments and re-burn, or upload a new video.
-      </p>
-
-      {showUpload && (
-        <UploadModal
-          onDone={(id) => { setShowUpload(false); onSelect(id); }}
-          onClose={() => { setShowUpload(false); loadJobs(); }}
-        />
-      )}
-
-      {jobs.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-16 text-muted-foreground border border-dashed border-border rounded-xl">
-          <VideoOff className="w-10 h-10 mb-3 opacity-40" />
-          <p className="text-sm font-medium">No caption jobs yet</p>
-          <p className="text-xs mt-1 text-muted-foreground/70">Upload a video above or send one via Telegram.</p>
+    <div className="p-6 grid grid-cols-1 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-8 max-w-6xl">
+      {/* ── Left: job list ── */}
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <h1 className="text-xl font-semibold text-foreground">Caption Jobs</h1>
+          <button
+            onClick={() => setShowUpload(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-semibold hover:opacity-90 transition-opacity"
+          >
+            <Upload className="w-3.5 h-3.5" />
+            New Job
+          </button>
         </div>
-      ) : (
-        <div className="space-y-2">
-          {jobs.map((job) => {
-            const isPending = job.status && job.status !== "ready";
-            const isError = job.status === "error";
-            return (
-              <button
-                key={job.id}
-                onClick={() => !isPending && onSelect(job.id)}
-                disabled={!!isPending}
-                className={`w-full flex items-center justify-between rounded-lg border border-border p-4 bg-card text-left group transition-colors ${
-                  isPending ? "opacity-60 cursor-not-allowed" : "hover:bg-accent"
-                }`}
-              >
-                <div className="min-w-0">
-                  <div className="font-medium text-sm truncate text-foreground">{job.video_filename || job.id}</div>
-                  <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-2">
-                    <span>
-                      {job.segment_count} segment{job.segment_count !== 1 ? "s" : ""}
-                      {job.created_at ? ` · ${new Date(job.created_at).toLocaleString()}` : ""}
-                    </span>
-                    {isPending && !isError && (
-                      <span className="flex items-center gap-1 text-amber-500">
-                        <Loader2 className="w-3 h-3 animate-spin" />
-                        {job.status_message || job.status}
+        <p className="text-sm text-muted-foreground mb-5">
+          Click a job to edit segments and re-burn, or upload a new video.
+        </p>
+
+        {showUpload && (
+          <UploadModal
+            onDone={(id) => { setShowUpload(false); onSelect(id); }}
+            onClose={() => { setShowUpload(false); loadJobs(); }}
+          />
+        )}
+
+        {jobs.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 text-muted-foreground border border-dashed border-border rounded-xl">
+            <VideoOff className="w-10 h-10 mb-3 opacity-40" />
+            <p className="text-sm font-medium">No caption jobs yet</p>
+            <p className="text-xs mt-1 text-muted-foreground/70">Upload a video above or send one via Telegram.</p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {jobs.map((job) => {
+              const isPending = job.status && job.status !== "ready";
+              const isError = job.status === "error";
+              return (
+                <button
+                  key={job.id}
+                  onClick={() => !isPending && onSelect(job.id)}
+                  disabled={!!isPending}
+                  className={`w-full flex items-center justify-between rounded-lg border border-border p-4 bg-card text-left group transition-colors ${
+                    isPending ? "opacity-60 cursor-not-allowed" : "hover:bg-accent"
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <div className="font-medium text-sm truncate text-foreground">{job.video_filename || job.id}</div>
+                    <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-2">
+                      <span>
+                        {job.segment_count} segment{job.segment_count !== 1 ? "s" : ""}
+                        {job.created_at ? ` · ${new Date(job.created_at).toLocaleString()}` : ""}
                       </span>
-                    )}
-                    {isError && (
-                      <span className="text-destructive">
-                        {job.status_message || "Pipeline error"}
-                      </span>
-                    )}
+                      {isPending && !isError && (
+                        <span className="flex items-center gap-1 text-amber-500">
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                          {job.status_message || job.status}
+                        </span>
+                      )}
+                      {isError && (
+                        <span className="text-destructive">
+                          {job.status_message || "Pipeline error"}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                </div>
-                {!isPending && <Play className="w-4 h-4 text-muted-foreground group-hover:text-foreground shrink-0 ml-4 transition-colors" />}
-              </button>
-            );
-          })}
-        </div>
-      )}
+                  {!isPending && <Play className="w-4 h-4 text-muted-foreground group-hover:text-foreground shrink-0 ml-4 transition-colors" />}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* ── Right: info sidebar ── */}
+      <div className="hidden xl:block border-l border-border pl-8 pt-1">
+        <InfoSidebar />
+      </div>
     </div>
   );
 }
@@ -616,12 +714,7 @@ function NLEditPanel({
   };
 
   return (
-    <div className="border-t border-border mt-4 pt-4">
-      <div className="flex items-center gap-2 mb-2">
-        <Wand2 className="w-4 h-4 text-muted-foreground" />
-        <span className="text-xs font-semibold text-foreground">Edit with AI</span>
-      </div>
-
+    <div className="space-y-2">
       <div className="flex gap-2">
         <input
           className="flex-1 min-w-0 bg-card border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring/30 transition-colors"
@@ -905,11 +998,11 @@ function PresetGallery({
       {/* AI style generation */}
       <button
         onClick={() => setShowGenerate(!showGenerate)}
-        className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+        className="flex items-center gap-1.5 w-full px-3 py-2 rounded-lg border border-dashed border-border text-xs font-medium text-foreground hover:bg-accent hover:border-primary transition-colors"
       >
-        <Sparkles className="w-3.5 h-3.5" />
+        <Sparkles className="w-3.5 h-3.5 text-primary" />
         Create with AI
-        <ChevronDown className={`w-3 h-3 transition-transform ${showGenerate ? "rotate-180" : ""}`} />
+        <ChevronDown className={`w-3 h-3 ml-auto transition-transform ${showGenerate ? "rotate-180" : ""}`} />
       </button>
 
       {showGenerate && (
@@ -1011,7 +1104,7 @@ function HermesPanel({
       {/* Header */}
       <div className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0">
         <Sparkles className="w-4 h-4 text-primary" />
-        <span className="text-sm font-semibold text-foreground">Hermes</span>
+        <span className="text-sm font-semibold text-foreground">AI Tools</span>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
