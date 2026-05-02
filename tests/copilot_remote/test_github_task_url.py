@@ -1,7 +1,5 @@
 """Tests for safe GitHub task URL construction."""
 
-from pathlib import Path
-
 from copilot_remote.github_task_url import build_github_task_web_url
 
 
@@ -52,3 +50,17 @@ def test_build_github_task_web_url_rejects_mismatched_origin_repo(monkeypatch, t
     )
 
     assert build_github_task_web_url(str(repo_dir), "static-pages", "task-123") is None
+
+
+def test_build_github_task_web_url_supports_ssh_origin(monkeypatch, tmp_path):
+    repo_dir = tmp_path / "static-pages"
+    repo_dir.mkdir()
+
+    monkeypatch.setattr(
+        "copilot_remote.github_task_url._git_origin_url",
+        lambda path: "git@github.com:RosenblattAI/static-pages.git",
+    )
+
+    url = build_github_task_web_url(str(repo_dir), "static-pages", "task-ssh")
+
+    assert url == "https://github.com/RosenblattAI/static-pages/tasks/task-ssh"
