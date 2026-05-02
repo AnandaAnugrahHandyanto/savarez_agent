@@ -26,12 +26,20 @@ def render_prep(report: dict) -> str:
     )
 
 
+def _lines(value, fallback: str) -> list[str]:
+    if isinstance(value, list):
+        lines = [str(item).strip() for item in value if str(item).strip()]
+    else:
+        lines = [line.strip() for line in str(value or "").splitlines() if line.strip()]
+    return lines or [fallback]
+
+
 def render_review(report: dict) -> str:
     role = report.get("role_title") or "Unknown role"
     mandate = report.get("role_charter", {}).get("mandate") or "Mandate not yet captured."
     performance = report.get("performance", {})
-    strengths = report.get("strengths") or ["No strengths captured yet."]
-    weaknesses = report.get("weaknesses") or report.get("failure_modes") or ["No weaknesses captured yet."]
+    strengths = _lines(report.get("strengths"), "No strengths captured yet.")
+    weaknesses = _lines(report.get("weaknesses") or report.get("failure_modes"), "No weaknesses captured yet.")
     recommendation = report.get("management_strategy", {}).get("how_michael_should_manage_them") or ["Clarify expectations and gather more evidence."]
     evidence_basis = performance.get("evidence_basis") or []
     strongest_evidence = evidence_basis[-1] if evidence_basis else "Evidence base is still thin."

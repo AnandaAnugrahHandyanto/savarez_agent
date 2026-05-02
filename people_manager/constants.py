@@ -6,6 +6,24 @@ REPORTS_DIRNAME = "reports"
 TEAM_SNAPSHOTS_DIRNAME = "team-snapshots"
 VERSION = 1
 
+PROFILE_TYPES = ("internal", "external")
+CATEGORY_VALUES = ("Nexus", "Satellites", "External")
+TRUST_VALUES = ("Rock Solid", "Very High", "Positive", "Normal", "Low")
+CADENCE_VALUES = ("weekly", "biweekly", "monthly")
+PERFORMANCE_VALUES = ("exceeds expectations", "meets expectations", "below expectations")
+EXTERNAL_RELATIONSHIP_KINDS = (
+    "investor",
+    "advisor",
+    "board",
+    "strategic_partner",
+    "customer",
+    "friend",
+    "family",
+    "other",
+)
+INTERNAL_RELATIONSHIP_KINDS = ("direct_report", "manager", "peer", "cross_functional", "other")
+INTERNAL_RANK_VALUES = ("N-", "N", "N+", "S-", "S", "S+", "unknown")
+
 RATING_BUCKETS = ("strong", "solid", "uneven", "concerning", "unknown")
 TRAJECTORY_VALUES = ("rising", "flat", "declining", "unclear")
 SCOPE_FIT_VALUES = ("under-scoped", "well-matched", "over-scoped", "unclear")

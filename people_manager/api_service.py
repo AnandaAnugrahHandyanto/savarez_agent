@@ -40,17 +40,47 @@ def _load_reports() -> list[dict[str, Any]]:
     return reports
 
 
-def list_profiles() -> dict[str, Any]:
+def list_profiles(*, profile_type: str | None = None, q: str | None = None) -> dict[str, Any]:
     profiles = []
+    query = str(q or "").strip().lower()
+    type_filter = str(profile_type or "").strip().lower()
     for meta in list_reports_by_recency():
         report = load_report(str(meta["slug"]))
         if not report:
             continue
+        if type_filter and str(report.get("profile_type") or "internal").lower() != type_filter:
+            continue
+        if query:
+            haystack = " ".join(
+                str(report.get(key) or "")
+                for key in ("name", "slug", "role_title", "roles", "mandates", "category", "function", "profile_type", "relationship_kind")
+            ).lower()
+            if query not in haystack:
+                continue
         profiles.append(
             {
                 "slug": report["slug"],
                 "name": report["name"],
                 "role_title": report.get("role_title") or "",
+                "category": report.get("category") or "Nexus",
+                "rank": report.get("rank", 101),
+                "roles": report.get("roles") or "",
+                "mandates": report.get("mandates") or "",
+                "trust": report.get("trust") or "Normal",
+                "cadence": report.get("cadence") or "monthly",
+                "last_meeting_date": report.get("last_meeting_date"),
+                "last_meeting_date_overridden": bool(report.get("last_meeting_date_overridden")),
+                "last_meeting_date_source": report.get("last_meeting_date_source"),
+                "next_meeting_date": report.get("next_meeting_date"),
+                "next_meeting_date_overridden": bool(report.get("next_meeting_date_overridden")),
+                "next_meeting_date_source": report.get("next_meeting_date_source"),
+                "performance_rating": report.get("performance_rating") or "meets expectations",
+                "profile_type": report.get("profile_type") or "internal",
+                "relationship_kind": report.get("relationship_kind") or "direct_report",
+                "internal_rank": report.get("internal_rank"),
+                "last_touch_at": report.get("last_touch_at"),
+                "next_checkup_at": report.get("next_checkup_at"),
+                "checkup_cadence": report.get("checkup_cadence"),
                 "status": report.get("status") or "active",
                 "updated_at": report.get("updated_at"),
                 "open_loop_count": len(report.get("open_loop_items") or []),
@@ -68,7 +98,33 @@ def get_profile(slug: str) -> dict[str, Any]:
 
 
 def create_profile(payload: dict[str, Any]) -> dict[str, Any]:
-    report = create_report(payload["name"], payload.get("role_title", ""), payload.get("mandate", ""))
+    metadata_keys = (
+        "category",
+        "rank",
+        "roles",
+        "mandates",
+        "trust",
+        "cadence",
+        "cadence_details",
+        "last_meeting_date",
+        "last_meeting_date_overridden",
+        "last_meeting_notes",
+        "next_meeting_date",
+        "next_meeting_date_overridden",
+        "prep_notes",
+        "performance_rating",
+        "long_term_notes_todos",
+        "strengths",
+        "weaknesses",
+        "profile_type",
+        "relationship_kind",
+        "internal_rank",
+        "last_touch_at",
+        "next_checkup_at",
+        "checkup_cadence",
+    )
+    metadata = {key: payload[key] for key in metadata_keys if key in payload}
+    report = create_report(payload["name"], payload.get("role_title") or payload.get("roles", ""), payload.get("mandate") or payload.get("mandates", ""), **metadata)
     return {"profile": report}
 
 
