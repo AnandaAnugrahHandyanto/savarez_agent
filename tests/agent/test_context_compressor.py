@@ -1657,3 +1657,38 @@ class TestDedupByOperation:
         assert deduped == 0  # already-Duplicate entry is left alone
         first = next(m for m in out if m.get("tool_call_id") == "1")
         assert first["content"].startswith("[Duplicate tool output")
+
+
+class TestThresholdAbsoluteMax:
+    def _make(self, **kw):
+        defaults = dict(
+            threshold_percent=0.50,
+            context_length=262_144,
+            threshold_absolute_max=None,
+        )
+        defaults.update(kw)
+        c = ContextCompressor.__new__(ContextCompressor)
+        for k, v in defaults.items():
+            setattr(c, k, v)
+        return c
+
+    def test_no_cap_uses_pure_percentage(self):
+        c = self._make(threshold_absolute_max=None)
+        # 262144 * 0.50 = 131072
+        assert c._compute_threshold_tokens() == 131_072
+
+    def test_cap_lower_than_percentage_wins(self):
+        c = self._make(threshold_absolute_max=80_000)
+        # min(131072, 80000) = 80000
+        assert c._compute_threshold_tokens() == 80_000
+
+    def test_cap_higher_than_percentage_is_no_op(self):
+        c = self._make(threshold_absolute_max=200_000)
+        # min(131072, 200000) = 131072
+        assert c._compute_threshold_tokens() == 131_072
+
+    def test_cap_below_minimum_floor_is_clamped(self):
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        c = self._make(threshold_absolute_max=10_000)
+        # never go below MINIMUM_CONTEXT_LENGTH
+        assert c._compute_threshold_tokens() == MINIMUM_CONTEXT_LENGTH

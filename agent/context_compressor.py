@@ -369,10 +369,7 @@ class ContextCompressor(ContextEngine):
         self.provider = provider
         self.api_mode = api_mode
         self.context_length = context_length
-        self.threshold_tokens = max(
-            int(context_length * self.threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
-        )
+        self.threshold_tokens = self._compute_threshold_tokens()
         # Recalculate token budgets for the new context length so the
         # compressor stays calibrated after a model switch (e.g. 200K → 32K).
         target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
@@ -437,10 +434,7 @@ class ContextCompressor(ContextEngine):
         # the percentage would suggest a lower value.  This prevents premature
         # compression on large-context models at 50% while keeping the % sane
         # for models right at the minimum.
-        self.threshold_tokens = max(
-            int(self.context_length * threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
-        )
+        self.threshold_tokens = self._compute_threshold_tokens()
         self.compression_count = 0
 
         # Derive token budgets: ratio is relative to the threshold, not total context
@@ -490,6 +484,20 @@ class ContextCompressor(ContextEngine):
         """Update tracked token usage from API response."""
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
         self.last_completion_tokens = usage.get("completion_tokens", 0)
+
+    def _compute_threshold_tokens(self) -> int:
+        """Compute the token threshold honoring both percentage and absolute cap.
+
+        Formula: max(MINIMUM_CONTEXT_LENGTH, min(absolute_max, ctx * pct)).
+
+        The absolute cap is opt-in. When unset (default), behavior is identical
+        to the prior ``max(int(ctx * pct), MINIMUM_CONTEXT_LENGTH)`` formula.
+        """
+        base = int(self.context_length * self.threshold_percent)
+        cap = getattr(self, "threshold_absolute_max", None)
+        if isinstance(cap, int) and cap > 0:
+            base = min(base, cap)
+        return max(base, MINIMUM_CONTEXT_LENGTH)
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold.
