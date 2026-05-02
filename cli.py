@@ -2017,13 +2017,16 @@ class HermesCLI:
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
         # busy_input_mode: "interrupt" (Enter interrupts current run),
-        # "queue" (Enter queues for next turn), or "steer" (Enter injects
-        # mid-run via /steer, arriving after the next tool call).
+        # "queue" (Enter queues for next turn), "steer" (Enter injects
+        # mid-run via /steer, arriving after the next tool call), or
+        # "background" (Enter starts a separate background agent).
         _bim = str(CLI_CONFIG["display"].get("busy_input_mode", "interrupt")).strip().lower()
         if _bim == "queue":
             self.busy_input_mode = "queue"
         elif _bim == "steer":
             self.busy_input_mode = "steer"
+        elif _bim == "background":
+            self.busy_input_mode = "background"
         else:
             self.busy_input_mode = "interrupt"
 
@@ -7526,6 +7529,7 @@ class HermesCLI:
             /busy status        Show current busy input mode
             /busy queue         Queue input for the next turn instead of interrupting
             /busy steer         Inject Enter mid-run via /steer (after next tool call)
+            /busy background    Start a separate background agent on Enter
             /busy interrupt     Interrupt the current run on Enter (default)
         """
         parts = cmd.strip().split(maxsplit=1)
@@ -7535,16 +7539,18 @@ class HermesCLI:
                 _behavior = "queues for next turn"
             elif self.busy_input_mode == "steer":
                 _behavior = "steers into current run (after next tool call)"
+            elif self.busy_input_mode == "background":
+                _behavior = "starts a separate background agent"
             else:
                 _behavior = "interrupts current run"
             _cprint(f"  {_DIM}Enter while busy: {_behavior}{_RST}")
-            _cprint(f"  {_DIM}Usage: /busy [queue|steer|interrupt|status]{_RST}")
+            _cprint(f"  {_DIM}Usage: /busy [queue|steer|background|interrupt|status]{_RST}")
             return
 
         arg = parts[1].strip().lower()
-        if arg not in {"queue", "interrupt", "steer"}:
+        if arg not in {"queue", "interrupt", "steer", "background"}:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Usage: /busy [queue|steer|interrupt|status]{_RST}")
+            _cprint(f"  {_DIM}Usage: /busy [queue|steer|background|interrupt|status]{_RST}")
             return
 
         self.busy_input_mode = arg
@@ -7553,6 +7559,8 @@ class HermesCLI:
                 behavior = "Enter will queue follow-up input while Hermes is busy."
             elif arg == "steer":
                 behavior = "Enter will steer your message into the current run (after the next tool call)."
+            elif arg == "background":
+                behavior = "Enter will launch follow-up input in a separate background agent while the current run continues."
             else:
                 behavior = "Enter will interrupt the current run while Hermes is busy."
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (saved to config){_RST}")
@@ -10234,6 +10242,13 @@ class HermesCLI:
                         self._pending_input.put(payload)
                         preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
                         _cprint(f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}")
+                    elif _effective_mode == "background":
+                        if images or not text:
+                            self._pending_input.put(payload)
+                            preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
+                            _cprint(f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}")
+                        else:
+                            self._handle_background_command(f"/background {text}")
                     elif _effective_mode == "interrupt":
                         self._interrupt_queue.put(payload)
                         # Debug: log to file when message enters interrupt queue

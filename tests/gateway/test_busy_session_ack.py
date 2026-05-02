@@ -65,6 +65,7 @@ def _make_runner():
     runner._pending_messages = {}
     runner._busy_ack_ts = {}
     runner._draining = False
+    runner._background_tasks = set()
     runner.adapters = {}
     runner.config = MagicMock()
     runner.session_store = None
@@ -270,6 +271,52 @@ class TestBusySessionAck:
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
         assert "Queued for the next turn" in content
+
+    @pytest.mark.asyncio
+    async def test_background_mode_starts_background_agent_without_interrupt_or_queue(self):
+        """busy_input_mode='background' launches a separate agent for follow-ups."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "background"
+        adapter = _make_adapter()
+
+        event = _make_event(text="please audit the docs separately")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+
+        created = []
+
+        class _FakeTask:
+            def add_done_callback(self, cb):
+                self._cb = cb
+
+        def _fake_create_task(coro):
+            coro.close()
+            task = _FakeTask()
+            created.append(task)
+            return task
+
+        async def _fake_run_background_task(*_args, **_kwargs):
+            return None
+
+        with patch("gateway.run.merge_pending_message_event") as mock_merge, \
+             patch("gateway.run.asyncio.create_task", side_effect=_fake_create_task) as mock_create, \
+             patch.object(runner, "_run_background_task", side_effect=_fake_run_background_task) as mock_run_bg:
+            await runner._handle_active_session_busy_message(event, sk)
+
+        agent.interrupt.assert_not_called()
+        mock_merge.assert_not_called()
+        mock_create.assert_called_once()
+        mock_run_bg.assert_called_once()
+        assert runner._background_tasks
+
+        call_kwargs = adapter._send_with_retry.call_args
+        content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
+        assert "separate background agent" in content
+        assert "Task ID: bg_" in content
+        assert "Interrupting" not in content
 
     @pytest.mark.asyncio
     async def test_debounce_suppresses_rapid_acks(self):
