@@ -58,6 +58,8 @@ _HERMES_CORE_TOOLS = [
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
+    # Codex job orchestration via tmux/worktrees
+    "codex_job",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Kanban multi-agent coordination — only in schema when the agent is
@@ -97,8 +99,8 @@ TOOLSETS = {
     },
     
     "terminal": {
-        "description": "Terminal/command execution and process management tools",
-        "tools": ["terminal", "process"],
+        "description": "Terminal/command execution, process management, and Codex job orchestration tools",
+        "tools": ["terminal", "process", "codex_job"],
         "includes": []
     },
     
