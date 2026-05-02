@@ -452,6 +452,7 @@ class ContextCompressor(ContextEngine):
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
 
+        self.summary_model_override = summary_model_override
         self.summary_model = summary_model_override or ""
 
         # Stores the previous compaction summary for iterative updates
@@ -923,6 +924,35 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 self.summary_model = ""  # empty = use main model
                 self._summary_failure_cooldown_until = 0.0  # no cooldown
                 return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)  # retry immediately
+
+            # Unknown-error best-effort retry on main model. Losing N turns of
+            # context is almost always worse than one extra summary attempt.
+            should_retry_on_main = (
+                (self.summary_model and self.summary_model != self.model)
+                or (
+                    not self.summary_model
+                    and bool(self.model)
+                    and self.summary_model_override is None
+                )
+            )
+            if (
+                should_retry_on_main
+                and not getattr(self, "_summary_model_fallen_back", False)
+            ):
+                self._summary_model_fallen_back = True
+                logging.warning(
+                    "Summary model '%s' failed (%s). "
+                    "Retrying on main model '%s' before giving up.",
+                    self.summary_model, e, self.model,
+                )
+                _err_text = str(e).strip() or e.__class__.__name__
+                if len(_err_text) > 220:
+                    _err_text = _err_text[:217].rstrip() + "..."
+                self._last_aux_model_failure_error = _err_text
+                self._last_aux_model_failure_model = self.summary_model
+                self.summary_model = ""  # empty = use main model
+                self._summary_failure_cooldown_until = 0.0
+                return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 
             # Transient errors (timeout, rate limit, network) — shorter cooldown
             _transient_cooldown = 60
