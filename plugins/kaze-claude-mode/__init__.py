@@ -2,57 +2,57 @@
 
 Chat-level Telegram "Claude lane" for Hermes/Kaze.
 
-When enabled for a Telegram chat, plain (non-slash) messages in that chat are
-routed through Hermes' normal agent/tool loop, but with a per-session runtime
-override to an Anthropic/Claude model. This preserves Hermes as the runtime
-owner (sessions, tools, approvals, safety) while providing a Claude-powered
-execution lane that can use Hermes tools to edit files and run commands.
-
-Slash commands remain escape hatches and are never captured as Claude-mode plain
-messages.
+Spec-aligned behavior:
+- Hermes remains the Telegram/runtime/session owner (routing, auth, approvals).
+- When enabled for a Telegram chat, *plain (non-slash)* messages are routed to a
+  Claude Code CLI execution lane (headless `claude -p`), not a hidden model
+  provider switch.
+- Slash commands remain escape hatches and are never captured as Claude-mode
+  plain messages.
 """
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import os
 import tempfile
+import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from shlex import quote as shell_quote
+from shutil import which
 from typing import Any
 
 from hermes_constants import display_hermes_home, get_hermes_home
 
 PLUGIN_NAME = "kaze-claude-mode"
-DEFAULT_CLAUDE_MODEL = os.environ.get("KAZE_CLAUDE_MODE_MODEL", "anthropic/claude-sonnet-4.6").strip()
 
 MODE_COMMANDS = {"claude-mode", "claude_mode"}
 INTERNAL_MODE = "kaze-claude-mode-dispatch"
-ESCAPE_COMMANDS = {
-    "approve",
-    "background",
-    "commands",
-    "debug",
-    "deny",
-    "help",
-    "new",
-    "queue",
-    "q",
-    "reset",
-    "restart",
-    "status",
-    "stop",
-}
+INTERNAL_RUN = "kaze-claude-mode-run"
+
 MAX_REPLY_CHARS = 3900
+_PENDING_TTL_SECS = 120
 
 _CTX = None  # set by register()
+
 _BOUNCE_PREFIX = (
-    "Claude mode is enabled for this chat, but the toolful Claude backend is not configured.\n"
-    "Routing this message to normal Hermes/Kaze instead.\n"
+    "Claude mode is enabled for this chat, but the Claude Code CLI backend is not available.\n"
     "Run `/claude-mode status` for setup info."
 )
+
+
+@dataclass(frozen=True)
+class _PendingPrompt:
+    chat_key: str
+    session_key: str
+    prompt: str
+    created_at: float
+
+
+_PENDING: dict[str, _PendingPrompt] = {}
 
 
 def _now_iso() -> str:
@@ -179,46 +179,79 @@ def _command_args(text: str) -> str:
     return parts[1] if len(parts) > 1 else ""
 
 
-def _resolve_toolful_claude_backend(*, model: str | None = None) -> tuple[bool, str, dict[str, Any]]:
-    """Return (ok, model, runtime) for the Claude toolful lane."""
-    from hermes_cli.runtime_provider import resolve_runtime_provider
-
-    target_model = (model or DEFAULT_CLAUDE_MODEL or "anthropic/claude-sonnet-4.6").strip()
-    runtime = resolve_runtime_provider(requested="anthropic", target_model=target_model)
-    ok = bool(runtime.get("api_key")) and str(runtime.get("provider") or "").strip().lower() == "anthropic"
-    return ok, target_model, runtime
+def _claude_code_cli_candidates() -> tuple[str, ...]:
+    return ("claude", "claude-code")
 
 
-def _apply_gateway_override(gateway: Any, session_key: str, *, model: str, runtime: dict[str, Any]) -> None:
-    """Apply a per-session Claude lane override to the gateway runner."""
-    if not gateway or not session_key:
-        return
-    overrides = getattr(gateway, "_session_model_overrides", None)
-    if not isinstance(overrides, dict):
-        return
-    overrides[session_key] = {
-        "model": model,
-        "provider": runtime.get("provider") or "anthropic",
-        "api_key": runtime.get("api_key") or "",
-        "base_url": runtime.get("base_url") or "",
-        "api_mode": runtime.get("api_mode") or "",
+def _resolve_claude_code_cli_backend() -> tuple[bool, dict[str, Any]]:
+    """Return (ok, info) for the Claude Code CLI backend.
+
+    This checks binary presence only; auth is exercised by smoke and live runs.
+    """
+    for cmd in _claude_code_cli_candidates():
+        path = which(cmd)
+        if path:
+            return True, {"backend": "claude-code-cli", "cmd": cmd, "path": path}
+    return False, {
+        "backend": "claude-code-cli",
+        "cmd": "",
+        "path": "",
+        "error": "Claude Code CLI not found on PATH",
     }
-    try:
-        gateway._evict_cached_agent(session_key)
-    except Exception:
-        pass
 
 
-def _clear_gateway_override(gateway: Any, session_key: str) -> None:
-    if not gateway or not session_key:
-        return
+def _claude_code_allowed_tools() -> str:
+    # Safe default: no shell/Bash tool, only read+edit.
+    raw = os.environ.get("KAZE_CLAUDE_MODE_ALLOWED_TOOLS", "Read,Edit").strip()
+    return raw or "Read,Edit"
+
+
+def _claude_code_permission_mode() -> str:
+    raw = os.environ.get("KAZE_CLAUDE_MODE_PERMISSION_MODE", "acceptEdits").strip()
+    allowed = {"acceptEdits", "auto", "default", "dontAsk", "plan"}
+    return raw if raw in allowed else "acceptEdits"
+
+
+def _claude_code_max_turns() -> int:
+    raw = os.environ.get("KAZE_CLAUDE_MODE_MAX_TURNS", "10").strip()
     try:
-        overrides = getattr(gateway, "_session_model_overrides", None)
-        if isinstance(overrides, dict):
-            overrides.pop(session_key, None)
-        gateway._evict_cached_agent(session_key)
+        value = int(raw)
     except Exception:
-        pass
+        value = 10
+    return max(1, min(60, value))
+
+
+def _claude_code_timeout_secs() -> int:
+    raw = os.environ.get("KAZE_CLAUDE_MODE_TIMEOUT", "240").strip()
+    try:
+        value = int(raw)
+    except Exception:
+        value = 240
+    return max(30, min(1800, value))
+
+
+def _gc_pending(now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    expired = [k for k, v in _PENDING.items() if (now - v.created_at) > _PENDING_TTL_SECS]
+    for k in expired:
+        _PENDING.pop(k, None)
+
+
+def _stash_pending_prompt(*, chat_key: str, session_key: str, prompt: str) -> str:
+    _gc_pending()
+    token = os.urandom(9).hex()
+    _PENDING[token] = _PendingPrompt(
+        chat_key=chat_key,
+        session_key=session_key,
+        prompt=prompt,
+        created_at=time.time(),
+    )
+    return token
+
+
+def _pop_pending_prompt(token: str) -> _PendingPrompt | None:
+    _gc_pending()
+    return _PENDING.pop((token or "").strip(), None)
 
 
 def build_pre_dispatch_decision(event: Any, gateway: Any = None) -> dict[str, Any] | None:
@@ -231,51 +264,20 @@ def build_pre_dispatch_decision(event: Any, gateway: Any = None) -> dict[str, An
     if platform != "telegram":
         return None
 
-    key = state_key_from_source(source)
+    chat_key = state_key_from_source(source)
     cmd = _command_name(text)
+
+    # /claude-mode itself is rewritten to our internal dispatcher so we can
+    # identify the chat + (when possible) the gateway session key.
     if cmd in MODE_COMMANDS:
-        args = _command_args(text).strip().lower()
         session_key = ""
         if gateway is not None:
             try:
                 session_key = gateway._session_key_for_source(source)
             except Exception:
                 session_key = ""
-
-        if args in {"off", "disable", "disabled"} and session_key:
-            _clear_gateway_override(gateway, session_key)
-
-        if args in {"on", "enable", "enabled"}:
-            ok, model, _runtime = _resolve_toolful_claude_backend()
-            if ok:
-                set_enabled(
-                    key,
-                    True,
-                    source=source,
-                    extra={
-                        "backend": "hermes_toolful",
-                        "provider": "anthropic",
-                        "model": model,
-                        "tool_edit_active": True,
-                        "last_enable_error": "",
-                    },
-                )
-            else:
-                set_enabled(
-                    key,
-                    False,
-                    source=source,
-                    extra={
-                        "backend": "unavailable",
-                        "provider": "anthropic",
-                        "model": DEFAULT_CLAUDE_MODEL,
-                        "tool_edit_active": False,
-                        "last_enable_error": "missing Anthropic credentials",
-                    },
-                )
-
         packet = {
-            "key": key,
+            "key": chat_key,
             "args": _command_args(text),
             "platform": platform,
             "chat_id": str(getattr(source, "chat_id", "") or ""),
@@ -284,26 +286,31 @@ def build_pre_dispatch_decision(event: Any, gateway: Any = None) -> dict[str, An
         }
         return {"action": "rewrite", "text": f"/{INTERNAL_MODE} {_encode_packet(packet)}"}
 
+    # Slash commands are escape hatches.
     if cmd:
         return None
 
-    if is_enabled(key):
+    # Plain messages in an enabled chat route to Claude Code.
+    if is_enabled(chat_key):
+        ok, _info = _resolve_claude_code_cli_backend()
+        if not ok:
+            # Backend missing: fail closed with a clear message. Avoid embedding
+            # user text in the rewritten command to reduce logging leakage.
+            return {
+                "action": "rewrite",
+                "text": f"/{INTERNAL_MODE} {_encode_packet({'key': chat_key, 'args': 'unavailable'})}",
+            }
         if gateway is None:
-            return {"action": "rewrite", "text": f"{_BOUNCE_PREFIX}\n\n{text}"}
-
+            return {
+                "action": "rewrite",
+                "text": f"/{INTERNAL_MODE} {_encode_packet({'key': chat_key, 'args': 'unavailable'})}",
+            }
         try:
             session_key = gateway._session_key_for_source(source)
         except Exception:
             session_key = ""
-
-        ok, model, runtime = _resolve_toolful_claude_backend()
-        if ok and session_key:
-            _apply_gateway_override(gateway, session_key, model=model, runtime=runtime)
-            return None
-
-        if session_key:
-            _clear_gateway_override(gateway, session_key)
-        return {"action": "rewrite", "text": f"{_BOUNCE_PREFIX}\n\n{text}"}
+        token = _stash_pending_prompt(chat_key=chat_key, session_key=session_key, prompt=text)
+        return {"action": "rewrite", "text": f"/{INTERNAL_RUN} {token}"}
 
     return None
 
@@ -312,21 +319,18 @@ def pre_gateway_dispatch(event: Any = None, gateway: Any = None, session_store: 
     return build_pre_dispatch_decision(event, gateway)
 
 
-def _format_backend_status() -> tuple[str, bool, str]:
-    ok, model, runtime = _resolve_toolful_claude_backend()
+def _format_backend_status() -> tuple[str, bool]:
+    ok, info = _resolve_claude_code_cli_backend()
     if ok:
-        api_mode = str(runtime.get("api_mode") or "").strip() or "auto"
-        base_url = str(runtime.get("base_url") or "").strip() or "default"
-        backend = (
-            f"Hermes toolful Claude lane (provider=`anthropic`, model=`{model}`, "
-            f"api_mode=`{api_mode}`, base_url=`{base_url}`)"
-        )
-        return backend, True, model
-    backend = (
-        "Claude lane unavailable (missing Anthropic credentials).\n"
-        f"Configure in {display_hermes_home()}/.env (ANTHROPIC_API_KEY) or run `hermes auth add anthropic`."
+        return f"`claude-code-cli` (cmd=`{info.get('cmd')}`, path=`{info.get('path')}`)", True
+    return (
+        "Claude Code CLI unavailable.\n"
+        "Install: `npm install -g @anthropic-ai/claude-code`\n"
+        "Auth check: `claude auth status --text`\n"
+        "PATH hint: ensure your npm global bin is on PATH for the gateway process.\n"
+        f"(Hermes home: {display_hermes_home()})",
+        False,
     )
-    return backend, False, (DEFAULT_CLAUDE_MODEL or "anthropic/claude-sonnet-4.6")
 
 
 class contextlib_suppress:
@@ -345,7 +349,7 @@ def _status_message(key: str) -> str:
     entry = ((state.get("chats") or {}).get(key) or {}) if isinstance(state, dict) else {}
     mode = "on" if entry.get("enabled") else "off"
     updated = entry.get("updated_at") or "unknown"
-    backend, toolful, _model = _format_backend_status()
+    backend, toolful = _format_backend_status()
     tool_state = "**active**" if (entry.get("enabled") and toolful) else "**inactive**"
     return (
         f"Claude mode: **{mode}**\n"
@@ -356,15 +360,53 @@ def _status_message(key: str) -> str:
     )
 
 
-async def _run_smoke(session_key: str) -> str:
-    """Prove tool/edit capability without leaking outputs or source bodies."""
+def _truncate_reply(text: str, limit: int = MAX_REPLY_CHARS) -> str:
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 20)].rstrip() + "\n\n…(truncated)…"
+
+
+def _extract_terminal_text(payload: dict[str, Any]) -> str:
+    stdout = str(payload.get("stdout") or payload.get("output") or payload.get("result") or "")
+    stderr = str(payload.get("stderr") or "")
+    combined = stdout.strip() or stderr.strip()
+    return combined
+
+
+def _dispatch_tool(tool_name: str, args: dict[str, Any], **kwargs: Any) -> str:
+    """Dispatch built-in Hermes tools from plugin command context.
+
+    Plugin discovery can happen before built-in tool modules are imported in
+    standalone command/plugin probes, so force idempotent built-in discovery
+    before using PluginContext.dispatch_tool.
+    """
+    from tools.registry import discover_builtin_tools
+
+    discover_builtin_tools()
+    return _CTX.dispatch_tool(tool_name, args, **kwargs)
+
+
+async def _run_claude_code_print(
+    *,
+    prompt: str,
+    session_key: str,
+    task_id: str,
+    workdir: str | None = None,
+) -> tuple[bool, str]:
+    """Run Claude Code CLI in headless print mode.
+
+    Critical: do NOT put the raw prompt on the shell command line (it would be
+    logged by approval/safety layers). Feed it via a temp file.
+    """
     global _CTX
     if _CTX is None:
-        return "Smoke failed: plugin context unavailable (tools not wired)."
+        return False, "Claude mode failed: plugin context unavailable (tools not wired)."
 
-    backend, toolful, model = _format_backend_status()
-    if not toolful:
-        return f"Smoke: **unavailable**\nbackend: {backend}"
+    ok, info = _resolve_claude_code_cli_backend()
+    if not ok:
+        backend, _toolful = _format_backend_status()
+        return False, backend
 
     try:
         from tools.approval import reset_current_session_key, set_current_session_key
@@ -373,50 +415,54 @@ async def _run_smoke(session_key: str) -> str:
         token = None
         reset_current_session_key = None
 
-    tmp_dir = get_hermes_home() / "tmp"
+    tmp_dir = get_hermes_home() / "tmp" / "kaze_claude_mode"
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp_path = tmp_dir / f"claude_mode_smoke_{os.urandom(3).hex()}.txt"
-    marker_cmd = "KAZE_CLAUDE_MODE_TOOL_OK"
-    marker_file = "KAZE_CLAUDE_MODE_FILE_OK"
+    prompt_path = tmp_dir / f"prompt_{os.urandom(4).hex()}.txt"
     try:
-        term_raw = _CTX.dispatch_tool(
-            "terminal",
-            {"command": f"echo {marker_cmd}", "timeout": 10},
-            task_id="claude_mode_smoke",
-        )
-        term = json.loads(term_raw) if isinstance(term_raw, str) else {}
-        term_out = str(term.get("stdout") or term.get("output") or term.get("result") or "")
-        if marker_cmd not in term_out:
-            return "Smoke failed: terminal tool did not return expected marker."
-
-        write_raw = _CTX.dispatch_tool(
+        write_raw = _dispatch_tool(
             "write_file",
-            {"path": str(tmp_path), "content": marker_file + "\n"},
-            task_id="claude_mode_smoke",
+            {"path": str(prompt_path), "content": prompt},
+            task_id=task_id,
         )
         write_payload = json.loads(write_raw) if isinstance(write_raw, str) else {}
         if write_payload.get("error"):
-            return "Smoke failed: write_file tool returned an error."
+            return False, "Claude mode failed: could not stage prompt for Claude Code."
 
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except TypeError:
-            if tmp_path.exists():
-                tmp_path.unlink()
+        allowed = _claude_code_allowed_tools()
+        max_turns = _claude_code_max_turns()
 
-        return (
-            "Smoke: **OK**\n"
-            f"- model lane: `{model}`\n"
-            f"- tool call: `{marker_cmd}`\n"
-            f"- file write+cleanup: `{tmp_path.name}`"
+        permission_mode = _claude_code_permission_mode()
+
+        # Use $(cat <file>) so the prompt is NOT present in the command string
+        # Hermes logs (inbound previews, approval queues, etc.).
+        cmd = (
+            f"{shell_quote(str(info.get('cmd') or 'claude'))} -p "
+            f"\"$(cat {shell_quote(str(prompt_path))})\" "
+            f"--allowedTools {shell_quote(allowed)} "
+            f"--permission-mode {shell_quote(permission_mode)} "
+            f"--max-turns {max_turns}"
         )
+        term_raw = _dispatch_tool(
+            "terminal",
+            {"command": cmd, "timeout": _claude_code_timeout_secs(), "workdir": workdir},
+            task_id=task_id,
+        )
+        term = json.loads(term_raw) if isinstance(term_raw, str) else {}
+        if term.get("status") == "approval_required":
+            return False, "Claude mode: waiting for approval to run Claude Code CLI."
+        out = _extract_terminal_text(term)
+        exit_code = term.get("exit_code")
+        if exit_code not in (None, 0, "0"):
+            err = out or "Claude Code returned a non-zero exit code."
+            return False, _truncate_reply(f"Claude Code error:\n{err}")
+        return True, _truncate_reply(out or "(Claude Code returned no output.)")
     finally:
         if token is not None and reset_current_session_key is not None:
             with contextlib_suppress(Exception):
                 reset_current_session_key(token)
         with contextlib_suppress(Exception):
-            if tmp_path.exists():
-                tmp_path.unlink()
+            if prompt_path.exists():
+                prompt_path.unlink()
 
 
 async def handle_internal_mode(raw_args: str) -> str:
@@ -426,29 +472,145 @@ async def handle_internal_mode(raw_args: str) -> str:
     session_key = str(packet.get("session_key") or "").strip()
     if not key:
         return "Claude mode could not identify this chat."
+
     if args in {"on", "enable", "enabled"}:
-        if not is_enabled(key):
-            backend, _toolful, _model = _format_backend_status()
+        ok, _info = _resolve_claude_code_cli_backend()
+        backend, toolful = _format_backend_status()
+        if not ok:
+            set_enabled(
+                key,
+                False,
+                extra={
+                    "backend": "claude-code-cli",
+                    "tool_edit_active": False,
+                    "last_enable_error": "Claude Code CLI not found",
+                },
+            )
             return (
                 "Claude mode: **off**\n"
                 f"backend: {backend}\n\n"
-                "Cannot enable tool/edit Claude mode without Anthropic credentials."
+                "Cannot enable Claude Code mode because the CLI backend is unavailable."
             )
-        backend, _toolful, _model = _format_backend_status()
+        set_enabled(
+            key,
+            True,
+            extra={
+                "backend": "claude-code-cli",
+                "tool_edit_active": True,
+                "last_enable_error": "",
+            },
+        )
         return (
             "Claude mode: **on**\n"
             f"backend: {backend}\n"
-            "Plain (non-slash) messages in this chat now route through Claude + Hermes tools.\n"
+            "Plain (non-slash) messages in this chat now route through Claude Code CLI (headless `claude -p`).\n"
             "Use `/claude-mode off` to return to normal Hermes/Kaze."
         )
+
     if args in {"off", "disable", "disabled"}:
         set_enabled(key, False, extra={"tool_edit_active": False})
         return "Claude mode: **off**\nPlain messages now use normal Kaze/Hermes again."
+
     if args in {"status", ""}:
         return _status_message(key) + "\n\nUsage: `/claude-mode on|off|status|smoke`"
+
+    if args == "unavailable":
+        backend, _toolful = _format_backend_status()
+        return f"{_BOUNCE_PREFIX}\n\nbackend: {backend}\n\nUse `/hermes <message>` to talk to Hermes."
+
     if args == "smoke":
-        return await _run_smoke(session_key)
+        backend, toolful = _format_backend_status()
+        ok, info = _resolve_claude_code_cli_backend()
+        if not ok or not toolful:
+            return f"Smoke: **unavailable**\nbackend: {backend}"
+
+        # Prove the real backend: run `claude -p` and verify it can edit a temp file.
+        tmp_dir = get_hermes_home() / "tmp" / "kaze_claude_mode_smoke"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        tmp_file = tmp_dir / f"smoke_{os.urandom(3).hex()}.txt"
+        marker = "KAZE_CLAUDE_MODE_FILE_OK"
+        _dispatch_tool("write_file", {"path": str(tmp_file), "content": "before\n"}, task_id="claude_mode_smoke")
+
+        prompt = (
+            "In the current directory, open the file named "
+            f"{tmp_file.name} and replace its entire content with exactly this single line:\n"
+            f"{marker}\n"
+            "Do not add any other text."
+        )
+        ok_run, out = await _run_claude_code_print(
+            prompt=prompt,
+            session_key=session_key,
+            task_id="claude_mode_smoke",
+            workdir=str(tmp_dir),
+        )
+        if not ok_run:
+            with contextlib_suppress(Exception):
+                tmp_file.unlink(missing_ok=True)
+            return f"Smoke: **FAILED**\n{out}"
+
+        # Verify edit happened (single-line marker) and clean up.
+        body = ""
+        try:
+            raw = _dispatch_tool(
+                "terminal",
+                {
+                    "command": (
+                        f"python -c {shell_quote('import pathlib;print(pathlib.Path(' + repr(str(tmp_file)) + ').read_text())')}"
+                    ),
+                    "timeout": 10,
+                },
+                task_id="claude_mode_smoke_verify",
+            )
+            payload = json.loads(raw) if isinstance(raw, str) else {}
+            body = _extract_terminal_text(payload)
+        except Exception:
+            body = ""
+        with contextlib_suppress(Exception):
+            tmp_file.unlink(missing_ok=True)
+        if marker not in body:
+            return "Smoke: **FAILED**\nClaude Code ran but did not apply the expected file edit in the temp dir."
+
+        return (
+            "Smoke: **OK**\n"
+            "- backend: `claude-code-cli`\n"
+            f"- allowedTools: `{_claude_code_allowed_tools()}`\n"
+            f"- permission-mode: `{_claude_code_permission_mode()}`\n"
+            f"- temp edit+cleanup: `{tmp_file.name}`"
+        )
+
     return "Usage: `/claude-mode on|off|status|smoke`"
+
+
+async def handle_internal_run(raw_args: str) -> str:
+    pending = _pop_pending_prompt(raw_args)
+    if pending is None:
+        return "Claude mode: expired request. Please resend the message."
+
+    ok, _info = _resolve_claude_code_cli_backend()
+    if not ok:
+        set_enabled(
+            pending.chat_key,
+            False,
+            extra={
+                "backend": "claude-code-cli",
+                "tool_edit_active": False,
+                "last_enable_error": "Claude Code CLI not found",
+            },
+        )
+        backend, _toolful = _format_backend_status()
+        return (
+            "Claude mode: **off** (auto-disabled)\n"
+            f"backend: {backend}\n\n"
+            "Claude Code CLI is unavailable. Your message was not routed.\n"
+            "Use `/hermes <message>` to talk to Hermes, or re-enable after setup."
+        )
+
+    ok_run, out = await _run_claude_code_print(
+        prompt=pending.prompt,
+        session_key=pending.session_key,
+        task_id="claude_mode_run",
+    )
+    return out
 
 
 async def handle_public_mode(raw_args: str) -> str:
@@ -462,7 +624,8 @@ def register(ctx: Any) -> None:
     ctx.register_command(
         "claude-mode",
         handle_public_mode,
-        "Toggle chat-level Claude Code fallback mode",
+        "Toggle chat-level Claude Code CLI mode",
         "on|off|status|smoke",
     )
     ctx.register_command(INTERNAL_MODE, handle_internal_mode, "Internal Kaze Claude mode control", "<packet>")
+    ctx.register_command(INTERNAL_RUN, handle_internal_run, "Internal Kaze Claude Code runner", "<token>")
