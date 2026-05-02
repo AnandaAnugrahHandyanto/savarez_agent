@@ -1465,10 +1465,10 @@ def list_authenticated_providers(
     # that differ only by suffix. Entries with distinct endpoints still
     # produce separate rows.
     #
-    # When the grouped endpoint matches ``current_base_url`` the group's
-    # slug becomes ``current_provider`` so that selecting a model from the
-    # picker flows back through the runtime provider that already holds
-    # valid credentials — no re-resolution needed.
+    # Each group keeps the provider's own stable slug even when its endpoint
+    # matches ``current_base_url``. Several custom providers can share a gateway
+    # URL while requiring different API keys, so the picker must route back
+    # through the selected named custom provider instead of the current one.
     if custom_providers and isinstance(custom_providers, list):
         from collections import OrderedDict
 
@@ -1504,23 +1504,12 @@ def list_authenticated_providers(
                         break
                 if not display_name:
                     display_name = raw_name
-                # If this endpoint matches the currently active one, use
-                # ``current_provider`` as the slug so picker-driven switches
-                # route through the live credential pipeline.
-                if (
-                    current_base_url
-                    and api_url == current_base_url.strip().rstrip("/")
-                ):
-                    # Guard against bare "custom" slug left by a prior
-                    # failed switch — always resolve to the canonical
-                    # custom:<name> form.  (GH #17478)
-                    slug = (
-                        current_provider
-                        if current_provider and current_provider != "custom"
-                        else custom_provider_slug(display_name)
-                    )
-                else:
-                    slug = custom_provider_slug(display_name)
+                # Prefer the provider's own stable slug.  Do not reuse the current
+                # provider merely because the base_url matches: multiple custom
+                # providers may share one gateway URL but use different API keys
+                # and therefore expose different /models listings. This also avoids
+                # preserving a bare "custom" slug from a prior failed switch.
+                slug = custom_provider_slug(display_name)
                 groups[group_key] = {
                     "slug": slug,
                     "name": display_name,
