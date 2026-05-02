@@ -14,8 +14,10 @@ Spec-aligned behavior:
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
+import re
 import tempfile
 import time
 from dataclasses import dataclass
@@ -23,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from shlex import quote as shell_quote
 from shutil import which
+from string import ascii_lowercase
 from typing import Any
 
 from hermes_constants import display_hermes_home, get_hermes_home
@@ -35,6 +38,8 @@ INTERNAL_RUN = "kaze-claude-mode-run"
 
 MAX_REPLY_CHARS = 3900
 _PENDING_TTL_SECS = 120
+_APPROVAL_ID_LEN = 5
+_APPROVAL_ID_ALPHABET = "".join([c for c in ascii_lowercase if c != "l"])
 
 _CTX = None  # set by register()
 
@@ -201,15 +206,193 @@ def _resolve_claude_code_cli_backend() -> tuple[bool, dict[str, Any]]:
 
 
 def _claude_code_allowed_tools() -> str:
-    # Safe default: no shell/Bash tool, only read+edit.
-    raw = os.environ.get("KAZE_CLAUDE_MODE_ALLOWED_TOOLS", "Read,Edit").strip()
-    return raw or "Read,Edit"
+    # Safe baseline: file ops + search only (no Bash by default).
+    raw = os.environ.get("KAZE_CLAUDE_MODE_ALLOWED_TOOLS", "").strip()
+    return raw or "Read,Write,Edit,Grep,Glob"
 
 
 def _claude_code_permission_mode() -> str:
     raw = os.environ.get("KAZE_CLAUDE_MODE_PERMISSION_MODE", "acceptEdits").strip()
-    allowed = {"acceptEdits", "auto", "default", "dontAsk", "plan"}
+    allowed = {"acceptEdits", "auto", "default", "dontAsk", "plan", "bypassPermissions"}
     return raw if raw in allowed else "acceptEdits"
+
+
+def _update_chat(
+    key: str,
+    *,
+    source: Any = None,
+    path: Path | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update a chat entry in the profile-safe state file without toggling enablement."""
+    path = _state_path() if path is None else path
+    state = _load_state(path)
+    chats = state.setdefault("chats", {})
+    if not isinstance(chats, dict):
+        chats = {}
+        state["chats"] = chats
+    entry = chats.setdefault(key, {})
+    if not isinstance(entry, dict):
+        entry = {}
+        chats[key] = entry
+    entry["updated_at"] = _now_iso()
+    if source is not None:
+        entry["platform"] = _platform_value(source)
+        entry["chat_id"] = str(getattr(source, "chat_id", "") or "")
+        thread_id = getattr(source, "thread_id", None)
+        if thread_id:
+            entry["thread_id"] = str(thread_id)
+    if extra:
+        for k, v in extra.items():
+            if v is None:
+                entry.pop(k, None)
+            else:
+                entry[k] = v
+    state["updated_at"] = _now_iso()
+    _atomic_write_json(path, state)
+    return entry
+
+
+def _chat_entry(key: str) -> dict[str, Any]:
+    state = _load_state()
+    entry = ((state.get("chats") or {}).get(key) or {}) if isinstance(state, dict) else {}
+    return entry if isinstance(entry, dict) else {}
+
+
+def _chat_allowed_tools_extra(key: str) -> list[str]:
+    raw = _chat_entry(key).get("allowed_tools_extra") or []
+    if not isinstance(raw, list):
+        return []
+    items: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            items.append(item.strip())
+    return items
+
+
+def _effective_allowed_tools(key: str) -> str:
+    base = _claude_code_allowed_tools()
+    extras = _chat_allowed_tools_extra(key)
+    parts = [p.strip() for p in base.split(",") if p.strip()]
+    parts.extend(extras)
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for part in parts:
+        if part in seen:
+            continue
+        seen.add(part)
+        deduped.append(part)
+    return ",".join(deduped)
+
+
+def _is_yolo_enabled(key: str) -> bool:
+    return bool(_chat_entry(key).get("yolo"))
+
+
+def _effective_permission_mode(key: str) -> str:
+    if _is_yolo_enabled(key):
+        return "bypassPermissions"
+    return _claude_code_permission_mode()
+
+
+def _tools_from_allowed_tools(allowed_tools: str) -> str:
+    """Derive a built-in tool allowlist for `--tools` from allowedTools rules.
+
+    Claude Code's `--allowedTools` controls auto-approval, not tool availability.
+    `--tools` limits which built-in tools are present at all.
+    """
+    builtins: list[str] = []
+    for raw in (allowed_tools or "").split(","):
+        token = raw.strip()
+        if not token or token.startswith("mcp__"):
+            continue
+        name = token.split("(", 1)[0].strip()
+        if not name:
+            continue
+        builtins.append(name)
+    if not builtins:
+        builtins = ["Read", "Write", "Edit", "Grep", "Glob"]
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in builtins:
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return ",".join(out)
+
+
+def _pending_approval(key: str) -> dict[str, Any] | None:
+    raw = _chat_entry(key).get("pending_approval")
+    return raw if isinstance(raw, dict) and raw else None
+
+
+def _has_pending_approval(key: str) -> bool:
+    return bool(_pending_approval(key))
+
+
+def _new_approval_id() -> str:
+    # Five lowercase letters drawn from a-z without l (avoids 1/I ambiguity on phones).
+    return "".join(_APPROVAL_ID_ALPHABET[b % len(_APPROVAL_ID_ALPHABET)] for b in os.urandom(_APPROVAL_ID_LEN))
+
+
+def _approval_prompt_path(approval_id: str) -> Path:
+    base = get_hermes_home() / "state" / "kaze_claude_mode_prompts"
+    return base / f"{approval_id}.txt"
+
+
+def _write_private_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+
+
+def _read_private_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def _clear_pending_approval(key: str) -> None:
+    pending = _pending_approval(key) or {}
+    prompt_path = pending.get("prompt_path")
+    _update_chat(key, extra={"pending_approval": None})
+    if isinstance(prompt_path, str) and prompt_path:
+        with contextlib_suppress(Exception):
+            Path(prompt_path).unlink(missing_ok=True)
+
+
+def _looks_like_permission_block(text: str) -> bool:
+    lowered = (text or "").lower()
+    if "permission blocked" in lowered:
+        return True
+    if "permission" in lowered and ("approve" in lowered or "prompt" in lowered or "denied" in lowered):
+        return True
+    return False
+
+
+_TOOL_RULE_RE = re.compile(r"(mcp__[-a-zA-Z0-9_]+__[-a-zA-Z0-9_*]+|[A-Za-z][A-Za-z0-9_]*(?:\([^\)]{1,200}\))?)")
+
+
+def _extract_tool_rule(text: str) -> str:
+    """Best-effort extraction of a tool rule from Claude Code errors."""
+    for match in _TOOL_RULE_RE.finditer(text or ""):
+        candidate = (match.group(1) or "").strip()
+        if not candidate:
+            continue
+        # Skip obvious non-tool words.
+        if candidate.lower() in {"permission", "permissions", "error", "blocked", "headless"}:
+            continue
+        # Prefer explicit specifiers (Tool(...)) or mcp__ patterns.
+        if candidate.startswith("mcp__") or "(" in candidate:
+            return candidate
+    # Fallback to a bare tool name if present.
+    for match in _TOOL_RULE_RE.finditer(text or ""):
+        candidate = (match.group(1) or "").strip()
+        if candidate and "(" not in candidate and candidate.startswith(("Read", "Write", "Edit", "Bash", "WebFetch", "WebSearch", "Grep", "Glob")):
+            return candidate
+    return ""
 
 
 def _claude_code_max_turns() -> int:
@@ -345,17 +528,27 @@ class contextlib_suppress:
 
 
 def _status_message(key: str) -> str:
-    state = _load_state()
-    entry = ((state.get("chats") or {}).get(key) or {}) if isinstance(state, dict) else {}
+    entry = _chat_entry(key)
     mode = "on" if entry.get("enabled") else "off"
     updated = entry.get("updated_at") or "unknown"
     backend, toolful = _format_backend_status()
     tool_state = "**active**" if (entry.get("enabled") and toolful) else "**inactive**"
+    yolo = "**on**" if _is_yolo_enabled(key) else "**off**"
+    pending = _pending_approval(key)
+    pending_line = "pending: **none**"
+    if pending:
+        pending_id = pending.get("id") or "unknown"
+        pending_tool = pending.get("tool_rule") or "unknown"
+        pending_line = f"pending: **yes** (`{pending_id}` / `{pending_tool}`)"
     return (
         f"Claude mode: **{mode}**\n"
         f"chat: `{key}`\n"
         f"updated: `{updated}`\n"
         f"backend: {backend}\n"
+        f"allowedTools: `{_effective_allowed_tools(key)}`\n"
+        f"permission-mode: `{_effective_permission_mode(key)}`\n"
+        f"yolo: {yolo}\n"
+        f"{pending_line}\n"
         f"tool/edit: {tool_state}"
     )
 
@@ -390,6 +583,7 @@ def _dispatch_tool(tool_name: str, args: dict[str, Any], **kwargs: Any) -> str:
 async def _run_claude_code_print(
     *,
     prompt: str,
+    chat_key: str,
     session_key: str,
     task_id: str,
     workdir: str | None = None,
@@ -428,10 +622,11 @@ async def _run_claude_code_print(
         if write_payload.get("error"):
             return False, "Claude mode failed: could not stage prompt for Claude Code."
 
-        allowed = _claude_code_allowed_tools()
+        allowed = _effective_allowed_tools(chat_key) if chat_key else _claude_code_allowed_tools()
+        tools_list = _tools_from_allowed_tools(allowed)
         max_turns = _claude_code_max_turns()
 
-        permission_mode = _claude_code_permission_mode()
+        permission_mode = _effective_permission_mode(chat_key) if chat_key else _claude_code_permission_mode()
 
         # Use $(cat <file>) so the prompt is NOT present in the command string
         # Hermes logs (inbound previews, approval queues, etc.).
@@ -439,6 +634,7 @@ async def _run_claude_code_print(
             f"{shell_quote(str(info.get('cmd') or 'claude'))} -p "
             f"\"$(cat {shell_quote(str(prompt_path))})\" "
             f"--allowedTools {shell_quote(allowed)} "
+            f"--tools {shell_quote(tools_list)} "
             f"--permission-mode {shell_quote(permission_mode)} "
             f"--max-turns {max_turns}"
         )
@@ -454,6 +650,37 @@ async def _run_claude_code_print(
         exit_code = term.get("exit_code")
         if exit_code not in (None, 0, "0"):
             err = out or "Claude Code returned a non-zero exit code."
+            if chat_key and _looks_like_permission_block(err):
+                # Replace any previous pending approval for this chat.
+                _clear_pending_approval(chat_key)
+                approval_id = _new_approval_id()
+                prompt_sha256 = hashlib.sha256((prompt or "").encode("utf-8")).hexdigest()
+                prompt_disk_path = _approval_prompt_path(approval_id)
+                _write_private_text(prompt_disk_path, prompt or "")
+                tool_rule = _extract_tool_rule(err)
+                _update_chat(
+                    chat_key,
+                    extra={
+                        "pending_approval": {
+                            "id": approval_id,
+                            "tool_rule": tool_rule,
+                            "created_at": _now_iso(),
+                            "prompt_path": str(prompt_disk_path),
+                            "prompt_sha256": prompt_sha256,
+                            "session_key": session_key or "",
+                        }
+                    },
+                )
+                safe_tool = tool_rule or "unknown"
+                return (
+                    False,
+                    _truncate_reply(
+                        "Claude mode: **approval pending**\n"
+                        f"- id: `{approval_id}`\n"
+                        f"- tool: `{safe_tool}`\n"
+                        "Reply `/claude-mode approve` to allow and retry, or `/claude-mode deny` to cancel."
+                    ),
+                )
             return False, _truncate_reply(f"Claude Code error:\n{err}")
         return True, _truncate_reply(out or "(Claude Code returned no output.)")
     finally:
@@ -468,10 +695,15 @@ async def _run_claude_code_print(
 async def handle_internal_mode(raw_args: str) -> str:
     packet = _decode_packet(raw_args)
     key = str(packet.get("key") or "").strip()
-    args = str(packet.get("args") or "").strip().lower()
+    raw = str(packet.get("args") or "").strip()
+    args = raw.lower()
     session_key = str(packet.get("session_key") or "").strip()
     if not key:
         return "Claude mode could not identify this chat."
+
+    head, *_rest = raw.split(maxsplit=1) if raw else [""]
+    head_l = head.lower()
+    tail = _rest[0] if _rest else ""
 
     if args in {"on", "enable", "enabled"}:
         ok, _info = _resolve_claude_code_cli_backend()
@@ -497,6 +729,7 @@ async def handle_internal_mode(raw_args: str) -> str:
             extra={
                 "backend": "claude-code-cli",
                 "tool_edit_active": True,
+                "yolo": bool(_chat_entry(key).get("yolo")),
                 "last_enable_error": "",
             },
         )
@@ -512,7 +745,7 @@ async def handle_internal_mode(raw_args: str) -> str:
         return "Claude mode: **off**\nPlain messages now use normal Kaze/Hermes again."
 
     if args in {"status", ""}:
-        return _status_message(key) + "\n\nUsage: `/claude-mode on|off|status|smoke`"
+        return _status_message(key) + "\n\nUsage: `/claude-mode on|off|status|smoke|approve|deny|yolo`"
 
     if args == "unavailable":
         backend, _toolful = _format_backend_status()
@@ -539,6 +772,7 @@ async def handle_internal_mode(raw_args: str) -> str:
         )
         ok_run, out = await _run_claude_code_print(
             prompt=prompt,
+            chat_key=key,
             session_key=session_key,
             task_id="claude_mode_smoke",
             workdir=str(tmp_dir),
@@ -573,12 +807,75 @@ async def handle_internal_mode(raw_args: str) -> str:
         return (
             "Smoke: **OK**\n"
             "- backend: `claude-code-cli`\n"
-            f"- allowedTools: `{_claude_code_allowed_tools()}`\n"
-            f"- permission-mode: `{_claude_code_permission_mode()}`\n"
+            f"- allowedTools: `{_effective_allowed_tools(key)}`\n"
+            f"- tools: `{_tools_from_allowed_tools(_effective_allowed_tools(key))}`\n"
+            f"- permission-mode: `{_effective_permission_mode(key)}`\n"
+            f"- yolo: `{'on' if _is_yolo_enabled(key) else 'off'}`\n"
             f"- temp edit+cleanup: `{tmp_file.name}`"
         )
 
-    return "Usage: `/claude-mode on|off|status|smoke`"
+    if head_l == "yolo":
+        sub = tail.strip().lower()
+        if sub in {"", "status"}:
+            return _status_message(key) + "\n\nUsage: `/claude-mode yolo on|off|status`"
+        if sub in {"on", "enable", "enabled", "true", "1"}:
+            _update_chat(key, extra={"yolo": True})
+            return _status_message(key)
+        if sub in {"off", "disable", "disabled", "false", "0"}:
+            _update_chat(key, extra={"yolo": False})
+            return _status_message(key)
+        return "Usage: `/claude-mode yolo on|off|status`"
+
+    if head_l in {"approve", "deny"}:
+        pending = _pending_approval(key)
+        if not pending:
+            return "Claude mode: no pending approval for this chat."
+
+        pending_id = str(pending.get("id") or "").strip()
+        token_or_rule = tail.strip()
+        if token_or_rule and re.fullmatch(rf"[{_APPROVAL_ID_ALPHABET}]{{{_APPROVAL_ID_LEN}}}", token_or_rule):
+            if token_or_rule != pending_id:
+                return f"Claude mode: unknown approval id `{token_or_rule}` for this chat."
+            token_or_rule = ""
+
+        if head_l == "deny":
+            _clear_pending_approval(key)
+            return "Claude mode: denied and cleared the pending approval."
+
+        tool_rule = token_or_rule or str(pending.get("tool_rule") or "").strip()
+        if not tool_rule:
+            return (
+                "Claude mode: pending approval has no parsed tool rule.\n"
+                "Retry with an explicit rule, e.g. `/claude-mode approve Bash(git status *)`."
+            )
+
+        # Persist chat-scoped allow rule (escape hatch; doesn't flip yolo).
+        extras = _chat_allowed_tools_extra(key)
+        if tool_rule not in extras:
+            extras.append(tool_rule)
+            _update_chat(key, extra={"allowed_tools_extra": extras})
+
+        # Re-run the original prompt and clear pending on success (or refresh on re-block).
+        prompt_path = pending.get("prompt_path")
+        prompt_text = ""
+        if isinstance(prompt_path, str) and prompt_path:
+            with contextlib_suppress(Exception):
+                prompt_text = _read_private_text(Path(prompt_path))
+        if not prompt_text:
+            _clear_pending_approval(key)
+            return "Claude mode: pending approval expired (missing prompt). Please resend your message."
+
+        ok_run, out = await _run_claude_code_print(
+            prompt=prompt_text,
+            chat_key=key,
+            session_key=str(pending.get("session_key") or session_key or ""),
+            task_id="claude_mode_approve",
+        )
+        if ok_run:
+            _clear_pending_approval(key)
+        return out
+
+    return "Usage: `/claude-mode on|off|status|smoke|approve|deny|yolo`"
 
 
 async def handle_internal_run(raw_args: str) -> str:
@@ -607,6 +904,7 @@ async def handle_internal_run(raw_args: str) -> str:
 
     ok_run, out = await _run_claude_code_print(
         prompt=pending.prompt,
+        chat_key=pending.chat_key,
         session_key=pending.session_key,
         task_id="claude_mode_run",
     )
@@ -614,7 +912,7 @@ async def handle_internal_run(raw_args: str) -> str:
 
 
 async def handle_public_mode(raw_args: str) -> str:
-    return "Use `/claude-mode on|off|status|smoke` from Telegram so the plugin can identify the chat."
+    return "Use `/claude-mode on|off|status|smoke|approve|deny|yolo` from Telegram so the plugin can identify the chat."
 
 
 def register(ctx: Any) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -206,3 +207,243 @@ async def test_claude_mode_status_reports_backend_precisely(tmp_path, monkeypatc
     assert "backend:" in reply
     assert "claude-code-cli" in reply
     assert "anthropic" not in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_claude_mode_status_reports_allowed_tools_permission_mode_yolo_and_pending(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes_test"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _enable_plugin(hermes_home, "kaze-claude-mode")
+    _reset_plugin_singleton(monkeypatch)
+    monkeypatch.delenv("KAZE_CLAUDE_MODE_ALLOWED_TOOLS", raising=False)
+    monkeypatch.delenv("KAZE_CLAUDE_MODE_PERMISSION_MODE", raising=False)
+
+    class _FakeCtx:
+        def dispatch_tool(self, name: str, args: dict, **kw):  # noqa: ARG002
+            return json.dumps({"error": "not used"})
+
+        def register_hook(self, *a, **kw):  # noqa: ANN001,ARG002
+            return None
+
+        def register_command(self, *a, **kw):  # noqa: ANN001,ARG002
+            return None
+
+    from hermes_cli.plugins import discover_plugins
+
+    discover_plugins(force=True)
+    from hermes_plugins.kaze_claude_mode import _encode_packet, handle_internal_mode, state_key_from_source, set_enabled
+    from hermes_plugins import kaze_claude_mode as mod
+
+    mod._CTX = _FakeCtx()
+    monkeypatch.setattr(
+        mod,
+        "_resolve_claude_code_cli_backend",
+        lambda: (True, {"backend": "claude-code-cli", "cmd": "claude", "path": "/usr/bin/claude"}),
+    )
+
+    src = _tg_source()
+    chat_key = state_key_from_source(src)
+    set_enabled(chat_key, True, source=src)
+
+    packet = {"key": chat_key, "args": "status", "session_key": "agent:main:telegram:dm:1"}
+    reply = await handle_internal_mode(_encode_packet(packet))
+
+    assert "allowedTools:" in reply
+    assert "`Read,Write,Edit,Grep,Glob`" in reply
+    assert "permission-mode:" in reply
+    assert "`acceptEdits`" in reply
+    assert "yolo:" in reply
+    assert "**off**" in reply
+    assert "pending:" in reply
+    assert "**none**" in reply
+
+
+@pytest.mark.asyncio
+async def test_claude_mode_env_overrides_allowed_tools_and_permission_mode(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes_test"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _enable_plugin(hermes_home, "kaze-claude-mode")
+    _reset_plugin_singleton(monkeypatch)
+    monkeypatch.setenv("KAZE_CLAUDE_MODE_ALLOWED_TOOLS", "Read,Edit")
+    monkeypatch.setenv("KAZE_CLAUDE_MODE_PERMISSION_MODE", "auto")
+
+    class _FakeCtx:
+        def dispatch_tool(self, name: str, args: dict, **kw):  # noqa: ARG002
+            return json.dumps({"error": "not used"})
+
+        def register_hook(self, *a, **kw):  # noqa: ANN001,ARG002
+            return None
+
+        def register_command(self, *a, **kw):  # noqa: ANN001,ARG002
+            return None
+
+    from hermes_cli.plugins import discover_plugins
+
+    discover_plugins(force=True)
+    from hermes_plugins.kaze_claude_mode import _encode_packet, handle_internal_mode, state_key_from_source, set_enabled
+    from hermes_plugins import kaze_claude_mode as mod
+
+    mod._CTX = _FakeCtx()
+    monkeypatch.setattr(
+        mod,
+        "_resolve_claude_code_cli_backend",
+        lambda: (True, {"backend": "claude-code-cli", "cmd": "claude", "path": "/usr/bin/claude"}),
+    )
+
+    src = _tg_source()
+    chat_key = state_key_from_source(src)
+    set_enabled(chat_key, True, source=src)
+
+    packet = {"key": chat_key, "args": "status", "session_key": "agent:main:telegram:dm:1"}
+    reply = await handle_internal_mode(_encode_packet(packet))
+
+    assert "`Read,Edit`" in reply
+    assert "`auto`" in reply
+
+
+@pytest.mark.asyncio
+async def test_claude_mode_yolo_toggles_bypass_permission_mode(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes_test"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _enable_plugin(hermes_home, "kaze-claude-mode")
+    _reset_plugin_singleton(monkeypatch)
+    monkeypatch.setenv("KAZE_CLAUDE_MODE_PERMISSION_MODE", "auto")
+
+    class _FakeCtx:
+        def dispatch_tool(self, name: str, args: dict, **kw):  # noqa: ARG002
+            return json.dumps({"error": "not used"})
+
+        def register_hook(self, *a, **kw):  # noqa: ANN001,ARG002
+            return None
+
+        def register_command(self, *a, **kw):  # noqa: ANN001,ARG002
+            return None
+
+    from hermes_cli.plugins import discover_plugins
+
+    discover_plugins(force=True)
+    from hermes_plugins.kaze_claude_mode import _encode_packet, handle_internal_mode, state_key_from_source, set_enabled
+    from hermes_plugins import kaze_claude_mode as mod
+
+    mod._CTX = _FakeCtx()
+    monkeypatch.setattr(
+        mod,
+        "_resolve_claude_code_cli_backend",
+        lambda: (True, {"backend": "claude-code-cli", "cmd": "claude", "path": "/usr/bin/claude"}),
+    )
+
+    src = _tg_source()
+    chat_key = state_key_from_source(src)
+    set_enabled(chat_key, True, source=src)
+
+    packet_on = {"key": chat_key, "args": "yolo on", "session_key": "agent:main:telegram:dm:1"}
+    reply_on = await handle_internal_mode(_encode_packet(packet_on))
+    assert "yolo: **on**" in reply_on
+    assert "`bypassPermissions`" in reply_on
+
+    packet_off = {"key": chat_key, "args": "yolo off", "session_key": "agent:main:telegram:dm:1"}
+    reply_off = await handle_internal_mode(_encode_packet(packet_off))
+    assert "yolo: **off**" in reply_off
+    assert "`auto`" in reply_off
+
+
+@pytest.mark.asyncio
+async def test_claude_mode_permission_block_creates_pending_approval_and_approve_retries(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes_test"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _enable_plugin(hermes_home, "kaze-claude-mode")
+    _reset_plugin_singleton(monkeypatch)
+    monkeypatch.delenv("KAZE_CLAUDE_MODE_ALLOWED_TOOLS", raising=False)
+
+    class _FakeCtx:
+        def __init__(self):
+            self.calls: list[tuple[str, dict]] = []
+
+        def dispatch_tool(self, name: str, args: dict, **kw):  # noqa: ARG002
+            self.calls.append((name, args))
+            if name == "write_file":
+                return json.dumps({"ok": True})
+            if name == "terminal":
+                cmd = args.get("command") or ""
+                if "Bash(git status *)" in cmd:
+                    return json.dumps({"stdout": "ok\\n", "exit_code": 0})
+                return json.dumps({"stdout": "Permission blocked: approve Bash(git status *)\\n", "exit_code": 1})
+            return json.dumps({"error": "unexpected tool"})
+
+        def register_hook(self, *a, **kw):  # noqa: ANN001,ARG002
+            return None
+
+        def register_command(self, *a, **kw):  # noqa: ANN001,ARG002
+            return None
+
+    from hermes_cli.plugins import discover_plugins
+
+    discover_plugins(force=True)
+    from hermes_plugins.kaze_claude_mode import (
+        _encode_packet,
+        _pending_approval,
+        _stash_pending_prompt,
+        handle_internal_mode,
+        handle_internal_run,
+        state_key_from_source,
+        set_enabled,
+    )
+    from hermes_plugins import kaze_claude_mode as mod
+
+    mod._CTX = _FakeCtx()
+    monkeypatch.setattr(
+        mod,
+        "_resolve_claude_code_cli_backend",
+        lambda: (True, {"backend": "claude-code-cli", "cmd": "claude", "path": "/usr/bin/claude"}),
+    )
+
+    src = _tg_source()
+    chat_key = state_key_from_source(src)
+    set_enabled(chat_key, True, source=src)
+
+    secret_prompt = "TOPSECRET: do not leak"
+    token = _stash_pending_prompt(chat_key=chat_key, session_key="agent:main:telegram:dm:1", prompt=secret_prompt)
+    out = await handle_internal_run(token)
+    assert "approval pending" in out.lower()
+    assert secret_prompt not in out
+
+    pending = _pending_approval(chat_key)
+    assert pending is not None
+    assert pending.get("tool_rule") == "Bash(git status *)"
+    assert pending.get("prompt_sha256") == hashlib.sha256(secret_prompt.encode("utf-8")).hexdigest()
+
+    # State file must not contain the raw prompt body.
+    state_text = (hermes_home / "state" / "kaze_claude_mode.json").read_text(encoding="utf-8")
+    assert secret_prompt not in state_text
+
+    approve_packet = {"key": chat_key, "args": "approve", "session_key": "agent:main:telegram:dm:1"}
+    out2 = await handle_internal_mode(_encode_packet(approve_packet))
+    assert "ok" in out2.lower()
+    assert _pending_approval(chat_key) is None
+
+
+def test_claude_mode_keeps_other_slash_commands_as_escape_hatches(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes_test"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _enable_plugin(hermes_home, "kaze-claude-mode")
+    _reset_plugin_singleton(monkeypatch)
+
+    from hermes_cli.plugins import discover_plugins
+
+    discover_plugins(force=True)
+    from hermes_plugins.kaze_claude_mode import build_pre_dispatch_decision, state_key_from_source, set_enabled
+    from hermes_plugins import kaze_claude_mode as mod
+
+    monkeypatch.setattr(
+        mod,
+        "_resolve_claude_code_cli_backend",
+        lambda: (True, {"backend": "claude-code-cli", "cmd": "claude", "path": "/usr/bin/claude"}),
+    )
+
+    src = _tg_source()
+    chat_key = state_key_from_source(src)
+    set_enabled(chat_key, True, source=src)
+
+    # /claude-mode is rewritten (handled by this plugin), but other slash commands must pass through.
+    event = SimpleNamespace(text="/help", source=src)
+    assert build_pre_dispatch_decision(event, gateway=_FakeGateway("agent:main:telegram:dm:1")) is None
