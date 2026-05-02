@@ -387,10 +387,16 @@ class QQAdapter(BasePlatformAdapter):
         """Open a WebSocket connection to the QQ Bot gateway."""
         # Only clean up WebSocket resources — keep _http_client alive for REST API calls.
         if self._ws and not self._ws.closed:
-            await self._ws.close()
+            try:
+                await asyncio.wait_for(self._ws.close(), timeout=3)
+            except Exception:
+                logger.debug("[%s] Timed out while closing stale QQ websocket", self._log_tag)
         self._ws = None
         if self._session and not self._session.closed:
-            await self._session.close()
+            try:
+                await asyncio.wait_for(self._session.close(), timeout=3)
+            except Exception:
+                logger.debug("[%s] Timed out while closing stale QQ websocket session", self._log_tag)
         self._session = None
 
         self._session = aiohttp.ClientSession()
