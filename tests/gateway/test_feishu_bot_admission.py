@@ -477,7 +477,7 @@ def test_admit_mentioned_topic_activates_thread_follow_for_later_unmentioned_mes
     )
 
 
-def test_admit_thread_follow_ttl_does_not_refresh_without_mention(monkeypatch):
+def test_admit_thread_follow_ttl_refreshes_on_unmentioned_human_message(monkeypatch):
     from gateway.platforms import feishu
 
     now = [100.0]
@@ -499,9 +499,13 @@ def test_admit_thread_follow_ttl_does_not_refresh_without_mention(monkeypatch):
     now[0] = 150.0
     stub_mention(adapter, False)
     assert adapter._admit(sender, message) is None
-    assert adapter._active_thread_follows[("oc_1", "omt_1")] == 160.0
+    assert adapter._active_thread_follows[("oc_1", "omt_1")] == 210.0
 
-    now[0] = 161.0
+    now[0] = 170.0
+    assert adapter._admit(sender, message) is None
+    assert adapter._active_thread_follows[("oc_1", "omt_1")] == 230.0
+
+    now[0] = 231.0
     assert adapter._admit(sender, message) == "group_policy_rejected"
 
 

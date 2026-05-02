@@ -3787,6 +3787,8 @@ class FeishuAdapter(BasePlatformAdapter):
                 self._activate_thread_follow(message)
                 return None
             if self._is_thread_follow_active(message):
+                if not is_bot:
+                    self._activate_thread_follow(message)
                 return None
             return "group_policy_rejected"
         return None
