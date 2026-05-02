@@ -1235,6 +1235,31 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             idx += 1
         return idx
 
+    def _anchor_to_first_assistant(
+        self,
+        messages: List[Dict[str, Any]],
+        start_idx: int,
+        tail_start: int | None = None,
+    ) -> int:
+        """Slide ``start_idx`` forward to the first assistant message.
+
+        When ``anchor_first_assistant`` is enabled, this preserves the forgecode
+        invariant that the compressed range always begins at an assistant turn.
+        Without the anchor, ``protect_first_n`` (a count) can land mid-user-block
+        and produce a summary that begins with an orphan user message.
+
+        If no assistant exists between ``start_idx`` and ``tail_start``, returns
+        a value at or beyond ``tail_start`` so the caller's "compress_start >=
+        compress_end" guard kicks in and skips compaction.
+        """
+        if not getattr(self, "anchor_first_assistant", False):
+            return start_idx
+        upper = tail_start if tail_start is not None else len(messages)
+        for i in range(start_idx, upper):
+            if messages[i].get("role") == "assistant":
+                return i
+        return upper
+
     def _align_boundary_backward(self, messages: List[Dict[str, Any]], idx: int) -> int:
         """Pull a compress-end boundary backward to avoid splitting a
         tool_call / result group.
@@ -1396,6 +1421,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         """
         compress_start = self._align_boundary_forward(messages, self.protect_first_n)
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+        compress_start = self._anchor_to_first_assistant(  # ← anchor: slide past orphan user block
+            messages, compress_start, tail_start=compress_end,
+        )
         return compress_start < compress_end
 
     # ------------------------------------------------------------------
@@ -1455,6 +1483,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         # Use token-budget tail protection instead of fixed message count
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+        compress_start = self._anchor_to_first_assistant(messages, compress_start, tail_start=compress_end)
 
         if compress_start >= compress_end:
             return messages
