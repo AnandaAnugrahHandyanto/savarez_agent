@@ -976,6 +976,25 @@ def skill_view(
                 if skill_md:
                     break
 
+        # Fallback: search by frontmatter name (fixes #18872)
+        # skills_list() returns frontmatter `name:` which may differ from
+        # the directory name — skill_view must resolve both.
+        if not skill_md:
+            for search_dir in all_dirs:
+                for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
+                    try:
+                        fm, _ = _parse_frontmatter(
+                            found_skill_md.read_text(encoding="utf-8")[:4000]
+                        )
+                        if fm.get("name") == name:
+                            skill_dir = found_skill_md.parent
+                            skill_md = found_skill_md
+                            break
+                    except Exception:
+                        continue
+                if skill_md:
+                    break
+
         # Legacy: flat .md files
         if not skill_md:
             for search_dir in all_dirs:
