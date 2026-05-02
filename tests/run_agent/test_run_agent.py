@@ -2177,6 +2177,7 @@ class TestRunConversation:
                 "repo_slug": "static-pages",
                 "state": "running",
                 "connect_command": "copilot --connect=task-1",
+                "web_url": "https://github.com/RosenblattAI/static-pages/tasks/task-1",
             },
         })
 
@@ -2194,6 +2195,7 @@ class TestRunConversation:
         assert result["completed"] is True
         assert "Launched this as a Copilot remote job" in result["final_response"]
         assert "static-pages" in result["final_response"]
+        assert "https://github.com/RosenblattAI/static-pages/tasks/task-1" in result["final_response"]
         assert mock_handle_function_call.call_args.args[0] == "copilot_remote"
         tool_args = mock_handle_function_call.call_args.args[1]
         assert tool_args["action"] == "launch"

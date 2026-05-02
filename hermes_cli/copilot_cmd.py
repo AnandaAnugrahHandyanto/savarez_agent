@@ -46,6 +46,43 @@ def _connect_handle(job: dict) -> Optional[str]:
     return handle if handle else None
 
 
+def _github_task_web_url(job: dict) -> Optional[str]:
+    """Build a GitHub task web URL if owner and connect handle are available."""
+    handle = _connect_handle(job)
+    if not handle:
+        return None
+    repo_path = job.get("repo_path", "") or ""
+    if not repo_path:
+        return None
+    # Derive owner from the git remote origin URL
+    from pathlib import Path
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "config", "--get", "remote.origin.url"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            url = result.stdout.strip()
+            if "://" in url:
+                parts = url.split("://", 1)[1].split("/")
+                if len(parts) >= 2:
+                    owner = parts[1]
+                    slug = Path(repo_path).name
+                    return f"https://github.com/{owner}/{slug}/tasks/{handle}"
+            elif "@" in url and ":" in url:
+                after_at = url.split("@", 1)[-1]
+                if ":" in after_at:
+                    parts = after_at.replace(":", "/").split("/")
+                    if len(parts) >= 2:
+                        owner = parts[1]
+                        slug = Path(repo_path).name
+                        return f"https://github.com/{owner}/{slug}/tasks/{handle}"
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        pass
+    return None
+
+
 def _relative_time(ts) -> str:
     """Format a timestamp as relative time."""
     if not ts:
@@ -193,6 +230,11 @@ def copilot_launch(args):
     if connect_handle:
         print(f"\n  Connect: copilot --connect={connect_handle}")
         print(f"  Resume:  copilot --resume={connect_handle}")
+        # Re-read from DB so repo_path is available for URL construction
+        job = db.get_copilot_remote(job_id) if db.get_copilot_remote(job_id) else {}
+        web = _github_task_web_url(job)
+        if web:
+            print(f"  Web:     {web}")
     else:
         # The launcher could not extract Copilot's remote task ID. Do not
         # fabricate a reconnect command from the Hermes job UUID — it is
@@ -260,6 +302,9 @@ def copilot_show(args):
         if sid:
             print(f"Connect:  copilot --connect={sid}")
             print(f"Resume:   copilot --resume={sid}")
+            web = _github_task_web_url(job)
+            if web:
+                print(f"Web:      {web}")
         else:
             print(
                 "Connect:  unavailable — Hermes did not extract a Copilot "

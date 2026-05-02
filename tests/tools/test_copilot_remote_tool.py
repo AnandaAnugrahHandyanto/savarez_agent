@@ -46,6 +46,8 @@ def test_launch_explicit_repo_dry_run(db):
     assert result["job"]["connect_handle"] is None
     assert result["job"]["connect_command"] is None
     assert result["job"]["resume_command"] is None
+    # Without a connect handle there is no web_url.
+    assert result["job"]["web_url"] is None
 
     jobs = db.list_copilot_remote(state="done")
     assert len(jobs) == 1
@@ -88,12 +90,56 @@ def test_launch_routes_repo_and_stores_connect_handle(db, monkeypatch):
     assert result["job"]["repo"] == "static-pages"
     assert result["job"]["connect_handle"] == "task-123"
     assert result["job"]["connect_command"] == "copilot --connect=task-123"
+    # repo_path is not a real git clone in the test environment, so _repo_owner_from_path
+    # cannot resolve the owner and web_url is omitted.
+    assert result["job"]["web_url"] is None
 
     jobs = db.list_copilot_remote(state="running")
     assert len(jobs) == 1
     # Post-v12: the launcher-discovered connect handle lives in its own
     # column; `signal_ref` is reserved for caller-supplied metadata.
     assert jobs[0]["connect_handle"] == "task-123"
+
+
+def test_launch_routes_repo_with_web_url(db, monkeypatch):
+    """When the repo path is a real git clone and connect handle exists, web_url should be present."""
+    routed_repo = RepoEntry(
+        slug="static-pages",
+        path="/workspace/repos/corp_it/static-pages",
+    )
+    monkeypatch.setattr("tools.copilot_remote_tool._route_repo", lambda prompt: routed_repo)
+    monkeypatch.setattr(
+        "tools.copilot_remote_tool._repo_owner_from_path",
+        lambda path: "RosenblattAI" if path else None,
+    )
+
+    def fake_launch(repo, prompt, *, session_id, model=None, dry_run=False, on_complete=None):
+        return {
+            "session_id": session_id,
+            "connect_id": "task-456",
+            "cmd": ["copilot"],
+            "proc": None,
+            "prompt_delivery_status": "already-submitted",
+            "prompt_delivery_warning": None,
+        }
+
+    monkeypatch.setattr("copilot_remote.launcher.launch_copilot", fake_launch)
+
+    result = json.loads(
+        copilot_remote(
+            {
+                "action": "launch",
+                "prompt": "Please build a new static webpage for the Macy Conferences",
+            },
+            task_id="slack-session-3",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["job"]["connect_handle"] == "task-456"
+    assert result["job"]["web_url"] == (
+        "https://github.com/RosenblattAI/static-pages/tasks/task-456"
+    )
 
 
 def test_launch_requires_prompt(db):
@@ -119,6 +165,8 @@ def test_list_and_show(db):
     shown = json.loads(copilot_remote({"action": "show", "job_id": "job-1"}))
     assert shown["success"] is True
     assert shown["job"]["resume_command"] == "copilot --resume=task-1"
+    # repo_path is not a real git clone in the test environment.
+    assert shown["job"]["web_url"] is None
 
 
 def test_hermes_slack_toolset_exposes_copilot_remote():
