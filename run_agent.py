@@ -13295,7 +13295,9 @@ class AIAgent:
                             messages, tools=self.tools or None
                         )
 
-                    if self.compression_enabled and _compressor.should_compress(_real_tokens):
+                    if self.compression_enabled and _compressor.should_compress(
+                        _real_tokens, messages=messages,
+                    ):
                         self._safe_print("  ⟳ compacting context…")
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message,

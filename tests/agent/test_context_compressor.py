@@ -1692,3 +1692,61 @@ class TestThresholdAbsoluteMax:
         c = self._make(threshold_absolute_max=10_000)
         # never go below MINIMUM_CONTEXT_LENGTH
         assert c._compute_threshold_tokens() == MINIMUM_CONTEXT_LENGTH
+
+
+class TestMultiTriggerThresholds:
+    def _make(self, **kw):
+        c = ContextCompressor.__new__(ContextCompressor)
+        c.threshold_tokens = 100_000
+        c.last_prompt_tokens = 0
+        c._ineffective_compression_count = 0
+        c.message_threshold = None
+        c.turn_threshold = None
+        c.quiet_mode = True
+        c._last_trigger = None
+        for k, v in kw.items():
+            setattr(c, k, v)
+        return c
+
+    def test_token_only_fallback(self):
+        c = self._make(last_prompt_tokens=120_000)
+        assert c.should_compress() is True
+        assert c._last_trigger == "token"
+
+    def test_message_threshold_fires_below_token_threshold(self):
+        c = self._make(message_threshold=200, last_prompt_tokens=10)
+        msgs = [{"role": "user", "content": str(i)} for i in range(200)]
+        assert c.should_compress(messages=msgs) is True
+        assert c._last_trigger == "message"
+
+    def test_turn_threshold_counts_user_messages(self):
+        c = self._make(turn_threshold=30, last_prompt_tokens=10)
+        msgs = (
+            [{"role": "system", "content": "sys"}]
+            + [{"role": "user", "content": "u"} for _ in range(30)]
+            + [{"role": "assistant", "content": "a"} for _ in range(30)]
+        )
+        assert c.should_compress(messages=msgs) is True
+        assert c._last_trigger == "turn"
+
+    def test_token_takes_precedence_when_multiple_fire(self):
+        c = self._make(
+            last_prompt_tokens=120_000,
+            message_threshold=10,
+            turn_threshold=2,
+        )
+        msgs = [{"role": "user", "content": "u"}] * 50
+        assert c.should_compress(messages=msgs) is True
+        # Token threshold checked first → it wins
+        assert c._last_trigger == "token"
+
+    def test_anti_thrashing_clears_trigger(self):
+        c = self._make(last_prompt_tokens=120_000)
+        c._ineffective_compression_count = 2
+        assert c.should_compress() is False
+        assert c._last_trigger is None
+
+    def test_no_trigger_no_fire(self):
+        c = self._make(last_prompt_tokens=10)
+        assert c.should_compress() is False
+        assert c._last_trigger is None

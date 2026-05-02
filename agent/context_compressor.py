@@ -499,27 +499,52 @@ class ContextCompressor(ContextEngine):
             base = min(base, cap)
         return max(base, MINIMUM_CONTEXT_LENGTH)
 
-    def should_compress(self, prompt_tokens: int = None) -> bool:
-        """Check if context exceeds the compression threshold.
+    def should_compress(
+        self,
+        prompt_tokens: int = None,
+        messages: List[Dict[str, Any]] | None = None,
+    ) -> bool:
+        """Multi-trigger compaction check.
 
-        Includes anti-thrashing protection: if the last two compressions
-        each saved less than 10%, skip compression to avoid infinite loops
-        where each pass removes only 1-2 messages.
+        Triggers (any one fires; order = priority):
+        - token: prompt_tokens >= threshold_tokens
+        - message: len(messages) >= message_threshold (if set)
+        - turn: count of user messages >= turn_threshold (if set)
+
+        Anti-thrashing back-off still applies after any trigger fires.
+        Records which trigger fired in ``self._last_trigger`` so callers
+        (CompactionResult) can attribute cause.
         """
+        self._last_trigger = None
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
-        if tokens < self.threshold_tokens:
+        if tokens >= self.threshold_tokens:
+            self._last_trigger = "token"
+        elif messages is not None and self._fires_message_threshold(messages):
+            self._last_trigger = "message"
+        elif messages is not None and self._fires_turn_threshold(messages):
+            self._last_trigger = "turn"
+        if self._last_trigger is None:
             return False
-        # Anti-thrashing: back off if recent compressions were ineffective
         if self._ineffective_compression_count >= 2:
             if not self.quiet_mode:
                 logger.warning(
-                    "Compression skipped — last %d compressions saved <10%% each. "
-                    "Consider /new to start a fresh session, or /compress <topic> "
-                    "for focused compression.",
+                    "Compression skipped — last %d compressions saved <10%% each.",
                     self._ineffective_compression_count,
                 )
+            self._last_trigger = None
             return False
         return True
+
+    def _fires_message_threshold(self, messages: List[Dict[str, Any]]) -> bool:
+        threshold = getattr(self, "message_threshold", None)
+        return isinstance(threshold, int) and len(messages) >= threshold
+
+    def _fires_turn_threshold(self, messages: List[Dict[str, Any]]) -> bool:
+        threshold = getattr(self, "turn_threshold", None)
+        if not isinstance(threshold, int):
+            return False
+        user_count = sum(1 for m in messages if m.get("role") == "user")
+        return user_count >= threshold
 
     # ------------------------------------------------------------------
     # Tool output pruning (cheap pre-pass, no LLM call)
