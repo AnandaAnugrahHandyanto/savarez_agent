@@ -31,6 +31,7 @@ import {
   Pen,
   FlaskConical,
   CheckCircle2,
+  Undo2,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -81,7 +82,7 @@ interface CaptionStyle {
   outline_color: string;
   outline_width: number;
   alignment: number;
-  margin_edge: number;
+  margin_bottom: number;
   max_line_length: number;
 }
 
@@ -146,7 +147,7 @@ const STYLE_DEFAULTS: CaptionStyle = {
   outline_color: "&H00000000",
   outline_width: 3,
   alignment: 2,
-  margin_edge: 80,
+  margin_bottom: 80,
   max_line_length: 42,
 };
 
@@ -1122,7 +1123,7 @@ function PresetGallery({
             <div className="rounded border border-border bg-card p-2 space-y-1">
               <p className="text-xs font-semibold text-foreground mb-1.5">Preview:</p>
               {(Object.entries(genPreview) as [string, string | number | null][]).map(([k, v]) => {
-                const LABELS: Record<string, string> = { font: "Font", font_size: "Font size", primary_color: "Text color", outline_color: "Outline color", outline_width: "Outline width", alignment: "Alignment", margin_edge: "Margin from edge", max_line_length: "Line length" };
+                const LABELS: Record<string, string> = { font: "Font", font_size: "Font size", primary_color: "Text color", outline_color: "Outline color", outline_width: "Outline width", alignment: "Alignment", margin_bottom: "Margin from edge", max_line_length: "Line length" };
                 const displayValue = k === "alignment" && typeof v === "number"
                   ? `${ALIGNMENT_ICONS[v] ?? ""} ${ALIGNMENT_NAMES[v] ?? v}`
                   : String(v);
@@ -1317,7 +1318,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
   const [burning, setBurning] = useState(false);
   const [burnError, setBurnError] = useState<string | null>(null);
   const [burnSuccess, setBurnSuccess] = useState(false);
-  const [burnStyleUsed, setBurnStyleUsed] = useState<{ alignment?: number; margin_edge?: number } | null>(null);
+  const [burnStyleUsed, setBurnStyleUsed] = useState<{ alignment?: number; margin_bottom?: number } | null>(null);
   const [burnTimestamp, setBurnTimestamp] = useState(Date.now());
   const [splitState, setSplitState] = useState<{ segIdx: number; splitBefore: Set<number> } | null>(null);
 
@@ -1328,6 +1329,36 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
 
   // NL panel pre-fill (from QA "Fix with AI")
   const [nlPrefill, setNlPrefill] = useState<string | undefined>(undefined);
+
+  // Undo stack — snapshots of segments before structural ops (session-only, max 50)
+  const undoStack = useRef<CaptionSegment[][]>([]);
+  const [canUndo, setCanUndo] = useState(false);
+
+  const pushUndo = useCallback((current: CaptionSegment[]) => {
+    undoStack.current = [...undoStack.current.slice(-49), current];
+    setCanUndo(true);
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    const stack = undoStack.current;
+    if (stack.length === 0) return;
+    const prev = stack[stack.length - 1];
+    undoStack.current = stack.slice(0, -1);
+    setCanUndo(undoStack.current.length > 0);
+    setSegments(prev);
+  }, []);
+
+  // Ctrl+Z / Cmd+Z keyboard shortcut
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [handleUndo]);
 
   // Ref for scrolling to a flagged segment
   const segmentRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -1352,14 +1383,15 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
   }, []);
 
   const toggleLang = useCallback((idx: number) => {
-    setSegments((prev) =>
-      prev.map((s, i) => {
+    setSegments((prev) => {
+      pushUndo(prev);
+      return prev.map((s, i) => {
         if (i !== idx) return s;
         const wasVi = (s.lang || "en") === "vi";
-        return { ...s, lang: wasVi ? "en" : "vi", phonetic: wasVi ? "" : s.phonetic };
-      })
-    );
-  }, []);
+        return { ...s, lang: (wasVi ? "en" : "vi") as "en" | "vi", phonetic: wasVi ? "" : s.phonetic };
+      });
+    });
+  }, [pushUndo]);
 
   const openSplit = useCallback((idx: number) => {
     setSplitState({ segIdx: idx, splitBefore: new Set() });
@@ -1405,14 +1437,15 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
       setSplitState(null);
       return;
     }
-    setSegments((prev) =>
-      [...prev.slice(0, segIdx), ...newSegs, ...prev.slice(segIdx + 1)].map((s, i) => ({
+    setSegments((prev) => {
+      pushUndo(prev);
+      return [...prev.slice(0, segIdx), ...newSegs, ...prev.slice(segIdx + 1)].map((s, i) => ({
         ...s,
         id: i,
-      }))
-    );
+      }));
+    });
     setSplitState(null);
-  }, [splitState, segments]);
+  }, [splitState, segments, pushUndo]);
 
   const handleQAReview = async () => {
     setQaLoading(true);
@@ -1430,6 +1463,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
 
   const handleApplyNLPatches = useCallback((patches: NLPatch[]) => {
     setSegments((prev) => {
+      pushUndo(prev);
       let segs = [...prev];
       // Process in reverse order to keep indices stable for splits/merges
       const sorted = [...patches].reverse();
@@ -1463,17 +1497,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
       }
       return segs.map((s, i) => ({ ...s, id: i }));
     });
-    // Auto-save after applying patches
-    setTimeout(async () => {
-      try {
-        await fetchJSON(`${API}/jobs/${jobId}/segments`, {
-          method: "PUT",
-          body: JSON.stringify({ segments }),
-          headers: { "Content-Type": "application/json" },
-        });
-      } catch { /* non-fatal */ }
-    }, 0);
-  }, [jobId, segments]);
+  }, [pushUndo]);
 
   const handleReburn = async () => {
     if (!style) return;
@@ -1557,9 +1581,20 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
         </button>
         <span className="text-muted-foreground opacity-40">/</span>
         <span className="text-sm font-medium truncate text-foreground">{filename}</span>
-        <span className="ml-auto text-xs text-muted-foreground shrink-0">
-          {segments.length} segment{segments.length !== 1 ? "s" : ""}
-        </span>
+        <div className="ml-auto flex items-center gap-2 shrink-0">
+          <button
+            onClick={handleUndo}
+            disabled={!canUndo}
+            title="Undo last structural edit (Ctrl+Z)"
+            className="flex items-center gap-1 px-2 py-1 rounded text-xs text-muted-foreground hover:text-foreground hover:bg-accent disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          >
+            <Undo2 className="w-3.5 h-3.5" />
+            Undo
+          </button>
+          <span className="text-xs text-muted-foreground">
+            {segments.length} segment{segments.length !== 1 ? "s" : ""}
+          </span>
+        </div>
       </div>
 
       {/* ── 3-column body ── */}
@@ -1599,7 +1634,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
               <p className="text-xs text-success">✓ Video re-burned successfully.</p>
               {burnStyleUsed && (
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  {ALIGNMENT_NAMES[burnStyleUsed.alignment!] ?? `align ${burnStyleUsed.alignment}`} · margin {burnStyleUsed.margin_edge}px
+                  {ALIGNMENT_NAMES[burnStyleUsed.alignment!] ?? `align ${burnStyleUsed.alignment}`} · margin {burnStyleUsed.margin_bottom}px
                 </p>
               )}
             </div>
@@ -1708,7 +1743,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                 <StyleColorField label="Outline" value={style.outline_color} onChange={(v) => setStyle((s) => s && ({ ...s, outline_color: v }))} />
                 <StyleNumberField label="Outline width" value={style.outline_width} onChange={(v) => setStyle((s) => s && ({ ...s, outline_width: v }))} />
                 <AlignmentPicker value={style.alignment} onChange={(v) => setStyle((s) => s && ({ ...s, alignment: v }))} />
-                <StyleNumberField label="Margin from edge" value={style.margin_edge} onChange={(v) => setStyle((s) => s && ({ ...s, margin_edge: v }))} />
+                <StyleNumberField label="Margin from edge" value={style.margin_bottom} onChange={(v) => setStyle((s) => s && ({ ...s, margin_bottom: v }))} />
                 <StyleNumberField label="Line length" value={style.max_line_length} onChange={(v) => setStyle((s) => s && ({ ...s, max_line_length: v }))} />
               </div>
               <p className="text-xs text-muted-foreground mt-3">Style changes apply on the next Re-burn.</p>
