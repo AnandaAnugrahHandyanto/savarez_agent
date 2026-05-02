@@ -47,7 +47,7 @@ _HERMES_CORE_TOOLS = [
     # Text-to-speech
     "text_to_speech",
     # Planning & memory
-    "todo", "memory",
+    "todo", "memory", "obsidian_graph_search",
     # Session history search
     "session_search",
     # Clarifying questions
@@ -171,6 +171,12 @@ TOOLSETS = {
     "memory": {
         "description": "Persistent memory across sessions (personal notes + user profile)",
         "tools": ["memory"],
+        "includes": []
+    },
+
+    "memory_graph": {
+        "description": "QMD semantic search expanded through the Obsidian note graph",
+        "tools": ["obsidian_graph_search"],
         "includes": []
     },
     
