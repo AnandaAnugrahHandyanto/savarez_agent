@@ -1,4 +1,4 @@
-"""Vietnamese language teaching video caption tool for Hermes Agent.
+"""Vietnamese language teaching video caption pipeline for Hermes Agent.
 
 For short teaching videos (YouTube Shorts style) that mix English narration
 with Vietnamese words/phrases being taught:
@@ -10,16 +10,21 @@ with Vietnamese words/phrases being taught:
 
 Pipeline:
   1. faster-whisper transcribes audio (auto language detect, fully local)
-  2. Kimi K2.5 via NVIDIA NIM: corrects Vietnamese diacritics, classifies
-     each segment as "en" or "vi", and generates English phonetic guides
+  2. Phonetic generation — two modes:
+       a. With NVIDIA_API_KEY: Kimi K2.6 via NVIDIA NIM (best quality)
+       b. Without key: user's configured Hermes model (automatic fallback)
+     In both modes: classifies each segment as "en" or "vi", corrects
+     Vietnamese diacritics, and generates English phonetic guides.
   3. ASS subtitle file built with MAIN + PHONETIC styles
   4. FFmpeg burns captions into the video
 
 Required dependencies:
-    pip install faster-whisper openai
+    pip install faster-whisper
+    pip install openai   # only needed when NVIDIA_API_KEY is set
 
-Required env var for phonetic generation (add to ~/.hermes/.env):
+Optional env var for high-quality phonetics (add to ~/.hermes/.env):
     NVIDIA_API_KEY=nvapi-...
+    If absent, the user's configured Hermes model is used instead.
 
 FFmpeg must be installed system-wide:
     macOS: brew install ffmpeg
@@ -39,7 +44,6 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from tools.registry import registry
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -214,15 +218,7 @@ def _get_split_threshold() -> float:
 
 
 def _auto_split_segments(segments: list[dict], threshold: float = 0.4) -> list[dict]:
-    """Split segments wherever the inter-word pause >= *threshold* seconds.
-
-    Whisper VAD can group several short words into one segment even when there
-    are clear pauses between them.  When word_timestamps=True is enabled we
-    detect those pauses and split automatically so each natural unit gets its
-    own on-screen time-slot.
-
-    Segments without word data (or with <= 1 word) are passed through unchanged.
-    """
+    """Split segments wherever the inter-word pause >= *threshold* seconds."""
     result: list[dict] = []
     for seg in segments:
         words = seg.get("words", [])
@@ -315,36 +311,13 @@ def transcribe(video_path: str) -> list[dict]:
     return segments
 
 
-def generate_phonetics(segments: list[dict], api_key: str | None = None) -> list[dict]:
-    """Use Kimi K2.5 to classify, correct, and add phonetics to segments.
-
-    For each segment Kimi will:
-      - Decide if it is English narration ("en") or a Vietnamese teaching moment ("vi")
-      - Correct Vietnamese diacritics if garbled by Whisper
-      - Generate an English phonetic guide for Vietnamese segments  e.g. [humm biet]
-
-    Falls back to all-English (no phonetics) if NVIDIA_API_KEY is not set.
-    """
-    _api_key = api_key or os.getenv("NVIDIA_API_KEY", "")
-    if not _api_key:
-        logger.warning(
-            "NVIDIA_API_KEY not set — skipping phonetic generation. "
-            "All segments treated as English. Add key to ~/.hermes/.env to enable."
-        )
-        return [{**s, "lang": "en", "phonetic": ""} for s in segments]
-
-    try:
-        import openai  # type: ignore
-    except ImportError:
-        logger.warning("openai not installed — skipping phonetics. Run: pip install openai")
-        return [{**s, "lang": "en", "phonetic": ""} for s in segments]
-
+def _phonetics_prompt(segments: list[dict]) -> str:
+    """Build the prompt used for both NVIDIA and Hermes-model phonetic generation."""
     input_lines = "\n".join(
         f'{{"id": {s["id"]}, "text": {json.dumps(s["text"])}}}'
         for s in segments
     )
-
-    prompt = (
+    return (
         "You are captioning a Vietnamese language teaching short video. "
         "The audio is mostly English narration with Vietnamese words and phrases being taught. "
         "Whisper (the speech transcriber) often garbles Vietnamese words into approximate English-looking spellings — "
@@ -363,52 +336,124 @@ def generate_phonetics(segments: list[dict], api_key: str | None = None) -> list
         f"Segments:\n{input_lines}"
     )
 
-    try:
-        client = openai.OpenAI(
-            api_key=_api_key,
-            base_url="https://integrate.api.nvidia.com/v1",
-        )
-        response = client.chat.completions.create(
-            model="moonshotai/kimi-k2.6",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=2048,
-            response_format={"type": "json_object"},
-        )
-        choice = response.choices[0]
-        raw = getattr(choice.message, "content", None) or ""
-        # Kimi NVIDIA NIM quirk: output sometimes in reasoning_content
-        if not raw.strip():
-            raw = getattr(choice.message, "reasoning_content", None) or ""
 
-    except Exception as e:
-        logger.warning("Kimi API call failed: %s — treating all segments as English", e)
-        return [{**s, "lang": "en", "phonetic": ""} for s in segments]
-
-    # json_object mode returns {"segments": [...]}, but handle bare array too for resilience
-    logger.debug("Kimi raw response (first 500 chars): %s", raw[:500])
+def _parse_phonetics_response(raw: str, segments: list[dict]) -> list[dict]:
+    """Parse a JSON phonetics response and merge results back into segments."""
     clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
     try:
         parsed = json.loads(clean)
         kimi_results = parsed.get("segments", []) if isinstance(parsed, dict) else parsed
     except json.JSONDecodeError:
         logger.warning(
-            "Kimi returned non-JSON — treating all segments as English.\n"
-            "Raw output was:\n%s", raw[:1000]
+            "Phonetics response was non-JSON — treating all segments as English.\n"
+            "Raw output:\n%s", raw[:1000]
         )
         return [{**s, "lang": "en", "phonetic": ""} for s in segments]
 
     result_map = {item["id"]: item for item in kimi_results if isinstance(item, dict)}
-    result_segments = []
-    for seg in segments:
-        kimi = result_map.get(seg["id"], {})
-        result_segments.append({
+    return [
+        {
             **seg,
-            "text": kimi.get("text", seg["text"]),
-            "lang": kimi.get("lang", "en"),
-            "phonetic": kimi.get("phonetic", ""),
-        })
-    return result_segments
+            "text": result_map.get(seg["id"], {}).get("text", seg["text"]),
+            "lang": result_map.get(seg["id"], {}).get("lang", "en"),
+            "phonetic": result_map.get(seg["id"], {}).get("phonetic", ""),
+        }
+        for seg in segments
+    ]
+
+
+def generate_phonetics(segments: list[dict], api_key: str | None = None) -> list[dict]:
+    """Classify, correct, and add phonetics to segments.
+
+    Mode selection (in priority order):
+      1. NVIDIA_API_KEY set → Kimi K2.6 via NVIDIA NIM (best quality)
+      2. No NVIDIA key      → user's configured Hermes model (automatic fallback)
+      3. Hermes model call fails → all segments treated as English (silent degradation)
+
+    Falls back to all-English (no phonetics) only when both model paths are unavailable.
+    """
+    _api_key = api_key or os.getenv("NVIDIA_API_KEY", "")
+    prompt = _phonetics_prompt(segments)
+
+    # ------------------------------------------------------------------
+    # Path A: NVIDIA NIM (Kimi K2.6)
+    # ------------------------------------------------------------------
+    if _api_key:
+        try:
+            import openai  # type: ignore
+        except ImportError:
+            logger.warning("openai not installed — falling back to Hermes model for phonetics. Run: pip install openai")
+            _api_key = ""  # fall through to Path B
+
+    if _api_key:
+        try:
+            import openai  # type: ignore
+            client = openai.OpenAI(
+                api_key=_api_key,
+                base_url="https://integrate.api.nvidia.com/v1",
+            )
+            response = client.chat.completions.create(
+                model="moonshotai/kimi-k2.6",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=2048,
+                response_format={"type": "json_object"},
+            )
+            choice = response.choices[0]
+            raw = getattr(choice.message, "content", None) or ""
+            # Kimi NVIDIA NIM quirk: output sometimes in reasoning_content
+            if not raw.strip():
+                raw = getattr(choice.message, "reasoning_content", None) or ""
+
+            logger.info("Phonetics generated via NVIDIA Kimi K2.6")
+            logger.debug("Kimi raw response (first 500 chars): %s", raw[:500])
+            return _parse_phonetics_response(raw, segments)
+
+        except Exception as e:
+            logger.warning("Kimi API call failed: %s — falling back to Hermes model", e)
+            # Fall through to Path B
+
+    # ------------------------------------------------------------------
+    # Path B: Hermes-configured model (fallback)
+    # ------------------------------------------------------------------
+    logger.info(
+        "NVIDIA_API_KEY not set (or call failed) — using configured Hermes model for phonetics"
+    )
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from run_agent import AIAgent
+
+        cfg = load_config()
+        model = cfg.get("model", {}).get("default", "")
+        runtime = resolve_runtime_provider(requested=None, target_model=model)
+
+        agent = AIAgent(
+            api_key=runtime.get("api_key"),
+            base_url=runtime.get("base_url"),
+            provider=runtime.get("provider"),
+            api_mode=runtime.get("api_mode"),
+            model=model,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            platform="api_server",
+            max_iterations=1,
+        )
+        system_prompt = (
+            "You are a precise JSON generator. "
+            "Return ONLY valid JSON with no markdown, no explanation, no extra text."
+        )
+        result = agent.run_conversation(prompt, system_message=system_prompt)
+        raw = result.get("final_response", "")
+        logger.info("Phonetics generated via Hermes model: %s", model)
+        return _parse_phonetics_response(raw, segments)
+
+    except Exception as e:
+        logger.warning(
+            "Hermes model phonetics call failed: %s — treating all segments as English", e
+        )
+        return [{**s, "lang": "en", "phonetic": ""} for s in segments]
 
 
 def build_ass(segments: list[dict], output_path: str | None = None) -> str:
@@ -458,10 +503,6 @@ def burn(video_path: str, ass_path: str, output_path: str | None = None) -> str:
     return output_path
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _check_ffmpeg() -> None:
     if subprocess.run(["which", "ffmpeg"], capture_output=True).returncode != 0:
         raise RuntimeError(
@@ -476,11 +517,7 @@ def save_caption_job(
     segments: list[dict],
     style: dict,
 ) -> Path:
-    """Persist caption job state to ~/.hermes/caption-jobs/{job_id}.json.
-
-    This enables the dashboard visual editor to load, edit, and re-burn
-    the job without any LLM involvement.
-    """
+    """Persist caption job state to ~/.hermes/caption-jobs/{job_id}.json."""
     jobs_dir = get_hermes_home() / "caption-jobs"
     jobs_dir.mkdir(parents=True, exist_ok=True)
     job_path = jobs_dir / f"{job_id}.json"
@@ -498,6 +535,7 @@ def save_caption_job(
 
 
 def check_requirements() -> bool:
+    """Return True if faster-whisper is importable (minimum viable requirement)."""
     try:
         import faster_whisper  # noqa: F401  # type: ignore
         return True
@@ -531,7 +569,6 @@ def _handle_caption(args: dict, **kw: Any) -> str:
             ass_path = build_ass(segments)
             out = burn(video_path, ass_path, output_path)
 
-            # Persist job for dashboard visual editor
             job_id = uuid.uuid4().hex[:12]
             save_caption_job(job_id, video_path, out, segments, style)
             dashboard_url = f"http://localhost:9119/captions/{job_id}"
@@ -614,15 +651,15 @@ def _handle_caption(args: dict, **kw: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Schema & registration
+# Schema
 # ---------------------------------------------------------------------------
 
-_SCHEMA = {
+SCHEMA = {
     "name": "video-caption",
     "description": (
         "Caption a Vietnamese language teaching video. Transcribes mixed EN/VI audio (auto language detect), "
         "classifies each segment as English or Vietnamese, corrects Vietnamese diacritics, and generates "
-        "English phonetic guides (e.g. [humm biet]) for Vietnamese segments via Kimi K2.5. "
+        "English phonetic guides (e.g. [humm biet]) for Vietnamese segments. "
         "Burns EN/VI-aware captions into the video.\n\n"
         "Caption layout:\n"
         "  Vietnamese segment: Vietnamese text on top + [phonetic guide] below\n"
@@ -630,12 +667,12 @@ _SCHEMA = {
         "Operations:\n"
         "- caption (default): full pipeline — transcribe + classify + phonetics + burn.\n"
         "- transcribe: transcribe audio only, returns raw segments.\n"
-        "- generate_phonetics: classify segments and generate phonetics via Kimi.\n"
+        "- generate_phonetics: classify segments and generate phonetics.\n"
         "- build_ass: build ASS subtitle file from segments.\n"
         "- burn: burn an existing ASS file into video.\n"
         "- reburn: apply corrected segments and re-burn (use after user edits).\n\n"
         "Segment format: {id, start, end, text, lang ('en'|'vi'), phonetic}\n"
-        "Requirements: faster-whisper, ffmpeg. NVIDIA_API_KEY for phonetics."
+        "Requirements: faster-whisper, ffmpeg. NVIDIA_API_KEY optional (falls back to Hermes model)."
     ),
     "parameters": {
         "type": "object",
@@ -670,13 +707,3 @@ _SCHEMA = {
         "required": [],
     },
 }
-
-registry.register(
-    name="video-caption",
-    toolset="video-caption",
-    schema=_SCHEMA,
-    handler=lambda args, **kw: _handle_caption(args, **kw),
-    check_fn=check_requirements,
-    requires_env=[],
-    emoji="🎬",
-)

@@ -233,6 +233,68 @@ function InfoSidebar() {
 }
 
 // ---------------------------------------------------------------------------
+// Prerequisites Banner
+// ---------------------------------------------------------------------------
+
+interface HealthStatus {
+  ffmpeg: boolean;
+  faster_whisper: boolean;
+  phonetics_source: "nvidia" | "hermes" | "unavailable";
+  hermes_model: string;
+}
+
+function PrerequisitesBanner() {
+  const [health, setHealth] = useState<HealthStatus | null>(null);
+  const [dismissed, setDismissed] = useState(false);
+
+  useEffect(() => {
+    fetchJSON(`${API}/health`)
+      .then((data: HealthStatus) => setHealth(data))
+      .catch(() => { /* non-fatal — banner simply doesn't render */ });
+  }, []);
+
+  if (!health || dismissed) return null;
+
+  const errors: string[] = [];
+  if (!health.ffmpeg) errors.push("ffmpeg not found (brew install ffmpeg / apt install ffmpeg)");
+  if (!health.faster_whisper) errors.push("faster-whisper not installed (pip install faster-whisper)");
+
+  const phoneticsLabel =
+    health.phonetics_source === "nvidia"
+      ? "NVIDIA Kimi K2.6"
+      : health.phonetics_source === "hermes"
+      ? `${health.hermes_model || "configured Hermes model"} (no NVIDIA key — fallback)`
+      : "unavailable (no faster-whisper)";
+
+  return (
+    <div className="mb-5 space-y-2">
+      {errors.length > 0 && (
+        <div className="relative flex items-start gap-3 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-xs text-destructive">
+          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+          <div className="flex-1 space-y-0.5">
+            <p className="font-semibold text-sm">Missing prerequisites</p>
+            {errors.map((e, i) => <p key={i} className="font-mono">{e}</p>)}
+          </div>
+          <button onClick={() => setDismissed(true)} className="p-1 rounded hover:bg-destructive/10">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+      <div className="relative flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-4 py-2.5 text-xs text-muted-foreground">
+        <Sparkles className="w-3.5 h-3.5 shrink-0 text-primary" />
+        <span>
+          <span className="font-medium text-foreground">Phonetics engine: </span>
+          {phoneticsLabel}
+        </span>
+        <button onClick={() => setDismissed(true)} className="ml-auto p-1 rounded hover:bg-muted">
+          <X className="w-3 h-3" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Job List View
 // ---------------------------------------------------------------------------
 
@@ -277,6 +339,7 @@ function JobListView({ onSelect }: { onSelect: (id: string) => void }) {
     <div className="p-6 grid grid-cols-1 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] gap-8 max-w-6xl">
       {/* ── Left: job list ── */}
       <div>
+        <PrerequisitesBanner />
         <div className="flex items-center justify-between mb-1">
           <h1 className="text-xl font-semibold text-foreground">Caption Jobs</h1>
           <button
@@ -1002,7 +1065,7 @@ function PresetGallery({
         className="flex items-center gap-1.5 w-full px-3 py-2 rounded-lg border border-dashed border-border text-xs font-medium text-foreground hover:bg-accent hover:border-primary transition-colors"
       >
         <Sparkles className="w-3.5 h-3.5 text-primary" />
-        Create with AI
+        Style with Hermes
         <ChevronDown className={`w-3 h-3 ml-auto transition-transform ${showGenerate ? "rotate-180" : ""}`} />
       </button>
 
@@ -1032,9 +1095,9 @@ function PresetGallery({
           {genPreview && (
             <div className="rounded border border-border bg-card p-2 space-y-1">
               <p className="text-xs font-semibold text-foreground mb-1.5">Preview:</p>
-              {(Object.entries(genPreview) as [string, string | number][]).map(([k, v]) => (
+              {(Object.entries(genPreview) as [string, string | number | null][]).filter(([k]) => k !== "position").map(([k, v]) => (
                 <div key={k} className="flex gap-2 text-xs">
-                  <span className="text-muted-foreground w-28 shrink-0">{k}</span>
+                  <span className="text-muted-foreground w-28 shrink-0">{{ font: "Font", font_size: "Font size", primary_color: "Text color", outline_color: "Outline color", outline_width: "Outline width", alignment: "Alignment", margin_bottom: "Margin from edge", max_line_length: "Max line length" }[k as string] ?? k}</span>
                   <span className="text-foreground font-mono">{String(v)}</span>
                 </div>
               ))}
@@ -1105,7 +1168,7 @@ function HermesPanel({
       {/* Header */}
       <div className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0">
         <Sparkles className="w-4 h-4 text-primary" />
-        <span className="text-sm font-semibold text-foreground">AI Tools</span>
+        <span className="text-sm font-semibold text-foreground">Hermes</span>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
@@ -1577,8 +1640,14 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                 <StyleColorField label="Text color" value={style.primary_color} onChange={(v) => setStyle((s) => s && ({ ...s, primary_color: v }))} />
                 <StyleColorField label="Outline" value={style.outline_color} onChange={(v) => setStyle((s) => s && ({ ...s, outline_color: v }))} />
                 <StyleNumberField label="Outline width" value={style.outline_width} onChange={(v) => setStyle((s) => s && ({ ...s, outline_width: v }))} />
-                <AlignmentPicker value={style.alignment} onChange={(v) => setStyle((s) => s && ({ ...s, alignment: v }))} />
-                <StyleNumberField label="Margin from edge" value={style.margin_bottom} onChange={(v) => setStyle((s) => s && ({ ...s, margin_bottom: v }))} />
+                <AlignmentPicker
+                  value={style.alignment}
+                  onChange={(v) => setStyle((s) => s && ({ ...s, alignment: v }))}
+                  label={style.position ? "Text anchor" : "Alignment"}
+                />
+                {!style.position && (
+                  <StyleNumberField label="Margin from edge" value={style.margin_bottom} onChange={(v) => setStyle((s) => s && ({ ...s, margin_bottom: v }))} />
+                )}
                 <PositionPicker position={style.position} onChange={(p) => setStyle((s) => s && ({ ...s, position: p }))} />
               </div>
               <p className="text-xs text-muted-foreground mt-3">Style changes apply on the next Re-burn.</p>
@@ -1702,10 +1771,10 @@ const ALIGNMENT_ICONS: Record<number, string> = {
   1: "↙", 2: "↓", 3: "↘",
 };
 
-function AlignmentPicker({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+function AlignmentPicker({ value, onChange, label = "Alignment" }: { value: number; onChange: (v: number) => void; label?: string }) {
   return (
     <div className="flex items-center gap-2">
-      <span className="w-24 shrink-0 text-xs text-muted-foreground">Alignment</span>
+      <span className="w-24 shrink-0 text-xs text-muted-foreground">{label}</span>
       <div className="grid grid-cols-3 gap-0.5">
         {ALIGNMENT_GRID.map((n) => (
           <button

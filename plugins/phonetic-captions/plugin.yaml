@@ -1,0 +1,19 @@
+name: phonetic-captions
+version: 1.0.0
+description: "Bilingual EN/VI phonetic caption editor for teaching videos.
+  Transcribes mixed English/Vietnamese audio, classifies each segment,
+  corrects Vietnamese diacritics, and generates English phonetic guides.
+  Includes a dashboard visual editor with NL editing, QA review, and style presets."
+author: NousResearch
+kind: standalone
+
+pip_dependencies:
+  - faster-whisper   # local Whisper transcription (required)
+  - openai           # NVIDIA NIM client (only needed when NVIDIA_API_KEY is set)
+
+provides_tools:
+  - video-caption
+
+# Note: NVIDIA_API_KEY is optional — phonetics fall back to the user's
+# configured Hermes model when the key is absent. ffmpeg must be installed
+# system-wide (brew install ffmpeg / apt install ffmpeg).

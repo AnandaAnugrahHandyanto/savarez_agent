@@ -24,6 +24,47 @@ _log = logging.getLogger(__name__)
 
 router = APIRouter()
 
+
+@router.get("/health")
+async def health_check():
+    """Return dependency status for the prerequisites banner in the frontend."""
+    import shutil
+
+    ffmpeg_ok = shutil.which("ffmpeg") is not None
+
+    faster_whisper_ok = False
+    try:
+        import faster_whisper  # type: ignore  # noqa: F401
+        faster_whisper_ok = True
+    except ImportError:
+        pass
+
+    nvidia_key = bool(os.environ.get("NVIDIA_API_KEY", ""))
+
+    if nvidia_key:
+        phonetics_source = "nvidia"
+    elif faster_whisper_ok:
+        # Hermes model path is always available when Hermes is running
+        phonetics_source = "hermes"
+    else:
+        phonetics_source = "unavailable"
+
+    hermes_model = ""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        hermes_model = cfg.get("model", {}).get("default", "")
+    except Exception:
+        pass
+
+    return {
+        "ffmpeg": ffmpeg_ok,
+        "faster_whisper": faster_whisper_ok,
+        "phonetics_source": phonetics_source,
+        "hermes_model": hermes_model,
+    }
+
+
 # Allowed video extensions for uploads (server-side validation)
 _ALLOWED_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".ts", ".mts"}
 
@@ -99,7 +140,7 @@ def _update_job_status(
 
 def _run_pipeline(job_id: str, video_path: str) -> None:
     """Transcribe + generate phonetics for a newly uploaded video (blocking, run in thread)."""
-    from tools.video_caption import generate_phonetics, transcribe
+    from ..pipeline import generate_phonetics, transcribe
 
     try:
         _update_job_status(job_id, "transcribing", "Transcribing audio…")
@@ -222,7 +263,7 @@ async def save_style(job_id: str, payload: StylePayload):
 @router.post("/jobs/{job_id}/burn")
 async def reburn_job(job_id: str):
     """Re-burn captions into video with current segments + style."""
-    from tools.video_caption import _build_ass_content, burn
+    from ..pipeline import _build_ass_content, burn
 
     data = _load_caption_job(job_id)
     segments = data.get("segments", [])

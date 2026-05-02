@@ -1,6 +1,6 @@
 # Hackathon Build Status
 
-**Last updated**: 2 May 2026 (night — v6 positioning)  
+**Last updated**: 2 May 2026 (night — v7 distributability)  
 **Deadline**: EOD Sunday 3 May 2026 (1 day remaining)
 
 ---
@@ -9,7 +9,7 @@
 
 ```
 Telegram (trigger only)
-  → Agent: transcribe (Whisper) + generate phonetics (Kimi K2.5, once)
+  → Agent: transcribe (Whisper) + generate phonetics (Kimi K2.6 or Hermes model fallback)
   → Saves job JSON to ~/.hermes/caption-jobs/{id}.json
   → Burns initial draft video (FFmpeg)
   → Returns: draft video + "Edit at http://localhost:9119/captions/{id}"
@@ -24,18 +24,21 @@ Dashboard /captions/:id  (no LLM, no tokens, visual editing)
 
 ## What We've Built
 
-### 1. Core Video Captioning Tool — `tools/video_caption.py` ✅
+### 1. Core Video Captioning Pipeline — `plugins/phonetic-captions/pipeline.py` ✅
 
 > **Pivoted 1 May**: Original design was EN→VI translation. Correct use case is Vietnamese
 > language *teaching* shorts — mixed EN/VI audio where the goal is phonetic guides for
 > Vietnamese words, not translating English content.
+>
+> **Moved 2 May (v7)**: Was `tools/video_caption.py` (core tree). Moved into the plugin
+> directory so the plugin is fully self-contained and distributable.
 
 A fully self-contained Hermes tool:
 
 | Function | What it does |
 |---|---|
 | `transcribe(video_path)` | faster-whisper `medium` model, **auto language detect** (`language=None`), VAD filter — returns `{id, start, end, text, lang, phonetic}` segments |
-| `generate_phonetics(segments, api_key)` | Single Kimi K2.5 call (NVIDIA NIM): classifies each segment as `"en"` or `"vi"`, corrects Whisper-garbled Vietnamese diacritics, generates English phonetic guide e.g. `[humm biet]` for VI segments |
+| `generate_phonetics(segments, api_key)` | **With NVIDIA_API_KEY**: Kimi K2.6 via NVIDIA NIM. **Without key**: user's configured Hermes model (automatic fallback). Classifies EN/VI, corrects Vietnamese diacritics, generates English phonetic guides |
 | `build_ass(segments, output_path)` | ASS subtitle file with `MAIN` + `PHONETIC` styles: VI segments → Vietnamese text on top + italic phonetic below; EN segments → text only |
 | `burn(video_path, ass_path, output_path)` | FFmpeg H.264 burn-in with fast preset |
 | `_handle_caption(args)` | Dispatcher supporting 6 operations (see below) |
@@ -60,7 +63,7 @@ English segment:       Today we learn... ← MAIN style only
 
 **Kimi quirk handled**: Response sometimes lands in `reasoning_content` instead of `content` — fallback guard is in place.
 
-**Tool registration**: Uses the standard `registry.register()` auto-discovery pattern — no manual import list needed.
+**Tool registration**: Via `plugins/phonetic-captions/__init__.py` `register(ctx)` — standard Hermes plugin system, no manual import list needed.
 
 ---
 
@@ -135,43 +138,36 @@ Chat correction loop retained as fallback for mobile/no-dashboard users.
 > Moved to a first-class **Hermes dashboard plugin** — zero core file changes, pre-built IIFE,
 > drop-in installation. Better demo story: *"We built a plugin, not a fork."*
 
-**Plugin location**: `plugins/phonetic-captions/dashboard/`
+**Plugin location**: `plugins/phonetic-captions/`
 
 ```
-plugins/phonetic-captions/dashboard/
-├── manifest.json        tab: /captions, icon: FileText, after:skills
-├── plugin_api.py        12 FastAPI routes at /api/plugins/phonetic-captions/*
-├── src/index.tsx        React editor UI (state-based nav, no react-router-dom)
-├── build.mjs            esbuild → IIFE (React from SDK, lucide-react bundled)
-├── package.json         devDeps: esbuild, lucide-react, typescript
-├── tsconfig.json
-└── dist/index.js        pre-built 35.8kB IIFE (committed, no user build step)
+plugins/phonetic-captions/
+├── plugin.yaml          plugin manifest (pip_dependencies, provides_tools)
+├── __init__.py          register(ctx) — wires video-caption tool into Hermes plugin system
+├── pipeline.py          caption pipeline (transcribe, phonetics, build_ass, burn)
+└── dashboard/
+    ├── manifest.json    tab: /captions, icon: FileText, after:skills
+    ├── plugin_api.py    13 FastAPI routes at /api/plugins/phonetic-captions/*
+    ├── src/index.tsx    React editor UI (state-based nav, no react-router-dom)
+    ├── build.mjs        esbuild → IIFE (React from SDK, lucide-react bundled)
+    ├── package.json     devDeps: esbuild, lucide-react, typescript
+    ├── tsconfig.json
+    └── dist/index.js    pre-built 50.7kB IIFE (committed, no user build step)
 ```
 
 **Plugin API** (`plugin_api.py` — `router = APIRouter()`):
 
 | Endpoint | Purpose |
 |---|---|
+| `GET /health` | Dependency health check (ffmpeg, faster_whisper, phonetics_source, hermes_model) |
 | `GET /jobs` | List all jobs (includes `status` field) |
-| `GET /jobs/{id}` | Get full job (segments, style, paths) |
-| `PUT /jobs/{id}/segments` | Save edited segments |
-| `PUT /jobs/{id}/style` | Save style changes |
-| `POST /jobs/{id}/burn` | Re-burn via FFmpeg + write style diff to `MemoryStore` |
-| `GET /jobs/{id}/video` | Stream video for in-browser player |
-| `GET /jobs/{id}/download` | Download final output |
-| `POST /upload` | Create job from uploaded video; runs pipeline in background thread |
-| `GET /jobs/{id}/status` | Poll pipeline status (`pending/transcribing/generating_phonetics/ready/error`) |
-| `POST /jobs/{id}/nl-edit` | NL instruction → AIAgent proposes JSON patch array |
-| `POST /jobs/{id}/qa` | AI quality review → returns segment flag list |
-| `GET /style/suggestion` | Cross-session style analysis via `MemoryStore` + `AIAgent` |
-| `GET /presets` | List all named style presets |
-| `PUT /presets/{name}` | Save or overwrite a named preset |
 | `DELETE /presets/{name}` | Delete a named preset |
 | `POST /presets/generate` | NL description → `AIAgent` → `CaptionStyle` (not auto-saved) |
 
 Auth: all `/api/plugins/*` routes are auth-exempt by framework design (localhost only).
 
 **Frontend** (`src/index.tsx` → `dist/index.js`):
+- `PrerequisitesBanner`: shown at top of job list — fetches `/health`, shows error strip (red) for missing ffmpeg/faster-whisper with install commands, info strip for phonetics source (NVIDIA K2.6 or Hermes model name)
 - Three-column layout (≥1280px): Col 1 video+actions, Col 2 segments+style, Col 3 ✦ Hermes panel
 - ✦ Hermes panel: Edit segments (NL edit), QA (flags + Fix→), Style presets (gallery + AI creation)
 - `PresetGallery`: named preset cards (apply/delete), Save current, Create with AI, Learned card
@@ -179,7 +175,7 @@ Auth: all `/api/plugins/*` routes are auth-exempt by framework design (localhost
 - QA: amber flag borders on segment cards; flag details + scroll-to-segment in Hermes panel
 - `UploadModal`: video + optional segments JSON, auto-pipeline toggle, 2s polling with live status
 - State-based routing (`useState` + `window.history.pushState`) — no react-router-dom
-- Bundle: 42.1 kB IIFE
+- Bundle: 50.7 kB IIFE
 
 **Core files minimally touched**: `web/src/App.tsx` (1-line catch-all guard for hard-refresh deep-link fix)
 
@@ -335,7 +331,8 @@ curl http://localhost:9119/api/dashboard/plugins | python -m json.tool
 - `PLAN_v3.md` — plugin architecture, editor + burn (executed)
 - `PLAN_v4.md` — Hermes-integrated dashboard: upload, NL edits, QA, style memory (executed)
 - `PLAN_v5.md` — 3-column layout, named preset library, AI style creation (executed)
-- `PLAN.md` — v6: alignment picker + drag-to-position overlay (current)
+- `PLAN_v6.md` — v6: alignment picker + drag-to-position overlay (executed)
+- `PLAN.md` — v7: plugin distributability, NVIDIA fallback, health banner (current)
 
 ---
 
@@ -366,9 +363,29 @@ curl http://localhost:9119/api/dashboard/plugins | python -m json.tool
 - No backend model changes — `position` flows through the existing `style: dict[str, Any]` payload
 - No new API routes
 
----
+### 11. Plugin Distributability ✅ (2 May — plan v7)
 
-## Pending Tasks / What's Left
+#### a) Self-contained plugin structure
+- `plugin.yaml` created at `plugins/phonetic-captions/` root — declares `pip_dependencies`, `provides_tools`, no `requires_env`
+- Pipeline code moved from `tools/video_caption.py` → `plugins/phonetic-captions/pipeline.py`
+- `plugins/phonetic-captions/__init__.py` added with `register(ctx)` — registers `video-caption` tool via Hermes plugin system
+- `video-caption` entry removed from `toolsets.py` (tool now registered via plugin)
+- `tools/video_caption.py` deleted
+
+#### b) NVIDIA fallback to Hermes model
+- `generate_phonetics()` now tries NVIDIA Kimi K2.6 first (if `NVIDIA_API_KEY` set)
+- Falls back automatically to user's configured Hermes model if key absent or call fails
+- Prompt and JSON parsing logic shared between both paths
+- NVIDIA_API_KEY is no longer a prerequisite — only an optional quality upgrade
+
+#### c) Frontend prerequisites health banner
+- `GET /health` endpoint returns: `ffmpeg`, `faster_whisper`, `phonetics_source`, `hermes_model`
+- `PrerequisitesBanner` component in `src/index.tsx` at top of job list:
+  - Error strip (red) if ffmpeg or faster_whisper missing, with exact install command
+  - Info strip showing phonetics engine (NVIDIA Kimi K2.6 or Hermes model name)
+  - Dismissible; non-blocking
+
+---
 
 ### P0 — Must have before demo
 
@@ -376,8 +393,8 @@ curl http://localhost:9119/api/dashboard/plugins | python -m json.tool
 |---|---|
 | Install dependencies | `pip install faster-whisper openai` in `.venv` |
 | Install FFmpeg | `brew install ffmpeg` |
-| Set `NVIDIA_API_KEY` | Add to `~/.hermes/.env` to enable Kimi phonetics |
-| Enable toolset | Add `video-caption` to `toolsets` in `~/.hermes/config.yaml` |
+| (Optional) Set `NVIDIA_API_KEY` | Add to `~/.hermes/.env` for best-quality phonetics; otherwise Hermes model is used |
+| Enable plugin | `hermes plugins enable phonetic-captions` (replaces toolset enable) |
 | Load skill | `hermes skills add skills/video/phonetic-captions` |
 | End-to-end smoke test | CLI caption → dashboard → edit → re-burn → download |
 | Upload smoke test | "+ New Job" → upload video → pipeline runs → editor opens with segments |
@@ -389,6 +406,7 @@ curl http://localhost:9119/api/dashboard/plugins | python -m json.tool
 | Drag position test | Drag thumbnail → re-burn → captions at pinned position |
 | Position reset test | "× Reset position" → re-burn uses alignment+margin only |
 | Telegram flow test | Send video via Telegram → path injection → captions → dashboard link |
+| Health banner test | Open job list → banner shows phonetics source; remove ffmpeg → error strip |
 
 ### P1 — Important for demo quality
 
@@ -476,9 +494,9 @@ print('Import OK')
 ### Immediate checks
 
 1. Confirm `ffmpeg -version` works from the shell. This is already green.
-2. Use Python 3.11+ for the repo. The current shell Python is 3.8.11, which blocks importing `tools.registry` because the codebase uses newer typing syntax.
-3. Install `faster-whisper` in a 3.11 virtualenv and verify `tools.video_caption` imports.
-4. Add `NVIDIA_API_KEY` if you want Vietnamese translation in the first run.
+2. Use Python 3.11+ for the repo. The current shell Python is 3.8.11, which blocks importing `plugins.phonetic_captions.pipeline` because the codebase uses newer typing syntax.
+3. Install `faster-whisper` in a 3.11 virtualenv and verify `plugins.phonetic_captions.pipeline` imports.
+4. Enable the plugin: `hermes plugins enable phonetic-captions`.
 5. Run the first smoke test on a short local clip before trying Telegram.
 
 ### First smoke test
@@ -501,8 +519,8 @@ Send the same clip through Telegram so we can verify the gateway path injection 
 - [ ] ffmpeg installed and working
 - [ ] Python 3.11+ virtualenv active
 - [ ] faster-whisper + openai installed
-- [ ] NVIDIA_API_KEY set in `~/.hermes/.env`
-- [ ] `video-caption` toolset enabled
+- [ ] NVIDIA_API_KEY set in `~/.hermes/.env` (optional — Hermes model is fallback)
+- [ ] `phonetic-captions` plugin enabled (`hermes plugins enable phonetic-captions`)
 - [ ] `phonetic-captions` skill loaded
 - [ ] End-to-end smoke test: Telegram → pipeline → editor → re-burn → download
 - [ ] Upload flow: "+ New Job" → auto-pipeline → editor opens with segments
@@ -513,8 +531,10 @@ Send the same clip through Telegram so we can verify the gateway path injection 
 - [ ] Drag position: pin position on thumbnail → re-burn respects \pos coordinates
 - [ ] Position reset: "× Reset position" reverts to alignment+margin burn
 - [ ] Hard refresh: `/captions/{id}` reloads correctly (not redirected to `/sessions`)
+- [ ] Health banner: shows phonetics source; missing-dep warnings appear correctly
 - [ ] Demo video 1 recorded: raw video → Telegram → captions → dashboard editor → NL correction → re-burn
 - [ ] Demo video 2 recorded: show style suggestion applied from memory
-- [ ] Kimi proof: show NVIDIA_API_KEY in config / API call in logs
+- [ ] Health banner: shows NVIDIA or Hermes fallback source correctly
+- [ ] Kimi proof: show NVIDIA_API_KEY in config / API call in logs (OR show Hermes model fallback in logs)
 - [ ] Tweet posted tagging @NousResearch
 - [ ] Discord submission in `#creative-hackathon-submissions`
