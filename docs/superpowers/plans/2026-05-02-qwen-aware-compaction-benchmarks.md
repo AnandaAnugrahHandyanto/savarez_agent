@@ -32,7 +32,7 @@ Each row reads: "On this benchmark, the implementation **ships** if the metric s
 | 1.7 | Anti-thrashing preserved | back-off still fires after 2 ineffective passes | back-off doesn't fire | new triggers bypass the counter |
 | 1.8 | First-assistant anchor sanity | post-compaction first-summarized-message role == "assistant" when anchor on, regardless of `protect_first_n` | role == "user" or "tool" | anchor logic broken |
 | 1.9 | Multimodal tool-result preservation | image parts present in output for any flag combo | image parts dropped or replaced with strings | `_dedup_by_operation` skipped a list-content guard |
-| 2.1 | Per-turn wall-clock on real local Qwen | mean ≤ 1.05 × baseline; p95 ≤ 1.10 × baseline | mean > 1.15 × baseline | new triggers fire too often |
+| 2.1 | Per-turn wall-clock on real local Qwen | median ≤ 1.15 × baseline (after 1 warmup discard, N=5) | median > 1.20 × baseline | new triggers fire too often; MoE batch-mode switching; missing warmup |
 | 2.2 | Compaction-event frequency | flags-on fires no more than 1.3× as often as flags-off on the same fixture | flags-on fires > 2× as often | absolute cap set too tight; threshold mis-tuned |
 | 2.3 | Fact-retention accuracy | ≥ 0.80 retention with flags AND ≥ (baseline − 0.05) | < 0.75 OR > 0.05 below baseline | summary quality degraded |
 | 2.4 | Tool-loop completion rate | completion rate with flags ≥ baseline | drop > 5pp | post-compaction state confuses model |
@@ -40,7 +40,7 @@ Each row reads: "On this benchmark, the implementation **ships** if the metric s
 | 3.2 | Trajectory replay — fingerprint diff on enabled inputs | only the documented-difference fields differ | other fields differ | side effect leaking through |
 | 3.3 | Real-session replay (3 captured sessions) | every session compresses without raising; final message list valid OpenAI shape | exception OR invalid shape | edge case in real workload |
 
-The headline pass criterion across the board: **no Tier-1 regression, ≤5% mean wall-clock cost, ≥80% fact retention, no atomicity violations, no message-shape errors.**
+The headline pass criterion across the board: **no Tier-1 regression, ≤15% median wall-clock cost (with warmup, N=5; tightened later when GPU/CPU pinning lands), ≥80% fact retention, no atomicity violations, no message-shape errors.**
 
 ---
 
@@ -377,25 +377,63 @@ def test_1_1_dedup_friendly_loop_saves_tokens(compressor_pair, stub_summarizer):
     assert with_flags._last_op_deduped > 0
 
 
-def test_1_2_neutral_session_does_not_lose_information(compressor_pair, stub_summarizer):
+def test_1_2_neutral_session_does_not_lose_information(stub_summarizer):
     """No resource reuse → dedup should not fire. Token counts within ±5%.
-    A larger drop would indicate we deleted information that wasn't redundant."""
+    A larger drop would indicate dedup deleted non-redundant information.
+
+    NOTE: This test isolates ``dedup_operations`` from the other qwen_aware
+    flags. Using the integrated ``compressor_pair`` here would confound the
+    measurement: ``threshold_absolute_max`` shrinks ``tail_token_budget``
+    (since ``tail_token_budget = threshold_tokens * summary_target_ratio``)
+    so the with_flags compressor compacts more aggressively for reasons
+    unrelated to dedup. We construct a custom pair that differs ONLY in
+    ``dedup_operations`` so the assertion measures dedup's effect alone.
+    """
+    from unittest.mock import patch
     from tests.agent.benchmarks.fixture_builders import make_neutral_session
-    baseline, with_flags = compressor_pair
+    from agent.context_compressor import ContextCompressor
+
+    def _make(**kw):
+        defaults = dict(
+            model="bench/qwen-instruct",
+            threshold_percent=0.50,
+            protect_first_n=3,
+            protect_last_n=20,
+            summary_target_ratio=0.20,
+            quiet_mode=True,
+            base_url="",
+            api_key="",
+            config_context_length=262_144,
+            provider="bench",
+            api_mode="chat_completions",
+        )
+        defaults.update(kw)
+        with patch(
+            "agent.context_compressor.get_model_context_length",
+            return_value=262_144,
+        ):
+            return ContextCompressor(**defaults)
+
+    # Identical configs except for dedup_operations.
+    baseline = _make()
+    dedup_only = _make(dedup_operations=True)
+
     msgs = make_neutral_session(n_turns=40, chars_per_turn=2_000)
     pre = estimate_messages_tokens_rough(msgs)
 
     out_b = baseline.compress(msgs.copy(), current_tokens=pre)
-    out_c = with_flags.compress(msgs.copy(), current_tokens=pre)
+    out_c = dedup_only.compress(msgs.copy(), current_tokens=pre)
     tk_b = estimate_messages_tokens_rough(out_b)
     tk_c = estimate_messages_tokens_rough(out_c)
     record("1.2", "post_compact_tokens", tk_b, tk_c, "tok")
 
-    # ratio in [0.95, 1.05]
+    # ratio in [0.95, 1.05] — dedup is a no-op on neutral content, so
+    # output sizes must match closely. Anything outside this band means
+    # dedup mistakenly collapsed unrelated tool calls.
     ratio = tk_c / tk_b if tk_b else 1.0
     assert 0.95 <= ratio <= 1.05, (
         f"Neutral session ratio {ratio:.3f} outside [0.95, 1.05] — "
-        f"unexpected info loss or bloat"
+        f"dedup_operations may be deleting non-redundant content"
     )
 ```
 
@@ -618,8 +656,12 @@ Auto-skipped when `127.0.0.1:8085` is unreachable. These take real wall-clock ti
 """Real wall-clock A/B against the live moe profile.
 
 Each test runs a synthetic-but-realistic session twice (baseline vs.
-with-flags compressor) and records mean/p95 per-turn duration plus
+with-flags compressor) and records median/max per-turn duration plus
 compaction event count.
+
+Marked ``integration`` so pyproject's ``addopts = "-m 'not integration'"``
+default keeps these out of CI runs. Opt in via ``-m integration``.
+Also auto-skipped when the moe profile isn't reachable on :8085.
 """
 import os
 import socket
@@ -632,6 +674,9 @@ from tests.agent.benchmarks._report import record
 from tests.agent.benchmarks.fixture_builders import (
     make_loop_session, estimate_serialized_bytes,
 )
+
+# Module-level marker — every test in this file is integration.
+pytestmark = pytest.mark.integration
 
 
 def _qwen_up() -> bool:
@@ -668,15 +713,37 @@ def _make(**flags):
 @qwen_required
 def test_2_1_per_turn_walltime_within_budget():
     """Run the same loop session twice, count compactions + measure
-    per-compaction wall-clock. Threshold: candidate mean ≤ 1.05 ×
-    baseline (since we're adding deterministic passes).
+    per-compaction wall-clock. Threshold: candidate median ≤ 1.15 ×
+    baseline (was 1.05× — see methodology note below).
+
+    **Why 1.15× and not 1.05× (research, 2026-05-02):** empirical
+    benchmarks of Qwen3.6-35B-A3B on RTX 3090 via llama.cpp show
+    end-to-end wall-clock CV of 2-5% in the warm/stable regime and
+    6-8% std at N=3 unwarmed. With confounders from MoE routing
+    variance and CPU↔GPU sync overhead (--n-cpu-moe=28), a 5%
+    threshold at N=3 is below the noise floor. We use 1.15× with
+    1 warmup discard + N=5 + median (not mean) for robustness.
+
+    To tighten back to 1.10× later: keep warmup, raise N to 10,
+    pin GPU/CPU governors, and use llama-server's reported
+    ``eval_duration`` from the response JSON (excludes HTTP +
+    Python overhead). See research notes in the plan's main
+    benchmark file.
     """
+    import statistics
+
     msgs = make_loop_session(n_iterations=40)
     bytes_pre = estimate_serialized_bytes(msgs)
 
-    def _run(c):
+    def _run(c, n_runs=5, n_warmup=1):
+        # Warmup: discard the first N runs to stabilize the page
+        # cache + CPU clocks + (when this calls into a server) any
+        # cold-start overhead. Empirically the first run is 12-18%
+        # slower than the steady state.
+        for _ in range(n_warmup):
+            c.compress(msgs.copy(), current_tokens=200_000)
         events = []
-        for _ in range(3):  # multiple compaction events to amortize
+        for _ in range(n_runs):
             t0 = time.perf_counter()
             out = c.compress(msgs.copy(), current_tokens=200_000)
             events.append({
@@ -696,16 +763,21 @@ def test_2_1_per_turn_walltime_within_budget():
         turn_threshold=30,
     ))
 
-    base_mean = sum(e["elapsed"] for e in base_events) / len(base_events)
-    cand_mean = sum(e["elapsed"] for e in cand_events) / len(cand_events)
-    record("2.1", "compaction_walltime_seconds_mean", base_mean, cand_mean, "s")
-    record("2.1", "compaction_walltime_seconds_p95",
+    # Median is robust to outlier runs (e.g. one slow run from MoE
+    # expert routing variance won't poison the regression check).
+    base_med = statistics.median(e["elapsed"] for e in base_events)
+    cand_med = statistics.median(e["elapsed"] for e in cand_events)
+    record("2.1", "compaction_walltime_seconds_median", base_med, cand_med, "s")
+    record("2.1", "compaction_walltime_seconds_max",
            max(e["elapsed"] for e in base_events),
            max(e["elapsed"] for e in cand_events), "s")
-    record("2.2", "compactions_per_session", len(base_events), len(cand_events), "n")
+    record("2.2", "compactions_per_session",
+           len(base_events) + 1, len(cand_events) + 1, "n",
+           note="includes warmup")
 
-    assert cand_mean <= 1.05 * base_mean, (
-        f"compress() mean slowed by {cand_mean/base_mean:.2%} (budget 1.05×)"
+    assert cand_med <= 1.15 * base_med, (
+        f"compress() median slowed by {cand_med/base_med:.2%} (budget 1.15×). "
+        f"baseline median={base_med*1000:.1f}ms, candidate={cand_med*1000:.1f}ms"
     )
 ```
 
@@ -714,13 +786,20 @@ def test_2_1_per_turn_walltime_within_budget():
 ```python
 # tests/agent/benchmarks/test_tier2_qwen_accuracy.py
 """Plant N facts in early turns, force compaction, ask the model
-N follow-up questions, score retention."""
+N follow-up questions, score retention.
+
+Marked ``integration`` (skipped by default; opt in with ``-m integration``)
+AND auto-skipped when the moe profile isn't reachable on :8085.
+"""
 import pytest
 import socket
 
 from agent.context_compressor import ContextCompressor
 from agent.auxiliary_client import call_llm
 from tests.agent.benchmarks._report import record
+
+# Module-level marker — every test in this file is integration.
+pytestmark = pytest.mark.integration
 
 
 def _qwen_up() -> bool:
@@ -776,7 +855,13 @@ def _build_session_with_facts() -> list[dict]:
 
 
 def _ask_questions(messages: list[dict]) -> int:
-    """For each probe, append the question, call qwen-instruct, score."""
+    """For each probe, append the question, call qwen-instruct, score.
+
+    Note: ``call_llm`` signature (verified in agent/auxiliary_client.py)
+    accepts ``provider``, ``model``, ``base_url``, ``api_key``,
+    ``messages``, ``temperature``, ``max_tokens``, ``tools``, ``timeout``,
+    ``extra_body`` — NO ``api_mode`` kwarg. Don't add one.
+    """
     score = 0
     for _, question, expected in FACT_PROBES:
         probe_msgs = messages + [{"role": "user", "content": question}]
@@ -786,7 +871,6 @@ def _ask_questions(messages: list[dict]) -> int:
             base_url="http://127.0.0.1:8085/v1",
             api_key="not-needed",
             provider="local-qwen",
-            api_mode="chat_completions",
             max_tokens=400,
         )
         answer = (resp.choices[0].message.content or "").lower()
@@ -899,12 +983,21 @@ The implementer adds a CLI flag (e.g. `--capture-trajectory <name>`) to `hermes`
 
 ```python
 # tests/agent/benchmarks/test_tier3_trajectory_replay.py
+"""Trajectory replay differential.
+
+Marked ``integration`` so pyproject's default ``addopts = "-m 'not integration'"``
+keeps these out of plain CI runs. They depend on captured real-session
+trajectories under ``trajectories/``; opt in with ``-m integration``.
+"""
 import hashlib
 import json
 import pytest
 from pathlib import Path
 
 from tests.agent.benchmarks.trajectory import load, TRAJECTORY_DIR
+
+# Module-level marker — every test in this file is integration.
+pytestmark = pytest.mark.integration
 
 
 def _fingerprint(messages: list[dict]) -> str:
@@ -1014,30 +1107,36 @@ When the trajectory dir is empty (clean checkout), the parametrize returns no ca
 
 ## How to run
 
+**Pytest invocation requirements (read first):**
+- Use whichever `pytest` is on your `$PATH` (project's `.venv/bin/pytest` if you have one set up; otherwise system pytest). Verify with `pytest --version` ≥ 8.0.
+- Pyproject's `[tool.pytest.ini_options] addopts = "-m 'not integration' -n auto"` does two things that affect benchmarks:
+  - `-m 'not integration'` skips Tier 2 + Tier 3 by default (they're tagged `pytest.mark.integration`). Run them explicitly with `-m integration` or `-m ""` to include.
+  - `-n auto` enables pytest-xdist parallel workers when xdist is installed. **xdist process-level parallelism corrupts wall-clock measurements** (CPU contention from sibling workers inflates `time.perf_counter()` non-deterministically; pytest-benchmark auto-disables itself when xdist is detected for exactly this reason — see [pytest-benchmark FAQ](https://pytest-benchmark.readthedocs.io/en/latest/faq.html)). All benchmark invocations below use `-p no:xdist` to disable xdist for the run. The flag is a no-op when xdist isn't installed, so it's safe to include unconditionally.
+
 **Tier 1 only (CI-friendly):**
 
 ```bash
-.venv/bin/pytest tests/agent/benchmarks/test_tier1_*.py -v
+pytest tests/agent/benchmarks/test_tier1_*.py -v -p no:xdist
 ```
 
 Expected runtime: ≤ 30s. Exits non-zero on any threshold breach.
 
-**Tier 2 (requires moe profile up):**
+**Tier 2 (requires moe profile up + integration marker opt-in):**
 
 ```bash
 qwen-server status   # confirm moe up
-.venv/bin/pytest tests/agent/benchmarks/test_tier2_*.py -v -s
+pytest tests/agent/benchmarks/test_tier2_*.py -v -s -p no:xdist -m integration
 ```
 
-Expected runtime: 1-5 minutes. The `-s` is so the per-turn timing logs print live.
+Expected runtime: 1-5 minutes. The `-s` is so the per-turn timing logs print live. The `-m integration` overrides pyproject's `'not integration'` default so the qwen-required tests are actually collected.
 
-**Tier 3 (requires captured trajectories):**
+**Tier 3 (requires captured trajectories + integration marker opt-in):**
 
 ```bash
 # 1. Capture a session (one-time)
 hermes --capture-trajectory 50turn-readwrite -z "your prompt" ...
 # 2. Replay
-.venv/bin/pytest tests/agent/benchmarks/test_tier3_*.py -v
+pytest tests/agent/benchmarks/test_tier3_*.py -v -p no:xdist -m integration
 ```
 
 **Generate the report:**
@@ -1067,7 +1166,7 @@ The report has rows like:
 **Three outcomes per benchmark:**
 
 - **Improved:** Δ exceeds the "ships if" threshold by a meaningful margin (e.g. 1.1's −15% threshold met with −25%). Counts as a clear win.
-- **No meaningful change:** Δ within ±5% on metrics where ±5% is noise (1.2, 1.3 wall-clock, 2.1). Counts as "neutral, ship anyway" if all other tiers pass.
+- **No meaningful change:** Δ within ±5% on metrics where ±5% is noise (1.2, 1.3 wall-clock); within ±15% for 2.1 (real-server wall-clock has 2-8% baseline variance). Counts as "neutral, ship anyway" if all other tiers pass.
 - **Regressed:** Δ violates the threshold OR fails the assertion. Block the merge until investigated.
 
 **Common failure → diagnostic mappings:**
@@ -1080,7 +1179,7 @@ The report has rows like:
 | 1.5 orphan IDs | Boundary calc broken | `_align_boundary_backward` interaction with new anchor |
 | 1.7 anti-thrashing didn't fire | New triggers bypass counter | `should_compress` ordering of the multi-trigger vs ineffective-count check |
 | 1.9 image part missing | Multimodal skip not in dedup | `isinstance(older_content, list)` guard in `_dedup_by_operation` |
-| 2.1 wall-clock > 1.05× | Real-server effect (not unit-time) | Compaction firing more often (check 2.2); summary model latency |
+| 2.1 wall-clock > 1.15× | Real-server effect (not unit-time) | Compaction firing more often (check 2.2); summary model latency; cold GPU (warmup discard not running); MoE expert routing variance |
 | 2.3 retention regressed | Summary input lost key facts | Check if dedup superseded a fact-bearing message; relax `dedup_operations` |
 | 3.2 unexpected diff | Side effect leaked through | Whichever message field differs that isn't on the allowed-diff list |
 

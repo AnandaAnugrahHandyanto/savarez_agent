@@ -30,23 +30,61 @@ def test_1_1_dedup_friendly_loop_saves_tokens(compressor_pair, stub_summarizer):
     assert with_flags._last_op_deduped > 0
 
 
-def test_1_2_neutral_session_does_not_lose_information(compressor_pair, stub_summarizer):
+def test_1_2_neutral_session_does_not_lose_information(stub_summarizer):
     """No resource reuse → dedup should not fire. Token counts within ±5%.
-    A larger drop would indicate we deleted information that wasn't redundant."""
+    A larger drop would indicate dedup deleted non-redundant information.
+
+    NOTE: This test isolates ``dedup_operations`` from the other qwen_aware
+    flags. Using the integrated ``compressor_pair`` here would confound the
+    measurement: ``threshold_absolute_max`` shrinks ``tail_token_budget``
+    (since ``tail_token_budget = threshold_tokens * summary_target_ratio``)
+    so the with_flags compressor compacts more aggressively for reasons
+    unrelated to dedup. We construct a custom pair that differs ONLY in
+    ``dedup_operations`` so the assertion measures dedup's effect alone.
+    """
+    from unittest.mock import patch
     from tests.agent.benchmarks.fixture_builders import make_neutral_session
-    baseline, with_flags = compressor_pair
+    from agent.context_compressor import ContextCompressor
+
+    def _make(**kw):
+        defaults = dict(
+            model="bench/qwen-instruct",
+            threshold_percent=0.50,
+            protect_first_n=3,
+            protect_last_n=20,
+            summary_target_ratio=0.20,
+            quiet_mode=True,
+            base_url="",
+            api_key="",
+            config_context_length=262_144,
+            provider="bench",
+            api_mode="chat_completions",
+        )
+        defaults.update(kw)
+        with patch(
+            "agent.context_compressor.get_model_context_length",
+            return_value=262_144,
+        ):
+            return ContextCompressor(**defaults)
+
+    # Identical configs except for dedup_operations.
+    baseline = _make()
+    dedup_only = _make(dedup_operations=True)
+
     msgs = make_neutral_session(n_turns=40, chars_per_turn=2_000)
     pre = estimate_messages_tokens_rough(msgs)
 
     out_b = baseline.compress(msgs.copy(), current_tokens=pre)
-    out_c = with_flags.compress(msgs.copy(), current_tokens=pre)
+    out_c = dedup_only.compress(msgs.copy(), current_tokens=pre)
     tk_b = estimate_messages_tokens_rough(out_b)
     tk_c = estimate_messages_tokens_rough(out_c)
     record("1.2", "post_compact_tokens", tk_b, tk_c, "tok")
 
-    # ratio in [0.95, 1.05]
+    # ratio in [0.95, 1.05] — dedup is a no-op on neutral content, so
+    # output sizes must match closely. Anything outside this band means
+    # dedup mistakenly collapsed unrelated tool calls.
     ratio = tk_c / tk_b if tk_b else 1.0
     assert 0.95 <= ratio <= 1.05, (
         f"Neutral session ratio {ratio:.3f} outside [0.95, 1.05] — "
-        f"unexpected info loss or bloat"
+        f"dedup_operations may be deleting non-redundant content"
     )
