@@ -754,56 +754,29 @@ def test_session_title_set_errors_when_row_lookup_fails_after_noop(monkeypatch):
 
 
 def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
-    unblock_agent = threading.Event()
+    """Verify that the pending-title flush drops the queue on ``ValueError``.
 
-    class _FakeWorker:
-        def __init__(self, key, model):
-            self.key = key
-
-        def close(self):
-            return None
-
-    class _FakeAgent:
-        model = "x"
-        provider = "openrouter"
-        base_url = ""
-        api_key = ""
+    Pre-#18370 this was exercised in the ``session.create`` path, but the
+    DB row is now created lazily and the flush moved to a helper invoked
+    from the prompt-submit handler. Drive that helper directly: that's
+    where the contract introduced for #14334 (queued title + duplicate
+    error → drop the queue) actually lives.
+    """
 
     class _FakeDB:
-        def create_session(self, _key, source="tui", model=None):
-            return None
-
         def set_session_title(self, _key, _title):
             raise ValueError("Title already in use")
 
-    def _make_agent(_sid, _key):
-        unblock_agent.wait(timeout=2.0)
-        return _FakeAgent()
-
-    monkeypatch.setattr(server, "_make_agent", _make_agent)
-    monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
-    monkeypatch.setattr(server, "_session_info", lambda _a: {"model": "x"})
-    monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
-    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
-    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
 
-    import tools.approval as _approval
-
-    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
-    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
-
-    resp = server.handle_request(
-        {"id": "1", "method": "session.create", "params": {"cols": 80}}
-    )
-    sid = resp["result"]["session_id"]
-    session = server._sessions[sid]
-    session["pending_title"] = "duplicate title"
-    unblock_agent.set()
-    session["agent_ready"].wait(timeout=2.0)
-
-    assert session["pending_title"] is None
-    server._sessions.pop(sid, None)
+    sid = "sid-pending-valueerror"
+    session = _session(pending_title="duplicate title")
+    server._sessions[sid] = session
+    try:
+        server._apply_pending_title(sid, session)
+        assert session["pending_title"] is None
+    finally:
+        server._sessions.pop(sid, None)
 
 
 def test_config_set_yolo_toggles_session_scope():

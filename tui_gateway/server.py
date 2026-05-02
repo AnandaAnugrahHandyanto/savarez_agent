@@ -604,6 +604,42 @@ def _start_agent_build(sid: str, session: dict) -> None:
     threading.Thread(target=_build, daemon=True).start()
 
 
+def _apply_pending_title(sid: str, session: dict) -> None:
+    """Persist a queued ``pending_title`` once the session DB row exists.
+
+    Session creation is lazy (#18370) — the DB row only materialises on the
+    first ``run_conversation()`` call, so any title queued before then has
+    to be applied post-first-message. This helper centralises that flush
+    so it can be invoked from the prompt-submit handler and exercised by
+    tests without standing up a full prompt round-trip.
+
+    Semantics, in order of try blocks below:
+
+    * If the queued title applies cleanly, clear ``pending_title``.
+    * If ``set_session_title`` raises ``ValueError`` (duplicate / invalid
+      by the time the row exists), **drop** the queued title and log the
+      reason so ``/title`` doesn't keep surfacing a stuck pending value.
+      This preserves the contract introduced for #14334.
+    * Any other exception is best-effort swallowed; auto-title can take
+      over from the next message.
+    """
+    pending = session.get("pending_title")
+    if not pending:
+        return
+    db = _get_db()
+    if db is None:
+        return
+    key = session.get("session_key") or sid
+    try:
+        if db.set_session_title(key, pending):
+            session["pending_title"] = None
+    except ValueError as ve:
+        session["pending_title"] = None
+        logger.info("Dropping pending title for session %s: %s", sid, ve)
+    except Exception:
+        pass  # Best effort — auto-title will handle it.
+
+
 def _sess_nowait(params, rid):
     s = _sessions.get(params.get("session_id") or "")
     return (s, None) if s else (None, _err(rid, 4001, "session not found"))
@@ -2982,15 +3018,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             _emit("message.complete", sid, payload)
 
             # Apply pending_title now that the DB row exists.
-            _pending = session.get("pending_title")
-            if _pending and status == "complete":
-                _pdb = _get_db()
-                if _pdb:
-                    try:
-                        if _pdb.set_session_title(session.get("session_key") or sid, _pending):
-                            session["pending_title"] = None
-                    except Exception:
-                        pass  # Best effort — auto-title will handle it below
+            if status == "complete":
+                _apply_pending_title(sid, session)
 
             if (
                 status == "complete"
