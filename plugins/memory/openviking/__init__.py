@@ -123,9 +123,9 @@ class _VikingClient:
     def health(self) -> bool:
         try:
             resp = self._httpx.get(
-                self._url("/health"), timeout=3.0
+                self._url("/system/health"), timeout=3.0
             )
-            return True  # any HTTP response = server is alive
+            return resp.status_code == 200
         except Exception:
             return False
 
@@ -261,6 +261,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._api_key = ""
         self._session_id = ""
         self._turn_count = 0
+        self._has_pending_messages = False
         self._sync_thread: Optional[threading.Thread] = None
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
@@ -317,6 +318,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._agent = os.environ.get("OPENVIKING_AGENT", "hermes")
         self._session_id = session_id
         self._turn_count = 0
+        self._has_pending_messages = False
 
         try:
             self._client = _VikingClient(
@@ -342,7 +344,16 @@ class OpenVikingMemoryProvider(MemoryProvider):
             # Check what's in the knowledge base via a root listing
             resp = self._client.get("/resources/list", params={"target": "viking://"})
             result = self._unwrap_result(resp)
-            children = len(result) if isinstance(result, list) else 0
+            entries: List[Any] = []
+            if isinstance(result, list):
+                entries = result
+            elif isinstance(result, dict):
+                for key in ("entries", "items", "children"):
+                    value = result.get(key)
+                    if isinstance(value, list):
+                        entries = value
+                        break
+            children = len(entries)
             if children == 0:
                 return ""
             return (
@@ -414,6 +425,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return
 
         self._turn_count += 1
+        self._has_pending_messages = True
 
         def _sync():
             try:
@@ -460,7 +472,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=10.0)
 
-        if self._turn_count == 0:
+        if self._turn_count == 0 and not self._has_pending_messages:
             return
 
         try:
@@ -488,6 +500,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                         {"type": "text", "text": f"[Memory note — {target}] {content}"},
                     ],
                 })
+                self._has_pending_messages = True
             except Exception as e:
                 logger.debug("OpenViking memory mirror failed: %s", e)
 
@@ -552,7 +565,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return uri
 
     def _is_directory_uri(self, uri: str) -> bool | None:
-        """Probe fs/stat to decide if a URI is a directory.
+        """Probe /resources/stat to decide if a URI is a directory.
 
         Returns True/False when the server answers cleanly, and None when the
         probe itself fails (network error, unexpected shape). Callers should
@@ -630,11 +643,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
         used_fallback = False
 
         # abstract/overview endpoints are directory-only on OpenViking
-        # (v0.3.x returns 500/412 for file URIs). When the caller asks for a
-        # summary level on a non-pseudo URI, probe fs/stat first and route
-        # file URIs straight to /content/read instead of eating a failing
-        # round-trip. The pseudo-URI path already points at a directory, so
-        # skip the probe there.
+        # (returns 500/412 for file URIs). When the caller asks for a
+        # summary level on a non-pseudo URI, probe /resources/stat first and
+        # route file URIs straight to /retrieval/read_binary instead of
+        # eating a failing round-trip. The pseudo-URI path already points at
+        # a directory, so skip the probe there.
         if summary_level and resolved_uri == uri:
             is_dir = self._is_directory_uri(uri)
             if is_dir is False:
@@ -648,16 +661,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         if is_dir is False or used_fallback:
             # File URI — use read_binary (returns base64)
-            try:
-                import base64
-                resp = self._client.get("/retrieval/read_binary", params={"target": resolved_uri})
-                result = self._unwrap_result(resp)
-                if isinstance(result, str):
-                    content = base64.b64decode(result).decode("utf-8", errors="replace")
-                else:
-                    content = str(result) if result else ""
-            except Exception:
-                content = ""
+            import base64
+            resp = self._client.get("/retrieval/read_binary", params={"target": resolved_uri})
+            result = self._unwrap_result(resp)
+            if isinstance(result, str):
+                content = base64.b64decode(result).decode("utf-8", errors="replace")
+            else:
+                content = str(result) if result else ""
         else:
             # Directory URI — use retrieval/read with level
             level_map = {"abstract": "L0", "overview": "L1", "full": "L2"}
