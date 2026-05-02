@@ -2403,5 +2403,93 @@ class TestSubagentApprovalCallback(unittest.TestCase):
         self.assertIsNone(_get_approval_callback())
 
 
+class TestLoadConfigDiskFreshness(unittest.TestCase):
+    """Regression: _load_config() must read fresh from disk, not stale CLI_CONFIG.
+
+    Issue #18946 — `hermes config set delegation.<key>` writes config.yaml on
+    disk and reports success, but the change had no effect on running
+    processes because `tools.delegate_tool._load_config()` checked
+    `cli.CLI_CONFIG` first. CLI_CONFIG is loaded once at module import and
+    never refreshed, so any subsequent `delegate_task` call ran with stale
+    config until the process was restarted.
+
+    The fix: always read fresh from `hermes_cli.config.load_config()`.
+    """
+
+    def test_disk_changes_visible_after_initial_load(self):
+        """After config.yaml is rewritten, _load_config() returns the new value."""
+        from tools.delegate_tool import _load_config
+
+        # Simulate the gateway state: cli.CLI_CONFIG populated with one value,
+        # config.yaml on disk holding a different (newer) value.
+        stale_cli_config = {
+            "delegation": {
+                "model": "stale/cached-model",
+                "provider": "nous",
+            }
+        }
+        fresh_disk_config = {
+            "delegation": {
+                "model": "fresh/disk-model",
+                "provider": "nous",
+            }
+        }
+
+        # Patch both the in-memory CLI_CONFIG and the on-disk loader.
+        with patch.dict(
+            sys.modules,
+            {"cli": MagicMock(CLI_CONFIG=stale_cli_config)},
+        ), patch(
+            "hermes_cli.config.load_config",
+            return_value=fresh_disk_config,
+        ):
+            result = _load_config()
+
+        # Must reflect what's on disk, not what's cached in CLI_CONFIG.
+        self.assertEqual(result.get("model"), "fresh/disk-model")
+        self.assertNotEqual(result.get("model"), "stale/cached-model")
+
+    def test_falls_back_to_cli_config_when_disk_read_fails(self):
+        """If hermes_cli.config.load_config() raises, fall back to CLI_CONFIG.
+
+        This preserves the historical behaviour for test contexts that mock
+        cli.CLI_CONFIG without setting up a real config file on disk.
+        """
+        from tools.delegate_tool import _load_config
+
+        cli_config_with_data = {
+            "delegation": {"model": "fallback/model", "provider": "nous"}
+        }
+
+        with patch.dict(
+            sys.modules,
+            {"cli": MagicMock(CLI_CONFIG=cli_config_with_data)},
+        ), patch(
+            "hermes_cli.config.load_config",
+            side_effect=RuntimeError("disk read failed"),
+        ):
+            result = _load_config()
+
+        self.assertEqual(result.get("model"), "fallback/model")
+
+    def test_returns_empty_dict_when_both_sources_fail(self):
+        """Defensive: if both disk and CLI_CONFIG fail, return {} rather than raise."""
+        from tools.delegate_tool import _load_config
+
+        broken_cli = MagicMock()
+        # Make CLI_CONFIG access raise too.
+        type(broken_cli).CLI_CONFIG = property(
+            lambda self: (_ for _ in ()).throw(RuntimeError("cli broken"))
+        )
+
+        with patch.dict(sys.modules, {"cli": broken_cli}), patch(
+            "hermes_cli.config.load_config",
+            side_effect=RuntimeError("disk read failed"),
+        ):
+            result = _load_config()
+
+        self.assertEqual(result, {})
+
+
 if __name__ == "__main__":
     unittest.main()
