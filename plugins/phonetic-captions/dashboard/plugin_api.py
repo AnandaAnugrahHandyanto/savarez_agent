@@ -196,9 +196,16 @@ def _call_agent(system_prompt: str, user_message: str) -> str:
         skip_memory=True,
         platform="api_server",
         max_iterations=1,
+        enabled_toolsets=[],  # no tools — forces direct text response, prevents empty final_response
     )
     result = agent.run_conversation(user_message, system_message=system_prompt)
-    return result.get("final_response", "")
+    response = result.get("final_response") or ""
+    if not response.strip():
+        raise ValueError(
+            "Agent returned an empty response — the model may have attempted a tool call "
+            "or the provider returned no content. Check agent.log for details."
+        )
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -455,6 +462,15 @@ _NL_SYSTEM_PROMPT = """You are a caption segment editor for bilingual EN/VI educ
 You receive a JSON array of caption segments and a natural-language instruction from the user.
 You MUST respond with ONLY a valid JSON array of patch operations — no prose, no markdown fences.
 
+Each segment in the input has two numbering fields:
+  "num"  — 1-based display number (this is what the user sees in the UI as "#1", "#2", etc.)
+  "id"   — 0-based internal identifier used in patches
+
+When the user references a segment by number (e.g. "#2", "segment 2", "2nd segment"),
+they are referring to the segment whose "num" equals that number.
+Always use the corresponding "id" value as "segment_id" in your patches.
+Example: if the user says "fix #3", find the segment where num=3 and use its id as segment_id.
+
 Each patch is one of:
   {"op":"edit",    "segment_id":<int>, "field":"text"|"phonetic"|"lang"|"start"|"end", "old":<any>, "new":<any>}
   {"op":"merge",   "segment_ids":[<int>, ...]}
@@ -462,7 +478,7 @@ Each patch is one of:
 
 Rules:
 - Only include patches that actually change something.
-- For "merge", list segment IDs in order; the merged text is the concatenation of their texts separated by a space.
+- For "merge", list segment IDs (id values, not num values) in order; the merged text is the concatenation of their texts separated by a space.
 - For "split", at_word_index is 0-based and must be within the words array of that segment.
 - "lang" must be "en" or "vi".
 - When changing lang to "en", also emit an edit patch clearing "phonetic" to "".
@@ -477,10 +493,12 @@ async def nl_edit_segments(job_id: str, payload: NLEditPayload):
     data = _load_caption_job(job_id)
     segments = data.get("segments", [])
 
-    # Build a compact segment representation for the prompt
+    # Build a compact segment representation for the prompt.
+    # Prepend "num" (1-indexed display number) so the AI can reliably map
+    # user references like "#2" or "segment 3" to the correct 0-based id.
     seg_compact = [
-        {k: v for k, v in s.items() if k != "words"}
-        for s in segments
+        {"num": i + 1, **{k: v for k, v in s.items() if k != "words"}}
+        for i, s in enumerate(segments)
     ]
     user_message = (
         f"Segments:\n{json.dumps(seg_compact, ensure_ascii=False, indent=2)}\n\n"
@@ -512,6 +530,9 @@ async def nl_edit_segments(job_id: str, payload: NLEditPayload):
 _QA_SYSTEM_PROMPT = """You are a quality reviewer for bilingual EN/VI caption segments.
 Review the provided segments and return ONLY a JSON array of issue flags — no prose, no markdown fences.
 
+Each segment has a "num" field (1-based display number) and an "id" field (0-based internal id).
+Use the "id" value as "segment_id" in every flag you emit.
+
 Each flag:
   {"segment_id":<int>, "issue":"<one-line description>", "suggestion":"<one-line fix>"}
 
@@ -534,8 +555,8 @@ async def qa_review(job_id: str):
     segments = data.get("segments", [])
 
     seg_compact = [
-        {k: v for k, v in s.items() if k != "words"}
-        for s in segments
+        {"num": i + 1, **{k: v for k, v in s.items() if k != "words"}}
+        for i, s in enumerate(segments)
     ]
     user_message = f"Segments:\n{json.dumps(seg_compact, ensure_ascii=False, indent=2)}"
 
