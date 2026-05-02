@@ -1010,6 +1010,11 @@ class WeComAdapter(BasePlatformAdapter):
         if not aes_key:
             raise ValueError("aes_key is required")
 
+                # WeCom aes_key may lack standard base64 padding (missing trailing '=')
+        # Add padding if needed: base64 strings must be multiple of 4 chars
+        missing_padding = len(aes_key) % 4
+        if missing_padding:
+            aes_key = aes_key + '=' * (4 - missing_padding)
         key = base64.b64decode(aes_key)
         if len(key) != 32:
             raise ValueError(f"Invalid WeCom AES key length: expected 32 bytes, got {len(key)}")
