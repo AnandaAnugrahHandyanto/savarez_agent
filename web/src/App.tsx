@@ -559,10 +559,16 @@ export default function App() {
                   {routes.map(({ key, path, element }) => (
                     <Route key={key} path={path} element={element} />
                   ))}
-                  <Route
-                    path="*"
-                    element={<Navigate to="/sessions" replace />}
-                  />
+                  {/* Only redirect unknown paths once plugins have loaded.
+                      Without this guard, a hard-refresh on a plugin route
+                      (e.g. /captions) would hit the catch-all before the
+                      plugin manifests arrive and bounce the user to /sessions. */}
+                  {!pluginsLoading && (
+                    <Route
+                      path="*"
+                      element={<Navigate to="/sessions" replace />}
+                    />
+                  )}
                 </Routes>
 
                 {embeddedChat &&
