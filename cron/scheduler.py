@@ -436,10 +436,26 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 text_to_send = cleaned_delivery_content.strip()
                 adapter_ok = True
                 if text_to_send:
-                    future = asyncio.run_coroutine_threadsafe(
-                        runtime_adapter.send(chat_id, text_to_send, metadata=send_metadata),
-                        loop,
-                    )
+                    coro = runtime_adapter.send(chat_id, text_to_send, metadata=send_metadata)
+                    # aiohttp's ClientTimeout requires an asyncio Task context.
+                    # run_coroutine_threadsafe wraps the callback in a handle,
+                    # not a Task — which breaks aiohttp's timeout on some platforms
+                    # (e.g. Weixin). Wrap in a real Task via loop.call_soon_threadsafe
+                    # + ensure_future for proper Task semantics.
+                    import concurrent.futures as _cf  # noqa: already imported at module level; local alias for clarity
+                    _task_ready = _cf.Event()
+                    _task_ref = [None]
+
+                    def _schedule():
+                        _task_ref[0] = asyncio.ensure_future(coro, loop=loop)
+                        _task_ready.set()
+
+                    loop.call_soon_threadsafe(_schedule)
+                    _task_ready.wait(timeout=5)
+                    task = _task_ref[0]
+                    if task is None:
+                        raise RuntimeError("failed to schedule send task on event loop")
+                    future = asyncio.wrap_future(task)
                     try:
                         send_result = future.result(timeout=60)
                     except TimeoutError:
