@@ -2,7 +2,20 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from gateway.config import Platform, PlatformConfig, load_gateway_config
+
+
+@pytest.fixture(autouse=True)
+def _scrub_telegram_group_env(monkeypatch):
+    for var in (
+        "TELEGRAM_REQUIRE_MENTION",
+        "TELEGRAM_MENTION_PATTERNS",
+        "TELEGRAM_FREE_RESPONSE_CHATS",
+        "TELEGRAM_IGNORED_THREADS",
+    ):
+        monkeypatch.delenv(var, raising=False)
 
 
 def _make_adapter(
@@ -79,17 +92,23 @@ def _group_message(
     entities=None,
     caption=None,
     caption_entities=None,
+    is_forum=False,
+    chat_type="group",
+    is_topic_message=None,
 ):
     reply_to_message = None
     if reply_to_bot:
         reply_to_message = SimpleNamespace(from_user=SimpleNamespace(id=999))
+    if is_topic_message is None:
+        is_topic_message = thread_id is not None
     return SimpleNamespace(
         text=text,
         caption=caption,
         entities=entities or [],
         caption_entities=caption_entities or [],
         message_thread_id=thread_id,
-        chat=SimpleNamespace(id=chat_id, type="group"),
+        is_topic_message=is_topic_message,
+        chat=SimpleNamespace(id=chat_id, type=chat_type, is_forum=is_forum),
         from_user=SimpleNamespace(id=from_user_id),
         reply_to_message=reply_to_message,
     )
@@ -118,11 +137,11 @@ def _mention_entities(text, mentions):
 
 
 def _bot_command_entity(text, command):
-    """Entity Telegram emits for a ``/cmd`` or ``/cmd@botname`` token.
+    """Build a Telegram ``bot_command`` entity covering ``command``.
 
-    Telegram parses slash commands server-side. For ``/cmd@botname`` the
-    client does NOT emit a separate ``mention`` entity — the whole span
-    is a single ``bot_command`` entity.
+    Telegram represents ``/cmd@botname`` as a single ``BOT_COMMAND`` entity —
+    no separate ``mention`` entity is emitted — so tests for ``/cmd@botname``
+    handling must use this shape rather than a fake mention entity.
     """
     offset = text.index(command)
     return SimpleNamespace(type="bot_command", offset=offset, length=len(command))
@@ -144,7 +163,8 @@ def test_group_messages_can_require_direct_trigger_via_config():
     assert adapter._should_process_message(_group_message("/status"), is_command=True) is False
     # Telegram's group command menu sends ``/cmd@botname`` as a single
     # ``bot_command`` entity spanning the whole token (no separate mention
-    # entity). We must accept it so the menu works when require_mention is on.
+    # entity). We must inspect the bot_command suffix so the menu works when
+    # require_mention is on.
     assert adapter._should_process_message(
         _group_message(
             "/status@hermes_bot",
@@ -322,8 +342,75 @@ def test_allowed_topics_do_not_filter_dms():
 def test_allowed_topics_treat_missing_thread_as_general_topic():
     adapter = _make_adapter(require_mention=False, allowed_topics=["1"])
 
-    assert adapter._should_process_message(_group_message("hello", thread_id=None)) is True
-    assert adapter._should_process_message(_group_message("hello", thread_id=8)) is False
+    assert adapter._should_process_message(_group_message("hello", thread_id=None, is_forum=True)) is True
+    assert adapter._should_process_message(_group_message("hello", thread_id=8, is_forum=True)) is False
+
+
+def test_ignored_threads_drop_general_topic_in_forum_groups():
+    adapter = _make_adapter(require_mention=False, ignored_threads=[1])
+
+    assert adapter._should_process_message(_group_message("hello", thread_id=None, is_forum=True)) is False
+    assert adapter._should_process_message(_group_message("hello", thread_id=None, is_forum=False)) is True
+
+
+def test_ignored_threads_drop_general_topic_in_forum_supergroups():
+    """Real Telegram forum groups are ``supergroup`` chats, not ``group``.
+
+    The General topic normalization in ``_effective_message_thread_id`` keys
+    off ``is_forum`` for both ``group`` and ``supergroup``; this test pins
+    the supergroup path so a future refactor can't silently regress the
+    common production shape.
+    """
+    adapter = _make_adapter(require_mention=False, ignored_threads=[1])
+
+    assert adapter._should_process_message(
+        _group_message("hello", thread_id=None, is_forum=True, chat_type="supergroup")
+    ) is False
+    # Non-forum supergroup with no thread_id must still pass — there is no
+    # General topic to normalize, so the ignored_threads gate has nothing
+    # to match.
+    assert adapter._should_process_message(
+        _group_message("hello", thread_id=None, is_forum=False, chat_type="supergroup")
+    ) is True
+
+
+def test_ignored_threads_beats_free_response_chats_for_general_topic():
+    """``ignored_threads`` must take precedence over ``free_response_chats``
+    even for the normalized General-topic id (``1``).
+
+    The General topic arrives with ``message_thread_id=None``; normalization
+    rewrites it to ``"1"`` so the ignored-thread check fires before the
+    free-response chat allowlist short-circuits the gate. Regressions here
+    would silently re-open a topic the operator had explicitly muted just
+    because the surrounding chat is otherwise free-response.
+    """
+    adapter = _make_adapter(
+        require_mention=False,
+        free_response_chats=["-200"],
+        ignored_threads=[1],
+    )
+
+    # Forum supergroup, free-response chat, General topic (thread_id=None
+    # → normalized to 1) → must drop because ignored_threads wins.
+    assert adapter._should_process_message(
+        _group_message(
+            "hello",
+            chat_id=-200,
+            thread_id=None,
+            is_forum=True,
+            chat_type="supergroup",
+        )
+    ) is False
+    # Same chat, a non-ignored topic → must still pass via free_response_chats.
+    assert adapter._should_process_message(
+        _group_message(
+            "hello",
+            chat_id=-200,
+            thread_id=99,
+            is_forum=True,
+            chat_type="supergroup",
+        )
+    ) is True
 
 
 def test_regex_mention_patterns_allow_custom_wake_words():
