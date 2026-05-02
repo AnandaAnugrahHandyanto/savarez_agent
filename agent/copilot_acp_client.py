@@ -60,6 +60,13 @@ _STDOUT_TAIL_LINES = 80
 
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 _TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
+CLAUDE_RESPONSE_FORMAT_MISMATCH = "CLAUDE_RESPONSE_FORMAT_MISMATCH"
+_CLAUDE_RESPONSE_FORMAT_MISMATCH_MESSAGE = (
+    "CLAUDE_RESPONSE_FORMAT_MISMATCH: Expected JSON but received SSE/event-stream style response. "
+    "Likely CCR/upstream transformer returned streaming output to a non-streaming caller. "
+    "This is usually a proxy/adapter/upstream response-format problem, not a Bash/Read tool permission problem."
+)
+
 _TIMEOUT_PATTERNS = ("timed out", "timeout")
 _HTTP_500_PATTERNS = ("api error: 500", "http 500", "500 internal server error")
 _INVALID_JSON_PATTERNS = ("unexpected token", "is not valid json", "json parse", "jsondecodeerror")
@@ -143,6 +150,19 @@ def classify_acp_failure(
             "ACP subprocess returned a non-retryable authentication/permission/rate-limit failure." + diagnostics,
         )
 
+    has_invalid_json = any(pattern in lowered for pattern in _INVALID_JSON_PATTERNS)
+    has_sse_payload = (
+        _looks_like_sse_payload(stdout_text)
+        or _looks_like_sse_payload(stderr_text)
+        or _looks_like_sse_payload(exception_text)
+    )
+    if has_invalid_json and has_sse_payload:
+        return (
+            CLAUDE_RESPONSE_FORMAT_MISMATCH,
+            True,
+            _CLAUDE_RESPONSE_FORMAT_MISMATCH_MESSAGE + diagnostics,
+        )
+
     if any(pattern in lowered for pattern in _HTTP_500_PATTERNS):
         return (
             "http_500",
@@ -150,13 +170,7 @@ def classify_acp_failure(
             "ACP subprocess returned an upstream HTTP 500/API Error 500." + diagnostics,
         )
 
-    if any(pattern in lowered for pattern in _INVALID_JSON_PATTERNS):
-        if _looks_like_sse_payload(stdout_text) or _looks_like_sse_payload(stderr_text) or _looks_like_sse_payload(exception_text):
-            return (
-                "sse_json_mismatch",
-                True,
-                "Expected JSON but received SSE event stream. Likely CCR/upstream streaming-format mismatch. Retry once, shorten the prompt, reduce log output, or check CCR non-streaming mode." + diagnostics,
-            )
+    if has_invalid_json:
         return (
             "malformed_json",
             True,

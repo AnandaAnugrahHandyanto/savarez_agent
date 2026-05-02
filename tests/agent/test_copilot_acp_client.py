@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from agent.copilot_acp_client import (
     ACPInvocationError,
+    CLAUDE_RESPONSE_FORMAT_MISMATCH,
     CopilotACPClient,
     _DEFAULT_TIMEOUT_SECONDS,
     _truncate_diagnostic,
@@ -266,15 +267,17 @@ def test_classify_http_500_failure_retryable():
     assert "500" in message
 
 
-def test_classify_sse_json_mismatch_retryable():
+def test_classify_claude_response_format_mismatch_retryable():
     category, retryable, message = classify_acp_failure(
         stdout_text='event: message\ndata: {"type":"chunk"}',
-        stderr_text='Unexpected token \'e\', "event: mes"... is not valid JSON',
+        stderr_text='API Error: 500 Unexpected token \'e\', "event: mes"... is not valid JSON',
     )
 
-    assert category == "sse_json_mismatch"
+    assert category == CLAUDE_RESPONSE_FORMAT_MISMATCH
     assert retryable is True
-    assert "Expected JSON but received SSE event stream" in message
+    assert "Expected JSON but received SSE/event-stream style response" in message
+    assert "streaming output to a non-streaming caller" in message
+    assert "not a Bash/Read tool permission problem" in message
 
 
 def test_classify_non_retryable_permission_failure():
