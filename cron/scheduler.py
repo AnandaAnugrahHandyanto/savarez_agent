@@ -123,9 +123,13 @@ _LOCK_FILE = _LOCK_DIR / ".tick.lock"
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
-    """Extract origin info from a job, preserving any extra routing metadata."""
+    """Extract origin info from a job, preserving any extra routing metadata.
+
+    ``origin`` is expected to be ``None`` or a dict with routing fields.
+    Tolerate non-dict values (string/list/int) by returning ``None``.
+    """
     origin = job.get("origin")
-    if not origin:
+    if not origin or not isinstance(origin, dict):
         return None
     platform = origin.get("platform")
     chat_id = origin.get("chat_id")
