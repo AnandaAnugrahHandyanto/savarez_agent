@@ -17,6 +17,7 @@ Backend compatibility:
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
 - Tavily: https://tavily.com (search, extract, crawl)
+- TinyFish: https://tinyfish.ai (search, extract)
 
 LLM Processing:
 - Uses OpenRouter API with Gemini 3 Flash Preview for intelligent content extraction
@@ -88,7 +89,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "tinyfish"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -99,6 +100,7 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
+        ("tinyfish", _has_env("TINYFISH_API_KEY")),
     )
     for backend, available in backend_candidates:
         if available:
@@ -117,6 +119,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "tinyfish":
+        return _has_env("TINYFISH_API_KEY")
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -189,6 +193,7 @@ def _web_requires_env() -> list[str]:
         "TAVILY_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
+        "TINYFISH_API_KEY",
     ]
     if managed_nous_tools_enabled():
         requires.extend(
@@ -956,6 +961,94 @@ def _exa_extract(urls: List[str]) -> List[Dict[str, Any]]:
     return results
 
 
+# ─── TinyFish Client ───────────────────────────────────────────────────────
+
+_tinyfish_client = None
+
+
+def _get_tinyfish_client():
+    """Get or create the TinyFish client (lazy initialization)."""
+    from tinyfish import TinyFish
+    global _tinyfish_client
+    if _tinyfish_client is None:
+        api_key = os.getenv("TINYFISH_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "TINYFISH_API_KEY environment variable not set. "
+                "Get your API key at https://agent.tinyfish.ai/api-keys"
+            )
+        kwargs: Dict[str, Any] = {"api_key": api_key}
+        base_url = os.getenv("TINYFISH_API_URL")
+        if base_url:
+            kwargs["base_url"] = base_url.rstrip("/")
+        _tinyfish_client = TinyFish(**kwargs)
+    return _tinyfish_client
+
+
+# ─── TinyFish Search & Extract Helpers ──────────────────────────────────────
+
+def _tinyfish_search(query: str, limit: int = 10) -> dict:
+    """Search using the TinyFish SDK and return results as a dict."""
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return {"error": "Interrupted", "success": False}
+
+    logger.info("TinyFish search: '%s' (limit=%d)", query, limit)
+    response = _get_tinyfish_client().search.query(query)
+
+    web_results = []
+    for i, result in enumerate(response.results or []):
+        if i >= limit:
+            break
+        web_results.append({
+            "title": result.title or "",
+            "url": result.url or "",
+            "description": result.snippet or "",
+            "position": result.position,
+        })
+
+    return {"success": True, "data": {"web": web_results}}
+
+
+def _tinyfish_extract(urls: List[str]) -> List[Dict[str, Any]]:
+    """Extract content from URLs using the TinyFish SDK.
+
+    Returns a list of result dicts matching the structure expected by the
+    LLM post-processing pipeline (url, title, content, metadata).
+    """
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
+
+    logger.info("TinyFish extract: %d URL(s)", len(urls))
+    response = _get_tinyfish_client().fetch.get_contents(urls, format="markdown")
+
+    results = []
+    for result in response.results or []:
+        content = result.text or ""
+        url = result.final_url or result.url or ""
+        title = result.title or ""
+        results.append({
+            "url": url,
+            "title": title,
+            "content": content,
+            "raw_content": content,
+            "metadata": {"sourceURL": url, "title": title},
+        })
+
+    for fail in response.errors or []:
+        results.append({
+            "url": fail.url or "",
+            "title": "",
+            "content": "",
+            "raw_content": "",
+            "error": fail.error or "extraction failed",
+            "metadata": {"sourceURL": fail.url or ""},
+        })
+
+    return results
+
+
 # ─── Parallel Search & Extract Helpers ────────────────────────────────────────
 
 def _parallel_search(query: str, limit: int = 5) -> dict:
@@ -1095,6 +1188,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
         if backend == "exa":
             response_data = _exa_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
+        if backend == "tinyfish":
+            response_data = _tinyfish_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
             result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
             debug_call_data["final_response_size"] = len(result_json)
@@ -1252,6 +1354,8 @@ async def web_extract_tool(
                     "include_images": False,
                 })
                 results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
+            elif backend == "tinyfish":
+                results = _tinyfish_extract(safe_urls)
             else:
                 # ── Firecrawl extraction ──
                 # Determine requested formats for Firecrawl v2
@@ -1922,9 +2026,9 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
+    if configured in ("exa", "parallel", "firecrawl", "tavily", "tinyfish"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily", "tinyfish"))
 
 
 def check_auxiliary_model() -> bool:

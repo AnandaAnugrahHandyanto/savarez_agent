@@ -1025,7 +1025,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 22,
+    "_config_version": 23,
 }
 
 # =============================================================================
@@ -1041,6 +1041,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
     11: ["TERMINAL_MODAL_MODE"],
+    23: ["TINYFISH_API_KEY"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -1526,6 +1527,14 @@ OPTIONAL_ENV_VARS = {
         "url": "https://github.com/jo-inc/camofox-browser",
         "tools": ["browser_navigate", "browser_click"],
         "password": False,
+        "category": "tool",
+    },
+    "TINYFISH_API_KEY": {
+        "description": "TinyFish API key for web search and content extraction",
+        "prompt": "TinyFish API key",
+        "url": "https://agent.tinyfish.ai/api-keys",
+        "tools": ["web_search", "web_extract"],
+        "password": True,
         "category": "tool",
     },
     "FAL_KEY": {
@@ -3762,6 +3771,7 @@ def show_config():
         ("TAVILY_API_KEY", "Tavily"),
         ("BROWSERBASE_API_KEY", "Browserbase"),
         ("BROWSER_USE_API_KEY", "Browser Use"),
+        ("TINYFISH_API_KEY", "TinyFish"),
         ("FAL_KEY", "FAL"),
     ]
     
@@ -3943,6 +3953,7 @@ def set_config_value(key: str, value: str):
         'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
         'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY',
         'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
+        'TINYFISH_API_KEY',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
