@@ -350,6 +350,12 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if target_ref.strip().isdigit():
             return f"group:{target_ref.strip()}", None, True
         return None, None, False
+    if platform_name == "whatsapp":
+        _trimmed = target_ref.strip()
+        # WhatsApp group/user JIDs (e.g., 12345@g.us, 12345@s.whatsapp.net)
+        # are explicit chat targets and must not fall back to home channel.
+        if "@" in _trimmed and "/" not in _trimmed:
+            return _trimmed, None, True
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:
