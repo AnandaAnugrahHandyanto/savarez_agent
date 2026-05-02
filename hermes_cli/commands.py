@@ -116,6 +116,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_config_gate="display.tool_progress_command"),
     CommandDef("yolo", "Toggle YOLO mode (skip all dangerous command approvals)",
                "Configuration"),
+    CommandDef("yalla", "Long-run completion mode: no stopping until polished and verified",
+               "Configuration", gateway_only=True, args_hint="[on|off|status|<task>]"),
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
                args_hint="[level|show|hide]",
                subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "show", "hide", "on", "off")),
@@ -303,6 +305,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "steer",
         "stop",
         "update",
+        "yalla",
     }
 )
 

@@ -691,6 +691,14 @@ class TestTelegramMenuCommands:
                 f"Command '{name}' is {len(name)} chars (limit {_TG_NAME_LIMIT})"
             )
 
+    def test_yalla_is_separate_long_run_command(self):
+        assert resolve_command("yalla").name == "yalla"
+        assert resolve_command("yolo").name == "yolo"
+        assert "yalla" not in resolve_command("yolo").aliases
+
+        names = {name for name, _desc in telegram_bot_commands()}
+        assert "yalla" in names
+
     def test_includes_plugin_commands_via_lazy_discovery(self, tmp_path, monkeypatch):
         """Telegram menu generation should discover plugin slash commands on first access."""
         from unittest.mock import patch

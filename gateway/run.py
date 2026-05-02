@@ -314,6 +314,19 @@ logger = logging.getLogger(__name__)
 # between the guard check and actual agent creation.
 _AGENT_PENDING_SENTINEL = object()
 
+_YALLA_MODE_INSTRUCTIONS = """[System note: YALLA MODE is active for this session.
+Treat this as a long-running autonomous completion task. Do not claim the task is done until the result is genuinely finished from the user's perspective.
+
+Yalla completion contract:
+- Keep working until the requested outcome is implemented, integrated, cleaned up, and polished.
+- Before any final answer, inspect the relevant diff/state, run the strongest practical tests or sanity checks, and fix discovered issues instead of reporting them as TODOs.
+- Do a human-perspective pass: check naming, UX/output clarity, docs/messages, edge cases, and whether the user can actually use the result without hidden setup.
+- Clean temporary files, generated caches, stale logs, and abandoned partial artifacts you created.
+- If you hit a real blocker that needs external credentials, missing access, or a user decision, state exactly what blocks completion and what remains.
+- The final response should be concise and include what changed, what was verified, and any known residual risk. If checks found no remaining issues, say so plainly.
+
+Do not stop early because the task is long. Prefer continuing with careful tool use over giving a premature summary.]"""
+
 
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
@@ -638,6 +651,7 @@ class GatewayRunner:
     _restart_via_service: bool = False
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
+    _session_yalla_modes: set[str] = set()
     
     def __init__(self, config: Optional[GatewayConfig] = None):
         self.config = config or load_gateway_config()
@@ -701,6 +715,10 @@ class GatewayRunner:
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
         self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        # Per-session Yalla completion mode. These sessions queue follow-ups,
+        # reject stop/reset/restart while active, and get stronger completion
+        # instructions for long-running polished tasks.
+        self._session_yalla_modes: set[str] = set()
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
@@ -1320,6 +1338,29 @@ class GatewayRunner:
                 pass
         return "queue" if mode == "queue" else "interrupt"
 
+    def _is_yalla_session(self, session_key: str | None) -> bool:
+        if not session_key:
+            return False
+        return session_key in getattr(self, "_session_yalla_modes", set())
+
+    def _set_yalla_session(self, session_key: str, enabled: bool) -> None:
+        if not session_key:
+            return
+        if not hasattr(self, "_session_yalla_modes"):
+            self._session_yalla_modes = set()
+        if enabled:
+            self._session_yalla_modes.add(session_key)
+        else:
+            self._session_yalla_modes.discard(session_key)
+
+    @staticmethod
+    def _yalla_protected_message(command_name: str) -> str:
+        return (
+            f"Yalla mode is protecting this long-running task, so `/{command_name}` was not applied.\n"
+            "Use `/status` for progress, `/queue <note>` to add work after it finishes, "
+            "`/steer <note>` to guide the current run, or `/yalla off` if you truly want to disable protection."
+        )
+
     @staticmethod
     def _load_restart_drain_timeout() -> float:
         """Load graceful gateway restart/stop drain timeout in seconds."""
@@ -1461,7 +1502,8 @@ class GatewayRunner:
         from gateway.platforms.base import merge_pending_message_event
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
-        is_queue_mode = self._busy_input_mode == "queue"
+        yalla_active = self._is_yalla_session(session_key)
+        is_queue_mode = yalla_active or self._busy_input_mode == "queue"
 
         # If not in queue mode, interrupt the running agent immediately.
         # This aborts in-flight tool calls and causes the agent loop to exit
@@ -1504,7 +1546,12 @@ class GatewayRunner:
                 pass
 
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
-        if is_queue_mode:
+        if yalla_active:
+            message = (
+                f"Yalla mode is active — queued for the next turn{status_detail}. "
+                "Use `/steer <note>` to guide this run, or `/yalla off` to disable protection."
+            )
+        elif is_queue_mode:
             message = (
                 f"⏳ Queued for the next turn{status_detail}. "
                 f"I'll respond once the current task finishes."
@@ -3185,6 +3232,12 @@ class GatewayRunner:
         # has been *idle* beyond the inactivity threshold (or when the agent
         # object has no activity tracker and wall-clock age is extreme).
         _raw_stale_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", 1800))
+        if self._is_yalla_session(_quick_key):
+            try:
+                _yalla_timeout = float(os.getenv("HERMES_YALLA_AGENT_TIMEOUT", "21600"))
+            except (TypeError, ValueError):
+                _yalla_timeout = 21600.0
+            _raw_stale_timeout = max(_raw_stale_timeout, _yalla_timeout)
         _stale_ts = self._running_agents_ts.get(_quick_key, 0)
         if _quick_key in self._running_agents and _stale_ts:
             _stale_age = time.time() - _stale_ts
@@ -3242,6 +3295,13 @@ class GatewayRunner:
             )
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
+
+            if (
+                self._is_yalla_session(_quick_key)
+                and _cmd_def_inner
+                and _cmd_def_inner.name in {"stop", "new", "restart"}
+            ):
+                return self._yalla_protected_message(_cmd_def_inner.name)
 
             if _cmd_def_inner and _cmd_def_inner.name == "restart":
                 return await self._handle_restart_command(event)
@@ -3373,7 +3433,9 @@ class GatewayRunner:
             # /fast and /reasoning are config-only and take effect next
             # message, so they fall through to the catch-all busy response
             # below — users should wait and set them between turns.
-            if _cmd_def_inner and _cmd_def_inner.name in ("yolo", "verbose"):
+            if _cmd_def_inner and _cmd_def_inner.name in ("yalla", "yolo", "verbose"):
+                if _cmd_def_inner.name == "yalla":
+                    return await self._handle_yalla_command(event)
                 if _cmd_def_inner.name == "yolo":
                     return await self._handle_yolo_command(event)
                 if _cmd_def_inner.name == "verbose":
@@ -3579,6 +3641,15 @@ class GatewayRunner:
 
         if canonical == "verbose":
             return await self._handle_verbose_command(event)
+
+        if canonical == "yalla":
+            yalla_response = await self._handle_yalla_command(event)
+            if yalla_response is not None:
+                return yalla_response
+            yalla_payload = event.get_command_args().strip()
+            event.text = yalla_payload
+            command = None
+            canonical = None
 
         if canonical == "yolo":
             return await self._handle_yolo_command(event)
@@ -4018,6 +4089,7 @@ class GatewayRunner:
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if getattr(session_entry, 'was_auto_reset', False):
+            self._set_yalla_session(session_key, False)
             reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
             if reset_reason == "suspended":
                 context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
@@ -6839,6 +6911,42 @@ class GatewayRunner:
             return f"⚡ ✓ Priority Processing: **{label}** (saved to config)\n_(takes effect on next message)_"
         return f"⚡ ✓ Priority Processing: **{label}** (this session only)"
 
+    async def _handle_yalla_command(self, event: MessageEvent) -> str | None:
+        """Handle /yalla — protected long-run completion mode for this session."""
+        session_key = self._session_key_for_source(event.source)
+        raw_args = event.get_command_args().strip()
+        args = raw_args.lower()
+
+        if args in ("off", "disable", "disabled", "stop", "cancel"):
+            self._set_yalla_session(session_key, False)
+            return (
+                "Yalla mode OFF for this session. New messages can interrupt normally again, "
+                "and `/stop` is available if a task is running."
+            )
+
+        if args in ("status", "state"):
+            if self._is_yalla_session(session_key):
+                return (
+                    "Yalla mode is ON for this session.\n"
+                    "- Long tasks are protected from `/stop`, `/new`, and `/restart` while running.\n"
+                    "- Follow-ups queue by default; use `/steer <note>` to guide the active run.\n"
+                    "- Hermes is instructed to finish, clean up, test/sanity-check, and do a human-perspective pass before final response."
+                )
+            return "Yalla mode is OFF. Use `/yalla on` or `/yalla <task>` to start protected completion mode."
+
+        if args in ("", "on", "enable", "enabled", "strict"):
+            self._set_yalla_session(session_key, True)
+            return (
+                "Yalla mode ON for this session.\n"
+                "I will protect long-running work from accidental stop/interruption and will not treat the task as done until it is polished, cleaned up, and verified.\n\n"
+                "Use `/yalla <task>` to start a protected task, `/status` for progress, `/steer <note>` for guidance, or `/yalla off` to disable."
+            )
+
+        # /yalla <task>: enable the mode, then let the caller rewrite the
+        # event text and fall through to the normal agent path.
+        self._set_yalla_session(session_key, True)
+        return None
+
     async def _handle_yolo_command(self, event: MessageEvent) -> str:
         """Handle /yolo — toggle dangerous command approval bypass for this session only."""
         from tools.approval import (
@@ -8617,6 +8725,9 @@ class GatewayRunner:
         if isinstance(pending_approvals, dict):
             pending_approvals.pop(session_key, None)
 
+        if hasattr(self, "_session_yalla_modes"):
+            self._session_yalla_modes.discard(session_key)
+
         try:
             from tools.approval import clear_session as _clear_approval_session
         except Exception:
@@ -9536,7 +9647,14 @@ class GatewayRunner:
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
 
             # Read from env var or use default (same as CLI)
+            yalla_active = self._is_yalla_session(session_key)
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            if yalla_active:
+                try:
+                    yalla_max_iterations = int(os.getenv("HERMES_YALLA_MAX_ITERATIONS", "360"))
+                except (TypeError, ValueError):
+                    yalla_max_iterations = 360
+                max_iterations = max(max_iterations, yalla_max_iterations)
             
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
@@ -9550,6 +9668,8 @@ class GatewayRunner:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
+            if yalla_active:
+                combined_ephemeral = (combined_ephemeral + "\n\n" + _YALLA_MODE_INSTRUCTIONS).strip()
 
             # Re-read .env and config for fresh credentials (gateway is long-lived,
             # keys may change without restart).
@@ -9580,6 +9700,16 @@ class GatewayRunner:
 
             pr = self._provider_routing
             reasoning_config = self._load_reasoning_config()
+            if yalla_active:
+                try:
+                    from hermes_constants import parse_reasoning_effort
+                    yalla_reasoning = parse_reasoning_effort(
+                        os.getenv("HERMES_YALLA_REASONING_EFFORT", "xhigh")
+                    )
+                    if yalla_reasoning:
+                        reasoning_config = yalla_reasoning
+                except Exception:
+                    pass
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
             # Set up stream consumer for token streaming or interim commentary.
