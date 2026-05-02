@@ -16,24 +16,19 @@ object NativeAndroidShellTool {
         val state = HermesLinuxSubsystemBridge.ensureInstalled(context.applicationContext)
         val homeDir = File(state.getString("home_path")).apply { mkdirs() }
         val tmpDir = File(state.getString("tmp_path")).apply { mkdirs() }
-        val shellPath = "/system/bin/sh"
-        val environment = HermesLinuxSubsystemBridge.buildRunEnvironment(state).toMutableMap().apply {
-            this["HOME"] = homeDir.absolutePath
-            this["TMPDIR"] = tmpDir.absolutePath
-            this["PATH"] = listOf(
-                "/system/bin",
-                "/system/xbin",
-                state.optString("bin_path"),
-            )
-                .filter { it.isNotBlank() }
-                .distinct()
-                .joinToString(":")
-        }
+        val shellPath = state.optString("shell_path", "/system/bin/sh").ifBlank { "/system/bin/sh" }
 
         val process = ProcessBuilder(shellPath, "-c", command)
             .directory(homeDir)
             .apply {
-                environment().putAll(environment)
+                environment().apply {
+                    put("HOME", homeDir.absolutePath)
+                    put("TMPDIR", tmpDir.absolutePath)
+                    put("PATH", nativePath(state))
+                    put("ANDROID_DATA", "/data")
+                    put("ANDROID_ROOT", "/system")
+                    put("HERMES_ANDROID_EXECUTION_MODE", state.optString("execution_mode"))
+                }
             }
             .start()
 
@@ -62,4 +57,14 @@ object NativeAndroidShellTool {
             .put("shell", shellPath)
     }
 
+    private fun nativePath(state: JSONObject): String {
+        return listOf(
+            state.optString("bin_path"),
+            "/system/bin",
+            "/system/xbin",
+        )
+            .filter { it.isNotBlank() }
+            .distinct()
+            .joinToString(":")
+    }
 }
