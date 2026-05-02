@@ -123,6 +123,32 @@ class TestBusyInputMode:
         cli.process_command("/queue follow up")
         assert cli._pending_input.get_nowait() == "follow up"
 
+    def test_queue_command_can_edit_remove_move_and_clear_pending_items(self):
+        cli = _make_cli()
+        cli.process_command("/queue first prompt")
+        cli.process_command("/queue second prompt")
+        cli.process_command("/queue edit 2 replacement prompt")
+        assert cli._pending_input_items() == ["first prompt", "replacement prompt"]
+
+        cli.process_command("/queue move 2 1")
+        assert cli._pending_input_items() == ["replacement prompt", "first prompt"]
+
+        cli.process_command("/queue rm 2")
+        assert cli._pending_input_items() == ["replacement prompt"]
+
+        cli.process_command("/queue clear")
+        assert cli._pending_input_items() == []
+
+    def test_queue_command_preserves_prompts_that_start_with_non_subcommand_words(self):
+        cli = _make_cli()
+        cli.process_command("/queue maybe run later")
+        assert cli._pending_input.get_nowait() == "maybe run later"
+
+    def test_queue_add_allows_prompts_that_start_with_management_words(self):
+        cli = _make_cli()
+        cli.process_command("/queue add clear the logs after tests")
+        assert cli._pending_input.get_nowait() == "clear the logs after tests"
+
     def test_queue_mode_routes_busy_enter_to_pending(self):
         """In queue mode, Enter while busy should go to _pending_input, not _interrupt_queue."""
         cli = _make_cli(config_overrides={"display": {"busy_input_mode": "queue"}})
