@@ -84,7 +84,9 @@ def _ask_questions(messages: list[dict]) -> int:
             model="qwen-instruct",
             base_url="http://127.0.0.1:8085/v1",
             api_key="not-needed",
-            provider="local-qwen",
+            # provider="custom" — the auxiliary_client routing keyword
+            # for "use the explicit base_url + api_key passed here."
+            provider="custom",
             max_tokens=400,
         )
         answer = (resp.choices[0].message.content or "").lower()
@@ -106,7 +108,9 @@ def test_2_3_fact_retention_after_compaction():
             protect_first_n=3, protect_last_n=20,
             summary_target_ratio=0.20, quiet_mode=True,
             base_url="http://127.0.0.1:8085/v1", api_key="not-needed",
-            provider="local-qwen", api_mode="chat_completions",
+            # provider="custom" — auxiliary_client routing keyword;
+            # see test_tier2_qwen_walltime.py for the explanation.
+            provider="custom", api_mode="chat_completions",
             config_context_length=262_144, **flags,
         )
 

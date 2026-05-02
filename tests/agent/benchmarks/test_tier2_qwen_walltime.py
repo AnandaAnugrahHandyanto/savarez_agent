@@ -46,7 +46,12 @@ def _make(**flags):
         quiet_mode=True,
         base_url="http://127.0.0.1:8085/v1",
         api_key="not-needed",
-        provider="local-qwen",
+        # NOTE: provider="custom" (NOT "local-qwen") — auxiliary_client's
+        # routing recognizes "custom" as the keyword for "use the
+        # explicit base_url + api_key passed at the call site." The
+        # YAML key in ~/.hermes/config.yaml ("local-qwen") is just a
+        # logical label; auxiliary_client doesn't see that file.
+        provider="custom",
         api_mode="chat_completions",
         config_context_length=262_144,
         **flags,

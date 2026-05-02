@@ -703,7 +703,11 @@ def _make(**flags):
         quiet_mode=True,
         base_url="http://127.0.0.1:8085/v1",
         api_key="not-needed",
-        provider="local-qwen",
+        # provider="custom" — auxiliary_client routing keyword for
+        # "use the explicit base_url + api_key passed at the call site."
+        # The YAML key in ~/.hermes/config.yaml ("local-qwen") is just
+        # a logical label; auxiliary_client doesn't see that file.
+        provider="custom",
         api_mode="chat_completions",
         config_context_length=262_144,
         **flags,
@@ -870,7 +874,9 @@ def _ask_questions(messages: list[dict]) -> int:
             model="qwen-instruct",
             base_url="http://127.0.0.1:8085/v1",
             api_key="not-needed",
-            provider="local-qwen",
+            # provider="custom" — see test_tier2_qwen_walltime.py
+            # for the explanation of why "custom" not "local-qwen".
+            provider="custom",
             max_tokens=400,
         )
         answer = (resp.choices[0].message.content or "").lower()
@@ -892,7 +898,8 @@ def test_2_3_fact_retention_after_compaction():
             protect_first_n=3, protect_last_n=20,
             summary_target_ratio=0.20, quiet_mode=True,
             base_url="http://127.0.0.1:8085/v1", api_key="not-needed",
-            provider="local-qwen", api_mode="chat_completions",
+            # provider="custom" — see test_tier2_qwen_walltime.py.
+            provider="custom", api_mode="chat_completions",
             config_context_length=262_144, **flags,
         )
 
@@ -1108,7 +1115,9 @@ When the trajectory dir is empty (clean checkout), the parametrize returns no ca
 ## How to run
 
 **Pytest invocation requirements (read first):**
-- Use whichever `pytest` is on your `$PATH` (project's `.venv/bin/pytest` if you have one set up; otherwise system pytest). Verify with `pytest --version` ≥ 8.0.
+- For Tier 1 (no LLM): any pytest ≥ 8.0 works. The project's hermes runtime venv lives at `./venv/bin/pytest`; a system or miniforge pytest is also fine.
+- For **Tier 2 (live LLM)**: you MUST use `./venv/bin/pytest`. Tier 2 invokes `agent.auxiliary_client.call_llm` which lazy-imports the `openai` SDK; that package is installed in the hermes venv but typically NOT in `miniforge`/system Python. Running Tier 2 with the wrong interpreter triggers `ModuleNotFoundError: No module named 'openai'`.
+- For Tier 3 (trajectory replay): same as Tier 1 — no LLM involved.
 - Pyproject's `[tool.pytest.ini_options] addopts = "-m 'not integration' -n auto"` does two things that affect benchmarks:
   - `-m 'not integration'` skips Tier 2 + Tier 3 by default (they're tagged `pytest.mark.integration`). Run them explicitly with `-m integration` or `-m ""` to include.
   - `-n auto` enables pytest-xdist parallel workers when xdist is installed. **xdist process-level parallelism corrupts wall-clock measurements** (CPU contention from sibling workers inflates `time.perf_counter()` non-deterministically; pytest-benchmark auto-disables itself when xdist is detected for exactly this reason — see [pytest-benchmark FAQ](https://pytest-benchmark.readthedocs.io/en/latest/faq.html)). All benchmark invocations below use `-p no:xdist` to disable xdist for the run. The flag is a no-op when xdist isn't installed, so it's safe to include unconditionally.
@@ -1121,12 +1130,14 @@ pytest tests/agent/benchmarks/test_tier1_*.py -v -p no:xdist
 
 Expected runtime: ≤ 30s. Exits non-zero on any threshold breach.
 
-**Tier 2 (requires moe profile up + integration marker opt-in):**
+**Tier 2 (requires moe profile up + integration marker opt-in + hermes venv):**
 
 ```bash
 qwen-server status   # confirm moe up
-pytest tests/agent/benchmarks/test_tier2_*.py -v -s -p no:xdist -m integration
+./venv/bin/pytest tests/agent/benchmarks/test_tier2_*.py -v -s -p no:xdist -m integration
 ```
+
+The `./venv/bin/pytest` path is intentional — see the "Pytest invocation requirements" subsection above.
 
 Expected runtime: 1-5 minutes. The `-s` is so the per-turn timing logs print live. The `-m integration` overrides pyproject's `'not integration'` default so the qwen-required tests are actually collected.
 
