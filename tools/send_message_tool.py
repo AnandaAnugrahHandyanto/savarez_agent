@@ -679,7 +679,18 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 formatted = message
             send_parse_mode = ParseMode.MARKDOWN_V2
 
-        bot = Bot(token=token)
+        # Respect TELEGRAM_PROXY / system proxy for send_message tool.
+        # The gateway adapter already does this (gateway/platforms/telegram.py),
+        # but the one-shot tool path created a bare Bot() without proxy config,
+        # causing timeouts when a proxy is required.  (hermes-agent #17347)
+        from gateway.platforms.base import resolve_proxy_url
+        proxy_url = resolve_proxy_url('TELEGRAM_PROXY')
+        if proxy_url:
+            from telegram.request import HTTPXRequest
+            bot = Bot(token=token, request=HTTPXRequest(proxy=proxy_url))
+            logger.info('[send_message/telegram] Proxy detected: %s', proxy_url)
+        else:
+            bot = Bot(token=token)
         int_chat_id = int(chat_id)
         media_files = media_files or []
         thread_kwargs = {}
