@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,6 +20,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from hermes_constants import get_hermes_home
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -106,17 +110,23 @@ async def get_job(job_id: str):
 @router.put("/jobs/{job_id}/segments")
 async def save_segments(job_id: str, payload: SegmentsPayload):
     """Save edited segments back to the job."""
-    data = _load_caption_job(job_id)
-    data["segments"] = payload.segments
-    _save_caption_job_data(job_id, data)
-    return {"ok": True}
+    try:
+        data = _load_caption_job(job_id)
+        data["segments"] = payload.model_dump()["segments"]
+        _save_caption_job_data(job_id, data)
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.error("save_segments failed for job %s: %s\n%s", job_id, exc, traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"save_segments error: {exc}") from exc
 
 
 @router.put("/jobs/{job_id}/style")
 async def save_style(job_id: str, payload: StylePayload):
     """Save style changes back to the job."""
     data = _load_caption_job(job_id)
-    data["style"] = payload.style
+    data["style"] = payload.model_dump()["style"]
     _save_caption_job_data(job_id, data)
     return {"ok": True}
 
