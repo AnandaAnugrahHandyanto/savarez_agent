@@ -1,6 +1,6 @@
 # Hackathon Build Status
 
-**Last updated**: 2 May 2026 (night — v7 distributability)  
+**Last updated**: 2 May 2026 (evening — post-v7 polish)  
 **Deadline**: EOD Sunday 3 May 2026 (1 day remaining)
 
 ---
@@ -387,6 +387,58 @@ curl http://localhost:9119/api/dashboard/plugins | python -m json.tool
 
 ---
 
+### 12. Post-v7 Polish & Bug Fixes ✅ (2 May — current state)
+
+Changes made after STATUS.md was last written (commits after `7199ddb37`).
+
+#### a) Drag-to-position overlay removed
+- The `style.position` override from v6 (normalised `{x, y}` + `\pos()` ASS injection) was removed in the style layout overhaul.
+- The **alignment picker** (3×3 numpad grid) remains — it's the canonical way to control caption position.
+- No `position` field in `CaptionStyle` TypeScript interface; no `\pos()` in ASS output.
+
+#### b) `margin_bottom` → `margin_edge` rename (backend only)
+- `pipeline.py` `_DEFAULT_STYLE` and `_build_ass_content()` now use `margin_edge` to accurately reflect that it's margin from the *nearest edge* regardless of alignment direction.
+- `plugin_api.py` `_STYLE_DEFAULTS` and all endpoints updated to `margin_edge`.
+- **Known inconsistency**: the TypeScript `CaptionStyle` interface still uses `margin_bottom` as the key name. The frontend sends `margin_bottom`; the pipeline reads `margin_edge`. This naming mismatch is the remaining root cause of the margin re-burn bug — margin UI changes don't apply correctly to the burned video. Multiple commits attempted to fix this; the fix is incomplete.
+
+#### c) Fixed relative import bug in `plugin_api.py`
+- Dashboard loader imports `plugin_api.py` by file path (not as a package module), so `from . import pipeline` failed with 500 errors.
+- Fixed by adding `_get_pipeline()` helper that loads `pipeline.py` via `importlib.util.spec_from_file_location` using the absolute path at `_PLUGIN_ROOT / "pipeline.py"`.
+
+#### d) SSE streaming for AI agent calls
+- Added `_agent_sse()` async generator in `plugin_api.py` that runs the agent in a thread via `asyncio.to_thread` and yields heartbeat `{"status": "..."}` SSE events every 1.5 s while waiting.
+- NL-edit (`/nl-edit`) and QA (`/qa`) endpoints now use `_agent_sse()` and return `StreamingResponse`, preventing browser timeout on slow models.
+- Frontend SSE readers in `NLEditPanel` and `HermesPanel` consume status events to show live progress text.
+
+#### e) QA review enhanced with praise flags
+- QA system prompt updated to return both `"issue"` and `"praise"` type flags.
+- `QAFlag` interface gains `type?: "issue" | "praise"` field; defaults to `"issue"` for backward compat.
+- Issues display with amber border + `AlertCircle` icon; praises display with green border + `CheckCircle2` icon.
+- Hermes panel header shows separate issue/praise counts: *"2 issues · 3 good"*.
+- Praise flag `suggestion` field is left empty (no "Fix →" button shown for praised segments).
+
+#### f) Info sidebar on job list
+- `InfoSidebar` component added to the right column of the job list page (visible ≥ xl breakpoint).
+- Shows "How it works" 4-step guide (Send video → Review & edit → Style it → Re-burn & download) with icons.
+- Shows "Key features" bullet list (AI QA, NL edits, style presets, Telegram-native).
+- Always visible to first-time users; no dismiss needed.
+
+#### g) Video player component improved
+- Extracted into `VideoPlayer` component with explicit `"loading" | "ready" | "error"` state.
+- Loading state shows spinner overlay while buffering; error state shows `VideoOff` icon with "Re-burn to generate it" hint.
+- `key={src}` reset on re-burn so the player reloads without a manual page refresh.
+
+#### h) Caption styles layout overhauled
+- Style fields reorganised into a cleaner vertical list with labelled rows.
+- `StyleNumberField` and `StyleTextField` helper components standardise number/text inputs.
+- Alignment picker moved into the style section (Col 2) directly; drag overlay removed.
+- "Style with Hermes" AI generation button renamed from "Create with AI" for consistency with branding.
+
+#### i) Undo added then removed
+- NL-edit undo (segment snapshot before applying patches) was added in `ee50521ca` and removed in `41d0a494d` to keep the UX simple and avoid stale-state edge cases.
+
+---
+
 ### P0 — Must have before demo
 
 | Task | Notes |
@@ -440,6 +492,7 @@ curl http://localhost:9119/api/dashboard/plugins | python -m json.tool
 | CPU transcription speed | Medium | 20s video takes ~15–30s on CPU — acceptable for demo, mention it in video |
 | Telegram 50MB video limit | Low risk | 10–20s Shorts are typically 5–25MB — should be fine |
 | No automated tests for new tool | Low risk | Manual E2E smoke test covers the hackathon window |
+| **`margin_edge` vs `margin_bottom` mismatch** | **Medium** | **Frontend `CaptionStyle` interface uses `margin_bottom`; backend reads `margin_edge`. Margin UI changes don't persist correctly to burn. Fix: rename `margin_bottom` → `margin_edge` in index.tsx (`CaptionStyle` interface + `STYLE_DEFAULTS` + all usages).** |
 
 ---
 
