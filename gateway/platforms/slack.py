@@ -1114,6 +1114,7 @@ class SlackAdapter(BasePlatformAdapter):
     _TABLE_CELL_LIMIT = 20
     _TABLE_ROW_LIMIT = 100
     _SECTION_TEXT_LIMIT = 3000
+    _TABLE_CELL_TEXT_LIMIT = 3000
     _BLOCK_LIMIT = 50
 
     @staticmethod
@@ -1158,6 +1159,61 @@ class SlackAdapter(BasePlatformAdapter):
     def _is_table_candidate_row(cls, line: str) -> bool:
         stripped = line.strip()
         return "|" in stripped and not stripped.startswith(">")
+
+    @classmethod
+    def _split_section_text(cls, text: str) -> List[str]:
+        """Split Slack mrkdwn section text without breaking code fences."""
+        if len(text) <= cls._SECTION_TEXT_LIMIT:
+            return [text]
+
+        chunks: List[str] = []
+        remaining = text
+        carry_lang: Optional[str] = None
+        fence_close = "\n```"
+
+        while remaining:
+            prefix = f"```{carry_lang}\n" if carry_lang is not None else ""
+            headroom = cls._SECTION_TEXT_LIMIT - len(prefix) - len(fence_close)
+            if headroom < 1:
+                headroom = max(1, cls._SECTION_TEXT_LIMIT - len(prefix))
+
+            if len(prefix) + len(remaining) <= cls._SECTION_TEXT_LIMIT:
+                chunks.append(prefix + remaining)
+                break
+
+            region = remaining[:headroom]
+            split_at = max(region.rfind("\n\n"), region.rfind("\n"))
+            if split_at < headroom // 2:
+                split_at = region.rfind(" ")
+            if split_at < 1:
+                split_at = headroom
+
+            chunk_body = remaining[:split_at]
+            remaining = remaining[split_at:].lstrip("\n")
+            full_chunk = prefix + chunk_body
+
+            in_code = carry_lang is not None
+            lang = carry_lang or ""
+            for line in chunk_body.split("\n"):
+                stripped = line.strip()
+                if stripped.startswith("```"):
+                    if in_code:
+                        in_code = False
+                        lang = ""
+                    else:
+                        in_code = True
+                        tag = stripped[3:].strip()
+                        lang = tag.split()[0] if tag else ""
+
+            if in_code and len(full_chunk) + len(fence_close) <= cls._SECTION_TEXT_LIMIT:
+                full_chunk += fence_close
+                carry_lang = lang
+            else:
+                carry_lang = lang if in_code else None
+
+            chunks.append(full_chunk)
+
+        return chunks
 
     @classmethod
     def _find_markdown_table(
@@ -1247,21 +1303,13 @@ class SlackAdapter(BasePlatformAdapter):
             formatted = self.format_message(markdown).strip()
             if not formatted:
                 return []
-            blocks: List[Dict[str, Any]] = []
-            remaining = formatted
-            while remaining:
-                chunk = remaining[:self._SECTION_TEXT_LIMIT]
-                # Prefer splitting between paragraphs/lines when possible.
-                if len(remaining) > self._SECTION_TEXT_LIMIT:
-                    split_at = max(chunk.rfind("\n\n"), chunk.rfind("\n"))
-                    if split_at > 0:
-                        chunk = remaining[:split_at]
-                blocks.append({
+            return [
+                {
                     "type": "section",
                     "text": {"type": "mrkdwn", "text": chunk},
-                })
-                remaining = remaining[len(chunk):].lstrip("\n")
-            return blocks
+                }
+                for chunk in self._split_section_text(formatted)
+            ]
 
         # Slack table cells use raw_text for plain cells or rich_text for
         # formatted cells; they do not use standard plain_text/mrkdwn objects.
@@ -1269,7 +1317,10 @@ class SlackAdapter(BasePlatformAdapter):
             "type": "table",
             "column_settings": [{"is_wrapped": True} for _ in rows[0]],
             "rows": [
-                [{"type": "raw_text", "text": cell[:3000]} for cell in row]
+                [
+                    {"type": "raw_text", "text": cell[:self._TABLE_CELL_TEXT_LIMIT]}
+                    for cell in row
+                ]
                 for row in rows
             ],
         }

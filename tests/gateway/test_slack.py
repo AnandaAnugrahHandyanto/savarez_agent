@@ -164,6 +164,54 @@ Done."""
 
         assert blocks is None
 
+    def test_long_table_prefix_code_fence_sections_are_balanced(self, adapter):
+        code = "\n".join(f"print({i})" for i in range(500))
+        content = f"""Before table.
+```python
+{code}
+```
+
+| A | B |
+|---|---|
+| 1 | 2 |"""
+
+        _, blocks = adapter._format_message_with_blocks(content)
+
+        assert blocks is not None
+        table_index = next(
+            index for index, block in enumerate(blocks) if block["type"] == "table"
+        )
+        prefix_sections = blocks[:table_index]
+        assert len(prefix_sections) > 1
+        for block in prefix_sections:
+            section_text = block["text"]["text"]
+            assert len(section_text) <= adapter._SECTION_TEXT_LIMIT
+            assert section_text.count("```") % 2 == 0
+
+    def test_long_table_suffix_code_fence_sections_are_balanced(self, adapter):
+        code = "\n".join(f"print({i})" for i in range(500))
+        content = f"""| A | B |
+|---|---|
+| 1 | 2 |
+
+After table.
+```python
+{code}
+```"""
+
+        _, blocks = adapter._format_message_with_blocks(content)
+
+        assert blocks is not None
+        table_index = next(
+            index for index, block in enumerate(blocks) if block["type"] == "table"
+        )
+        suffix_sections = blocks[table_index + 1:]
+        assert len(suffix_sections) > 1
+        for block in suffix_sections:
+            section_text = block["text"]["text"]
+            assert len(section_text) <= adapter._SECTION_TEXT_LIMIT
+            assert section_text.count("```") % 2 == 0
+
     @pytest.mark.asyncio
     async def test_send_posts_blocks_with_text_fallback(self, adapter):
         adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "123.456"})
