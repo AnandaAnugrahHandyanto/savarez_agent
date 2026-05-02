@@ -40,3 +40,15 @@ def test_build_github_task_web_url_requires_matching_repo_dir_name(monkeypatch, 
     )
 
     assert build_github_task_web_url(str(repo_dir), "static-pages", "task-123") is None
+
+
+def test_build_github_task_web_url_rejects_mismatched_origin_repo(monkeypatch, tmp_path):
+    repo_dir = tmp_path / "static-pages"
+    repo_dir.mkdir()
+
+    monkeypatch.setattr(
+        "copilot_remote.github_task_url._git_origin_url",
+        lambda path: "https://github.com/RosenblattAI/other-repo.git",
+    )
+
+    assert build_github_task_web_url(str(repo_dir), "static-pages", "task-123") is None

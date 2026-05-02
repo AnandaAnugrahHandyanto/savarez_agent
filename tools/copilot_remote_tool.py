@@ -143,7 +143,7 @@ def _job_handle(job: Dict[str, Any]) -> Optional[str]:
     return str(handle) if handle else None
 
 
-def _serialize_job(job: Dict[str, Any]) -> Dict[str, Any]:
+def _serialize_job(job: Dict[str, Any], *, include_web_url: bool = True) -> Dict[str, Any]:
     handle = _job_handle(job)
     repo_path = job.get("repo_path", "") or ""
     repo_slug = str(job.get("repo_slug") or "")
@@ -159,7 +159,11 @@ def _serialize_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "connect_handle": handle,
         "connect_command": f"copilot --connect={handle}" if handle else None,
         "resume_command": f"copilot --resume={handle}" if handle else None,
-        "web_url": build_github_task_web_url(repo_path, repo_slug, handle),
+        "web_url": (
+            build_github_task_web_url(repo_path, repo_slug, handle)
+            if include_web_url
+            else None
+        ),
     }
     prompt = job.get("prompt")
     if prompt:
@@ -423,7 +427,10 @@ def _list(args: Dict[str, Any]) -> str:
 
     db = _get_db()
     try:
-        jobs = [_serialize_job(job) for job in db.list_copilot_remote(state=state, limit=limit)]
+        jobs = [
+            _serialize_job(job, include_web_url=False)
+            for job in db.list_copilot_remote(state=state, limit=limit)
+        ]
         return json.dumps({"success": True, "action": "list", "jobs": jobs}, ensure_ascii=False)
     finally:
         db.close()

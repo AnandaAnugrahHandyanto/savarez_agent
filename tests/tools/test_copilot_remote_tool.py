@@ -90,8 +90,8 @@ def test_launch_routes_repo_and_stores_connect_handle(db, monkeypatch):
     assert result["job"]["repo"] == "static-pages"
     assert result["job"]["connect_handle"] == "task-123"
     assert result["job"]["connect_command"] == "copilot --connect=task-123"
-    # repo_path is not a real git clone in the test environment, so _repo_owner_from_path
-    # cannot resolve the owner and web_url is omitted.
+    # repo_path is not a real git clone in the test environment, so the shared
+    # GitHub task URL helper cannot derive an origin-backed web_url.
     assert result["job"]["web_url"] is None
 
     jobs = db.list_copilot_remote(state="running")
@@ -169,6 +169,30 @@ def test_list_and_show(db):
     assert shown["job"]["resume_command"] == "copilot --resume=task-1"
     # repo_path is not a real git clone in the test environment.
     assert shown["job"]["web_url"] is None
+
+
+def test_list_skips_web_url_lookup(db, monkeypatch):
+    db.create_copilot_remote(
+        job_id="job-2",
+        repo_slug="static-pages",
+        repo_path="/workspace/repos/corp_it/static-pages",
+        prompt="Build page",
+        connect_handle="task-2",
+    )
+
+    def _unexpected_web_url(*args, **kwargs):
+        raise AssertionError("list should not compute web_url")
+
+    monkeypatch.setattr(
+        "tools.copilot_remote_tool.build_github_task_web_url",
+        _unexpected_web_url,
+    )
+
+    listing = json.loads(copilot_remote({"action": "list"}))
+
+    assert listing["success"] is True
+    assert listing["jobs"][0]["job_id"] == "job-2"
+    assert listing["jobs"][0]["web_url"] is None
 
 
 def test_hermes_slack_toolset_exposes_copilot_remote():

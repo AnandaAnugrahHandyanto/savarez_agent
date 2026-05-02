@@ -62,7 +62,7 @@ def _git_origin_url(repo_dir: Path) -> Optional[str]:
     return origin_url if result.returncode == 0 and origin_url else None
 
 
-def _github_owner_from_origin_url(origin_url: str) -> Optional[str]:
+def _github_remote_parts_from_origin_url(origin_url: str) -> Optional[tuple[str, str]]:
     normalized = (origin_url or "").strip()
     if not normalized:
         return None
@@ -81,7 +81,12 @@ def _github_owner_from_origin_url(origin_url: str) -> Optional[str]:
     if len(parts) < 2:
         return None
     owner = parts[0]
-    return owner if _is_safe_github_segment(owner) else None
+    repo_name = parts[1]
+    if repo_name.endswith(".git"):
+        repo_name = repo_name[:-4]
+    if not _is_safe_github_segment(owner) or not _is_safe_github_segment(repo_name):
+        return None
+    return owner, repo_name
 
 
 def build_github_task_web_url(
@@ -97,8 +102,12 @@ def build_github_task_web_url(
     if repo_dir is None:
         return None
 
-    owner = _github_owner_from_origin_url(_git_origin_url(repo_dir) or "")
-    if not owner:
+    remote_parts = _github_remote_parts_from_origin_url(_git_origin_url(repo_dir) or "")
+    if not remote_parts:
+        return None
+
+    owner, remote_repo_slug = remote_parts
+    if remote_repo_slug != repo_slug:
         return None
 
     return (

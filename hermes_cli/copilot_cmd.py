@@ -204,8 +204,11 @@ def copilot_launch(args):
     if connect_handle:
         print(f"\n  Connect: copilot --connect={connect_handle}")
         print(f"  Resume:  copilot --resume={connect_handle}")
-        # Re-read from DB so repo_path is available for URL construction
-        job = db.get_copilot_remote(job_id) if db.get_copilot_remote(job_id) else {}
+        job = {
+            "repo_path": repo_path,
+            "repo_slug": repo,
+            "connect_handle": connect_handle,
+        }
         web = _github_task_web_url(job)
         if web:
             print(f"  Web:     {web}")
