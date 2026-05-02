@@ -91,11 +91,11 @@ class TestPersonaEmojiResolution:
 class TestDynamicReactionsResolution:
     """dynamic_reactions flag should be configurable."""
 
-    def test_enabled_by_default(self):
-        """Dynamic reactions are on by default."""
+    def test_disabled_by_default(self):
+        """Dynamic reactions are off by default."""
         with mock_patch("hermes_cli.config.load_config", return_value={}):
             adapter = FakeAdapter()
-        assert adapter._rxn_dynamic is True
+        assert adapter._rxn_dynamic is False
 
     def test_disabled_via_platform_config(self):
         """Platform-level dynamic_reactions=false disables tool swapping."""
