@@ -31,7 +31,7 @@ Click **Change** on the Main model row:
 The picker has two columns:
 
 - **Left** — authenticated providers. Only providers you've set up (API key set, OAuth'd, or defined as a custom endpoint) show up here. If a provider is missing, head to **Keys** and add its credential.
-- **Right** — the curated model list for the selected provider. These are the agentic models Hermes recommends for that provider, not the raw `/models` dump (which on OpenRouter includes 400+ models including TTS, image generators, and rerankers).
+- **Right** — the available model list for the selected provider. When credentials are present, Hermes prefers the provider's live `/models` catalog and merges it with the curated/models.dev fallback so newly available models appear without a Hermes release. Offline or unauthenticated providers fall back to the bundled curated list.
 
 Type in the filter box to narrow by provider name, slug, or model ID.
 
@@ -177,7 +177,7 @@ Edit `~/.hermes/config.yaml` and restart whatever reads it. See the [Configurati
 The dashboard uses three endpoints. Useful for scripting:
 
 ```bash
-# List authenticated providers + curated model lists
+# List authenticated providers + available model lists
 curl -H "X-Hermes-Session-Token: $TOKEN" http://localhost:PORT/api/model/options
 
 # Read current main + auxiliary assignments

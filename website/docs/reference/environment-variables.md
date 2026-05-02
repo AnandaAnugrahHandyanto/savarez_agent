@@ -510,13 +510,15 @@ For task-specific direct endpoints, Hermes uses the task's configured API key or
 
 ## Fallback Model (config.yaml only)
 
-The primary model fallback is configured exclusively through `config.yaml` — there are no environment variables for it. Add a `fallback_model` section with `provider` and `model` keys to enable automatic failover when your main model encounters errors.
+The primary model fallback is configured exclusively through `config.yaml` — there are no environment variables for it. Add a top-level `fallback_providers` list with `provider` and `model` keys to enable automatic failover when your main model encounters errors.
 
 ```yaml
-fallback_model:
-  provider: openrouter
-  model: anthropic/claude-sonnet-4
+fallback_providers:
+  - provider: openrouter
+    model: anthropic/claude-sonnet-4
 ```
+
+The legacy single-dict `fallback_model` key is still accepted for backward compatibility.
 
 See [Fallback Providers](/docs/user-guide/features/fallback-providers) for full details.
 
