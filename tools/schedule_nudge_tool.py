@@ -95,25 +95,38 @@ CANCEL_NUDGE_SCHEMA = {
 
 
 def _get_current_session_info() -> tuple[Optional[str], Optional[str]]:
-    """Get current session ID and key from environment/context.
+    """Get current session ID and key from gateway context.
 
     Returns:
         Tuple of (session_id, session_key) or (None, None) if not available
     """
+    # Try environment variables first (set by gateway)
     session_id = os.getenv("HERMES_SESSION_ID")
     session_key = os.getenv("HERMES_SESSION_KEY")
 
     if session_id and session_key:
         return session_id, session_key
 
+    # Try gateway context vars (more reliable in gateway context)
     try:
-        from gateway.session_context import get_session_vars
-        vars = get_session_vars()
-        platform = vars.get("platform", "")
-        chat_id = vars.get("chat_id", "")
+        from gateway.session_context import get_session_env
+
+        # Build session key from available info
+        platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+        chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+
         if platform and chat_id:
-            session_key = f"agent:main:{platform}:dm:{chat_id}"
-            return session_id, session_key
+            # Check if session_key was explicitly set
+            stored_key = get_session_env("HERMES_SESSION_KEY", "")
+            if stored_key:
+                session_key = stored_key
+            else:
+                # Construct session key from platform and chat_id
+                session_key = f"agent:main:{platform}:dm:{chat_id}"
+
+            # session_id is not available from context vars by default
+            # The nudge will still work but won't verify session_id
+            return None, session_key
     except Exception:
         pass
 
@@ -162,14 +175,20 @@ def schedule_nudge(
 
         session_id, session_key = _get_current_session_info()
 
-        if not session_id or not session_key:
+        # Require at least session_key; session_id is optional
+        # (but recommended for session-reset detection)
+        if not session_key:
             return json.dumps({
                 "success": False,
-                "error": "Cannot determine current session. Nudges can only be scheduled from within an active agent session.",
+                "error": (
+                    "Cannot determine current session. "
+                    "Nudges can only be scheduled from within an active agent session "
+                    "in a gateway context (not CLI or subagent)."
+                ),
             }, indent=2)
 
         nudge = create_nudge(
-            session_id=session_id,
+            session_id=session_id or "",
             session_key=session_key,
             schedule=schedule,
             context=context,

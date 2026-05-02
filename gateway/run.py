@@ -13469,23 +13469,32 @@ def _trigger_nudge_wake(runner, nudge: dict, adapters, loop):
             logger.warning("No session store available for nudge trigger")
             return
 
-        # Find the session entry
-        entry = session_store._entries.get(session_key)
-        if not entry:
-            logger.warning("Session %s not found for nudge trigger", session_key)
-            return
+        # Thread-safe session lookup using the session store's lock
+        with session_store._lock:
+            entry = session_store._entries.get(session_key)
+            if not entry:
+                logger.warning("Session %s not found for nudge trigger", session_key)
+                return
 
-        # Check if session is suspended
-        if entry.suspended:
-            logger.debug("Session %s is suspended, skipping nudge", session_key)
-            return
+            # Check if session is suspended
+            if entry.suspended:
+                logger.debug("Session %s is suspended, skipping nudge", session_key)
+                return
 
-        # Verify session ID matches (session may have been reset)
-        if entry.session_id != session_id:
-            logger.debug(
-                "Session %s ID mismatch (nudge: %s, current: %s), skipping",
-                session_key, session_id, entry.session_id
-            )
+            # Verify session ID matches (session may have been reset)
+            # Only check if session_id was stored in the nudge (may be empty for older nudges)
+            if session_id and entry.session_id != session_id:
+                logger.debug(
+                    "Session %s ID mismatch (nudge: %s, current: %s), skipping",
+                    session_key, session_id, entry.session_id
+                )
+                return
+
+            # Capture source for later use (outside lock)
+            source = entry.origin
+
+        if not source:
+            logger.warning("Session %s has no origin, cannot trigger nudge", session_key)
             return
 
         # Build the wake-up message
@@ -13493,13 +13502,6 @@ def _trigger_nudge_wake(runner, nudge: dict, adapters, loop):
             wake_message = f"[Scheduled reminder '{nudge_name}']: {context}"
         else:
             wake_message = f"[Scheduled reminder '{nudge_name}']: Continuing with scheduled task."
-
-        # Build a synthetic message event
-        from gateway.session import SessionSource
-        source = entry.origin
-        if not source:
-            logger.warning("Session %s has no origin, cannot trigger nudge", session_key)
-            return
 
         # Create a message event
         from gateway.platforms.base import MessageEvent
@@ -13511,6 +13513,7 @@ def _trigger_nudge_wake(runner, nudge: dict, adapters, loop):
         )
 
         # Schedule the message handling on the event loop
+        # _handle_message respects busy_input_mode (queue/interrupt/steer)
         if loop and loop.is_running():
             asyncio.run_coroutine_threadsafe(
                 runner._handle_message(event),
