@@ -840,6 +840,49 @@ def get_plugin_platform_adapter(name: str) -> Optional[tuple]:
     return get_plugin_manager()._plugin_platform_adapters.get(name)
 
 
+class PluginPlatformIdentifier:
+    """Platform-enum-shaped identifier for plugin-registered platforms.
+
+    Built-in adapters pass ``Platform.TELEGRAM`` etc. as the second arg
+    to ``BasePlatformAdapter.__init__``. Plugin adapters can't extend
+    the closed Platform enum, so they pass an instance of this class
+    instead — it quacks like ``Platform`` enough for the base class
+    (``.value`` attribute, hashable, equality on value).
+
+    Usage in a plugin adapter::
+
+        from hermes_cli.plugins import PluginPlatformIdentifier
+        from gateway.platforms.base import BasePlatformAdapter
+
+        class MyAdapter(BasePlatformAdapter):
+            def __init__(self, config):
+                super().__init__(config, PluginPlatformIdentifier("my-platform"))
+
+    The ``name`` should match what was passed to
+    ``ctx.register_platform_adapter(name=..., ...)``.
+    """
+
+    __slots__ = ("value",)
+
+    def __init__(self, name: str):
+        self.value = name
+
+    def __hash__(self) -> int:
+        # Distinct hash bucket so a plugin platform named "telegram"
+        # (impossible — registration is rejected — but defensively)
+        # never collides with Platform.TELEGRAM in dict keys.
+        return hash(("__plugin_platform__", self.value))
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, PluginPlatformIdentifier)
+            and self.value == other.value
+        )
+
+    def __repr__(self) -> str:
+        return f"PluginPlatformIdentifier({self.value!r})"
+
+
 def get_plugin_commands() -> Dict[str, dict]:
     """Return the full plugin commands dict (name → {handler, description, plugin}).
 
