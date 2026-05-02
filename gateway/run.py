@@ -11164,10 +11164,18 @@ class GatewayRunner:
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
                                 session_key or "?",
                             )
+                            # Keep text and media delivery behavior aligned with normal
+                            # adapter flow: send cleaned text, then deliver MEDIA/local files.
+                            _, first_response_text = adapter.extract_media(first_response)
                             await adapter.send(
                                 source.chat_id,
-                                first_response,
+                                first_response_text,
                                 metadata=_status_thread_metadata,
+                            )
+                            await self._deliver_media_from_response(
+                                first_response,
+                                event,
+                                adapter,
                             )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
