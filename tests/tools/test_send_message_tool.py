@@ -239,6 +239,71 @@ class TestSendMessageTool:
         assert "error" in result
         assert leaked not in result["error"]
         assert "access_token=***" in result["error"]
+    def test_send_message_schema_includes_edit_action(self):
+        from tools.send_message_tool import SEND_MESSAGE_SCHEMA
+
+        action_schema = SEND_MESSAGE_SCHEMA["parameters"]["properties"]["action"]
+        assert "edit" in action_schema["enum"]
+        assert "message_id" in SEND_MESSAGE_SCHEMA["parameters"]["properties"]
+
+    def test_send_message_schema_includes_create_thread_action(self):
+        from tools.send_message_tool import SEND_MESSAGE_SCHEMA
+
+        action_schema = SEND_MESSAGE_SCHEMA["parameters"]["properties"]["action"]
+        properties = SEND_MESSAGE_SCHEMA["parameters"]["properties"]
+        assert "create_thread" in action_schema["enum"]
+        assert "thread_name" in properties
+        assert "thread_auto_archive_duration" in properties
+
+    def test_discord_edit_uses_thread_id_when_target_includes_thread(self):
+        discord_cfg = SimpleNamespace(enabled=True, token="discord-token", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.DISCORD: discord_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._edit_discord_message", new=AsyncMock(return_value={"success": True, "message_id": "msg-1"})) as edit_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "edit",
+                        "target": "discord:123:456",
+                        "message_id": "msg-1",
+                        "message": "updated",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        edit_mock.assert_awaited_once_with("discord-token", "456", "msg-1", "updated")
+
+    def test_discord_create_thread_uses_parent_channel_id(self):
+        discord_cfg = SimpleNamespace(enabled=True, token="discord-token", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.DISCORD: discord_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._create_discord_thread", new=AsyncMock(return_value={"success": True, "thread_id": "789"})) as create_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "create_thread",
+                        "target": "discord:123",
+                        "thread_name": "codex-smoke-test",
+                        "thread_auto_archive_duration": 60,
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        create_mock.assert_awaited_once_with("discord-token", "123", "codex-smoke-test", 60, None)
 
 
 class TestSendTelegramMediaDelivery:

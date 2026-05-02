@@ -1,7 +1,8 @@
 """Send Message Tool -- cross-channel messaging via platform APIs.
 
 Sends a message to a user or channel on any connected messaging platform
-(Telegram, Discord, Slack). Supports listing available targets and resolving
+(Telegram, Discord, Slack). Supports editing bot-authored Discord messages,
+creating Discord threads, listing available targets, and resolving
 human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
@@ -115,7 +116,8 @@ async def _send_telegram_message_with_retry(bot, *, attempts: int = 3, **kwargs)
 SEND_MESSAGE_SCHEMA = {
     "name": "send_message",
     "description": (
-        "Send a message to a connected messaging platform, or list available targets.\n\n"
+        "Send, edit a bot-authored message, create a Discord thread, or list available targets "
+        "on connected messaging platforms.\n\n"
         "IMPORTANT: When the user asks to send to a specific channel or person "
         "(not just a bare platform name), call send_message(action='list') FIRST to see "
         "available targets, then send to the correct one.\n"
@@ -127,8 +129,8 @@ SEND_MESSAGE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["send", "list"],
-                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms."
+                "enum": ["send", "edit", "create_thread", "list"],
+                "description": "Action to perform. 'send' (default) sends a message. 'edit' updates an existing bot-authored message where supported. 'create_thread' creates a Discord public thread in a channel. 'list' returns all available channels/contacts across connected platforms."
             },
             "target": {
                 "type": "string",
@@ -136,7 +138,19 @@ SEND_MESSAGE_SCHEMA = {
             },
             "message": {
                 "type": "string",
-                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment."
+                "description": "The message text to send or edit. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment."
+            },
+            "message_id": {
+                "type": "string",
+                "description": "For action='edit', the platform message ID to update. For action='create_thread' on Discord, optionally start the thread from this existing channel message."
+            },
+            "thread_name": {
+                "type": "string",
+                "description": "For action='create_thread', the Discord thread name to create in the target channel."
+            },
+            "thread_auto_archive_duration": {
+                "type": "integer",
+                "description": "For action='create_thread', Discord auto-archive duration in minutes (allowed values usually 60, 1440, 4320, or 10080). Defaults to 1440."
             }
         },
         "required": []
@@ -150,6 +164,12 @@ def send_message_tool(args, **kw):
 
     if action == "list":
         return _handle_list()
+
+    if action == "edit":
+        return _handle_edit(args)
+
+    if action == "create_thread":
+        return _handle_create_thread(args)
 
     return _handle_send(args)
 
@@ -305,6 +325,148 @@ def _handle_send(args):
         return json.dumps(result)
     except Exception as e:
         return json.dumps(_error(f"Send failed: {e}"))
+
+
+def _handle_edit(args):
+    """Edit an existing platform message where supported."""
+    target = args.get("target", "")
+    message = args.get("message", "")
+    message_id = str(args.get("message_id", "")).strip()
+
+    if not target or not message or not message_id:
+        return tool_error("'target', 'message', and 'message_id' are required when action='edit'")
+
+    parts = target.split(":", 1)
+    platform_name = parts[0].strip().lower()
+    target_ref = parts[1].strip() if len(parts) > 1 else None
+    if platform_name != "discord":
+        return tool_error("action='edit' is currently supported only for Discord")
+    if not target_ref:
+        return tool_error("A Discord channel or thread target is required when action='edit'")
+
+    chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+
+    # Resolve human-friendly Discord channel names to numeric IDs.
+    if target_ref and not is_explicit:
+        try:
+            from gateway.channel_directory import resolve_channel_name
+            resolved = resolve_channel_name(platform_name, target_ref)
+            if resolved:
+                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
+            else:
+                return json.dumps({
+                    "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                    f"Use send_message(action='list') to see available targets."
+                })
+        except Exception:
+            return json.dumps({
+                "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                f"Try using a numeric channel ID instead."
+            })
+
+    channel_or_thread_id = thread_id or chat_id
+    if not channel_or_thread_id:
+        return tool_error("Could not determine Discord channel/thread ID for action='edit'")
+
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return tool_error("Interrupted")
+
+    try:
+        from gateway.config import load_gateway_config, Platform
+        config = load_gateway_config()
+        pconfig = config.platforms.get(Platform.DISCORD)
+        if not pconfig or not pconfig.enabled:
+            return tool_error("Platform 'discord' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
+    except Exception as e:
+        return json.dumps(_error(f"Failed to load gateway config: {e}"))
+
+    try:
+        from model_tools import _run_async
+        result = _run_async(_edit_discord_message(pconfig.token, channel_or_thread_id, message_id, message))
+        if isinstance(result, dict) and "error" in result:
+            result["error"] = _sanitize_error_text(result["error"])
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps(_error(f"Edit failed: {e}"))
+
+
+def _handle_create_thread(args):
+    """Create a Discord public thread in a channel."""
+    target = args.get("target", "")
+    thread_name = str(args.get("thread_name", "")).strip()
+    message_id = str(args.get("message_id", "")).strip() or None
+    auto_archive_duration = args.get("thread_auto_archive_duration", 1440)
+
+    if not target or not thread_name:
+        return tool_error("'target' and 'thread_name' are required when action='create_thread'")
+
+    try:
+        auto_archive_duration = int(auto_archive_duration or 1440)
+    except (TypeError, ValueError):
+        return tool_error("'thread_auto_archive_duration' must be an integer number of minutes")
+
+    parts = target.split(":", 1)
+    platform_name = parts[0].strip().lower()
+    target_ref = parts[1].strip() if len(parts) > 1 else None
+    if platform_name != "discord":
+        return tool_error("action='create_thread' is currently supported only for Discord")
+    if not target_ref:
+        return tool_error("A Discord channel target is required when action='create_thread'")
+
+    chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+
+    # Resolve human-friendly Discord channel names to numeric IDs.
+    if target_ref and not is_explicit:
+        try:
+            from gateway.channel_directory import resolve_channel_name
+            resolved = resolve_channel_name(platform_name, target_ref)
+            if resolved:
+                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
+            else:
+                return json.dumps({
+                    "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                    f"Use send_message(action='list') to see available targets."
+                })
+        except Exception:
+            return json.dumps({
+                "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                f"Try using a numeric channel ID instead."
+            })
+
+    if thread_id:
+        return tool_error("action='create_thread' target must be a Discord channel, not an existing thread")
+    if not chat_id:
+        return tool_error("Could not determine Discord channel ID for action='create_thread'")
+
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return tool_error("Interrupted")
+
+    try:
+        from gateway.config import load_gateway_config, Platform
+        config = load_gateway_config()
+        pconfig = config.platforms.get(Platform.DISCORD)
+        if not pconfig or not pconfig.enabled:
+            return tool_error("Platform 'discord' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
+    except Exception as e:
+        return json.dumps(_error(f"Failed to load gateway config: {e}"))
+
+    try:
+        from model_tools import _run_async
+        result = _run_async(_create_discord_thread(
+            pconfig.token,
+            chat_id,
+            thread_name,
+            auto_archive_duration,
+            message_id,
+        ))
+        if isinstance(result, dict) and "error" in result:
+            result["error"] = _sanitize_error_text(result["error"])
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps(_error(f"Create thread failed: {e}"))
+
 
 
 def _parse_target_ref(platform_name: str, target_ref: str):
@@ -800,6 +962,90 @@ def _remember_channel_is_forum(chat_id: str, is_forum: bool) -> None:
 
 def _probe_is_forum_cached(chat_id: str) -> Optional[bool]:
     return _DISCORD_CHANNEL_TYPE_PROBE_CACHE.get(str(chat_id))
+
+
+async def _edit_discord_message(token, channel_id, message_id, message):
+    """Edit a bot-authored Discord message via REST API."""
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+
+    try:
+        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+        _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+        headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
+        url = f"https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}"
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
+            async with session.patch(url, headers=headers, json={"content": message}, **_req_kw) as resp:
+                body = await resp.text()
+                if resp.status != 200:
+                    return _error(f"Discord edit API error ({resp.status}): {body}")
+                try:
+                    data = json.loads(body) if body else {}
+                except json.JSONDecodeError:
+                    data = {}
+                return {
+                    "success": True,
+                    "platform": "discord",
+                    "chat_id": str(channel_id),
+                    "message_id": str(data.get("id") or message_id),
+                }
+    except Exception as e:
+        return _error(f"Discord edit failed: {e}")
+
+
+async def _create_discord_thread(token, channel_id, thread_name, auto_archive_duration=1440, message_id=None):
+    """Create a Discord public thread via REST API.
+
+    If ``message_id`` is provided, creates the thread from that existing channel
+    message. Otherwise creates a standalone public thread in the channel.
+    """
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+
+    try:
+        auto_archive_duration = int(auto_archive_duration or 1440)
+        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+        _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+        headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
+        if message_id:
+            url = f"https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}/threads"
+            payload = {
+                "name": thread_name[:100],
+                "auto_archive_duration": auto_archive_duration,
+            }
+        else:
+            url = f"https://discord.com/api/v10/channels/{channel_id}/threads"
+            payload = {
+                "name": thread_name[:100],
+                "type": 11,  # GUILD_PUBLIC_THREAD
+                "auto_archive_duration": auto_archive_duration,
+            }
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
+            async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
+                body = await resp.text()
+                if resp.status not in (200, 201):
+                    return _error(f"Discord create thread API error ({resp.status}): {body}")
+                try:
+                    data = json.loads(body) if body else {}
+                except json.JSONDecodeError:
+                    data = {}
+                thread_id = str(data.get("id") or "")
+                return {
+                    "success": True,
+                    "platform": "discord",
+                    "chat_id": str(channel_id),
+                    "thread_id": thread_id,
+                    "target": f"discord:{channel_id}:{thread_id}" if thread_id else None,
+                    "name": data.get("name") or thread_name[:100],
+                }
+    except Exception as e:
+        return _error(f"Discord create thread failed: {e}")
 
 
 async def _send_discord(token, chat_id, message, thread_id=None, media_files=None):
