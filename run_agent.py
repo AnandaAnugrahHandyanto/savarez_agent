@@ -128,6 +128,7 @@ from tools.browser_tool import cleanup_browser
 
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import StreamingContextScrubber, build_memory_context_block, sanitize_context
+from agent.deterministic_memory_context import build_deterministic_memory_context_block
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
@@ -1698,12 +1699,14 @@ class AIAgent:
         self._memory_store = None
         self._memory_enabled = False
         self._user_profile_enabled = False
+        self._deterministic_memory_config = {}
         self._memory_nudge_interval = 10
         self._turns_since_memory = 0
         self._iters_since_skill = 0
         if not skip_memory:
             try:
                 mem_config = _agent_cfg.get("memory", {})
+                self._deterministic_memory_config = mem_config.get("deterministic_mcp", {}) or {}
                 self._memory_enabled = mem_config.get("memory_enabled", False)
                 self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
                 self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
@@ -10723,6 +10726,16 @@ class AIAgent:
             except Exception:
                 pass
 
+        _deterministic_memory_context = ""
+        try:
+            _query = original_user_message if isinstance(original_user_message, str) else ""
+            _deterministic_memory_context = build_deterministic_memory_context_block(
+                _query,
+                getattr(self, "_deterministic_memory_config", {}) or {},
+            )
+        except Exception as exc:
+            logger.debug("deterministic-memory context build failed: %s", exc)
+
         while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) or self._budget_grace_call:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot
             self._checkpoint_mgr.new_turn()
@@ -10867,6 +10880,8 @@ class AIAgent:
                         _fenced = build_memory_context_block(_ext_prefetch_cache)
                         if _fenced:
                             _injections.append(_fenced)
+                    if _deterministic_memory_context:
+                        _injections.append(_deterministic_memory_context)
                     if _plugin_user_context:
                         _injections.append(_plugin_user_context)
                     if _injections:

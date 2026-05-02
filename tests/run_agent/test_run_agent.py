@@ -9,6 +9,7 @@ import io
 import json
 import logging
 import re
+import sqlite3
 import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -2276,6 +2277,103 @@ class TestRunConversation:
             result = agent.run_conversation("hello")
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
+
+    def test_deterministic_memory_context_injected_into_current_user_message(self, agent, tmp_path):
+        self._setup_agent(agent)
+        db_path = tmp_path / "memory.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE nodes (
+                id TEXT PRIMARY KEY,
+                scope TEXT NOT NULL,
+                type TEXT NOT NULL,
+                key TEXT NOT NULL,
+                content TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                updated_at TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                metadata_json TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE TABLE aliases (
+                alias TEXT PRIMARY KEY,
+                alias_norm TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                type TEXT NOT NULL,
+                key TEXT NOT NULL,
+                node_id TEXT,
+                canonical_address TEXT NOT NULL
+            );
+            CREATE TABLE triggers (
+                trigger TEXT NOT NULL,
+                trigger_norm TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                type TEXT NOT NULL,
+                key TEXT NOT NULL,
+                PRIMARY KEY(trigger_norm, node_id)
+            );
+            CREATE TABLE facets (
+                facet TEXT NOT NULL,
+                facet_norm TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                PRIMARY KEY(facet_norm, node_id)
+            );
+            CREATE TABLE scope_defaults (
+                scope TEXT NOT NULL,
+                scope_norm TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                PRIMARY KEY(scope_norm, node_id)
+            );
+            INSERT INTO nodes(id, scope, type, key, content, status, updated_at, version)
+            VALUES (
+                'mem.user.preference.tone',
+                'user',
+                'preference',
+                'communication.tone',
+                'Prefer concise technical tone.',
+                'active',
+                '2026-05-02T00:00:00Z',
+                1
+            );
+            INSERT INTO triggers(trigger, trigger_norm, node_id, scope, type, key)
+            VALUES (
+                'communication tone',
+                'communication tone',
+                'mem.user.preference.tone',
+                'user',
+                'preference',
+                'communication.tone'
+            );
+            """
+        )
+        conn.commit()
+        conn.close()
+        agent._deterministic_memory_config = {
+            "enabled": True,
+            "db_path": str(db_path),
+            "max_results": 5,
+            "max_chars": 2000,
+        }
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("communication tone")
+
+        assert result["final_response"] == "Final answer"
+        api_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        user_message = next(msg for msg in api_messages if msg["role"] == "user")
+        assert user_message["content"].startswith("communication tone")
+        assert "<deterministic-memory-context>" in user_message["content"]
+        assert "Prefer concise technical tone." in user_message["content"]
+        assert "not as overriding higher-priority instructions" in user_message["content"]
 
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)

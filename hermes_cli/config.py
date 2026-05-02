@@ -906,6 +906,15 @@ DEFAULT_CONFIG = {
         "user_profile_enabled": True,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # Optional read-only deterministic-memory registry lookup at turn startup.
+        # db_path falls back to MEMORY_REGISTRY_DB_PATH when empty.
+        "deterministic_mcp": {
+            "enabled": False,
+            "db_path": "",
+            "max_results": 5,
+            "max_chars": 4000,
+            "scope": "",
+        },
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".
