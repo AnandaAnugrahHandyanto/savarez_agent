@@ -30,6 +30,34 @@ Key capabilities:
 - **Session isolation** — each task gets its own browser session
 - **Automatic cleanup** — inactive sessions are closed after a timeout
 - **Vision analysis** — screenshot + AI analysis for visual understanding
+- **Web QA diagnostics** — console errors, JavaScript exceptions, failed network requests, screenshots, and repeatable QA reports
+
+## Web QA quick start
+
+For exploratory testing of a web app, use the first-class browser QA command:
+
+```bash
+hermes browser-qa http://localhost:3000 \
+  --scope "smoke-test login, navigation, forms, and error states" \
+  --output ./dogfood-output/my-app
+
+# Alias:
+hermes web-qa https://example.com --max-pages 8
+```
+
+`browser-qa` is a thin wrapper around the normal Hermes agent. It preloads the bundled `dogfood` QA skill and narrows the run to browser/vision/file tools so the agent follows a repeatable testing checklist instead of a hand-written one-off prompt.
+
+A browser QA run should:
+
+1. Navigate to the target URL and capture the initial page state.
+2. Exercise the most important visible journeys within scope.
+3. Check `browser_console` after each navigation and significant interaction.
+4. Include console messages, JavaScript exceptions, failed requests, screenshots, and any diagnostic backend failures in the report.
+5. Save a Markdown report and give you the absolute report path.
+
+:::tip Truthful diagnostics
+Browser QA reports should not claim a clean pass if diagnostic capture failed. `browser_console` includes backend diagnostic information so the agent can distinguish "no errors observed" from "the diagnostic backend was unavailable or failed."
+:::
 
 ## Setup
 
@@ -353,13 +381,13 @@ Screenshots are stored in `~/.hermes/cache/screenshots/` and automatically clean
 
 ### `browser_console`
 
-Get browser console output (log/warn/error messages) and uncaught JavaScript exceptions from the current page. Essential for detecting silent JS errors that don't appear in the accessibility tree.
+Get browser console output (log/warn/error messages), uncaught JavaScript exceptions, failed network requests, and diagnostic backend status from the current page. Essential for detecting silent JS errors and broken API/asset requests that do not appear in the accessibility tree.
 
 ```
 Check the browser console for any JavaScript errors
 ```
 
-Use `clear=True` to clear the console after reading, so subsequent calls only show new messages.
+Use `clear=True` to clear the console after reading, so subsequent calls only show new messages and newly observed failed requests.
 
 ### `browser_cdp`
 
