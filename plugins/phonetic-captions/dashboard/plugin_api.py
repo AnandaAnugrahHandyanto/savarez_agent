@@ -524,6 +524,9 @@ Rules:
 - For "split", at_word_index is 0-based and must be within the words array of that segment.
 - "lang" must be "en" or "vi".
 - When changing lang to "en", also emit an edit patch clearing "phonetic" to "".
+- "phonetic" values MUST use only regular English letters, hyphens, spaces, and square brackets.
+  NEVER use IPA symbols (no ɓ ɔ ŋ ʔ ː ˨ ˩ ˧ ˥ or any Unicode phonetic/tone characters).
+  Write how the Vietnamese sounds to an English speaker, e.g. "[hong biet]", "[zuh yee]", "[toh ee ten lah]".
 - If the instruction cannot produce any meaningful patches (e.g. no relevant segments), return [].
 - Return ONLY the JSON array.
 """
@@ -582,7 +585,8 @@ Each flag must have a "type" field — either "issue" or "praise":
 Check for issues:
 1. Wrong language classification (e.g. Vietnamese text labelled "en" or vice versa)
 2. Mangled Vietnamese diacritics (Whisper artifacts: missing tones, malformed characters)
-3. Phonetic guide that does not phonetically match the Vietnamese text
+3. Phonetic guide that does not phonetically match the Vietnamese text, or that uses IPA symbols
+   (ɓ ɔ ŋ ʔ ː ˨ ˩ ˧ ˥ etc.) — guides must use only plain English letters/hyphens/brackets
 4. Very short duration (<0.3 s) — likely a stray word that should be merged
 5. Very long duration (>8 s) — likely should be split
 6. Empty text field

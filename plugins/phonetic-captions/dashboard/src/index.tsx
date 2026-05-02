@@ -1254,7 +1254,7 @@ function HermesPanel({
                       {praises.length} good
                     </span>
                   )}
-                  {issues.length > 0 && <span className="text-muted-foreground text-xs ml-1">— amber in list</span>}
+                  {issues.length > 0 && <span className="text-muted-foreground text-xs ml-1">— amber · green in list</span>}
                   <button onClick={onClearQA} className="ml-auto text-muted-foreground hover:text-foreground">
                     <X className="w-3.5 h-3.5" />
                   </button>
@@ -1624,19 +1624,21 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                 {segments.map((seg, idx) => {
                   const lang = (seg.lang === "vi" ? "vi" : "en") as "en" | "vi";
                   const flag = qaFlags.find((f) => f.segment_id === seg.id);
+                  const flagType = flag ? (flag.type ?? "issue") : null;
                   return (
                     <div
                       key={`${seg.id}-${idx}`}
                       ref={(el) => { if (el) segmentRefs.current.set(seg.id, el); }}
                       className={`rounded-lg border bg-card p-3 space-y-2 text-sm transition-colors ${
-                        flag ? "border-amber-400/60 dark:border-amber-500/50" : "border-border"
+                        flagType === "issue"
+                          ? "border-amber-400/60 dark:border-amber-500/50"
+                          : flagType === "praise"
+                          ? "border-emerald-400/60 dark:border-emerald-500/50"
+                          : "border-border"
                       }`}
                     >
                       <div className="flex items-center gap-2">
                         <span className="text-xs font-mono text-muted-foreground w-7 shrink-0 text-right">#{idx + 1}</span>
-                        <span className="text-xs tabular-nums text-muted-foreground shrink-0 w-[5.5rem]">
-                          {formatTime(seg.start)}–{formatTime(seg.end)}
-                        </span>
                         <button
                           onClick={() => toggleLang(idx)}
                           title="Toggle EN / VI"
@@ -1671,9 +1673,12 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                             <Scissors className="w-3.5 h-3.5" />
                           </button>
                         )}
+                        <span className="text-xs tabular-nums text-muted-foreground shrink-0">
+                          {formatTime(seg.start)}–{formatTime(seg.end)}
+                        </span>
                       </div>
                       {lang === "vi" && (
-                        <div className="flex items-center gap-2 pl-[calc(1.75rem+5.5rem+3rem+0.75rem)]">
+                        <div className="flex items-center gap-2 pl-9">
                           <span className="text-xs text-muted-foreground shrink-0">phonetic</span>
                           <input
                             className="flex-1 min-w-0 bg-transparent border-b border-transparent hover:border-border focus:border-ring outline-none px-1 py-0.5 italic text-muted-foreground transition-colors"
