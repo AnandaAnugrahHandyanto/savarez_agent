@@ -193,15 +193,13 @@ class TestSessionOps:
         update = call.kwargs["update"]
         assert isinstance(update, AvailableCommandsUpdate)
         assert update.session_update == "available_commands_update"
-        assert [cmd.name for cmd in update.available_commands] == [
-            "help",
-            "model",
-            "tools",
-            "context",
-            "reset",
-            "compact",
-            "version",
-        ]
+        # Source of truth: ``HermesACPAgent._ADVERTISED_COMMANDS``. Pull the
+        # list from there rather than hardcoding so this assertion stays
+        # green when commands are added/removed/reordered upstream (most
+        # recently #16... added ``steer`` and ``queue``).
+        from acp_adapter.server import HermesACPAgent
+        expected_names = [spec["name"] for spec in HermesACPAgent._ADVERTISED_COMMANDS]
+        assert [cmd.name for cmd in update.available_commands] == expected_names
         model_cmd = next(
             cmd for cmd in update.available_commands if cmd.name == "model"
         )
