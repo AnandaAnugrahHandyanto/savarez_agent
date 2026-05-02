@@ -48,7 +48,13 @@ def _connect_handle(job: dict) -> Optional[str]:
 
 
 def _github_task_web_url(job: dict) -> Optional[str]:
-    """Build a GitHub task web URL if owner and connect handle are available."""
+    """Build a GitHub task web URL when the stored job metadata is sufficient.
+
+    Returns ``None`` unless the job has a connect handle, a repo slug, and a
+    repo path that resolves to an existing directory whose basename matches the
+    stored slug. The shared helper also requires a GitHub ``remote.origin.url``
+    whose repo segment matches that slug.
+    """
     handle = _connect_handle(job)
     if not handle:
         return None

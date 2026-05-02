@@ -107,7 +107,7 @@ def build_github_task_web_url(
         return None
 
     owner, remote_repo_slug = remote_parts
-    if remote_repo_slug != repo_slug:
+    if remote_repo_slug.lower() != repo_slug.lower():
         return None
 
     return (
