@@ -7882,7 +7882,26 @@ class AIAgent:
         Used to decide whether to strip image content parts from API-bound
         messages (for non-vision models) or let the provider adapter handle
         them natively (for vision-capable models).
+
+        User explicit override wins: when ``agent.image_input_mode == "native"``
+        in config.yaml, this returns True regardless of the capability cache
+        lookup. This mirrors how ``agent.image_routing.decide_image_input_mode``
+        already honors the same setting at attachment time in ``cli.py``;
+        without this consistency, the two boundaries disagree for custom
+        providers (which aren't in the models.dev catalog), and image parts
+        get silently stripped on the way out even though the user explicitly
+        opted in to native attachment.
         """
+        # Explicit user override (mirrors the gating done by
+        # agent.image_routing.decide_image_input_mode at attachment time).
+        try:
+            from hermes_cli.config import load_config as _load_vision_cfg
+            _cfg = _load_vision_cfg() or {}
+            if (_cfg.get("agent") or {}).get("image_input_mode") == "native":
+                return True
+        except Exception:
+            pass
+
         try:
             from agent.models_dev import get_model_capabilities
             provider = (getattr(self, "provider", "") or "").strip()
