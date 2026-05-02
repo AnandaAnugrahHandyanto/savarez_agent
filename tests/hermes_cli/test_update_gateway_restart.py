@@ -156,22 +156,6 @@ class TestLaunchdPlistPath:
         assert "<key>VIRTUAL_ENV</key>" in plist
         assert "<key>HERMES_HOME</key>" in plist
 
-    def test_plist_prefers_bws_wrapper_when_marker_files_exist(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / ".hermes"
-        (hermes_home / "bin").mkdir(parents=True)
-        (hermes_home / "bin" / "hermes-bws-gateway.sh").write_text("#!/bin/bash\n", encoding="utf-8")
-        (hermes_home / "bws-secrets-map.env").write_text("FOO=bar\n", encoding="utf-8")
-        (hermes_home / "bws-project-id").write_text("project-id\n", encoding="utf-8")
-        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
-
-        plist = gateway_cli.generate_launchd_plist()
-
-        assert "<string>/bin/bash</string>" in plist
-        assert f"<string>{hermes_home / 'bin' / 'hermes-bws-gateway.sh'}</string>" in plist
-        assert "<string>run</string>" in plist
-        assert "<string>--replace</string>" in plist
-        assert "<string>hermes_cli.main</string>" not in plist
-
     def test_plist_path_includes_venv_bin(self):
         plist = gateway_cli.generate_launchd_plist()
         detected = gateway_cli._detect_venv_dir()
@@ -249,16 +233,6 @@ class TestLaunchdPlistRefresh:
     """refresh_launchd_plist_if_needed rewrites stale plists (like systemd's
     refresh_systemd_unit_if_needed)."""
 
-    @staticmethod
-    def _make_bws_home(base_path):
-        hermes_home = base_path / ".hermes"
-        (hermes_home / "bin").mkdir(parents=True)
-        wrapper = hermes_home / "bin" / "hermes-bws-gateway.sh"
-        wrapper.write_text("#!/bin/bash\n", encoding="utf-8")
-        (hermes_home / "bws-secrets-map.env").write_text("FOO=bar\n", encoding="utf-8")
-        (hermes_home / "bws-project-id").write_text("project-id\n", encoding="utf-8")
-        return hermes_home, wrapper
-
     def test_refresh_rewrites_stale_plist(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text("<plist>old content</plist>")
@@ -278,30 +252,6 @@ class TestLaunchdPlistRefresh:
         # Plist should now contain the generated content (which includes --replace)
         assert "--replace" in plist_path.read_text()
         # Should have booted out then bootstrapped
-        assert any("bootout" in str(c) for c in calls)
-        assert any("bootstrap" in str(c) for c in calls)
-
-    def test_refresh_rewrites_stale_plist_to_bws_wrapper(self, tmp_path, monkeypatch):
-        plist_path = tmp_path / "ai.hermes.gateway.plist"
-        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
-        hermes_home, wrapper = self._make_bws_home(tmp_path)
-
-        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
-        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
-
-        calls = []
-        monkeypatch.setattr(
-            gateway_cli.subprocess,
-            "run",
-            lambda cmd, check=False, **kwargs: calls.append(cmd) or SimpleNamespace(returncode=0, stdout="", stderr=""),
-        )
-
-        result = gateway_cli.refresh_launchd_plist_if_needed()
-
-        assert result is True
-        refreshed = plist_path.read_text(encoding="utf-8")
-        assert f"<string>{wrapper}</string>" in refreshed
-        assert "<string>hermes_cli.main</string>" not in refreshed
         assert any("bootout" in str(c) for c in calls)
         assert any("bootstrap" in str(c) for c in calls)
 
@@ -376,80 +326,6 @@ class TestLaunchdPlistRefresh:
         assert any("kickstart" in s for s in cmd_strs)
         # Should NOT call bootout (nothing to bootout)
         assert not any("bootout" in s for s in cmd_strs)
-
-    def test_launchd_start_regenerates_missing_plist_with_bws_wrapper(self, tmp_path, monkeypatch):
-        plist_path = tmp_path / "ai.hermes.gateway.plist"
-        hermes_home, wrapper = self._make_bws_home(tmp_path)
-
-        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
-        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
-
-        calls = []
-        monkeypatch.setattr(
-            gateway_cli.subprocess,
-            "run",
-            lambda cmd, check=False, **kwargs: calls.append(cmd) or SimpleNamespace(returncode=0, stdout="", stderr=""),
-        )
-
-        gateway_cli.launchd_start()
-
-        created = plist_path.read_text(encoding="utf-8")
-        assert f"<string>{wrapper}</string>" in created
-        assert "<string>hermes_cli.main</string>" not in created
-        assert any("bootstrap" in " ".join(c) for c in calls)
-        assert any("kickstart" in " ".join(c) for c in calls)
-
-    def test_launchd_restart_refreshes_stale_bws_wrapper_plist_before_restart(self, tmp_path, monkeypatch):
-        plist_path = tmp_path / "ai.hermes.gateway.plist"
-        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
-        hermes_home, wrapper = self._make_bws_home(tmp_path)
-
-        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
-        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
-        label = gateway_cli.get_launchd_label()
-        target = f"{gateway_cli._launchd_domain()}/{label}"
-
-        calls = []
-        monkeypatch.setattr(
-            gateway_cli.subprocess,
-            "run",
-            lambda cmd, check=False, **kwargs: calls.append(cmd) or SimpleNamespace(returncode=0, stdout="", stderr=""),
-        )
-
-        gateway_cli.launchd_restart()
-
-        refreshed = plist_path.read_text(encoding="utf-8")
-        assert f"<string>{wrapper}</string>" in refreshed
-        assert "<string>hermes_cli.main</string>" not in refreshed
-        assert any(cmd[:2] == ["launchctl", "bootout"] for cmd in calls)
-        assert ["launchctl", "kickstart", target] in calls
-
-    def test_launchd_restart_regenerates_missing_plist_with_bws_wrapper(self, tmp_path, monkeypatch):
-        plist_path = tmp_path / "ai.hermes.gateway.plist"
-        hermes_home, wrapper = self._make_bws_home(tmp_path)
-
-        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
-        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
-        label = gateway_cli.get_launchd_label()
-        domain = gateway_cli._launchd_domain()
-        target = f"{domain}/{label}"
-
-        calls = []
-        monkeypatch.setattr(
-            gateway_cli.subprocess,
-            "run",
-            lambda cmd, check=False, **kwargs: calls.append(cmd) or SimpleNamespace(returncode=0, stdout="", stderr=""),
-        )
-
-        gateway_cli.launchd_restart()
-
-        created = plist_path.read_text(encoding="utf-8")
-        assert f"<string>{wrapper}</string>" in created
-        assert "<string>hermes_cli.main</string>" not in created
-        assert calls == [
-            ["launchctl", "bootstrap", domain, str(plist_path)],
-            ["launchctl", "kickstart", target],
-        ]
 
 
 class TestCmdUpdateLaunchdRestart:
@@ -602,7 +478,6 @@ class TestCmdUpdateLaunchdRestart:
         )
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
-        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
 
         mock_run.side_effect = _make_run_side_effect(
             commit_count="3",

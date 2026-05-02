@@ -2188,7 +2188,7 @@ def generate_launchd_plist() -> str:
 
     <key>WorkingDirectory</key>
     <string>{working_dir}</string>
-
+    
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
@@ -2286,28 +2286,21 @@ def launchd_uninstall():
     
     print("✓ Service uninstalled")
 
-def _ensure_launchd_plist() -> tuple[Path, bool, bool]:
-    """Ensure the launchd plist exists and matches the current generated config."""
+def launchd_start():
     plist_path = get_launchd_plist_path()
+    label = get_launchd_label()
+
+    # Self-heal if the plist is missing entirely (e.g., manual cleanup, failed upgrade)
     if not plist_path.exists():
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
-        return plist_path, True, False
-    refreshed = refresh_launchd_plist_if_needed()
-    return plist_path, False, refreshed
-
-
-def launchd_start():
-    plist_path, created, _refreshed = _ensure_launchd_plist()
-    label = get_launchd_label()
-
-    if created:
         subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
         subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
         print("✓ Service started")
         return
 
+    refresh_launchd_plist_if_needed()
     try:
         subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
     except subprocess.CalledProcessError as e:
@@ -2378,26 +2371,11 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
 
 
 def launchd_restart():
-    plist_path, created, refreshed = _ensure_launchd_plist()
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
     drain_timeout = _get_restart_drain_timeout()
     from gateway.status import get_running_pid
 
-    if created:
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
-        print("✓ Service restarted")
-        return
-
-    if refreshed:
-        subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
-        print("✓ Service restarted")
-        return
-
-    # Use kickstart -k so launchd performs an atomic kill+restart.
-    # A two-step stop/start from inside the gateway's own process tree
-    # would kill the shell before the start command is reached.
     try:
         pid = get_running_pid()
         if pid is not None and _request_gateway_self_restart(pid):
@@ -2419,6 +2397,7 @@ def launchd_restart():
             raise
         # Job not loaded — bootstrap and start fresh
         print("↻ launchd job was unloaded; reloading")
+        plist_path = get_launchd_plist_path()
         subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
         subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
         print("✓ Service restarted")
