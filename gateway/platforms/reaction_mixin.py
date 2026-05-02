@@ -24,6 +24,7 @@ The mixin resolves ``dynamic_reactions``, ``persona_emoji``, and
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any, Dict, Hashable, Optional
@@ -103,6 +104,8 @@ class DynamicReactionMixin:
         self._rxn_msg_refs: Dict[Hashable, Any] = {}
         # Cooldown: msg_key → monotonic timestamp of last swap
         self._rxn_last_swap: Dict[Hashable, float] = {}
+        # Per-message lock to serialize reaction swaps (prevents stacking)
+        self._rxn_locks: Dict[Hashable, asyncio.Lock] = {}
 
         # Resolve config once
         self._rxn_persona_emoji: str = self._rxn_resolve_persona_emoji()
@@ -156,6 +159,12 @@ class DynamicReactionMixin:
 
     # ── Lifecycle hooks ──────────────────────────────────────────────────
 
+    def _rxn_lock(self, key: Hashable) -> asyncio.Lock:
+        """Get or create a per-message lock to serialize reaction swaps."""
+        if key not in self._rxn_locks:
+            self._rxn_locks[key] = asyncio.Lock()
+        return self._rxn_locks[key]
+
     async def _rxn_on_processing_start(self, event: Any) -> None:
         """Add persona emoji when processing begins."""
         if not getattr(self, "_rxn_initialized", False):
@@ -193,39 +202,43 @@ class DynamicReactionMixin:
         key = self._reaction_msg_key(event)
         if key is None:
             return
-        msg_ref = self._rxn_msg_refs.get(key)
-        if msg_ref is None:
-            # Try resolving from event directly (fallback)
-            msg_ref = self._reaction_resolve_message(event)
+
+        async with self._rxn_lock(key):
+            msg_ref = self._rxn_msg_refs.get(key)
             if msg_ref is None:
+                # Try resolving from event directly (fallback)
+                msg_ref = self._reaction_resolve_message(event)
+                if msg_ref is None:
+                    return
+                self._rxn_msg_refs[key] = msg_ref
+
+            # Cooldown check
+            now = time.monotonic()
+            last = self._rxn_last_swap.get(key, 0.0)
+            if now - last < self._rxn_cooldown:
                 return
-            self._rxn_msg_refs[key] = msg_ref
 
-        # Cooldown check
-        now = time.monotonic()
-        last = self._rxn_last_swap.get(key, 0.0)
-        if now - last < self._rxn_cooldown:
-            return
+            from agent.display import get_tool_emoji
+            raw_emoji = get_tool_emoji(tool_name, default="⚙️")
+            tool_emoji = self._reaction_translate_emoji(raw_emoji)
+            if tool_emoji is None:
+                tool_emoji = self._reaction_translate_emoji("⚙️") or "⚙️"
 
-        from agent.display import get_tool_emoji
-        raw_emoji = get_tool_emoji(tool_name, default="⚙️")
-        tool_emoji = self._reaction_translate_emoji(raw_emoji)
-        if tool_emoji is None:
-            tool_emoji = self._reaction_translate_emoji("⚙️") or "⚙️"
+            current = self._rxn_active.get(key)
+            if current == tool_emoji:
+                return  # Already showing this emoji
 
-        current = self._rxn_active.get(key)
-        if current == tool_emoji:
-            return  # Already showing this emoji
+            if self._reaction_replace_mode:
+                await self._reaction_set(msg_ref, tool_emoji)
+            else:
+                # Add new FIRST, then remove old — prevents zero-reaction
+                # reflow jitter on Discord (message shifts when reactions disappear)
+                await self._reaction_add(msg_ref, tool_emoji)
+                if current and current != tool_emoji:
+                    await self._reaction_remove(msg_ref, current)
 
-        if self._reaction_replace_mode:
-            await self._reaction_set(msg_ref, tool_emoji)
-        else:
-            await self._reaction_add(msg_ref, tool_emoji)
-            if current and current != tool_emoji:
-                await self._reaction_remove(msg_ref, current)
-
-        self._rxn_active[key] = tool_emoji
-        self._rxn_last_swap[key] = now
+            self._rxn_active[key] = tool_emoji
+            self._rxn_last_swap[key] = now
 
     async def _rxn_on_processing_complete(self, event: Any, outcome: Any) -> None:
         """Replace active reaction with final emoji."""
@@ -237,38 +250,45 @@ class DynamicReactionMixin:
         key = self._reaction_msg_key(event)
         if key is None:
             return
-        msg_ref = self._rxn_msg_refs.pop(key, None)
-        if msg_ref is None:
-            msg_ref = self._reaction_resolve_message(event)
-        current = self._rxn_active.pop(key, None)
-        self._rxn_last_swap.pop(key, None)
 
-        if msg_ref is None:
-            return
+        async with self._rxn_lock(key):
+            msg_ref = self._rxn_msg_refs.pop(key, None)
+            if msg_ref is None:
+                msg_ref = self._reaction_resolve_message(event)
+            current = self._rxn_active.pop(key, None)
+            self._rxn_last_swap.pop(key, None)
 
-        # Import here to avoid circular imports at module level
-        from gateway.platforms.base import ProcessingOutcome
+            if msg_ref is None:
+                self._rxn_locks.pop(key, None)
+                return
 
-        if outcome == ProcessingOutcome.CANCELLED:
-            # Just clean up, don't change the reaction
-            if current:
-                if not self._reaction_replace_mode:
+            # Import here to avoid circular imports at module level
+            from gateway.platforms.base import ProcessingOutcome
+
+            if outcome == ProcessingOutcome.CANCELLED:
+                # Just clean up, don't change the reaction
+                if current:
+                    if not self._reaction_replace_mode:
+                        await self._reaction_remove(msg_ref, current)
+                self._rxn_locks.pop(key, None)
+                return
+
+            if outcome == ProcessingOutcome.SUCCESS:
+                final = self._rxn_persona_emoji
+            else:
+                final = "❌"
+
+            translated = self._reaction_translate_emoji(final)
+            if translated is None:
+                translated = self._reaction_translate_emoji("❌") or "❌"
+
+            if self._reaction_replace_mode:
+                await self._reaction_set(msg_ref, translated)
+            else:
+                if translated != current:
+                    await self._reaction_add(msg_ref, translated)
+                if current and current != translated:
                     await self._reaction_remove(msg_ref, current)
-            return
 
-        if outcome == ProcessingOutcome.SUCCESS:
-            final = self._rxn_persona_emoji
-        else:
-            final = "❌"
-
-        translated = self._reaction_translate_emoji(final)
-        if translated is None:
-            translated = self._reaction_translate_emoji("❌") or "❌"
-
-        if self._reaction_replace_mode:
-            await self._reaction_set(msg_ref, translated)
-        else:
-            if translated != current:
-                await self._reaction_add(msg_ref, translated)
-            if current and current != translated:
-                await self._reaction_remove(msg_ref, current)
+        # Clean up lock outside the lock itself
+        self._rxn_locks.pop(key, None)
