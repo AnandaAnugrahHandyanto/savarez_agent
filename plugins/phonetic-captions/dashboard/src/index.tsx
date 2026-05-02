@@ -69,7 +69,7 @@ interface CaptionSegment {
   start: number;
   end: number;
   text: string;
-  lang: "en" | "vi" | "";  // may be "" on pre-phonetics jobs
+  lang: string;  // "en" | <target_lang> | "" (may be empty on pre-phonetics jobs)
   phonetic: string;
   words?: Word[];
 }
@@ -92,6 +92,7 @@ interface CaptionJob {
   output_path: string;
   style: CaptionStyle;
   segments: CaptionSegment[];
+  target_lang?: string;  // BCP-47 code, e.g. "vi", "ko", "ja"
 }
 
 interface JobSummary {
@@ -101,6 +102,7 @@ interface JobSummary {
   segment_count: number;
   status?: string;
   status_message?: string;
+  target_lang?: string;
 }
 
 // Patch operations returned by the NL-edit endpoint
@@ -126,6 +128,27 @@ interface CaptionPreset {
   name: string;
   style: CaptionStyle;
 }
+
+// Supported target languages for the upload modal
+const SUPPORTED_LANGS = [
+  { code: "auto", label: "Auto-detect" },
+  { code: "vi",   label: "Vietnamese" },
+  { code: "ko",   label: "Korean" },
+  { code: "ja",   label: "Japanese" },
+  { code: "zh",   label: "Chinese (Mandarin)" },
+  { code: "ar",   label: "Arabic" },
+  { code: "fr",   label: "French" },
+  { code: "es",   label: "Spanish" },
+  { code: "de",   label: "German" },
+  { code: "it",   label: "Italian" },
+  { code: "pt",   label: "Portuguese" },
+  { code: "hi",   label: "Hindi" },
+  { code: "th",   label: "Thai" },
+  { code: "id",   label: "Indonesian" },
+  { code: "tr",   label: "Turkish" },
+  { code: "nl",   label: "Dutch" },
+  { code: "ru",   label: "Russian" },
+];
 
 // ---------------------------------------------------------------------------
 // API base
@@ -453,6 +476,7 @@ function UploadModal({
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [segmentsFile, setSegmentsFile] = useState<File | null>(null);
   const [runPipeline, setRunPipeline] = useState(true);
+  const [targetLang, setTargetLang] = useState("auto");
   const [uploading, setUploading] = useState(false);
   const [statusMsg, setStatusMsg] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -479,6 +503,7 @@ function UploadModal({
       fd.append("video", videoFile);
       if (segmentsFile) fd.append("segments", segmentsFile);
       fd.append("run_pipeline", String(runPipeline && !segmentsFile));
+      fd.append("target_lang", targetLang);
 
       const res = await fetch(`${API}/upload`, { method: "POST", body: fd });
       if (!res.ok) {
@@ -558,6 +583,22 @@ function UploadModal({
             />
             <span className="text-sm text-foreground">Auto-transcribe &amp; generate phonetics</span>
           </label>
+
+          {/* Target language selector */}
+          {runPipeline && (
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1.5">Target language</label>
+              <select
+                value={targetLang}
+                onChange={(e) => setTargetLang(e.target.value)}
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              >
+                {SUPPORTED_LANGS.map((l) => (
+                  <option key={l.code} value={l.code}>{l.label}</option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* Manual segments upload (when pipeline is off) */}
           {!runPipeline && (
@@ -1312,6 +1353,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
   const [job, setJob] = useState<CaptionJob | null>(null);
   const [segments, setSegments] = useState<CaptionSegment[]>([]);
   const [style, setStyle] = useState<CaptionStyle | null>(null);
+  const [targetLang, setTargetLang] = useState<string>("vi");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [burning, setBurning] = useState(false);
@@ -1340,6 +1382,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
         setJob(data);
         setSegments(data.segments);
         setStyle(mergeStyle(data.style));
+        setTargetLang(data.target_lang || "vi");
       })
       .catch((e: any) => setError(String(e)))
       .finally(() => setLoading(false));
@@ -1355,11 +1398,11 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
     setSegments((prev) =>
       prev.map((s, i) => {
         if (i !== idx) return s;
-        const wasVi = (s.lang || "en") === "vi";
-        return { ...s, lang: (wasVi ? "en" : "vi") as "en" | "vi", phonetic: wasVi ? "" : s.phonetic };
+        const wasTarget = (s.lang || "en") === targetLang;
+        return { ...s, lang: wasTarget ? "en" : targetLang, phonetic: wasTarget ? "" : s.phonetic };
       })
     );
-  }, []);
+  }, [targetLang]);
 
   const openSplit = useCallback((idx: number) => {
     setSplitState({ segIdx: idx, splitBefore: new Set() });
@@ -1612,7 +1655,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
             ) : (
               <div className="space-y-2 pb-2">
                 {segments.map((seg, idx) => {
-                  const lang = (seg.lang === "vi" ? "vi" : "en") as "en" | "vi";
+                  const isTarget = seg.lang === targetLang;
                   const flag = qaFlags.find((f) => f.segment_id === seg.id);
                   return (
                     <div
@@ -1626,14 +1669,14 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                         <span className="text-xs font-mono text-muted-foreground w-7 shrink-0 text-right">#{idx + 1}</span>
                         <button
                           onClick={() => toggleLang(idx)}
-                          title="Toggle EN / VI"
+                          title={`Toggle EN / ${targetLang.toUpperCase()}`}
                           className={`px-2 py-0.5 rounded text-xs font-semibold shrink-0 transition-colors ${
-                            lang === "vi"
+                            isTarget
                               ? "bg-blue-500/20 text-blue-300 hover:bg-blue-500/30"
                               : "bg-secondary text-secondary-foreground hover:bg-accent"
                           }`}
                         >
-                          {lang.toUpperCase()}
+                          {(seg.lang || "en").toUpperCase()}
                         </button>
                         <input
                           className="flex-1 min-w-0 bg-transparent border-b border-transparent hover:border-border focus:border-ring outline-none px-1 py-0.5 transition-colors text-foreground"
@@ -1662,7 +1705,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                           {formatTime(seg.start)}–{formatTime(seg.end)}
                         </span>
                       </div>
-                      {lang === "vi" && (
+                      {isTarget && (
                         <div className="flex items-center gap-2 pl-9">
                           <span className="text-xs text-muted-foreground shrink-0">phonetic</span>
                           <input

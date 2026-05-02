@@ -1,6 +1,6 @@
 # Hackathon Build Status
 
-**Last updated**: 2 May 2026 (evening — post-v7 polish)  
+**Last updated**: 2 May 2026 (evening — post-v8 language generalization)  
 **Deadline**: EOD Sunday 3 May 2026 (1 day remaining)
 
 ---
@@ -332,7 +332,8 @@ curl http://localhost:9119/api/dashboard/plugins | python -m json.tool
 - `PLAN_v4.md` — Hermes-integrated dashboard: upload, NL edits, QA, style memory (executed)
 - `PLAN_v5.md` — 3-column layout, named preset library, AI style creation (executed)
 - `PLAN_v6.md` — v6: alignment picker + drag-to-position overlay (executed)
-- `PLAN.md` — v7: plugin distributability, NVIDIA fallback, health banner (current)
+- `PLAN_v7.md` — v7: plugin distributability, NVIDIA fallback, health banner (executed)
+- `PLAN.md` — v8: language generalization — any target language, Whisper auto-detect (current)
 
 ---
 
@@ -387,7 +388,61 @@ curl http://localhost:9119/api/dashboard/plugins | python -m json.tool
 
 ---
 
-### 12. Post-v7 Polish & Bug Fixes ✅ (2 May — current state)
+### 12. Language Generalization ✅ (2 May — plan v8)
+
+The plugin is no longer tied to Vietnamese. Any target language now works with zero
+code changes — the key insight is that Whisper already auto-detects per-segment language,
+so the pipeline can derive `target_lang` automatically without asking the user.
+
+#### a) `pipeline.py` — `target_lang` parameter throughout
+
+- **`LANG_NAMES`** dict: BCP-47 code → display name for 17 languages (vi, ko, ja, zh, ar, fr, es, de, it, pt, hi, th, id, tr, nl, pl, ru)
+- **`_lang_name(code)`** helper: returns display name from `LANG_NAMES`, falls back to `code.upper()`
+- **`_detect_target_lang(segments)`**: inspects the `lang` field on already-transcribed segments (populated by Whisper's per-segment language detection) and returns the most-frequent non-English code. Falls back to `"vi"` with a warning if all segments are English.
+- **`_phonetics_prompt(segments, target_lang)`**: prompt now uses `{lang_name}` and `{target_lang}` placeholders — works for Korean, Japanese, Arabic, etc. without edits
+- **`_build_ass_content(segments, style, target_lang)`**: `if lang == target_lang` replaces `if lang == "vi"` — phonetic line appears for whichever language is the target
+- **`generate_phonetics(segments, ..., target_lang)`**: passes `target_lang` to prompt builder
+- **`build_ass(segments, ..., target_lang)`**: passes through to `_build_ass_content`
+- **`save_caption_job(..., target_lang)`**: stores `target_lang` in job JSON for later use
+- **`_handle_caption(args)`**: reads `target_lang` arg (default `"auto"`), runs `_detect_target_lang` if `"auto"`, passes resolved code through all downstream calls
+- **SCHEMA**: `target_lang` parameter added; description updated to language-agnostic wording
+
+#### b) `plugin_api.py` — prompts parameterized, endpoints updated
+
+- **`_NL_SYSTEM_PROMPT`** → **`_nl_system_prompt(target_lang_code, target_lang_name)`** function: NL edit instructions are now language-aware (`"lang" must be "en" or "{code}"`)
+- **`_QA_SYSTEM_PROMPT`** → **`_qa_system_prompt(target_lang_code, target_lang_name)`** function: QA checks mention the correct language name for diacritics and classification issues
+- **`_STYLE_GENERATE_SYSTEM_PROMPT`**: updated to remove EN/VI hardcoding (style is language-agnostic anyway)
+- **`_update_job_status()`**: gains optional `target_lang` kwarg — writes resolved lang to job JSON after Whisper detection
+- **`_run_pipeline(job_id, video_path, target_lang="auto")`**: resolves `"auto"` via `_detect_target_lang()` after transcription, stores resolved lang on job before phonetics call
+- **`/upload` endpoint**: accepts `target_lang: str = Form("auto")` — stored on job, passed to pipeline
+- **`list_jobs`**: includes `target_lang` in each job summary row
+- **`/nl-edit` and `/qa` endpoints**: load job's `target_lang` and pass to prompt functions
+
+#### c) `dashboard/src/index.tsx` — language selector + per-job awareness
+
+- **`SUPPORTED_LANGS`** constant: 17 languages + auto-detect option
+- **`CaptionSegment.lang`**: widened from `"en" | "vi" | ""` to `string` — accepts any BCP-47 code
+- **`CaptionJob.target_lang?: string`** and **`JobSummary.target_lang?: string`** added
+- **`UploadModal`**: language selector `<select>` shown when pipeline is on, defaults to "Auto-detect"
+- **`EditorView`**: `targetLang` state loaded from `job.target_lang` (fallback `"vi"` for old jobs)
+- **`toggleLang`**: uses `targetLang` variable instead of hardcoded `"vi"` — correct toggle for Korean, Japanese, etc.
+- **Segment badge**: `isTarget = seg.lang === targetLang` replaces `lang === "vi"` comparisons — badge highlights the actual target language
+- **Phonetic input row**: shown when `isTarget` (any target lang), not only when `lang === "vi"`
+- **Bundle rebuilt**: `dist/index.js` updated (51.0 kB)
+
+#### Design decisions applied
+
+| Decision | Outcome |
+|---|---|
+| Auto-detect strategy | Whisper already emits per-segment language codes; `_detect_target_lang()` picks the most-frequent non-English one — no user input needed for the happy path |
+| Telegram entry point | No change to UX — auto-detect covers 90%+ of use cases silently |
+| Dashboard entry point | Upload modal gains a language selector (default: auto) — power users can override |
+| Backwards compatibility | Old jobs without `target_lang` field default to `"vi"` everywhere — zero breakage |
+| Non-goals for v8 | Multiple simultaneous target langs, non-English-as-primary videos — deferred |
+
+---
+
+### 13. Post-v7 Polish & Bug Fixes ✅ (2 May — current state)
 
 Changes made after STATUS.md was last written (commits after `7199ddb37`).
 

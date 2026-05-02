@@ -139,6 +139,7 @@ def _update_job_status(
     status: str,
     status_message: str = "",
     segments: Optional[list] = None,
+    target_lang: Optional[str] = None,
 ) -> None:
     """Update status fields on a job in-place (called from background pipeline thread)."""
     safe_id = Path(job_id).name
@@ -151,25 +152,33 @@ def _update_job_status(
         data["status_message"] = status_message
         if segments is not None:
             data["segments"] = segments
+        if target_lang is not None:
+            data["target_lang"] = target_lang
         job_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         _log.exception("_update_job_status failed for %s", job_id)
 
 
-def _run_pipeline(job_id: str, video_path: str) -> None:
+def _run_pipeline(job_id: str, video_path: str, target_lang: str = "auto") -> None:
     """Transcribe + generate phonetics for a newly uploaded video (blocking, run in thread)."""
     pipeline = _get_pipeline()
     generate_phonetics = pipeline.generate_phonetics
     transcribe = pipeline.transcribe
+    detect_target_lang = pipeline._detect_target_lang
 
     try:
         _update_job_status(job_id, "transcribing", "Transcribing audio…")
         segments = transcribe(video_path)
 
-        _update_job_status(job_id, "generating_phonetics", "Generating phonetics…", segments=segments)
-        segments = generate_phonetics(segments)
+        # Resolve auto-detect now that we have segment language tags from Whisper
+        resolved_lang = detect_target_lang(segments) if target_lang == "auto" else target_lang
+        _update_job_status(
+            job_id, "generating_phonetics", "Generating phonetics…",
+            segments=segments, target_lang=resolved_lang,
+        )
+        segments = generate_phonetics(segments, target_lang=resolved_lang)
 
-        _update_job_status(job_id, "ready", "", segments=segments)
+        _update_job_status(job_id, "ready", "", segments=segments, target_lang=resolved_lang)
     except Exception as exc:
         _log.exception("Pipeline failed for job %s", job_id)
         _update_job_status(job_id, "error", str(exc))
@@ -251,6 +260,7 @@ async def list_jobs():
                 "segment_count": len(data.get("segments", [])),
                 "status": data.get("status", "ready"),
                 "status_message": data.get("status_message", ""),
+                "target_lang": data.get("target_lang", "vi"),
             })
         except (json.JSONDecodeError, OSError):
             continue
@@ -421,6 +431,7 @@ async def upload_video(
     video: UploadFile = File(...),
     segments: Optional[UploadFile] = File(None),
     run_pipeline: bool = Form(True),
+    target_lang: str = Form("auto"),
 ):
     """Create a new caption job from an uploaded video file.
 
@@ -470,12 +481,13 @@ async def upload_video(
         "segments": parsed_segments,
         "status": initial_status,
         "status_message": "",
+        "target_lang": target_lang,  # may still be "auto" — resolved during pipeline
     }
     _save_caption_job_data(job_id, job)
 
     if not has_segments and run_pipeline:
         # Fire pipeline in background thread — do not await
-        asyncio.create_task(asyncio.to_thread(_run_pipeline, job_id, str(video_path)))
+        asyncio.create_task(asyncio.to_thread(_run_pipeline, job_id, str(video_path), target_lang))
 
     return {"job_id": job_id, "status": initial_status}
 
@@ -500,7 +512,9 @@ async def get_job_status(job_id: str):
 # NL edit — apply natural-language instructions to segments
 # ---------------------------------------------------------------------------
 
-_NL_SYSTEM_PROMPT = """You are a caption segment editor for bilingual EN/VI educational videos.
+
+def _nl_system_prompt(target_lang_code: str, target_lang_name: str) -> str:
+    return f"""You are a caption segment editor for bilingual EN/{target_lang_code.upper()} educational videos.
 You receive a JSON array of caption segments and a natural-language instruction from the user.
 You MUST respond with ONLY a valid JSON array of patch operations — no prose, no markdown fences.
 
@@ -514,19 +528,19 @@ Always use the corresponding "id" value as "segment_id" in your patches.
 Example: if the user says "fix #3", find the segment where num=3 and use its id as segment_id.
 
 Each patch is one of:
-  {"op":"edit",    "segment_id":<int>, "field":"text"|"phonetic"|"lang"|"start"|"end", "old":<any>, "new":<any>}
-  {"op":"merge",   "segment_ids":[<int>, ...]}
-  {"op":"split",   "segment_id":<int>, "at_word_index":<int>}
+  {{"op":"edit",    "segment_id":<int>, "field":"text"|"phonetic"|"lang"|"start"|"end", "old":<any>, "new":<any>}}
+  {{"op":"merge",   "segment_ids":[<int>, ...]}}
+  {{"op":"split",   "segment_id":<int>, "at_word_index":<int>}}
 
 Rules:
 - Only include patches that actually change something.
 - For "merge", list segment IDs (id values, not num values) in order; the merged text is the concatenation of their texts separated by a space.
 - For "split", at_word_index is 0-based and must be within the words array of that segment.
-- "lang" must be "en" or "vi".
+- "lang" must be "en" or "{target_lang_code}".
 - When changing lang to "en", also emit an edit patch clearing "phonetic" to "".
 - "phonetic" values MUST use only regular English letters, hyphens, spaces, and square brackets.
   NEVER use IPA symbols (no ɓ ɔ ŋ ʔ ː ˨ ˩ ˧ ˥ or any Unicode phonetic/tone characters).
-  Write how the Vietnamese sounds to an English speaker, e.g. "[hong biet]", "[zuh yee]", "[toh ee ten lah]".
+  Write how the {target_lang_name} sounds to an English speaker.
 - If the instruction cannot produce any meaningful patches (e.g. no relevant segments), return [].
 - Return ONLY the JSON array.
 """
@@ -551,7 +565,7 @@ async def nl_edit_segments(job_id: str, payload: NLEditPayload):
     )
 
     try:
-        raw = await asyncio.to_thread(_call_agent, _NL_SYSTEM_PROMPT, user_message)
+        raw = await asyncio.to_thread(_call_agent, _nl_system_prompt(job_target_lang, job_target_lang_name), user_message)
         # Strip markdown fences if model wrapped response anyway
         clean = raw.strip()
         if clean.startswith("```"):
@@ -604,6 +618,9 @@ async def qa_review(job_id: str):
     """Run an AI quality review over all segments and return a list of flags."""
     data = _load_caption_job(job_id)
     segments = data.get("segments", [])
+    job_target_lang = data.get("target_lang", "vi")
+    pipeline = _get_pipeline()
+    job_target_lang_name = pipeline._lang_name(job_target_lang)
 
     seg_compact = [
         {"num": i + 1, **{k: v for k, v in s.items() if k != "words"}}
@@ -612,7 +629,7 @@ async def qa_review(job_id: str):
     user_message = f"Segments:\n{json.dumps(seg_compact, ensure_ascii=False, indent=2)}"
 
     try:
-        raw = await asyncio.to_thread(_call_agent, _QA_SYSTEM_PROMPT, user_message)
+        raw = await asyncio.to_thread(_call_agent, _qa_system_prompt(job_target_lang, job_target_lang_name), user_message)
         clean = raw.strip()
         if clean.startswith("```"):
             clean = "\n".join(clean.splitlines()[1:])
@@ -712,7 +729,7 @@ def _safe_preset_name(name: str) -> str:
     return safe
 
 
-_STYLE_GENERATE_SYSTEM_PROMPT = """You are a caption style assistant for bilingual EN/VI short-form videos.
+_STYLE_GENERATE_SYSTEM_PROMPT = """You are a caption style assistant for bilingual language teaching short-form videos.
 The user will describe a visual style in natural language.
 Return ONLY a JSON object with these exact 8 fields (no other keys, no prose, no markdown fences):
   font           (str) — font family name, e.g. "Impact", "Arial", "Trebuchet MS"

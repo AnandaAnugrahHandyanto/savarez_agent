@@ -1,112 +1,141 @@
-# Hermes Caption Plugin — Plan v7 (Distributability)
+# Hermes Caption Plugin — Plan v8 (Language Generalization)
 
 **Hackathon**: Hermes Agent Creative Hackathon  
-**Previous plans**: v1–v6 executed (see PLAN_v1.md … PLAN_v6.md)
+**Previous plans**: v1–v7 executed (see PLAN_v1.md … PLAN_v7.md)
 
 ---
 
 ## Goal
 
-Make `phonetic-captions` a proper drop-in Hermes plugin that a new user can
-install and run without touching core repo files. Current blocker: the
-pipeline code lives in `tools/video_caption.py` (core tree), so the plugin
-is not self-contained and NVIDIA_API_KEY is listed as a hard prerequisite even
-though it's optional.
+Remove the Vietnamese-specific hardcoding and make the plugin work with any
+target language. The pipeline architecture stays identical — the change is
+primarily string parameterization plus a Whisper-based auto-detection default.
+
+---
+
+## Design Decisions
+
+### Language detection strategy
+
+Whisper already runs with `language=None` (auto-detect) and emits a detected
+language code per segment. We can infer the target language without requiring
+the user to specify it:
+
+> **Auto-detect rule**: `target_lang = most-frequent non-English language
+> detected across all segments`
+
+This covers the dominant use case (bilingual teaching video with English as
+the known language) without any round-trip. When the auto-detect result is
+ambiguous or wrong, the user can override via:
+
+- **Telegram**: natural language, e.g. "caption this video, target language is Korean"
+- **Dashboard**: language selector in the upload modal (defaults to auto-detected value)
+
+Edge cases we explicitly defer (not in scope for v8):
+- Non-English as the "known" language (e.g., Vietnamese learning Korean)
+- 3+ language videos
+- User's native language is not English
+
+### Two entry points
+
+| Entry point | Language selection | Notes |
+|---|---|---|
+| Telegram | Auto-detect (Whisper) + optional override in message | No usability hit for happy path |
+| Dashboard | Auto-detect default + dropdown override in upload modal | Low-friction, power-user friendly |
 
 ---
 
 ## Changes
 
-### Phase 1 — Self-contained structure
+### 1. `pipeline.py` — introduce `target_lang` parameter
 
-| Action | File |
-|--------|------|
-| CREATE | `plugins/phonetic-captions/plugin.yaml` |
-| CREATE | `plugins/phonetic-captions/pipeline.py` (pipeline moved from `tools/video_caption.py`) |
-| CREATE | `plugins/phonetic-captions/__init__.py` (`register(ctx)` wires tool into Hermes plugin system) |
-| UPDATE | `plugins/phonetic-captions/dashboard/plugin_api.py` — import from `..pipeline` instead of `tools.video_caption` |
-| DELETE | `tools/video_caption.py` |
-| UPDATE | `toolsets.py` — remove `video-caption` entry (tool now registered via plugin) |
+**`run_pipeline()`** gains a `target_lang: str = "auto"` parameter.
 
-**plugin.yaml fields:**
-```yaml
-name: phonetic-captions
-version: 1.0.0
-description: "Bilingual EN/VI phonetic caption editor for teaching videos"
-pip_dependencies:
-  - faster-whisper
-  - openai         # only needed if NVIDIA_API_KEY is set
-provides_tools:
-  - video-caption
-```
-No `requires_env` — NVIDIA_API_KEY is optional, not a gate.
-
-**Ordering constraint:** `plugin_api.py` import update (Phase 1 Step 4) MUST be
-applied before deleting `tools/video_caption.py` (Step 5). These two happen
-atomically in the same implementation pass.
-
-### Phase 2 — NVIDIA fallback to Hermes model
-
-Modify `generate_phonetics()` in `pipeline.py`:
-
-- **With `NVIDIA_API_KEY`**: use `moonshotai/kimi-k2.6` via NVIDIA NIM (best quality, current behaviour)
-- **Without key**: call `_call_agent()` (same helper already used by `plugin_api.py` for NL-edit / QA)
-  using the user's configured Hermes model
-
-This removes NVIDIA_API_KEY as a user-facing prerequisite entirely. The `openai` pip package
-remains listed in `pip_dependencies` for users who want the NVIDIA path.
-
-### Phase 3 — Frontend health banner
-
-**New endpoint** `GET /health` in `plugin_api.py`:
-```json
-{
-  "ffmpeg": true,
-  "faster_whisper": false,
-  "phonetics_source": "nvidia" | "hermes" | "unavailable",
-  "hermes_model": "claude-3-7-sonnet"
-}
+**Auto-detection** added after transcription:
+```python
+def _detect_target_lang(segments: list[dict]) -> str:
+    """Return most-frequent non-English language code from Whisper segments."""
+    from collections import Counter
+    counts = Counter(s["lang"] for s in segments if s.get("lang") and s["lang"] != "en")
+    return counts.most_common(1)[0][0] if counts else "vi"  # fallback: vi
 ```
 
-**New component** `PrerequisitesBanner` in `src/index.tsx`, rendered at top of `JobListView`:
-- Fetches `/health` on mount
-- **Error strip** (red/amber): missing `ffmpeg` or `faster_whisper` with exact install command
-- **Info strip** (blue): phonetics source — *"Using NVIDIA Kimi K2.6"* or *"Using [model] (no NVIDIA key)"*
-- Dismissible; non-blocking (app still navigable with missing deps)
+**`_phonetics_prompt()`** parameterized — replace hardcoded "Vietnamese" with
+`target_lang_name` (derived from a `LANG_NAMES` dict mapping code → display name).
+
+**ASS logic** — replace `if lang == "vi"` with `if lang == target_lang`.
+
+**Tool schema** — replace "Vietnamese language teaching" with
+"bilingual language teaching" in description.
+
+**`_handle_caption()`** — read `target_lang` from args, pass through pipeline.
+
+### 2. `plugin_api.py` — parameterize system prompts + job model
+
+**`CaptionJob`** model gains `target_lang: str = "vi"` field (backwards-compatible
+default preserves existing jobs).
+
+**`_NL_SYSTEM_PROMPT`**, **`_QA_SYSTEM_PROMPT`**, **`_STYLE_GENERATE_SYSTEM_PROMPT`** — 
+convert to format-string templates parameterized on `target_lang_name`.
+
+**`/upload` endpoint** — accept optional `target_lang` form field (default `"auto"`),
+resolve via `_detect_target_lang()` after transcription, store on job.
+
+**`/health` endpoint** — include `target_lang_detection: "whisper"` in response.
+
+### 3. `dashboard/src/index.tsx` — language selector in upload modal
+
+- Widen `lang` type from `"en" | "vi" | ""` to `string`.
+- Add `SUPPORTED_LANGS` constant:
+  ```ts
+  const SUPPORTED_LANGS = [
+    { code: "auto", label: "Auto-detect" },
+    { code: "vi",   label: "Vietnamese" },
+    { code: "ko",   label: "Korean" },
+    { code: "ja",   label: "Japanese" },
+    { code: "zh",   label: "Chinese (Mandarin)" },
+    { code: "ar",   label: "Arabic" },
+    { code: "fr",   label: "French" },
+    { code: "es",   label: "Spanish" },
+    { code: "de",   label: "German" },
+  ];
+  ```
+- Upload modal: add `<select>` for target language (default `"auto"`), submit
+  alongside file.
+- Editor view: show resolved target language as a read-only badge next to job
+  title (e.g., `🌐 Vietnamese`).
+- `SegmentRow` badge: replace hardcoded `"vi"` color with `isTarget ? targetColor : "en-color"`.
+
+### 4. Rebuild frontend
+
+```bash
+cd plugins/phonetic-captions/dashboard && npm run build
+```
 
 ---
 
 ## What does NOT change
 
-- `plugins/phonetic-captions/dashboard/manifest.json` — unchanged
-- `plugins/phonetic-captions/dashboard/src/index.tsx` — only adds `PrerequisitesBanner`
-- Gateway video path injection (`gateway/run.py`) — unchanged
-- Caption config in `hermes_cli/config.py` — unchanged
-- Skills — unchanged
+- Pipeline architecture (transcribe → classify → ASS → FFmpeg)
+- Job storage format (only adds `target_lang` field)
+- Gateway video path injection
+- Whisper model or transcription logic
+- Caption style config
+- Plugin registration / `plugin.yaml`
 
 ---
 
-## Installation steps for new users (after this plan)
+## Fallback safety
 
-```bash
-# 1. Copy plugin into Hermes plugins directory
-cp -r plugins/phonetic-captions ~/.hermes/plugins/
+If `_detect_target_lang()` finds no non-English segments (e.g. English-only
+video), it returns `"vi"` as a safe default and logs a warning. The user can
+always override via the dashboard language selector before triggering re-burn.
 
-# 2. Install Python dependencies
-pip install faster-whisper openai
+---
 
-# 3. Install FFmpeg
-brew install ffmpeg        # macOS
-# sudo apt install ffmpeg  # Linux
+## Non-goals (explicitly out of scope for v8)
 
-# 4. (Optional) Set NVIDIA API key for best-quality phonetics
-echo "NVIDIA_API_KEY=nvapi-..." >> ~/.hermes/.env
-# Without this key, phonetics fall back to your configured Hermes model.
-
-# 5. Enable the plugin
-hermes plugins enable phonetic-captions
-
-# 6. Enable the dashboard and open
-hermes dashboard
-# → Click the "Captions" tab
-```
+- Supporting multiple simultaneous target languages per video
+- Non-English as the "primary" language
+- Changing the phonetics guide language (always English for now)
+- User-defined language lists or custom language codes
