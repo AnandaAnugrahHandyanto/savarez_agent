@@ -1872,7 +1872,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                     return live
         except Exception:
             pass
-    if normalized == "custom":
+    if normalized == "custom" or normalized.startswith("custom:"):
         base_url = _get_custom_base_url()
         if base_url:
             # Try common API key env vars for custom endpoints
