@@ -15,6 +15,15 @@ import {
   VideoOff,
   AlertCircle,
   Scissors,
+  Upload,
+  Wand2,
+  ShieldCheck,
+  X,
+  Check,
+  Lightbulb,
+  FileDown,
+  FileUp,
+  Loader2,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -83,6 +92,26 @@ interface JobSummary {
   created_at: string;
   video_filename: string;
   segment_count: number;
+  status?: string;
+  status_message?: string;
+}
+
+// Patch operations returned by the NL-edit endpoint
+type NLPatch =
+  | { op: "edit"; segment_id: number; field: string; old: any; new: any }
+  | { op: "merge"; segment_ids: number[] }
+  | { op: "split"; segment_id: number; at_word_index: number };
+
+interface QAFlag {
+  segment_id: number;
+  issue: string;
+  suggestion: string;
+}
+
+interface StyleSuggestion {
+  available: boolean;
+  style?: CaptionStyle;
+  explanation?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -113,13 +142,17 @@ function JobListView({ onSelect }: { onSelect: (id: string) => void }) {
   const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showUpload, setShowUpload] = useState(false);
 
-  useEffect(() => {
+  const loadJobs = useCallback(() => {
+    setLoading(true);
     fetchJSON(`${API}/jobs`)
       .then((data: JobSummary[]) => setJobs(data))
       .catch((e: any) => setError(String(e)))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => { loadJobs(); }, [loadJobs]);
 
   if (loading) {
     return (
@@ -144,36 +177,251 @@ function JobListView({ onSelect }: { onSelect: (id: string) => void }) {
 
   return (
     <div className="p-6 max-w-2xl">
-      <h1 className="text-xl font-semibold mb-1 text-foreground">Caption Jobs</h1>
+      <div className="flex items-center justify-between mb-1">
+        <h1 className="text-xl font-semibold text-foreground">Caption Jobs</h1>
+        <button
+          onClick={() => setShowUpload(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-semibold hover:opacity-90 transition-opacity"
+        >
+          <Upload className="w-3.5 h-3.5" />
+          New Job
+        </button>
+      </div>
       <p className="text-sm text-muted-foreground mb-5">
-        Jobs are created when Hermes captions a video. Click a job to edit segments and re-burn.
+        Click a job to edit segments and re-burn, or upload a new video.
       </p>
+
+      {showUpload && (
+        <UploadModal
+          onDone={(id) => { setShowUpload(false); onSelect(id); }}
+          onClose={() => { setShowUpload(false); loadJobs(); }}
+        />
+      )}
+
       {jobs.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-muted-foreground border border-dashed border-border rounded-xl">
           <VideoOff className="w-10 h-10 mb-3 opacity-40" />
           <p className="text-sm font-medium">No caption jobs yet</p>
-          <p className="text-xs mt-1 text-muted-foreground/70">Send a video via Telegram and Hermes will create one.</p>
+          <p className="text-xs mt-1 text-muted-foreground/70">Upload a video above or send one via Telegram.</p>
         </div>
       ) : (
         <div className="space-y-2">
-          {jobs.map((job) => (
-            <button
-              key={job.id}
-              onClick={() => onSelect(job.id)}
-              className="w-full flex items-center justify-between rounded-lg border border-border p-4 bg-card hover:bg-accent transition-colors text-left group"
-            >
-              <div className="min-w-0">
-                <div className="font-medium text-sm truncate text-foreground">{job.video_filename || job.id}</div>
-                <div className="text-xs text-muted-foreground mt-0.5">
-                  {job.segment_count} segment{job.segment_count !== 1 ? "s" : ""}
-                  {job.created_at ? ` · ${new Date(job.created_at).toLocaleString()}` : ""}
+          {jobs.map((job) => {
+            const isPending = job.status && job.status !== "ready";
+            const isError = job.status === "error";
+            return (
+              <button
+                key={job.id}
+                onClick={() => !isPending && onSelect(job.id)}
+                disabled={!!isPending}
+                className={`w-full flex items-center justify-between rounded-lg border border-border p-4 bg-card text-left group transition-colors ${
+                  isPending ? "opacity-60 cursor-not-allowed" : "hover:bg-accent"
+                }`}
+              >
+                <div className="min-w-0">
+                  <div className="font-medium text-sm truncate text-foreground">{job.video_filename || job.id}</div>
+                  <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-2">
+                    <span>
+                      {job.segment_count} segment{job.segment_count !== 1 ? "s" : ""}
+                      {job.created_at ? ` · ${new Date(job.created_at).toLocaleString()}` : ""}
+                    </span>
+                    {isPending && !isError && (
+                      <span className="flex items-center gap-1 text-amber-500">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        {job.status_message || job.status}
+                      </span>
+                    )}
+                    {isError && (
+                      <span className="text-destructive">
+                        {job.status_message || "Pipeline error"}
+                      </span>
+                    )}
+                  </div>
                 </div>
-              </div>
-              <Play className="w-4 h-4 text-muted-foreground group-hover:text-foreground shrink-0 ml-4 transition-colors" />
-            </button>
-          ))}
+                {!isPending && <Play className="w-4 h-4 text-muted-foreground group-hover:text-foreground shrink-0 ml-4 transition-colors" />}
+              </button>
+            );
+          })}
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Upload Modal
+// ---------------------------------------------------------------------------
+
+function UploadModal({
+  onDone,
+  onClose,
+}: {
+  onDone: (jobId: string) => void;
+  onClose: () => void;
+}) {
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [segmentsFile, setSegmentsFile] = useState<File | null>(null);
+  const [runPipeline, setRunPipeline] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [statusMsg, setStatusMsg] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopPoll = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  };
+
+  // Cleanup on unmount
+  useEffect(() => () => stopPoll(), []);
+
+  const handleSubmit = async () => {
+    if (!videoFile) return;
+    setUploading(true);
+    setError(null);
+    setStatusMsg("Uploading…");
+
+    try {
+      const fd = new FormData();
+      fd.append("video", videoFile);
+      if (segmentsFile) fd.append("segments", segmentsFile);
+      fd.append("run_pipeline", String(runPipeline && !segmentsFile));
+
+      const res = await fetch(`${API}/upload`, { method: "POST", body: fd });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `${res.status} ${res.statusText}`);
+      }
+      const { job_id, status } = await res.json();
+
+      if (status === "ready") {
+        onDone(job_id);
+        return;
+      }
+
+      // Pipeline running — poll for completion
+      pollRef.current = setInterval(async () => {
+        try {
+          const s = await fetchJSON(`${API}/jobs/${job_id}/status`);
+          setStatusMsg(s.status_message || s.status);
+          if (s.status === "ready") {
+            stopPoll();
+            onDone(job_id);
+          } else if (s.status === "error") {
+            stopPoll();
+            setError(s.status_message || "Pipeline failed");
+            setUploading(false);
+          }
+        } catch {
+          // transient network error — keep polling
+        }
+      }, 2000);
+    } catch (e: any) {
+      setError(String(e));
+      setUploading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+      <div className="bg-card border border-border rounded-xl shadow-xl w-full max-w-md mx-4 p-6">
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="text-base font-semibold text-foreground">New Caption Job</h2>
+          <button onClick={onClose} disabled={uploading} className="text-muted-foreground hover:text-foreground transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="space-y-4">
+          {/* Video picker */}
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1.5">Video file *</label>
+            <label className={`flex items-center gap-2 px-3 py-2.5 rounded-lg border-2 border-dashed cursor-pointer transition-colors ${
+              videoFile ? "border-primary/50 bg-primary/5" : "border-border hover:border-primary/30"
+            }`}>
+              <FileUp className="w-4 h-4 text-muted-foreground shrink-0" />
+              <span className="text-sm truncate text-foreground">
+                {videoFile ? videoFile.name : "Choose .mp4, .mov, .mkv…"}
+              </span>
+              <input
+                type="file"
+                accept=".mp4,.mov,.avi,.mkv,.webm,.m4v,.ts,.mts"
+                className="hidden"
+                onChange={(e) => setVideoFile(e.target.files?.[0] ?? null)}
+              />
+            </label>
+          </div>
+
+          {/* Auto-pipeline toggle */}
+          <label className="flex items-center gap-3 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={runPipeline}
+              onChange={(e) => {
+                setRunPipeline(e.target.checked);
+                if (e.target.checked) setSegmentsFile(null);
+              }}
+              className="w-4 h-4 accent-primary"
+            />
+            <span className="text-sm text-foreground">Auto-transcribe &amp; generate phonetics</span>
+          </label>
+
+          {/* Manual segments upload (when pipeline is off) */}
+          {!runPipeline && (
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1.5">Segments JSON (optional)</label>
+              <label className={`flex items-center gap-2 px-3 py-2.5 rounded-lg border-2 border-dashed cursor-pointer transition-colors ${
+                segmentsFile ? "border-primary/50 bg-primary/5" : "border-border hover:border-primary/30"
+              }`}>
+                <FileUp className="w-4 h-4 text-muted-foreground shrink-0" />
+                <span className="text-sm truncate text-foreground">
+                  {segmentsFile ? segmentsFile.name : "Choose segments .json…"}
+                </span>
+                <input
+                  type="file"
+                  accept=".json"
+                  className="hidden"
+                  onChange={(e) => setSegmentsFile(e.target.files?.[0] ?? null)}
+                />
+              </label>
+            </div>
+          )}
+
+          {/* Status / error */}
+          {uploading && !error && (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+              <span>{statusMsg || "Working…"}</span>
+            </div>
+          )}
+          {error && (
+            <div className="flex items-start gap-2 text-sm text-destructive">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{error}</span>
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 mt-6">
+          <button
+            onClick={onClose}
+            disabled={uploading}
+            className="px-4 py-2 rounded-lg border border-border text-sm font-medium text-foreground hover:bg-accent transition-colors disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={!videoFile || uploading}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+            {uploading ? "Processing…" : "Create Job"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -299,8 +547,149 @@ function SplitEditor({
 }
 
 // ---------------------------------------------------------------------------
-// Editor
+// NL Edit Panel
 // ---------------------------------------------------------------------------
+
+function NLEditPanel({
+  jobId,
+  segments,
+  onApplyPatches,
+  prefillInstruction,
+}: {
+  jobId: string;
+  segments: CaptionSegment[];
+  onApplyPatches: (patches: NLPatch[]) => void;
+  prefillInstruction?: string;
+}) {
+  const [instruction, setInstruction] = useState(prefillInstruction ?? "");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [patches, setPatches] = useState<NLPatch[] | null>(null);
+  const [checked, setChecked] = useState<Set<number>>(new Set());
+
+  // Sync prefill from QA "Fix with AI"
+  useEffect(() => {
+    if (prefillInstruction !== undefined) setInstruction(prefillInstruction);
+  }, [prefillInstruction]);
+
+  const handleSubmit = async () => {
+    if (!instruction.trim()) return;
+    setLoading(true);
+    setError(null);
+    setPatches(null);
+    try {
+      const res = await fetchJSON(`${API}/jobs/${jobId}/nl-edit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instruction }),
+      });
+      const ps: NLPatch[] = res.patches ?? [];
+      setPatches(ps);
+      setChecked(new Set(ps.map((_, i) => i)));
+    } catch (e: any) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const applySelected = () => {
+    if (!patches) return;
+    onApplyPatches(patches.filter((_, i) => checked.has(i)));
+    setPatches(null);
+    setInstruction("");
+    setChecked(new Set());
+  };
+
+  const patchDescription = (p: NLPatch): string => {
+    if (p.op === "edit") return `#${p.segment_id + 1} ${p.field}: "${p.old}" → "${p.new}"`;
+    if (p.op === "merge") return `Merge segments ${p.segment_ids.map((id) => `#${id + 1}`).join(" + ")}`;
+    if (p.op === "split") return `Split segment #${p.segment_id + 1} at word ${p.at_word_index}`;
+    return "Unknown operation";
+  };
+
+  return (
+    <div className="border-t border-border mt-4 pt-4">
+      <div className="flex items-center gap-2 mb-2">
+        <Wand2 className="w-4 h-4 text-muted-foreground" />
+        <span className="text-xs font-semibold text-foreground">Edit with AI</span>
+      </div>
+
+      <div className="flex gap-2">
+        <input
+          className="flex-1 min-w-0 bg-card border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring/30 transition-colors"
+          placeholder="e.g. fix diacritics in segment 3, merge segments 4 and 5…"
+          value={instruction}
+          onChange={(e) => setInstruction(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && !loading && handleSubmit()}
+          disabled={loading}
+        />
+        <button
+          onClick={handleSubmit}
+          disabled={!instruction.trim() || loading}
+          className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-primary text-primary-foreground text-xs font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+        >
+          {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
+          {loading ? "Thinking…" : "Apply"}
+        </button>
+      </div>
+
+      {error && (
+        <div className="mt-2 flex items-start gap-2 text-xs text-destructive">
+          <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+          {error}
+        </div>
+      )}
+
+      {patches !== null && (
+        <div className="mt-3 rounded-lg border border-border bg-muted/40 p-3">
+          <p className="text-xs font-semibold text-foreground mb-2">
+            {patches.length === 0 ? "No changes suggested." : `${patches.length} proposed change${patches.length !== 1 ? "s" : ""}:`}
+          </p>
+          {patches.length > 0 && (
+            <>
+              <div className="space-y-1 max-h-40 overflow-y-auto">
+                {patches.map((p, i) => (
+                  <label key={i} className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={checked.has(i)}
+                      onChange={() =>
+                        setChecked((prev) => {
+                          const next = new Set(prev);
+                          next.has(i) ? next.delete(i) : next.add(i);
+                          return next;
+                        })
+                      }
+                      className="accent-primary"
+                    />
+                    <span className="text-xs text-foreground">{patchDescription(p)}</span>
+                  </label>
+                ))}
+              </div>
+              <div className="flex gap-2 mt-3">
+                <button
+                  onClick={applySelected}
+                  disabled={checked.size === 0}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-primary text-primary-foreground text-xs font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+                >
+                  <Check className="w-3 h-3" />
+                  Apply {checked.size} change{checked.size !== 1 ? "s" : ""}
+                </button>
+                <button
+                  onClick={() => { setPatches(null); setChecked(new Set()); }}
+                  className="px-3 py-1.5 rounded border border-border text-xs font-medium text-foreground hover:bg-accent transition-colors"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
   const [job, setJob] = useState<CaptionJob | null>(null);
@@ -315,6 +704,19 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [splitState, setSplitState] = useState<{ segIdx: number; splitBefore: Set<number> } | null>(null);
 
+  // QA state
+  const [qaFlags, setQaFlags] = useState<QAFlag[]>([]);
+  const [qaLoading, setQaLoading] = useState(false);
+  const [qaError, setQaError] = useState<string | null>(null);
+
+  // NL panel pre-fill (from QA "Fix with AI")
+  const [nlPrefill, setNlPrefill] = useState<string | undefined>(undefined);
+
+  // Style suggestion state
+  const [styleSuggestion, setStyleSuggestion] = useState<StyleSuggestion | null>(null);
+  const [styleSuggestionDismissed, setStyleSuggestionDismissed] = useState(false);
+  const styleFileRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     setLoading(true);
     fetchJSON(`${API}/jobs/${jobId}`)
@@ -326,6 +728,13 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
       })
       .catch((e: any) => setError(String(e)))
       .finally(() => setLoading(false));
+  }, [jobId]);
+
+  // Check if a style suggestion is available (non-blocking)
+  useEffect(() => {
+    fetchJSON(`${API}/style/suggestion`)
+      .then((s: StyleSuggestion) => setStyleSuggestion(s))
+      .catch(() => {});
   }, [jobId]);
 
   const updateSegment = useCallback((idx: number, field: keyof CaptionSegment, value: string) => {
@@ -396,6 +805,97 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
     );
     setSplitState(null);
   }, [splitState, segments]);
+
+  const handleQAReview = async () => {
+    setQaLoading(true);
+    setQaError(null);
+    setQaFlags([]);
+    try {
+      const res = await fetchJSON(`${API}/jobs/${jobId}/qa`, { method: "POST" });
+      setQaFlags(res.flags ?? []);
+    } catch (e: any) {
+      setQaError(String(e));
+    } finally {
+      setQaLoading(false);
+    }
+  };
+
+  const handleApplyNLPatches = useCallback((patches: NLPatch[]) => {
+    setSegments((prev) => {
+      let segs = [...prev];
+      // Process in reverse order to keep indices stable for splits/merges
+      const sorted = [...patches].reverse();
+      for (const p of sorted) {
+        if (p.op === "edit") {
+          const idx = segs.findIndex((s) => s.id === p.segment_id);
+          if (idx !== -1) segs[idx] = { ...segs[idx], [p.field]: p.new };
+        } else if (p.op === "merge") {
+          const indices = p.segment_ids
+            .map((id) => segs.findIndex((s) => s.id === id))
+            .filter((i) => i !== -1)
+            .sort((a, b) => a - b);
+          if (indices.length >= 2) {
+            const merged: CaptionSegment = {
+              ...segs[indices[0]],
+              end: segs[indices[indices.length - 1]].end,
+              text: indices.map((i) => segs[i].text).join(" ").trim(),
+              phonetic: "",
+            };
+            segs = [
+              ...segs.slice(0, indices[0]),
+              merged,
+              ...segs.filter((_, i) => !indices.includes(i) || i === indices[0]).slice(indices[0] + 1),
+            ].filter((_, i) => !indices.slice(1).map((x) => x).includes(i));
+            // Rebuild properly using filter
+            const keep = new Set(indices.slice(1));
+            segs = segs.filter((s, i) => !keep.has(i));
+          }
+        }
+        // split op is handled via existing applyWordSplit UI; skip here
+      }
+      return segs.map((s, i) => ({ ...s, id: i }));
+    });
+    // Auto-save after applying patches
+    setTimeout(async () => {
+      try {
+        await fetchJSON(`${API}/jobs/${jobId}/segments`, {
+          method: "PUT",
+          body: JSON.stringify({ segments }),
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch { /* non-fatal */ }
+    }, 0);
+  }, [jobId, segments]);
+
+  const handleLoadStylePreset = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(reader.result as string);
+        const required = ["font", "font_size", "primary_color", "outline_color", "outline_width", "alignment", "margin_bottom", "max_line_length"];
+        const missing = required.filter((k) => !(k in parsed));
+        if (missing.length > 0) throw new Error(`Missing fields: ${missing.join(", ")}`);
+        setStyle(parsed as CaptionStyle);
+      } catch (err) {
+        setBurnError(`Invalid style preset: ${err}`);
+      }
+      e.target.value = "";
+    };
+    reader.readAsText(file);
+  };
+
+  const handleSaveStylePreset = () => {
+    if (!style) return;
+    const blob = new Blob([JSON.stringify(style, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "caption-style.json";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const handleReburn = async () => {
     if (!style) return;
@@ -528,10 +1028,33 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
         {/* ── Right: segment editor + style settings ── */}
         <div className="flex-1 overflow-y-auto p-5">
           <div className="max-w-2xl mx-auto">
-          <div className="flex items-baseline gap-2 mb-4">
+          <div className="flex items-center gap-2 mb-4">
             <h2 className="text-base font-semibold text-foreground">Segments</h2>
-            <span className="text-xs text-muted-foreground">{segments.length} total · edits are saved on Re-burn</span>
+            <span className="text-xs text-muted-foreground flex-1">{segments.length} total · edits are saved on Re-burn</span>
+            <button
+              onClick={handleQAReview}
+              disabled={qaLoading || segments.length === 0}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-border text-xs font-medium text-foreground hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {qaLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+              {qaLoading ? "Reviewing…" : "Review all"}
+            </button>
           </div>
+          {qaError && (
+            <div className="mb-3 flex items-start gap-2 text-xs text-destructive">
+              <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+              {qaError}
+            </div>
+          )}
+          {qaFlags.length > 0 && (
+            <div className="mb-3 flex items-center gap-2 text-xs text-amber-500">
+              <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+              {qaFlags.length} issue{qaFlags.length !== 1 ? "s" : ""} found — flagged segments are highlighted
+              <button onClick={() => setQaFlags([])} className="ml-auto text-muted-foreground hover:text-foreground">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
 
           {segments.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-muted-foreground border border-dashed border-border rounded-xl">
@@ -542,11 +1065,26 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
             <div className="space-y-2 pb-2">
               {segments.map((seg, idx) => {
                 const lang = (seg.lang === "vi" ? "vi" : "en") as "en" | "vi";
+                const flag = qaFlags.find((f) => f.segment_id === seg.id);
                 return (
                   <div
                     key={`${seg.id}-${idx}`}
-                    className="rounded-lg border border-border bg-card p-3 space-y-2 text-sm transition-colors"
+                    className={`rounded-lg border bg-card p-3 space-y-2 text-sm transition-colors ${
+                      flag ? "border-amber-400/60 dark:border-amber-500/50" : "border-border"
+                    }`}
                   >
+                    {flag && (
+                      <div className="flex items-start gap-2 text-xs text-amber-500">
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                        <span className="flex-1">{flag.issue}</span>
+                        <button
+                          onClick={() => setNlPrefill(flag.suggestion)}
+                          className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline whitespace-nowrap"
+                        >
+                          Fix with AI
+                        </button>
+                      </div>
+                    )}
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-mono text-muted-foreground w-7 shrink-0 text-right">#{idx + 1}</span>
                       <span className="text-xs tabular-nums text-muted-foreground shrink-0 w-[5.5rem]">
@@ -613,9 +1151,66 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
             </div>
           )}
 
-          {/* ── Style settings (below segments) ── */}
+          {/* ── NL Edit Panel (always shown below segments) ── */}
+          <NLEditPanel
+            jobId={jobId}
+            segments={segments}
+            onApplyPatches={handleApplyNLPatches}
+            prefillInstruction={nlPrefill}
+          />
+
+          {/* ── Style settings (below NL panel) ── */}
           <div className="border-t border-border mt-6 pb-8">
-            <h2 className="text-base font-semibold mt-6 mb-4 text-foreground">Caption Style</h2>
+            <div className="flex items-center gap-2 mt-6 mb-4">
+              <h2 className="text-base font-semibold text-foreground flex-1">Caption Style</h2>
+              {/* Style preset buttons */}
+              <input
+                ref={styleFileRef}
+                type="file"
+                accept=".json"
+                className="hidden"
+                onChange={handleLoadStylePreset}
+              />
+              <button
+                onClick={() => styleFileRef.current?.click()}
+                className="flex items-center gap-1 px-2.5 py-1 rounded border border-border text-xs font-medium text-foreground hover:bg-accent transition-colors"
+                title="Load a style preset from a JSON file"
+              >
+                <FileUp className="w-3.5 h-3.5" />
+                Load
+              </button>
+              <button
+                onClick={handleSaveStylePreset}
+                className="flex items-center gap-1 px-2.5 py-1 rounded border border-border text-xs font-medium text-foreground hover:bg-accent transition-colors"
+                title="Save current style as a JSON preset"
+              >
+                <FileDown className="w-3.5 h-3.5" />
+                Save
+              </button>
+              {styleSuggestion?.available && !styleSuggestionDismissed && (
+                <button
+                  onClick={() => {
+                    if (styleSuggestion.style) setStyle(styleSuggestion.style);
+                    setStyleSuggestionDismissed(true);
+                  }}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded border border-amber-400/50 bg-amber-400/10 text-xs font-medium text-amber-500 hover:bg-amber-400/20 transition-colors"
+                  title={styleSuggestion.explanation}
+                >
+                  <Lightbulb className="w-3.5 h-3.5" />
+                  Suggest
+                </button>
+              )}
+            </div>
+            {/* Style suggestion explanation banner */}
+            {styleSuggestion?.available && !styleSuggestionDismissed && styleSuggestion.explanation && (
+              <div className="flex items-start gap-2 mb-3 rounded-lg border border-amber-400/30 bg-amber-400/5 px-3 py-2 text-xs text-amber-500">
+                <Lightbulb className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <span className="flex-1">{styleSuggestion.explanation}</span>
+                <button onClick={() => setStyleSuggestionDismissed(true)} className="text-muted-foreground hover:text-foreground">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
             <div className="space-y-2.5">
               <StyleField label="Font" value={style.font} onChange={(v) => setStyle((s) => s && ({ ...s, font: v }))} placeholder="e.g. Arial, Impact, Trebuchet MS" />
               <StyleNumberField label="Font size" value={style.font_size} onChange={(v) => setStyle((s) => s && ({ ...s, font_size: v }))} />
