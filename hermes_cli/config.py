@@ -1721,6 +1721,14 @@ OPTIONAL_ENV_VARS = {
     },
 
     # ── Tool API keys ──
+    "LASTFM_API_KEY": {
+        "description": "Last.fm API key for music discovery and metadata",
+        "prompt": "Last.fm API key",
+        "url": "https://www.last.fm/api/account/create",
+        "tools": ["lastfm_discover", "lastfm_artist", "lastfm_track", "lastfm_tag", "lastfm_charts"],
+        "password": True,
+        "category": "tool",
+    },
     "EXA_API_KEY": {
         "description": "Exa API key for AI-native web search and contents",
         "prompt": "Exa API key",
