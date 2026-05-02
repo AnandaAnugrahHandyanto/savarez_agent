@@ -173,6 +173,25 @@ class TestTextToSpeechToolTruncation:
         # xAI should accept the full 12000 chars
         assert len(captured_text["text"]) == 12000
 
+    def test_voicebox_existing_ogg_is_voice_compatible(self, tmp_path, monkeypatch):
+        def fake_voicebox(t, out, cfg):
+            with open(out, "wb") as f:
+                f.write(b"OggS\x00test")
+            return out
+
+        monkeypatch.setattr("tools.tts_tool._generate_voicebox_tts", fake_voicebox)
+        monkeypatch.setattr("tools.tts_tool._load_tts_config",
+                            lambda: {"provider": "voicebox"})
+
+        from tools.tts_tool import text_to_speech_tool
+        out = str(tmp_path / "out.ogg")
+        result = json.loads(text_to_speech_tool(text="voicebox probe", output_path=out))
+
+        assert result["success"] is True
+        assert result["file_path"].endswith(".ogg")
+        assert result["voice_compatible"] is True
+        assert result["media_tag"].startswith("[[audio_as_voice]]\nMEDIA:")
+
     def test_user_override_is_respected(self, tmp_path, monkeypatch):
         # User says "cap openai at 100 chars" -- we must honor it
         text = "C" * 500

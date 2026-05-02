@@ -13,6 +13,7 @@ Built-in TTS providers:
 - NeuTTS (local, free, no API key): On-device TTS via neutts
 - KittenTTS (local, free, no API key): On-device 25MB model
 - Piper (local, free, no API key): OHF-Voice/piper1-gpl neural VITS, 44 languages
+- Voicebox (local, free, no API key): Calls a local Voicebox FastAPI server
 
 Custom command providers:
 - Users can declare any number of named providers with ``type: command``
@@ -175,6 +176,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "mistral": 4000,      # conservative; no published per-request cap
     "gemini": 5000,       # Gemini TTS caps at ~8k input tokens / ~655s audio
     "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
+    "voicebox": 5000,     # local server supports longer, but keep voice replies snappy
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
     "piper": 5000,        # local VITS model, phoneme-based; practical cap
@@ -921,6 +923,136 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
 
 
 # ===========================================================================
+# Provider: Voicebox local server
+# ===========================================================================
+def _voicebox_base_url(tts_config: Dict[str, Any]) -> str:
+    vb_config = tts_config.get("voicebox", {}) if isinstance(tts_config.get("voicebox"), dict) else {}
+    return str(vb_config.get("base_url") or os.getenv("VOICEBOX_URL") or "http://127.0.0.1:17493").rstrip("/")
+
+
+def _check_voicebox_available(tts_config: Optional[Dict[str, Any]] = None) -> bool:
+    try:
+        import requests
+
+        cfg = tts_config or _load_tts_config()
+        response = requests.get(f"{_voicebox_base_url(cfg)}/health", timeout=2)
+        return response.status_code < 500
+    except Exception:
+        return False
+
+
+def _voicebox_resolve_profile_id(base_url: str, vb_config: Dict[str, Any], timeout: float) -> str:
+    profile_id = str(vb_config.get("profile_id") or "").strip()
+    if profile_id:
+        return profile_id
+
+    profile_name = str(vb_config.get("profile") or vb_config.get("profile_name") or "").strip()
+    if not profile_name:
+        raise ValueError("Voicebox provider needs tts.voicebox.profile_id or tts.voicebox.profile")
+
+    import requests
+
+    response = requests.get(f"{base_url}/profiles", timeout=timeout)
+    response.raise_for_status()
+    profiles = response.json()
+    needle = profile_name.lower()
+    for profile in profiles:
+        if str(profile.get("id") or "") == profile_name:
+            return str(profile["id"])
+        if str(profile.get("name") or "").lower() == needle:
+            return str(profile["id"])
+    names = ", ".join(str(p.get("name") or p.get("id")) for p in profiles[:10])
+    raise ValueError(f"Voicebox profile '{profile_name}' not found. Available: {names}")
+
+
+def _voicebox_write_wav_to_output(wav_bytes: bytes, output_path: str) -> str:
+    if output_path.endswith(".wav"):
+        wav_path = output_path
+    else:
+        wav_path = output_path.rsplit(".", 1)[0] + ".wav"
+
+    with open(wav_path, "wb") as f:
+        f.write(wav_bytes)
+
+    if wav_path == output_path:
+        return output_path
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        os.rename(wav_path, output_path)
+        return output_path
+
+    subprocess.run([ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path], check=True, timeout=60)
+    try:
+        os.remove(wav_path)
+    except OSError:
+        pass
+    return output_path
+
+
+def _voicebox_generate_via_history(base_url: str, payload: Dict[str, Any], output_path: str, timeout: float) -> str:
+    import requests
+
+    response = requests.post(f"{base_url}/generate", json=payload, timeout=30)
+    response.raise_for_status()
+    generation_id = response.json().get("id")
+    if not generation_id:
+        raise RuntimeError("Voicebox /generate did not return a generation id")
+
+    deadline = datetime.datetime.now().timestamp() + timeout
+    last_status: Dict[str, Any] = {}
+    while datetime.datetime.now().timestamp() < deadline:
+        status_response = requests.get(f"{base_url}/history/{generation_id}", timeout=10)
+        status_response.raise_for_status()
+        last_status = status_response.json()
+        status = last_status.get("status") or "completed"
+        if status == "completed":
+            audio_response = requests.get(f"{base_url}/history/{generation_id}/export-audio", timeout=60)
+            audio_response.raise_for_status()
+            return _voicebox_write_wav_to_output(audio_response.content, output_path)
+        if status == "failed":
+            raise RuntimeError(f"Voicebox generation failed: {last_status.get('error') or 'unknown error'}")
+        import time
+
+        time.sleep(1)
+
+    raise TimeoutError(f"Voicebox generation timed out after {timeout:.0f}s; last status: {last_status}")
+
+
+def _generate_voicebox_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio via a local Voicebox FastAPI server."""
+    import requests
+
+    vb_config = tts_config.get("voicebox", {}) if isinstance(tts_config.get("voicebox"), dict) else {}
+    base_url = _voicebox_base_url(tts_config)
+    timeout = float(vb_config.get("timeout", 180))
+    profile_id = _voicebox_resolve_profile_id(base_url, vb_config, timeout)
+
+    payload: Dict[str, Any] = {
+        "profile_id": profile_id,
+        "text": text,
+        "language": vb_config.get("language", "en"),
+        "engine": vb_config.get("engine", "kokoro"),
+        "normalize": bool(vb_config.get("normalize", True)),
+        "max_chunk_chars": int(vb_config.get("max_chunk_chars", 800)),
+        "crossfade_ms": int(vb_config.get("crossfade_ms", 50)),
+    }
+    for key in ("seed", "model_size", "instruct"):
+        value = vb_config.get(key)
+        if value is not None and value != "":
+            payload[key] = value
+
+    try:
+        response = requests.post(f"{base_url}/generate/stream", json=payload, timeout=timeout)
+        if response.status_code == 400 and "not downloaded" in response.text.lower():
+            return _voicebox_generate_via_history(base_url, payload, output_path, timeout)
+        response.raise_for_status()
+        return _voicebox_write_wav_to_output(response.content, output_path)
+    except requests.HTTPError:
+        raise
+
+
+# ===========================================================================
 # Provider: MiniMax TTS
 # ===========================================================================
 def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
@@ -1655,6 +1787,15 @@ def text_to_speech_tool(
             logger.info("Generating speech with xAI TTS...")
             _generate_xai_tts(text, file_str, tts_config)
 
+        elif provider == "voicebox":
+            if not _check_voicebox_available(tts_config):
+                return json.dumps({
+                    "success": False,
+                    "error": "Voicebox provider selected but no local Voicebox server is responding. Start Voicebox on http://127.0.0.1:17493 or set tts.voicebox.base_url."
+                }, ensure_ascii=False)
+            logger.info("Generating speech with local Voicebox...")
+            _generate_voicebox_tts(text, file_str, tts_config)
+
         elif provider == "mistral":
             try:
                 _import_mistral_client()
@@ -1756,11 +1897,13 @@ def text_to_speech_tool(
                     if opus_path:
                         file_str = opus_path
                 voice_compatible = file_str.endswith(".ogg")
-        elif provider in ("edge", "neutts", "minimax", "xai", "kittentts", "piper") and not file_str.endswith(".ogg"):
+        elif provider in ("edge", "neutts", "minimax", "xai", "voicebox", "kittentts", "piper") and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
+        elif provider in ("edge", "neutts", "minimax", "xai", "voicebox", "kittentts"):
+            voice_compatible = file_str.endswith(".ogg")
         elif provider in ("elevenlabs", "openai", "mistral", "gemini"):
             voice_compatible = file_str.endswith(".ogg")
 
@@ -1811,6 +1954,11 @@ def check_tts_requirements() -> bool:
     Returns:
         bool: True if at least one provider can work.
     """
+    tts_config = _load_tts_config()
+    provider = _get_provider(tts_config)
+    if provider == "voicebox":
+        return _check_voicebox_available(tts_config)
+
     # Any configured command provider counts as available.
     if _has_any_command_tts_provider():
         return True
