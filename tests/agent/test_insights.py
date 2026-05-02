@@ -382,6 +382,25 @@ class TestInsightsPopulated:
         skill_names = [s["skill"] for s in skills["top_skills"]]
         assert "systematic-debugging" not in skill_names
 
+    def test_get_skill_breakdown_public_method_matches_full_generate(self, populated_db):
+        """The public `get_skill_breakdown(days)` shortcut must return the same
+        `skills` payload that `generate(days)["skills"]` would, so callers
+        like the dashboard analytics endpoint can avoid the full pass without
+        reaching into private `_get_skill_usage` / `_compute_skill_breakdown`
+        helpers."""
+        engine = InsightsEngine(populated_db)
+        full = engine.generate(days=30)["skills"]
+        narrow = engine.get_skill_breakdown(days=30)
+        assert narrow == full
+
+    def test_get_skill_breakdown_respects_source_filter(self, populated_db):
+        """Source filter on the public shortcut must be honored, just like the
+        full report's source filter."""
+        engine = InsightsEngine(populated_db)
+        full = engine.generate(days=30, source="cli")["skills"]
+        narrow = engine.get_skill_breakdown(days=30, source="cli")
+        assert narrow == full
+
     def test_get_skill_usage_ignores_non_skill_tool_calls(self, db):
         """SQL prefilter on _get_skill_usage must not change semantics — rows
         whose tool_calls JSON contains the literal substring "skill_view" or

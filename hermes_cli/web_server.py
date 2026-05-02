@@ -2747,10 +2747,8 @@ async def get_usage_analytics(days: int = 30):
         # here scanned/parsed every assistant tool_calls row twice (once for
         # _get_tool_usage, once for _get_skill_usage) and head-of-line blocked
         # the FastAPI event loop on multi-second DB+JSON work for unrelated
-        # endpoints. Compose the two skill-only helpers directly instead.
-        engine = InsightsEngine(db)
-        skill_usage = engine._get_skill_usage(cutoff)
-        skills = engine._compute_skill_breakdown(skill_usage)
+        # endpoints.
+        skills = InsightsEngine(db).get_skill_breakdown(days=days)
 
         return {
             "daily": daily,
