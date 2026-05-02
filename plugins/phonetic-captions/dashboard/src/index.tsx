@@ -31,7 +31,6 @@ import {
   Pen,
   FlaskConical,
   CheckCircle2,
-  Undo2,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -1330,36 +1329,6 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
   // NL panel pre-fill (from QA "Fix with AI")
   const [nlPrefill, setNlPrefill] = useState<string | undefined>(undefined);
 
-  // Undo stack — snapshots of segments before structural ops (session-only, max 50)
-  const undoStack = useRef<CaptionSegment[][]>([]);
-  const [canUndo, setCanUndo] = useState(false);
-
-  const pushUndo = useCallback((current: CaptionSegment[]) => {
-    undoStack.current = [...undoStack.current.slice(-49), current];
-    setCanUndo(true);
-  }, []);
-
-  const handleUndo = useCallback(() => {
-    const stack = undoStack.current;
-    if (stack.length === 0) return;
-    const prev = stack[stack.length - 1];
-    undoStack.current = stack.slice(0, -1);
-    setCanUndo(undoStack.current.length > 0);
-    setSegments(prev);
-  }, []);
-
-  // Ctrl+Z / Cmd+Z keyboard shortcut
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
-        e.preventDefault();
-        handleUndo();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [handleUndo]);
-
   // Ref for scrolling to a flagged segment
   const segmentRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
@@ -1383,15 +1352,14 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
   }, []);
 
   const toggleLang = useCallback((idx: number) => {
-    setSegments((prev) => {
-      pushUndo(prev);
-      return prev.map((s, i) => {
+    setSegments((prev) =>
+      prev.map((s, i) => {
         if (i !== idx) return s;
         const wasVi = (s.lang || "en") === "vi";
         return { ...s, lang: (wasVi ? "en" : "vi") as "en" | "vi", phonetic: wasVi ? "" : s.phonetic };
-      });
-    });
-  }, [pushUndo]);
+      })
+    );
+  }, []);
 
   const openSplit = useCallback((idx: number) => {
     setSplitState({ segIdx: idx, splitBefore: new Set() });
@@ -1437,15 +1405,14 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
       setSplitState(null);
       return;
     }
-    setSegments((prev) => {
-      pushUndo(prev);
-      return [...prev.slice(0, segIdx), ...newSegs, ...prev.slice(segIdx + 1)].map((s, i) => ({
+    setSegments((prev) =>
+      [...prev.slice(0, segIdx), ...newSegs, ...prev.slice(segIdx + 1)].map((s, i) => ({
         ...s,
         id: i,
-      }));
-    });
+      }))
+    );
     setSplitState(null);
-  }, [splitState, segments, pushUndo]);
+  }, [splitState, segments]);
 
   const handleQAReview = async () => {
     setQaLoading(true);
@@ -1463,7 +1430,6 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
 
   const handleApplyNLPatches = useCallback((patches: NLPatch[]) => {
     setSegments((prev) => {
-      pushUndo(prev);
       let segs = [...prev];
       // Process in reverse order to keep indices stable for splits/merges
       const sorted = [...patches].reverse();
@@ -1497,7 +1463,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
       }
       return segs.map((s, i) => ({ ...s, id: i }));
     });
-  }, [pushUndo]);
+  }, []);
 
   const handleReburn = async () => {
     if (!style) return;
@@ -1581,20 +1547,9 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
         </button>
         <span className="text-muted-foreground opacity-40">/</span>
         <span className="text-sm font-medium truncate text-foreground">{filename}</span>
-        <div className="ml-auto flex items-center gap-2 shrink-0">
-          <button
-            onClick={handleUndo}
-            disabled={!canUndo}
-            title="Undo last structural edit (Ctrl+Z)"
-            className="flex items-center gap-1 px-2 py-1 rounded text-xs text-muted-foreground hover:text-foreground hover:bg-accent disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-          >
-            <Undo2 className="w-3.5 h-3.5" />
-            Undo
-          </button>
-          <span className="text-xs text-muted-foreground">
-            {segments.length} segment{segments.length !== 1 ? "s" : ""}
-          </span>
-        </div>
+        <span className="ml-auto text-xs text-muted-foreground shrink-0">
+          {segments.length} segment{segments.length !== 1 ? "s" : ""}
+        </span>
       </div>
 
       {/* ── 3-column body ── */}
