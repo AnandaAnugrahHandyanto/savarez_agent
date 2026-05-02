@@ -1165,7 +1165,13 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
 
     Returns a list of non-``None`` return values from plugin callbacks.
     """
-    return get_plugin_manager().invoke_hook(hook_name, **kwargs)
+    # Hook call sites exist in early startup paths (notably the gateway)
+    # before any explicit plugin discovery or command lookup has occurred.
+    # Ensure discovery runs idempotently so hook-based plugins work in a
+    # fresh process without requiring get_plugin_commands() as a side effect.
+    manager = get_plugin_manager()
+    manager.discover_and_load()
+    return manager.invoke_hook(hook_name, **kwargs)
 
 
 

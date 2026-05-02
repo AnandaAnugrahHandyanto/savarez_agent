@@ -334,6 +334,39 @@ class TestPluginHooks:
     def test_valid_hooks_include_pre_gateway_dispatch(self):
         assert "pre_gateway_dispatch" in VALID_HOOKS
 
+    def test_module_invoke_hook_triggers_discovery(self, tmp_path, monkeypatch):
+        """Module-level invoke_hook() must be discovery-safe.
+
+        Regression test: in a fresh process, gateway code calls
+        ``hermes_cli.plugins.invoke_hook("pre_gateway_dispatch", ...)`` before
+        any plugin command lookup. That hook invocation must still discover
+        and load enabled user plugins so they can rewrite incoming commands.
+        """
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "kaze_claude_mode",
+            register_body=(
+                'ctx.register_command("claude-mode", lambda args: "ok")\n'
+                '    ctx.register_hook("pre_gateway_dispatch", '
+                'lambda **kw: {"action": "rewrite", "text": "REWRITTEN"} '
+                'if getattr(kw.get("event"), "text", "").startswith("/claude-mode") '
+                'else None)'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        # Simulate a fresh process: other imports during test setup may have
+        # already triggered plugin discovery (e.g. model_tools), so reset the
+        # singleton after creating the on-disk plugin.
+        import hermes_cli.plugins as _plugins_mod
+        monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
+
+        from types import SimpleNamespace
+
+        results = invoke_hook("pre_gateway_dispatch", event=SimpleNamespace(text="/claude-mode status"))
+
+        assert results == [{"action": "rewrite", "text": "REWRITTEN"}]
+
     def test_pre_gateway_dispatch_collects_action_dicts(self, tmp_path, monkeypatch):
         """pre_gateway_dispatch callbacks return action dicts (skip/rewrite/allow)."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
