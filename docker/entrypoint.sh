@@ -10,6 +10,10 @@ INSTALL_DIR="/opt/hermes"
 # optionally remap the hermes user/group to match host-side ownership, fix volume
 # permissions, then re-exec as hermes.
 if [ "$(id -u)" = "0" ]; then
+    # If caller sets HERMES_HOME outside /opt/data (e.g. /home/hermes/.hermes),
+    # ensure the parent path exists before dropping privileges so mkdir -p later
+    # doesn't fail with EPERM as the hermes user.
+    mkdir -p "$(dirname "$HERMES_HOME")" 2>/dev/null || true
     if [ -n "$HERMES_UID" ] && [ "$HERMES_UID" != "$(id -u hermes)" ]; then
         echo "Changing hermes UID to $HERMES_UID"
         usermod -u "$HERMES_UID" hermes
@@ -64,7 +68,7 @@ source "${INSTALL_DIR}/.venv/bin/activate"
 # The "home/" subdirectory is a per-profile HOME for subprocesses (git,
 # ssh, gh, npm …).  Without it those tools write to /root which is
 # ephemeral and shared across profiles.  See issue #4426.
-mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,home}
+mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,home,.local,.local/bin}
 
 # .env
 if [ ! -f "$HERMES_HOME/.env" ]; then
