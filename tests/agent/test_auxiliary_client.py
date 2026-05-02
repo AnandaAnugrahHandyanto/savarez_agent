@@ -768,6 +768,11 @@ class TestIsPaymentError:
         exc.status_code = 429
         assert _is_payment_error(exc) is True
 
+    def test_429_usage_limit_reached_is_payment(self):
+        exc = Exception("Error code: 429 - {'error': {'type': 'usage_limit_reached', 'message': 'The usage limit has been reached'}}")
+        exc.status_code = 429
+        assert _is_payment_error(exc) is True
+
     def test_429_without_credits_message_is_not_payment(self):
         """Normal rate limits should NOT be treated as payment errors."""
         exc = Exception("Rate limit exceeded, try again in 2 seconds")
@@ -1334,6 +1339,16 @@ class _AuxAuth401(Exception):
         super().__init__(message)
 
 
+class _AuxUsageLimit(Exception):
+    status_code = 429
+
+    def __init__(self):
+        super().__init__(
+            "Error code: 429 - {'error': {'type': 'usage_limit_reached', "
+            "'message': 'The usage limit has been reached'}}"
+        )
+
+
 class _DummyResponse:
     def __init__(self, text="ok"):
         self.choices = [MagicMock(message=MagicMock(content=text))]
@@ -1466,6 +1481,34 @@ class TestAuxiliaryAuthRefreshRetry:
 
         assert resp.choices[0].message.content == "fresh-async"
         mock_refresh.assert_called_once_with("openai-codex")
+
+    @pytest.mark.asyncio
+    async def test_async_auto_vision_falls_back_on_usage_limit_reached(self):
+        failing_client = MagicMock()
+        failing_client.base_url = "https://chatgpt.com/backend-api/codex"
+        failing_client.chat.completions.create = AsyncMock(side_effect=_AuxUsageLimit())
+
+        fallback_sync_client = MagicMock()
+        fallback_sync_client.base_url = "https://openrouter.ai/api/v1"
+        fallback_async_client = MagicMock()
+        fallback_async_client.base_url = "https://openrouter.ai/api/v1"
+        fallback_async_client.chat.completions.create = AsyncMock(return_value=_DummyResponse("fallback-vision"))
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("auto", None, None, None, None)),
+            patch("agent.auxiliary_client.resolve_vision_provider_client", return_value=("openai-codex", failing_client, "gpt-5.4")),
+            patch("agent.auxiliary_client._try_payment_fallback", return_value=(fallback_sync_client, "google/gemini-flash", "openrouter")) as mock_fallback,
+            patch("agent.auxiliary_client._to_async_client", return_value=(fallback_async_client, "google/gemini-flash")),
+        ):
+            resp = await async_call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "describe"}],
+            )
+
+        assert resp.choices[0].message.content == "fallback-vision"
+        mock_fallback.assert_called_once_with("openai-codex", "vision", reason="payment error")
+        assert failing_client.chat.completions.create.await_count == 1
+        assert fallback_async_client.chat.completions.create.await_count == 1
 
     def test_refresh_provider_credentials_force_refreshes_anthropic_oauth_and_evicts_cache(self, monkeypatch):
         stale_client = MagicMock()

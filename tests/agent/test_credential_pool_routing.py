@@ -11,6 +11,8 @@ Covers:
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 # ---------------------------------------------------------------------------
 # 1. CLI _resolve_turn_agent_config includes credential_pool
@@ -232,3 +234,55 @@ class TestPoolRotationCycle:
         )
         assert recovered is False
         assert has_retried is False
+
+
+class TestCompressorCredentialSync:
+    """Compression must follow the active pooled credential after rotation."""
+
+    def _make_agent(self, *, provider, api_mode, base_url):
+        from run_agent import AIAgent
+
+        with patch.object(AIAgent, "__init__", lambda self, **kw: None):
+            agent = AIAgent()
+        agent.model = "gpt-test"
+        agent.provider = provider
+        agent.api_mode = api_mode
+        agent.base_url = base_url
+        agent.api_key = "old-key"
+        agent._client_kwargs = {"api_key": "***", "base_url": agent.base_url}
+        agent._replace_primary_openai_client = MagicMock(return_value=True)
+        agent._apply_client_headers_for_base_url = MagicMock()
+        agent.context_compressor = MagicMock()
+        agent.context_compressor.context_length = 200000
+        return agent
+
+    @pytest.mark.parametrize(
+        ("provider", "api_mode", "base_url"),
+        [
+            ("openai-codex", "codex_responses", "https://chatgpt.com/backend-api/codex/responses"),
+            ("openrouter", "chat_completions", "https://openrouter.ai/api/v1"),
+            ("nous", "chat_completions", "https://inference.nousresearch.com/v1"),
+        ],
+    )
+    def test_swap_credential_updates_context_compressor_for_pooled_provider(
+        self,
+        provider,
+        api_mode,
+        base_url,
+    ):
+        agent = self._make_agent(provider=provider, api_mode=api_mode, base_url=base_url)
+        entry = SimpleNamespace(
+            runtime_api_key="new-key",
+            runtime_base_url=base_url,
+        )
+
+        agent._swap_credential(entry)
+
+        agent.context_compressor.update_model.assert_called_once_with(
+            model="gpt-test",
+            context_length=200000,
+            base_url=base_url,
+            api_key="new-key",
+            provider=provider,
+            api_mode=api_mode,
+        )

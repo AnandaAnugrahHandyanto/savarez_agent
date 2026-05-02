@@ -1583,7 +1583,8 @@ def _is_payment_error(exc: Exception) -> bool:
     if status in (402, 429, None):
         if any(kw in err_lower for kw in ("credits", "insufficient funds",
                                            "can only afford", "billing",
-                                           "payment required")):
+                                           "payment required", "usage_limit_reached",
+                                           "usage limit has been reached")):
             return True
     return False
 
@@ -3324,6 +3325,7 @@ def call_llm(
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
 
+    vision_requested_auto = task == "vision" and resolved_provider in ("auto", "", None)
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
             provider=resolved_provider if resolved_provider != "auto" else provider,
@@ -3539,7 +3541,7 @@ def call_llm(
         # Only try alternative providers when the user didn't explicitly
         # configure this task's provider.  Explicit provider = hard constraint;
         # auto (the default) = best-effort fallback chain.  (#7559)
-        is_auto = resolved_provider in ("auto", "", None)
+        is_auto = resolved_provider in ("auto", "", None) or vision_requested_auto
         if should_fallback and is_auto:
             reason = "payment error" if _is_payment_error(first_err) else "connection error"
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
@@ -3637,6 +3639,7 @@ async def async_call_llm(
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
 
+    vision_requested_auto = task == "vision" and resolved_provider in ("auto", "", None)
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
             provider=resolved_provider if resolved_provider != "auto" else provider,
@@ -3815,7 +3818,7 @@ async def async_call_llm(
 
         # ── Payment / connection fallback (mirrors sync call_llm) ─────
         should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
-        is_auto = resolved_provider in ("auto", "", None)
+        is_auto = resolved_provider in ("auto", "", None) or vision_requested_auto
         if should_fallback and is_auto:
             reason = "payment error" if _is_payment_error(first_err) else "connection error"
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",
