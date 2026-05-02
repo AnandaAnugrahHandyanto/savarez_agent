@@ -69,7 +69,7 @@ def extract_local_skills():
                 continue
 
             skill_path = os.path.join(root, "SKILL.md")
-            with open(skill_path) as f:
+            with open(skill_path, encoding="utf-8") as f:
                 content = f.read()
 
             if not content.startswith("---"):
@@ -128,7 +128,7 @@ def extract_cached_index_skills():
 
         filepath = os.path.join(INDEX_CACHE_DIR, filename)
         try:
-            with open(filepath) as f:
+            with open(filepath, encoding="utf-8") as f:
                 data = json.load(f)
         except (json.JSONDecodeError, OSError):
             continue
@@ -254,8 +254,8 @@ def main():
     ))
 
     os.makedirs(os.path.dirname(OUTPUT), exist_ok=True)
-    with open(OUTPUT, "w") as f:
-        json.dump(all_skills, f, indent=2)
+    with open(OUTPUT, "w", encoding="utf-8") as f:
+        json.dump(all_skills, f, indent=2, ensure_ascii=False)
 
     print(f"Extracted {len(all_skills)} skills to {OUTPUT}")
     print(f"  {len(local)} local ({sum(1 for s in local if s['source'] == 'built-in')} built-in, "
