@@ -12,7 +12,7 @@ import type {
 } from '../../../gatewayTypes.js'
 import { fmtK } from '../../../lib/text.js'
 import type { PanelSection } from '../../../types.js'
-import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
+import { type BusyInputMode, DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
@@ -420,14 +420,14 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'control busy enter mode [queue|steer|interrupt|status]',
+    help: 'control busy enter mode [queue|steer|background|interrupt|status]',
     name: 'busy',
     run: (arg, ctx) => {
       const mode = arg.trim().toLowerCase()
-      const valid = new Set(['', 'status', 'queue', 'steer', 'interrupt'])
+      const valid = new Set(['', 'status', 'queue', 'steer', 'background', 'interrupt'])
 
       if (!valid.has(mode)) {
-        return ctx.transcript.sys('usage: /busy [queue|steer|interrupt|status]')
+        return ctx.transcript.sys('usage: /busy [queue|steer|background|interrupt|status]')
       }
 
       if (!mode || mode === 'status') {
@@ -446,7 +446,8 @@ export const sessionCommands: SlashCommand[] = [
         .rpc<ConfigSetResponse>('config.set', { key: 'busy', value: mode })
         .then(
           ctx.guarded<ConfigSetResponse>(r => {
-            const next = r.value || mode
+            const next = (r.value || mode) as BusyInputMode
+            patchUiState({ busyInputMode: next })
             ctx.transcript.sys(`busy input mode: ${next}`)
           })
         )

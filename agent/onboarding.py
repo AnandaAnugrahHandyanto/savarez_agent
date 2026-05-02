@@ -51,6 +51,13 @@ def busy_input_hint_gateway(mode: str) -> str:
             "Send `/busy interrupt` or `/busy queue` to change this, or "
             "`/busy status` to check. This notice won't appear again."
         )
+    if mode == "background":
+        return (
+            "💡 First-time tip — I started your message in a separate background agent "
+            "instead of interrupting the current task. Send `/busy queue` to process "
+            "follow-ups in the same session later, `/busy steer` to inject context "
+            "mid-run, or `/busy status` to check. This notice won't appear again."
+        )
     return (
         "💡 First-time tip — I just interrupted my current task to answer you. "
         "Send `/busy queue` to queue follow-ups for after the current task instead, "
@@ -72,6 +79,12 @@ def busy_input_hint_cli(mode: str) -> str:
             "(tip) Your message was steered into the current run; it arrives "
             "after the next tool call. Use /busy interrupt or /busy queue to "
             "change this. This tip only shows once."
+        )
+    if mode == "background":
+        return (
+            "(tip) Your message started in a separate background agent. "
+            "Use /busy queue for same-session next-turn handling, or /busy steer "
+            "to inject mid-run. This tip only shows once."
         )
     return (
         "(tip) Your message interrupted the current run. "
