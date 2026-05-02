@@ -6,14 +6,18 @@ same key. The fix prefixes keys with platform value: 'telegram:123' vs
 'slack:123'.
 """
 
+import ast
+import inspect
 import json
 import tempfile
+import textwrap
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from gateway.config import Platform
+from gateway.platforms.base import MessageType
 from gateway.run import GatewayRunner
 
 
@@ -38,6 +42,59 @@ class TestVoiceKeyHelper:
         assert key_telegram == "telegram:123"
         assert key_slack == "slack:123"
         assert key_discord == "discord:123"
+
+    def test_get_voice_mode_for_whatsapp_resolves_lid_phone_aliases(self):
+        """Voice-only tool gating survives WhatsApp flipping chat IDs between LID and phone forms."""
+        runner = _make_runner()
+        runner._voice_mode = {"whatsapp:179143169863708@lid": "voice_only"}
+
+        def aliases(identifier):
+            value = str(identifier).split("@", 1)[0]
+            if value in {"179143169863708", "19025168540"}:
+                return {"179143169863708", "19025168540"}
+            return {value}
+
+        with patch("gateway.whatsapp_identity.expand_whatsapp_aliases", side_effect=aliases):
+            assert runner._get_voice_mode_for_chat(
+                Platform.WHATSAPP,
+                "19025168540@s.whatsapp.net",
+            ) == "voice_only"
+
+    def test_get_voice_mode_for_non_whatsapp_does_not_cross_platforms(self):
+        runner = _make_runner()
+        runner._voice_mode = {"whatsapp:123@lid": "voice_only"}
+
+        assert runner._get_voice_mode_for_chat(Platform.SLACK, "123") is None
+
+    def test_run_agent_does_not_shadow_platform_import(self):
+        """Voice-only gating must not be disabled by a local Platform import later in _run_agent."""
+        source = textwrap.dedent(inspect.getsource(GatewayRunner._run_agent))
+        tree = ast.parse(source)
+        local_platform_imports = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            and node.module == "gateway.config"
+            and any(alias.name == "Platform" for alias in node.names)
+        ]
+
+        assert local_platform_imports == []
+
+    def test_should_send_voice_reply_uses_whatsapp_alias_lookup(self):
+        runner = _make_runner()
+        runner._voice_mode = {"whatsapp:179143169863708@lid": "voice_only"}
+        event = MagicMock()
+        event.source.platform = Platform.WHATSAPP
+        event.source.chat_id = "19025168540@s.whatsapp.net"
+        event.message_type = MessageType.VOICE
+
+        def aliases(identifier):
+            value = str(identifier).split("@", 1)[0]
+            if value in {"179143169863708", "19025168540"}:
+                return {"179143169863708", "19025168540"}
+            return {value}
+
+        with patch("gateway.whatsapp_identity.expand_whatsapp_aliases", side_effect=aliases):
+            assert runner._should_send_voice_reply(event, "hello", [], already_sent=True) is True
 
 
 class TestVoiceModePlatformIsolation:
@@ -65,14 +122,15 @@ class TestVoiceModePlatformIsolation:
 class TestLegacyKeyMigration:
     """Test migration of legacy unprefixed keys in _load_voice_modes."""
 
-    def test_load_voice_modes_skips_legacy_keys(self):
-        """_load_voice_modes skips keys without ':' prefix and logs a warning."""
+    def test_load_voice_modes_migrates_legacy_whatsapp_jids_and_skips_ambiguous_keys(self):
+        """_load_voice_modes migrates self-identifying WhatsApp JIDs only."""
         runner = _make_runner()
 
         # Simulate legacy persisted data with unprefixed keys
         legacy_data = {
             "123": "all",
             "456": "voice_only",
+            "179143169863708@lid": "voice_only",
             # Also includes a properly prefixed key (from after the fix)
             "telegram:789": "off",
         }
@@ -85,12 +143,14 @@ class TestLegacyKeyMigration:
                 with patch("gateway.run.logger") as mock_logger:
                     result = runner._load_voice_modes()
 
-            # Legacy keys without ':' should be skipped
+            # Ambiguous legacy keys without ':' should be skipped
             assert "123" not in result
             assert "456" not in result
+            # WhatsApp JIDs are self-identifying, so they are migrated
+            assert result.get("whatsapp:179143169863708@lid") == "voice_only"
             # Prefixed key should be preserved
             assert result.get("telegram:789") == "off"
-            # Warning should be logged for each legacy key
+            # Warning should be logged for ambiguous legacy keys
             assert mock_logger.warning.called
             warning_calls = [str(call) for call in mock_logger.warning.call_args_list]
             assert any("Skipping legacy unprefixed voice mode key" in str(c) for c in warning_calls)

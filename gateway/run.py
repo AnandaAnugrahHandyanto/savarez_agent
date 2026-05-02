@@ -1221,6 +1221,33 @@ class GatewayRunner:
         """Return a platform-namespaced key for voice mode state."""
         return f"{platform.value}:{chat_id}"
 
+    def _get_voice_mode_for_chat(self, platform: Platform, chat_id: str) -> Optional[str]:
+        """Return persisted voice mode for a chat, resolving WhatsApp JID/LID aliases."""
+        direct = self._voice_mode.get(self._voice_key(platform, chat_id))
+        if direct:
+            return direct
+
+        if platform != Platform.WHATSAPP:
+            return None
+
+        try:
+            from gateway.whatsapp_identity import expand_whatsapp_aliases, normalize_whatsapp_identifier
+
+            wanted_aliases = expand_whatsapp_aliases(chat_id)
+            wanted_aliases.add(normalize_whatsapp_identifier(chat_id))
+            prefix = f"{platform.value}:"
+            for key, mode in self._voice_mode.items():
+                if not key.startswith(prefix):
+                    continue
+                stored_chat_id = key[len(prefix):]
+                stored_aliases = expand_whatsapp_aliases(stored_chat_id)
+                stored_aliases.add(normalize_whatsapp_identifier(stored_chat_id))
+                if wanted_aliases.intersection(stored_aliases):
+                    return mode
+        except Exception as exc:
+            logger.debug("Failed to resolve WhatsApp voice-mode aliases for %s: %s", chat_id, exc)
+        return None
+
     def _load_voice_modes(self) -> Dict[str, str]:
         try:
             data = json.loads(self._VOICE_MODE_PATH.read_text())
@@ -1236,8 +1263,20 @@ class GatewayRunner:
             if mode not in valid_modes:
                 continue
             key = str(chat_id)
-            # Skip legacy unprefixed keys (warn and skip)
+            # Legacy pre-platform-isolation state stored raw chat IDs. We cannot
+            # safely infer a platform for arbitrary numeric IDs, but WhatsApp JIDs
+            # are self-identifying and should survive account relinks/upgrades.
+            # Migrate those to the new platform-prefixed form instead of silently
+            # dropping voice mode for active chats.
             if ":" not in key:
+                if key.endswith(("@lid", "@s.whatsapp.net", "@g.us")):
+                    result[f"whatsapp:{key}"] = mode
+                    logger.info(
+                        "Migrated legacy WhatsApp voice mode key %r to %r.",
+                        key,
+                        f"whatsapp:{key}",
+                    )
+                    continue
                 logger.warning(
                     "Skipping legacy unprefixed voice mode key %r during migration. "
                     "Re-enable voice mode on that chat to rebuild the prefixed key.",
@@ -8234,7 +8273,7 @@ class GatewayRunner:
             return False
 
         chat_id = event.source.chat_id
-        voice_mode = self._voice_mode.get(self._voice_key(event.source.platform, chat_id), "off")
+        voice_mode = self._get_voice_mode_for_chat(event.source.platform, chat_id) or "off"
         is_voice_input = (event.message_type == MessageType.VOICE)
 
         should = (
@@ -11777,6 +11816,28 @@ class GatewayRunner:
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 
+        # Voice-only WhatsApp turns must not get general-purpose tools. The gateway
+        # has already handled STT before the agent runs, and final text is converted
+        # to speech by the adapter. If the model can see terminal/send-message tools,
+        # it may try to manufacture and send its own audio with macOS `say` or another
+        # fallback voice, bypassing the configured TTS character voice.
+        _voice_only_turn = False
+        try:
+            voice_mode = self._get_voice_mode_for_chat(source.platform, source.chat_id)
+            _voice_only_turn = (
+                source.platform == Platform.WHATSAPP
+                and voice_mode == "voice_only"
+            )
+        except Exception:
+            _voice_only_turn = False
+        if _voice_only_turn:
+            enabled_toolsets = []
+            logger.info(
+                "Voice-only WhatsApp turn: disabling agent tools so adapter auto-TTS owns voice delivery "
+                "(chat_id=%s)",
+                source.chat_id,
+            )
+
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):
             display_config = {}
@@ -11819,7 +11880,6 @@ class GatewayRunner:
         )
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
-        from gateway.config import Platform
         tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
@@ -13816,13 +13876,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         try:
             import subprocess as _sp
             _ps = _sp.run(
-                ["ps", "aux"],
+                ["ps", "-axo", "pid=,comm="],
                 capture_output=True, text=True, timeout=3,
             )
             _hermes_procs = [
-                line for line in _ps.stdout.splitlines()
+                line.strip() for line in _ps.stdout.splitlines()
                 if ("hermes" in line.lower() or "gateway" in line.lower())
-                and str(os.getpid()) not in line.split()[1:2]  # exclude self
+                and str(os.getpid()) not in line.split()[:1]  # exclude self
             ]
             if _hermes_procs:
                 logger.warning(

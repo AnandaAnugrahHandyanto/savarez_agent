@@ -329,6 +329,14 @@ class TestExtractMedia:
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
 
+    def test_media_placeholder_is_removed_but_not_sent(self):
+        content = "Done.\nMEDIA:/absolute/path"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "MEDIA:" not in cleaned
+        assert "/absolute/path" not in cleaned
+        assert cleaned == "Done."
+
 
 # ---------------------------------------------------------------------------
 # should_send_media_as_audio

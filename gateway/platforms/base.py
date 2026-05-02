@@ -97,6 +97,25 @@ def _prefix_within_utf16_limit(s: str, limit: int) -> str:
     return s[:lo]
 
 
+def _truncate_spoken_reply(text: str, limit: int) -> str:
+    """Keep auto-TTS replies short enough for slow cloned voice engines."""
+    cleaned = (text or "").strip()
+    if limit <= 0 or len(cleaned) <= limit:
+        return cleaned
+
+    prefix = cleaned[:limit].rstrip()
+    # Prefer a sentence boundary near the cap, but do not cut to a tiny fragment.
+    boundary = max(prefix.rfind(". "), prefix.rfind("! "), prefix.rfind("? "), prefix.rfind("\n"))
+    if boundary >= int(limit * 0.55):
+        prefix = prefix[: boundary + 1].rstrip()
+    else:
+        word_boundary = prefix.rfind(" ")
+        if word_boundary >= int(limit * 0.55):
+            prefix = prefix[:word_boundary].rstrip()
+
+    return f"{prefix}…"
+
+
 def _custom_unit_to_cp(s: str, budget: int, len_fn) -> int:
     """Return the largest codepoint offset *n* such that ``len_fn(s[:n]) <= budget``.
 
@@ -1897,16 +1916,32 @@ class BasePlatformAdapter(ABC):
         media_pattern = re.compile(
             r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
+        had_media_tag = False
         for match in media_pattern.finditer(content):
+            had_media_tag = True
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+            expanded = os.path.expanduser(path)
+            # Ignore LLM placeholders. Treating these as real files creates noisy
+            # platform errors like EISDIR for MEDIA:/absolute/path and can make a
+            # voice-only reply look broken even when auto-TTS succeeded.
+            placeholder_parts = {"absolute", "path", "to", "file", "your", "local"}
+            path_parts = {part.lower() for part in expanded.split(os.sep) if part}
+            if (
+                expanded in {"/absolute/path", "/path/to/file"}
+                or "<" in expanded
+                or ">" in expanded
+                or placeholder_parts.issuperset(path_parts)
+            ):
+                continue
             if path:
-                media.append((os.path.expanduser(path), has_voice_tag))
+                media.append((expanded, has_voice_tag))
 
-        # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
-        if media:
+        # Remove MEDIA tags from content (including surrounding quote/backtick wrappers),
+        # even when they were ignored as placeholders.
+        if had_media_tag:
             cleaned = media_pattern.sub('', cleaned)
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
@@ -2770,7 +2805,14 @@ class BasePlatformAdapter(ABC):
                         from tools.tts_tool import text_to_speech_tool, check_tts_requirements
                         if check_tts_requirements():
                             import json as _json
-                            speech_text = re.sub(r'[*_`#\[\]()]', '', text_content)[:4000].strip()
+                            speech_text = re.sub(r'[*_`#\[\]()]', '', text_content).strip()
+                            if self.platform == Platform.WHATSAPP:
+                                # Chatterbox cloned voices can take minutes on multi-chunk
+                                # replies. Keep WhatsApp voice-note answers to one spoken
+                                # chunk; the text fallback remains available only if TTS fails.
+                                speech_text = _truncate_spoken_reply(speech_text, 320)
+                            else:
+                                speech_text = speech_text[:4000].strip()
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
                             tts_result_str = await asyncio.to_thread(
@@ -2794,6 +2836,12 @@ class BasePlatformAdapter(ABC):
                             os.remove(_tts_path)
                         except OSError:
                             pass
+
+                    # WhatsApp voice-note replies should be audio-only. Sending the
+                    # same text underneath is noisy, and after relinks it makes the
+                    # voice lane look broken even when TTS succeeded.
+                    if self.platform == Platform.WHATSAPP:
+                        text_content = ""
 
                 # Send the text portion
                 if text_content:
