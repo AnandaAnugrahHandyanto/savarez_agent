@@ -92,7 +92,10 @@ class TestIterSkillIndexFiles:
         # This must terminate (not hang)
         results = list(iter_skill_index_files(tmp_path, "SKILL.md"))
         assert len(results) == 1
-        assert results[0] == dir_a / "SKILL.md"
+        # Use resolve() — os.walk traversal order varies by platform,
+        # so the reported path may be a/SKILL.md or b/link/SKILL.md
+        # (both resolve to the same file).
+        assert results[0].resolve() == (dir_a / "SKILL.md").resolve()
 
     def test_non_cyclic_symlink_still_followed(self, tmp_path):
         """Non-cyclic symlinks should still be followed and yield files."""
