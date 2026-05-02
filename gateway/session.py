@@ -16,7 +16,7 @@ import threading
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -491,6 +491,10 @@ class SessionEntry:
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
 
+    # Pending nudges from scheduled reminders that need to be
+    # delivered to this session on its next turn. Nudges trigger auto-resume.
+    pending_nudges: List[Dict[str, Any]] = field(default_factory=list)
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -518,6 +522,7 @@ class SessionEntry:
                 else None
             ),
             "is_fresh_reset": self.is_fresh_reset,
+            "pending_nudges": self.pending_nudges,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -567,6 +572,7 @@ class SessionEntry:
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
             is_fresh_reset=data.get("is_fresh_reset", False),
+            pending_nudges=data.get("pending_nudges", []),
         )
 
 
