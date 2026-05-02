@@ -1975,10 +1975,14 @@ class GatewayRunner:
             try:
                 success = await adapter.connect()
                 if success:
-                    # Plugin platforms keyed by string in self.adapters
-                    # (built-ins use the Platform enum). Downstream code
-                    # treats both as opaque dict keys for routing.
-                    self.adapters[plugin_name] = adapter
+                    # Key by adapter.platform (a PluginPlatformIdentifier
+                    # instance). Downstream code does ``[p.value for p in
+                    # self.adapters.keys()]`` and similar — keying by the
+                    # identifier (which has a .value attribute) keeps
+                    # plugin platforms structurally compatible with the
+                    # rest of the dict instead of mixing strings and
+                    # enum members.
+                    self.adapters[adapter.platform] = adapter
                     connected_count += 1
                     logger.info("✓ %s (plugin) connected", plugin_name)
                 else:
