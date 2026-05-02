@@ -1818,19 +1818,26 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+      - Single: provide goal (+ optional context, toolsets, role, model, provider, base_url)
+      - Batch:  provide tasks array [{goal, context, toolsets, role, model, provider, base_url}, ...]
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
+
+    Per-task model/provider/base_url overrides the top-level ones, which in turn
+    override the config. api_key is always resolved from config or provider system
+    (never from task overrides for security reasons).
 
     Returns JSON with results array, one entry per task.
     """
@@ -1895,7 +1902,8 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role,
+             "model": model, "provider": provider, "base_url": base_url}
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -1911,10 +1919,12 @@ def delegate_task(
     # Resolve delegation credentials for each task
     for i, t in enumerate(task_list):
         try:
-            # First resolve task-specific model/provider overrides
+            # First resolve task-specific model/provider/base_url overrides
+            # (api_key is never from task overrides for security reasons)
             task_model = t.get("model")
             task_provider = t.get("provider")
-            model_override = _resolve_task_model(task_model, task_provider, cfg, parent_agent)
+            task_base_url = t.get("base_url")
+            model_override = _resolve_task_model(task_model, task_provider, task_base_url, cfg, parent_agent)
             
             # Then resolve full credentials using the override
             task_creds = _resolve_delegation_credentials(cfg, parent_agent, model_override)
@@ -2234,6 +2244,7 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
 def _resolve_task_model(
     task_model: Optional[str],
     task_provider: Optional[str],
+    task_base_url: Optional[str],
     cfg: dict,
     parent_agent,
 ) -> dict:
@@ -2243,9 +2254,10 @@ def _resolve_task_model(
     1. Separate format: provider field + model field — use directly
     2. Pure model name: "model-slug" — use task_provider or global provider
 
-    Returns a dict with {model, provider} that overrides delegation config.
+    Returns a dict with {model, provider, base_url} that overrides delegation config.
+    (api_key is resolved from config or provider system, not from task overrides for security reasons.
     """
-    if not task_model and not task_provider:
+    if not task_model and not task_provider and not task_base_url:
         return {}
 
     result: Dict[str, Any] = {}
@@ -2255,6 +2267,9 @@ def _resolve_task_model(
 
     if task_model:
         result["model"] = str(task_model).strip()
+
+    if task_base_url:
+        result["base_url"] = str(task_base_url).strip()
 
     return result
 
@@ -2272,8 +2287,9 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent, task_override: Opti
     If neither base_url nor provider is configured, returns None values so the
     child inherits everything from the parent agent.
 
-    task_override: optional dict with {model, provider} from per-task specification.
-    When provided, these override the configured delegation.model/provider.
+    task_override: optional dict with {model, provider, base_url} from per-task specification.
+    (api_key is NOT accepted from task overrides for security reasons;
+    it is always resolved from config or provider system.)
 
     Raises ValueError with a user-friendly message on credential failure.
     """
@@ -2285,10 +2301,88 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent, task_override: Opti
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
 
+    # Apply task overrides - task_override has higher priority than config
     effective_model = task_override.get("model") or configured_model
     effective_provider = task_override.get("provider") or configured_provider
+    effective_base_url = task_override.get("base_url") or configured_base_url
 
-    if configured_base_url and not task_override.get("provider"):
+    # First, check if we have a model but no provider/base_url - try to find matching custom provider
+    found_provider_data = None
+    if effective_model and not effective_provider and not effective_base_url:
+        try:
+            from hermes_cli.config import load_config
+
+            full_config = load_config()
+            providers = full_config.get("providers", {})
+            custom_providers = full_config.get("custom_providers", [])
+
+            # Check custom_providers list first (old format) - PRIORITY
+            if isinstance(custom_providers, list):
+                for cp in custom_providers:
+                    if isinstance(cp, dict) and cp.get("model") == effective_model:
+                        base_url = cp.get("base_url")
+                        if base_url:
+                            found_provider_data = cp
+                            break
+
+            # Then check providers dict (new format) if not found
+            if not found_provider_data and isinstance(providers, dict):
+                for provider_name, provider_data in providers.items():
+                    if isinstance(provider_data, dict) and provider_data.get("model") == effective_model:
+                        # Found a matching custom provider by model!
+                        base_url = provider_data.get("api") or provider_data.get("url") or provider_data.get("base_url")
+                        if base_url:
+                            found_provider_data = provider_data
+                            found_provider_data["name"] = provider_name
+                            break
+        except Exception:
+            # If anything fails, continue with normal logic
+            pass
+
+    # If we found provider data, use it directly
+    if found_provider_data:
+        base_url = found_provider_data.get("api") or found_provider_data.get("url") or found_provider_data.get("base_url")
+        key_env = found_provider_data.get("key_env", "")
+        api_key = None
+        if key_env:
+            api_key = os.getenv(key_env, "").strip()
+        if not api_key:
+            api_key = str(found_provider_data.get("api_key", "") or "").strip()
+        if not api_key:
+            api_key = configured_api_key or os.getenv("OPENAI_API_KEY", "").strip()
+
+        if not api_key:
+            raise ValueError(
+                f"Custom provider for model '{effective_model}' configured but no API key was found. "
+                "Set the api_key or key_env in providers/custom_providers config."
+            )
+
+        effective_base_url = str(base_url).strip()
+        base_lower = effective_base_url.lower()
+
+        provider = "custom"
+        api_mode = "chat_completions"
+
+        # Try to get api_mode from provider data
+        from hermes_cli.runtime_provider import _parse_api_mode, _detect_api_mode_for_url
+        provider_api_mode = _parse_api_mode(found_provider_data.get("api_mode") or found_provider_data.get("transport"))
+        if provider_api_mode:
+            api_mode = provider_api_mode
+        else:
+            detected_api_mode = _detect_api_mode_for_url(effective_base_url)
+            if detected_api_mode:
+                api_mode = detected_api_mode
+
+        return {
+            "model": effective_model,
+            "provider": provider,
+            "base_url": effective_base_url,
+            "api_key": api_key,
+            "api_mode": api_mode,
+        }
+
+    # If task_override has base_url, use that directly
+    if effective_base_url and not effective_provider:
         api_key = configured_api_key or os.getenv("OPENAI_API_KEY", "").strip()
         if not api_key:
             raise ValueError(
@@ -2296,16 +2390,16 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent, task_override: Opti
                 "Set delegation.api_key or OPENAI_API_KEY."
             )
 
-        base_lower = configured_base_url.lower()
+        base_lower = effective_base_url.lower()
         provider = "custom"
         api_mode = "chat_completions"
         if (
-            base_url_hostname(configured_base_url) == "chatgpt.com"
+            base_url_hostname(effective_base_url) == "chatgpt.com"
             and "/backend-api/codex" in base_lower
         ):
             provider = "openai-codex"
             api_mode = "codex_responses"
-        elif base_url_hostname(configured_base_url) == "api.anthropic.com":
+        elif base_url_hostname(effective_base_url) == "api.anthropic.com":
             provider = "anthropic"
             api_mode = "anthropic_messages"
         elif "api.kimi.com/coding" in base_lower:
@@ -2315,49 +2409,52 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent, task_override: Opti
         return {
             "model": effective_model,
             "provider": provider,
-            "base_url": configured_base_url,
+            "base_url": effective_base_url,
             "api_key": api_key,
             "api_mode": api_mode,
         }
 
-    if not effective_provider:
-        # No provider override — child inherits everything from parent
+    # If we have a provider, resolve full credentials
+    if effective_provider:
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            runtime = resolve_runtime_provider(
+                requested=effective_provider,
+                target_model=effective_model
+            )
+        except Exception as exc:
+            raise ValueError(
+                f"Cannot resolve delegation provider '{effective_provider}': {exc}. "
+                f"Check that the provider is configured (API key set, valid provider name), "
+                f"or set delegation.base_url/delegation.api_key for a direct endpoint. "
+                f"Available providers: openrouter, nous, zai, kimi-coding, minimax."
+            ) from exc
+
+        api_key = configured_api_key or runtime.get("api_key", "")
+        if not api_key:
+            raise ValueError(
+                f"Delegation provider '{effective_provider}' resolved but has no API key. "
+                f"Set the appropriate environment variable or run 'hermes auth'."
+            )
+
         return {
-            "model": effective_model,
-            "provider": None,
-            "base_url": None,
-            "api_key": None,
-            "api_mode": None,
+            "model": effective_model or runtime.get("model") or None,
+            "provider": runtime.get("provider"),
+            "base_url": effective_base_url or runtime.get("base_url"),
+            "api_key": api_key,
+            "api_mode": runtime.get("api_mode"),
+            "command": runtime.get("command"),
+            "args": list(runtime.get("args") or []),
         }
 
-    # Provider is configured — resolve full credentials
-    try:
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-
-        runtime = resolve_runtime_provider(requested=effective_provider)
-    except Exception as exc:
-        raise ValueError(
-            f"Cannot resolve delegation provider '{effective_provider}': {exc}. "
-            f"Check that the provider is configured (API key set, valid provider name), "
-            f"or set delegation.base_url/delegation.api_key for a direct endpoint. "
-            f"Available providers: openrouter, nous, zai, kimi-coding, minimax."
-        ) from exc
-
-    api_key = runtime.get("api_key", "")
-    if not api_key:
-        raise ValueError(
-            f"Delegation provider '{effective_provider}' resolved but has no API key. "
-            f"Set the appropriate environment variable or run 'hermes auth'."
-        )
-
+    # No provider or base_url override — child inherits everything from parent
     return {
-        "model": effective_model or runtime.get("model") or None,
-        "provider": runtime.get("provider"),
-        "base_url": runtime.get("base_url"),
-        "api_key": api_key,
-        "api_mode": runtime.get("api_mode"),
-        "command": runtime.get("command"),
-        "args": list(runtime.get("args") or []),
+        "model": effective_model,
+        "provider": None,
+        "base_url": effective_base_url,
+        "api_key": configured_api_key,
+        "api_mode": None,
     }
 
 
@@ -2505,6 +2602,10 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "description": "Override the global provider for this subagent (e.g. 'openrouter', 'openai'). Use together with model.",
                         },
+                        "base_url": {
+                            "type": "string",
+                            "description": "Direct OpenAI-compatible API endpoint URL for this subagent (e.g. https://api.openai.com/v1). Overrides delegation.base_url for this task only. (API key is resolved from config or provider system, not from task overrides.)",
+                        },
                         "role": {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
@@ -2534,6 +2635,18 @@ DELEGATE_TASK_SCHEMA = {
                     "max_spawn_depth or when "
                     "delegation.orchestrator_enabled=false."
                 ),
+            },
+            "model": {
+                "type": "string",
+                "description": "Model for the subagent (e.g. 'gpt-4o', 'claude-3-sonnet'). Overrides delegation.model. Per-task model in the tasks array takes precedence.",
+            },
+            "provider": {
+                "type": "string",
+                "description": "Override the global provider for the subagent (e.g. 'openrouter', 'openai'). Use together with model.",
+            },
+            "base_url": {
+                "type": "string",
+                "description": "Direct OpenAI-compatible API endpoint URL for the subagent (e.g. https://api.openai.com/v1). Overrides delegation.base_url. (API key is resolved from config or provider system, not from task overrides for security reasons.)",
             },
             "acp_command": {
                 "type": "string",
@@ -2574,6 +2687,9 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        model=args.get("model"),
+        provider=args.get("provider"),
+        base_url=args.get("base_url"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

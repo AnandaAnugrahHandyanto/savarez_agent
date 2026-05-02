@@ -42,7 +42,7 @@ class TodoStore:
         Write todos. Returns the full current list after writing.
 
         Args:
-            todos: list of {id, content, status, model?, provider?} dicts
+            todos: list of {id, content, status, model, provider, base_url} dicts
             merge: if False, replace the entire list. If True, update
                    existing items by id and append new ones.
         """
@@ -69,8 +69,10 @@ class TodoStore:
                         existing[item_id]["model"] = str(t["model"]).strip() if t["model"] else None
                     if "provider" in t:
                         existing[item_id]["provider"] = str(t["provider"]).strip() if t["provider"] else None
+                    if "base_url" in t:
+                        existing[item_id]["base_url"] = str(t["base_url"]).strip() if t["base_url"] else None
                 else:
-                    # New item -- validate fully and append to end
+                    # New item — validate fully and append to end
                     validated = self._validate(t)
                     existing[validated["id"]] = validated
                     self._items.append(validated)
@@ -133,7 +135,8 @@ class TodoStore:
         Validate and normalize a todo item.
 
         Ensures required fields exist and status is valid.
-        Returns a clean dict with {id, content, status} plus optional {model, provider}.
+        Returns a clean dict with {id, content, status} plus optional {model, provider, base_url}.
+        (api_key is NOT accepted from todo items for security reasons.)
         """
         item_id = str(item.get("id", "")).strip()
         if not item_id:
@@ -158,6 +161,11 @@ class TodoStore:
             provider = str(item["provider"]).strip()
             if provider:
                 result["provider"] = provider
+
+        if item.get("base_url"):
+            base_url = str(item["base_url"]).strip()
+            if base_url:
+                result["base_url"] = base_url
 
         return result
 
@@ -236,7 +244,10 @@ TODO_SCHEMA = {
         "- merge=true: update existing items by id, add any new ones\n\n"
         "Each item: {id: string, content: string, "
         "status: pending|in_progress|completed|cancelled}\n"
-        "Optional overrides (use together): model (e.g. 'gpt-4o'), provider (e.g. 'openrouter').\n"
+        "Optional overrides: model (e.g. 'gpt-4o'), provider (e.g. 'openrouter'), "
+        "base_url (direct API endpoint).\n"
+        "(api_key is never accepted from todo items for security reasons; "
+        "it is always resolved from config or provider system.)\n"
         "List order is priority. Only ONE item in_progress at a time.\n"
         "Mark items completed immediately when done. If something fails, "
         "cancel it and add a revised item.\n\n"
@@ -271,6 +282,10 @@ TODO_SCHEMA = {
                         "provider": {
                             "type": "string",
                             "description": "Override the global provider for this subagent (e.g. 'openrouter', 'openai'). Use together with model."
+                        },
+                        "base_url": {
+                            "type": "string",
+                            "description": "Direct OpenAI-compatible API endpoint URL for this subagent (e.g. https://api.openai.com/v1). (API key is resolved from config or provider system, not from todo items for security reasons.)"
                         }
                     },
                     "required": ["id", "content", "status"]
