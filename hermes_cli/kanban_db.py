@@ -1,8 +1,13 @@
 """SQLite-backed Kanban board for multi-profile collaboration.
 
-The board lives at ``$HERMES_HOME/kanban.db`` (profile-agnostic on purpose:
-multiple profiles on the same machine all see the same board, which IS the
-coordination primitive).
+The board lives at the *default* Hermes root (``~/.hermes/kanban.db`` in
+standard installs, ``$HERMES_HOME/kanban.db`` in Docker / custom roots) —
+profile-agnostic on purpose: multiple profiles on the same machine all see
+the same board, which IS the coordination primitive.  The path is resolved
+via ``get_default_hermes_root()``, NOT ``get_hermes_home()``, so that a
+worker running under ``hermes -p <name>`` (HERMES_HOME pointed at
+``profiles/<name>``) still reaches the shared host-level board instead of a
+private per-profile DB.  See issue #18442.
 
 Schema is intentionally small: tasks, task_links, task_comments,
 task_events.  The ``workspace_kind`` field decouples coordination from git
@@ -62,15 +67,26 @@ _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
 # ---------------------------------------------------------------------------
 
 def kanban_db_path() -> Path:
-    """Return the path to ``kanban.db`` inside the active HERMES_HOME."""
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "kanban.db"
+    """Return the path to the shared host-level ``kanban.db``.
+
+    Resolved against the *default* Hermes root rather than the active
+    profile's HERMES_HOME, so that a worker spawned under
+    ``hermes -p <name>`` reaches the same board as the dispatcher and the
+    other profiles on the host.  See issue #18442.
+    """
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root() / "kanban.db"
 
 
 def workspaces_root() -> Path:
-    """Return the directory under which ``scratch`` workspaces are created."""
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "kanban" / "workspaces"
+    """Return the directory under which ``scratch`` workspaces are created.
+
+    Anchored at the default Hermes root for the same reason as
+    :func:`kanban_db_path` -- workspace paths are absolute and shared across
+    profiles, so they must not be created under a profile-private root.
+    """
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root() / "kanban" / "workspaces"
 
 
 # ---------------------------------------------------------------------------
