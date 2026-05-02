@@ -40,13 +40,29 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _check_kanban_mode() -> bool:
-    """Tools are available iff the current process has ``HERMES_KANBAN_TASK``
-    set in its env, which the dispatcher sets when spawning a worker.
+    """Tools are available when the current process has ``HERMES_KANBAN_TASK``
+    set (kanban worker) OR when the active profile has ``kanban`` in its
+    toolsets config (orchestrator profiles that route via kanban).
 
-    Humans running ``hermes chat`` see zero kanban tools. Workers spawned
-    by the kanban dispatcher (gateway-embedded by default) see all seven.
+    Workers spawned by the kanban dispatcher always pass via the env var.
+    Orchestrator profiles that list ``kanban`` in their ``toolsets`` config
+    need this second path because the dispatcher never sets the env var
+    for them — they create/link tasks, not execute them. (issue #18968)
     """
-    return bool(os.environ.get("HERMES_KANBAN_TASK"))
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return True
+    # Check if kanban is in the current profile's toolsets config.
+    # This allows orchestrator profiles to use kanban_create/kanban_link
+    # even when they're not kanban workers.
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        toolsets = cfg.get("toolsets") or []
+        if "kanban" in toolsets:
+            return True
+    except Exception:
+        pass
+    return False
 
 
 # ---------------------------------------------------------------------------
