@@ -4025,16 +4025,19 @@ class AIAgent:
                 dump_payload["error"] = error_info
 
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            from agent.redact import redact_sensitive_text
+
             dump_file = self.logs_dir / f"request_dump_{self.session_id}_{timestamp}.json"
+            dump_json = json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str)
             dump_file.write_text(
-                json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str),
+                redact_sensitive_text(dump_json),
                 encoding="utf-8",
             )
 
             self._vprint(f"{self.log_prefix}🧾 Request debug dump written to: {dump_file}")
 
             if env_var_enabled("HERMES_DUMP_REQUEST_STDOUT"):
-                print(json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str))
+                print(redact_sensitive_text(dump_json))
 
             return dump_file
         except Exception as dump_error:
