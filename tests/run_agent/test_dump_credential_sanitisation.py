@@ -3,14 +3,18 @@
 Verify that _dump_api_request_debug never writes credential material to disk.
 """
 import json
-import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Import only what we need — run_agent is the module under test.
 from run_agent import AIAgent
+
+# Realistic-looking fake keys — long enough to exercise the masking logic
+# (_mask_api_key_for_logs: >12 chars -> prefix...suffix, >18 chars -> 6+4).
+_FAKE_OPENAI_KEY = "sk-proj-abc123def456ghi789jkl012mno345pqr678"
+_FAKE_XAI_KEY = "xai-ABCDefghIJKLmnopQRSTuvwxYZ1234567890abcd"
+_FAKE_ANTHROPIC_KEY = "sk-ant-api03-1234567890abcdef1234567890abcdef"
 
 
 @pytest.fixture()
@@ -29,7 +33,7 @@ def agent(tmp_path):
             skip_memory=True,
         )
         a.client = MagicMock()
-        a.client.api_key = "sk-proj-abc123def456ghi789jkl012mno345pqr678"
+        a.client.api_key = _FAKE_OPENAI_KEY
         a.logs_dir = tmp_path
         a.session_id = "test-dump-sanitise"
         a.api_mode = "chat_completions"
@@ -49,48 +53,48 @@ class TestDumpCredentialSanitisation:
 
     def test_api_key_stripped_from_body(self, agent):
         """api_key inside api_kwargs body must not appear in dump."""
-        secret = "sk-proj-abc123def456ghi789jkl012mno345pqr678"
         payload = self._dump_and_read(
             agent,
             {
                 "model": "gpt-4",
                 "messages": [{"role": "user", "content": "hi"}],
-                "api_key": secret,
+                "api_key": _FAKE_OPENAI_KEY,
             },
         )
         body_text = json.dumps(payload["request"]["body"])
-        assert secret not in body_text
+        assert _FAKE_OPENAI_KEY not in body_text
         assert "api_key" not in body_text
 
     def test_x_api_key_stripped_from_body(self, agent):
         """x_api_key inside api_kwargs body must not appear in dump."""
-        secret = "xai-abc123def456ghi789jkl012mno345pqr678"
         payload = self._dump_and_read(
             agent,
             {
                 "model": "grok-3",
                 "messages": [{"role": "user", "content": "hi"}],
-                "x_api_key": secret,
+                "x_api_key": _FAKE_XAI_KEY,
             },
         )
         body_text = json.dumps(payload["request"]["body"])
-        assert secret not in body_text
+        assert _FAKE_XAI_KEY not in body_text
 
     def test_extra_headers_stripped_from_body(self, agent):
         """extra_headers dict (may contain Authorization) must be removed."""
-        secret = "Bearer sk-ant-secret1234567890"
         payload = self._dump_and_read(
             agent,
             {
                 "model": "claude-3",
                 "messages": [{"role": "user", "content": "hi"}],
-                "extra_headers": {"Authorization": secret, "X-API-Key": "key-123"},
+                "extra_headers": {
+                    "Authorization": f"Bearer {_FAKE_ANTHROPIC_KEY}",
+                    "X-API-Key": "some-key-value",
+                },
             },
         )
         body_text = json.dumps(payload["request"]["body"])
         assert "extra_headers" not in body_text
-        assert secret not in body_text
-        assert "key-123" not in body_text
+        assert _FAKE_ANTHROPIC_KEY not in body_text
+        assert "some-key-value" not in body_text
 
     def test_headers_dict_stripped_from_body(self, agent):
         """Top-level headers dict in body must be removed."""
@@ -99,25 +103,31 @@ class TestDumpCredentialSanitisation:
             {
                 "model": "test",
                 "messages": [{"role": "user", "content": "hi"}],
-                "headers": {"Authorization": "Bearer secret-token-here"},
+                "headers": {"Authorization": f"Bearer {_FAKE_OPENAI_KEY}"},
             },
         )
         body_text = json.dumps(payload["request"]["body"])
         assert "headers" not in body_text
-        assert "secret-token-here" not in body_text
+        assert _FAKE_OPENAI_KEY not in body_text
 
     def test_auth_header_masked_in_request_headers(self, agent):
-        """Authorization in the synthetic request headers must be masked."""
+        """Authorization in the synthetic request headers must be masked.
+
+        _mask_api_key_for_logs preserves first 8 + last 4 chars for keys
+        > 12 chars. The full key must never appear.
+        """
         payload = self._dump_and_read(
             agent,
             {"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
         )
         auth = payload["request"]["headers"].get("Authorization", "")
-        # Must not contain the full key
-        assert "sk-proj-abc123def456ghi789jkl012mno345pqr678" not in auth
-        # Must either be masked or absent
+        # Full key must not appear
+        assert _FAKE_OPENAI_KEY not in auth
+        # Masked format: first 8 chars + "..." + last 4 chars
         if auth:
-            assert "..." in auth or "***" in auth
+            assert _FAKE_OPENAI_KEY[:8] in auth
+            assert _FAKE_OPENAI_KEY[-4:] in auth
+            assert "..." in auth
 
     def test_no_timeout_in_body(self, agent):
         """timeout is transport-only and must not appear in dump."""
@@ -147,17 +157,16 @@ class TestDumpCredentialSanitisation:
 
     def test_full_serialised_dump_contains_no_secrets(self, agent):
         """End-to-end: the entire serialised JSON must contain no raw secrets."""
-        secret_key = "sk-proj-abc123def456ghi789jkl012mno345pqr678"
         payload = self._dump_and_read(
             agent,
             {
                 "model": "gpt-4",
                 "messages": [{"role": "user", "content": "hi"}],
-                "api_key": secret_key,
-                "extra_headers": {"Authorization": f"Bearer {secret_key}"},
+                "api_key": _FAKE_OPENAI_KEY,
+                "extra_headers": {"Authorization": f"Bearer {_FAKE_OPENAI_KEY}"},
             },
         )
         full_text = json.dumps(payload)
-        assert secret_key not in full_text, (
-            f"Raw secret found in dump: {secret_key[:12]}..."
+        assert _FAKE_OPENAI_KEY not in full_text, (
+            f"Raw secret found in dump"
         )
