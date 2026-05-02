@@ -13,9 +13,31 @@ def get_hermes_home() -> Path:
 
     Reads HERMES_HOME env var, falls back to ~/.hermes.
     This is the single source of truth — all other copies should import this.
+
+    Raises ValueError when HERMES_HOME is unset but an ``active_profile``
+    file indicates a non-default profile is active.  In that case the
+    fallback to ``~/.hermes`` would silently corrupt the other profile's
+    data — the caller must set HERMES_HOME explicitly.
+    See https://github.com/NousResearch/hermes-agent/issues/18594.
     """
     val = os.environ.get("HERMES_HOME", "").strip()
-    return Path(val) if val else Path.home() / ".hermes"
+    if not val:
+        # Guard: if a non-default profile is active, falling back to
+        # ~/.hermes would write into the wrong profile's data directory.
+        active_profile_path = Path.home() / ".hermes" / "active_profile"
+        try:
+            active = active_profile_path.read_text().strip()
+        except (FileNotFoundError, UnicodeDecodeError, OSError):
+            active = ""
+        if active and active != "default":
+            raise ValueError(
+                f"HERMES_HOME is not set, but active profile is '{active}'. "
+                f"Profile mode requires HERMES_HOME to be set to the profile "
+                f"directory (e.g. ~/.hermes/profiles/{active}). "
+                f"This prevents silent cross-profile data corruption."
+            )
+        return Path.home() / ".hermes"
+    return Path(val)
 
 
 def get_default_hermes_root() -> Path:
