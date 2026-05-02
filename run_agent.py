@@ -3974,12 +3974,26 @@ class AIAgent:
         Dump a debug-friendly HTTP request record for the active inference API.
 
         Captures the request body from api_kwargs (excluding transport-only keys
-        like timeout). Intended for debugging provider-side 4xx failures where
-        retries are not useful.
+        like timeout and any credential material). Intended for debugging
+        provider-side 4xx failures where retries are not useful.
+
+        Security: all credential material is stripped before writing to disk.
+        See #8518 / #18707.
         """
         try:
             body = copy.deepcopy(api_kwargs)
             body.pop("timeout", None)
+
+            # Strip credential material from body — some SDK/client combos
+            # pass api_key or auth headers inside api_kwargs.
+            for _secret_key in ("api_key", "x_api_key", "api_token", "auth_token"):
+                body.pop(_secret_key, None)
+            # extra_headers / headers dicts may contain Authorization or
+            # X-API-Key values; drop them entirely rather than sanitising
+            # nested dicts.
+            for _header_key in ("extra_headers", "headers"):
+                body.pop(_header_key, None)
+
             body = {k: v for k, v in body.items() if v is not None}
 
             api_key = None
