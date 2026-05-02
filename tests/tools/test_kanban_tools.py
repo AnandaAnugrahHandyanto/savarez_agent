@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -96,6 +97,38 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert d["task"]["status"] == "running"
     assert "worker_context" in d
     assert "runs" in d
+
+
+def test_worker_uses_dispatcher_kanban_db_override(monkeypatch, tmp_path):
+    """A profile-scoped worker must still update the dispatcher's board DB."""
+    dispatcher_home = tmp_path / "dispatcher-home"
+    worker_home = tmp_path / "worker-profile-home"
+    dispatcher_home.mkdir()
+    worker_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(dispatcher_home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="cross-profile task", assignee="seo")
+        kb.claim_task(conn, tid)
+    finally:
+        conn.close()
+
+    dispatcher_db = kb.kanban_db_path()
+    monkeypatch.setenv("HERMES_HOME", str(worker_home))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(dispatcher_db))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+
+    from tools import kanban_tools as kt
+    out = kt._handle_show({})
+    d = json.loads(out)
+    assert d["task"]["id"] == tid
+    assert d["task"]["status"] == "running"
+    assert not (worker_home / "kanban.db").exists()
 
 
 def test_show_explicit_task_id(worker_env):
