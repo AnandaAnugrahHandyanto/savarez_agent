@@ -39,8 +39,10 @@ class TestMemoryStatusClarity:
             "Status should not show 'Built-in: always active' which confuses "
             "the memory framework with the built-in storage backend"
         )
-        # Should still communicate that the memory subsystem is active
+        # Should display the corrected label (not the old ambiguous "Built-in")
+        assert "Memory subsystem" in out
         assert "active" in out.lower()
+        assert "Built-in" not in out
 
     def test_with_provider_does_not_imply_builtin_store_running(self, capfd):
         """When an external provider is configured, the status should not
