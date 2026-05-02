@@ -17,8 +17,12 @@ logger = logging.getLogger(__name__)
 TOOLSET = "vibe-trading"
 DEFAULT_BASE_URL = "http://192.168.1.58:8899"
 DEFAULT_TIMEOUT_SECONDS = 20.0
-DEFAULT_AGENT_TIMEOUT_SECONDS = 300.0
+DEFAULT_AGENT_TIMEOUT_SECONDS = 600.0
 DEFAULT_AGENT_POLL_SECONDS = 3.0
+AGENT_TOOL_MARKUP_PATTERN = re.compile(
+    r"<\s*(?:minimax:tool_call|longcat_tool_call|invoke)\b|</\s*(?:minimax:tool_call|longcat_tool_call|invoke)\s*>",
+    re.IGNORECASE,
+)
 
 
 def _base_url() -> str:
@@ -111,7 +115,13 @@ def _vibe_health(args: dict[str, Any], **kwargs) -> str:
 def _latest_assistant_message(messages: Any) -> str | None:
     if not isinstance(messages, list):
         return None
-    for message in reversed(messages):
+
+    last_user_index = -1
+    for index, message in enumerate(messages):
+        if isinstance(message, dict) and message.get("role") == "user":
+            last_user_index = index
+
+    for message in reversed(messages[last_user_index + 1:]):
         if not isinstance(message, dict):
             continue
         if message.get("role") == "assistant":
@@ -124,6 +134,10 @@ def _latest_assistant_message(messages: Any) -> str | None:
 def _clean_agent_answer(content: str) -> str:
     text = content.strip()
     return re.sub(r"^(?:<think>.*?</think>\s*)+", "", text, flags=re.IGNORECASE | re.DOTALL).strip()
+
+
+def _contains_agent_tool_markup(content: str) -> bool:
+    return bool(AGENT_TOOL_MARKUP_PATTERN.search(content))
 
 
 def _vibe_agent_ask(question: str, *, title: str, instruction: str | None = None) -> str:
@@ -152,8 +166,17 @@ def _vibe_agent_ask(question: str, *, title: str, instruction: str | None = None
         send_payload.setdefault("session_id", session_id)
         return _json_dumps(send_payload)
     attempt_id = send_payload.get("attempt_id")
+    repaired_tool_markup = False
 
     messages_path = f"/sessions/{urllib.parse.quote(session_id, safe='')}/messages"
+
+    def send_session_message(message_content: str) -> dict[str, Any]:
+        payload = json.loads(_request_json(
+            "POST",
+            f"/sessions/{urllib.parse.quote(session_id, safe='')}/messages",
+            {"content": message_content},
+        ))
+        return payload
 
     def read_answer() -> tuple[str | None, Any]:
         messages_payload = json.loads(_request_json(
@@ -169,6 +192,20 @@ def _vibe_agent_ask(question: str, *, title: str, instruction: str | None = None
         answer, messages_payload = read_answer()
         last_messages = messages_payload
         if answer:
+            if _contains_agent_tool_markup(answer) and not repaired_tool_markup:
+                repaired_tool_markup = True
+                repair_payload = send_session_message(
+                    "上一条回答包含未执行的工具调用标记，例如 <minimax:tool_call> 或 <invoke>。"
+                    "请不要再调用任何工具，不要输出工具 XML，不要输出代码块；"
+                    "只基于你已经获取到的数据，直接重新输出一份完整、干净的中文最终投资分析报告，"
+                    "必须包含买入/观望/卖出结论、买卖点、止损止盈、风险和免责声明。"
+                )
+                if repair_payload.get("success") is False:
+                    repair_payload.setdefault("session_id", session_id)
+                    return _json_dumps(repair_payload)
+                attempt_id = repair_payload.get("attempt_id") or attempt_id
+                deadline = time.monotonic() + _agent_timeout_seconds()
+                continue
             return _json_dumps({
                 "success": True,
                 "session_id": session_id,
@@ -180,6 +217,24 @@ def _vibe_agent_ask(question: str, *, title: str, instruction: str | None = None
     answer, messages_payload = read_answer()
     last_messages = messages_payload
     if answer:
+        if _contains_agent_tool_markup(answer) and not repaired_tool_markup:
+            repair_payload = send_session_message(
+                "上一条回答包含未执行的工具调用标记，例如 <minimax:tool_call> 或 <invoke>。"
+                "请不要再调用任何工具，不要输出工具 XML，不要输出代码块；"
+                "只基于你已经获取到的数据，直接重新输出一份完整、干净的中文最终投资分析报告。"
+            )
+            if repair_payload.get("success") is False:
+                repair_payload.setdefault("session_id", session_id)
+                return _json_dumps(repair_payload)
+            attempt_id = repair_payload.get("attempt_id") or attempt_id
+            deadline = time.monotonic() + _agent_timeout_seconds()
+            while time.monotonic() < deadline:
+                answer, messages_payload = read_answer()
+                last_messages = messages_payload
+                if answer and not _contains_agent_tool_markup(answer):
+                    break
+                time.sleep(_agent_poll_seconds())
+
         return _json_dumps({
             "success": True,
             "session_id": session_id,

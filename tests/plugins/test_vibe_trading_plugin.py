@@ -237,6 +237,45 @@ def test_vibe_ask_strips_leading_think_block_with_reasoning(monkeypatch):
     assert result["answer"] == "# 最终报告"
 
 
+def test_vibe_ask_repairs_vibe_tool_call_leak_with_followup(monkeypatch):
+    plugin = _load_plugin()
+    sent_payloads = []
+    get_calls = 0
+
+    def fake_request_json(method, path, payload=None, query=None):
+        nonlocal get_calls
+        if method == "POST" and path == "/sessions":
+            return json.dumps({"session_id": "s6"})
+        if method == "POST" and path == "/sessions/s6/messages":
+            sent_payloads.append(payload)
+            return json.dumps({"message_id": f"m{len(sent_payloads)}", "attempt_id": f"a{len(sent_payloads)}"})
+        if method == "GET" and path == "/sessions/s6/messages":
+            get_calls += 1
+            if len(sent_payloads) == 1:
+                return json.dumps([
+                    {"role": "user", "content": "分析 600219.SH"},
+                    {"role": "assistant", "content": "报告前半段\n<minimax:tool_call>\n<invoke name=\"bash\">"},
+                ], ensure_ascii=False)
+            return json.dumps([
+                {"role": "user", "content": "分析 600219.SH"},
+                {"role": "assistant", "content": "报告前半段\n<minimax:tool_call>\n<invoke name=\"bash\">"},
+                {"role": "user", "content": "请重新输出最终报告"},
+                {"role": "assistant", "content": "# 干净最终报告"},
+            ], ensure_ascii=False)
+        raise AssertionError(f"Unexpected call: {method} {path}")
+
+    monkeypatch.setattr(plugin, "_request_json", fake_request_json)
+
+    result = json.loads(plugin._vibe_ask({"question": "分析 600219.SH"}))
+
+    assert result["success"] is True
+    assert result["attempt_id"] == "a2"
+    assert result["answer"] == "# 干净最终报告"
+    assert len(sent_payloads) == 2
+    assert "上一条回答包含未执行的工具调用标记" in sent_payloads[1]["content"]
+    assert get_calls >= 2
+
+
 def test_vibe_ask_checks_once_more_at_timeout_boundary(monkeypatch):
     plugin = _load_plugin()
     get_calls = 0

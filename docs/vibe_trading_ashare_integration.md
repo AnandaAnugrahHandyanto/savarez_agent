@@ -404,10 +404,10 @@ A 股买卖建议高度依赖实时或准实时数据。每次输出应说明：
 
 ### 响应耗时边界
 
-完整 Vibe Agent 分析通常需要几十秒到数分钟。插件默认等待 `300` 秒，并会在超时边界再读取一次结果，避免 Vibe 已完成但 Hermes 刚好错过最后一轮轮询。可以通过环境变量调整：
+完整 Vibe Agent 分析通常需要几十秒到数分钟。插件默认等待 `600` 秒，并会在超时边界再读取一次结果，避免 Vibe 已完成但 Hermes 刚好错过最后一轮轮询。如果 Vibe 返回了 `<minimax:tool_call>` 或 `<invoke>` 这类未执行工具标记，插件会在同一个 Vibe session 内追问一次，要求它直接输出干净的最终中文报告。可以通过环境变量调整：
 
 ```text
-VIBE_TRADING_AGENT_TIMEOUT_SECONDS=300
+VIBE_TRADING_AGENT_TIMEOUT_SECONDS=600
 VIBE_TRADING_AGENT_POLL_SECONDS=3
 ```
 
