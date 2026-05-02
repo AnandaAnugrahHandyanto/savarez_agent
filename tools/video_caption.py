@@ -345,8 +345,10 @@ def generate_phonetics(segments: list[dict], api_key: str | None = None) -> list
         '- "text": if English narration → corrected English text. '
         'If the segment contains Vietnamese being taught (even if garbled) → rewrite with correct Vietnamese spelling and diacritics.\n'
         '- "lang": "en" for English narration, "vi" for Vietnamese words/phrases being taught.\n'
-        '- "phonetic": if lang is "vi" → a simple English pronunciation guide in square brackets '
-        '(e.g. "[humm biet]", "[zuh yee]", "[toh-ee ten la]"). '
+        '- "phonetic": if lang is "vi" → a simple English-only pronunciation approximation in square '
+        'brackets, written using ONLY regular English letters and hyphens — do NOT use IPA symbols '
+        '(no ʔ ː ɓ ˨˩ ŋ ɔ ʈ or any Unicode phonetic characters). Write how it SOUNDS to an '
+        'English speaker, e.g. "[hong biet]", "[ai chon now?]", "[zuh yee]", "[toh ee ten lah]". '
         'If lang is "en" → empty string "".\n\n'
         'Return ONLY a valid JSON object like {"segments": [...]}, no markdown, no explanation.\n\n'
         f"Segments:\n{input_lines}"
