@@ -2105,12 +2105,61 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
 
 
 
+def _collect_browser_network_failures(task_id: str, clear: bool = False) -> tuple[list[dict[str, Any]], Optional[str]]:
+    """Return failed browser network requests for QA diagnostics.
+
+    ``agent-browser network requests`` is available on local sessions and gives
+    Hermes a cheap way to surface failed document/API/asset requests alongside
+    console output.  That matters for Web QA because broken API calls often do
+    not emit JavaScript exceptions.
+    """
+    args = ["--clear"] if clear else []
+    result = _run_browser_command(task_id, "network", ["requests", *args])
+    if not result.get("success"):
+        return [], result.get("error") or "network request inspection failed"
+
+    failures: list[dict[str, Any]] = []
+    for req in result.get("data", {}).get("requests", []) or []:
+        if not isinstance(req, dict):
+            continue
+        url = str(req.get("url") or "")
+        if url.startswith("data:"):
+            continue
+
+        status_raw = req.get("status")
+        status: Optional[int]
+        try:
+            status = int(status_raw) if status_raw is not None else None
+        except (TypeError, ValueError):
+            status = None
+
+        # agent-browser records failed navigations without a response status;
+        # HTTP 4xx/5xx are also QA-relevant failures.
+        if status is not None and status < 400:
+            continue
+        if status is None and req.get("mimeType"):
+            # A successful request may be missing status in older backends but
+            # still carry a mimeType; avoid false positives.
+            continue
+
+        failures.append({
+            "url": url,
+            "method": req.get("method", "GET"),
+            "status": status,
+            "resource_type": req.get("resourceType"),
+            "mime_type": req.get("mimeType"),
+        })
+
+    return failures, None
+
+
 def browser_console(clear: bool = False, expression: Optional[str] = None, task_id: Optional[str] = None) -> str:
     """Get browser console messages and JavaScript errors, or evaluate JS in the page.
     
     When ``expression`` is provided, evaluates JavaScript in the page context
     (like the DevTools console) and returns the result.  Otherwise returns
-    console output (log/warn/error/info) and uncaught exceptions.
+    console output (log/warn/error/info), uncaught exceptions, and failed
+    network requests useful for Web QA diagnostics.
     
     Args:
         clear: If True, clear the message/error buffers after reading
@@ -2118,7 +2167,7 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
         task_id: Task identifier for session isolation
         
     Returns:
-        JSON string with console messages/errors, or eval result
+        JSON string with console messages/errors/network failures, or eval result
     """
     # --- JS evaluation mode ---
     if expression is not None:
@@ -2138,6 +2187,7 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
     errors_result = _run_browser_command(effective_task_id, "errors", error_args)
     
     messages = []
+    diagnostics: list[str] = []
     if console_result.get("success"):
         for msg in console_result.get("data", {}).get("messages", []):
             messages.append({
@@ -2145,6 +2195,8 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
                 "text": msg.get("text", ""),
                 "source": "console",
             })
+    else:
+        diagnostics.append(f"console command unavailable: {console_result.get('error', 'unknown error')}")
     
     errors = []
     if errors_result.get("success"):
@@ -2153,14 +2205,25 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
                 "message": err.get("message", ""),
                 "source": "exception",
             })
+    else:
+        diagnostics.append(f"errors command unavailable: {errors_result.get('error', 'unknown error')}")
+
+    failed_requests, network_error = _collect_browser_network_failures(effective_task_id, clear=clear)
+    if network_error:
+        diagnostics.append(f"network request inspection unavailable: {network_error}")
     
-    return json.dumps({
+    response = {
         "success": True,
         "console_messages": messages,
         "js_errors": errors,
+        "failed_requests": failed_requests,
         "total_messages": len(messages),
         "total_errors": len(errors),
-    }, ensure_ascii=False)
+        "total_failed_requests": len(failed_requests),
+    }
+    if diagnostics:
+        response["diagnostics"] = diagnostics
+    return json.dumps(response, ensure_ascii=False)
 
 
 def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
