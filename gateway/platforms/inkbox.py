@@ -1068,7 +1068,7 @@ class InkboxAdapter(BasePlatformAdapter):
             if contact.get("name"):
                 first_name = str(contact["name"]).split()[0]
             who = f"{first_name}" if first_name else "there"
-            text = f"Hi {who}, this is your Inkbox on-call agent. How can I help?"
+            text = f"Hi {who}, how can I help?"
             try:
                 await _send_text_delta(text, turn_id="greeting")
                 await _send_text_done(turn_id="greeting")
