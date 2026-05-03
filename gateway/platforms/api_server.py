@@ -2261,13 +2261,46 @@ class APIServerAdapter(BasePlatformAdapter):
 
     # ------------------------------------------------------------------
     # Config endpoints — persona (SOUL.md) + toolsets list
+    #
+    # All four handlers (GET/PUT persona, GET/PUT toolsets) gate on the
+    # existing ``_check_auth`` bearer-token middleware — same guard as
+    # ``/api/jobs/*``. When the api_server platform has no ``key`` configured
+    # the auth check no-ops (matching the rest of the surface), so behavior
+    # is identical to the existing 401-or-allow contract.
+    #
+    # Schema stability: response bodies are intentionally a thin pass-through
+    # of existing on-disk shapes:
+    #   - ``persona``  is the raw text contents of ``SOUL.md`` (string).
+    #   - ``toolsets`` is the list-of-strings under ``toolsets:`` in
+    #     ``config.yaml``, validated as ``^[a-zA-Z0-9_-]+$`` on PUT.
+    # No separate API version is introduced; these inherit whatever stability
+    # contract those config fields already have. If the underlying schema
+    # gains nested fields, the response body shape can grow (additive) without
+    # breaking existing clients.
+    #
+    # Reload behavior:
+    #   - PUT persona    → rewrites SOUL.md atomically. Picked up the next
+    #                     time an agent session starts (SOUL.md is loaded
+    #                     fresh per agent boot, not cached cross-session).
+    #                     In-flight conversations don't observe mid-session
+    #                     persona changes.
+    #   - PUT toolsets   → goes through ``hermes_cli.config.save_config``
+    #                     (atomic write); subsequent ``load_config`` calls
+    #                     re-read via mtime-based caching, so the next agent
+    #                     invocation in this gateway picks the new value up
+    #                     without a restart.
+    # If callers need true mid-session reload (rare), restart the gateway —
+    # there is no hot-swap of an active agent's persona/toolsets today.
     # ------------------------------------------------------------------
 
     _MAX_PERSONA_LENGTH = 50_000  # SOUL.md is a system prompt; cap defensive
     _TOOLSET_KEY_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
     async def _handle_get_persona(self, request: "web.Request") -> "web.Response":
-        """GET /api/config/persona — return SOUL.md contents (empty string if missing)."""
+        """GET /api/config/persona — return SOUL.md contents (empty string if missing).
+
+        Auth: bearer token via ``_check_auth`` (same as ``/api/jobs/*``).
+        """
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -2280,7 +2313,12 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response({"error": str(e)}, status=500)
 
     async def _handle_set_persona(self, request: "web.Request") -> "web.Response":
-        """PUT /api/config/persona — overwrite SOUL.md with the provided content."""
+        """PUT /api/config/persona — overwrite SOUL.md with the provided content.
+
+        Auth: bearer token via ``_check_auth``. Reload: takes effect on the
+        next agent session boot (SOUL.md is loaded fresh per session, not
+        hot-swapped into in-flight conversations).
+        """
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -2307,7 +2345,12 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response({"error": str(e)}, status=500)
 
     async def _handle_get_toolsets(self, request: "web.Request") -> "web.Response":
-        """GET /api/config/toolsets — return the enabled-toolsets list from config.yaml."""
+        """GET /api/config/toolsets — return the enabled-toolsets list from config.yaml.
+
+        Auth: bearer token via ``_check_auth``. Response shape is
+        ``{"toolsets": [str, ...]}`` — a thin pass-through of the
+        ``toolsets:`` field in ``config.yaml``.
+        """
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -2322,7 +2365,14 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response({"error": str(e)}, status=500)
 
     async def _handle_set_toolsets(self, request: "web.Request") -> "web.Response":
-        """PUT /api/config/toolsets — replace the enabled-toolsets list in config.yaml."""
+        """PUT /api/config/toolsets — replace the enabled-toolsets list in config.yaml.
+
+        Auth: bearer token via ``_check_auth``. Items validated against
+        ``^[a-zA-Z0-9_-]+$`` and de-duplicated server-side preserving order.
+        Reload: ``save_config`` writes atomically; next ``load_config`` call
+        in any agent invocation picks up the new value via mtime-based cache
+        (no gateway restart required for new sessions).
+        """
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
