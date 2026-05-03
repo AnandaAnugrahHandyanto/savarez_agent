@@ -6936,9 +6936,13 @@ class AIAgent:
                     usage_obj = chunk.usage
                     if self.usage_callback:
                         self.usage_callback(usage_obj)
-                    if self.usage_callback:
-                        print(f"\n[DEBUG-USAGE] Stream usage detected: {usage_obj}\n", flush=True)
-                        self.usage_callback(usage_obj)
+                    
+                    # FIX: Update session totals so the Standard CLI status bar reflects usage immediately
+                    # without waiting for session compression.
+                    self.session_prompt_tokens += getattr(usage_obj, "prompt_tokens", 0) or 0
+                    self.session_completion_tokens += getattr(usage_obj, "completion_tokens", 0) or 0
+                    self.session_total_tokens += getattr(usage_obj, "total_tokens", 0) or 0
+                    self.session_api_calls += 1
 
             # Build mock response matching non-streaming shape
             full_content = "".join(content_parts) or None
