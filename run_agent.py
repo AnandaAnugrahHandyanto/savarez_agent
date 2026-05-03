@@ -2029,6 +2029,7 @@ class AIAgent:
                 config_context_length=_config_context_length,
                 provider=self.provider,
                 api_mode=self.api_mode,
+                compression_config=_compression_cfg,
             )
         self.compression_enabled = compression_enabled
 
@@ -2415,6 +2416,11 @@ class AIAgent:
                 provider=self.provider,
                 api_mode=self.api_mode,
             )
+            # Ordering invariant (#18733): re_resolve_threshold() reads
+            # self.model and self.provider from the compressor, which the
+            # update_model() call just rewrote. Reordering would resolve
+            # against the OLD pair. Keep this immediately after update_model.
+            self.context_compressor.re_resolve_threshold()
 
         # ── Invalidate cached system prompt so it rebuilds next turn ──
         self._cached_system_prompt = None
@@ -7654,6 +7660,8 @@ class AIAgent:
                     api_key=getattr(self, "api_key", ""),
                     provider=self.provider,
                 )
+                # Ordering invariant (#18733): see comment at switch_model().
+                self.context_compressor.re_resolve_threshold()
 
             self._emit_status(
                 f"🔄 Primary model failed — switching to fallback: "
@@ -7733,6 +7741,8 @@ class AIAgent:
                 api_key=rt["compressor_api_key"],
                 provider=rt["compressor_provider"],
             )
+            # Ordering invariant (#18733): see comment at switch_model().
+            cc.re_resolve_threshold()
 
             # ── Reset fallback chain for the new turn ──
             self._fallback_activated = False
