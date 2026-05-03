@@ -936,6 +936,7 @@ class AIAgent:
         reasoning_config: Dict[str, Any] = None,
         service_tier: str = None,
         request_overrides: Dict[str, Any] = None,
+        custom_openai_request_options: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
         user_id: str = None,
@@ -1209,6 +1210,7 @@ class AIAgent:
         self.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
         self.service_tier = service_tier
         self.request_overrides = dict(request_overrides or {})
+        self._custom_openai_request_options = dict(custom_openai_request_options or {})
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         self._force_ascii_payload = False
         
@@ -8458,6 +8460,9 @@ class AIAgent:
             lmstudio_reasoning_options=self._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
             anthropic_max_output=_ant_max,
             provider_name=self.provider,
+            custom_openai_request_options=(
+                self._custom_openai_request_options or None
+            ),
         )
 
     def _supports_reasoning_extra_body(self) -> bool:

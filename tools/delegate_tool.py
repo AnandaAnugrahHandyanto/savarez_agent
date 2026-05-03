@@ -1026,6 +1026,7 @@ def _build_child_agent(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
+    _parent_compat = getattr(parent_agent, "_custom_openai_request_options", None) or {}
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -1034,6 +1035,9 @@ def _build_child_agent(
         api_mode=effective_api_mode,
         acp_command=effective_acp_command,
         acp_args=effective_acp_args,
+        custom_openai_request_options=(
+            dict(_parent_compat) if effective_provider == "custom" else None
+        ),
         max_iterations=max_iterations,
         max_tokens=getattr(parent_agent, "max_tokens", None),
         reasoning_config=child_reasoning,

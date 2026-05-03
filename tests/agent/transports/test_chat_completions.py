@@ -122,6 +122,51 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["extra_body"]["think"] is False
 
+    def test_custom_provider_sets_default_temperature(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(model="llama", messages=msgs, is_custom_provider=True)
+        assert kw["temperature"] == 0.2
+
+    def test_custom_provider_parallel_tools_default(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        tools = [{"type": "function", "function": {"name": "read", "parameters": {}}}]
+        kw = transport.build_kwargs(
+            model="llama", messages=msgs, tools=tools, is_custom_provider=True,
+        )
+        assert kw["parallel_tool_calls"] is True
+
+    def test_custom_provider_compat_yaml_overrides(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        tools = [{"type": "function", "function": {"name": "read", "parameters": {}}}]
+        compat = {"temperature": 0.05, "parallel_tool_calls": False}
+        kw = transport.build_kwargs(
+            model="llama",
+            messages=msgs,
+            tools=tools,
+            is_custom_provider=True,
+            custom_openai_request_options=compat,
+        )
+        assert kw["temperature"] == 0.05
+        assert kw["parallel_tool_calls"] is False
+
+    def test_custom_provider_omit_temperature(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="llama",
+            messages=msgs,
+            is_custom_provider=True,
+            custom_openai_request_options={"omit_temperature": True},
+        )
+        assert "temperature" not in kw
+
+    def test_openrouter_does_not_inject_parallel_tool_calls(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        tools = [{"type": "function", "function": {"name": "read", "parameters": {}}}]
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs, tools=tools, is_openrouter=True,
+        )
+        assert "parallel_tool_calls" not in kw
+
     def test_gemini_native_without_explicit_reasoning_config_keeps_existing_behavior(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

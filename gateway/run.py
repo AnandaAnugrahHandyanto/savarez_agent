@@ -590,7 +590,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
-    return {
+    resolved = {
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
@@ -599,6 +599,10 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
     }
+    compat = runtime.get("custom_openai_request_options")
+    if isinstance(compat, dict) and compat:
+        resolved["custom_openai_request_options"] = dict(compat)
+    return resolved
 
 
 def _try_resolve_fallback_provider() -> dict | None:
@@ -1507,6 +1511,8 @@ class GatewayRunner:
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
+        _compat_gw = runtime_kwargs.get("custom_openai_request_options")
+        _compat_flat = dict(_compat_gw) if isinstance(_compat_gw, dict) else {}
         runtime = {
             "api_key": runtime_kwargs.get("api_key"),
             "base_url": runtime_kwargs.get("base_url"),
@@ -1515,6 +1521,7 @@ class GatewayRunner:
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
+            "custom_openai_request_options": _compat_flat,
         }
         route = {
             "model": model,
@@ -1526,6 +1533,7 @@ class GatewayRunner:
                 runtime["api_mode"],
                 runtime["command"],
                 tuple(runtime["args"]),
+                tuple(sorted(_compat_flat.items())),
             ),
         }
 

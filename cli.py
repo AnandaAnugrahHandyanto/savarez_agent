@@ -3404,6 +3404,12 @@ class HermesCLI:
         self.api_key = api_key
         self.base_url = base_url
 
+        _compat_opts = runtime.get("custom_openai_request_options")
+        _compat_flat = dict(_compat_opts) if isinstance(_compat_opts, dict) else {}
+        compat_changed = _compat_flat != getattr(self, "_resolved_custom_compat_opts", {})
+
+        setattr(self, "_resolved_custom_compat_opts", _compat_flat)
+
         # When a custom_provider entry carries an explicit `model` field,
         # use it as the effective model name.  Without this, running
         # `hermes chat --model <provider-name>` sends the provider name
@@ -3442,7 +3448,7 @@ class HermesCLI:
 
         # AIAgent/OpenAI client holds auth at init time, so rebuild if key,
         # routing, or the effective model changed.
-        if (credentials_changed or routing_changed or model_changed) and self.agent is not None:
+        if (credentials_changed or routing_changed or model_changed or compat_changed) and self.agent is not None:
             self.agent = None
             self._active_agent_route_signature = None
 
@@ -3458,6 +3464,7 @@ class HermesCLI:
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
+        _compat_pick = getattr(self, "_resolved_custom_compat_opts", {}) or {}
         runtime = {
             "api_key": self.api_key,
             "base_url": self.base_url,
@@ -3466,6 +3473,7 @@ class HermesCLI:
             "command": self.acp_command,
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
+            "custom_openai_request_options": dict(_compat_pick),
         }
         route = {
             "model": self.model,
@@ -3477,6 +3485,7 @@ class HermesCLI:
                 runtime["api_mode"],
                 runtime["command"],
                 tuple(runtime["args"]),
+                tuple(sorted(_compat_pick.items())),
             ),
         }
 
@@ -3578,8 +3587,12 @@ class HermesCLI:
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
+                "custom_openai_request_options": dict(
+                    getattr(self, "_resolved_custom_compat_opts", {}) or {},
+                ),
             }
             effective_model = model_override or self.model
+            _co_pick = runtime.get("custom_openai_request_options") or {}
             self.agent = AIAgent(
                 model=effective_model,
                 api_key=runtime.get("api_key"),
@@ -3589,6 +3602,7 @@ class HermesCLI:
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
+                custom_openai_request_options=_co_pick if isinstance(_co_pick, dict) else None,
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 disabled_toolsets=self.disabled_toolsets,
@@ -3637,6 +3651,7 @@ class HermesCLI:
                 runtime.get("api_mode"),
                 runtime.get("command"),
                 tuple(runtime.get("args") or ()),
+                tuple(sorted((_co_pick or {}).items())),
             )
 
             # Force-create DB row on /title intent, then apply title.
@@ -6741,6 +6756,9 @@ class HermesCLI:
                     reasoning_config=self.reasoning_config,
                     service_tier=self.service_tier,
                     request_overrides=turn_route.get("request_overrides"),
+                    custom_openai_request_options=turn_route["runtime"].get(
+                        "custom_openai_request_options",
+                    ),
                     providers_allowed=self._providers_only,
                     providers_ignored=self._providers_ignore,
                     providers_order=self._providers_order,

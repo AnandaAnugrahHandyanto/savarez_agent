@@ -2641,6 +2641,17 @@ def _normalize_custom_provider_entry(
     if isinstance(rate_limit_delay, (int, float)) and rate_limit_delay >= 0:
         normalized["rate_limit_delay"] = rate_limit_delay
 
+    if entry.get("omit_temperature") is True:
+        normalized["omit_temperature"] = True
+
+    req_temp = entry.get("temperature")
+    if isinstance(req_temp, (int, float)):
+        normalized["temperature"] = float(req_temp)
+
+    ptc = entry.get("parallel_tool_calls")
+    if isinstance(ptc, bool):
+        normalized["parallel_tool_calls"] = ptc
+
     return normalized
 
 
