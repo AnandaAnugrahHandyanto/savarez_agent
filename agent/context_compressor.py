@@ -739,6 +739,16 @@ class ContextCompressor(ContextEngine):
             return None
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
+        if self._previous_summary:
+            # Iterative compaction updates an already-compressed checkpoint.
+            # Size the output budget to preserve that checkpoint plus the
+            # new-turn delta; otherwise a small follow-up turn can force the
+            # previous summary through another lossy ratio-sized compression.
+            previous_summary_tokens = max(1, len(self._previous_summary) // _CHARS_PER_TOKEN)
+            summary_budget = min(
+                self.max_summary_tokens,
+                max(summary_budget, previous_summary_tokens + summary_budget),
+            )
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
 
         # Preamble shared by both first-compaction and iterative-update prompts.

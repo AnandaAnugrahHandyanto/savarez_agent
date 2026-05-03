@@ -223,6 +223,47 @@ class TestNonStringContent:
         }
 
 
+class TestIterativeSummaryFidelity:
+    def test_iterative_summary_budget_covers_existing_summary(self):
+        """Iterative compaction should not size the output budget from new turns only.
+
+        The previous summary is already compressed context. On later passes,
+        a tiny set of new turns must not force that previous summary through
+        another lossy ratio-sized budget.
+        """
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "updated summary"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        previous_summary = (
+            "## Critical Context\n"
+            + (
+                "KEEP-REGRESSION-DETAIL file=agent/context_compressor.py "
+                "line=831 error='must preserve across passes'\n"
+                * 350
+            )
+        )
+        c._previous_summary = previous_summary
+
+        previous_summary_tokens = len(previous_summary) // 4
+        assert previous_summary_tokens < c.max_summary_tokens
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            c._generate_summary([
+                {"role": "user", "content": "continue"},
+                {"role": "assistant", "content": "ok"},
+            ])
+
+        sent_max_tokens = mock_call.call_args.kwargs["max_tokens"]
+        assert sent_max_tokens >= previous_summary_tokens, (
+            "Iterative compaction budget was sized from only the new turns, "
+            "so the previous summary cannot be preserved without lossy re-compression."
+        )
+
+
 class TestSummaryFailureCooldown:
     def test_summary_failure_enters_cooldown_and_skips_retry(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
