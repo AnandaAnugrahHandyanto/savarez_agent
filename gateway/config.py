@@ -56,8 +56,12 @@ def _coerce_int(value: Any, default: int) -> int:
         return default
 
 
-def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> str:
-    """Normalize unauthorized DM behavior to a supported value."""
+def _normalize_unauthorized_dm_behavior(value: Any, default: str = "ignore") -> str:
+    """Normalize unauthorized DM behavior to a supported value.
+
+    Default to ``ignore`` so unknown direct messages fail closed. Operators who
+    want public self-service onboarding can explicitly set ``pair``.
+    """
     if isinstance(value, str):
         normalized = value.strip().lower()
         if normalized in {"pair", "ignore"}:
@@ -414,7 +418,7 @@ class GatewayConfig:
     thread_sessions_per_user: bool = False  # When False (default), threads are shared across all participants
 
     # Unauthorized DM policy
-    unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
+    unauthorized_dm_behavior: str = "ignore"  # "pair" or "ignore"
 
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
@@ -563,7 +567,7 @@ class GatewayConfig:
         thread_sessions_per_user = data.get("thread_sessions_per_user")
         unauthorized_dm_behavior = _normalize_unauthorized_dm_behavior(
             data.get("unauthorized_dm_behavior"),
-            "pair",
+            "ignore",
         )
 
         try:
@@ -688,7 +692,7 @@ def load_gateway_config() -> GatewayConfig:
             if "unauthorized_dm_behavior" in yaml_cfg:
                 gw_data["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
                     yaml_cfg.get("unauthorized_dm_behavior"),
-                    "pair",
+                    "ignore",
                 )
 
             # Merge platforms section from config.yaml into gw_data so that
@@ -725,7 +729,7 @@ def load_gateway_config() -> GatewayConfig:
                 if "unauthorized_dm_behavior" in platform_cfg:
                     bridged["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
                         platform_cfg.get("unauthorized_dm_behavior"),
-                        gw_data.get("unauthorized_dm_behavior", "pair"),
+                        gw_data.get("unauthorized_dm_behavior", "ignore"),
                     )
                 if "notice_delivery" in platform_cfg:
                     bridged["notice_delivery"] = _normalize_notice_delivery(
