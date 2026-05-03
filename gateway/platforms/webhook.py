@@ -313,7 +313,7 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.error("[webhook] Failed to read body: %s", e)
             return web.json_response({"error": "Bad request"}, status=400)
 
-        # Validate HMAC signature FIRST (skip for INSECURE_NO_AUTH testing mode)
+        # Validate HMAC signature FIRST
         secret = route_config.get("secret", self._global_secret)
         if secret:
            if not self._validate_signature(request, raw_body, secret):
