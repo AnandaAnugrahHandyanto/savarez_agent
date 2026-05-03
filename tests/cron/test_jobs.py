@@ -279,6 +279,44 @@ class TestUpdateJob:
         result = update_job("nonexistent_id", {"name": "X"})
         assert result is None
 
+    def test_update_schedule_raw_string(self, tmp_cron_dir):
+        job = create_job(prompt="Daily report", schedule="every 1h")
+        old_next = job["next_run_at"]
+        updated = update_job(job["id"], {"schedule": "every 2h"})
+        assert updated is not None
+        assert updated["schedule"]["kind"] == "interval"
+        assert updated["schedule"]["minutes"] == 120
+        assert updated["next_run_at"] != old_next
+
+    def test_update_invalid_schedule_string_preserves_prior(self, tmp_cron_dir, caplog):
+        import logging
+
+        job = create_job(prompt="Hold", schedule="every 1h")
+        prior_schedule = dict(job["schedule"])
+        prior_next = job["next_run_at"]
+        prior_display = job["schedule_display"]
+        with caplog.at_level(logging.WARNING):
+            updated = update_job(job["id"], {"schedule": "totally_not_a_schedule"})
+        assert updated is not None
+        assert updated["schedule"] == prior_schedule
+        assert updated["next_run_at"] == prior_next
+        assert updated["schedule_display"] == prior_display
+        assert "invalid schedule string" in caplog.text
+
+    def test_update_invalid_cron_string_preserves_prior(self, tmp_cron_dir, caplog):
+        pytest.importorskip("croniter")
+        import logging
+
+        job = create_job(prompt="Cron hold", schedule="0 9 * * *")
+        prior_schedule = dict(job["schedule"])
+        prior_next = job["next_run_at"]
+        with caplog.at_level(logging.WARNING):
+            updated = update_job(job["id"], {"schedule": "99 99 99 99 99"})
+        assert updated is not None
+        assert updated["schedule"] == prior_schedule
+        assert updated["next_run_at"] == prior_next
+        assert "invalid schedule string" in caplog.text
+
 
 class TestPauseResumeJob:
     def test_pause_sets_state(self, tmp_cron_dir):

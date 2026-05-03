@@ -11,6 +11,7 @@ import logging
 import tempfile
 import threading
 import os
+from contextlib import contextmanager
 import re
 import uuid
 from datetime import datetime, timedelta
@@ -22,6 +23,16 @@ logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
 from utils import atomic_replace
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
 
 try:
     from croniter import croniter
@@ -37,10 +48,40 @@ HERMES_DIR = get_hermes_home().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 
-# In-process lock protecting load_jobs→modify→save_jobs cycles.
-# Required when tick() runs jobs in parallel threads — without this,
-# concurrent mark_job_run / advance_next_run calls can clobber each other.
-_jobs_file_lock = threading.Lock()
+# Re-entrant thread lock paired with `_exclusive_jobs_file_lock()` below so
+# in-process parallelism and multi-process gateways do not tear jobs.json.
+_jobs_file_lock = threading.RLock()
+
+
+@contextmanager
+def _exclusive_jobs_file_lock():
+    """Block until this process owns the cron store mutex (fcntl or msvcrt)."""
+    ensure_dirs()
+    lock_path = CRON_DIR / ".jobs.lock"
+    lock_fp = None
+    try:
+        lock_fp = open(lock_path, "a+b")
+        if fcntl:
+            fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX)
+        elif msvcrt:
+            msvcrt.locking(lock_fp.fileno(), msvcrt.LK_LOCK, 1)
+        yield
+    finally:
+        if lock_fp is not None:
+            try:
+                if fcntl:
+                    fcntl.flock(lock_fp.fileno(), fcntl.LOCK_UN)
+                elif msvcrt:
+                    try:
+                        msvcrt.locking(lock_fp.fileno(), msvcrt.LK_UNLCK, 1)
+                    except (OSError, IOError):
+                        pass
+            except (OSError, IOError):
+                pass
+            try:
+                lock_fp.close()
+            except OSError:
+                pass
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
@@ -338,25 +379,22 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 # Job CRUD Operations
 # =============================================================================
 
-def load_jobs() -> List[Dict[str, Any]]:
-    """Load all jobs from storage."""
-    ensure_dirs()
+def _load_jobs_impl() -> List[Dict[str, Any]]:
+    """Read jobs.json. Caller must hold `_jobs_file_lock` + `_exclusive_jobs_file_lock`."""
     if not JOBS_FILE.exists():
         return []
-    
+
     try:
-        with open(JOBS_FILE, 'r', encoding='utf-8') as f:
+        with open(JOBS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
             return data.get("jobs", [])
     except json.JSONDecodeError:
-        # Retry with strict=False to handle bare control chars in string values
         try:
-            with open(JOBS_FILE, 'r', encoding='utf-8') as f:
+            with open(JOBS_FILE, "r", encoding="utf-8") as f:
                 data = json.loads(f.read(), strict=False)
                 jobs = data.get("jobs", [])
                 if jobs:
-                    # Auto-repair: rewrite with proper escaping
-                    save_jobs(jobs)
+                    _save_jobs_impl(jobs)
                     logger.warning("Auto-repaired jobs.json (had invalid control characters)")
                 return jobs
         except Exception as e:
@@ -367,9 +405,8 @@ def load_jobs() -> List[Dict[str, Any]]:
         raise RuntimeError(f"Failed to read cron database: {e}") from e
 
 
-def save_jobs(jobs: List[Dict[str, Any]]):
-    """Save all jobs to storage."""
-    ensure_dirs()
+def _save_jobs_impl(jobs: List[Dict[str, Any]]):
+    """Atomic write jobs.json. Caller must hold `_jobs_file_lock` + `_exclusive_jobs_file_lock`."""
     fd, tmp_path = tempfile.mkstemp(dir=str(JOBS_FILE.parent), suffix='.tmp', prefix='.jobs_')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
@@ -384,6 +421,20 @@ def save_jobs(jobs: List[Dict[str, Any]]):
         except OSError:
             pass
         raise
+
+
+def load_jobs() -> List[Dict[str, Any]]:
+    """Load all jobs from storage."""
+    with _jobs_file_lock:
+        with _exclusive_jobs_file_lock():
+            return _load_jobs_impl()
+
+
+def save_jobs(jobs: List[Dict[str, Any]]):
+    """Save all jobs to storage."""
+    with _jobs_file_lock:
+        with _exclusive_jobs_file_lock():
+            _save_jobs_impl(jobs)
 
 
 def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
@@ -543,9 +594,11 @@ def create_job(
         "workdir": normalized_workdir,
     }
 
-    jobs = load_jobs()
-    jobs.append(job)
-    save_jobs(jobs)
+    with _jobs_file_lock:
+        with _exclusive_jobs_file_lock():
+            jobs = _load_jobs_impl()
+            jobs.append(job)
+            _save_jobs_impl(jobs)
 
     return job
 
@@ -569,50 +622,105 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
 
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
-    jobs = load_jobs()
-    for i, job in enumerate(jobs):
-        if job["id"] != job_id:
-            continue
+    with _jobs_file_lock:
+        with _exclusive_jobs_file_lock():
+            jobs = _load_jobs_impl()
+            for i, job in enumerate(jobs):
+                if job["id"] != job_id:
+                    continue
 
-        # Validate / normalize workdir if present in updates.  Empty string or
-        # None both mean "clear the field" (restore old behaviour).
-        if "workdir" in updates:
-            _wd = updates["workdir"]
-            if _wd in (None, "", False):
-                updates["workdir"] = None
-            else:
-                updates["workdir"] = _normalize_workdir(_wd)
+                if "workdir" in updates:
+                    _wd = updates["workdir"]
+                    if _wd in (None, "", False):
+                        updates["workdir"] = None
+                    else:
+                        updates["workdir"] = _normalize_workdir(_wd)
 
-        updated = _apply_skill_fields({**job, **updates})
-        schedule_changed = "schedule" in updates
+                updated = _apply_skill_fields({**job, **updates})
+                schedule_changed = "schedule" in updates
 
-        if "skills" in updates or "skill" in updates:
-            normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
-            updated["skills"] = normalized_skills
-            updated["skill"] = normalized_skills[0] if normalized_skills else None
+                if "skills" in updates or "skill" in updates:
+                    normalized_skills = _normalize_skill_list(
+                        updated.get("skill"), updated.get("skills")
+                    )
+                    updated["skills"] = normalized_skills
+                    updated["skill"] = normalized_skills[0] if normalized_skills else None
 
-        if schedule_changed:
-            updated_schedule = updated["schedule"]
-            # The API may pass schedule as a raw string (e.g. "every 10m")
-            # instead of a pre-parsed dict.  Normalize it the same way
-            # create_job() does so downstream code can call .get() safely.
-            if isinstance(updated_schedule, str):
-                updated_schedule = parse_schedule(updated_schedule)
-                updated["schedule"] = updated_schedule
-            updated["schedule_display"] = updates.get(
-                "schedule_display",
-                updated_schedule.get("display", updated.get("schedule_display")),
-            )
-            if updated.get("state") != "paused":
-                updated["next_run_at"] = compute_next_run(updated_schedule)
+                if schedule_changed:
+                    updated_schedule = updated["schedule"]
+                    if isinstance(updated_schedule, str):
+                        prior_schedule = copy.deepcopy(job["schedule"])
+                        prior_next = job.get("next_run_at")
+                        prior_display = job.get("schedule_display")
+                        try:
+                            parsed_schedule = parse_schedule(updated_schedule)
+                        except Exception as exc:
+                            logger.warning(
+                                "cron update_job: invalid schedule string for job %s: %s",
+                                job_id,
+                                exc,
+                                exc_info=True,
+                            )
+                            updated["schedule"] = prior_schedule
+                            updated["schedule_display"] = prior_display
+                            updated["next_run_at"] = prior_next
+                        else:
+                            updated["schedule"] = parsed_schedule
+                            updated["schedule_display"] = updates.get(
+                                "schedule_display",
+                                parsed_schedule.get(
+                                    "display", updated.get("schedule_display")
+                                ),
+                            )
+                            if updated.get("state") != "paused":
+                                try:
+                                    updated["next_run_at"] = compute_next_run(parsed_schedule)
+                                except Exception as nex:
+                                    logger.warning(
+                                        "cron update_job: next_run failed for job %s: %s",
+                                        job_id,
+                                        nex,
+                                        exc_info=True,
+                                    )
+                                    updated["next_run_at"] = prior_next
+                    else:
+                        updated["schedule_display"] = updates.get(
+                            "schedule_display",
+                            updated_schedule.get(
+                                "display", updated.get("schedule_display")
+                            ),
+                        )
+                        if updated.get("state") != "paused":
+                            try:
+                                updated["next_run_at"] = compute_next_run(updated_schedule)
+                            except Exception as exc:
+                                logger.warning(
+                                    "cron update_job: next_run failed for job %s: %s",
+                                    job_id,
+                                    exc,
+                                    exc_info=True,
+                                )
+                                updated["next_run_at"] = job.get("next_run_at")
 
-        if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
-            updated["next_run_at"] = compute_next_run(updated["schedule"])
+                if (
+                    updated.get("enabled", True)
+                    and updated.get("state") != "paused"
+                    and not updated.get("next_run_at")
+                ):
+                    try:
+                        updated["next_run_at"] = compute_next_run(updated["schedule"])
+                    except Exception as exc:
+                        logger.warning(
+                            "cron update_job: fallback next_run failed for job %s: %s",
+                            job_id,
+                            exc,
+                            exc_info=True,
+                        )
 
-        jobs[i] = updated
-        save_jobs(jobs)
-        return _apply_skill_fields(jobs[i])
-    return None
+                jobs[i] = updated
+                _save_jobs_impl(jobs)
+                return _apply_skill_fields(jobs[i])
+            return None
 
 
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -666,13 +774,15 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 def remove_job(job_id: str) -> bool:
     """Remove a job by ID."""
-    jobs = load_jobs()
-    original_len = len(jobs)
-    jobs = [j for j in jobs if j["id"] != job_id]
-    if len(jobs) < original_len:
-        save_jobs(jobs)
-        return True
-    return False
+    with _jobs_file_lock:
+        with _exclusive_jobs_file_lock():
+            jobs = _load_jobs_impl()
+            original_len = len(jobs)
+            jobs = [j for j in jobs if j["id"] != job_id]
+            if len(jobs) < original_len:
+                _save_jobs_impl(jobs)
+                return True
+            return False
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
@@ -687,65 +797,55 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
     can succeed (agent produced output) but fail delivery (platform down).
     """
     with _jobs_file_lock:
-        jobs = load_jobs()
-        for i, job in enumerate(jobs):
-            if job["id"] == job_id:
-                now = _hermes_now().isoformat()
-                job["last_run_at"] = now
-                job["last_status"] = "ok" if success else "error"
-                job["last_error"] = error if not success else None
-                # Track delivery failures separately — cleared on successful delivery
-                job["last_delivery_error"] = delivery_error
-                
-                # Increment completed count
-                if job.get("repeat"):
-                    job["repeat"]["completed"] = job["repeat"].get("completed", 0) + 1
-                    
-                    # Check if we've hit the repeat limit
-                    times = job["repeat"].get("times")
-                    completed = job["repeat"]["completed"]
-                    if times is not None and times > 0 and completed >= times:
-                        # Remove the job (limit reached)
-                        jobs.pop(i)
-                        save_jobs(jobs)
-                        return
-                
-                # Compute next run
-                job["next_run_at"] = compute_next_run(job["schedule"], now)
+        with _exclusive_jobs_file_lock():
+            jobs = _load_jobs_impl()
+            for i, job in enumerate(jobs):
+                if job["id"] == job_id:
+                    now = _hermes_now().isoformat()
+                    job["last_run_at"] = now
+                    job["last_status"] = "ok" if success else "error"
+                    job["last_error"] = error if not success else None
+                    job["last_delivery_error"] = delivery_error
 
-                # If no next run, decide whether this is terminal completion
-                # (one-shot) or a transient failure (recurring schedule couldn't
-                # compute — e.g. 'croniter' missing from the runtime env).
-                # Recurring jobs must NEVER be silently disabled: that turns a
-                # missing runtime dep into "job completed" and the user's
-                # schedule quietly goes off. See issue #16265.
-                if job["next_run_at"] is None:
-                    kind = job.get("schedule", {}).get("kind")
-                    if kind in ("cron", "interval"):
-                        job["state"] = "error"
-                        if not job.get("last_error"):
-                            job["last_error"] = (
-                                "Failed to compute next run for recurring "
-                                "schedule (is the 'croniter' package "
-                                "installed in the gateway's Python env?)"
+                    if job.get("repeat"):
+                        job["repeat"]["completed"] = job["repeat"].get("completed", 0) + 1
+
+                        times = job["repeat"].get("times")
+                        completed = job["repeat"]["completed"]
+                        if times is not None and times > 0 and completed >= times:
+                            jobs.pop(i)
+                            _save_jobs_impl(jobs)
+                            return
+
+                    job["next_run_at"] = compute_next_run(job["schedule"], now)
+
+                    if job["next_run_at"] is None:
+                        kind = job.get("schedule", {}).get("kind")
+                        if kind in ("cron", "interval"):
+                            job["state"] = "error"
+                            if not job.get("last_error"):
+                                job["last_error"] = (
+                                    "Failed to compute next run for recurring "
+                                    "schedule (is the 'croniter' package "
+                                    "installed in the gateway's Python env?)"
+                                )
+                            logger.error(
+                                "Job '%s' (%s) could not compute next_run_at; "
+                                "leaving enabled and marking state=error so the "
+                                "job is not silently disabled.",
+                                job.get("name", job["id"]),
+                                kind,
                             )
-                        logger.error(
-                            "Job '%s' (%s) could not compute next_run_at; "
-                            "leaving enabled and marking state=error so the "
-                            "job is not silently disabled.",
-                            job.get("name", job["id"]),
-                            kind,
-                        )
-                    else:
-                        job["enabled"] = False
-                        job["state"] = "completed"
-                elif job.get("state") != "paused":
-                    job["state"] = "scheduled"
+                        else:
+                            job["enabled"] = False
+                            job["state"] = "completed"
+                    elif job.get("state") != "paused":
+                        job["state"] = "scheduled"
 
-                save_jobs(jobs)
-                return
+                    _save_jobs_impl(jobs)
+                    return
 
-        logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
+            logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
 
 
 def advance_next_run(job_id: str) -> bool:
@@ -761,20 +861,21 @@ def advance_next_run(job_id: str) -> bool:
     Returns True if next_run_at was advanced, False otherwise.
     """
     with _jobs_file_lock:
-        jobs = load_jobs()
-        for job in jobs:
-            if job["id"] == job_id:
-                kind = job.get("schedule", {}).get("kind")
-                if kind not in ("cron", "interval"):
+        with _exclusive_jobs_file_lock():
+            jobs = _load_jobs_impl()
+            for job in jobs:
+                if job["id"] == job_id:
+                    kind = job.get("schedule", {}).get("kind")
+                    if kind not in ("cron", "interval"):
+                        return False
+                    now = _hermes_now().isoformat()
+                    new_next = compute_next_run(job["schedule"], now)
+                    if new_next and new_next != job.get("next_run_at"):
+                        job["next_run_at"] = new_next
+                        _save_jobs_impl(jobs)
+                        return True
                     return False
-                now = _hermes_now().isoformat()
-                new_next = compute_next_run(job["schedule"], now)
-                if new_next and new_next != job.get("next_run_at"):
-                    job["next_run_at"] = new_next
-                    save_jobs(jobs)
-                    return True
-                return False
-        return False
+            return False
 
 
 def get_due_jobs() -> List[Dict[str, Any]]:
@@ -786,74 +887,70 @@ def get_due_jobs() -> List[Dict[str, Any]]:
     immediately.  This prevents a burst of missed jobs on gateway restart.
     """
     now = _hermes_now()
-    raw_jobs = load_jobs()
-    jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
-    due = []
-    needs_save = False
+    with _jobs_file_lock:
+        with _exclusive_jobs_file_lock():
+            raw_jobs = _load_jobs_impl()
+            jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
+            due = []
+            needs_save = False
 
-    for job in jobs:
-        if not job.get("enabled", True):
-            continue
+            for job in jobs:
+                if not job.get("enabled", True):
+                    continue
 
-        next_run = job.get("next_run_at")
-        if not next_run:
-            recovered_next = _recoverable_oneshot_run_at(
-                job.get("schedule", {}),
-                now,
-                last_run_at=job.get("last_run_at"),
-            )
-            if not recovered_next:
-                continue
-
-            job["next_run_at"] = recovered_next
-            next_run = recovered_next
-            logger.info(
-                "Job '%s' had no next_run_at; recovering one-shot run at %s",
-                job.get("name", job["id"]),
-                recovered_next,
-            )
-            for rj in raw_jobs:
-                if rj["id"] == job["id"]:
-                    rj["next_run_at"] = recovered_next
-                    needs_save = True
-                    break
-
-        next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
-        if next_run_dt <= now:
-            schedule = job.get("schedule", {})
-            kind = schedule.get("kind")
-
-            # For recurring jobs, check if the scheduled time is stale
-            # (gateway was down and missed the window). Fast-forward to
-            # the next future occurrence instead of firing a stale run.
-            grace = _compute_grace_seconds(schedule)
-            if kind in ("cron", "interval") and (now - next_run_dt).total_seconds() > grace:
-                # Job is past its catch-up grace window — this is a stale missed run.
-                # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
-                new_next = compute_next_run(schedule, now.isoformat())
-                if new_next:
-                    logger.info(
-                        "Job '%s' missed its scheduled time (%s, grace=%ds). "
-                        "Fast-forwarding to next run: %s",
-                        job.get("name", job["id"]),
-                        next_run,
-                        grace,
-                        new_next,
+                next_run = job.get("next_run_at")
+                if not next_run:
+                    recovered_next = _recoverable_oneshot_run_at(
+                        job.get("schedule", {}),
+                        now,
+                        last_run_at=job.get("last_run_at"),
                     )
-                    # Update the job in storage
+                    if not recovered_next:
+                        continue
+
+                    job["next_run_at"] = recovered_next
+                    next_run = recovered_next
+                    logger.info(
+                        "Job '%s' had no next_run_at; recovering one-shot run at %s",
+                        job.get("name", job["id"]),
+                        recovered_next,
+                    )
                     for rj in raw_jobs:
                         if rj["id"] == job["id"]:
-                            rj["next_run_at"] = new_next
+                            rj["next_run_at"] = recovered_next
                             needs_save = True
                             break
-                    continue  # Skip this run
 
-            due.append(job)
+                next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
+                if next_run_dt <= now:
+                    schedule = job.get("schedule", {})
+                    kind = schedule.get("kind")
 
-    if needs_save:
-        save_jobs(raw_jobs)
+                    grace = _compute_grace_seconds(schedule)
+                    if kind in ("cron", "interval") and (now - next_run_dt).total_seconds() > grace:
+                        new_next = compute_next_run(schedule, now.isoformat())
+                        if new_next:
+                            logger.info(
+                                "Job '%s' missed its scheduled time (%s, grace=%ds). "
+                                "Fast-forwarding to next run: %s",
+                                job.get("name", job["id"]),
+                                next_run,
+                                grace,
+                                new_next,
+                            )
+                            for rj in raw_jobs:
+                                if rj["id"] == job["id"]:
+                                    rj["next_run_at"] = new_next
+                                    needs_save = True
+                                    break
+                            continue
 
-    return due
+                    due.append(job)
+
+            if needs_save:
+                _save_jobs_impl(raw_jobs)
+
+            return due
 
 
 def save_job_output(job_id: str, output: str):
@@ -948,55 +1045,59 @@ def rewrite_skill_refs(
         return {"rewrites": [], "jobs_updated": 0, "jobs_scanned": 0}
 
     with _jobs_file_lock:
-        jobs = load_jobs()
-        rewrites: List[Dict[str, Any]] = []
-        changed = False
+        with _exclusive_jobs_file_lock():
+            jobs = _load_jobs_impl()
+            rewrites: List[Dict[str, Any]] = []
+            changed = False
 
-        for job in jobs:
-            skills_before = _normalize_skill_list(job.get("skill"), job.get("skills"))
-            if not skills_before:
-                continue
+            for job in jobs:
+                skills_before = _normalize_skill_list(
+                    job.get("skill"), job.get("skills")
+                )
+                if not skills_before:
+                    continue
 
-            mapped: Dict[str, str] = {}
-            dropped: List[str] = []
-            new_skills: List[str] = []
+                mapped: Dict[str, str] = {}
+                dropped: List[str] = []
+                new_skills: List[str] = []
 
-            for name in skills_before:
-                if name in consolidated:
-                    target = consolidated[name]
-                    mapped[name] = target
-                    if target and target not in new_skills:
-                        new_skills.append(target)
-                elif name in pruned_set:
-                    dropped.append(name)
-                else:
-                    if name not in new_skills:
-                        new_skills.append(name)
+                for name in skills_before:
+                    if name in consolidated:
+                        target = consolidated[name]
+                        mapped[name] = target
+                        if target and target not in new_skills:
+                            new_skills.append(target)
+                    elif name in pruned_set:
+                        dropped.append(name)
+                    else:
+                        if name not in new_skills:
+                            new_skills.append(name)
 
-            if not mapped and not dropped:
-                continue
+                if not mapped and not dropped:
+                    continue
 
-            job["skills"] = new_skills
-            job["skill"] = new_skills[0] if new_skills else None
-            changed = True
+                job["skills"] = new_skills
+                job["skill"] = new_skills[0] if new_skills else None
+                changed = True
 
-            rewrites.append({
-                "job_id": job.get("id"),
-                "job_name": job.get("name") or job.get("id"),
-                "before": list(skills_before),
-                "after": list(new_skills),
-                "mapped": mapped,
-                "dropped": dropped,
-            })
+                rewrites.append({
+                    "job_id": job.get("id"),
+                    "job_name": job.get("name") or job.get("id"),
+                    "before": list(skills_before),
+                    "after": list(new_skills),
+                    "mapped": mapped,
+                    "dropped": dropped,
+                })
 
-        if changed:
-            save_jobs(jobs)
-            logger.info(
-                "Curator rewrote skill references in %d cron job(s)", len(rewrites)
-            )
+            if changed:
+                _save_jobs_impl(jobs)
+                logger.info(
+                    "Curator rewrote skill references in %d cron job(s)",
+                    len(rewrites),
+                )
 
-        return {
-            "rewrites": rewrites,
-            "jobs_updated": len(rewrites),
-            "jobs_scanned": len(jobs),
-        }
+            return {
+                "rewrites": rewrites,
+                "jobs_updated": len(rewrites),
+                "jobs_scanned": len(jobs),
+            }
