@@ -69,43 +69,36 @@ Hermes Agent에서 아래처럼 요청할 수 있습니다.
 
 핵심은 “어떤 렌더러를 쓰느냐”보다 각 섹션 이미지가 제품 원형, 정확한 한국어, 근거 있는 표현, 플랫폼 리스크 기준을 통과하는지입니다.
 
-## FHL25 파일럿 예시
+## 제품별 섹션 설계 예시
 
-이 스킬은 FHL25 접이식 목걸이 LCD 숫자표시 휴대용 선풍기 상세페이지 제작 흐름을 기반 사례로 사용합니다.
+이 스킬은 특정 강의자, 특정 교육자료, 특정 파일럿 상품명을 전제로 하지 않습니다. 상품 링크와 소스 이미지를 기준으로 제품에 맞는 섹션 수와 순서를 새로 설계합니다.
 
 예시 흐름:
 
 ```text
-도매꾹 상품 링크
-→ 상품명/모델명/인증/배송/주의사항 확인
+상품 링크
+→ 상품명/모델명/구성품/인증/배송/주의사항 확인
 → 도매·판촉 문구를 B2C 소비자 구매 문구로 변환
 → 스마트스토어·쿠팡용 상세페이지 섹션 구성
-→ GPT Image용 한국어 이미지 프롬프트 작성
+→ GPT Image / ChatGPT Image용 한국어 이미지 프롬프트 작성
 → 섹션별 이미지 생성 및 QA
 → 전체 상세페이지 이미지로 세로 합본
 ```
 
-예시 섹션 구조입니다. 아래 00~17은 FHL25 선풍기 파일럿에서 사용한 구조일 뿐이며, 모든 상품을 항상 17개 섹션으로 만들라는 뜻이 아닙니다. 실제 섹션 수와 순서는 제품 카테고리, 구매 설득 포인트, 리스크, 사용 장면, 소스 이미지 수량에 맞게 조정합니다.
+섹션 구조는 아래처럼 제품별로 필요한 모듈만 선택합니다. 항상 17개로 고정하지 않습니다.
 
 ```text
 00_main_thumbnail_product_only.png
-01_hero_freehands.png
-02_problem_busy_hands.png
-03_handheld_vs_neckstrap.png
-04_product_reveal.png
-05_benefit_three_points.png
-06_neckstrap_freehands.png
-07_foldable_storage.png
-08_lcd_display.png
-09_usecase_commute_school.png
-10_usecase_outdoor.png
-11_usecase_desk.png
-12_portability_storage.png
-13_detail_components.png
-14_trust_checkpoints.png
-15_faq_b2c.png
-16_notice_product_info.png
-17_final_cta_b2c.png
+01_hero_stopper.png
+02_problem_or_use_context.png
+03_product_solution.png
+04_key_benefit_summary.png
+05_feature_proof_or_detail.png
+06_use_case_scene.png
+07_components_or_options.png
+08_trust_checkpoints.png
+09_faq_or_notice.png
+10_final_cta.png
 ```
 
 ## 도매/판촉 문구를 B2C 문구로 바꾸는 기준
@@ -152,7 +145,7 @@ Hermes Agent에서 아래처럼 요청할 수 있습니다.
 1. 사용할 상품 링크를 준비합니다.
 2. 판매 채널을 정합니다. 기본값은 스마트스토어와 쿠팡입니다.
 3. 개인 고객이 1개 구매하는 상황을 기준으로 제품의 구매 이유를 정리합니다.
-4. 상세페이지 섹션은 제품에 맞게 설계합니다. FHL25처럼 17개 섹션을 쓸 수도 있지만, 항상 17개로 고정하지 않습니다.
+4. 상세페이지 섹션은 제품에 맞게 설계합니다. 섹션 수는 고정하지 않고 상품 특성에 맞춰 조정합니다.
 5. 섹션별 이미지를 생성한 뒤 한글 오탈자와 제품 왜곡 여부를 검수합니다.
 6. 최종적으로 대표 이미지 1장과 전체 상세페이지 이미지 1장만 제출합니다.
 

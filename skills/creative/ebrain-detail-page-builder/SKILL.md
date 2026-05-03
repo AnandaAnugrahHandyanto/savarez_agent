@@ -251,27 +251,22 @@ claim_risk:
 qa_criteria:
 ```
 
-Example electronics/fan section set from the FHL25 pilot. This is an example only, not the required section count:
+Example product-specific section module set. This is an example menu, not a required section count:
 
 ```text
 00_main_thumbnail_product_only.png
-01_hero_freehands.png
-02_problem_busy_hands.png
-03_handheld_vs_neckstrap.png
-04_product_reveal.png
-05_benefit_three_points.png
-06_neckstrap_freehands.png
-07_foldable_storage.png
-08_lcd_display.png
-09_usecase_commute_school.png
-10_usecase_outdoor.png
-11_usecase_desk.png
-12_portability_storage.png
-13_detail_components.png
-14_trust_checkpoints.png
-15_faq_b2c.png
-16_notice_product_info.png
-17_final_cta_b2c.png
+01_hero_stopper.png
+02_problem_or_use_context.png
+03_product_solution.png
+04_key_benefit_summary.png
+05_feature_proof_or_detail.png
+06_comparison_or_difference.png
+07_use_case_scene.png
+08_components_or_options.png
+09_specs_or_care_summary.png
+10_trust_checkpoints.png
+11_faq_or_notice.png
+12_final_cta.png
 ```
 
 ### 8. Prompt Pack Creation
@@ -302,15 +297,15 @@ Korean text rules:
 Product correction block must be concrete:
 
 ```text
-- compact white foldable neck-strap portable fan
-- round circular fan head with protective grille
-- short white handle/body
-- small dark LCD display on front
-- strap/lanyard concept
-- not headphones, not desk fan, not mini air conditioner
+- exact product category and silhouette from the source image
+- visible color/material/finish
+- key components and accessories visible in the seller images
+- important buttons, labels, ports, packaging, or texture details
+- what the product is NOT, to prevent category drift
+- no invented logos, certifications, awards, prices, or review counts
 ```
 
-For other products, rewrite this block from source image analysis.
+Rewrite this block for every product from source image analysis.
 
 ### 9. Image Generation Strategy
 
@@ -379,14 +374,14 @@ file "<path>"
 du -h "<path>"
 ```
 
-Recommended working filenames are product-specific. The FHL25 pilot used names like these, but do not force every product to use exactly these 17 detail sections:
+Recommended working filenames are product-specific. Do not force every product to use a fixed section count:
 
 ```text
 00_main_thumbnail_product_only_gpt2.png
-01_hero_freehands_gpt2.png
-02_problem_busy_hands_gpt2.png
+01_hero_stopper_gpt2.png
+02_problem_or_use_context_gpt2.png
 ...
-17_final_cta_b2c_gpt2.png
+NN_final_cta_gpt2.png
 ```
 
 Final customer-facing result should be reduced to exactly two image files:
@@ -426,9 +421,9 @@ outdir.mkdir(parents=True, exist_ok=True)
 
 files = [
     folder/"00_main_thumbnail_product_only_gpt2.png",
-    folder/"01_hero_freehands_gpt2.png",
-    # ... ordered section list ...
-    folder/"17_final_cta_b2c_gpt2.png",
+    folder/"01_hero_stopper_gpt2.png",
+    # ... product-specific ordered section list ...
+    folder/"NN_final_cta_gpt2.png",
 ]
 
 target_w = 1024
@@ -527,30 +522,30 @@ Replace with B2C language:
 Hero:
 
 ```text
-손에 들지 않아도,
-바람이 따라옵니다.
+필요한 순간,
+제품의 장점이 바로 보이게
 ```
 
 Problem:
 
 ```text
-더운데,
-손은 이미 바쁩니다.
+고객이 불편을 느끼는 순간을
+짧고 구체적으로 보여주세요
 ```
 
 Product reveal:
 
 ```text
-목에 걸고,
-필요할 때 펼쳐 쓰세요.
+이 제품이 어떤 방식으로
+문제를 줄여주는지 보여주세요
 ```
 
 Benefit trio:
 
 ```text
-손이 자유로운 목걸이형
-접어서 보관하는 휴대성
-숫자로 확인하는 LCD 표시
+핵심 장점 1
+핵심 장점 2
+구매 전 확인 포인트
 ```
 
 Trust/check:
