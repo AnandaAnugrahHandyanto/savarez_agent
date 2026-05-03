@@ -89,3 +89,15 @@ Why:
 - stays fully local
 - avoids extra paid provider dependence
 - fits Hermes’s current one-external-provider architecture
+
+## D-009: Canonical BusinessOS docs sync automatically into Holographic
+Status: active
+
+Decision:
+- Canonical BusinessOS markdown facts from `PROJECT.md`, `docs/architecture.md`, and `docs/decisions.md` are mirrored into Holographic automatically.
+- Sync is event-driven on doc changes and also runs on a periodic safety-net timer.
+
+Why:
+- keeps Hermes recall aligned with the repo source of truth
+- removes operator dependence on manual sync commands
+- preserves a local-first memory workflow with deterministic inputs

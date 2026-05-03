@@ -37,6 +37,7 @@ These remain useful for longer-form context and operator guidance:
 - SQLite is the query and operational state layer
 - repo markdown is the engineering source of truth
 - Dropbox is a one-way mirror target
+- canonical docs sync automatically into Holographic memory via a doc-watch path unit plus a periodic safety-net timer
 - the scheduled pipeline handles live IMAP intake, live Steady Telegram support intake, manual/email document filing, task dashboard generation, finance/tax summaries, operator Telegram updates, and previous-day summary reporting
 - full downstream rebuild/export behavior is still only partially restored
 

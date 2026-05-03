@@ -162,3 +162,15 @@ What the current on-disk stack supports:
 
 What is still a later restoration step:
 - full downstream rebuild chain for clustering refreshes, candidate generation, and reply-draft export/approval/send
+
+## Hermes memory sync layer
+
+Canonical markdown docs are mirrored into Holographic from:
+- `PROJECT.md`
+- `docs/architecture.md`
+- `docs/decisions.md`
+
+Automation model:
+- a doc-change path unit triggers sync when those files change
+- a periodic timer re-runs sync as a safety net
+- built-in Hermes memory remains the canonical user/project memory layer even though Holographic receives the synced facts

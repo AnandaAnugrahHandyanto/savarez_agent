@@ -86,6 +86,32 @@ sqlite3 ~/.hermes/memory_store.db '.tables'
 sqlite3 ~/.hermes/memory_store.db 'SELECT fact_id, category, content FROM facts ORDER BY fact_id LIMIT 30;'
 ```
 
+## Automatic BusinessOS memory sync
+
+Canonical docs are auto-synced into Holographic from:
+- `PROJECT.md`
+- `docs/architecture.md`
+- `docs/decisions.md`
+
+Installed automation:
+- `BusinessOS/04_AUTOMATIONS/scripts/sync_businessos_memory.py`
+- `BusinessOS/04_AUTOMATIONS/scripts/run_businessos_memory_sync.sh`
+- `BusinessOS/04_AUTOMATIONS/systemd/businessos-memory-sync.service`
+- `BusinessOS/04_AUTOMATIONS/systemd/businessos-memory-sync.path`
+- `BusinessOS/04_AUTOMATIONS/systemd/businessos-memory-sync.timer`
+
+Check status:
+```bash
+systemctl --user status businessos-memory-sync.path businessos-memory-sync.timer businessos-memory-sync.service
+journalctl --user -u businessos-memory-sync.service -n 50 --no-pager
+```
+
+Dry-run the sync manually if needed:
+```bash
+cd /home/yuiop/.hermes/hermes-agent
+venv/bin/python BusinessOS/04_AUTOMATIONS/scripts/sync_businessos_memory.py --dry-run
+```
+
 ## Important configs
 
 - `BusinessOS/04_AUTOMATIONS/configs/support-inboxes.yaml`
