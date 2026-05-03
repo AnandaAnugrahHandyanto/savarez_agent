@@ -2989,6 +2989,12 @@ class GatewayRunner:
             )
         asyncio.create_task(self._platform_reconnect_watcher())
 
+        # Start background status heartbeat — periodically refreshes
+        # gateway_state.json so the health check doesn't false-positive
+        # restart the gateway during stable operation (no platform
+        # state transitions = no state file writes = stale detection).
+        asyncio.create_task(self._status_heartbeat())
+
         logger.info("Press Ctrl+C to stop")
         
         return True
@@ -3674,6 +3680,29 @@ class GatewayRunner:
                 if not self._running:
                     return
                 await asyncio.sleep(1)
+
+    async def _status_heartbeat(self, interval: int = 300) -> None:
+        """Background task that periodically refreshes gateway_state.json.
+
+        The health check (gateway_health_check.py) marks state as stale after
+        20 minutes without an update. During stable operation there are no
+        platform state transitions, so the state file would never be updated
+        — causing false-positive gateway restarts every ~20 min.
+
+        This heartbeat writes the current runtime status every ``interval``
+        seconds (default 5 min), well within the 20-min stale threshold.
+        """
+        await asyncio.sleep(60)  # initial delay — let gateway fully start
+        while self._running:
+            try:
+                self._update_runtime_status()
+            except Exception:
+                pass
+            # Sleep in 1s slices so shutdown is snappy
+            slept = 0.0
+            while slept < interval and self._running:
+                await asyncio.sleep(1.0)
+                slept += 1.0
 
     async def stop(
         self,
