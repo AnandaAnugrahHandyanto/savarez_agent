@@ -2204,6 +2204,154 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_image_file_missing_image_key_includes_response_details(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        class _ImageAPI:
+            def create(self, request):
+                return SimpleNamespace(
+                    success=lambda: True,
+                    code=0,
+                    msg="ok",
+                    data=SimpleNamespace(image_key="", request_id="req_img_1"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(image=_ImageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".png", delete=False) as tmp:
+            tmp.write(b"\x89PNG\r\n\x1a\n")
+            image_path = tmp.name
+
+        try:
+            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+                result = asyncio.run(adapter.send_image_file(chat_id="oc_chat", image_path=image_path))
+        finally:
+            os.unlink(image_path)
+
+        self.assertFalse(result.success)
+        self.assertIn("Feishu image upload missing image_key", result.error)
+        self.assertIn("code=0", result.error)
+        self.assertIn("msg=ok", result.error)
+        self.assertIn("request_id", result.error)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_image_file_json_decode_exception_is_diagnostic(self):
+        from json import JSONDecodeError
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        class _ImageAPI:
+            def create(self, request):
+                raise JSONDecodeError("Expecting value", "", 0)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(image=_ImageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".png", delete=False) as tmp:
+            tmp.write(b"\x89PNG\r\n\x1a\n")
+            image_path = tmp.name
+
+        try:
+            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+                result = asyncio.run(adapter.send_image_file(chat_id="oc_chat", image_path=image_path))
+        finally:
+            image_name = os.path.basename(image_path)
+            os.unlink(image_path)
+
+        self.assertFalse(result.success)
+        self.assertIn("Feishu image upload failed", result.error)
+        self.assertIn("JSONDecodeError", result.error)
+        self.assertIn(image_name, result.error)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_document_missing_file_key_includes_response_details(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        class _FileAPI:
+            def create(self, request):
+                return SimpleNamespace(
+                    success=lambda: True,
+                    code=0,
+                    msg="ok",
+                    data=SimpleNamespace(file_key="", request_id="req_file_1"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(file=_FileAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".txt", delete=False) as tmp:
+            tmp.write(b"hello")
+            file_path = tmp.name
+
+        try:
+            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+                result = asyncio.run(adapter.send_document(chat_id="oc_chat", file_path=file_path))
+        finally:
+            os.unlink(file_path)
+
+        self.assertFalse(result.success)
+        self.assertIn("Feishu file upload missing file_key", result.error)
+        self.assertIn("code=0", result.error)
+        self.assertIn("msg=ok", result.error)
+        self.assertIn("request_id", result.error)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_document_json_decode_exception_is_diagnostic(self):
+        from json import JSONDecodeError
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        class _FileAPI:
+            def create(self, request):
+                raise JSONDecodeError("Expecting value", "", 0)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(file=_FileAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".txt", delete=False) as tmp:
+            tmp.write(b"hello")
+            file_path = tmp.name
+
+        try:
+            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+                result = asyncio.run(adapter.send_document(chat_id="oc_chat", file_path=file_path))
+        finally:
+            file_name = os.path.basename(file_path)
+            os.unlink(file_path)
+
+        self.assertFalse(result.success)
+        self.assertIn("Feishu file upload failed", result.error)
+        self.assertIn("JSONDecodeError", result.error)
+        self.assertIn(file_name, result.error)
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_image_file_with_caption_uses_single_post_message(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

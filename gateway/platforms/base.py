@@ -1871,6 +1871,20 @@ class BasePlatformAdapter(ABC):
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
 
     @staticmethod
+    def _is_placeholder_media_path(path: str) -> bool:
+        """Return True for documentation/example MEDIA paths, not real outputs."""
+        raw = str(path or "").strip()
+        if not raw:
+            return False
+        expanded = os.path.expanduser(raw)
+        normalized = expanded.replace("\\", "/")
+        lowered = normalized.lower().rstrip("`\"'*,.;:)}]")
+
+        if lowered == "/absolute/path/to/file" or lowered.startswith("/absolute/path/to/file."):
+            return True
+        return False
+
+    @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """
         Extract MEDIA:<path> tags and [[audio_as_voice]] directives from response text.
@@ -1897,18 +1911,35 @@ class BasePlatformAdapter(ABC):
         media_pattern = re.compile(
             r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
+        matched_spans = []
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
-            if path:
+            if path and not BasePlatformAdapter._is_placeholder_media_path(path):
                 media.append((os.path.expanduser(path), has_voice_tag))
+                matched_spans.append(match.span())
 
-        # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
-        if media:
-            cleaned = media_pattern.sub('', cleaned)
-            cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+        # Remove only MEDIA tags that became real attachments.  Leave ignored
+        # placeholder tags in the text so docs/examples are visible and do not
+        # produce noisy "file not found" delivery attempts.
+        if matched_spans:
+            pieces = []
+            last = 0
+            for start, end in matched_spans:
+                pieces.append(content[last:start])
+                last = end
+            pieces.append(content[last:])
+            cleaned = ''.join(pieces)
+        else:
+            cleaned = content
+        cleaned = cleaned.replace("[[audio_as_voice]]", "")
+        # Strip [[as_document]] directive — callers inspect the original
+        # ``content`` for it (so they can still react to it); here we just
+        # keep it out of the user-visible cleaned text.
+        cleaned = cleaned.replace("[[as_document]]", "")
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
         return media, cleaned
 

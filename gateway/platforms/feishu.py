@@ -1988,8 +1988,9 @@ class FeishuAdapter(BasePlatformAdapter):
                 )
             return self._finalize_send_result(message_response, "image send failed")
         except Exception as exc:
-            logger.error("[Feishu] Failed to send image %s: %s", image_path, exc, exc_info=True)
-            return SendResult(success=False, error=str(exc))
+            error = self._upload_exception_error("image", image_path, exc)
+            logger.error("[Feishu] %s", error, exc_info=True)
+            return SendResult(success=False, error=error)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Feishu bot API does not expose a typing indicator."""
@@ -4051,8 +4052,9 @@ class FeishuAdapter(BasePlatformAdapter):
                 )
             return self._finalize_send_result(message_response, "file send failed")
         except Exception as exc:
-            logger.error("[Feishu] Failed to send file %s: %s", file_path, exc, exc_info=True)
-            return SendResult(success=False, error=str(exc))
+            error = self._upload_exception_error("file", file_path, exc)
+            logger.error("[Feishu] %s", error, exc_info=True)
+            return SendResult(success=False, error=error)
 
     async def _send_raw_message(
         self,
@@ -4094,6 +4096,42 @@ class FeishuAdapter(BasePlatformAdapter):
         data = getattr(response, "data", None)
         return getattr(data, field_name, None) if data else None
 
+    @staticmethod
+    def _safe_repr(value: Any, *, max_len: int = 300) -> str:
+        try:
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                text = str(value)
+            elif isinstance(value, dict):
+                text = json.dumps(value, ensure_ascii=False, default=str)
+            else:
+                text = repr(value)
+        except Exception:
+            text = f"<{type(value).__name__}>"
+        text = text.replace("\n", " ").replace("\r", " ")
+        if len(text) > max_len:
+            return text[: max_len - 3] + "..."
+        return text
+
+    @classmethod
+    def _describe_response(cls, response: Any) -> str:
+        if response is None:
+            return "response=None"
+        parts = []
+        for attr in ("code", "msg"):
+            if hasattr(response, attr):
+                parts.append(f"{attr}={cls._safe_repr(getattr(response, attr), max_len=120)}")
+        data = getattr(response, "data", None)
+        if data is not None:
+            parts.append(f"data={cls._safe_repr(data)}")
+        if not parts:
+            parts.append(f"response={cls._safe_repr(response)}")
+        return ", ".join(parts)
+
+    @staticmethod
+    def _upload_exception_error(kind: str, path: str, exc: Exception) -> str:
+        name = os.path.basename(str(path or "")) or str(path or "<unknown>")
+        return f"Feishu {kind} upload failed for {name}: {type(exc).__name__}: {exc}"
+
     def _response_error_result(
         self,
         response: Any,
@@ -4102,7 +4140,12 @@ class FeishuAdapter(BasePlatformAdapter):
         override_error: Optional[str] = None,
     ) -> SendResult:
         if override_error:
-            return SendResult(success=False, error=override_error, raw_response=response)
+            details = self._describe_response(response)
+            return SendResult(
+                success=False,
+                error=f"{override_error}: {details}" if details else override_error,
+                raw_response=response,
+            )
         code = getattr(response, "code", "unknown")
         msg = getattr(response, "msg", default_message)
         return SendResult(success=False, error=f"[{code}] {msg}", raw_response=response)
