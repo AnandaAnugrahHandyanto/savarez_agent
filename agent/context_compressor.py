@@ -566,8 +566,11 @@ class ContextCompressor(ContextEngine):
             if msg.get("role") != "tool":
                 continue
             content = msg.get("content") or ""
-            # Skip multimodal content (list of content blocks)
-            if isinstance(content, list):
+            # Skip multimodal content only when it contains non-text blocks.
+            if isinstance(content, list) and any(
+                not isinstance(part, dict) or part.get("type") not in {"text", "input_text"}
+                for part in content
+            ):
                 continue
             if len(content) < 200:
                 continue
