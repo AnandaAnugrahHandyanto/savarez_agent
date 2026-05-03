@@ -2090,6 +2090,8 @@ class AIAgent:
         self.session_prompt_tokens = 0
         self.session_completion_tokens = 0
         self.session_total_tokens = 0
+        self.current_turn_prompt_tokens = 0
+        self.current_turn_completion_tokens = 0
         self.session_api_calls = 0
         self.session_input_tokens = 0
         self.session_output_tokens = 0
@@ -6838,6 +6840,7 @@ class AIAgent:
                         est = estimate_tokens_rough(accumulated_content)
 
                         self.usage_callback({"completion_tokens": est})
+                        self.current_turn_completion_tokens = est
 
                     if not tool_calls_acc:
                         _fire_first_delta()
@@ -9189,6 +9192,8 @@ class AIAgent:
         )
         self.context_compressor.last_prompt_tokens = _compressed_est
         self.context_compressor.last_completion_tokens = 0
+        self.current_turn_prompt_tokens = _compressed_est
+        self.current_turn_completion_tokens = 0
 
         # Clear the file-read dedup cache.  After compression the original
         # read content is summarised away — if the model re-reads the same
@@ -13812,6 +13817,8 @@ class AIAgent:
             "completion_tokens": self.session_completion_tokens,
             "total_tokens": self.session_total_tokens,
             "last_prompt_tokens": getattr(self.context_compressor, "last_prompt_tokens", 0) or 0,
+            "current_turn_prompt_tokens": self.current_turn_prompt_tokens,
+            "current_turn_completion_tokens": self.current_turn_completion_tokens,
             "estimated_cost_usd": self.session_estimated_cost_usd,
             "cost_status": self.session_cost_status,
             "cost_source": self.session_cost_source,
