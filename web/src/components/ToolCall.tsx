@@ -86,7 +86,7 @@ export function ToolCall({ tool }: { tool: ToolEntry }) {
 
   return (
     <div
-      className={`rounded-md border overflow-hidden ${STATUS_TONE[tool.status]}`}
+      className={`shrink-0 rounded-md border overflow-hidden ${STATUS_TONE[tool.status]}`}
     >
       <ListItem
         onClick={() => setUserOverride(!open)}
