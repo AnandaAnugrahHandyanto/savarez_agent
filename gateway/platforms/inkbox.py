@@ -115,7 +115,7 @@ SMS_MAX_LENGTH = 1600  # Inkbox SMS hard cap
 # leaks into the user's actual mailbox or SMS thread on Inkbox.  Drop
 # them at adapter.send() so they never get delivered as real messages.
 _ADMIN_NOTICE_PREFIXES: Tuple[str, ...] = (
-    "◐", "◆", "📬", "🔄", "✓", "✗", "⚠️", "⚠", "⚡", "💡",
+    "◐", "◆", "📬", "🔄", "✓", "✗", "⚠️", "⚠", "⚡", "💡", "⏳",
 )
 
 # Substrings that mark CLI/TUI runtime chatter even when the leading glyph is
@@ -129,6 +129,9 @@ _ADMIN_NOTICE_SUBSTRINGS: Tuple[str, ...] = (
     "/busy status",
     "Session automatically reset",
     "No home channel is set",
+    "Still working",
+    "min elapsed — iteration",
+    "Cronjob Response:",
 )
 
 
@@ -936,9 +939,37 @@ class InkboxAdapter(BasePlatformAdapter):
         self._active_call_ws[contact_id] = ws
         self._last_inbound_modality[str(contact_id)] = "voice"
 
+        # Outbound-call purpose: the agent that placed the call writes a
+        # context file under ``$HERMES_HOME/inkbox_call_contexts/<token>.json``
+        # and includes ``?context_token=<token>`` on the WS URL.  We load it
+        # here so the in-call agent — which runs in a brand-new session and
+        # has zero memory of why it's calling — can be told the reason on
+        # its first transcript turn.
+        call_context: Dict[str, Any] = {}
+        ctx_token = (request.query.get("context_token") or "").strip()
+        if ctx_token:
+            try:
+                from hermes_cli.config import get_hermes_home
+                ctx_path = get_hermes_home() / "inkbox_call_contexts" / f"{ctx_token}.json"
+                if ctx_path.exists():
+                    call_context = json.loads(ctx_path.read_text())
+                    # Single-use: drop the file so abandoned tokens don't pile up.
+                    with suppress(Exception):
+                        ctx_path.unlink()
+                else:
+                    logger.warning(
+                        "[Inkbox] Outbound-call context_token %s not found at %s",
+                        ctx_token, ctx_path,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "[Inkbox] Failed to load context_token %s: %s", ctx_token, exc,
+                )
+
         logger.info(
-            "[Inkbox] Call WS open: call_id=%s contact_id=%s remote=%s",
+            "[Inkbox] Call WS open: call_id=%s contact_id=%s remote=%s context=%s",
             call_id, contact_id, meta.get("remote_phone_number"),
+            (call_context.get("reason") or "")[:80] if call_context else "(none)",
         )
 
         async def _send_text_delta(text: str, *, turn_id: str) -> None:
@@ -973,6 +1004,8 @@ class InkboxAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.warning("[Inkbox] Failed to send greeting: %s", exc)
 
+        first_transcript_seen = False
+
         try:
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
@@ -1001,8 +1034,29 @@ class InkboxAdapter(BasePlatformAdapter):
                         message_id=payload.get("turn_id"),
                     )
                     contact_block = self._contact_marker(meta.get("contact"))
+
+                    # On the FIRST transcript only, prepend the call-purpose
+                    # block (if any) so the in-call agent — which has no
+                    # memory of why it's calling — has authoritative context.
+                    purpose_block = ""
+                    if call_context and not first_transcript_seen:
+                        reason = (call_context.get("reason") or "").strip()
+                        scheduled_by = (call_context.get("scheduled_by") or "").strip()
+                        prior = (call_context.get("conversation_summary") or "").strip()
+                        lines = ["[outbound_call_context]"]
+                        if reason:
+                            lines.append(f"reason: {reason}")
+                        if scheduled_by:
+                            lines.append(f"scheduled_by: {scheduled_by}")
+                        if prior:
+                            lines.append(f"prior_conversation: {prior}")
+                        lines.append("[/outbound_call_context]")
+                        purpose_block = "\n".join(lines) + "\n"
+                    first_transcript_seen = True
+
                     tagged = (
-                        f"[inkbox:voice_call call_id={call_id} | {contact_block}]\n{text}"
+                        f"[inkbox:voice_call call_id={call_id} | {contact_block}]\n"
+                        f"{purpose_block}{text}"
                     )
                     event = MessageEvent(
                         text=tagged,

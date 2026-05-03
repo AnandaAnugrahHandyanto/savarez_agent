@@ -208,20 +208,39 @@ for t in identity.list_transcripts(calls[0].id):
 
 When the identity is wired into Hermes via the Inkbox platform adapter, the gateway already runs the WebSocket that bridges call audio — same `/phone/media/ws` endpoint that handles inbound calls. On every connect the adapter writes the live URLs to an identity-state file so cron-spawned and other follow-up agents can find them without guessing.
 
-**Read `ws_url` from the state file — do not hardcode the path or re-derive the URL.** The Inkbox-powered Hermes fork uses an isolated runtime home (typically `HERMES_HOME=~/.hermes-inkbox`), so the state file is **not** at `~/.hermes/`. Always go through `$HERMES_HOME`, which the launcher sets and which subprocess invocations (cron, terminal) inherit:
+**Read `ws_url` from the state file — do not hardcode the path or re-derive the URL.** The Inkbox-powered Hermes fork uses an isolated runtime home (typically `HERMES_HOME=~/.hermes-inkbox`), so the state file is **not** at `~/.hermes/`. Always go through `$HERMES_HOME`, which the launcher sets and which subprocess invocations (cron, terminal) inherit.
+
+**Always pass call-purpose context.** A fresh in-call agent session is spawned when the callee picks up — that session has zero memory of why the call was scheduled, so without explicit context it'll greet the user and have no idea what's going on. Bridge this gap by writing a small JSON file under `$HERMES_HOME/inkbox_call_contexts/<token>.json` and including `?context_token=<token>` on the `client_websocket_url`. The adapter reads the file on WS open, deletes it (single-use), and prepends `[outbound_call_context]…[/outbound_call_context]` to the in-call agent's first transcript.
+
+Known-good recipe:
 
 ```python
-import os, json
+import os, json, secrets
 from pathlib import Path
+from urllib.parse import urlparse
 from inkbox import Inkbox
 
 home = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
 state = json.loads((home / "inkbox_identity_state.json").read_text())
 ws_url = state["ws_url"]
 
+# Write call-purpose context the in-call agent will see on its first turn.
+ctx_dir = home / "inkbox_call_contexts"
+ctx_dir.mkdir(parents=True, exist_ok=True)
+token = secrets.token_urlsafe(16)
+(ctx_dir / f"{token}.json").write_text(json.dumps({
+    "reason": "Dima asked via SMS to be called back in 2 minutes",
+    "scheduled_by": "cron 8ae42d54deec",
+    "conversation_summary": (
+        "Earlier in SMS Dima asked the agent to call him in 2 minutes. "
+        "No specific topic was given — the call is a check-in / liveness test."
+    ),
+}))
+ws_with_ctx = f"{ws_url}?context_token={token}"
+
 with Inkbox(api_key=os.environ["INKBOX_API_KEY"]) as ink:
     identity = ink.get_identity(os.environ.get("INKBOX_IDENTITY", state["handle"]))
-    call = identity.place_call(to_number="+15167251294", client_websocket_url=ws_url)
+    call = identity.place_call(to_number="+15167251294", client_websocket_url=ws_with_ctx)
     print(f"placed call: id={call.id} status={call.status}")
 ```
 
