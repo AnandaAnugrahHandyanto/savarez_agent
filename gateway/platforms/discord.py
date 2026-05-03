@@ -2718,6 +2718,20 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_background(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/background {prompt}", "Background task started~")
 
+        # ── /raw: inline handler (gateway-level, does NOT go to agent) ──
+        @tree.command(
+            name="raw",
+            description="Save a URL to Wiki Raw/ folder for nightly compilation",
+        )
+        @discord.app_commands.describe(url="X/Twitter link or any URL to ingest")
+        async def slash_raw(interaction: discord.Interaction, url: str):
+            """Delegates to gateway _handle_raw_command for proper scraping + formatting."""
+            # Strip command prefix if user pasted "/raw https://..." into the url field
+            url = url.strip()
+            if url.startswith("/raw ") or url.startswith("!raw "):
+                url = url.split(" ", 1)[1].strip()
+            await self._run_simple_slash(interaction, f"/raw {url}")
+
         # ── Auto-register any gateway-available commands not yet on the tree ──
         # This ensures new commands added to COMMAND_REGISTRY in
         # hermes_cli/commands.py automatically appear as Discord slash

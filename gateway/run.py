@@ -8739,6 +8739,114 @@ class GatewayRunner:
         preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
         return f'🔄 Background task started: "{preview}"\nTask ID: {task_id}\nYou can keep chatting — results will appear when done.'
 
+    async def _handle_raw_command(self, event: MessageEvent) -> str:
+        """Handle /raw command — scrape URL(s) and save to Wiki Raw/ folder.
+
+        Routes YouTube URLs to fetch_youtube_transcript.py (full transcript via API),
+        all other URLs to wiki_scrape.py (Camoufox/Firecrawl). Returns a structured
+        response per the LLM-Wiki skill spec.
+        """
+        raw_args = event.get_command_args().strip()
+        if not raw_args:
+            return (
+                "❌ Usage: /raw <url> [url2 ...]\n"
+                "   Scrapes URL(s) and saves to Raw/ for nightly compilation.\n"
+                "   X/Twitter and YouTube URLs get special handling."
+            )
+
+        # Determine wiki raw directory
+        script_dir = os.path.expanduser("~/.hermes/scripts")
+        wiki_script = os.path.join(script_dir, "wiki_scrape.py")
+        youtube_script = os.path.expanduser(
+            "~/.hermes/skills/note-taking/llm-wiki/scripts/fetch_youtube_transcript.py"
+        )
+        default_raw = os.path.expanduser(
+            "~/Documents/Personal/My Second Brain/Resources/Raw"
+        )
+        raw_dir = default_raw
+        try:
+            if hasattr(self, "config") and self.config:
+                cfg = self.config
+                if hasattr(cfg, "skills") and cfg.skills:
+                    wiki_path = cfg.skills.get("config", {}).get("wiki", {}).get("path")
+                    if wiki_path:
+                        raw_dir = os.path.join(os.path.expanduser(str(wiki_path)), "Raw")
+        except Exception:
+            pass  # fall back to default
+        os.makedirs(raw_dir, exist_ok=True)
+
+        urls = shlex.split(raw_args)
+        total_images = 0
+        total_sources = 0
+        saved_files = []
+        errors = []
+
+        # YouTube domain patterns — these get the full transcript via API
+        youtube_pattern = re.compile(
+            r"(youtube\.com|youtu\.be)", re.IGNORECASE
+        )
+
+        for url in urls:
+            url = url.strip().rstrip("/")
+            if url in ("/raw", "!raw"):
+                continue
+            if not url or url.startswith("http://") or url.startswith("https://"):
+                pass
+            elif "." in url:
+                url = "https://" + url
+
+            safe_url = url.replace("&", "\\&").replace(";", "\\;")
+
+            # YouTube URLs get full transcript via API; everything else uses wiki_scrape.py
+            is_youtube = bool(youtube_pattern.search(url))
+            script_to_use = youtube_script if is_youtube else wiki_script
+
+            result = subprocess.run(
+                [sys.executable, script_to_use, safe_url, "--raw-dir", raw_dir],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode != 0:
+                errors.append(f"❌ {url}: {result.stderr.strip() or result.stdout.strip()}")
+                continue
+
+            # Both scripts output file path to stdout prefixed with "→ "
+            stderr = result.stderr.strip()
+            stdout = result.stdout.strip()
+
+            # Parse file path from stdout: "→ /path/to/file.md"
+            filepath = stdout.lstrip("→ ").strip() if stdout else ""
+
+            # Parse images count from stderr: " | N image(s)"
+            images = 0
+            img_match = re.search(r'(\d+)\s+image\(s\)', stderr)
+            if img_match:
+                images = int(img_match.group(1))
+
+            total_sources += 1
+            total_images += images
+            if filepath:
+                saved_files.append(os.path.basename(filepath))
+            else:
+                saved_files.append(url)
+
+        lines = []
+        if saved_files:
+            lines.append("✅ Saved to Raw/")
+            for f in saved_files:
+                lines.append(f"📄 {f}")
+            lines.append(f"🔗 {total_sources} source(s)")
+            lines.append(f"🖼 {total_images} image(s)")
+            lines.append("⏰ Compile at next nightly cron")
+            if errors:
+                lines.append("")
+                lines.extend(errors)
+        elif errors:
+            lines.extend(errors)
+        else:
+            lines.append("🤷 Nothing to scrape — no valid URLs found.")
+
+        return "\n".join(lines)
+
     async def _run_background_task(
         self, prompt: str, source: "SessionSource", task_id: str
     ) -> None:
