@@ -324,6 +324,26 @@ def test_config_bridges_no_thread_channels(monkeypatch, tmp_path):
     assert os.getenv("DISCORD_NO_THREAD_CHANNELS") == "333"
 
 
+def test_config_bridges_thread_free_response_channels(monkeypatch, tmp_path):
+    """gateway/config.py bridges discord.thread_free_response_channels to env var and adapter extra."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "thread_free_response_channels": ["444", "555"],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("DISCORD_THREAD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    from gateway.config import Platform, load_gateway_config
+    config = load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_THREAD_FREE_RESPONSE_CHANNELS") == "444,555"
+    assert config.platforms[Platform.DISCORD].extra["thread_free_response_channels"] == ["444", "555"]
+
+
 def test_config_env_var_takes_precedence(monkeypatch, tmp_path):
     """Env vars should take precedence over config.yaml values."""
     import yaml

@@ -3229,6 +3229,24 @@ class DiscordAdapter(BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
+    def _discord_thread_free_response_channels(self) -> set:
+        """Return Discord channel IDs where mention-free messages should auto-thread.
+
+        ``discord.free_response_channels`` intentionally replies inline so a
+        lightweight chat channel does not spawn a thread for every message. This
+        separate allowlist is for team/ops channels that should be ambiently
+        monitored while still keeping each top-level request contained in its
+        own thread.
+        """
+        raw = self.config.extra.get("thread_free_response_channels")
+        if raw is None:
+            raw = os.getenv("DISCORD_THREAD_FREE_RESPONSE_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        if isinstance(raw, str) and raw.strip():
+            return {part.strip() for part in raw.split(",") if part.strip()}
+        return set()
+
     def _thread_parent_channel(self, channel: Any) -> Any:
         """Return the parent text channel when invoked from a thread."""
         return getattr(channel, "parent", None) or channel
@@ -3767,6 +3785,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 return
 
             free_channels = self._discord_free_response_channels()
+            thread_free_channels = self._discord_thread_free_response_channels()
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
 
@@ -3779,8 +3798,11 @@ class DiscordAdapter(BasePlatformAdapter):
             is_free_channel = (
                 "*" in free_channels
                 or bool(channel_ids & free_channels)
+                or "*" in thread_free_channels
+                or bool(channel_ids & thread_free_channels)
                 or is_voice_linked_channel
             )
+            is_thread_free_channel = "*" in thread_free_channels or bool(channel_ids & thread_free_channels)
 
             # Skip the mention check if the message is in a thread where
             # the bot has previously participated (auto-created or replied in).
@@ -3797,7 +3819,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
+            skip_thread = bool(channel_ids & no_thread_channels) or (is_free_channel and not is_thread_free_channel)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:

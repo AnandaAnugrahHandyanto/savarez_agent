@@ -17,6 +17,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
 | **Server channels** | By default, Hermes only responds when you `@mention` it. If you post in a channel without mentioning it, Hermes ignores the message. |
 | **Free-response channels** | You can make specific channels mention-free with `DISCORD_FREE_RESPONSE_CHANNELS`, or disable mentions globally with `DISCORD_REQUIRE_MENTION=false`. Messages in these channels are answered inline — auto-threading is skipped so the channel stays a lightweight chat. |
+| **Threaded free-response channels** | You can make specific channels mention-free while still creating a new thread per top-level message with `DISCORD_THREAD_FREE_RESPONSE_CHANNELS`. This is useful for shared team channels where Hermes should listen ambiently but keep each request contained. |
 | **Threads** | Hermes replies in the same thread. Mention rules still apply unless that thread or its parent channel is configured as free-response. Threads stay isolated from the parent channel for session history. |
 | **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel for safety and clarity. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
 | **Messages mentioning other users** | When `DISCORD_IGNORE_NO_MENTION` is `true` (the default), Hermes stays silent if a message @mentions other users but does **not** mention the bot. This prevents the bot from jumping into conversations directed at other people. Set to `false` if you want the bot to respond to all messages regardless of who is mentioned. This only applies in server channels, not DMs. |
@@ -277,7 +278,8 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_HOME_CHANNEL_NAME` | No | `"Home"` | Display name for the home channel in logs and status output. |
 | `DISCORD_COMMAND_SYNC_POLICY` | No | `"safe"` | Controls native slash-command startup sync. `"safe"` diffs existing global commands and only updates what changed, recreating commands when Discord metadata changes cannot be applied via patch. `"bulk"` preserves the old `tree.sync()` behavior. `"off"` skips startup sync entirely. |
 | `DISCORD_REQUIRE_MENTION` | No | `true` | When `true`, the bot only responds in server channels when `@mentioned`. Set to `false` to respond to all messages in every channel. |
-| `DISCORD_FREE_RESPONSE_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds without requiring an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `true`. |
+| `DISCORD_FREE_RESPONSE_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds without requiring an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `true`. These channels reply inline and skip auto-threading. |
+| `DISCORD_THREAD_FREE_RESPONSE_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds without requiring an `@mention` and still auto-creates a thread for each top-level message when `DISCORD_AUTO_THREAD` is `true`. |
 | `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent if a message `@mentions` other users but does **not** mention the bot. Prevents the bot from jumping into conversations directed at other people. Only applies in server channels, not DMs. |
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
 | `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. |
@@ -302,7 +304,8 @@ The `discord` section in `~/.hermes/config.yaml` mirrors the env vars above. Con
 # Discord-specific settings
 discord:
   require_mention: true           # Require @mention in server channels
-  free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
+  free_response_channels: ""      # Mention-free channel IDs that reply inline
+  thread_free_response_channels: "" # Mention-free channel IDs that auto-thread
   auto_thread: true               # Auto-create threads on @mention
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
@@ -344,7 +347,27 @@ discord:
 
 If a thread's parent channel is in this list, the thread also becomes mention-free.
 
-Free-response channels also **skip auto-threading** — the bot replies inline rather than spinning off a new thread per message. This keeps the channel usable as a lightweight chat surface. If you want threading behavior, don't list the channel as free-response (use normal `@mention` flow instead).
+Free-response channels also **skip auto-threading** — the bot replies inline rather than spinning off a new thread per message. This keeps the channel usable as a lightweight chat surface. If you want mention-free messages to create threads, use `discord.thread_free_response_channels` instead.
+
+#### `discord.thread_free_response_channels`
+
+**Type:** string or list — **Default:** `""`
+
+Channel IDs where the bot responds to all messages without needing an `@mention` and still auto-creates a new thread for each top-level message when `discord.auto_thread` is enabled. Accepts either a comma-separated string or a YAML list:
+
+```yaml
+# String format
+discord:
+  thread_free_response_channels: "1234567890,9876543210"
+
+# List format
+discord:
+  thread_free_response_channels:
+    - 1234567890
+    - 9876543210
+```
+
+This is useful for ambient team/ops channels where every top-level message should become an isolated Hermes conversation. Channels listed in `discord.no_thread_channels` still bypass auto-threading and get inline replies.
 
 #### `discord.auto_thread`
 
@@ -352,7 +375,7 @@ Free-response channels also **skip auto-threading** — the bot replies inline r
 
 When enabled, every `@mention` in a regular text channel automatically creates a new thread for the conversation. This keeps the main channel clean and gives each conversation its own isolated session history. Once a thread is created, subsequent messages in that thread don't require `@mention` — the bot knows it's already participating.
 
-Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.free_response_channels` or `discord.no_thread_channels` also bypass auto-threading and get inline replies instead.
+Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.free_response_channels` or `discord.no_thread_channels` also bypass auto-threading and get inline replies instead. Channels listed in `discord.thread_free_response_channels` are mention-free but still auto-thread top-level messages.
 
 #### `discord.reactions`
 
