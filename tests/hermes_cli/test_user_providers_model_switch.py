@@ -632,14 +632,12 @@ def test_list_authenticated_providers_dedup_honors_base_url_env_override(monkeyp
 
 
 def test_list_authenticated_providers_mistral_uses_overlay_and_hides_shadow(monkeypatch):
-    """Mistral's models.dev entry has no API URL, so Hermes must use its overlay.
+    """Mistral's models.dev entry has no API URL, so Hermes must use its registry URL.
 
-    Without the overlay endpoint and built-in endpoint dedup, the picker shows a
+    Without the real provider endpoint and built-in endpoint dedup, the picker shows a
     second ``custom:mistral`` row from config.yaml; that stale row can contain
     short aliases like ``vibe-tools`` that the Mistral API rejects.
     """
-    from hermes_cli.providers import HermesOverlay
-
     monkeypatch.setenv("MISTRAL_API_KEY", "sk-test")
     monkeypatch.setattr(
         "agent.models_dev.fetch_models_dev",
@@ -649,16 +647,6 @@ def test_list_authenticated_providers_mistral_uses_overlay_and_hides_shadow(monk
                 "env": ["MISTRAL_API_KEY"],
                 "api": "",
             }
-        },
-    )
-    monkeypatch.setattr(
-        "hermes_cli.providers.HERMES_OVERLAYS",
-        {
-            "mistral": HermesOverlay(
-                transport="openai_chat",
-                base_url_override="https://api.mistral.ai/v1",
-                base_url_env_var="MISTRAL_BASE_URL",
-            )
         },
     )
     monkeypatch.setattr("agent.models_dev.list_agentic_models", lambda provider: [])

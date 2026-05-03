@@ -330,6 +330,19 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("NVIDIA_API_KEY",),
         base_url_env_var="NVIDIA_BASE_URL",
     ),
+    "mistral": ProviderConfig(
+        id="mistral",
+        name="Mistral",
+        auth_type="api_key",
+        inference_base_url="https://api.mistral.ai/v1",
+        api_key_env_vars=(
+            "MISTRAL_API_KEY",
+            "MISTRAL_VIBE_API_KEY",
+            "VIBE_API_KEY",
+            "CODESTRAL_API_KEY",
+        ),
+        base_url_env_var="MISTRAL_BASE_URL",
+    ),
     "ai-gateway": ProviderConfig(
         id="ai-gateway",
         name="Vercel AI Gateway",
