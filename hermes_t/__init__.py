@@ -12,6 +12,7 @@ from hermes_olin.runtime import (
     stage_pending_signal,
 )
 from hermes_olin.store import TradingStateStore
+from hermes_t.post_market_review import build_post_market_review
 from hermes_t.tech_data import FixedTechDataProvider, JsonSymbolTechDataProvider, TechDataProvider, build_tech_data_provider
 
 __all__ = [
@@ -21,6 +22,7 @@ __all__ = [
     "TechDataProvider",
     "FixedTechDataProvider",
     "JsonSymbolTechDataProvider",
+    "build_post_market_review",
     "build_tech_data_provider",
     "arbitrate_candidate",
     "build_execution_suggestion",
