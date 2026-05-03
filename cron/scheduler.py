@@ -123,9 +123,14 @@ _LOCK_FILE = _LOCK_DIR / ".tick.lock"
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
-    """Extract origin info from a job, preserving any extra routing metadata."""
+    """Extract origin info from a job, preserving any extra routing metadata.
+
+    Tolerates non-dict ``origin`` values (e.g. a free-form string left by a
+    script that wrote jobs.json directly) by returning ``None`` rather than
+    crashing the tick with ``AttributeError``.
+    """
     origin = job.get("origin")
-    if not origin:
+    if not origin or not isinstance(origin, dict):
         return None
     platform = origin.get("platform")
     chat_id = origin.get("chat_id")
@@ -394,7 +399,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         thread_id = target.get("thread_id")
 
         # Diagnostic: log thread_id for topic-aware delivery debugging
-        origin = job.get("origin") or {}
+        origin = _resolve_origin(job) or {}
         origin_thread = origin.get("thread_id")
         if origin_thread and not thread_id:
             logger.warning(
