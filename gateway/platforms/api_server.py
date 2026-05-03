@@ -34,6 +34,7 @@ import re
 import sqlite3
 import time
 import uuid
+from contextvars import copy_context
 from typing import Any, Dict, List, Optional
 
 try:
@@ -2337,34 +2338,57 @@ class APIServerAdapter(BasePlatformAdapter):
         at ``agent_ref[0]`` before ``run_conversation`` begins.  This allows
         callers (e.g. the SSE writer) to call ``agent.interrupt()`` from
         another thread to stop in-progress LLM calls.
+
+        Session context vars (``HERMES_SESSION_PLATFORM`` etc.) are set for
+        the duration of the run and propagated into the executor thread via
+        ``copy_context``.  Without this, ``terminal_tool``'s watcher
+        registration block (which gates on ``HERMES_SESSION_PLATFORM`` being
+        non-empty) is silently skipped on the API server path, making
+        ``notify_on_complete=True`` a no-op for WebUI / Dashboard / any
+        OpenAI-compatible client.  Mirrors ``GatewayRunner._set_session_env``
+        in ``gateway/run.py``.  Issue #10760.
         """
-        loop = asyncio.get_running_loop()
+        from gateway.session_context import set_session_vars, clear_session_vars
 
-        def _run():
-            agent = self._create_agent(
-                ephemeral_system_prompt=ephemeral_system_prompt,
-                session_id=session_id,
-                stream_delta_callback=stream_delta_callback,
-                tool_progress_callback=tool_progress_callback,
-                tool_start_callback=tool_start_callback,
-                tool_complete_callback=tool_complete_callback,
-            )
-            if agent_ref is not None:
-                agent_ref[0] = agent
-            effective_task_id = session_id or str(uuid.uuid4())
-            result = agent.run_conversation(
-                user_message=user_message,
-                conversation_history=conversation_history,
-                task_id=effective_task_id,
-            )
-            usage = {
-                "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-            }
-            return result, usage
+        # API server is stateless w.r.t. chat/user identity (no platform-side
+        # account model), so chat_id and session_key both carry session_id —
+        # that's the only stable per-conversation handle we have here.
+        _session_tokens = set_session_vars(
+            platform=Platform.API_SERVER.value,
+            chat_id=session_id or "",
+            session_key=session_id or "",
+        )
+        try:
+            loop = asyncio.get_running_loop()
+            ctx = copy_context()
 
-        return await loop.run_in_executor(None, _run)
+            def _run():
+                agent = self._create_agent(
+                    ephemeral_system_prompt=ephemeral_system_prompt,
+                    session_id=session_id,
+                    stream_delta_callback=stream_delta_callback,
+                    tool_progress_callback=tool_progress_callback,
+                    tool_start_callback=tool_start_callback,
+                    tool_complete_callback=tool_complete_callback,
+                )
+                if agent_ref is not None:
+                    agent_ref[0] = agent
+                effective_task_id = session_id or str(uuid.uuid4())
+                result = agent.run_conversation(
+                    user_message=user_message,
+                    conversation_history=conversation_history,
+                    task_id=effective_task_id,
+                )
+                usage = {
+                    "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                    "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+                    "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                }
+                return result, usage
+
+            return await loop.run_in_executor(None, ctx.run, _run)
+        finally:
+            clear_session_vars(_session_tokens)
 
     # ------------------------------------------------------------------
     # /v1/runs — structured event streaming

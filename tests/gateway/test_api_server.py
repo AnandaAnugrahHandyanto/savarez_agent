@@ -361,6 +361,85 @@ class TestAgentExecution:
             task_id="session-123",
         )
 
+    @pytest.mark.asyncio
+    async def test_run_agent_sets_session_contextvars_for_executor(self, adapter):
+        """Regression for #10760.
+
+        ``terminal_tool``'s ``notify_on_complete`` watcher registration is gated
+        on ``HERMES_SESSION_PLATFORM`` being non-empty (read via
+        ``gateway.session_context.get_session_env``).  On the API server path
+        the agent runs inside ``loop.run_in_executor``; if the adapter doesn't
+        seed the session contextvars *and* propagate them via ``copy_context``,
+        the watcher block is silently skipped and ``notify_on_complete`` becomes
+        a no-op.
+
+        This test asserts the contextvars are visible inside the executor
+        thread where the agent actually runs (i.e. where ``terminal_tool`` would
+        read them).
+        """
+        from gateway.session_context import get_session_env
+
+        observed: Dict[str, str] = {}
+
+        def _capture_env_inside_run_conversation(*args, **kwargs):
+            # This runs in the executor thread, mirroring where terminal_tool's
+            # ``_gw_platform = _gse("HERMES_SESSION_PLATFORM", "")`` lookup
+            # actually happens during background-process registration.
+            observed["platform"] = get_session_env("HERMES_SESSION_PLATFORM", "")
+            observed["chat_id"] = get_session_env("HERMES_SESSION_CHAT_ID", "")
+            observed["session_key"] = get_session_env("HERMES_SESSION_KEY", "")
+            return {"final_response": "ok"}
+
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.side_effect = _capture_env_inside_run_conversation
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                session_id="session-watcher-42",
+            )
+
+        assert observed["platform"] == "api_server", (
+            "terminal_tool's notify_on_complete watcher block is gated on "
+            "HERMES_SESSION_PLATFORM; it must be set to 'api_server' inside "
+            "the executor thread or the watcher is silently skipped."
+        )
+        assert observed["chat_id"] == "session-watcher-42"
+        assert observed["session_key"] == "session-watcher-42"
+
+    @pytest.mark.asyncio
+    async def test_run_agent_clears_session_contextvars_after_run(self, adapter):
+        """Regression for #10760.
+
+        Session contextvars must not leak past ``_run_agent`` — otherwise a
+        subsequent unrelated agent run on the same asyncio task could observe
+        stale routing data from a previous request.
+        """
+        from gateway.session_context import get_session_env
+
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "ok"}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                session_id="session-leak-check",
+            )
+
+        # After the run, the contextvars should be cleared (set to "") so a
+        # subsequent unguarded read returns "" rather than the previous run's
+        # session_id.  This matches GatewayRunner._clear_session_env semantics.
+        assert get_session_env("HERMES_SESSION_CHAT_ID", "default-fallback") == ""
+        assert get_session_env("HERMES_SESSION_KEY", "default-fallback") == ""
+
 
 # ---------------------------------------------------------------------------
 # /health endpoint
