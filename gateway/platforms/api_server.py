@@ -53,7 +53,13 @@ from gateway.platforms.base import (
 logger = logging.getLogger(__name__)
 
 # Default settings
-DEFAULT_HOST = "127.0.0.1"
+try:
+    from hermes_constants import is_container
+    _API_DEFAULT_HOST = "0.0.0.0" if is_container() else "127.0.0.1"
+except ImportError:
+    _API_DEFAULT_HOST = "127.0.0.1"
+DEFAULT_HOST = _API_DEFAULT_HOST
+del _API_DEFAULT_HOST
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies

@@ -8083,14 +8083,30 @@ def cmd_dashboard(args):
         if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
             sys.exit(1)
 
+    # Auto-detect container environment: default to 0.0.0.0 and allow public
+    # binding so Docker -p port mappings work without --host 0.0.0.0 --insecure.
     from hermes_cli.web_server import start_server
+    try:
+        from hermes_constants import is_container
+        _in_container = is_container()
+    except ImportError:
+        _in_container = False
+
+    host = args.host
+    if _in_container and host == "127.0.0.1":
+        host = "0.0.0.0"
+        print(
+            "  ⚕ Container detected: dashboard binding to 0.0.0.0. "
+            "Use --host 127.0.0.1 to override."
+        )
+    allow_public = getattr(args, "insecure", False) or _in_container
 
     embedded_chat = args.tui or os.environ.get("HERMES_DASHBOARD_TUI") == "1"
     start_server(
-        host=args.host,
+        host=host,
         port=args.port,
         open_browser=not args.no_open,
-        allow_public=getattr(args, "insecure", False),
+        allow_public=allow_public,
         embedded_chat=embedded_chat,
     )
 

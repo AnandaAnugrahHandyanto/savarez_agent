@@ -35,13 +35,23 @@ docker run -d \
   --name hermes \
   --restart unless-stopped \
   -v ~/.hermes:/opt/data \
+  -e API_SERVER_HOST=0.0.0.0 \
+  -e API_SERVER_KEY=$(openssl rand -hex 32) \
   -p 8642:8642 \
   nousresearch/hermes-agent gateway run
 ```
 
 Port 8642 exposes the gateway's [OpenAI-compatible API server](./features/api-server.md) and health endpoint. It's optional if you only use chat platforms (Telegram, Discord, etc.), but required if you want the dashboard or external tools to reach the gateway.
 
-Opening any port on an internet facing machine is a security risk. You should not do it unless you understand the risks.
+:::warning
+
+Setting `API_SERVER_HOST=0.0.0.0` exposes the API server on all network interfaces. You **must** set a strong `API_SERVER_KEY` (generate one with `openssl rand -hex 32`) when binding to `0.0.0.0`. Without it, the API server will refuse to start and log:
+
+> `Refusing to start: binding to 0.0.0.0 requires API_SERVER_KEY`
+
+Starting in Hermes 5401a00, the container environment is auto-detected — if no host override is set inside a container, the API server and dashboard bind to `0.0.0.0` by default. You still need `API_SERVER_KEY` for authentication (see above).
+
+:::
 
 ## Running the dashboard
 
@@ -56,8 +66,16 @@ docker run -d \
   -v ~/.hermes:/opt/data \
   -p 9119:9119 \
   -e GATEWAY_HEALTH_URL=http://$HOST_IP:8642 \
-  nousresearch/hermes-agent dashboard
+  nousresearch/hermes-agent dashboard --host 0.0.0.0 --insecure
 ```
+
+:::warning
+
+The dashboard exposes API keys and configuration without robust authentication. The `--insecure` flag is required when binding to `0.0.0.0` — only use it on trusted networks.
+
+Starting in Hermes 5401a00, the container environment is auto-detected: if you run the dashboard inside a container without specifying `--host`, it defaults to `0.0.0.0` and skips the `--insecure` guard automatically. The flags above are still recommended for explicitness.
+
+:::
 
 Replace `$HOST_IP` with the IP address of the machine running the gateway container (e.g. `192.168.1.100`), or use a Docker network hostname if both containers share a network (see the [Compose example](#docker-compose-example) below).
 
@@ -191,6 +209,9 @@ services:
       - "8642:8642"
     volumes:
       - ~/.hermes:/opt/data
+    environment:
+      - API_SERVER_HOST=0.0.0.0
+      - API_SERVER_KEY=${API_SERVER_KEY}
     networks:
       - hermes-net
     # Uncomment to forward specific env vars instead of using .env file:
