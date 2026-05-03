@@ -130,7 +130,12 @@ def _read_bundled_manifest_names() -> Set[str]:
 
 
 def _read_hub_installed_names() -> Set[str]:
-    """Return the set of skill names installed via the Skills Hub.
+    """Return identifiers for skills installed via the Skills Hub.
+
+    Returns both the hub slug (lock.json key, e.g. ``"getnote"``) and the
+    SKILL.md ``name`` field resolved via ``install_path`` (e.g. ``"Get笔记"``).
+    Including the display name ensures skills with localized or otherwise
+    non-slug names are correctly protected from curator processing.
 
     Reads ~/.hermes/skills/.hub/lock.json (see tools/skills_hub.py :: HubLockFile).
     """
@@ -139,10 +144,61 @@ def _read_hub_installed_names() -> Set[str]:
         return set()
     try:
         data = json.loads(lock_path.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            installed = data.get("installed") or {}
-            if isinstance(installed, dict):
-                return {str(k) for k in installed.keys()}
+        if not isinstance(data, dict):
+            return set()
+        installed = data.get("installed") or {}
+        if not isinstance(installed, dict):
+            return set()
+        names: Set[str] = {str(k) for k in installed.keys()}
+        skills_dir = _skills_dir()
+        for entry in installed.values():
+            if not isinstance(entry, dict):
+                continue
+            ip = entry.get("install_path")
+            if not ip:
+                continue
+            rel = Path(str(ip).strip("/"))
+            if ".." in rel.parts:
+                continue
+            skill_md = skills_dir / rel / "SKILL.md"
+            if skill_md.exists():
+                display = _read_skill_name(skill_md, fallback="")
+                if display:
+                    names.add(display)
+        return names
+    except (OSError, json.JSONDecodeError) as e:
+        logger.debug("Failed to read hub lock file: %s", e)
+    return set()
+
+
+def _read_hub_installed_dirs() -> Set[str]:
+    """Return normalized install_path values for hub-installed skills.
+
+    Used alongside _read_hub_installed_names() in list_agent_created_skill_names()
+    to catch skills where the SKILL.md is unreadable and the display name cannot
+    be resolved, but the directory is still a known hub install location.
+    """
+    lock_path = _skills_dir() / ".hub" / "lock.json"
+    if not lock_path.exists():
+        return set()
+    try:
+        data = json.loads(lock_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return set()
+        installed = data.get("installed") or {}
+        if not isinstance(installed, dict):
+            return set()
+        dirs: Set[str] = set()
+        for entry in installed.values():
+            if not isinstance(entry, dict):
+                continue
+            ip = entry.get("install_path")
+            if not ip:
+                continue
+            rel = Path(str(ip).strip("/"))
+            if ".." not in rel.parts:
+                dirs.add(rel.as_posix())
+        return dirs
     except (OSError, json.JSONDecodeError) as e:
         logger.debug("Failed to read hub lock file: %s", e)
     return set()
@@ -160,6 +216,7 @@ def list_agent_created_skill_names() -> List[str]:
         return []
     bundled = _read_bundled_manifest_names()
     hub = _read_hub_installed_names()
+    hub_dirs = _read_hub_installed_dirs()
     off_limits = bundled | hub
 
     names: List[str] = []
@@ -172,6 +229,10 @@ def list_agent_created_skill_names() -> List[str]:
             continue
         parts = rel.parts
         if parts and (parts[0].startswith(".") or parts[0] == "node_modules"):
+            continue
+        # Belt-and-suspenders: skip by install_path directory match, for cases
+        # where the SKILL.md display name could not be resolved from the lock.
+        if rel.parent.as_posix() in hub_dirs:
             continue
         name = _read_skill_name(skill_md, fallback=skill_md.parent.name)
         if name in off_limits:

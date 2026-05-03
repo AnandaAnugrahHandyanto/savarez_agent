@@ -237,6 +237,96 @@ def test_is_agent_created(skills_home):
     assert is_agent_created("hubbed") is False
 
 
+def test_agent_created_excludes_hub_skill_with_nonascii_display_name(skills_home):
+    """Hub skill whose SKILL.md name differs from the hub slug (e.g. "Get笔记" vs
+    "getnote") must not appear in list_agent_created_skill_names(). Regression
+    for GitHub issue #19293."""
+    from tools.skill_usage import list_agent_created_skill_names
+    skills_dir = skills_home / "skills"
+    # Hub skill: slug "getnote", SKILL.md name "Get笔记", nested under productivity/
+    hub_skill_dir = skills_dir / "productivity" / "getnote"
+    hub_skill_dir.mkdir(parents=True)
+    (hub_skill_dir / "SKILL.md").write_text(
+        "---\nname: Get笔记\ndescription: note tool\n---\n", encoding="utf-8"
+    )
+    _write_skill(skills_dir, "my-skill")
+    hub_dir = skills_dir / ".hub"
+    hub_dir.mkdir()
+    (hub_dir / "lock.json").write_text(
+        json.dumps({
+            "version": 1,
+            "installed": {
+                "getnote": {
+                    "source": "taps/main",
+                    "install_path": "productivity/getnote",
+                }
+            },
+        }),
+        encoding="utf-8",
+    )
+    names = list_agent_created_skill_names()
+    assert "my-skill" in names
+    assert "Get笔记" not in names
+    assert "getnote" not in names
+
+
+def test_is_agent_created_nonascii_hub_display_name(skills_home):
+    """is_agent_created() must return False for a hub skill's non-ASCII display
+    name, not just its slug. Regression for GitHub issue #19293."""
+    from tools.skill_usage import is_agent_created
+    skills_dir = skills_home / "skills"
+    hub_skill_dir = skills_dir / "productivity" / "getnote"
+    hub_skill_dir.mkdir(parents=True)
+    (hub_skill_dir / "SKILL.md").write_text(
+        "---\nname: Get笔记\ndescription: note tool\n---\n", encoding="utf-8"
+    )
+    hub_dir = skills_dir / ".hub"
+    hub_dir.mkdir()
+    (hub_dir / "lock.json").write_text(
+        json.dumps({
+            "version": 1,
+            "installed": {
+                "getnote": {
+                    "source": "taps/main",
+                    "install_path": "productivity/getnote",
+                }
+            },
+        }),
+        encoding="utf-8",
+    )
+    assert is_agent_created("getnote") is False       # slug
+    assert is_agent_created("Get笔记") is False        # display name
+    assert is_agent_created("my-other-skill") is True  # unrelated skill
+
+
+def test_agent_created_excludes_hub_skill_dir_when_skill_md_unreadable(skills_home):
+    """Directory-path guard must block a hub skill even when SKILL.md is absent
+    (belt-and-suspenders for the install_path check)."""
+    from tools.skill_usage import list_agent_created_skill_names
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "my-skill")
+    hub_dir = skills_dir / ".hub"
+    hub_dir.mkdir()
+    # lock.json records an install_path but we do NOT create the SKILL.md
+    (hub_dir / "lock.json").write_text(
+        json.dumps({
+            "version": 1,
+            "installed": {
+                "ghost-skill": {
+                    "source": "taps/main",
+                    "install_path": "productivity/ghost-skill",
+                }
+            },
+        }),
+        encoding="utf-8",
+    )
+    # Create the directory but deliberately no SKILL.md inside it
+    (skills_dir / "productivity" / "ghost-skill").mkdir(parents=True)
+    names = list_agent_created_skill_names()
+    assert "my-skill" in names
+    assert "ghost-skill" not in names
+
+
 def test_agent_created_skips_archive_and_hub_dirs(skills_home):
     from tools.skill_usage import list_agent_created_skill_names
     skills_dir = skills_home / "skills"
