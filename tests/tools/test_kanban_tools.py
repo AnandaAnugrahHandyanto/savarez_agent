@@ -112,6 +112,39 @@ def test_show_explicit_task_id(worker_env):
     assert d["task"]["id"] == other
 
 
+def test_worker_tools_use_shared_db_override(monkeypatch, tmp_path):
+    """Worker tools must find tasks on the dispatcher DB after -p switches home."""
+    from pathlib import Path as _Path
+    from hermes_cli import kanban_db as kb
+
+    root = tmp_path / ".hermes"
+    profile_home = root / "profiles" / "researcher"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="shared board", assignee="researcher")
+        kb.claim_task(conn, tid)
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(root / "kanban.db"))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_PROFILE", "researcher")
+
+    from tools import kanban_tools as kt
+    out = kt._handle_show({})
+    d = json.loads(out)
+    assert d["task"]["id"] == tid
+    assert d["task"]["title"] == "shared board"
+
+
 def test_complete_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_complete({

@@ -2215,6 +2215,33 @@ def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
     env = captured["env"]
     assert env.get("HERMES_KANBAN_TASK") == tid
     assert env.get("HERMES_PROFILE") == "some-profile"
+    assert env.get("HERMES_KANBAN_DB") == str(kanban_home / "kanban.db")
+    assert env.get("HERMES_KANBAN_WORKSPACES_ROOT") == str(
+        kanban_home / "kanban" / "workspaces"
+    )
+
+
+def test_kanban_paths_prefer_dispatcher_env_over_profile_home(tmp_path, monkeypatch):
+    """A profile worker must keep using the dispatcher's shared board.
+
+    ``hermes -p researcher`` rewrites HERMES_HOME to the profile directory.
+    Without the explicit dispatcher env override, worker-side kanban tools
+    look at profiles/researcher/kanban.db instead of the shared board.
+    """
+    root = tmp_path / ".hermes"
+    profile_home = root / "profiles" / "researcher"
+    shared_db = root / "kanban.db"
+    shared_workspaces = root / "kanban" / "workspaces"
+    profile_home.mkdir(parents=True)
+    shared_workspaces.mkdir(parents=True)
+
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(shared_db))
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(shared_workspaces))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    assert kb.kanban_db_path() == shared_db
+    assert kb.workspaces_root() == shared_workspaces
 
 
 

@@ -62,13 +62,26 @@ _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
 # ---------------------------------------------------------------------------
 
 def kanban_db_path() -> Path:
-    """Return the path to ``kanban.db`` inside the active HERMES_HOME."""
+    """Return the path to the active Kanban database.
+
+    Profile workers run with ``HERMES_HOME`` set to their profile directory,
+    but Kanban is a shared board owned by the dispatcher. The dispatcher passes
+    the canonical DB path through ``HERMES_KANBAN_DB`` so worker tools keep
+    talking to the same board after ``hermes -p <profile>`` rewrites
+    ``HERMES_HOME``.
+    """
+    override = os.environ.get("HERMES_KANBAN_DB", "").strip()
+    if override:
+        return Path(override).expanduser()
     from hermes_constants import get_hermes_home
     return get_hermes_home() / "kanban.db"
 
 
 def workspaces_root() -> Path:
     """Return the directory under which ``scratch`` workspaces are created."""
+    override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
+    if override:
+        return Path(override).expanduser()
     from hermes_constants import get_hermes_home
     return get_hermes_home() / "kanban" / "workspaces"
 
@@ -2070,6 +2083,8 @@ def _default_spawn(task: Task, workspace: str) -> Optional[int]:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    env["HERMES_KANBAN_DB"] = str(kanban_db_path())
+    env["HERMES_KANBAN_WORKSPACES_ROOT"] = str(workspaces_root())
     # HERMES_PROFILE is the author the kanban_comment tool defaults to.
     # `hermes -p <assignee>` activates the profile, but the env var is
     # what the tool reads — set it explicitly here so comments are
