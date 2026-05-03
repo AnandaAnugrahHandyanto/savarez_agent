@@ -21,10 +21,10 @@ entry points you'll actually edit.
 
 ```
 hermes-agent/
-├── run_agent.py          # AIAgent class — core conversation loop (~12k LOC)
+├── run_agent.py          # AIAgent class — core conversation loop (~14k LOC as of 2026-05-03)
 ├── model_tools.py        # Tool orchestration, discover_builtin_tools(), handle_function_call()
 ├── toolsets.py           # Toolset definitions, _HERMES_CORE_TOOLS list
-├── cli.py                # HermesCLI class — interactive CLI orchestrator (~11k LOC)
+├── cli.py                # HermesCLI class — interactive CLI orchestrator (~12k LOC as of 2026-05-03)
 ├── hermes_state.py       # SessionDB — SQLite session store (FTS5 search)
 ├── hermes_constants.py   # get_hermes_home(), display_hermes_home() — profile-aware paths
 ├── hermes_logging.py     # setup_logging() — agent.log / errors.log / gateway.log (profile-aware)
@@ -32,16 +32,17 @@ hermes-agent/
 ├── agent/                # Agent internals (provider adapters, memory, caching, compression, etc.)
 ├── hermes_cli/           # CLI subcommands, setup wizard, plugins loader, skin engine
 ├── tools/                # Tool implementations — auto-discovered via tools/registry.py
-│   └── environments/     # Terminal backends (local, docker, ssh, modal, daytona, singularity)
+│   └── environments/     # Terminal backends (local, docker, ssh, singularity, modal, daytona, vercel_sandbox)
 ├── gateway/              # Messaging gateway — run.py + session.py + platforms/
 │   ├── platforms/        # Adapter per platform (telegram, discord, slack, whatsapp,
 │   │                     #   homeassistant, signal, matrix, mattermost, email, sms,
-│   │                     #   dingtalk, wecom, weixin, feishu, qqbot, bluebubbles,
-│   │                     #   webhook, api_server, ...). See ADDING_A_PLATFORM.md.
+│   │                     #   dingtalk, wecom, wecom_callback, weixin, feishu, qqbot,
+│   │                     #   yuanbao, bluebubbles, webhook). See ADDING_A_PLATFORM.md.
 │   └── builtin_hooks/    # Extension point for always-registered gateway hooks (none shipped)
 ├── plugins/              # Plugin system (see "Plugins" section below)
 │   ├── memory/           # Memory-provider plugins (honcho, mem0, supermemory, ...)
 │   ├── context_engine/   # Context-engine plugins
+│   ├── platforms/        # Plugin-shipped messaging adapters (irc, teams)
 │   └── <others>/         # Dashboard, image-gen, disk-cleanup, examples, ...
 ├── optional-skills/      # Heavier/niche skills shipped but NOT active by default
 ├── skills/               # Built-in skills bundled with the repo
@@ -53,7 +54,7 @@ hermes-agent/
 ├── environments/         # RL training environments (Atropos)
 ├── scripts/              # run_tests.sh, release.py, auxiliary scripts
 ├── website/              # Docusaurus docs site
-└── tests/                # Pytest suite (~15k tests across ~700 files as of Apr 2026)
+└── tests/                # Pytest suite (~19k tests across ~890 files as of 2026-05-03)
 ```
 
 **User config:** `~/.hermes/config.yaml` (settings), `~/.hermes/.env` (API keys only).
