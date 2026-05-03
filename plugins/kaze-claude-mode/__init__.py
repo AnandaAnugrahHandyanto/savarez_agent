@@ -48,6 +48,14 @@ _APPROVAL_ID_LEN = 5
 _APPROVAL_ID_ALPHABET = "".join([c for c in ascii_lowercase if c != "l"])
 _TRANSCRIPT_MAX_MESSAGES = 40
 _TRANSCRIPT_MAX_CHARS = 12000
+_KAZE_VAULT_ROOT_DEFAULT = "/Users/rei/Documents/ki"
+_KAZE_CONTEXT_POINTERS: tuple[str, ...] = ("System/Boot.md", "System/Routines.md")
+_KAZE_SOURCE_SCRIPT_POINTERS: tuple[str, ...] = (
+    "Scripts/pulse_sync.py",
+    "Scripts/kaze_source_health.py",
+    "Scripts/kaze_live_intake_readiness_v1.py",
+)
+_KAZE_DAILY_DIRS: tuple[str, ...] = ("Daily", "Weekly")
 # Claude Code stream-json can emit very large one-line JSON events when tool
 # output is embedded. asyncio's default StreamReader limit is 64 KiB; exceeding
 # that raises LimitOverrunError("Separator is found, but chunk is longer than limit").
@@ -526,13 +534,86 @@ def _format_recent_transcript(session_store: Any, session_key: str) -> str:
     return excerpt
 
 
+def _kaze_vault_root() -> Path:
+    raw = os.environ.get("KAZE_VAULT_ROOT", "").strip()
+    return Path(raw or _KAZE_VAULT_ROOT_DEFAULT)
+
+
+def _build_kaze_context_pack() -> str:
+    """Build a bounded, metadata-only Kaze/Hermes context pack for Claude-mode.
+
+    Failure-tolerant: never raises; never reads or includes file bodies. All
+    filesystem checks are local stat-only and gracefully degrade if the vault
+    is missing.
+    """
+    vault_root = _kaze_vault_root()
+    try:
+        vault_exists = vault_root.is_dir()
+    except Exception:
+        vault_exists = False
+
+    available: list[str] = []
+    if vault_exists:
+        for pointer in (*_KAZE_CONTEXT_POINTERS, *_KAZE_SOURCE_SCRIPT_POINTERS):
+            try:
+                if (vault_root / pointer).is_file():
+                    available.append(pointer)
+            except Exception:
+                continue
+        for sub in _KAZE_DAILY_DIRS:
+            try:
+                if (vault_root / sub).is_dir():
+                    available.append(f"{sub}/")
+            except Exception:
+                continue
+
+    pointer_lines = (
+        "\n".join(f"  - {p}" for p in available)
+        if available
+        else "  - (no expected pointers found at vault_root)"
+    )
+
+    return (
+        "<kaze_context_pack>\n"
+        "role: Claude Code CLI lane invoked from Hermes/Kaze.\n"
+        "  - Hermes/Kaze is the runtime/session owner (Telegram routing, auth, approvals, tool allowlist).\n"
+        "  - You are not the top-level agent; you are a CLI lane Hermes invoked for this turn.\n"
+        f"vault_root: {vault_root}\n"
+        "available_pointers (descriptions only — do NOT dump full file bodies unless asked):\n"
+        f"{pointer_lines}\n"
+        "live_sources:\n"
+        "  - Kaze/Hermes can inspect the local vault, scripts, and CLIs when the configured tool allowlist permits it.\n"
+        "  - Source-health/live-intake script paths are listed in available_pointers when present; these are capability/status entry points, not raw source data.\n"
+        "  - Allowed tools for this run are passed via --allowedTools/--tools by Hermes; consult them before claiming no access.\n"
+        "  - Do NOT assert that a source is unavailable purely because you are a CLI lane: check this pack and the allowed tools first.\n"
+        "constraints:\n"
+        "  - Do not run a full live-source sync unless the user explicitly asks AND the allowed tools cover it.\n"
+        "  - Do not expose secrets or raw private source bodies in replies.\n"
+        "  - If tools/context are insufficient for the request, name the exact missing capability and route the user back to normal Kaze (e.g. `/kaze ...`).\n"
+        "</kaze_context_pack>"
+    )
+
+
 def _build_claude_mode_prompt(*, user_text: str, transcript: str) -> str:
+    context_pack = _build_kaze_context_pack()
     if not transcript:
-        return user_text
+        return (
+            "You are the Claude Code CLI lane invoked from Hermes/Kaze for this Telegram chat.\n"
+            "Use the Kaze context pack below to ground your role, available pointers, and constraints "
+            "before claiming any source is inaccessible. Answer the user's latest message directly and concisely.\n\n"
+            f"{context_pack}\n\n"
+            "<latest_user_message>\n"
+            f"{user_text}\n"
+            "</latest_user_message>"
+        )
     return (
         "You are the Claude Code CLI lane invoked from Hermes/Kaze for this Telegram chat.\n"
-        "Use the recent Hermes session transcript below as the available Telegram chat history. "
-        "Do not claim access to messages outside this transcript. Answer the user's latest message directly and concisely.\n\n"
+        "Use the Kaze context pack below to ground your role, available pointers, and constraints, "
+        "and the recent Hermes session transcript as the available Telegram chat history. "
+        "Do not claim access to messages outside this transcript, and do not claim no access to live sources "
+        "before considering the context pack and the allowed tools. "
+        "Answer the user's latest message directly and concisely.\n\n"
+        f"{context_pack}\n\n"
         "<recent_telegram_session_transcript>\n"
         f"{transcript}\n"
         "</recent_telegram_session_transcript>\n\n"

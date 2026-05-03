@@ -183,6 +183,116 @@ def test_claude_mode_injects_recent_session_transcript_without_rewrite_leak(tmp_
     assert store.loaded is True
 
 
+def test_claude_mode_injects_kaze_context_pack_into_pending_prompt(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes_test"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _enable_plugin(hermes_home, "kaze-claude-mode")
+    _reset_plugin_singleton(monkeypatch)
+
+    # Point the vault root at a synthetic directory so the test does not depend
+    # on the real ki vault and runs hermetically.
+    fake_vault = tmp_path / "ki"
+    (fake_vault / "System").mkdir(parents=True, exist_ok=True)
+    (fake_vault / "System" / "Boot.md").write_text("boot stub", encoding="utf-8")
+    (fake_vault / "System" / "Routines.md").write_text("routines stub", encoding="utf-8")
+    (fake_vault / "Daily").mkdir(parents=True, exist_ok=True)
+    (fake_vault / "Weekly").mkdir(parents=True, exist_ok=True)
+    (fake_vault / "Scripts").mkdir(parents=True, exist_ok=True)
+    (fake_vault / "Scripts" / "pulse_sync.py").write_text("# pulse stub", encoding="utf-8")
+    (fake_vault / "Scripts" / "kaze_source_health.py").write_text("# health stub", encoding="utf-8")
+    (fake_vault / "Scripts" / "kaze_live_intake_readiness_v1.py").write_text("# readiness stub", encoding="utf-8")
+    monkeypatch.setenv("KAZE_VAULT_ROOT", str(fake_vault))
+
+    from hermes_cli.plugins import discover_plugins, invoke_hook
+    discover_plugins(force=True)
+    from hermes_plugins import kaze_claude_mode as mod
+    monkeypatch.setattr(
+        mod,
+        "_resolve_claude_code_cli_backend",
+        lambda: (True, {"backend": "claude-code-cli", "cmd": "claude", "path": "/usr/bin/claude"}),
+    )
+    from hermes_plugins.kaze_claude_mode import set_enabled, state_key_from_source
+
+    src = _tg_source()
+    chat_key = state_key_from_source(src)
+    session_key = "agent:main:telegram:dm:1"
+    set_enabled(chat_key, True, source=src)
+    store = _FakeSessionStore(
+        session_key,
+        [
+            {"role": "user", "content": "Earlier user request"},
+            {"role": "assistant", "content": "Earlier assistant answer"},
+        ],
+    )
+
+    secret_user_text = "SENSITIVE-USER-PROMPT-TOKEN"
+    event = SimpleNamespace(text=secret_user_text, source=src)
+    results = invoke_hook(
+        "pre_gateway_dispatch",
+        event=event,
+        gateway=_FakeGateway(session_key),
+        session_store=store,
+    )
+
+    assert len(results) == 1
+    rewrite = results[0]["text"]
+    assert rewrite.startswith("/kaze-claude-mode-run ")
+    # Rewritten command must carry only the internal token — no user text,
+    # transcript, or context pack body.
+    assert secret_user_text not in rewrite
+    assert "Earlier user request" not in rewrite
+    assert "<kaze_context_pack>" not in rewrite
+    assert "vault_root" not in rewrite
+
+    token = rewrite.split(maxsplit=1)[1]
+    prompt = mod._PENDING[token].prompt
+
+    # Context pack is present with the key boundary lines.
+    assert "<kaze_context_pack>" in prompt
+    assert "</kaze_context_pack>" in prompt
+    assert "Claude Code CLI lane invoked from Hermes/Kaze" in prompt
+    assert "runtime/session owner" in prompt
+    assert f"vault_root: {fake_vault}" in prompt
+    assert "System/Boot.md" in prompt
+    assert "System/Routines.md" in prompt
+    assert "Daily/" in prompt
+    assert "Weekly/" in prompt
+    assert "Scripts/pulse_sync.py" in prompt
+    assert "Scripts/kaze_source_health.py" in prompt
+    assert "Scripts/kaze_live_intake_readiness_v1.py" in prompt
+    assert "capability/status entry points" in prompt
+    assert "do NOT dump full file bodies" in prompt
+    assert "allowed tools" in prompt.lower()
+    assert "do not run a full live-source sync" in prompt.lower()
+    assert "/kaze" in prompt
+
+    # Existing transcript behavior remains: transcript and latest user message still wrapped.
+    assert "<recent_telegram_session_transcript>" in prompt
+    assert "Earlier user request" in prompt
+    assert "Earlier assistant answer" in prompt
+    assert "<latest_user_message>" in prompt
+    assert secret_user_text in prompt
+
+
+def test_claude_mode_context_pack_is_failure_tolerant_when_vault_missing(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes_test"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _enable_plugin(hermes_home, "kaze-claude-mode")
+    _reset_plugin_singleton(monkeypatch)
+
+    # Point at a non-existent vault root.
+    monkeypatch.setenv("KAZE_VAULT_ROOT", str(tmp_path / "missing-vault"))
+
+    from hermes_cli.plugins import discover_plugins
+    discover_plugins(force=True)
+    from hermes_plugins import kaze_claude_mode as mod
+
+    pack = mod._build_kaze_context_pack()
+    assert "<kaze_context_pack>" in pack
+    assert "Claude Code CLI lane invoked from Hermes/Kaze" in pack
+    assert "no expected pointers found" in pack
+
+
 @pytest.mark.asyncio
 async def test_claude_mode_smoke_uses_tools_without_leaking_outputs(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes_test"
