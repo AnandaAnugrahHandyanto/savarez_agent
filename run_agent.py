@@ -7686,6 +7686,61 @@ class AIAgent:
 
     # ── Per-turn primary restoration ─────────────────────────────────────
 
+    def check_provider_health(self) -> bool:
+        """Probe the *primary* provider to check if it's reachable.
+
+        Builds a temporary OpenAI client from the primary-runtime snapshot so
+        the probe always targets the primary endpoint, not the currently-active
+        fallback client.  Skipped (returns True) when the primary uses
+        ``anthropic_messages`` mode because the Anthropic SDK does not expose a
+        ``models.list`` endpoint and ``self.client`` is ``None`` in that mode —
+        ``_restore_primary_runtime`` already handles the reconnect there.
+
+        Returns True if the provider responds (or if no probe is needed),
+        False if the primary endpoint is unreachable.
+        """
+        rt = getattr(self, "_primary_runtime", None)
+        if not rt:
+            return True  # No snapshot yet — treat as healthy
+
+        primary_api_mode = rt.get("api_mode", "")
+        if primary_api_mode == "anthropic_messages":
+            # Anthropic SDK has no public models.list endpoint; skip the probe
+            # and let _restore_primary_runtime attempt the reconnect directly.
+            return True
+
+        try:
+            probe_client = self._create_openai_client(
+                dict(rt["client_kwargs"]),
+                reason="health_check_probe",
+                shared=False,
+            )
+            try:
+                probe_client.models.list()
+            finally:
+                self._close_openai_client(probe_client, reason="health_check_probe", shared=False)
+            return True
+        except Exception:
+            return False
+
+    def try_recover_primary(self) -> bool:
+        """Attempt to recover the primary provider if currently on fallback.
+
+        Called at the start of each turn (from ``run_conversation``) to check
+        whether the primary has recovered.  If the health probe succeeds,
+        triggers a full restore via ``_restore_primary_runtime``.
+
+        Returns True if primary was recovered (or was already active),
+        False if the primary is still unreachable.
+        """
+        if not self._fallback_activated:
+            return True  # Already on primary
+
+        if self.check_provider_health():
+            return self._restore_primary_runtime()
+
+        return False
+
     def _restore_primary_runtime(self) -> bool:
         """Restore the primary runtime at the start of a new turn.
 
@@ -10418,10 +10473,11 @@ class AIAgent:
         from hermes_logging import set_session_context
         set_session_context(self.session_id)
 
-        # If the previous turn activated fallback, restore the primary
-        # runtime so this turn gets a fresh attempt with the preferred model.
+        # If the previous turn activated fallback, attempt to recover the
+        # primary provider. Uses try_recover_primary which first probes
+        # provider health before attempting a full restore.
         # No-op when _fallback_activated is False (gateway, first turn, etc.).
-        self._restore_primary_runtime()
+        self.try_recover_primary()
 
         # Sanitize surrogate characters from user input.  Clipboard paste from
         # rich-text editors (Google Docs, Word, etc.) can inject lone surrogates
