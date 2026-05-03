@@ -37,6 +37,13 @@ def _clear_provider_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _block_codex_import():
+    """Prevent _seed_from_singletons from importing real ~/.codex/ credentials."""
+    with patch("hermes_cli.auth._import_codex_cli_tokens", return_value=None):
+        yield
+
+
 def test_auth_add_api_key_persists_manual_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -1504,6 +1511,7 @@ def test_credential_sources_registry_has_expected_steps():
         "~/.claude/.credentials.json",
         "~/.hermes/.anthropic_oauth.json",
         "auth.json providers.nous",
+        "auth.json providers.minimax-oauth",
         "auth.json providers.openai-codex + ~/.codex/auth.json",
         "auth.json providers.minimax-oauth",
         "~/.qwen/oauth_creds.json",
