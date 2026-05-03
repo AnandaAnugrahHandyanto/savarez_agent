@@ -40,12 +40,15 @@ def make_approval_callback(
         timeout: Seconds to wait for a response before auto-denying.
     """
 
-    def _callback(command: str, description: str) -> str:
+    def _callback(command: str, description: str, *, allow_permanent: bool = True) -> str:
         options = [
             PermissionOption(option_id="allow_once", kind="allow_once", name="Allow once"),
-            PermissionOption(option_id="allow_always", kind="allow_always", name="Allow always"),
-            PermissionOption(option_id="deny", kind="reject_once", name="Deny"),
         ]
+        if allow_permanent:
+            options.append(
+                PermissionOption(option_id="allow_always", kind="allow_always", name="Allow always")
+            )
+        options.append(PermissionOption(option_id="deny", kind="reject_once", name="Deny"))
         import acp as _acp
 
         tool_call = _acp.start_tool_call("perm-check", command, kind="execute")
@@ -68,10 +71,13 @@ def make_approval_callback(
 
         outcome = response.outcome
         if isinstance(outcome, AllowedOutcome):
-            option_id = outcome.option_id
+            # ACP schema versions have used both snake_case and camelCase.
+            # Support both so Hermes ACP approval does not crash after package drift.
+            option_id = getattr(outcome, "option_id", None) or getattr(outcome, "optionId", None)
             # Look up the kind from our options list
             for opt in options:
-                if opt.option_id == option_id:
+                current_id = getattr(opt, "option_id", None) or getattr(opt, "optionId", None)
+                if current_id == option_id:
                     return _KIND_TO_HERMES.get(opt.kind, "deny")
             return "once"  # fallback for unknown option_id
         else:

@@ -199,6 +199,8 @@ class HonchoMemoryProvider(MemoryProvider):
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: Optional[threading.Thread] = None
         self._sync_thread: Optional[threading.Thread] = None
+        self._sync_lock = threading.Lock()
+        self._last_sync_signature: Optional[tuple[str, str, str]] = None
 
         # B1: recall_mode — set during initialize from config
         self._recall_mode = "hybrid"  # "context", "tools", or "hybrid"
@@ -289,8 +291,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 self._cron_skipped = True
                 return
 
-            from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
-            from plugins.memory.honcho.session import HonchoSessionManager
+            from plugins.memory.honcho.client import HonchoClientConfig
 
             cfg = HonchoClientConfig.from_global_config()
             if not cfg.enabled or not (cfg.api_key or cfg.base_url):
@@ -448,7 +449,7 @@ class HonchoMemoryProvider(MemoryProvider):
             return True
         if self._cron_skipped:
             return False
-        if not self._config or not self._lazy_init_kwargs:
+        if not self._config or self._lazy_init_kwargs is None:
             return False
 
         try:
@@ -1125,15 +1126,33 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if self._cron_skipped:
             return
-        if not self._manager or not self._session_key:
-            return
 
         msg_limit = self._config.message_max_chars if self._config else 25000
         clean_user_content = sanitize_context(user_content or "").strip()
         clean_assistant_content = sanitize_context(assistant_content or "").strip()
+        if not clean_user_content and not clean_assistant_content:
+            return
+
+        # Some ACP lifecycle paths can report the same completed turn more
+        # than once while closing/resuming a session. Honcho is durable memory,
+        # so avoid polluting it with exact duplicate adjacent turns.
+        sync_signature = (session_id or self._session_key or "", clean_user_content, clean_assistant_content)
+        with self._sync_lock:
+            if sync_signature == self._last_sync_signature:
+                logger.debug("Honcho sync_turn skipped exact duplicate turn")
+                return
+            self._last_sync_signature = sync_signature
 
         def _sync():
             try:
+                # Tools-only lazy mode intentionally avoids session creation on
+                # initialize()/prefetch so Zed ACP launch and first prompt stay
+                # responsive.  Still initialize here inside the background
+                # writer so Honcho observes turns without blocking the response
+                # path.
+                if not self._manager or not self._session_key:
+                    if not self._ensure_session():
+                        return
                 session = self._manager.get_or_create(self._session_key)
                 for chunk in self._chunk_message(clean_user_content, msg_limit):
                     session.add_message("user", chunk)
@@ -1144,7 +1163,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 logger.debug("Honcho sync_turn failed: %s", e)
 
         if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=5.0)
+            logger.debug("Honcho sync_turn overlap; starting another async writer")
         self._sync_thread = threading.Thread(
             target=_sync, daemon=True, name="honcho-sync"
         )
@@ -1168,11 +1187,15 @@ class HonchoMemoryProvider(MemoryProvider):
             return
         if self._cron_skipped:
             return
-        if not self._manager or not self._session_key:
-            return
 
         def _write():
             try:
+                # Lazy tools-only sessions must still mirror explicit memory
+                # writes; initialize in this background thread instead of
+                # dropping the write.
+                if not self._manager or not self._session_key:
+                    if not self._ensure_session():
+                        return
                 self._manager.create_conclusion(self._session_key, content)
             except Exception as e:
                 logger.debug("Honcho memory mirror failed: %s", e)

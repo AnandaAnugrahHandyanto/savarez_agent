@@ -201,64 +201,71 @@ class HonchoSessionManager:
             session.add_peers([(user_peer, user_config), (assistant_peer, ai_config)])
 
             # Sync back: server-side config (set via Honcho UI) wins over
-            # local defaults. Read the effective config after add_peers.
-            # Note: observation booleans are manager-scoped, not per-session.
-            # Last session init wins. Fine for CLI; gateway should scope per-session.
-            try:
-                server_user = session.get_peer_configuration(user_peer)
-                server_ai = session.get_peer_configuration(assistant_peer)
-                if server_user.observe_me is not None:
-                    self._user_observe_me = server_user.observe_me
-                if server_user.observe_others is not None:
-                    self._user_observe_others = server_user.observe_others
-                if server_ai.observe_me is not None:
-                    self._ai_observe_me = server_ai.observe_me
-                if server_ai.observe_others is not None:
-                    self._ai_observe_others = server_ai.observe_others
-                logger.debug(
-                    "Honcho observation synced from server: user(me=%s,others=%s) ai(me=%s,others=%s)",
-                    self._user_observe_me, self._user_observe_others,
-                    self._ai_observe_me, self._ai_observe_others,
-                )
-            except Exception as e:
-                logger.debug("Honcho get_peer_configuration failed (using local config): %s", e)
+            # local defaults. In tools-only ACP mode this extra pair of HTTP
+            # calls is intentionally skipped: ACP launch/write must stay
+            # bounded and the local host config is the source of truth.
+            if not (self._config and getattr(self._config, "recall_mode", "hybrid") == "tools"):
+                try:
+                    server_user = session.get_peer_configuration(user_peer)
+                    server_ai = session.get_peer_configuration(assistant_peer)
+                    if server_user.observe_me is not None:
+                        self._user_observe_me = server_user.observe_me
+                    if server_user.observe_others is not None:
+                        self._user_observe_others = server_user.observe_others
+                    if server_ai.observe_me is not None:
+                        self._ai_observe_me = server_ai.observe_me
+                    if server_ai.observe_others is not None:
+                        self._ai_observe_others = server_ai.observe_others
+                    logger.debug(
+                        "Honcho observation synced from server: user(me=%s,others=%s) ai(me=%s,others=%s)",
+                        self._user_observe_me, self._user_observe_others,
+                        self._ai_observe_me, self._ai_observe_others,
+                    )
+                except Exception as e:
+                    logger.debug("Honcho get_peer_configuration failed (using local config): %s", e)
         except Exception as e:
             logger.warning(
                 "Honcho session '%s' add_peers failed (non-fatal): %s",
                 session_id, e,
             )
 
-        # Load existing messages via context() - single call for messages + metadata
+        # Load existing messages via context() - single call for messages + metadata.
+        # Tools-only ACP uses Honcho as explicit tools + durable observation, not
+        # automatic history injection. Skipping this context read avoids a slow
+        # first-turn write path and keeps Zed ACP launch bounded.
         existing_messages = []
-        try:
-            ctx = session.context(summary=True, tokens=self._context_tokens)
-            existing_messages = ctx.messages or []
+        if self._config and getattr(self._config, "recall_mode", "hybrid") == "tools":
+            logger.info("Honcho session '%s' opened in tools-only fast path", session_id)
+        else:
+            try:
+                ctx = session.context(summary=True, tokens=self._context_tokens)
+                existing_messages = ctx.messages or []
 
-            # Verify chronological ordering
-            if existing_messages and len(existing_messages) > 1:
-                timestamps = [m.created_at for m in existing_messages if m.created_at]
-                if timestamps and timestamps != sorted(timestamps):
-                    logger.warning(
-                        "Honcho messages not chronologically ordered for session '%s', sorting",
-                        session_id,
-                    )
-                    existing_messages = sorted(
-                        existing_messages,
-                        key=lambda m: m.created_at or datetime.min,
-                    )
+                # Verify chronological ordering
+                if existing_messages and len(existing_messages) > 1:
+                    timestamps = [m.created_at for m in existing_messages if m.created_at]
+                    if timestamps and timestamps != sorted(timestamps):
+                        logger.warning(
+                            "Honcho messages not chronologically ordered for session '%s', sorting",
+                            session_id,
+                        )
+                        existing_messages = sorted(
+                            existing_messages,
+                            key=lambda m: m.created_at or datetime.min,
+                        )
 
-            if existing_messages:
-                logger.info(
-                    "Honcho session '%s' retrieved (%d existing messages)",
-                    session_id, len(existing_messages),
+                if existing_messages:
+                    logger.info(
+                        "Honcho session '%s' retrieved (%d existing messages)",
+                        session_id, len(existing_messages),
+                    )
+                else:
+                    logger.info("Honcho session '%s' created (new)", session_id)
+            except Exception as e:
+                logger.warning(
+                    "Honcho session '%s' loaded (failed to fetch context: %s)",
+                    session_id, e,
                 )
-            else:
-                logger.info("Honcho session '%s' created (new)", session_id)
-        except Exception as e:
-            logger.warning(
-                "Honcho session '%s' loaded (failed to fetch context: %s)",
-                session_id, e,
-            )
 
         self._sessions_cache[session_id] = session
         return session, existing_messages
