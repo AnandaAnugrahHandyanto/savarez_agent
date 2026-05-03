@@ -157,6 +157,11 @@ class TrueConfAdapter(BasePlatformAdapter):
         # user_id → chat_id lookup for outgoing sends
         self._user_to_chat: Dict[str, str] = {}
 
+        # Last message tracking per chat: chat_id → {'msg_id': str, 'content': str, 'is_system': bool}
+        # Used to edit system messages in-place instead of sending new ones.
+        # System messages are merged only if the previous message was also a system message.
+        self._last_message: Dict[str, Dict[str, Any]] = {}
+
         # Reconnection state
         self._reconnect_delay: float = 5.0
         self._reconnect_attempts: int = 0
@@ -622,6 +627,27 @@ class TrueConfAdapter(BasePlatformAdapter):
         return name_map.get(mimetype, Path(file_name).suffix if file_name else fallback)
 
     # ------------------------------------------------------------------
+    # System message detection
+    # ------------------------------------------------------------------
+
+    def _is_system_message(self, content: str) -> bool:
+        """
+        Check if content is a system message (agent tool execution).
+        System messages start with an emoji followed by tool name and colon.
+        Examples: "📖 read_file: path", "💻 terminal: command", "🐍 execute_code:"
+        Regular messages with emojis won't match this pattern.
+        
+        Handles multi-character emojis (like ⌨️ which is \u2338 + \ufe0f).
+        """
+        if not content:
+            return False
+
+        # Pattern: one or more non-whitespace (emoji) + whitespace + tool_name + ":"
+        # \S+ matches the entire emoji (including variation selectors)
+        # Tool names are typically lowercase with underscores
+        return bool(re.match(r'^\S+\s+[a-z_]+:', content))
+
+    # ------------------------------------------------------------------
     # Outbound sending
     # ------------------------------------------------------------------
 
@@ -629,63 +655,144 @@ class TrueConfAdapter(BasePlatformAdapter):
         self, chat_id: str, content: str, reply_to: Optional[str] = None,
         thread_id: Optional[str] = None, **kwargs
     ) -> SendResult:
-        """Send a text message, splitting if necessary using safe_split_text."""
+        """Send a text message. For system messages (starting with emoji),
+        edits the previous message only if it was also a system message.
+        """
         if not self._bot:
             return SendResult(success=False, message_id=None, error="Bot not connected")
 
-        resolved_chat_id = await self._resolve_chat_id(chat_id)
-        if not resolved_chat_id:
-            return SendResult(
-                success=False,
-                message_id=None,
-                error=f"Chat ID not resolved for {chat_id} — user has not messaged the bot",
-            )
+        # Check if this is a system message
+        is_system = self._is_system_message(content)
+        
+        logger.info(f"TrueConf send: is_system={is_system}, chat_id={chat_id}, content_preview={content[:50]}")
 
-        clean_text = content.strip().replace("\n\n", "\n")
-        if not clean_text:
-            return SendResult(
-                success=False, message_id=None,
-                error="Empty message after stripping markdown"
-            )
+        if is_system:
+            # System message - check if previous message was also system
+            last = self._last_message.get(chat_id)
+            logger.info(f"TrueConf send system: last_message={last}")
 
-        chunks = safe_split_text(clean_text, limit=self.MAX_MESSAGE_LENGTH)
-        if not chunks:
-            return SendResult(
-                success=False, message_id=None,
-                error="safe_split_text returned empty result"
-            )
+            if last and last.get('is_system'):
+                # Previous message was system - APPEND to it and EDIT
+                accumulated = last['content'] + '\n' + content
+                logger.info(f"TrueConf editing message {last['msg_id']}, accumulated length={len(accumulated)}")
 
-        sent_ids: List[str] = []
-        last_error: Optional[str] = None
+                edit_result = await self.edit_message(
+                    chat_id=chat_id,
+                    message_id=last['msg_id'],
+                    content=accumulated
+                )
 
-        for chunk in chunks:
+                logger.info(f"TrueConf edit result: success={edit_result.success}, error={edit_result.error}")
+                
+                if edit_result.success:
+                    # Update tracked state with new accumulated content
+                    last['content'] = accumulated
+                    return edit_result
+                # If edit fails, fall through to send new
+                logger.warning(f"TrueConf edit failed, falling through to send new. error={edit_result.error}")
+
+            # Send NEW system message (first one or fallback from failed edit)
+            resolved = await self._resolve_chat_id(chat_id)
+            if not resolved:
+                return SendResult(
+                    success=False, message_id=None,
+                    error=f"Chat ID not resolved for {chat_id}"
+                )
+
+            clean_text = content.strip().replace("\n\n", "\n")
+            if not clean_text:
+                return SendResult(success=False, message_id=None, error="Empty message")
+
             try:
                 result = await asyncio.wait_for(
                     self._bot.send_message(
-                        chat_id=resolved_chat_id,
-                        text=chunk,
+                        chat_id=resolved,
+                        text=clean_text,
                         parse_mode=ParseMode.MARKDOWN,
                         reply_message_id=reply_to,
                     ),
                     timeout=60.0,
                 )
                 if result and hasattr(result, "message_id"):
-                    sent_ids.append(str(result.message_id))
-                    last_error = None
-                else:
-                    last_error = str(result)
+                    msg_id = str(result.message_id)
+                    # Track this as the last message (system)
+                    self._last_message[chat_id] = {
+                        'msg_id': msg_id,
+                        'content': content,
+                        'is_system': True
+                    }
+                    logger.info(f"TrueConf sent NEW system message: msg_id={msg_id}")
+                    return SendResult(success=True, message_id=msg_id, error=None)
+                return SendResult(success=False, message_id=None, error="send_message failed")
             except asyncio.TimeoutError:
                 logger.error("TrueConf send_message timeout")
-                last_error = "Timeout sending message"
-                break
+                return SendResult(success=False, message_id=None, error="Timeout sending message")
             except Exception as e:
                 logger.error("TrueConf send error: %s", e)
-                last_error = str(e)
-                break
+                return SendResult(success=False, message_id=None, error=str(e))
 
-        if sent_ids:
-            return SendResult(success=True, message_id=sent_ids[0], error=None)
-        return SendResult(success=False, message_id=None, error=last_error)
+        else:
+            # Non-system message - clear state and send normally with chunking
+            self._last_message.pop(chat_id, None)
+
+            resolved_chat_id = await self._resolve_chat_id(chat_id)
+            if not resolved_chat_id:
+                return SendResult(
+                    success=False, message_id=None,
+                    error=f"Chat ID not resolved for {chat_id}"
+                )
+
+            clean_text = content.strip().replace("\n\n", "\n")
+            if not clean_text:
+                return SendResult(
+                    success=False, message_id=None,
+                    error="Empty message after stripping markdown"
+                )
+
+            chunks = safe_split_text(clean_text, limit=self.MAX_MESSAGE_LENGTH)
+            if not chunks:
+                return SendResult(
+                    success=False, message_id=None,
+                    error="safe_split_text returned empty result"
+                )
+
+            sent_ids: List[str] = []
+            last_error: Optional[str] = None
+
+            for chunk in chunks:
+                try:
+                    result = await asyncio.wait_for(
+                        self._bot.send_message(
+                            chat_id=resolved_chat_id,
+                            text=chunk,
+                            parse_mode=ParseMode.MARKDOWN,
+                            reply_message_id=reply_to,
+                        ),
+                        timeout=60.0,
+                    )
+                    if result and hasattr(result, "message_id"):
+                        sent_ids.append(str(result.message_id))
+                        last_error = None
+                    else:
+                        last_error = str(result)
+                except asyncio.TimeoutError:
+                    logger.error("TrueConf send_message timeout")
+                    last_error = "Timeout sending message"
+                    break
+                except Exception as e:
+                    logger.error("TrueConf send error: %s", e)
+                    last_error = str(e)
+                    break
+
+            if sent_ids:
+                # Track the first message as the last message (non-system)
+                self._last_message[chat_id] = {
+                    'msg_id': sent_ids[0],
+                    'content': clean_text[:200],  # store preview
+                    'is_system': False
+                }
+                return SendResult(success=True, message_id=sent_ids[0], error=None)
+            return SendResult(success=False, message_id=None, error=last_error)
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None,
@@ -889,7 +996,7 @@ class TrueConfAdapter(BasePlatformAdapter):
         self, chat_id: str, message_id: str, content: str,
         *, finalize: bool = False,
     ) -> SendResult:
-        """Edit a previously sent message."""
+        """Edit a previously sent message (full content, no chunking)."""
         if not self._bot:
             return SendResult(success=False, message_id=None, error="Bot not connected")
 
@@ -897,22 +1004,24 @@ class TrueConfAdapter(BasePlatformAdapter):
         if not clean_text:
             return SendResult(success=False, message_id=None, error="Empty content")
 
-        chunks = safe_split_text(clean_text, limit=self.MAX_MESSAGE_LENGTH)
-        if not chunks:
-            return SendResult(success=False, message_id=None, error="safe_split_text returned empty")
+        logger.info(f"TrueConf edit_message: msg_id={message_id}, content_length={len(clean_text)}")
 
         try:
             from trueconf.enums import ParseMode
-            result = await asyncio.wait_for(
+            # Note: TrueConf Bot API edit_message does NOT accept chat_id parameter
+            # The API identifies the message by message_id alone
+            result: EditMessageResponse = await asyncio.wait_for(
                 self._bot.edit_message(
                     message_id=message_id,
-                    text=chunks[0],
+                    text=clean_text,
                     parse_mode=ParseMode.MARKDOWN,
                 ),
                 timeout=30.0,
             )
             if result and hasattr(result, "message_id"):
+                logger.info(f"TrueConf edit_message success: msg_id={result.message_id}")
                 return SendResult(success=True, message_id=str(result.message_id), error=None)
+            logger.error(f"TrueConf edit_message failed: result={result}")
             return SendResult(success=False, message_id=None, error=str(result))
         except asyncio.TimeoutError:
             logger.error("TrueConf edit_message timeout")
