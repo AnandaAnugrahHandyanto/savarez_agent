@@ -140,6 +140,28 @@ def test_same_day_ledger_rows_are_not_double_counted(state_dir: Path):
     assert review["summary"]["month_cumulative_pnl"] == pytest.approx(6000.0)
 
 
+def test_buy_before_sell_is_not_counted_as_realized_t_pnl(state_dir: Path):
+    from hermes_t.post_market_review import build_post_market_review
+
+    _write_json(
+        state_dir / "execution_state.json",
+        {
+            "trade_date": "2026-05-03",
+            "sell_count": 1,
+            "buy_count": 1,
+            "actions": [
+                {"seq": 1, "action": "buy", "price": 16.80, "shares": 10000, "timestamp": "2026-05-03 10:00:00"},
+                {"seq": 2, "action": "sell", "price": 17.20, "shares": 10000, "timestamp": "2026-05-03 11:00:00"},
+            ],
+        },
+    )
+
+    review = build_post_market_review(state_dir, trade_date="2026-05-03")
+
+    assert review["summary"]["realized_pnl"] == pytest.approx(0.0)
+    assert review["summary"]["net_shares_sold"] == 0
+
+
 def test_prior_month_ledger_rows_are_excluded_from_current_month(state_dir: Path):
     from hermes_t.post_market_review import build_post_market_review
 

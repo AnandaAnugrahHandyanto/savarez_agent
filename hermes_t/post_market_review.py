@@ -45,24 +45,49 @@ def _read_jsonl(path: Path) -> list[dict]:
     return rows
 
 
-def _calc_round_trip_pnl(pairs: list[tuple[dict, dict]]) -> float:
+def _calc_round_trip_pnl(pairs: list[tuple[float, float, int]]) -> float:
     total = 0.0
-    for sell, buy in pairs:
-        sell_px = float(sell.get("price", 0) or 0)
-        buy_px = float(buy.get("price", 0) or 0)
-        shares = min(int(sell.get("shares", 0) or 0), int(buy.get("shares", 0) or 0))
+    for sell_px, buy_px, shares in pairs:
         total += (sell_px - buy_px) * shares
     return total
 
 
-def _pair_actions(actions: list[dict]) -> tuple[list[tuple[dict, dict]], int, int]:
-    sells = [a for a in actions if str(a.get("action", "") or "").strip().lower() == "sell"]
-    buys = [a for a in actions if str(a.get("action", "") or "").strip().lower() == "buy"]
+def _pair_actions(actions: list[dict]) -> tuple[list[tuple[float, float, int]], int, int]:
+    pairs: list[tuple[float, float, int]] = []
+    open_sells: list[list[float | int]] = []
+    unpaired_buy_shares = 0
 
-    min_len = min(len(sells), len(buys))
-    pairs = [(sells[i], buys[i]) for i in range(min_len)]
-    unpaired_sell_shares = sum(int(a.get("shares", 0) or 0) for a in sells[min_len:])
-    unpaired_buy_shares = sum(int(a.get("shares", 0) or 0) for a in buys[min_len:])
+    for action in actions:
+        a_action = str(action.get("action", "") or "").strip().lower()
+        shares_remaining = int(action.get("shares", 0) or 0)
+        price = float(action.get("price", 0) or 0)
+
+        if shares_remaining <= 0:
+            continue
+
+        if a_action == "sell":
+            open_sells.append([price, shares_remaining])
+            continue
+
+        if a_action != "buy":
+            continue
+
+        while shares_remaining > 0 and open_sells:
+            sell_price, sell_shares_remaining = open_sells[0]
+            matched_shares = min(int(sell_shares_remaining), shares_remaining)
+            pairs.append((float(sell_price), price, matched_shares))
+            shares_remaining -= matched_shares
+            sell_shares_remaining = int(sell_shares_remaining) - matched_shares
+
+            if sell_shares_remaining == 0:
+                open_sells.pop(0)
+            else:
+                open_sells[0][1] = sell_shares_remaining
+
+        if shares_remaining > 0:
+            unpaired_buy_shares += shares_remaining
+
+    unpaired_sell_shares = sum(int(item[1]) for item in open_sells)
     return pairs, unpaired_sell_shares, unpaired_buy_shares
 
 
