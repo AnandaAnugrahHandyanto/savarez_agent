@@ -3222,6 +3222,76 @@ class TestRunConversation:
         assert "truncated due to output length limit" in result["error"]
         mock_handle_function_call.assert_not_called()
 
+    def test_empty_object_args_rejected_for_required_schema(self, agent):
+        """Recovered/empty args must not execute tools with required params."""
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("write_file")
+        agent.tools.append({
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "description": "write a file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["path", "content"],
+                },
+            },
+        })
+        bad_tc = _mock_tool_call(name="write_file", arguments="{}", call_id="c1")
+        retry_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"fixed"}',
+            call_id="c2",
+        )
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[bad_tc])
+        resp2 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[retry_tc])
+        resp3 = _mock_response(content="Done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2, resp3]
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success":true}') as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("write the report")
+
+        mock_hfc.assert_called_once()
+        args, kwargs = mock_hfc.call_args
+        assert args[:2] == ("write_file", {"path": "report.md", "content": "fixed"})
+        assert any(
+            msg.get("role") == "tool" and "Missing required tool arguments" in msg.get("content", "")
+            for msg in result["messages"]
+        )
+        assert result["final_response"] == "Done"
+
+    def test_iteration_budget_exhausted_after_tool_result_returns_partial(self, agent):
+        self._setup_agent(agent)
+        agent.max_iterations = 1
+        agent.iteration_budget.limit = 1
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_handle_max_iterations") as mock_handle_max_iterations,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        mock_handle_max_iterations.assert_not_called()
+        assert result["completed"] is False
+        assert result["partial"] is True
+        assert "iteration_budget_exhausted_after_tool_result" in result["turn_exit_reason"]
+        assert "Iteration budget exhausted after tool result" in result["error"]
+
 
 class TestRetryExhaustion:
     """Regression: retry_count > max_retries was dead code (off-by-one).

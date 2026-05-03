@@ -705,6 +705,26 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     return "{}"
 
 
+def _missing_required_tool_args(tools: list | None, tool_name: str, args_obj) -> list[str]:
+    """Return required schema fields absent from a tool-call argument object."""
+    if not isinstance(args_obj, dict):
+        return []
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function", {})
+        if not isinstance(fn, dict) or fn.get("name") != tool_name:
+            continue
+        params = fn.get("parameters", {})
+        if not isinstance(params, dict):
+            return []
+        required = params.get("required", [])
+        if not isinstance(required, list):
+            return []
+        return [name for name in required if isinstance(name, str) and name not in args_obj]
+    return []
+
+
 def _strip_non_ascii(text: str) -> str:
     """Remove non-ASCII characters, replacing with closest ASCII equivalent or removing.
 
@@ -1546,12 +1566,12 @@ class AIAgent:
                     print(f"🤖 AI Agent initialized with model: {self.model}")
                     if base_url:
                         print(f"🔗 Using custom base URL: {base_url}")
-                    # Always show API key info (masked) for debugging auth issues
+                    # Show credential status without leaking API-key fragments.
                     key_used = client_kwargs.get("api_key", "none")
                     if key_used and key_used != "dummy-key" and len(key_used) > 12:
-                        print(f"🔑 Using API key: {key_used[:8]}...{key_used[-4:]}")
+                        print("🔑 API key loaded from credential store/env")
                     else:
-                        print(f"⚠️  Warning: API key appears invalid or missing (got: '{key_used[:20] if key_used else 'none'}...')")
+                        print("⚠️  Warning: API key appears invalid or missing")
             except Exception as e:
                 raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
         
@@ -13209,6 +13229,48 @@ class AIAgent:
                     # Reset retry counter on successful JSON validation
                     self._invalid_json_retries = 0
 
+                    # Validate required schema parameters before executing tools.
+                    # Argument repair may normalize malformed/empty args to {},
+                    # which is safe for no-arg tools but dangerous for tools like
+                    # write_file/terminal that require explicit inputs. Surface a
+                    # tool error so the model can recover instead of executing a
+                    # required-arg tool with an empty object.
+                    missing_required_args = []
+                    for tc in assistant_message.tool_calls:
+                        try:
+                            parsed_args = json.loads(tc.function.arguments or "{}")
+                        except Exception:
+                            parsed_args = {}
+                        missing = _missing_required_tool_args(
+                            self.tools, tc.function.name, parsed_args
+                        )
+                        if missing:
+                            missing_required_args.append((tc.function.name, missing))
+
+                    if missing_required_args:
+                        self._vprint(
+                            f"{self.log_prefix}⚠️  Tool call missing required arguments; injecting recovery result."
+                        )
+                        recovery_assistant = self._build_assistant_message(assistant_message, finish_reason)
+                        messages.append(recovery_assistant)
+                        invalid_names = {name for name, _ in missing_required_args}
+                        for tc in assistant_message.tool_calls:
+                            if tc.function.name in invalid_names:
+                                missing = next(m for n, m in missing_required_args if n == tc.function.name)
+                                tool_result = (
+                                    "Error: Missing required tool arguments for "
+                                    f"'{tc.function.name}': {', '.join(missing)}. "
+                                    "Please retry this tool call with all required arguments."
+                                )
+                            else:
+                                tool_result = "Skipped: other tool call in this response was missing required arguments."
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": tool_result,
+                            })
+                        continue
+
                     # ── Post-call guardrails ──────────────────────────
                     assistant_message.tool_calls = self._cap_delegate_task_calls(
                         assistant_message.tool_calls
@@ -13742,23 +13804,45 @@ class AIAgent:
             api_call_count >= self.max_iterations
             or self.iteration_budget.remaining <= 0
         ):
-            # Budget exhausted — ask the model for a summary via one extra
-            # API call with tools stripped.  _handle_max_iterations injects a
-            # user message and makes a single toolless request.
-            _turn_exit_reason = f"max_iterations_reached({api_call_count}/{self.max_iterations})"
-            self._emit_status(
-                f"⚠️ Iteration budget exhausted ({api_call_count}/{self.max_iterations}) "
-                "— asking model to summarise"
-            )
-            if not self.quiet_mode:
-                self._safe_print(
-                    f"\n⚠️  Iteration budget exhausted ({api_call_count}/{self.max_iterations}) "
-                    "— requesting summary..."
+            _last_msg_role_before_budget = messages[-1].get("role") if messages else None
+            if _last_msg_role_before_budget == "tool":
+                # Do not perform one more model call after a tool result when
+                # the hard iteration budget is already exhausted. That extra
+                # summarisation call can itself hang/fail and creates the user-
+                # visible "just stops" pattern. Return an explicit partial
+                # result so callers/schedulers can resume or escalate cleanly.
+                _turn_exit_reason = f"iteration_budget_exhausted_after_tool_result({api_call_count}/{self.max_iterations})"
+                self._emit_status(
+                    f"⚠️ Iteration budget exhausted after tool result "
+                    f"({api_call_count}/{self.max_iterations}) — returning partial progress"
                 )
-            final_response = self._handle_max_iterations(messages, api_call_count)
+                final_response = (
+                    "Partial progress: stopped after a tool result because the "
+                    "iteration budget was exhausted. Resume the task or raise "
+                    "the turn budget to continue."
+                )
+            else:
+                # Budget exhausted — ask the model for a summary via one extra
+                # API call with tools stripped.  _handle_max_iterations injects a
+                # user message and makes a single toolless request.
+                _turn_exit_reason = f"max_iterations_reached({api_call_count}/{self.max_iterations})"
+                self._emit_status(
+                    f"⚠️ Iteration budget exhausted ({api_call_count}/{self.max_iterations}) "
+                    "— asking model to summarise"
+                )
+                if not self.quiet_mode:
+                    self._safe_print(
+                        f"\n⚠️  Iteration budget exhausted ({api_call_count}/{self.max_iterations}) "
+                        "— requesting summary..."
+                    )
+                final_response = self._handle_max_iterations(messages, api_call_count)
         
         # Determine if conversation completed successfully
-        completed = final_response is not None and api_call_count < self.max_iterations
+        completed = (
+            final_response is not None
+            and api_call_count < self.max_iterations
+            and not _turn_exit_reason.startswith("iteration_budget_exhausted_after_tool_result")
+        )
 
         # Save trajectory if enabled.  ``user_message`` may be a multimodal
         # list of parts; the trajectory format wants a plain string.
@@ -13848,7 +13932,7 @@ class AIAgent:
             "api_calls": api_call_count,
             "completed": completed,
             "turn_exit_reason": _turn_exit_reason,
-            "partial": False,  # True only when stopped due to invalid tool calls
+            "partial": _turn_exit_reason.startswith("iteration_budget_exhausted_after_tool_result"),
             "interrupted": interrupted,
             "response_previewed": getattr(self, "_response_was_previewed", False),
             "model": self.model,
@@ -13869,6 +13953,8 @@ class AIAgent:
         }
         if self._tool_guardrail_halt_decision is not None:
             result["guardrail"] = self._tool_guardrail_halt_decision.to_metadata()
+        if _turn_exit_reason.startswith("iteration_budget_exhausted_after_tool_result"):
+            result["error"] = "Iteration budget exhausted after tool result"
         # If a /steer landed after the final assistant turn (no more tool
         # batches to drain into), hand it back to the caller so it can be
         # delivered as the next user turn instead of being silently lost.
