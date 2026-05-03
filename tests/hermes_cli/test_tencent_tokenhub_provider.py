@@ -134,10 +134,42 @@ class TestTencentTokenhubCredentials:
         assert not status["configured"]
 
     def test_custom_base_url_override(self, monkeypatch):
-        monkeypatch.setenv("TOKENHUB_API_KEY", "sk-test-12345678")
+        monkeypatch.setenv("TOKENHUB_API_KEY", "***")
         monkeypatch.setenv("TOKENHUB_BASE_URL", "https://custom.tokenhub.example/v1")
         creds = resolve_api_key_provider_credentials("tencent-tokenhub")
         assert creds["base_url"] == "https://custom.tokenhub.example/v1"
+
+    def test_custom_base_url_override_from_dotenv(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        home.mkdir()
+        (home / ".env").write_text(
+            "TOKENHUB_API_KEY=sk-tokenhub-test\n"
+            "TOKENHUB_BASE_URL=https://custom.tokenhub.example/v1\n"
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.delenv("TOKENHUB_API_KEY", raising=False)
+        monkeypatch.delenv("TOKENHUB_BASE_URL", raising=False)
+
+        creds = resolve_api_key_provider_credentials("tencent-tokenhub")
+
+        assert creds["base_url"] == "https://custom.tokenhub.example/v1"
+
+    def test_status_uses_base_url_override_from_dotenv(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        home.mkdir()
+        (home / ".env").write_text(
+            "TOKENHUB_API_KEY=sk-tokenhub-test\n"
+            "TOKENHUB_BASE_URL=https://custom.tokenhub.example/v1\n"
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.delenv("TOKENHUB_API_KEY", raising=False)
+        monkeypatch.delenv("TOKENHUB_BASE_URL", raising=False)
+
+        status = get_api_key_provider_status("tencent-tokenhub")
+
+        assert status["base_url"] == "https://custom.tokenhub.example/v1"
 
 
 # =============================================================================

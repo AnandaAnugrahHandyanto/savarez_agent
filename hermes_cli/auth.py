@@ -541,6 +541,16 @@ def _resolve_api_key_provider_secret(
     return "", ""
 
 
+def _resolve_provider_base_url_env_value(pconfig: ProviderConfig) -> str:
+    """Resolve provider base URL override from process env or ~/.hermes/.env."""
+    if not pconfig.base_url_env_var:
+        return ""
+
+    from hermes_cli.config import get_env_value
+
+    return (get_env_value(pconfig.base_url_env_var) or "").strip()
+
+
 # =============================================================================
 # Z.AI Endpoint Detection
 # =============================================================================
@@ -3422,9 +3432,7 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     key_source = ""
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
 
-    env_url = ""
-    if pconfig.base_url_env_var:
-        env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+    env_url = _resolve_provider_base_url_env_value(pconfig)
 
     if provider_id in ("kimi-coding", "kimi-coding-cn"):
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
@@ -3526,9 +3534,7 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         api_key = LMSTUDIO_NOAUTH_PLACEHOLDER
         key_source = key_source or "default"
 
-    env_url = ""
-    if pconfig.base_url_env_var:
-        env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+    env_url = _resolve_provider_base_url_env_value(pconfig)
 
     if provider_id in ("kimi-coding", "kimi-coding-cn"):
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
