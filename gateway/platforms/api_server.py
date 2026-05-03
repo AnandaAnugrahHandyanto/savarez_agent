@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
-MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
+DEFAULT_MAX_REQUEST_BYTES = 100 * 1024 * 1024  # 100 MiB — default cap for POST bodies (raised from the old 1 MB so image attachments fit). Override per-deployment via the ``api_server.max_request_bytes`` config key or the ``API_SERVER_MAX_REQUEST_BYTES`` env var.
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
@@ -434,12 +434,19 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
-        """Reject overly large request bodies early based on Content-Length."""
+        """Reject overly large request bodies early based on Content-Length.
+
+        The limit is read from ``request.app["max_request_bytes"]`` so it
+        tracks whatever the :class:`ApiServerAdapter` was configured with —
+        see ``DEFAULT_MAX_REQUEST_BYTES`` and the ``max_request_bytes``
+        config key / ``API_SERVER_MAX_REQUEST_BYTES`` env var.
+        """
         if request.method in ("POST", "PUT", "PATCH"):
+            limit = int(request.app.get("max_request_bytes", DEFAULT_MAX_REQUEST_BYTES))
             cl = request.headers.get("Content-Length")
             if cl is not None:
                 try:
-                    if int(cl) > MAX_REQUEST_BYTES:
+                    if int(cl) > limit:
                         return web.json_response(_openai_error("Request body too large.", code="body_too_large"), status=413)
                 except ValueError:
                     return web.json_response(_openai_error("Invalid Content-Length header.", code="invalid_content_length"), status=400)
@@ -575,6 +582,12 @@ class APIServerAdapter(BasePlatformAdapter):
         self._host: str = extra.get("host", os.getenv("API_SERVER_HOST", DEFAULT_HOST))
         self._port: int = int(extra.get("port", os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))))
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
+        self._max_request_bytes: int = int(
+            extra.get(
+                "max_request_bytes",
+                os.getenv("API_SERVER_MAX_REQUEST_BYTES", str(DEFAULT_MAX_REQUEST_BYTES)),
+            )
+        )
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
@@ -2775,8 +2788,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
-            self._app = web.Application(middlewares=mws)
+            self._app = web.Application(middlewares=mws, client_max_size=self._max_request_bytes)
             self._app["api_server_adapter"] = self
+            self._app["max_request_bytes"] = self._max_request_bytes
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
             self._app.router.add_get("/v1/health", self._handle_health)
