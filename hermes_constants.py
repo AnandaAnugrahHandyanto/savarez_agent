@@ -162,6 +162,59 @@ def display_hermes_home() -> str:
         return str(home)
 
 
+_SEALED_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def is_sealed() -> bool:
+    """Return True when ``HERMES_SEALED`` is set to a truthy value.
+
+    Sealed mode locks the runtime to a single profile. It's an opt-in
+    deployment posture for multi-tenant SaaS / sealed-image scenarios
+    (e.g. per-client docker images that bake one profile and should
+    refuse to enumerate or load any other).
+
+    When sealed:
+
+    * ``hermes profile list`` reports only the configured profile, not
+      siblings on disk.
+    * ``hermes profile create`` / ``delete`` / ``rename`` / ``import`` /
+      ``export`` raise ``SealedProfileError``.
+    * ``hermes profile use`` accepts only the configured profile name
+      (no-op if already active).
+
+    Truthy values: ``1``, ``true``, ``yes``, ``on`` (case-insensitive).
+    Anything else (including unset) → unchanged behavior, fully
+    backward-compatible.
+    """
+    return os.environ.get("HERMES_SEALED", "").strip().lower() in _SEALED_TRUTHY
+
+
+def get_sealed_profile_name() -> str | None:
+    """Return the configured sealed-profile name, or None if not sealed.
+
+    Resolution order:
+
+    1. ``HERMES_PROFILE_NAME`` env var (explicit).
+    2. Inferred from ``HERMES_HOME`` path when it ends in
+       ``.../profiles/<name>``.
+    3. ``None`` — caller treats as a configuration error (sealed mode
+       was requested but the profile name can't be determined).
+
+    Always returns ``None`` when sealed mode is not active.
+    """
+    if not is_sealed():
+        return None
+    explicit = os.environ.get("HERMES_PROFILE_NAME", "").strip()
+    if explicit:
+        return explicit
+    home = os.environ.get("HERMES_HOME", "").strip()
+    if home:
+        path = Path(home)
+        if path.parent.name == "profiles":
+            return path.name
+    return None
+
+
 def get_subprocess_home() -> str | None:
     """Return a per-profile HOME directory for subprocesses, or None.
 
