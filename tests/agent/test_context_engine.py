@@ -1,6 +1,9 @@
 """Tests for the ContextEngine ABC and plugin slot."""
 
 import json
+from types import SimpleNamespace
+from unittest.mock import patch
+
 import pytest
 from typing import Any, Dict, List
 
@@ -188,6 +191,35 @@ class TestCompressorSessionReset:
         assert c._context_probed is False
         assert c._context_probe_persistable is False
         assert c._previous_summary is None
+
+
+class TestCompressorSummaryRetry:
+    """Regression tests for transient summary transport failures."""
+
+    def test_generate_summary_retries_once_after_incomplete_chunked_read(self):
+        c = ContextCompressor(model="test", quiet_mode=True, config_context_length=200000)
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Recovered summary"))]
+        )
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[
+                Exception(
+                    "peer closed connection without sending complete message body "
+                    "(incomplete chunked read)"
+                ),
+                response,
+            ],
+        ) as call:
+            summary = c._generate_summary([
+                {"role": "user", "content": "Please inspect Hermes compression."},
+                {"role": "assistant", "content": "I will inspect logs and code."},
+            ])
+
+        assert call.call_count == 2
+        assert "Recovered summary" in summary
+        assert c._last_summary_error is None
+        assert c._summary_failure_cooldown_until == 0.0
 
 
 # ---------------------------------------------------------------------------

@@ -457,6 +457,7 @@ class ContextCompressor(ContextEngine):
         # succeeded.  Silent recovery would hide the broken config.
         self._last_aux_model_failure_error: Optional[str] = None
         self._last_aux_model_failure_model: Optional[str] = None
+        self._summary_transient_retry_used: bool = False
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -883,6 +884,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             self._summary_failure_cooldown_until = 0.0
             self._summary_model_fallen_back = False
             self._last_summary_error = None
+            self._summary_transient_retry_used = False
             return self._with_summary_prefix(summary)
         except RuntimeError:
             # No provider configured — long cooldown, unlikely to self-resolve
@@ -966,6 +968,28 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 self._summary_failure_cooldown_until = 0.0
                 return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 
+            _looks_transient_transport_error = any(
+                marker in _err_str
+                for marker in (
+                    "incomplete chunked read",
+                    "peer closed connection",
+                    "remote protocol error",
+                    "connection reset",
+                    "remote disconnected",
+                    "read timeout",
+                    "timeout",
+                    "temporarily unavailable",
+                )
+            )
+            if _looks_transient_transport_error and not getattr(self, "_summary_transient_retry_used", False):
+                self._summary_transient_retry_used = True
+                self._summary_failure_cooldown_until = 0.0
+                logging.warning(
+                    "Context summary transport error (%s). Retrying compression summary once before fallback.",
+                    e,
+                )
+                return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+
             # Transient errors (timeout, rate limit, network) — shorter cooldown
             _transient_cooldown = 60
             self._summary_failure_cooldown_until = time.monotonic() + _transient_cooldown
@@ -973,6 +997,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             if len(err_text) > 220:
                 err_text = err_text[:217].rstrip() + "..."
             self._last_summary_error = err_text
+            self._summary_transient_retry_used = False
             logging.warning(
                 "Failed to generate context summary: %s. "
                 "Further summary attempts paused for %d seconds.",
