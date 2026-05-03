@@ -23,7 +23,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { randomBytes } from 'crypto';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
@@ -53,6 +53,7 @@ const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n──────────
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
   : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
+const DEFAULT_MEDIA_UPLOAD_TIMEOUT_MS = parseInt(process.env.WHATSAPP_MEDIA_UPLOAD_TIMEOUT_MS || '300000', 10);
 
 function formatOutgoingMessage(message) {
   // In bot mode, messages come from a different number so the prefix is
@@ -60,6 +61,19 @@ function formatOutgoingMessage(message) {
   // self-chat mode where bot and user share the same number.
   if (WHATSAPP_MODE !== 'self-chat') return message;
   return REPLY_PREFIX ? `${REPLY_PREFIX}${message}` : message;
+}
+
+function mediaUploadTimeoutMs(filePath, requestedTimeoutMs) {
+  const requested = Number(requestedTimeoutMs);
+  if (Number.isFinite(requested) && requested > 0) {
+    return requested;
+  }
+  let sizeMb = 0;
+  try {
+    sizeMb = statSync(filePath).size / (1024 * 1024);
+  } catch {}
+  const scaled = Math.floor(60000 + (sizeMb * 30000));
+  return Math.max(DEFAULT_MEDIA_UPLOAD_TIMEOUT_MS, Math.min(scaled, 900000));
 }
 
 function normalizeWhatsAppId(value) {
@@ -482,7 +496,7 @@ app.post('/send-media', async (req, res) => {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
 
-  const { chatId, filePath, mediaType, caption, fileName } = req.body;
+  const { chatId, filePath, mediaType, caption, fileName, mediaUploadTimeoutMs: requestedUploadTimeoutMs } = req.body;
   if (!chatId || !filePath) {
     return res.status(400).json({ error: 'chatId and filePath are required' });
   }
@@ -519,7 +533,11 @@ app.post('/send-media', async (req, res) => {
         break;
     }
 
-    const sent = await sock.sendMessage(chatId, msgPayload);
+    const sent = await sock.sendMessage(
+      chatId,
+      msgPayload,
+      { mediaUploadTimeoutMs: mediaUploadTimeoutMs(filePath, requestedUploadTimeoutMs) },
+    );
 
     // Track sent message ID to prevent echo-back loops
     if (sent?.key?.id) {
