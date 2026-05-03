@@ -103,10 +103,15 @@ def test_cron_run_job_codex_path_handles_internal_401_refresh(monkeypatch):
             "provider": "openai-codex",
             "api_mode": "codex_responses",
             "base_url": "https://chatgpt.com/backend-api/codex",
-            "api_key": "codex-token",
+            "api_key": "***",
         },
     )
     monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    monkeypatch.setattr(
+        cron_scheduler,
+        "_resolve_job_hermes_home",
+        lambda job: cron_scheduler._hermes_home.expanduser().resolve(),
+    )
 
     _Codex401ThenSuccessAgent.refresh_attempts = 0
     _Codex401ThenSuccessAgent.last_init = {}

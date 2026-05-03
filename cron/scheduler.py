@@ -16,6 +16,7 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -34,7 +35,7 @@ from typing import List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, resolve_hermes_home
 from hermes_cli.config import load_config
 from hermes_time import now as _hermes_now
 
@@ -162,21 +163,13 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
                 "chat_id": str(origin["chat_id"]),
                 "thread_id": origin.get("thread_id"),
             }
-        # Origin missing (e.g. job created via API/script) — try each
-        # platform's home channel as a fallback instead of silently dropping.
-        for platform_name in _HOME_TARGET_ENV_VARS:
-            chat_id = _get_home_target_chat_id(platform_name)
-            if chat_id:
-                logger.info(
-                    "Job '%s' has deliver=origin but no origin; falling back to %s home channel",
-                    job.get("name", job.get("id", "?")),
-                    platform_name,
-                )
-                return {
-                    "platform": platform_name,
-                    "chat_id": chat_id,
-                    "thread_id": None,
-                }
+        # Unattended/API-created jobs can carry deliver=origin with no stored
+        # origin metadata. Treat those as local-only consistently instead of
+        # opportunistically falling back to a platform home channel.
+        logger.info(
+            "Job '%s' has deliver=origin but no origin metadata; no delivery target will be resolved",
+            job.get("name", job.get("id", "?")),
+        )
         return None
 
     if ":" in deliver_value:
@@ -343,7 +336,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     """
     targets = _resolve_delivery_targets(job)
     if not targets:
-        if job.get("deliver", "local") != "local":
+        deliver_mode = _normalize_deliver_value(job.get("deliver", "local")).strip().lower()
+        origin = job.get("origin") or {}
+        if deliver_mode == "origin" and not origin:
+            logger.info(
+                "Job '%s': deliver=origin but no origin metadata is stored; treating as local-only",
+                job["id"],
+            )
+            return None
+        if deliver_mode != "local":
             msg = f"no delivery target resolved for deliver={job.get('deliver', 'local')}"
             logger.warning("Job '%s': %s", job["id"], msg)
             return msg
@@ -795,7 +796,91 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     return "\n".join(parts)
 
 
+def _resolve_job_hermes_home(job: dict) -> Path:
+    return resolve_hermes_home(profile=job.get("profile"), hermes_home=job.get("hermes_home"))
+
+
+def _run_job_in_bound_home(job: dict, hermes_home: Path) -> tuple[bool, str, str, Optional[str]]:
+    hermes_home = hermes_home.expanduser().resolve()
+    if not hermes_home.exists() or not hermes_home.is_dir():
+        error = f"Bound Hermes home does not exist or is not a directory: {hermes_home}"
+        return False, f"# Cron Job Failure\n\n```\n{error}\n```\n", "", error
+    child_env = os.environ.copy()
+    child_env["HERMES_HOME"] = str(hermes_home)
+    result_path: Optional[Path] = None
+    try:
+        result_dir = hermes_home / "cron" / "tmp"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(prefix="child-result-", suffix=".json", dir=result_dir, delete=False) as tf:
+            result_path = Path(tf.name)
+        child_env["HERMES_CRON_CHILD_RESULT_PATH"] = str(result_path)
+    except Exception as exc:
+        error = f"Failed to prepare child result file in bound Hermes home: {exc}"
+        return False, f"# Cron Job Failure\n\n```\n{error}\n```\n", "", error
+    payload = json.dumps(job)
+    runner = "\n".join([
+        "import json, os, sys, traceback",
+        "payload = {'success': False, 'output': '', 'final_response': '', 'error': 'unknown child failure'}",
+        "try:",
+        "    from cron.scheduler import _run_job_local",
+        "    job = json.loads(sys.stdin.read())",
+        "    result = _run_job_local(job)",
+        "    payload = {'success': result[0], 'output': result[1], 'final_response': result[2], 'error': result[3]}",
+        "except BaseException as exc:",
+        "    payload = {'success': False, 'output': '# Cron Job Failure\\n\\n```\\n' + ''.join(traceback.format_exception_only(type(exc), exc)).strip() + '\\n```\\n', 'final_response': '', 'error': str(exc)}",
+        "text = json.dumps(payload)",
+        "path = os.environ.get('HERMES_CRON_CHILD_RESULT_PATH')",
+        "if path:",
+        "    try:",
+        "        open(path, 'w', encoding='utf-8').write(text)",
+        "    except Exception:",
+        "        pass",
+        "print(text)",
+    ])
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", runner],
+            input=payload,
+            capture_output=True,
+            text=True,
+            env=child_env,
+            cwd=str(hermes_home),
+        )
+        if proc.returncode != 0:
+            error = (proc.stderr or proc.stdout or "subprocess execution failed").strip()
+            return False, f"# Cron Job Failure\n\n```\n{error}\n```\n", "", error
+        raw_stdout = (proc.stdout or "").strip()
+        candidate = raw_stdout.splitlines()[-1].strip() if raw_stdout else ""
+        if not candidate and result_path and result_path.exists():
+            candidate = result_path.read_text(encoding="utf-8").strip()
+        try:
+            parsed = json.loads(candidate)
+        except Exception as exc:
+            raw = (proc.stdout or proc.stderr or "").strip()
+            if result_path and result_path.exists() and not candidate:
+                raw_result = result_path.read_text(encoding="utf-8", errors="ignore").strip()
+                raw = raw_result or raw
+            error = f"Failed to parse child result: {exc}"
+            return False, f"# Cron Job Failure\n\n```\n{error}\n{raw}\n```\n", "", error
+        return bool(parsed.get("success")), str(parsed.get("output") or ""), str(parsed.get("final_response") or ""), parsed.get("error")
+    finally:
+        try:
+            if result_path:
+                result_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
+    target_home = _resolve_job_hermes_home(job)
+    current_home = _hermes_home.expanduser().resolve()
+    if target_home != current_home:
+        logger.info("Running job '%s' in bound Hermes home: %s", job.get("name", job.get("id", "?")), target_home)
+        return _run_job_in_bound_home(job, target_home)
+    return _run_job_local(job)
+
+
+def _run_job_local(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
     
@@ -803,6 +888,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         Tuple of (success, full_output_doc, final_response, error_message)
     """
     from run_agent import AIAgent
+    from tools.website_policy import (
+        reset_unattended_strict_website_policy,
+        set_unattended_strict_website_policy,
+    )
+
+    unattended_policy_token = set_unattended_strict_website_policy(True)
     
     # Initialize SQLite session store so cron job messages are persisted
     # and discoverable via session_search (same pattern as gateway/run.py).
@@ -1226,6 +1317,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
+        reset_unattended_strict_website_policy(unattended_policy_token)
         if _session_db:
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")
