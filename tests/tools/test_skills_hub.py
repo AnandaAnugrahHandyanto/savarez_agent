@@ -917,6 +917,20 @@ class TestCheckForSkillUpdates:
 
         assert digest.startswith("sha256:")
 
+    def test_bundle_content_hash_accepts_bytes_files(self):
+        bundle = SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": b"binary-safe content",
+                "assets/icon.png": b"\x89PNG\r\n\x1a\n",
+            },
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+
+        assert bundle_content_hash(bundle).startswith("sha256:")
+
     def test_bundle_content_hash_bytes_matches_str_equivalent(self):
         """Bytes content must hash identically to its str-decoded form."""
         text_bundle = SkillBundle(
