@@ -22,7 +22,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from agent.auxiliary_client import call_llm
 from agent.context_engine import ContextEngine
@@ -72,6 +72,110 @@ _IMAGE_TOKEN_ESTIMATE = 1600
 # for tail-cut decisions.
 _IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
+
+# ── Per-model / per-provider compression threshold overrides (issue #18733) ──
+
+# Bounds on the resolved threshold ratio. Values outside this range are treated
+# as configuration errors and fall through to the next precedence level.
+_THRESHOLD_MIN = 0.10
+_THRESHOLD_MAX = 0.95
+_THRESHOLD_DEFAULT = 0.50
+
+# Module-level dedup so a misconfigured override doesn't spam the gateway log
+# on every model switch / fallback. Keys are (scope, identifier) tuples:
+#   ("model",    "google/gemini-2.5-pro")
+#   ("provider", "anthropic")
+#   ("global",   "")
+# The set is intentionally NOT reset on config reload — long-lived gateway
+# processes prioritize log-noise control over reload feedback. If reload
+# feedback becomes important, expose a _reset_threshold_warnings() hook.
+_LOGGED_INVALID_OVERRIDE: set = set()
+
+
+def _validate_threshold(raw: Any, *, origin: str, dedup_key: tuple) -> Optional[float]:
+    """Coerce and range-check a threshold override.
+
+    Returns the validated float, or None if the value is invalid (in which
+    case a one-time warning is logged for ``dedup_key`` and the caller should
+    fall through to the next precedence level).
+    """
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        if dedup_key not in _LOGGED_INVALID_OVERRIDE:
+            _LOGGED_INVALID_OVERRIDE.add(dedup_key)
+            logger.warning(
+                "Invalid %s=%r — must be numeric, falling through.", origin, raw,
+            )
+        return None
+    if not (_THRESHOLD_MIN <= value <= _THRESHOLD_MAX):
+        if dedup_key not in _LOGGED_INVALID_OVERRIDE:
+            _LOGGED_INVALID_OVERRIDE.add(dedup_key)
+            logger.warning(
+                "Invalid %s=%s — must be within [%.2f, %.2f], falling through.",
+                origin, value, _THRESHOLD_MIN, _THRESHOLD_MAX,
+            )
+        return None
+    return value
+
+
+def resolve_compression_threshold(
+    model: str,
+    provider: str,
+    config: Mapping[str, Any],
+) -> float:
+    """Resolve the compression threshold for the active (model, provider).
+
+    Precedence (highest first):
+      1. ``compression.model_thresholds[model]``
+      2. ``compression.provider_thresholds[provider]``
+      3. ``compression.threshold``
+      4. ``_THRESHOLD_DEFAULT`` (0.50)
+
+    Provider keys must be exact ``hermes_cli/auth.py:PROVIDER_REGISTRY`` ids
+    (e.g. ``anthropic``, ``gemini``, ``kimi-coding``, ``xai``, ``openrouter``).
+    Aliases such as ``google``, ``moonshot``, or ``claude`` will silently fall
+    through to the global default — those aliases are scoped to auxiliary
+    model routing, not the main agent's ``self.provider``.
+
+    Invalid override values (non-numeric, outside ``[_THRESHOLD_MIN,
+    _THRESHOLD_MAX]``) emit a one-time warning per scope+identifier and fall
+    through to the next precedence level. Empty dicts and missing keys are
+    silent fall-throughs.
+    """
+    if not isinstance(config, Mapping):
+        return _THRESHOLD_DEFAULT
+
+    model_overrides = config.get("model_thresholds") or {}
+    if isinstance(model_overrides, Mapping) and model and model in model_overrides:
+        candidate = _validate_threshold(
+            model_overrides[model],
+            origin="compression.model_thresholds[%r]" % model,
+            dedup_key=("model", model),
+        )
+        if candidate is not None:
+            return candidate
+
+    provider_overrides = config.get("provider_thresholds") or {}
+    if isinstance(provider_overrides, Mapping) and provider and provider in provider_overrides:
+        candidate = _validate_threshold(
+            provider_overrides[provider],
+            origin="compression.provider_thresholds[%r]" % provider,
+            dedup_key=("provider", provider),
+        )
+        if candidate is not None:
+            return candidate
+
+    if "threshold" in config:
+        candidate = _validate_threshold(
+            config["threshold"],
+            origin="compression.threshold",
+            dedup_key=("global", ""),
+        )
+        if candidate is not None:
+            return candidate
+
+    return _THRESHOLD_DEFAULT
 
 
 def _content_length_for_budget(raw_content: Any) -> int:

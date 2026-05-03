@@ -2010,9 +2010,15 @@ class AIAgent:
             if not self.quiet_mode:
                 logger.info("Using context engine: %s", _selected_engine.name)
         else:
+            from agent.context_compressor import resolve_compression_threshold
+            _resolved_threshold = resolve_compression_threshold(
+                model=self.model,
+                provider=self.provider,
+                config=_compression_cfg,
+            )
             self.context_compressor = ContextCompressor(
                 model=self.model,
-                threshold_percent=compression_threshold,
+                threshold_percent=_resolved_threshold,
                 protect_first_n=3,
                 protect_last_n=compression_protect_last,
                 summary_target_ratio=compression_target_ratio,
@@ -2143,7 +2149,11 @@ class AIAgent:
 
         if not self.quiet_mode:
             if compression_enabled:
-                print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {self.context_compressor.threshold_tokens:,})")
+                # Use the compressor's resolved threshold (may differ from the
+                # global compression.threshold when per-model/per-provider
+                # overrides apply — issue #18733).
+                _display_pct = int(self.context_compressor.threshold_percent * 100)
+                print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (compress at {_display_pct}% = {self.context_compressor.threshold_tokens:,})")
             else:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (auto-compression disabled)")
 
