@@ -31,7 +31,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import subprocess
 import time
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, Optional, Tuple
@@ -251,17 +253,97 @@ def load_goal(session_id: str) -> Optional[GoalState]:
         return None
 
 
+def _sql_literal(value: Any) -> str:
+    """Return a minimal SQL literal for psql stdin snippets."""
+    if value is None:
+        return "null"
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _mirror_goal_to_enki_operational_db(session_id: str, state: GoalState) -> None:
+    """Best-effort mirror into Enki's local Postgres control plane.
+
+    The canonical runtime copy is still SessionDB.state_meta. This mirror is
+    intentionally fail-soft because upstream/generic Hermes installs may not
+    have psql or the local enki_ops database.
+    """
+    db_name = os.getenv("ENKI_DB_NAME") or os.getenv("ENKI_DB") or "enki_ops"
+    state_json = state.to_json()
+    last_turn_expr = "null"
+    if state.last_turn_at:
+        last_turn_expr = f"to_timestamp({float(state.last_turn_at)})"
+    sql = f"""
+create table if not exists enki_session_goals (
+  session_id text primary key,
+  goal text not null,
+  status text not null check (status in ('active', 'paused', 'done', 'cleared')),
+  turns_used integer not null default 0,
+  max_turns integer not null default 20,
+  last_verdict text,
+  last_reason text,
+  paused_reason text,
+  state_json jsonb not null,
+  created_at timestamptz not null default now(),
+  last_turn_at timestamptz,
+  modified_at timestamptz not null default now()
+);
+insert into enki_session_goals (
+  session_id, goal, status, turns_used, max_turns, last_verdict,
+  last_reason, paused_reason, state_json, last_turn_at, modified_at
+) values (
+  {_sql_literal(session_id)},
+  {_sql_literal(state.goal)},
+  {_sql_literal(state.status)},
+  {int(state.turns_used)},
+  {int(state.max_turns)},
+  {_sql_literal(state.last_verdict)},
+  {_sql_literal(state.last_reason)},
+  {_sql_literal(state.paused_reason)},
+  {_sql_literal(state_json)}::jsonb,
+  {last_turn_expr},
+  now()
+)
+on conflict (session_id) do update set
+  goal = excluded.goal,
+  status = excluded.status,
+  turns_used = excluded.turns_used,
+  max_turns = excluded.max_turns,
+  last_verdict = excluded.last_verdict,
+  last_reason = excluded.last_reason,
+  paused_reason = excluded.paused_reason,
+  state_json = excluded.state_json,
+  last_turn_at = excluded.last_turn_at,
+  modified_at = now();
+"""
+    try:
+        completed = subprocess.run(
+            ["psql", "-d", db_name, "-v", "ON_ERROR_STOP=1", "-q"],
+            input=sql,
+            text=True,
+            capture_output=True,
+            timeout=3,
+        )
+    except Exception as exc:
+        logger.debug("GoalManager: Enki operational DB mirror skipped: %s", exc)
+        return
+    if completed.returncode != 0:
+        logger.debug(
+            "GoalManager: Enki operational DB mirror failed: %s",
+            (completed.stderr or "").strip(),
+        )
+
+
 def save_goal(session_id: str, state: GoalState) -> None:
-    """Persist a goal to SessionDB. No-op if DB unavailable."""
+    """Persist a goal to SessionDB and best-effort mirror to Enki DB."""
     if not session_id:
         return
     db = _get_session_db()
-    if db is None:
-        return
-    try:
-        db.set_meta(_meta_key(session_id), state.to_json())
-    except Exception as exc:
-        logger.debug("GoalManager: set_meta failed: %s", exc)
+    if db is not None:
+        try:
+            db.set_meta(_meta_key(session_id), state.to_json())
+        except Exception as exc:
+            logger.debug("GoalManager: set_meta failed: %s", exc)
+    _mirror_goal_to_enki_operational_db(session_id, state)
 
 
 def clear_goal(session_id: str) -> None:

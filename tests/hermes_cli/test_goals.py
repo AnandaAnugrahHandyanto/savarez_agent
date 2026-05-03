@@ -252,6 +252,46 @@ class TestGoalManager:
         assert mgr2.state.goal == "do the thing"
         assert mgr2.is_active()
 
+    def test_save_goal_mirrors_state_to_enki_operational_db(self, hermes_home, monkeypatch):
+        """SessionDB remains canonical, but Enki gets a best-effort Postgres mirror."""
+        from hermes_cli.goals import GoalManager
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return MagicMock(returncode=0, stderr="")
+
+        monkeypatch.setenv("ENKI_DB_NAME", "enki_test")
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        mgr = GoalManager(session_id="persist-sid-operational")
+        mgr.set("do the durable thing")
+
+        assert calls, "expected save_goal to write the operational DB mirror"
+        cmd, kwargs = calls[-1]
+        assert cmd[:4] == ["psql", "-d", "enki_test", "-v"]
+        assert kwargs["input"]
+        assert "insert into enki_session_goals" in kwargs["input"].lower()
+        assert "persist-sid-operational" in kwargs["input"]
+        assert "do the durable thing" in kwargs["input"]
+        assert "active" in kwargs["input"]
+
+    def test_operational_db_mirror_is_fail_soft(self, hermes_home, monkeypatch):
+        """Missing psql/Postgres must not break generic Hermes /goal behavior."""
+        from hermes_cli.goals import GoalManager
+
+        def fake_run(cmd, **kwargs):
+            raise FileNotFoundError("psql")
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        mgr = GoalManager(session_id="persist-sid-no-psql")
+        state = mgr.set("still store in SessionDB")
+
+        assert state.status == "active"
+        assert GoalManager(session_id="persist-sid-no-psql").state.goal == "still store in SessionDB"
+
     def test_evaluate_after_turn_done(self, hermes_home):
         """Judge says done → status=done, no continuation."""
         from hermes_cli import goals
