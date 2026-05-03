@@ -1884,6 +1884,34 @@ class AIAgent:
                 )
                 _config_context_length = None
 
+        # Read explicit max_tokens (output cap) override from model config.
+        # OpenAI-compatible proxies that forward to Anthropic models require
+        # max_tokens when tools are present, otherwise the upstream API rejects
+        # the call with HTTP 400. See #19360.
+        # Constructor-passed max_tokens wins over config; only fill in when the
+        # caller didn't supply one.
+        if self.max_tokens is None and isinstance(_model_cfg, dict):
+            _config_max_tokens = _model_cfg.get("max_tokens")
+            if _config_max_tokens is not None:
+                try:
+                    _parsed_max = int(_config_max_tokens)
+                    if _parsed_max <= 0:
+                        raise ValueError
+                    self.max_tokens = _parsed_max
+                    self._session_init_model_config["max_tokens"] = _parsed_max
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Invalid model.max_tokens in config.yaml: %r — "
+                        "must be a positive integer. Ignoring.",
+                        _config_max_tokens,
+                    )
+                    print(
+                        f"\n⚠ Invalid model.max_tokens in config.yaml: {_config_max_tokens!r}\n"
+                        f"  Must be a positive integer (e.g. 4096).\n"
+                        f"  Ignoring; the request will omit max_tokens.\n",
+                        file=sys.stderr,
+                    )
+
         # Resolve custom_providers list once for reuse below (startup
         # context-length override and plugin context-engine init).
         try:
@@ -1946,6 +1974,23 @@ class AIAgent:
         # Persist for reuse on switch_model / fallback activation. Must come
         # AFTER the custom_providers branch so per-model overrides aren't lost.
         self._config_context_length = _config_context_length
+
+        # Per-model max_tokens override from custom_providers (#19360).
+        # Only applies when the caller didn't pass an explicit max_tokens and
+        # no top-level model.max_tokens was set above.
+        if self.max_tokens is None and _custom_providers:
+            try:
+                from hermes_cli.config import get_custom_provider_max_tokens
+                _cp_max_resolved = get_custom_provider_max_tokens(
+                    model=self.model,
+                    base_url=self.base_url,
+                    custom_providers=_custom_providers,
+                )
+                if _cp_max_resolved:
+                    self.max_tokens = int(_cp_max_resolved)
+                    self._session_init_model_config["max_tokens"] = self.max_tokens
+            except Exception:
+                pass
 
         self._ensure_lmstudio_runtime_loaded(_config_context_length)
 

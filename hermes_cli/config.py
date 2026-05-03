@@ -2773,6 +2773,60 @@ def get_custom_provider_context_length(
     return None
 
 
+def get_custom_provider_max_tokens(
+    model: str,
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
+    """Look up a per-model ``max_tokens`` override from ``custom_providers``.
+
+    Mirrors :func:`get_custom_provider_context_length` for the output cap. Used
+    when a custom OpenAI-compatible proxy forwards to Anthropic models, which
+    require ``max_tokens`` whenever ``tools`` are present (see #19360).
+    Returns ``None`` when no override applies.
+    """
+    if not model or not base_url:
+        return None
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            if config is None:
+                return None
+            raw = config.get("custom_providers")
+            custom_providers = raw if isinstance(raw, list) else []
+    if not isinstance(custom_providers, list):
+        return None
+
+    target_url = (base_url or "").rstrip("/")
+    if not target_url:
+        return None
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = (entry.get("base_url") or "").rstrip("/")
+        if not entry_url or entry_url != target_url:
+            continue
+        models = entry.get("models")
+        if not isinstance(models, dict):
+            continue
+        model_cfg = models.get(model)
+        if not isinstance(model_cfg, dict):
+            continue
+        raw_max = model_cfg.get("max_tokens")
+        if raw_max is None:
+            continue
+        try:
+            max_tokens = int(raw_max)
+        except (TypeError, ValueError):
+            continue
+        if max_tokens > 0:
+            return max_tokens
+    return None
+
+
 def check_config_version() -> Tuple[int, int]:
     """
     Check config version.
