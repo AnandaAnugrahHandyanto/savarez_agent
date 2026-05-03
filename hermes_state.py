@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -68,6 +68,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     pricing_version TEXT,
     title TEXT,
     api_call_count INTEGER DEFAULT 0,
+    workspace_path TEXT,
+    last_cwd TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -523,13 +525,15 @@ class SessionDB:
         system_prompt: str = None,
         user_id: str = None,
         parent_session_id: str = None,
+        workspace_path: str = None,
+        last_cwd: str = None,
     ) -> str:
         """Create a new session record. Returns the session_id."""
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
-                   system_prompt, parent_session_id, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   system_prompt, parent_session_id, started_at, workspace_path, last_cwd)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
@@ -539,10 +543,21 @@ class SessionDB:
                     system_prompt,
                     parent_session_id,
                     time.time(),
+                    workspace_path,
+                    last_cwd,
                 ),
             )
         self._execute_write(_do)
         return session_id
+
+    def update_session_cwd(self, session_id: str, last_cwd: str) -> None:
+        """Persist the most recent working directory for a session."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET last_cwd = ? WHERE id = ?",
+                (last_cwd, session_id),
+            )
+        self._execute_write(_do)
 
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session as ended.
@@ -679,6 +694,8 @@ class SessionDB:
         session_id: str,
         source: str = "unknown",
         model: str = None,
+        workspace_path: str = None,
+        last_cwd: str = None,
     ) -> None:
         """Ensure a session row exists, creating it with minimal metadata if absent.
 
@@ -689,9 +706,9 @@ class SessionDB:
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions
-                   (id, source, model, started_at)
-                   VALUES (?, ?, ?, ?)""",
-                (session_id, source, model, time.time()),
+                   (id, source, model, started_at, workspace_path, last_cwd)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (session_id, source, model, time.time(), workspace_path, last_cwd),
             )
         self._execute_write(_do)
 
@@ -2091,4 +2108,3 @@ class SessionDB:
             result["error"] = str(exc)
 
         return result
-

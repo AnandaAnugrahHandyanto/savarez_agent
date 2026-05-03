@@ -35,6 +35,45 @@ class TestSessionLifecycle:
         assert session["model"] == "test-model"
         assert session["ended_at"] is None
 
+    def test_create_session_stores_workspace_context(self, db):
+        db.create_session(
+            session_id="s1",
+            source="cli",
+            workspace_path="/work/project",
+            last_cwd="/work/project/src",
+        )
+
+        session = db.get_session("s1")
+        assert session["workspace_path"] == "/work/project"
+        assert session["last_cwd"] == "/work/project/src"
+
+    def test_update_session_cwd(self, db):
+        db.create_session(
+            session_id="s1",
+            source="cli",
+            workspace_path="/work/project",
+            last_cwd="/work/project",
+        )
+
+        db.update_session_cwd("s1", "/work/project/packages/app")
+
+        session = db.get_session("s1")
+        assert session["workspace_path"] == "/work/project"
+        assert session["last_cwd"] == "/work/project/packages/app"
+
+    def test_ensure_session_stores_workspace_context(self, db):
+        db.ensure_session(
+            "s1",
+            source="cli",
+            model="test-model",
+            workspace_path="/work/project",
+            last_cwd="/work/project",
+        )
+
+        session = db.get_session("s1")
+        assert session["workspace_path"] == "/work/project"
+        assert session["last_cwd"] == "/work/project"
+
     def test_get_nonexistent_session(self, db):
         assert db.get_session("nonexistent") is None
 
@@ -961,13 +1000,21 @@ class TestDeleteAndExport:
         assert db.resolve_session_id("20260315_092437") == "20260315_092437_c9a6ff"
 
     def test_export_session(self, db):
-        db.create_session(session_id="s1", source="cli", model="test")
+        db.create_session(
+            session_id="s1",
+            source="cli",
+            model="test",
+            workspace_path="/work/project",
+            last_cwd="/work/project",
+        )
         db.append_message("s1", role="user", content="Hello")
         db.append_message("s1", role="assistant", content="Hi")
 
         export = db.export_session("s1")
         assert isinstance(export, dict)
         assert export["source"] == "cli"
+        assert export["workspace_path"] == "/work/project"
+        assert export["last_cwd"] == "/work/project"
         assert len(export["messages"]) == 2
 
     def test_export_nonexistent(self, db):
@@ -1316,13 +1363,15 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 11
+        assert version == 12
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
         cursor = db._conn.execute("PRAGMA table_info(sessions)")
         columns = {row[1] for row in cursor.fetchall()}
         assert "title" in columns
+        assert "workspace_path" in columns
+        assert "last_cwd" in columns
 
     def test_migration_from_v2(self, tmp_path):
         """Simulate a v2 database and verify migration adds title column."""
@@ -1372,17 +1421,19 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v9
+        # Open with SessionDB — should migrate to the current schema
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 11
+        assert cursor.fetchone()[0] == 12
 
-        # Verify title column exists and is NULL for existing sessions
+        # Verify added columns exist and are NULL for existing sessions
         session = migrated_db.get_session("existing")
         assert session is not None
         assert session["title"] is None
+        assert session["workspace_path"] is None
+        assert session["last_cwd"] is None
 
         # Verify api_call_count column was added with default 0
         cursor = migrated_db._conn.execute(
@@ -2481,7 +2532,6 @@ class TestFTS5ToolCallMigration:
                 "SELECT version FROM schema_version LIMIT 1"
             ).fetchone()
             version = row["version"] if hasattr(row, "keys") else row[0]
-            assert version == 11
+            assert version == 12
         finally:
             session_db.close()
-
