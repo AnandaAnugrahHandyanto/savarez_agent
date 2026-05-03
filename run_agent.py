@@ -3751,6 +3751,14 @@ class AIAgent:
         Uses _last_flushed_db_idx to track which messages have already been
         written, so repeated calls (from multiple exit paths) only write
         truly new messages — preventing the duplicate-write bug (#860).
+
+        The cursor is advanced *per successful append* rather than once after
+        the loop completes.  Without per-message advancement, an exception
+        mid-loop (e.g. SQLite lock contention writing the next row when
+        multiple Hermes processes share the same state.db) leaves the cursor
+        at its old value, so the next flush re-writes the rows that *did*
+        commit and the user ends up with duplicate transcript entries —
+        message_count growing as 2× the real conversation length.  See #12563.
         """
         if not self._session_db:
             return
@@ -3761,7 +3769,7 @@ class AIAgent:
                 self._ensure_db_session()
             start_idx = len(conversation_history) if conversation_history else 0
             flush_from = max(start_idx, self._last_flushed_db_idx)
-            for msg in messages[flush_from:]:
+            for i, msg in enumerate(messages[flush_from:]):
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
                 tool_calls_data = None
@@ -3786,7 +3794,10 @@ class AIAgent:
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                 )
-            self._last_flushed_db_idx = len(messages)
+                # Advance the cursor immediately after a successful append so
+                # a mid-loop exception on the *next* row cannot cause already
+                # committed rows to be re-written on the next flush (#12563).
+                self._last_flushed_db_idx = flush_from + i + 1
         except Exception as e:
             logger.warning("Session DB append_message failed: %s", e)
 
