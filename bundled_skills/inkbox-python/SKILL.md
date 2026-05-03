@@ -44,6 +44,10 @@ PY
 
 The inbound routing marker already contains the resolved Contact fields; it is acceptable immediate context for conversational identity questions, but verify through the SDK when asked for live/current contact or channel facts.
 
+For Inkbox-routed Hermes runtime pitfalls — forcing SMS rather than email when messaging a contact, checking delivery/bounce status, and scheduling outbound calls — see `references/routed-session-operations.md`.
+
+**Third-party “text X” pitfall:** if the user explicitly asks for an SMS to a contact, prefer `identity.send_text(to="+E164", text=...)` after resolving the contact phone. Do not assume `send_message(target="inkbox:Contact", ...)` will text; contact targets can default to email when the adapter lacks recent SMS modality for that contact. Verify delivery in `identity.get_text_conversation(phone, ...)` before reporting success.
+
 **Voice-call caller identity pitfall:** if a voice turn arrives with `contact=unknown_in_inkbox`, the caller may still exist in the contact book. Use the marker's `call_id` to find the live call via `identity.list_calls(...)`, read `remote_phone_number`, then run `inkbox.contacts.lookup(phone=remote_phone_number)` before saying you do not know who the caller is. This is especially useful for natural questions like “what's my name?”, “do you know my number?”, or “can you look me up?”.
 
 ```python
@@ -199,6 +203,45 @@ for c in calls:
 for t in identity.list_transcripts(calls[0].id):
     print(f"[{t.party}] {t.text}")   # party: "local" or "remote"
 ```
+
+### Outbound calls from a Hermes-routed identity
+
+When the identity is wired into Hermes via the Inkbox platform adapter, the gateway already runs the WebSocket that bridges call audio — same `/phone/media/ws` endpoint that handles inbound calls. On every connect the adapter writes the live URLs to an identity-state file so cron-spawned and other follow-up agents can find them without guessing.
+
+**Read `ws_url` from the state file — do not hardcode the path or re-derive the URL.** The Inkbox-powered Hermes fork uses an isolated runtime home (typically `HERMES_HOME=~/.hermes-inkbox`), so the state file is **not** at `~/.hermes/`. Always go through `$HERMES_HOME`, which the launcher sets and which subprocess invocations (cron, terminal) inherit:
+
+```python
+import os, json
+from pathlib import Path
+from inkbox import Inkbox
+
+home = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
+state = json.loads((home / "inkbox_identity_state.json").read_text())
+ws_url = state["ws_url"]
+
+with Inkbox(api_key=os.environ["INKBOX_API_KEY"]) as ink:
+    identity = ink.get_identity(os.environ.get("INKBOX_IDENTITY", state["handle"]))
+    call = identity.place_call(to_number="+15167251294", client_websocket_url=ws_url)
+    print(f"placed call: id={call.id} status={call.status}")
+```
+
+State file shape (written by the adapter on connect):
+
+```json
+{
+  "handle": "inkbox-on-call-agent",
+  "email_address": "inkbox-on-call-agent@inkboxmail.com",
+  "phone_number": "+14137240502",
+  "phone_number_id": "<uuid>",
+  "public_url": "https://<host>.ngrok-free.dev",
+  "webhook_url": "https://<host>.ngrok-free.dev/webhook",
+  "ws_url": "wss://<host>.ngrok-free.dev/phone/media/ws"
+}
+```
+
+Common pitfall: a cron job that hardcodes `Path.home() / ".hermes"` will read the upstream Hermes home, not the isolated Inkbox home, and will fail with `No Inkbox call websocket URL found`. The fix is always the `$HERMES_HOME` lookup above.
+
+When the callee picks up, audio bridges to the *same* WS handler as inbound calls — the live-call flow (greeting, transcript-driven turns, two-frame text protocol) is identical. There is no separate outbound code path on the agent side.
 
 ## Text Messages (SMS/MMS)
 
