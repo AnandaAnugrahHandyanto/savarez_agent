@@ -517,7 +517,7 @@ def _append_worker_handoff_template(prompt: str) -> str:
 
 def _append_completion_protocol(prompt: str) -> str:
     """Add a tiny machine-readable footer without replacing the human summary."""
-    if "HERMES_JOB_DONE" in prompt:
+    if "Hermes completion protocol:" in prompt:
         return prompt
     return f"{prompt.rstrip()}\n\n{_COMPLETION_PROTOCOL}"
 
@@ -1131,21 +1131,54 @@ def _completion_status_from_payload(payload: dict[str, Any], cleaned_output: str
 
 
 def _extract_completion_sentinel(cleaned_output: str) -> dict[str, Any] | None:
-    for line in reversed((cleaned_output or "").splitlines()):
-        match = re.search(r"HERMES_JOB_DONE\s+(\{.*\})\s*$", line.strip())
-        if not match:
+    for match in reversed(list(re.finditer(r"HERMES_JOB_DONE", cleaned_output or ""))):
+        tail = cleaned_output[match.end():]
+        start = tail.find("{")
+        if start < 0:
             continue
-        try:
-            payload = json.loads(match.group(1), strict=False)
-        except Exception:
-            return {
-                "status": "blocked",
-                "summary": "Completion sentinel was present but JSON could not be parsed.",
-                "parse_error": True,
-                "raw": _truncate_text(match.group(1), 500),
-            }
-        return payload if isinstance(payload, dict) else {"status": "completed", "value": payload}
+        chunk = tail[start:start + 4000]
+        depth = 0
+        in_string = False
+        escape = False
+        raw_candidate = None
+        for index, char in enumerate(chunk):
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    raw_candidate = chunk[:index + 1]
+                    break
+        if raw_candidate is None:
+            continue
+        candidates = [re.sub(r"\s*\n\s*", " ", raw_candidate).strip(), raw_candidate]
+        for candidate in candidates:
+            try:
+                payload = json.loads(candidate, strict=False)
+            except Exception:
+                continue
+            return payload if isinstance(payload, dict) else {"status": "completed", "value": payload}
+        return {
+            "status": "blocked",
+            "summary": "Completion sentinel was present but JSON could not be parsed.",
+            "parse_error": True,
+            "raw": _truncate_text(raw_candidate, 500),
+        }
     return None
+
+
+def _has_bare_completion_sentinel(cleaned_output: str) -> bool:
+    return any(line.strip() == "HERMES_JOB_DONE" for line in (cleaned_output or "").splitlines())
 
 
 def _idle_prompt_after_final_answer(cleaned_output: str) -> bool:
@@ -1189,6 +1222,18 @@ def _detect_completion_state(output: str, tmux_alive: bool) -> dict[str, Any]:
             "status": status,
             "phase": "idle_complete" if tmux_alive else "exited",
             "payload": payload,
+        }
+    if _has_bare_completion_sentinel(cleaned):
+        return {
+            "is_complete": True,
+            "method": "bare_sentinel",
+            "status": "needs_manual_verification",
+            "phase": "idle_complete" if tmux_alive else "exited",
+            "payload": {
+                "status": "needs_manual_verification",
+                "summary": "Completion sentinel was present without JSON.",
+                "parse_error": True,
+            },
         }
     if _idle_prompt_after_final_answer(cleaned):
         payload = _heuristic_completion_payload(cleaned)
@@ -1351,7 +1396,8 @@ def _record_completion_state(job: dict[str, Any], state: dict[str, Any], output:
         _update_runtime_observations(job, output)
     payload = job.get("completion_payload") or {}
     if isinstance(payload, dict):
-        if payload.get("tests") and not job.get("tests"):
+        existing_tests = str(job.get("tests") or "").strip().lower()
+        if payload.get("tests") and existing_tests in {"", "not_run", "not captured yet", "unknown"}:
             job["tests"] = str(payload["tests"])
         if payload.get("summary") and not job.get("key_findings"):
             job["key_findings"] = str(payload["summary"])

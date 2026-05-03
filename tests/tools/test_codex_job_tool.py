@@ -462,6 +462,18 @@ HERMES_JOB_DONE {"status":"completed","recommendation":"open_pr","summary":"Prof
     assert "worker suggested docs or skill updates" in job["distillation"]["reasons"]
 
 
+def test_completion_record_updates_placeholder_tests_from_payload():
+    from tools.codex_job_tool import _detect_completion_state, _record_completion_state
+
+    output = 'HERMES_JOB_DONE {"status":"completed","summary":"done","tests":"passed"}'
+    job = {"job_id": "done4", "status": "running", "phase": "running", "tests": "not_run"}
+
+    state = _detect_completion_state(output, tmux_alive=True)
+    _record_completion_state(job, state, output)
+
+    assert job["tests"] == "passed"
+
+
 def test_start_appends_machine_readable_completion_protocol(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
@@ -489,6 +501,29 @@ def test_start_appends_machine_readable_completion_protocol(tmp_path, monkeypatc
     assert "Do the task normally" in result["prompt"]
     assert "exactly one line" in result["prompt"]
     assert "HERMES_JOB_DONE" in "\n".join(result["tmux_commands"])
+
+
+def test_completion_protocol_is_appended_when_user_prompt_mentions_bare_sentinel(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    repo = _make_repo(tmp_path)
+
+    from tools.codex_job_tool import codex_job_tool
+
+    result = json.loads(codex_job_tool({
+        "action": "start",
+        "title": "Bare sentinel smoke",
+        "prompt": "Finish with HERMES_JOB_DONE when complete.",
+        "repo_path": str(repo),
+        "workspace_mode": "local",
+        "launch": False,
+        "discord": False,
+    }))
+
+    assert result["success"] is True
+    assert "Finish with HERMES_JOB_DONE when complete." in result["prompt"]
+    assert "Hermes completion protocol" in result["prompt"]
+    assert 'HERMES_JOB_DONE {"status":"completed|blocked' in result["prompt"]
 
 
 def test_start_can_disable_worker_handoff_template(tmp_path, monkeypatch):
@@ -532,6 +567,41 @@ HERMES_JOB_DONE {"status":"request_changes","verdict":"REQUEST_CHANGES","recomme
     assert state["status"] == "request_changes"
     assert state["payload"]["verdict"] == "REQUEST_CHANGES"
     assert state["payload"]["recommendation"] == "send_to_fixer"
+
+
+def test_completion_detector_parses_wrapped_sentinel_json_from_terminal_capture():
+    from tools.codex_job_tool import _detect_completion_state
+
+    output = """
+HERMES_JOB_DONE {"status":"completed","recommendation":"No next step needed","summary":"Confirmed the working directory without modifying
+  files.","commit":null,"tests":"passed"}
+"""
+
+    state = _detect_completion_state(output, tmux_alive=True)
+
+    assert state["is_complete"] is True
+    assert state["method"] == "sentinel"
+    assert state["status"] == "completed"
+    assert state["payload"]["summary"] == "Confirmed the working directory without modifying files."
+    assert state["payload"]["tests"] == "passed"
+
+
+def test_completion_detector_marks_bare_sentinel_as_needing_manual_verification():
+    from tools.codex_job_tool import _detect_completion_state
+
+    output = """
+Result
+Finished the tiny smoke test and changed no files.
+
+HERMES_JOB_DONE
+"""
+
+    state = _detect_completion_state(output, tmux_alive=True)
+
+    assert state["is_complete"] is True
+    assert state["method"] == "bare_sentinel"
+    assert state["status"] == "needs_manual_verification"
+    assert state["payload"]["summary"] == "Completion sentinel was present without JSON."
 
 
 def test_completion_detector_marks_codex_idle_prompt_after_final_answer_as_heuristic_complete():
