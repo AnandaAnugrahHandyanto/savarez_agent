@@ -655,6 +655,70 @@ class TestToolsModeInitBehavior:
         assert cfg.peer_name is None
         assert mock_manager_cls.call_args.kwargs["runtime_user_peer_name"] == "8439114563"
 
+    def test_tools_lazy_sync_turn_initializes_in_background(self):
+        """tools + lazy init must still mirror completed turns to Honcho."""
+        from plugins.memory.honcho.client import HonchoClientConfig
+        from unittest.mock import MagicMock, patch
+
+        cfg = HonchoClientConfig(
+            api_key="test-key",
+            enabled=True,
+            recall_mode="tools",
+            init_on_session_start=False,
+        )
+        provider = HonchoMemoryProvider()
+        mock_manager = MagicMock()
+        mock_session = MagicMock()
+        mock_session.messages = []
+        mock_manager.get_or_create.return_value = mock_session
+
+        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            provider.initialize(session_id="test-session-001")
+            assert provider._session_initialized is False
+            provider.sync_turn("hello", "hi there")
+            provider._sync_thread.join(timeout=2.0)
+
+        assert provider._session_initialized is True
+        mock_manager.get_or_create.assert_any_call(provider._session_key)
+        assert mock_session.add_message.call_count == 2
+
+    def test_tools_lazy_memory_write_initializes_in_background(self):
+        """Explicit memory writes must not be dropped in tools-only lazy mode."""
+        from plugins.memory.honcho.client import HonchoClientConfig
+        from unittest.mock import MagicMock, patch
+
+        cfg = HonchoClientConfig(
+            api_key="test-key",
+            enabled=True,
+            recall_mode="tools",
+            init_on_session_start=False,
+        )
+        provider = HonchoMemoryProvider()
+        mock_manager = MagicMock()
+        mock_session = MagicMock()
+        mock_session.messages = []
+        mock_manager.get_or_create.return_value = mock_session
+
+        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            provider.initialize(session_id="test-session-001")
+            assert provider._session_initialized is False
+            provider.on_memory_write("add", "user", "favorite color is purple")
+            import time
+            deadline = time.time() + 2.0
+            while time.time() < deadline and not mock_manager.create_conclusion.called:
+                time.sleep(0.01)
+
+        assert provider._session_initialized is True
+        mock_manager.create_conclusion.assert_called_once_with(
+            provider._session_key, "favorite color is purple"
+        )
+
 
 class TestPerSessionMigrateGuard:
     """Verify migrate_memory_files is skipped under per-session strategy.
@@ -1097,7 +1161,7 @@ class TestDialecticDepth:
         provider._session_key = "test"
         provider._base_context_cache = "existing context"
 
-        result = provider._run_dialectic_depth("test query")
+        provider._run_dialectic_depth("test query")
         # Only 1 call because pass 0 had sufficient signal
         assert provider._manager.dialectic_query.call_count == 1
 
@@ -1193,7 +1257,6 @@ class TestDialecticCadenceAdvancesOnSuccess:
         return provider
 
     def test_empty_dialectic_result_does_not_advance_cadence(self):
-        import time as _time
         provider = self._make_provider()
         provider._session_key = "test"
         provider._manager.dialectic_query.return_value = ""  # silent failure
