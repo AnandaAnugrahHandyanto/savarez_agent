@@ -43,14 +43,19 @@ class _StubCLI:
     _pending_model_switch_note = ""
 
 
-def _run_display(monkeypatch, result):
+def _run_display(monkeypatch, result, custom_providers=None):
     import cli as cli_mod
 
     captured: list[str] = []
     monkeypatch.setattr(cli_mod, "_cprint", lambda s, *a, **k: captured.append(str(s)))
     # Avoid writing to ~/.hermes/config.yaml during the test.
     monkeypatch.setattr(cli_mod, "save_config_value", lambda *a, **k: None)
-    cli_mod.HermesCLI._apply_model_switch_result(_StubCLI(), result, False)
+    cli_mod.HermesCLI._apply_model_switch_result(
+        _StubCLI(),
+        result,
+        False,
+        custom_providers=custom_providers,
+    )
     return captured
 
 
@@ -150,3 +155,35 @@ def test_picker_path_falls_back_to_model_info_when_resolver_empty(monkeypatch):
     assert "1,050,000" in ctx_line, (
         f"resolver-empty path should fall back to ModelInfo, got: {ctx_line!r}"
     )
+
+
+def test_picker_path_honors_custom_provider_context(monkeypatch):
+    """Picker confirmation must pass custom_providers into the shared resolver."""
+    result = ModelSwitchResult(
+        success=True,
+        new_model="local-model",
+        target_provider="custom:local",
+        provider_changed=True,
+        api_key="",
+        base_url="http://localhost:1234/v1",
+        api_mode="chat_completions",
+        warning_message="",
+        provider_label="Local",
+        resolved_via_alias=False,
+        capabilities=None,
+        model_info=_FakeModelInfo(),
+        is_global=False,
+    )
+    custom_providers = [
+        {
+            "name": "Local",
+            "base_url": "http://localhost:1234/v1",
+            "models": {"local-model": {"context_length": 900_000}},
+        }
+    ]
+
+    lines = _run_display(monkeypatch, result, custom_providers=custom_providers)
+
+    ctx_line = next((l for l in lines if "Context:" in l), "")
+    assert "900,000" in ctx_line
+    assert "1,050,000" not in ctx_line

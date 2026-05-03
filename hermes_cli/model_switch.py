@@ -558,6 +558,26 @@ def resolve_display_context_length(
     Prefer the provider-aware value; fall back to ``model_info.context_window``
     only if the resolver returns nothing.
     """
+    if (
+        config_context_length is not None
+        and isinstance(config_context_length, int)
+        and config_context_length > 0
+    ):
+        return config_context_length
+
+    if custom_providers and base_url and model:
+        try:
+            from hermes_cli.config import get_custom_provider_context_length
+            ctx = get_custom_provider_context_length(
+                model=model,
+                base_url=base_url,
+                custom_providers=custom_providers,
+            )
+            if ctx:
+                return int(ctx)
+        except Exception:
+            pass
+
     try:
         from agent.model_metadata import get_model_context_length
         ctx = get_model_context_length(

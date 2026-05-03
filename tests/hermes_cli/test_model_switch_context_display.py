@@ -89,6 +89,17 @@ class TestResolveDisplayContextLength:
             )
         assert ctx == 128_000
 
+    def test_config_context_length_overrides_resolver_and_model_info(self):
+        fake_mi = _FakeModelInfo(2_000_000)
+        ctx = resolve_display_context_length(
+            "custom-model",
+            "custom",
+            base_url="https://example.invalid/v1",
+            model_info=fake_mi,
+            config_context_length=750_000,
+        )
+        assert ctx == 750_000
+
     def test_custom_providers_override_honored(self):
         """Regression for #15779: /model switch onto a custom provider must
         surface the configured per-model context_length, not the 128K/256K
@@ -146,3 +157,23 @@ class TestResolveDisplayContextLength:
                 custom_providers=custom_provs,
             )
         assert ctx == 400_000
+
+    def test_non_matching_custom_provider_does_not_override(self):
+        fake_mi = _FakeModelInfo(1_050_000)
+        custom_provs = [
+            {
+                "base_url": "https://example.invalid/v1",
+                "models": {"m": {"context_length": 400_000}},
+            }
+        ]
+        with patch(
+            "agent.model_metadata.get_model_context_length", return_value=256_000
+        ):
+            ctx = resolve_display_context_length(
+                "m",
+                "custom",
+                base_url="https://other.invalid/v1",
+                model_info=fake_mi,
+                custom_providers=custom_provs,
+            )
+        assert ctx == 256_000

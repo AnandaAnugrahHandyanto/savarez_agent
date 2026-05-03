@@ -5455,7 +5455,12 @@ class HermesCLI:
         scroll_offset = max(0, min(scroll_offset, n - visible))
         return scroll_offset, visible
 
-    def _apply_model_switch_result(self, result, persist_global: bool) -> None:
+    def _apply_model_switch_result(
+        self,
+        result,
+        persist_global: bool,
+        custom_providers: list | None = None,
+    ) -> None:
         if not result.success:
             _cprint(f"  ✗ {result.error_message}")
             return
@@ -5507,7 +5512,12 @@ class HermesCLI:
                 base_url=result.base_url or self.base_url or "",
                 api_key=result.api_key or self.api_key or "",
                 model_info=mi,
-                config_context_length=getattr(self.agent, "_config_context_length", None) if self.agent else None,
+                custom_providers=custom_providers,
+                config_context_length=(
+                    getattr(self.agent, "_config_context_length", None)
+                    if self.agent
+                    else None
+                ),
             )
             if ctx:
                 _cprint(f"    Context: {ctx:,} tokens")
@@ -5595,7 +5605,11 @@ class HermesCLI:
                     custom_providers=state.get("custom_provs"),
                 )
                 self._close_model_picker()
-                self._apply_model_switch_result(result, persist_global)
+                self._apply_model_switch_result(
+                    result,
+                    persist_global,
+                    custom_providers=state.get("custom_provs"),
+                )
                 return
             self._close_model_picker()
 
@@ -5734,7 +5748,12 @@ class HermesCLI:
             base_url=result.base_url or self.base_url or "",
             api_key=result.api_key or self.api_key or "",
             model_info=mi,
-            config_context_length=getattr(self.agent, "_config_context_length", None) if self.agent else None,
+            custom_providers=custom_provs,
+            config_context_length=(
+                getattr(self.agent, "_config_context_length", None)
+                if self.agent
+                else None
+            ),
         )
         if ctx:
             _cprint(f"    Context: {ctx:,} tokens")
