@@ -1153,6 +1153,9 @@ class GatewayRunner:
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
 
+        # Sparse AwareOS contextual-evaluator debounce (in-memory only; never persisted).
+        self._awareos_last_context_eval_ts: Dict[str, float] = {}
+
 
     def _warn_if_docker_media_delivery_is_risky(self) -> None:
         """Warn when Docker-backed gateways lack an explicit export mount.
@@ -5585,6 +5588,37 @@ class GatewayRunner:
             except Exception as exc:
                 logger.debug("@ context reference expansion failed: %s", exc)
 
+        # Sparse AwareOS context evaluator: only on relevant prompts, debounced
+        # per-session, and only when explicitly enabled via env.
+        try:
+            from gateway.awareos_bridge import (
+                should_trigger_context_eval as _awareos_should_eval,
+                context_eval_debounce_secs as _awareos_debounce,
+                run_context_eval as _awareos_eval,
+            )
+
+            if _awareos_should_eval(message_text):
+                now = time.time()
+                last_ts = float(self._awareos_last_context_eval_ts.get(session_key, 0.0) or 0.0)
+                debounce = float(_awareos_debounce() or 0)
+                if debounce <= 0 or (now - last_ts) >= debounce:
+                    res = _awareos_eval(
+                        message_text=message_text,
+                        session_key=session_key,
+                        platform=source.platform.value if source.platform else "",
+                        chat_id=str(source.chat_id or ""),
+                        user_id=str(source.user_id or "") if source.user_id is not None else None,
+                    )
+                    if res is not None and res.ok and res.snippet:
+                        self._awareos_last_context_eval_ts[session_key] = now
+                        message_text = (
+                            "[AwareOS context evaluator]\n"
+                            f"{res.snippet.strip()}\n\n"
+                            f"{message_text}"
+                        )
+        except Exception:
+            pass
+
         return message_text
 
     def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:
@@ -6142,7 +6176,17 @@ class GatewayRunner:
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
                 "session_id": session_entry.session_id,
+                "session_key": session_key,
+                "chat_id": source.chat_id,
+                "message_id": event.message_id,
                 "message": message_text[:500],
+                "message_length": len(message_text or ""),
+                "is_command": bool((message_text or "").lstrip().startswith("/")),
+                # Heuristic; agent:end will refine with tool usage.
+                "substantive": (
+                    bool(message_text and not (message_text or "").lstrip().startswith("/"))
+                    and len((message_text or "").strip()) >= 20
+                ),
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
@@ -6301,10 +6345,37 @@ class GatewayRunner:
             if _footer_line and response and not agent_result.get("already_sent"):
                 response = f"{response}\n\n{_footer_line}"
 
+            # Compact per-turn tool usage summary for hooks/observers.
+            tool_names: list[str] = []
+            try:
+                for _m in agent_messages:
+                    if not isinstance(_m, dict) or _m.get("role") != "assistant":
+                        continue
+                    _tcs = _m.get("tool_calls")
+                    if not isinstance(_tcs, list):
+                        continue
+                    for _tc in _tcs:
+                        if not isinstance(_tc, dict):
+                            continue
+                        fn = (_tc.get("function") or {}) if isinstance(_tc.get("function"), dict) else {}
+                        name = fn.get("name")
+                        if isinstance(name, str) and name:
+                            tool_names.append(name)
+                # De-dup while preserving order.
+                seen = set()
+                tool_names = [n for n in tool_names if not (n in seen or seen.add(n))]
+            except Exception:
+                tool_names = []
+
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
                 **hook_ctx,
                 "response": (response or "")[:500],
+                "response_length": len(response or ""),
+                "api_calls": int(agent_result.get("api_calls", 0) or 0),
+                "model": agent_result.get("model") or "",
+                "tool_names": tool_names,
+                "substantive": bool(tool_names) or bool(agent_result.get("api_calls", 0) or 0) > 1,
             })
             
             # Check for pending process watchers (check_interval on background processes)

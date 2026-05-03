@@ -30,6 +30,11 @@ from string import ascii_lowercase
 from typing import Any
 
 from hermes_constants import display_hermes_home, get_hermes_home
+from gateway.awareos_bridge import (
+    awareos_overlay_enabled,
+    record_work_overlay_start,
+    record_work_overlay_stop,
+)
 
 PLUGIN_NAME = "kaze-claude-mode"
 
@@ -991,6 +996,35 @@ async def _run_claude_code_print(
         if delivered:
             return ok_stream, ""
 
+    overlay_id = ""
+    overlay_source: dict[str, Any] = {}
+    overlay_started_at = 0.0
+    overlay_ok: bool | None = None
+    overlay_error: str = ""
+    if awareos_overlay_enabled() and platform == "telegram" and chat_id:
+        overlay_started_at = time.time()
+        overlay_id = (
+            "hermes:telegram:"
+            f"{chat_id}:claude_mode:"
+            f"{hashlib.sha256((session_key or chat_key or os.urandom(4).hex()).encode('utf-8')).hexdigest()[:16]}:"
+            f"{int(overlay_started_at * 1000)}"
+        )
+        overlay_source = {
+            "platform": platform,
+            "chat_id": chat_id,
+            "thread_id": thread_id or "",
+            "session_key": session_key or "",
+            "chat_key": chat_key or "",
+            "lane": "kaze-claude-mode",
+            "task_id": task_id,
+        }
+        record_work_overlay_start(
+            overlay_id=overlay_id,
+            source=overlay_source,
+            prompt_text=prompt,
+            journal={"turn_kind": "claude_code_cli"},
+        )
+
     try:
         from tools.approval import reset_current_session_key, set_current_session_key
         token = set_current_session_key(session_key or "")
@@ -1009,6 +1043,8 @@ async def _run_claude_code_print(
         )
         write_payload = json.loads(write_raw) if isinstance(write_raw, str) else {}
         if write_payload.get("error"):
+            overlay_ok = False
+            overlay_error = "stage_prompt_failed"
             return False, "Claude mode failed: could not stage prompt for Claude Code."
 
         allowed = _effective_allowed_tools(chat_key) if chat_key else _claude_code_allowed_tools()
@@ -1034,6 +1070,8 @@ async def _run_claude_code_print(
         )
         term = json.loads(term_raw) if isinstance(term_raw, str) else {}
         if term.get("status") == "approval_required":
+            overlay_ok = False
+            overlay_error = "approval_required"
             return False, "Claude mode: waiting for approval to run Claude Code CLI."
         out = _extract_terminal_text(term)
         exit_code = term.get("exit_code")
@@ -1061,6 +1099,8 @@ async def _run_claude_code_print(
                     },
                 )
                 safe_tool = tool_rule or "unknown"
+                overlay_ok = False
+                overlay_error = "permission_block"
                 return (
                     False,
                     _truncate_reply(
@@ -1070,9 +1110,26 @@ async def _run_claude_code_print(
                         "Reply `/claude-mode approve` to allow and retry, or `/claude-mode deny` to cancel."
                     ),
                 )
+            overlay_ok = False
+            overlay_error = "nonzero_exit"
             return False, _truncate_reply(f"Claude Code error:\n{err}")
+        overlay_ok = True
         return True, _truncate_reply(out or "(Claude Code returned no output.)")
     finally:
+        if overlay_id and overlay_source:
+            try:
+                record_work_overlay_stop(
+                    overlay_id=overlay_id,
+                    source=overlay_source,
+                    result={
+                        "ok": bool(overlay_ok) if overlay_ok is not None else None,
+                        "error": overlay_error or None,
+                        "duration_ms": int((time.time() - overlay_started_at) * 1000),
+                    },
+                    journal={"turn_kind": "claude_code_cli"},
+                )
+            except Exception:
+                pass
         if token is not None and reset_current_session_key is not None:
             with contextlib_suppress(Exception):
                 reset_current_session_key(token)

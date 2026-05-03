@@ -59,7 +59,13 @@ class HookRegistry:
         point for future always-on gateway hooks so they drop in without
         re-plumbing discover_and_load().
         """
-        return
+        try:
+            from gateway.builtin_hooks.awareos_overlay import register_builtin_hooks
+
+            register_builtin_hooks(self)
+        except Exception:
+            # Built-in hooks are best-effort. Failure must never block the gateway.
+            return
 
     def discover_and_load(self) -> None:
         """
