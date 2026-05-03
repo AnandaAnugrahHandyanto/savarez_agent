@@ -6,6 +6,7 @@ import asyncio
 import contextvars
 import logging
 import os
+import threading
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Deque, Optional
@@ -854,22 +855,37 @@ class HermesACPAgent(acp.Agent):
             self.session_manager.save_session(session_id)
 
         final_response = result.get("final_response", "")
-        if final_response:
-            try:
-                from agent.title_generator import maybe_auto_title
-
-                maybe_auto_title(
-                    self.session_manager._get_db(),
-                    session_id,
-                    user_text,
-                    final_response,
-                    state.history,
-                )
-            except Exception:
-                logger.debug("Failed to auto-title ACP session %s", session_id, exc_info=True)
+        # Critical ACP ordering: commit the assistant answer to the client before
+        # any auxiliary work.  Title generation may call an LLM and can be slow
+        # or hang on provider/network issues; if it runs first, Zed receives
+        # streamed chunks but never gets the final session/prompt response, so
+        # the answer can disappear from the UI.  Keep user-visible finalization
+        # on the hot path and move title generation to a best-effort daemon
+        # thread.
         if final_response and conn:
             update = acp.update_agent_message_text(final_response)
             await conn.session_update(session_id, update)
+
+        if final_response:
+            def _auto_title_background() -> None:
+                try:
+                    from agent.title_generator import maybe_auto_title
+
+                    maybe_auto_title(
+                        self.session_manager._get_db(),
+                        session_id,
+                        user_text,
+                        final_response,
+                        state.history,
+                    )
+                except Exception:
+                    logger.debug("Failed to auto-title ACP session %s", session_id, exc_info=True)
+
+            threading.Thread(
+                target=_auto_title_background,
+                name=f"acp-title-{session_id[:8]}",
+                daemon=True,
+            ).start()
 
         # Mark this turn idle before draining queued work so recursive prompt()
         # calls can acquire the session. Queued turns are intentionally run as
