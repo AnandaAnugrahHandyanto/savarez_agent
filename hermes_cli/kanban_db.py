@@ -2655,20 +2655,23 @@ def read_worker_log(
 def list_profiles_on_disk() -> list[str]:
     """Return the set of named profiles discovered on disk.
 
-    Reads ``~/.hermes/profiles/`` directly so this module has no import
-    dependency on ``hermes_cli.profiles`` (which pulls in a large chunk
-    of the CLI startup path). Only returns directories that contain a
+    Reads the profiles directory under ``HERMES_HOME`` (respecting
+    ``HERMES_HOME`` env overrides and profile-aware root) so this module
+    works correctly in custom-root deployments (e.g. Docker with
+    ``HERMES_HOME=/data``). Only returns directories that contain a
     ``config.yaml`` — a bare dir without config isn't a real profile.
     """
     try:
-        home = Path.home() / ".hermes" / "profiles"
+        from hermes_constants import get_default_hermes_root
+        profiles_dir = get_default_hermes_root() / "profiles"
     except Exception:
-        return []
-    if not home.is_dir():
+        # Fallback for environments where hermes_constants is unavailable
+        profiles_dir = Path.home() / ".hermes" / "profiles"
+    if not profiles_dir.is_dir():
         return []
     names: list[str] = []
     try:
-        for entry in sorted(home.iterdir()):
+        for entry in sorted(profiles_dir.iterdir()):
             if not entry.is_dir():
                 continue
             if (entry / "config.yaml").is_file():
