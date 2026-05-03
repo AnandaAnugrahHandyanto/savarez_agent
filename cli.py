@@ -4527,6 +4527,20 @@ class HermesCLI:
         provider = getattr(self, "provider", None) or "unknown"
         model = getattr(self, "model", None) or "(unknown)"
         is_running = bool(getattr(self, "_agent_running", False))
+        busy_mode = getattr(self, "busy_input_mode", "interrupt")
+        try:
+            queued_inputs = int(getattr(getattr(self, "_pending_input", None), "qsize", lambda: 0)())
+        except Exception:
+            queued_inputs = 0
+        try:
+            from tools.process_registry import process_registry
+
+            processes = process_registry.list_sessions()
+            running_processes = sum(1 for p in processes if p.get("status") == "running")
+            finished_processes = sum(1 for p in processes if p.get("status") != "running")
+        except Exception:
+            running_processes = 0
+            finished_processes = 0
 
         lines = [
             "Hermes CLI Status",
@@ -4542,6 +4556,9 @@ class HermesCLI:
             f"Last Activity: {updated_at.strftime('%Y-%m-%d %H:%M')}",
             f"Tokens: {total_tokens:,}",
             f"Agent Running: {'Yes' if is_running else 'No'}",
+            f"Busy Input Mode: {busy_mode}",
+            f"Queued Inputs: {queued_inputs}",
+            f"Background Processes: {running_processes} running, {finished_processes} recent",
         ])
         self._console_print("\n".join(lines), highlight=False, markup=False)
     

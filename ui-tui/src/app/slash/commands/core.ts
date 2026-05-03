@@ -48,6 +48,10 @@ const DETAILS_USAGE =
 
 const DETAILS_SECTION_USAGE = 'usage: /details <section> [hidden|collapsed|expanded|reset]'
 
+const numberFormatter = new Intl.NumberFormat('en-US')
+const formatNumber = (value: number | undefined): string =>
+  typeof value === 'number' ? numberFormatter.format(value) : '0'
+
 export const coreCommands: SlashCommand[] = [
   {
     help: 'list commands + hotkeys',
@@ -78,6 +82,62 @@ export const coreCommands: SlashCommand[] = [
       )
 
       ctx.transcript.panel(ctx.ui.theme.brand.helpHeader, sections)
+    }
+  },
+
+  {
+    help: 'show local TUI/session status',
+    name: 'status',
+    run: (_arg, ctx) => {
+      const info = ctx.ui.info
+      const usage = ctx.ui.usage ?? info?.usage
+      const mcpServers = info?.mcp_servers ?? []
+      const connectedMcp = mcpServers.filter(server => server.connected).length
+      const queued = ctx.composer.queueRef.current.length
+      const backgroundTasks = ctx.ui.bgTasks.size
+      const model = info?.model ?? 'unknown'
+      const cwd = info?.cwd ?? 'unknown'
+
+      const sections: PanelSection[] = [
+        {
+          rows: [
+            ['Session ID', ctx.sid ?? ctx.ui.sid ?? '(none)'],
+            ['Model', model],
+            ['CWD', cwd],
+            ['Hermes', info?.version ? `v${info.version}` : 'unknown']
+          ],
+          title: 'Session'
+        },
+        {
+          rows: [
+            ['Agent busy', ctx.ui.busy ? 'yes' : 'no'],
+            ['Busy input mode', ctx.ui.busyInputMode],
+            ['Queued prompts', String(queued)],
+            ['Background tasks', String(backgroundTasks)]
+          ],
+          title: 'Work queue'
+        },
+        {
+          rows: [
+            ['API calls', formatNumber(usage?.calls)],
+            ['Input tokens', formatNumber(usage?.input)],
+            ['Output tokens', formatNumber(usage?.output)],
+            ['Total tokens', formatNumber(usage?.total)]
+          ],
+          title: 'Usage'
+        },
+        {
+          rows: [
+            ['Status bar', ctx.ui.statusBar],
+            ['Details mode', ctx.ui.detailsMode],
+            ['Streaming', ctx.ui.streaming ? 'on' : 'off'],
+            ['MCP servers', mcpServers.length ? `${connectedMcp}/${mcpServers.length} connected` : 'none']
+          ],
+          title: 'UI'
+        }
+      ]
+
+      ctx.transcript.panel('Hermes TUI Status', sections)
     }
   },
 
