@@ -6265,6 +6265,124 @@ class HermesCLI:
             print(f"    2. Or configure settings in {display_hermes_home()}/config.yaml")
             print()
     
+    def _pending_input_items(self) -> list:
+        """Return a snapshot of queued next-turn prompts."""
+        with self._pending_input.mutex:
+            return list(self._pending_input.queue)
+
+    def _replace_pending_input_items(self, items: list) -> None:
+        """Replace queued next-turn prompts while preserving queue semantics."""
+        with self._pending_input.mutex:
+            self._pending_input.queue.clear()
+            self._pending_input.queue.extend(items)
+            self._pending_input.unfinished_tasks = len(items)
+            self._pending_input.not_empty.notify_all()
+
+    def _handle_queue_command(self, cmd_original: str) -> None:
+        """Queue, inspect, and edit next-turn prompts from the CLI.
+
+        Backward compatibility matters: `/queue anything` still appends the
+        literal prompt unless the first word is an explicit queue-management
+        subcommand.
+        """
+        parts = cmd_original.split(None, 1)
+        payload = parts[1].strip() if len(parts) > 1 else ""
+        subcmds = {"add", "list", "ls", "show", "edit", "set", "remove", "rm", "delete", "del", "pop", "clear", "move"}
+
+        if not payload:
+            items = self._pending_input_items()
+            if not items:
+                _cprint("  Queue is empty. Usage: /queue <prompt> | /queue list | /queue edit N <prompt> | /queue rm N | /queue clear | /queue move FROM TO")
+                return
+            _cprint(f"  Queue ({len(items)} pending):")
+            for idx, item in enumerate(items, 1):
+                preview = item.replace("\n", " ")
+                _cprint(f"    {idx}. {preview[:120]}{'...' if len(preview) > 120 else ''}")
+            return
+
+        action, _, rest = payload.partition(" ")
+        action_l = action.lower()
+
+        if action_l not in subcmds:
+            self._pending_input.put(payload)
+            if self._agent_running:
+                _cprint(f"  Queued for the next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+            else:
+                _cprint(f"  Queued: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+            return
+
+        if action_l == "add":
+            if not rest.strip():
+                _cprint("  Usage: /queue add <prompt>")
+                return
+            prompt = rest.strip()
+            self._pending_input.put(prompt)
+            _cprint(f"  Queued: {prompt[:80]}{'...' if len(prompt) > 80 else ''}")
+            return
+
+        if action_l in {"list", "ls", "show"}:
+            items = self._pending_input_items()
+            if not items:
+                _cprint("  Queue is empty.")
+                return
+            _cprint(f"  Queue ({len(items)} pending):")
+            for idx, item in enumerate(items, 1):
+                preview = item.replace("\n", " ")
+                _cprint(f"    {idx}. {preview[:120]}{'...' if len(preview) > 120 else ''}")
+            return
+
+        if action_l in {"clear"}:
+            count = len(self._pending_input_items())
+            self._replace_pending_input_items([])
+            _cprint(f"  Cleared {count} queued prompt{'s' if count != 1 else ''}.")
+            return
+
+        if action_l in {"remove", "rm", "delete", "del", "pop"}:
+            if not rest.strip().isdigit():
+                _cprint("  Usage: /queue rm <number>")
+                return
+            idx = int(rest.strip())
+            items = self._pending_input_items()
+            if idx < 1 or idx > len(items):
+                _cprint(f"  Queue item {idx} not found. Current size: {len(items)}")
+                return
+            removed = items.pop(idx - 1)
+            self._replace_pending_input_items(items)
+            preview = removed.replace("\n", " ")
+            _cprint(f"  Removed queue item {idx}: {preview[:80]}{'...' if len(preview) > 80 else ''}")
+            return
+
+        if action_l in {"edit", "set"}:
+            idx_text, _, new_prompt = rest.strip().partition(" ")
+            if not idx_text.isdigit() or not new_prompt.strip():
+                _cprint("  Usage: /queue edit <number> <new prompt>")
+                return
+            idx = int(idx_text)
+            items = self._pending_input_items()
+            if idx < 1 or idx > len(items):
+                _cprint(f"  Queue item {idx} not found. Current size: {len(items)}")
+                return
+            items[idx - 1] = new_prompt.strip()
+            self._replace_pending_input_items(items)
+            _cprint(f"  Updated queue item {idx}: {items[idx - 1][:80]}{'...' if len(items[idx - 1]) > 80 else ''}")
+            return
+
+        if action_l == "move":
+            bits = rest.split()
+            if len(bits) != 2 or not bits[0].isdigit() or not bits[1].isdigit():
+                _cprint("  Usage: /queue move <from> <to>")
+                return
+            src, dst = int(bits[0]), int(bits[1])
+            items = self._pending_input_items()
+            if src < 1 or src > len(items) or dst < 1 or dst > len(items):
+                _cprint(f"  Queue move out of range. Current size: {len(items)}")
+                return
+            item = items.pop(src - 1)
+            items.insert(dst - 1, item)
+            self._replace_pending_input_items(items)
+            _cprint(f"  Moved queue item {src} to {dst}.")
+            return
+
     def process_command(self, command: str) -> bool:
         """
         Process a slash command.
@@ -6532,17 +6650,7 @@ class HermesCLI:
         elif canonical == "background":
             self._handle_background_command(cmd_original)
         elif canonical == "queue":
-            # Extract prompt after "/queue " or "/q "
-            parts = cmd_original.split(None, 1)
-            payload = parts[1].strip() if len(parts) > 1 else ""
-            if not payload:
-                _cprint("  Usage: /queue <prompt>")
-            else:
-                self._pending_input.put(payload)
-                if self._agent_running:
-                    _cprint(f"  Queued for the next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
-                else:
-                    _cprint(f"  Queued: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+            self._handle_queue_command(cmd_original)
         elif canonical == "steer":
             # Inject a message after the next tool call without interrupting.
             # If the agent is actively running, push the text into the agent's
