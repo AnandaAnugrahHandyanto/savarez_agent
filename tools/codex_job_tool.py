@@ -233,6 +233,22 @@ def _tmux_alive(session: str | None) -> bool:
     return proc.returncode == 0
 
 
+_COMPLETION_PROTOCOL = """
+
+Hermes completion protocol:
+Do the task normally and provide the usual human-readable final summary. When you are fully done or blocked, append exactly one line as the final line:
+HERMES_JOB_DONE {"status":"completed|blocked|request_changes|approved|needs_manual_verification","recommendation":"short_next_step","summary":"one sentence","commit":null,"tests":"passed|failed|blocked|not_run|partial"}
+Use valid single-line JSON after HERMES_JOB_DONE. After that line, stop and wait at the prompt.
+""".strip()
+
+
+def _append_completion_protocol(prompt: str) -> str:
+    """Add a tiny machine-readable footer without replacing the human summary."""
+    if "HERMES_JOB_DONE" in prompt:
+        return prompt
+    return f"{prompt.rstrip()}\n\n{_COMPLETION_PROTOCOL}"
+
+
 def _build_tmux_commands(
     *,
     session: str,
@@ -430,6 +446,7 @@ def _handle_start(args: dict[str, Any]) -> str:
     prompt = (args.get("prompt") or "").strip()
     if not prompt:
         return tool_error("prompt is required when action='start'")
+    prompt = _append_completion_protocol(prompt)
 
     mode = (args.get("workspace_mode") or "worktree").strip().lower()
     if mode not in _VALID_WORKSPACE_MODES:
@@ -545,9 +562,26 @@ def _handle_status(args: dict[str, Any]) -> str:
     if not job:
         return tool_error(f"codex job not found: {job_id}")
     alive = _tmux_alive(job.get("tmux_session"))
-    if job.get("status") == "running" and not alive:
-        job["status"] = "exited"
-        _save_job(job)
+    if job.get("status") == "running":
+        output = _capture_tmux_pane(job) if alive else ""
+        if not output:
+            log_path = Path(job.get("log_path") or "")
+            if log_path.exists():
+                try:
+                    output = log_path.read_text(encoding="utf-8", errors="replace")[-5000:]
+                except Exception:
+                    output = ""
+        state = _detect_completion_state(output, tmux_alive=alive)
+        if state.get("is_complete"):
+            _record_completion_state(job, state)
+            if not alive:
+                job["ended_at"] = _now_iso()
+            _save_job(job)
+        elif not alive:
+            job["status"] = "exited"
+            job["phase"] = "exited"
+            job["ended_at"] = _now_iso()
+            _save_job(job)
     return json.dumps({"success": True, "job": job, "tmux_alive": alive}, ensure_ascii=False)
 
 
@@ -665,6 +699,123 @@ def _truncate_text(text: str, max_chars: int) -> str:
     return text[: max(0, max_chars - 1)].rstrip() + "…"
 
 
+def _completion_status_from_payload(payload: dict[str, Any], cleaned_output: str = "") -> str:
+    status = str(payload.get("status") or "").strip().lower()
+    if status:
+        return status
+    verdict = str(payload.get("verdict") or "").strip().upper()
+    if verdict == "APPROVE":
+        return "approved"
+    if verdict == "REQUEST_CHANGES":
+        return "request_changes"
+    if verdict == "NEEDS_MANUAL_VERIFICATION":
+        return "needs_manual_verification"
+    upper = cleaned_output.upper()
+    if "REQUEST_CHANGES" in upper or "REQUEST CHANGES" in upper:
+        return "request_changes"
+    if "NEEDS_MANUAL_VERIFICATION" in upper or "NEEDS MANUAL VERIFICATION" in upper:
+        return "needs_manual_verification"
+    if re.search(r"(?im)^\s*Verdict:\s*APPROVE\b", cleaned_output):
+        return "approved"
+    return "completed"
+
+
+def _extract_completion_sentinel(cleaned_output: str) -> dict[str, Any] | None:
+    for line in reversed((cleaned_output or "").splitlines()):
+        match = re.search(r"HERMES_JOB_DONE\s+(\{.*\})\s*$", line.strip())
+        if not match:
+            continue
+        try:
+            payload = json.loads(match.group(1), strict=False)
+        except Exception:
+            return {
+                "status": "blocked",
+                "summary": "Completion sentinel was present but JSON could not be parsed.",
+                "parse_error": True,
+                "raw": _truncate_text(match.group(1), 500),
+            }
+        return payload if isinstance(payload, dict) else {"status": "completed", "value": payload}
+    return None
+
+
+def _idle_prompt_after_final_answer(cleaned_output: str) -> bool:
+    if not cleaned_output:
+        return False
+    has_idle_prompt = (
+        "Use /skills to list available skills" in cleaned_output
+        or re.search(r"(?m)^›\s+", cleaned_output) is not None
+    )
+    has_worked_footer = "Worked for" in cleaned_output
+    has_status_bar = "Context" in cleaned_output and "gpt-" in cleaned_output
+    has_final_content = re.search(
+        r"(?im)^\s*(Verdict:|Recommendation\s*$|Recommendation:|Commit\s*$|Commit:|Verification\s*Performed|Tests:|Result:|Blocking Issues\s*$|Remaining Risk\s*$)",
+        cleaned_output,
+    ) is not None
+    return bool(has_idle_prompt and has_worked_footer and has_status_bar and has_final_content)
+
+
+def _heuristic_completion_payload(cleaned_output: str) -> dict[str, Any]:
+    upper = cleaned_output.upper()
+    payload: dict[str, Any] = {}
+    if "REQUEST_CHANGES" in upper or "REQUEST CHANGES" in upper:
+        payload["verdict"] = "REQUEST_CHANGES"
+    elif "NEEDS_MANUAL_VERIFICATION" in upper or "NEEDS MANUAL VERIFICATION" in upper:
+        payload["verdict"] = "NEEDS_MANUAL_VERIFICATION"
+    elif re.search(r"(?im)^\s*Verdict:\s*APPROVE\b", cleaned_output):
+        payload["verdict"] = "APPROVE"
+    payload["summary"] = _recent_activity(_clean_codex_output(cleaned_output, max_chars=2500), max_chars=220)
+    return payload
+
+
+def _detect_completion_state(output: str, tmux_alive: bool) -> dict[str, Any]:
+    """Classify task completion separately from whether tmux is still alive."""
+    cleaned = _strip_terminal_sequences(output or "")
+    payload = _extract_completion_sentinel(cleaned)
+    if payload is not None:
+        status = _completion_status_from_payload(payload, cleaned)
+        return {
+            "is_complete": True,
+            "method": "sentinel",
+            "status": status,
+            "phase": "idle_complete" if tmux_alive else "exited",
+            "payload": payload,
+        }
+    if _idle_prompt_after_final_answer(cleaned):
+        payload = _heuristic_completion_payload(cleaned)
+        status = _completion_status_from_payload(payload, cleaned)
+        return {
+            "is_complete": True,
+            "method": "heuristic_idle_prompt",
+            "status": status,
+            "phase": "idle_complete",
+            "payload": payload,
+        }
+    if not tmux_alive:
+        return {
+            "is_complete": True,
+            "method": "process_exit",
+            "status": "exited",
+            "phase": "exited",
+            "payload": {},
+        }
+    return {
+        "is_complete": False,
+        "method": "active",
+        "status": "running",
+        "phase": "running",
+        "payload": {},
+    }
+
+
+def _record_completion_state(job: dict[str, Any], state: dict[str, Any]) -> None:
+    job["status"] = state.get("status") or "completed"
+    job["phase"] = state.get("phase") or "idle_complete"
+    job["completion_detected_at"] = _now_iso()
+    job["completion_method"] = state.get("method")
+    job["completion_payload"] = state.get("payload") or {}
+    job["monitor_status"] = "stopped_after_completion"
+
+
 def _workspace_summary(job: dict[str, Any], max_chars: int = 520) -> str:
     workspace = job.get("workspace_path")
     if not workspace:
@@ -779,7 +930,7 @@ def _recent_activity(cleaned_output: str, max_chars: int = 700) -> str:
 
 
 def _render_monitor_status(job: dict[str, Any], alive: bool, output: str) -> str:
-    phase = "running" if alive else "exited"
+    phase = job.get("phase") or ("running" if alive else "exited")
     cleaned = _clean_codex_output(output, max_chars=5000)
     key_findings = _extract_key_findings(cleaned)
     recent = _recent_activity(cleaned)
@@ -906,6 +1057,11 @@ def monitor_job(job_id: str, interval: int = 30, max_seconds: int = 60 * 60 * 6)
                     output = log_path.read_text(encoding="utf-8", errors="replace")[-5000:]
                 except Exception:
                     output = "(failed to read log)"
+        completion_state = _detect_completion_state(output, tmux_alive=alive)
+        if completion_state.get("is_complete"):
+            _record_completion_state(job, completion_state)
+            if not alive:
+                job["ended_at"] = _now_iso()
         try:
             result = _send_message({
                 "action": "edit",
@@ -919,10 +1075,8 @@ def monitor_job(job_id: str, interval: int = 30, max_seconds: int = 60 * 60 * 6)
                 _append_monitor_log(job, "edit ok")
         except Exception as exc:
             _append_monitor_log(job, f"edit exception: {exc}")
-        if not alive:
-            job["status"] = "exited"
-            job["ended_at"] = _now_iso()
-            _send_completion_summary(job, output, status="completed")
+        if completion_state.get("is_complete"):
+            _send_completion_summary(job, output, status=job.get("status") or "completed")
             _save_job(job)
             return
         time.sleep(interval)

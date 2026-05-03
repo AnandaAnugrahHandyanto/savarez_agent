@@ -352,3 +352,104 @@ def test_completion_summary_send_is_idempotent(monkeypatch, tmp_path):
     assert sent[0]["target"] == "discord"
     assert job["completion_summary_message_id"] == "msg-1"
     assert job["completion_summary_sent_at"]
+
+
+def test_start_appends_machine_readable_completion_protocol(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    repo = _make_repo(tmp_path)
+
+    from tools.codex_job_tool import codex_job_tool
+
+    result = json.loads(codex_job_tool({
+        "action": "start",
+        "title": "Review branch",
+        "prompt": "Review the branch and give a normal human-readable summary.",
+        "repo_path": str(repo),
+        "workspace_mode": "local",
+        "launch": False,
+        "discord": False,
+    }))
+
+    assert result["success"] is True
+    assert "Review the branch and give a normal human-readable summary." in result["prompt"]
+    assert "Hermes completion protocol" in result["prompt"]
+    assert "HERMES_JOB_DONE" in result["prompt"]
+    assert "Do the task normally" in result["prompt"]
+    assert "exactly one line" in result["prompt"]
+    assert "HERMES_JOB_DONE" in "\n".join(result["tmux_commands"])
+
+
+def test_completion_detector_parses_sentinel_json():
+    from tools.codex_job_tool import _detect_completion_state
+
+    output = """
+Verdict: REQUEST_CHANGES
+
+The fix still misses deep-link handling for hidden over-limit habits.
+
+HERMES_JOB_DONE {"status":"request_changes","verdict":"REQUEST_CHANGES","recommendation":"send_to_fixer","summary":"Habit limit fix has blocking deep-link gap","tests":"not_run"}
+"""
+
+    state = _detect_completion_state(output, tmux_alive=True)
+
+    assert state["is_complete"] is True
+    assert state["method"] == "sentinel"
+    assert state["status"] == "request_changes"
+    assert state["payload"]["verdict"] == "REQUEST_CHANGES"
+    assert state["payload"]["recommendation"] == "send_to_fixer"
+
+
+def test_completion_detector_marks_codex_idle_prompt_after_final_answer_as_heuristic_complete():
+    from tools.codex_job_tool import _detect_completion_state
+
+    output = """
+Verdict: APPROVE
+
+Blocking Issues
+None.
+
+Recommendation
+Push/open a draft PR after CI runs in a writable environment.
+
+─ Worked for 5m 30s ─────────────────────────────────────────────────────────
+
+› Use /skills to list available skills
+
+gpt-5.5 xhigh · Context 39% left · ~/.codex/worktrees/2353/FocusLock · FocusLock
+"""
+
+    state = _detect_completion_state(output, tmux_alive=True)
+
+    assert state["is_complete"] is True
+    assert state["method"] == "heuristic_idle_prompt"
+    assert state["status"] == "approved"
+    assert state["payload"]["verdict"] == "APPROVE"
+
+
+
+def test_completion_detector_does_not_mark_environmental_test_blocker_as_blocked():
+    from tools.codex_job_tool import _detect_completion_state
+
+    output = """
+Commit
+abc123 fix: enforce limits
+
+Verification
+Core tests passed. Focused simulator tests were blocked by CoreSimulatorService timeout.
+
+Recommendation
+Start independent review.
+
+─ Worked for 12m 10s ─────────────────────────────────────────────────────────
+
+› Use /skills to list available skills
+
+gpt-5.5 xhigh · Context 45% left · ~/.codex/worktrees/abcd/FocusLock · FocusLock
+"""
+
+    state = _detect_completion_state(output, tmux_alive=True)
+
+    assert state["is_complete"] is True
+    assert state["method"] == "heuristic_idle_prompt"
+    assert state["status"] == "completed"
