@@ -2713,6 +2713,325 @@ class TelegramAdapter(BasePlatformAdapter):
             except (TypeError, ValueError):
                 logger.warning("[%s] Ignoring invalid Telegram thread id: %r", self.name, value)
         return ignored
+    def _telegram_hq_aliases(self) -> list[str]:
+        raw = self.config.extra.get("hq_aliases")
+        if raw is None:
+            raw = os.getenv("TELEGRAM_HQ_ALIASES", "")
+        if isinstance(raw, list):
+            return [str(part).strip().lower() for part in raw if str(part).strip()]
+        return [part.strip().lower() for part in str(raw).split(",") if part.strip()]
+
+    def _telegram_hq_bot_id(self) -> str:
+        configured = self.config.extra.get("hq_bot_id")
+        if configured is None:
+            configured = os.getenv("TELEGRAM_HQ_BOT_ID", "")
+        return str(configured).strip().lower()
+
+    @staticmethod
+    def _coerce_string_set(raw: Any, *, lower: bool = False, strip_at: bool = False) -> set[str]:
+        if raw is None:
+            return set()
+        if isinstance(raw, str):
+            values = [part.strip() for part in raw.split(",") if part.strip()]
+        elif isinstance(raw, (list, tuple, set)):
+            values = [str(part).strip() for part in raw if str(part).strip()]
+        else:
+            values = [str(raw).strip()] if str(raw).strip() else []
+        result: set[str] = set()
+        for value in values:
+            if strip_at:
+                value = value.lstrip("@")
+            if lower:
+                value = value.lower()
+            if value:
+                result.add(value)
+        return result
+
+    def _telegram_hq_assignment_config(self) -> dict:
+        raw = self.config.extra.get("hq_assignment")
+        if raw is None:
+            raw_env = os.getenv("TELEGRAM_HQ_ASSIGNMENT", "").strip()
+            if raw_env:
+                try:
+                    raw = json.loads(raw_env)
+                except Exception:
+                    logger.warning("[%s] Invalid TELEGRAM_HQ_ASSIGNMENT JSON; ignoring", self.name)
+                    raw = None
+        return raw if isinstance(raw, dict) else {}
+
+    def _hq_assignment_enabled(self) -> bool:
+        value = self._telegram_hq_assignment_config().get("enabled", False)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    def _hq_assignment_allowed_chat_ids(self) -> set[str]:
+        raw = self._telegram_hq_assignment_config().get("allowed_chat_ids")
+        return self._coerce_string_set(raw)
+
+    def _hq_assignment_trusted_sender_ids(self) -> set[str]:
+        raw = self._telegram_hq_assignment_config().get("trusted_sender_user_ids")
+        return self._coerce_string_set(raw)
+
+    def _hq_assignment_trusted_sender_usernames(self) -> set[str]:
+        raw = self._telegram_hq_assignment_config().get("trusted_sender_usernames")
+        return self._coerce_string_set(raw, lower=True, strip_at=True)
+
+    def _hq_assignment_turn_limits(self) -> tuple[int, int]:
+        cfg = self._telegram_hq_assignment_config()
+        try:
+            default_turns = int(cfg.get("max_turns_default", 1) or 1)
+        except (TypeError, ValueError):
+            default_turns = 1
+        try:
+            max_turns = int(cfg.get("max_turns_max", 3) or 3)
+        except (TypeError, ValueError):
+            max_turns = 3
+        default_turns = max(1, default_turns)
+        max_turns = max(1, max_turns)
+        return min(default_turns, max_turns), max_turns
+
+    def _telegram_hq_escalation_config(self) -> dict:
+        raw = self.config.extra.get("hq_escalation")
+        if raw is None:
+            raw_env = os.getenv("TELEGRAM_HQ_ESCALATION", "").strip()
+            if raw_env:
+                try:
+                    raw = json.loads(raw_env)
+                except Exception:
+                    logger.warning("[%s] Invalid TELEGRAM_HQ_ESCALATION JSON; ignoring", self.name)
+                    raw = None
+        return raw if isinstance(raw, dict) else {}
+
+    def _hq_escalation_enabled(self) -> bool:
+        value = self._telegram_hq_escalation_config().get("enabled", False)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    def _hq_escalation_allowed_chat_ids(self) -> set[str]:
+        raw = self._telegram_hq_escalation_config().get("allowed_chat_ids")
+        return self._coerce_string_set(raw)
+
+    def _hq_escalation_trusted_worker_ids(self) -> set[str]:
+        raw = self._telegram_hq_escalation_config().get("trusted_worker_user_ids")
+        return self._coerce_string_set(raw)
+
+    def _hq_escalation_trusted_worker_usernames(self) -> set[str]:
+        raw = self._telegram_hq_escalation_config().get("trusted_worker_usernames")
+        return self._coerce_string_set(raw, lower=True, strip_at=True)
+
+    def _hq_escalation_accepted_types(self) -> set[str]:
+        raw = self._telegram_hq_escalation_config().get("accepted_types", ["HQ_ESCALATE", "HQ_RESULT"])
+        return {value.upper() for value in self._coerce_string_set(raw) if value.upper() in {"HQ_ESCALATE", "HQ_RESULT"}}
+
+    def _hq_escalation_statuses(self) -> set[str]:
+        raw = self._telegram_hq_escalation_config().get("statuses", ["done", "blocked", "failed", "needs_human"])
+        return self._coerce_string_set(raw, lower=True)
+
+    def _hq_escalation_turn_limits(self) -> tuple[int, int]:
+        cfg = self._telegram_hq_escalation_config()
+        try:
+            default_turns = int(cfg.get("max_turns_default", 1) or 1)
+        except (TypeError, ValueError):
+            default_turns = 1
+        try:
+            max_turns = int(cfg.get("max_turns_max", 3) or 3)
+        except (TypeError, ValueError):
+            max_turns = 3
+        default_turns = max(1, default_turns)
+        max_turns = max(1, max_turns)
+        return min(default_turns, max_turns), max_turns
+
+    def _parse_hq_assignment(self, message: Message) -> Optional[dict]:
+        bot_id = self._telegram_hq_bot_id()
+        if not bot_id:
+            return None
+        text = (getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
+        match = re.match(r"^\[HQ_ASSIGN\s+([^\]]+)\]\s*(.*)$", text, re.IGNORECASE | re.DOTALL)
+        if not match:
+            return None
+        fields = {
+            key.lower(): value.strip().strip("'\"").lower()
+            for key, value in re.findall(r"(\w+)=([^\s\]]+)", match.group(1))
+        }
+        target = fields.get("target", "").strip().lower()
+        if target != bot_id:
+            return None
+        body = (match.group(2) or "").strip()
+        if not body:
+            return None
+        default_turns, max_turns_cap = self._hq_assignment_turn_limits()
+        try:
+            max_turns = int(fields.get("max_turns", default_turns) or default_turns)
+        except (TypeError, ValueError):
+            max_turns = default_turns
+        max_turns = max(1, min(max_turns, max_turns_cap))
+        return {
+            "target": target,
+            "body": body,
+            "max_turns": max_turns,
+            "trace_id": fields.get("trace_id"),
+            "fields": fields,
+        }
+
+    def _sender_is_trusted_hq_assignment_bot(self, message: Message) -> bool:
+        sender = getattr(message, "from_user", None)
+        if not sender:
+            return False
+        sender_id = str(getattr(sender, "id", "") or "")
+        sender_username = str(getattr(sender, "username", "") or "").lstrip("@").lower()
+        return (
+            sender_id in self._hq_assignment_trusted_sender_ids()
+            or sender_username in self._hq_assignment_trusted_sender_usernames()
+        )
+
+    def _parse_hq_escalation(self, message: Message) -> Optional[dict]:
+        bot_id = self._telegram_hq_bot_id()
+        if bot_id != "architect":
+            return None
+        accepted_types = self._hq_escalation_accepted_types()
+        if not accepted_types:
+            return None
+        text = (getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
+        match = re.match(r"^\[(HQ_ESCALATE|HQ_RESULT)\s+([^\]]+)\]\s*(.*)$", text, re.IGNORECASE | re.DOTALL)
+        if not match:
+            return None
+        envelope_type = match.group(1).upper()
+        if envelope_type not in accepted_types:
+            return None
+        fields = {
+            key.lower(): value.strip().strip("'\"")
+            for key, value in re.findall(r"(\w+)=([^\s\]]+)", match.group(2))
+        }
+        target = fields.get("target", "").strip().lower()
+        if target != bot_id:
+            return None
+        from_bot = fields.get("from", "").strip().lower()
+        if not from_bot:
+            return None
+        body = (match.group(3) or "").strip()
+        if not body:
+            return None
+        ticket = fields.get("ticket", "").strip()
+        status = fields.get("status", "").strip().lower()
+        if envelope_type == "HQ_RESULT":
+            if not ticket:
+                return None
+            if status not in self._hq_escalation_statuses():
+                return None
+        default_turns, max_turns_cap = self._hq_escalation_turn_limits()
+        try:
+            max_turns = int(fields.get("max_turns", default_turns) or default_turns)
+        except (TypeError, ValueError):
+            max_turns = default_turns
+        max_turns = max(1, min(max_turns, max_turns_cap))
+        return {
+            "type": envelope_type,
+            "target": target,
+            "from": from_bot,
+            "ticket": ticket,
+            "status": status,
+            "severity": fields.get("severity", "").strip().lower(),
+            "body": body,
+            "max_turns": max_turns,
+            "trace_id": fields.get("trace_id"),
+            "fields": fields,
+        }
+
+    def _sender_is_trusted_hq_escalation_worker(self, message: Message) -> bool:
+        sender = getattr(message, "from_user", None)
+        if not sender:
+            return False
+        sender_id = str(getattr(sender, "id", "") or "")
+        sender_username = str(getattr(sender, "username", "") or "").lstrip("@").lower()
+        return (
+            sender_id in self._hq_escalation_trusted_worker_ids()
+            or sender_username in self._hq_escalation_trusted_worker_usernames()
+        )
+
+    def _message_is_trusted_hq_escalation_for_architect(self, message: Message) -> bool:
+        if not self._sender_is_bot(message):
+            return False
+        if self._is_own_bot_message(message):
+            return False
+        if not self._hq_escalation_enabled():
+            return False
+        allowed_chats = self._hq_escalation_allowed_chat_ids()
+        chat_id = str(getattr(getattr(message, "chat", None), "id", "") or "")
+        if allowed_chats and chat_id not in allowed_chats:
+            return False
+        if not self._sender_is_trusted_hq_escalation_worker(message):
+            return False
+        return self._parse_hq_escalation(message) is not None
+
+    def _message_is_trusted_hq_assignment_for_this_bot(self, message: Message) -> bool:
+        if not self._sender_is_bot(message):
+            return False
+        if self._is_own_bot_message(message):
+            return False
+        if not self._hq_assignment_enabled():
+            return False
+        allowed_chats = self._hq_assignment_allowed_chat_ids()
+        chat_id = str(getattr(getattr(message, "chat", None), "id", "") or "")
+        if allowed_chats and chat_id not in allowed_chats:
+            return False
+        if not self._sender_is_trusted_hq_assignment_bot(message):
+            return False
+        return self._parse_hq_assignment(message) is not None
+
+    def _apply_hq_assignment_to_event(self, message: Message, event: MessageEvent) -> MessageEvent:
+        assignment = self._parse_hq_assignment(message)
+        if not assignment:
+            return event
+        cfg = self._telegram_hq_assignment_config()
+        if cfg.get("strip_header", True):
+            event.text = assignment["body"]
+        if not getattr(event, "metadata", None):
+            event.metadata = {}
+        sender = getattr(message, "from_user", None)
+        event.metadata["hq_assignment"] = {
+            "target": assignment["target"],
+            "max_turns": assignment["max_turns"],
+            "trace_id": assignment.get("trace_id"),
+            "sender_user_id": str(getattr(sender, "id", "") or "") if sender else "",
+            "sender_username": str(getattr(sender, "username", "") or "") if sender else "",
+        }
+        return event
+
+    def _apply_hq_escalation_to_event(self, message: Message, event: MessageEvent) -> MessageEvent:
+        escalation = self._parse_hq_escalation(message)
+        if not escalation:
+            return event
+        cfg = self._telegram_hq_escalation_config()
+        if cfg.get("strip_header", True):
+            event.text = escalation["body"]
+        if not getattr(event, "metadata", None):
+            event.metadata = {}
+        sender = getattr(message, "from_user", None)
+        event.metadata["hq_escalation"] = {
+            "type": escalation["type"],
+            "target": escalation["target"],
+            "from": escalation["from"],
+            "ticket": escalation["ticket"],
+            "status": escalation["status"],
+            "severity": escalation["severity"],
+            "max_turns": escalation["max_turns"],
+            "trace_id": escalation.get("trace_id"),
+            "sender_user_id": str(getattr(sender, "id", "") or "") if sender else "",
+            "sender_username": str(getattr(sender, "username", "") or "") if sender else "",
+        }
+        return event
+
+    def _telegram_allow_bots(self) -> str:
+        configured = self.config.extra.get("allow_bots")
+        if configured is None:
+            configured = os.getenv("TELEGRAM_ALLOW_BOTS", "none")
+        value = str(configured).lower().strip()
+        if value not in {"none", "mentions", "all"}:
+            logger.warning("[%s] Invalid Telegram allow_bots value %r; using 'none'", self.name, configured)
+            return "none"
+        return value
 
     def _compile_mention_patterns(self) -> List[re.Pattern]:
         """Compile optional regex wake-word patterns for group triggers."""
@@ -2764,6 +3083,31 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         reply_user = getattr(message.reply_to_message, "from_user", None)
         return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
+
+    def _sender_is_bot(self, message: Message) -> bool:
+        return bool(getattr(getattr(message, "from_user", None), "is_bot", False))
+
+    def _is_own_bot_message(self, message: Message) -> bool:
+        if not self._bot:
+            return False
+        sender = getattr(message, "from_user", None)
+        return bool(sender and getattr(sender, "id", None) == getattr(self._bot, "id", None))
+
+    def _bot_sender_allowed(self, message: Message) -> bool:
+        if not self._sender_is_bot(message):
+            return True
+        if self._is_own_bot_message(message):
+            return False
+        if self._message_is_trusted_hq_assignment_for_this_bot(message):
+            return True
+        if self._message_is_trusted_hq_escalation_for_architect(message):
+            return True
+        allow_bots = self._telegram_allow_bots()
+        if allow_bots == "all":
+            return True
+        if allow_bots == "mentions":
+            return self._message_mentions_bot(message)
+        return False
 
     def _message_mentions_bot(self, message: Message) -> bool:
         if not self._bot:
@@ -2830,6 +3174,28 @@ class TelegramAdapter(BasePlatformAdapter):
                     return True
         return False
 
+    def _message_matches_hq_aliases(self, message: Message) -> bool:
+        aliases = self._telegram_hq_aliases()
+        if not aliases:
+            return False
+        separators = {" ", "\t", "\n", ":", "：", ",", "，", "、", "-", "—"}
+        for candidate in (getattr(message, "text", None), getattr(message, "caption", None)):
+            text = (candidate or "").strip().lower()
+            if not text:
+                continue
+            for alias in aliases:
+                if text == alias:
+                    return True
+                if text.startswith(alias) and len(text) > len(alias) and text[len(alias)] in separators:
+                    return True
+        return False
+
+    def _message_is_hq_assignment_for_this_bot(self, message: Message) -> bool:
+        return self._parse_hq_assignment(message) is not None
+
+    def _message_is_hq_escalation_for_architect(self, message: Message) -> bool:
+        return self._message_is_trusted_hq_escalation_for_architect(message)
+
     def _clean_bot_trigger_text(self, text: Optional[str]) -> Optional[str]:
         if not text or not self._bot or not getattr(self._bot, "username", None):
             return text
@@ -2845,6 +3211,9 @@ class TelegramAdapter(BasePlatformAdapter):
         - ``require_mention`` is disabled
         - the message replies to the bot
         - the bot is @mentioned
+        - the text/caption matches a configured HQ alias
+        - the text/caption is an HQ assignment for this bot
+        - the text/caption is a trusted HQ escalation/result for architect
         - the text/caption matches a configured regex wake-word pattern
 
         When ``require_mention`` is enabled, slash commands are not given
@@ -2854,6 +3223,9 @@ class TelegramAdapter(BasePlatformAdapter):
         mentioning the bot (``@botname /command``), both of which are
         recognised as mentions by :meth:`_message_mentions_bot`.
         """
+        if not self._bot_sender_allowed(message):
+            logger.info("[%s] Ignoring Telegram bot-originated message", self.name)
+            return False
         if not self._is_group_chat(message):
             return True
         thread_id = getattr(message, "message_thread_id", None)
@@ -2870,6 +3242,12 @@ class TelegramAdapter(BasePlatformAdapter):
         if self._is_reply_to_bot(message):
             return True
         if self._message_mentions_bot(message):
+            return True
+        if self._message_matches_hq_aliases(message):
+            return True
+        if self._message_is_hq_assignment_for_this_bot(message):
+            return True
+        if self._message_is_hq_escalation_for_architect(message):
             return True
         return self._message_matches_mention_patterns(message)
 
@@ -3519,6 +3897,7 @@ class TelegramAdapter(BasePlatformAdapter):
             user_name=user.full_name if user else (chat.full_name if hasattr(chat, "full_name") and chat_type == "dm" else None),
             thread_id=thread_id_str,
             chat_topic=chat_topic,
+            is_bot=self._sender_is_bot(message),
         )
         
         # Extract reply context if this message is a reply
@@ -3537,7 +3916,7 @@ class TelegramAdapter(BasePlatformAdapter):
             _chat_id_str if thread_id_str else None,
         )
 
-        return MessageEvent(
+        event = MessageEvent(
             text=message.text or "",
             message_type=msg_type,
             source=source,
@@ -3550,6 +3929,8 @@ class TelegramAdapter(BasePlatformAdapter):
             channel_prompt=_channel_prompt,
             timestamp=message.date,
         )
+        event = self._apply_hq_assignment_to_event(message, event)
+        return self._apply_hq_escalation_to_event(message, event)
 
     # ── Message reactions (processing lifecycle) ──────────────────────────
 

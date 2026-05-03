@@ -851,6 +851,21 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(telegram_cfg, dict):
                 if "require_mention" in telegram_cfg and not os.getenv("TELEGRAM_REQUIRE_MENTION"):
                     os.environ["TELEGRAM_REQUIRE_MENTION"] = str(telegram_cfg["require_mention"]).lower()
+                if "allow_bots" in telegram_cfg and not os.getenv("TELEGRAM_ALLOW_BOTS"):
+                    os.environ["TELEGRAM_ALLOW_BOTS"] = str(telegram_cfg["allow_bots"]).lower()
+                hq_aliases = telegram_cfg.get("hq_aliases")
+                if hq_aliases is not None and not os.getenv("TELEGRAM_HQ_ALIASES"):
+                    if isinstance(hq_aliases, list):
+                        hq_aliases = ",".join(str(v) for v in hq_aliases)
+                    os.environ["TELEGRAM_HQ_ALIASES"] = str(hq_aliases)
+                if "hq_bot_id" in telegram_cfg and not os.getenv("TELEGRAM_HQ_BOT_ID"):
+                    os.environ["TELEGRAM_HQ_BOT_ID"] = str(telegram_cfg["hq_bot_id"]).lower()
+                if "hq_assignment" in telegram_cfg and not os.getenv("TELEGRAM_HQ_ASSIGNMENT"):
+                    import json as _json
+                    os.environ["TELEGRAM_HQ_ASSIGNMENT"] = _json.dumps(telegram_cfg["hq_assignment"])
+                if "hq_escalation" in telegram_cfg and not os.getenv("TELEGRAM_HQ_ESCALATION"):
+                    import json as _json
+                    os.environ["TELEGRAM_HQ_ESCALATION"] = _json.dumps(telegram_cfg["hq_escalation"])
                 if "mention_patterns" in telegram_cfg and not os.getenv("TELEGRAM_MENTION_PATTERNS"):
                     os.environ["TELEGRAM_MENTION_PATTERNS"] = json.dumps(telegram_cfg["mention_patterns"])
                 frc = telegram_cfg.get("free_response_chats")

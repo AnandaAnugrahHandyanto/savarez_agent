@@ -1497,6 +1497,26 @@ class GatewayRunner:
 
         return model, runtime_kwargs
 
+    @staticmethod
+    def _effective_max_iterations_for_event(event: Optional[MessageEvent], default_max_iterations: int) -> int:
+        """Clamp per-message HQ assignment turn budget to the normal gateway cap."""
+        try:
+            default_value = int(default_max_iterations)
+        except (TypeError, ValueError):
+            default_value = 90
+        default_value = max(1, default_value)
+        metadata = getattr(event, "metadata", {}) if event else {}
+        control = metadata.get("hq_assignment") if isinstance(metadata, dict) else None
+        if not isinstance(control, dict) and isinstance(metadata, dict):
+            control = metadata.get("hq_escalation")
+        if not isinstance(control, dict):
+            return default_value
+        try:
+            requested = int(control.get("max_turns", default_value))
+        except (TypeError, ValueError):
+            return default_value
+        return max(1, min(requested, default_value))
+
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
 
@@ -4579,6 +4599,14 @@ class GatewayRunner:
                 if _action == "allow":
                     break
 
+        event_metadata = getattr(event, "metadata", None)
+        is_trusted_hq_control_event = False
+        if isinstance(event_metadata, dict):
+            is_trusted_hq_control_event = any(
+                isinstance(event_metadata.get(key), dict)
+                for key in ("hq_assignment", "hq_escalation")
+            )
+
         if is_internal:
             pass
         elif source.user_id is None:
@@ -4588,7 +4616,7 @@ class GatewayRunner:
             # flow with a None user_id.
             logger.debug("Ignoring message with no user_id from %s", source.platform.value)
             return None
-        elif not self._is_user_authorized(source):
+        elif not is_trusted_hq_control_event and not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
             if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
@@ -6237,6 +6265,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=event.message_id,
                 channel_prompt=event.channel_prompt,
+                event_metadata=event.metadata,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -11901,6 +11930,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        event_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -12383,7 +12413,10 @@ class GatewayRunner:
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
 
             # Read from env var or use default (same as CLI)
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            max_iterations = self._effective_max_iterations_for_event(
+                MessageEvent(text=message, metadata=event_metadata or {}),
+                int(os.getenv("HERMES_MAX_ITERATIONS", "90")),
+            )
             
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
@@ -12613,6 +12646,7 @@ class GatewayRunner:
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+            agent.max_iterations = max_iterations
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []
