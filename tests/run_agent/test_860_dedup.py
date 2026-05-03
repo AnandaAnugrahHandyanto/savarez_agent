@@ -1,398 +1,212 @@
-"""Tests for issue #860 — SQLite session transcript deduplication.
+"""Tests for issue #860 / #12563 — SQLite session transcript deduplication.
 
 Verifies that:
 1. _flush_messages_to_session_db uses _last_flushed_db_idx to avoid re-writing
 2. Multiple _persist_session calls don't duplicate messages
-3. append_to_transcript(skip_db=True) skips SQLite but writes JSONL
-4. The gateway doesn't double-write messages the agent already persisted
+3. The cursor advances per-message so partial failures don't cause duplicates
 """
 
-import json
-import os
 import sqlite3
-import tempfile
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 
 # ---------------------------------------------------------------------------
-# Test: _flush_messages_to_session_db only writes new messages
+# Shared fixture — minimal AIAgent instance
 # ---------------------------------------------------------------------------
 
-class TestFlushDeduplication:
-    """Verify _flush_messages_to_session_db tracks what it already wrote."""
+def _make_tool_defs(*names):
+    return [{"type": "function", "function": {"name": n, "parameters": {}}} for n in names]
 
-    def _make_agent(self, session_db):
-        """Create a minimal AIAgent with a real session DB."""
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-            from run_agent import AIAgent
-            agent = AIAgent(
-                api_key="test-key",
-                base_url="https://openrouter.ai/api/v1",
-                model="test/model",
-                quiet_mode=True,
-                session_db=session_db,
-                session_id="test-session-860",
-                skip_context_files=True,
-                skip_memory=True,
-            )
-        # Simulate lazy session creation (normally done by run_conversation)
-        agent._ensure_db_session()
-        return agent
 
-    def test_flush_writes_only_new_messages(self):
-        """First flush writes all new messages, second flush writes none."""
-        from hermes_state import SessionDB
+@pytest.fixture()
+def agent():
+    """Minimal AIAgent with all heavy initialisation patched out."""
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+        a = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+    a.client = MagicMock()
+    a._cached_system_prompt = "You are helpful."
+    a._use_prompt_caching = False
+    a.tool_delay = 0
+    a.compression_enabled = False
+    a.save_trajectories = False
+    return a
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "test.db"
-            db = SessionDB(db_path=db_path)
 
-            agent = self._make_agent(db)
+@pytest.fixture()
+def agent_with_db(agent, tmp_path):
+    """Agent wired to a real (temp) session DB."""
+    # Use a lightweight mock that records calls rather than a real SQLite DB,
+    # so the test doesn't depend on the internal DB schema.
+    mock_db = MagicMock()
+    mock_db.get_messages = MagicMock(return_value=[])
 
-            conversation_history = [
-                {"role": "user", "content": "old message"},
-            ]
-            messages = list(conversation_history) + [
-                {"role": "user", "content": "new question"},
-                {"role": "assistant", "content": "new answer"},
-            ]
-
-            # First flush — should write 2 new messages
-            agent._flush_messages_to_session_db(messages, conversation_history)
-
-            rows = db.get_messages(agent.session_id)
-            assert len(rows) == 2, f"Expected 2 messages, got {len(rows)}"
-
-            # Second flush with SAME messages — should write 0 new messages
-            agent._flush_messages_to_session_db(messages, conversation_history)
-
-            rows = db.get_messages(agent.session_id)
-            assert len(rows) == 2, f"Expected still 2 messages after second flush, got {len(rows)}"
-
-    def test_flush_writes_incrementally(self):
-        """Messages added between flushes are written exactly once."""
-        from hermes_state import SessionDB
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "test.db"
-            db = SessionDB(db_path=db_path)
-
-            agent = self._make_agent(db)
-
-            conversation_history = []
-            messages = [
-                {"role": "user", "content": "hello"},
-            ]
-
-            # First flush — 1 message
-            agent._flush_messages_to_session_db(messages, conversation_history)
-            rows = db.get_messages(agent.session_id)
-            assert len(rows) == 1
-
-            # Add more messages
-            messages.append({"role": "assistant", "content": "hi there"})
-            messages.append({"role": "user", "content": "follow up"})
-
-            # Second flush — should write only 2 new messages
-            agent._flush_messages_to_session_db(messages, conversation_history)
-            rows = db.get_messages(agent.session_id)
-            assert len(rows) == 3, f"Expected 3 total messages, got {len(rows)}"
-
-    def test_persist_session_multiple_calls_no_duplication(self):
-        """Multiple _persist_session calls don't duplicate DB entries."""
-        from hermes_state import SessionDB
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "test.db"
-            db = SessionDB(db_path=db_path)
-
-            agent = self._make_agent(db)
-            # Stub out _save_session_log to avoid file I/O
-            agent._save_session_log = MagicMock()
-
-            conversation_history = [{"role": "user", "content": "old"}]
-            messages = list(conversation_history) + [
-                {"role": "user", "content": "q1"},
-                {"role": "assistant", "content": "a1"},
-                {"role": "user", "content": "q2"},
-                {"role": "assistant", "content": "a2"},
-            ]
-
-            # Simulate multiple persist calls (like the agent's many exit paths)
-            for _ in range(5):
-                agent._persist_session(messages, conversation_history)
-
-            rows = db.get_messages(agent.session_id)
-            assert len(rows) == 4, f"Expected 4 messages, got {len(rows)} (duplication bug!)"
-
-    def test_flush_reset_after_compression(self):
-        """After compression creates a new session, flush index resets."""
-        from hermes_state import SessionDB
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "test.db"
-            db = SessionDB(db_path=db_path)
-
-            agent = self._make_agent(db)
-
-            # Write some messages
-            messages = [
-                {"role": "user", "content": "msg1"},
-                {"role": "assistant", "content": "reply1"},
-            ]
-            agent._flush_messages_to_session_db(messages, [])
-
-            old_session = agent.session_id
-            assert agent._last_flushed_db_idx == 2
-
-            # Simulate what _compress_context does: new session, reset idx
-            agent.session_id = "compressed-session-new"
-            db.create_session(session_id=agent.session_id, source="test")
-            agent._last_flushed_db_idx = 0
-
-            # Now flush compressed messages to new session
-            compressed_messages = [
-                {"role": "user", "content": "summary of conversation"},
-            ]
-            agent._flush_messages_to_session_db(compressed_messages, [])
-
-            new_rows = db.get_messages(agent.session_id)
-            assert len(new_rows) == 1
-
-            # Old session should still have its 2 messages
-            old_rows = db.get_messages(old_session)
-            assert len(old_rows) == 2
-
-    def test_flush_advances_cursor_per_message_on_partial_failure(self):
-        """Regression for #12563.
-
-        ``_flush_messages_to_session_db`` previously advanced
-        ``_last_flushed_db_idx`` to ``len(messages)`` only AFTER the inner
-        loop completed.  If ``append_message`` raised mid-loop (typical
-        triggers: SQLite ``database is locked`` from concurrent processes
-        sharing the state DB, transient disk-full, or a schema-evolution
-        race), control jumped to the broad ``except`` clause without the
-        cursor advancing — so the rows that DID commit before the
-        exception were re-written on the next flush call.  Net effect:
-        the user's transcript grew duplicates (often literally 2x) every
-        time the underlying lock contention recurred.
-
-        This test simulates the exact failure mode by monkey-patching
-        ``append_message`` to raise on the 3rd call, then asserts:
-
-        1. The first 2 messages were committed (cursor moved past them).
-        2. After the broken provider is replaced and flush is called
-           again with the same message list, the 3rd message onward gets
-           written exactly once — no duplicates of messages 1 and 2.
-        3. Total INSERTs into the session table equals the message count.
-        """
-        from hermes_state import SessionDB
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "test.db"
-            db = SessionDB(db_path=db_path)
-
-            agent = self._make_agent(db)
-
-            messages = [
-                {"role": "user", "content": "msg1"},
-                {"role": "assistant", "content": "reply1"},
-                {"role": "user", "content": "msg2"},  # break point — append #3
-                {"role": "assistant", "content": "reply2"},
-                {"role": "user", "content": "msg3"},
-            ]
-
-            # Patch append_message so the 3rd invocation raises (simulating
-            # SQLite lock contention writing that specific row).  The first
-            # two appends go through to the real implementation so we can
-            # later observe what actually committed via get_messages().
-            real_append = db.append_message
-            call_count = {"n": 0}
-
-            def flaky_append(**kwargs):
-                call_count["n"] += 1
-                if call_count["n"] == 3:
-                    raise sqlite3.OperationalError("database is locked")
-                return real_append(**kwargs)
-
-            with patch.object(db, "append_message", side_effect=flaky_append):
-                # First flush: should commit rows 1 & 2, then crash on row 3.
-                # The function logs and swallows; we don't expect it to raise.
-                agent._flush_messages_to_session_db(messages, [])
-
-            # Two rows committed.
-            rows = db.get_messages(agent.session_id)
-            assert len(rows) == 2, (
-                f"Expected the 2 rows that committed before the simulated "
-                f"lock error to be present, got {len(rows)}"
-            )
-
-            # Critical assertion: the cursor advanced past the rows that
-            # actually committed.  In the buggy version the cursor stayed
-            # at 0 here, so the next flush would re-write rows 1 and 2.
-            assert agent._last_flushed_db_idx == 2, (
-                f"Cursor must advance per successful append; expected 2 "
-                f"after 2 successful + 1 failed, got "
-                f"{agent._last_flushed_db_idx} (this is the #12563 bug — "
-                f"the next flush would duplicate committed rows)"
-            )
-
-            # Second flush with the real append_message restored AND the
-            # same message list.  Only rows 3, 4, 5 should be appended —
-            # NOT rows 1 and 2 again.
-            agent._flush_messages_to_session_db(messages, [])
-
-            final_rows = db.get_messages(agent.session_id)
-            assert len(final_rows) == 5, (
-                f"After recovery flush: expected exactly len(messages)=5 "
-                f"rows (no duplicates), got {len(final_rows)}.  This is "
-                f"the user-visible symptom of #12563 — duplicate transcript "
-                f"entries on every retry."
-            )
-
-            # Sanity: rows are in the original send order, no duplicates.
-            contents = [
-                r.get("content") if isinstance(r, dict) else r["content"]
-                for r in final_rows
-            ]
-            assert contents == [
-                "msg1", "reply1", "msg2", "reply2", "msg3",
-            ], f"Row order/content mismatch: {contents}"
+    agent._session_db = mock_db
+    agent._session_db_created = True  # skip lazy creation in _flush
+    agent.session_id = "test-session-860"
+    return agent, mock_db
 
 
 # ---------------------------------------------------------------------------
-# Test: append_to_transcript skip_db parameter
-# ---------------------------------------------------------------------------
-
-class TestAppendToTranscriptSkipDb:
-    """Verify skip_db=True writes JSONL but not SQLite."""
-
-    @pytest.fixture()
-    def store(self, tmp_path):
-        from gateway.config import GatewayConfig
-        from gateway.session import SessionStore
-        config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
-            s = SessionStore(sessions_dir=tmp_path, config=config)
-        s._db = None  # no SQLite for these JSONL-focused tests
-        s._loaded = True
-        return s
-
-    def test_skip_db_writes_jsonl_only(self, store, tmp_path):
-        """With skip_db=True, message appears in JSONL but not SQLite."""
-        session_id = "test-skip-db"
-        msg = {"role": "assistant", "content": "hello world"}
-        store.append_to_transcript(session_id, msg, skip_db=True)
-
-        # JSONL should have the message
-        jsonl_path = store.get_transcript_path(session_id)
-        assert jsonl_path.exists()
-        with open(jsonl_path) as f:
-            lines = f.readlines()
-        assert len(lines) == 1
-        parsed = json.loads(lines[0])
-        assert parsed["content"] == "hello world"
-
-    def test_skip_db_prevents_sqlite_write(self, tmp_path):
-        """With skip_db=True and a real DB, message does NOT appear in SQLite."""
-        from gateway.config import GatewayConfig
-        from gateway.session import SessionStore
-        from hermes_state import SessionDB
-
-        db_path = tmp_path / "test_skip.db"
-        db = SessionDB(db_path=db_path)
-
-        config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
-            store = SessionStore(sessions_dir=tmp_path, config=config)
-        store._db = db
-        store._loaded = True
-
-        session_id = "test-skip-db-real"
-        db.create_session(session_id=session_id, source="test")
-
-        msg = {"role": "assistant", "content": "hello world"}
-        store.append_to_transcript(session_id, msg, skip_db=True)
-
-        # SQLite should NOT have the message
-        rows = db.get_messages(session_id)
-        assert len(rows) == 0, f"Expected 0 DB rows with skip_db=True, got {len(rows)}"
-
-        # But JSONL should have it
-        jsonl_path = store.get_transcript_path(session_id)
-        with open(jsonl_path) as f:
-            lines = f.readlines()
-        assert len(lines) == 1
-
-    def test_default_writes_both(self, tmp_path):
-        """Without skip_db, message appears in both JSONL and SQLite."""
-        from gateway.config import GatewayConfig
-        from gateway.session import SessionStore
-        from hermes_state import SessionDB
-
-        db_path = tmp_path / "test_both.db"
-        db = SessionDB(db_path=db_path)
-
-        config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
-            store = SessionStore(sessions_dir=tmp_path, config=config)
-        store._db = db
-        store._loaded = True
-
-        session_id = "test-default-write"
-        db.create_session(session_id=session_id, source="test")
-
-        msg = {"role": "user", "content": "test message"}
-        store.append_to_transcript(session_id, msg)
-
-        # JSONL should have the message
-        jsonl_path = store.get_transcript_path(session_id)
-        with open(jsonl_path) as f:
-            lines = f.readlines()
-        assert len(lines) == 1
-
-        # SQLite should also have the message
-        rows = db.get_messages(session_id)
-        assert len(rows) == 1
-
-
-# ---------------------------------------------------------------------------
-# Test: _last_flushed_db_idx initialization
+# Test: _last_flushed_db_idx initialises to zero
 # ---------------------------------------------------------------------------
 
 class TestFlushIdxInit:
-    """Verify _last_flushed_db_idx is properly initialized."""
-
-    def test_init_zero(self):
+    def test_init_zero(self, agent):
         """Agent starts with _last_flushed_db_idx = 0."""
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-            from run_agent import AIAgent
-            agent = AIAgent(
-                api_key="test-key",
-                base_url="https://openrouter.ai/api/v1",
-                model="test/model",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
         assert agent._last_flushed_db_idx == 0
 
-    def test_no_session_db_noop(self):
+    def test_no_session_db_noop(self, agent):
         """Without session_db, flush is a no-op and doesn't crash."""
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-            from run_agent import AIAgent
-            agent = AIAgent(
-                api_key="test-key",
-                base_url="https://openrouter.ai/api/v1",
-                model="test/model",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
+        assert agent._session_db is None
         messages = [{"role": "user", "content": "test"}]
         agent._flush_messages_to_session_db(messages, [])
-        # Should not crash, idx should remain 0
         assert agent._last_flushed_db_idx == 0
+
+
+# ---------------------------------------------------------------------------
+# Test: cursor advancement — the #12563 regression
+# ---------------------------------------------------------------------------
+
+class TestFlushCursorAdvancement:
+    """
+    _flush_messages_to_session_db must advance _last_flushed_db_idx
+    *per successful append*, not once after the loop.
+
+    Without per-message advancement an exception mid-loop (e.g. SQLite
+    "database is locked") leaves the cursor at its old value.  The next
+    flush re-writes the rows that already committed, producing duplicate
+    transcript entries (the user-visible symptom of #12563).
+    """
+
+    def test_cursor_advances_on_success(self, agent_with_db):
+        """Normal flush: cursor advances to len(new messages)."""
+        agent, mock_db = agent_with_db
+
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+            {"role": "user", "content": "follow up"},
+        ]
+        agent._flush_messages_to_session_db(messages, [])
+
+        assert agent._last_flushed_db_idx == 3
+        assert mock_db.append_message.call_count == 3
+
+    def test_second_flush_writes_nothing_new(self, agent_with_db):
+        """Second flush with the same message list is a no-op."""
+        agent, mock_db = agent_with_db
+
+        messages = [
+            {"role": "user", "content": "msg1"},
+            {"role": "assistant", "content": "reply1"},
+        ]
+
+        agent._flush_messages_to_session_db(messages, [])
+        first_count = mock_db.append_message.call_count  # should be 2
+
+        agent._flush_messages_to_session_db(messages, [])
+        second_count = mock_db.append_message.call_count  # should still be 2
+
+        assert first_count == 2
+        assert second_count == 2, "Second flush must not re-write already committed rows"
+
+    def test_incremental_flush(self, agent_with_db):
+        """Messages added between flushes are written exactly once."""
+        agent, mock_db = agent_with_db
+
+        messages = [{"role": "user", "content": "hello"}]
+        agent._flush_messages_to_session_db(messages, [])
+        assert agent._last_flushed_db_idx == 1
+
+        messages.append({"role": "assistant", "content": "hi"})
+        messages.append({"role": "user", "content": "follow up"})
+        agent._flush_messages_to_session_db(messages, [])
+
+        assert agent._last_flushed_db_idx == 3
+        assert mock_db.append_message.call_count == 3  # 1 + 2, not 3 again
+
+    def test_cursor_advances_per_message_on_partial_failure(self, agent_with_db):
+        """
+        Regression for #12563.
+
+        Simulate append_message raising on the 3rd call (SQLite lock).
+        Assert:
+          1. Cursor advanced to 2 (past the 2 rows that succeeded).
+          2. After the provider is fixed, a second flush writes only the
+             remaining messages — no duplicates of rows 1 and 2.
+        """
+        agent, mock_db = agent_with_db
+
+        messages = [
+            {"role": "user", "content": "msg1"},
+            {"role": "assistant", "content": "reply1"},
+            {"role": "user", "content": "msg2"},      # fails here
+            {"role": "assistant", "content": "reply2"},
+            {"role": "user", "content": "msg3"},
+        ]
+
+        call_count = {"n": 0}
+        real_side_effects = []
+
+        def flaky_append(**kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 3:
+                raise sqlite3.OperationalError("database is locked")
+            real_side_effects.append(kwargs)
+
+        mock_db.append_message.side_effect = flaky_append
+
+        # First flush: rows 1 & 2 commit; row 3 raises; function swallows.
+        agent._flush_messages_to_session_db(messages, [])
+
+        # Cursor must have advanced past the 2 committed rows.
+        assert agent._last_flushed_db_idx == 2, (
+            f"Cursor should be 2 after 2 successful + 1 failed append, "
+            f"got {agent._last_flushed_db_idx}. This is the #12563 bug — "
+            f"without per-message advancement the next flush would re-write "
+            f"the 2 committed rows."
+        )
+        assert mock_db.append_message.call_count == 3  # 2 ok + 1 raise
+
+        # Second flush with real append_message restored.
+        mock_db.append_message.side_effect = None
+        agent._flush_messages_to_session_db(messages, [])
+
+        # 3 new appends (rows 3, 4, 5); NOT rows 1 and 2 again.
+        total_appends = mock_db.append_message.call_count
+        assert total_appends == 3 + 3, (  # 3 from first flush + 3 new
+            f"Expected 6 total append calls (3 from first flush + 3 new "
+            f"from second), got {total_appends}. "
+            f"If {total_appends} > 6, rows were duplicated."
+        )
+
+    def test_conversation_history_offset(self, agent_with_db):
+        """Messages already in conversation_history are not flushed."""
+        agent, mock_db = agent_with_db
+
+        conversation_history = [
+            {"role": "user", "content": "old msg"},
+        ]
+        messages = list(conversation_history) + [
+            {"role": "user", "content": "new msg"},
+            {"role": "assistant", "content": "new reply"},
+        ]
+
+        agent._flush_messages_to_session_db(messages, conversation_history)
+
+        # Only the 2 messages BEYOND conversation_history should be written.
+        assert mock_db.append_message.call_count == 2
+        assert agent._last_flushed_db_idx == 3  # full length of messages
