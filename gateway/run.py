@@ -10655,6 +10655,22 @@ class GatewayRunner:
         import subprocess
         import tempfile
 
+        # Read config: ffmpeg path and size limit
+        vp = getattr(self.config, "video_processing", {}) or {}
+        ffmpeg_bin = vp.get("ffmpeg_path", "ffmpeg")
+        max_bytes = (vp.get("max_size_mb", 500) or 500) * 1024 * 1024
+
+        # Pre-check: skip videos over the size limit
+        try:
+            if os.path.getsize(video_path) > max_bytes:
+                logger.warning(
+                    "Skipping video %s (%d bytes > %d limit)",
+                    video_path, os.path.getsize(video_path), max_bytes,
+                )
+                return None, []
+        except OSError:
+            logger.debug("Cannot stat video %s", video_path)
+
         _tmp_dir = tempfile.mkdtemp(prefix="hermes_video_")
         audio_out = os.path.join(_tmp_dir, "audio.wav")
         frame_pattern = os.path.join(_tmp_dir, "frame_%03d.jpg")
@@ -10667,7 +10683,7 @@ class GatewayRunner:
             proc = await asyncio.to_thread(
                 subprocess.run,
                 [
-                    "ffmpeg", "-i", video_path,
+                    ffmpeg_bin, "-i", video_path,
                     "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
                     "-y", audio_out,
                 ],
@@ -10690,7 +10706,7 @@ class GatewayRunner:
                 proc = await asyncio.to_thread(
                     subprocess.run,
                     [
-                        "ffmpeg", "-i", video_path,
+                        ffmpeg_bin, "-i", video_path,
                         "-vf", vf_filter,
                         "-frames:v", "3", "-vsync", "vfr",
                         "-y", frame_pattern,
@@ -10728,6 +10744,11 @@ class GatewayRunner:
         note instead of a silent drop.
         """
         import shutil
+
+        # Check config: skip if video processing is disabled
+        vp = getattr(self.config, "video_processing", {}) or {}
+        if not vp.get("enabled", True):
+            return user_text
 
         enriched_parts: list = []
         _tmp_dirs_to_clean: list = []
