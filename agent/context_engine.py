@@ -177,6 +177,7 @@ class ContextEngine(ABC):
         """
         return {
             "last_prompt_tokens": self.last_prompt_tokens,
+            "last_completion_tokens": self.last_completion_tokens,
             "threshold_tokens": self.threshold_tokens,
             "context_length": self.context_length,
             "usage_percent": (
@@ -184,6 +185,12 @@ class ContextEngine(ABC):
                 if self.context_length else 0
             ),
             "compression_count": self.compression_count,
+            # Session-level accumulators (ContextCompressor populates these;
+            # other engines may leave them at 0)
+            "session_prompt_tokens": getattr(self, "session_prompt_tokens", 0),
+            "session_completion_tokens": getattr(self, "session_completion_tokens", 0),
+            "session_total_tokens": getattr(self, "session_total_tokens", 0),
+            "call_count": getattr(self, "call_count", 0),
         }
 
     # -- Optional: model switch support ------------------------------------

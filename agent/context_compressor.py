@@ -344,6 +344,11 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        # Reset session-level accumulators
+        self.session_prompt_tokens = 0
+        self.session_completion_tokens = 0
+        self.session_total_tokens = 0
+        self.call_count = 0
 
     def update_model(
         self,
@@ -435,6 +440,11 @@ class ContextCompressor(ContextEngine):
 
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
+        # Session-level token accumulators (running totals across all API calls)
+        self.session_prompt_tokens = 0
+        self.session_completion_tokens = 0
+        self.session_total_tokens = 0
+        self.call_count = 0
 
         self.summary_model = summary_model_override or ""
 
@@ -458,9 +468,20 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model: Optional[str] = None
 
     def update_from_response(self, usage: Dict[str, Any]):
-        """Update tracked token usage from API response."""
-        self.last_prompt_tokens = usage.get("prompt_tokens", 0)
-        self.last_completion_tokens = usage.get("completion_tokens", 0)
+        """Update tracked token usage from API response.
+
+        Also accumulates session-level totals for per-session introspection.
+        """
+        prompt = usage.get("prompt_tokens", 0)
+        completion = usage.get("completion_tokens", 0)
+        total = usage.get("total_tokens", 0) or (prompt + completion)
+        self.last_prompt_tokens = prompt
+        self.last_completion_tokens = completion
+        # Accumulate session-level totals
+        self.session_prompt_tokens += prompt
+        self.session_completion_tokens += completion
+        self.session_total_tokens += total
+        self.call_count += 1
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold.
