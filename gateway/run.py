@@ -10757,7 +10757,8 @@ class GatewayRunner:
             logger.info("Processing inbound video: %s", vpath)
             audio_path, frame_paths = await self._extract_video_components(vpath)
 
-            # Track temp dir for cleanup
+            # Audio and frame files share the same temp dir — track it once
+            # so shutil.rmtree can clean everything.
             if audio_path:
                 _tmp_dirs_to_clean.append(os.path.dirname(audio_path))
             elif frame_paths:
