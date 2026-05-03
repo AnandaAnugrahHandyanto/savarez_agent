@@ -53,6 +53,12 @@ const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n──────────
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
   : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
+const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '4096', 10);
+const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10);
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 function formatOutgoingMessage(message) {
   // In bot mode, messages come from a different number so the prefix is
@@ -60,6 +66,38 @@ function formatOutgoingMessage(message) {
   // self-chat mode where bot and user share the same number.
   if (WHATSAPP_MODE !== 'self-chat') return message;
   return REPLY_PREFIX ? `${REPLY_PREFIX}${message}` : message;
+}
+
+function splitLongMessage(message, maxLength = MAX_MESSAGE_LENGTH) {
+  const text = String(message || '');
+  if (!text) return [];
+  if (!Number.isFinite(maxLength) || maxLength < 1 || text.length <= maxLength) {
+    return [text];
+  }
+
+  const chunks = [];
+  let remaining = text;
+  while (remaining.length > maxLength) {
+    let splitAt = remaining.lastIndexOf('\n', maxLength);
+    if (splitAt < Math.floor(maxLength / 2)) {
+      splitAt = remaining.lastIndexOf(' ', maxLength);
+    }
+    if (splitAt < 1) splitAt = maxLength;
+
+    chunks.push(remaining.slice(0, splitAt).trimEnd());
+    remaining = remaining.slice(splitAt).trimStart();
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
+function trackSentMessageId(sent) {
+  if (sent?.key?.id) {
+    recentlySentIds.add(sent.key.id);
+    if (recentlySentIds.size > MAX_RECENT_IDS) {
+      recentlySentIds.delete(recentlySentIds.values().next().value);
+    }
+  }
 }
 
 function normalizeWhatsAppId(value) {
@@ -421,17 +459,22 @@ app.post('/send', async (req, res) => {
   }
 
   try {
-    const sent = await sock.sendMessage(chatId, { text: formatOutgoingMessage(message) });
-
-    // Track sent message ID to prevent echo-back loops
-    if (sent?.key?.id) {
-      recentlySentIds.add(sent.key.id);
-      if (recentlySentIds.size > MAX_RECENT_IDS) {
-        recentlySentIds.delete(recentlySentIds.values().next().value);
+    const chunks = splitLongMessage(formatOutgoingMessage(message));
+    const messageIds = [];
+    for (let i = 0; i < chunks.length; i += 1) {
+      const sent = await sock.sendMessage(chatId, { text: chunks[i] });
+      trackSentMessageId(sent);
+      if (sent?.key?.id) messageIds.push(sent.key.id);
+      if (chunks.length > 1 && i < chunks.length - 1) {
+        await sleep(CHUNK_DELAY_MS);
       }
     }
 
-    res.json({ success: true, messageId: sent?.key?.id });
+    res.json({
+      success: true,
+      messageId: messageIds[messageIds.length - 1],
+      messageIds,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -450,8 +493,22 @@ app.post('/edit', async (req, res) => {
 
   try {
     const key = { id: messageId, fromMe: true, remoteJid: chatId };
-    await sock.sendMessage(chatId, { text: formatOutgoingMessage(message), edit: key });
-    res.json({ success: true });
+    const chunks = splitLongMessage(formatOutgoingMessage(message));
+    const messageIds = [];
+
+    await sock.sendMessage(chatId, { text: chunks[0], edit: key });
+    if (chunks.length > 1) {
+      for (let i = 1; i < chunks.length; i += 1) {
+        const sent = await sock.sendMessage(chatId, { text: chunks[i] });
+        trackSentMessageId(sent);
+        if (sent?.key?.id) messageIds.push(sent.key.id);
+        if (i < chunks.length - 1) {
+          await sleep(CHUNK_DELAY_MS);
+        }
+      }
+    }
+
+    res.json({ success: true, messageIds });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -522,13 +579,7 @@ app.post('/send-media', async (req, res) => {
 
     const sent = await sock.sendMessage(chatId, msgPayload);
 
-    // Track sent message ID to prevent echo-back loops
-    if (sent?.key?.id) {
-      recentlySentIds.add(sent.key.id);
-      if (recentlySentIds.size > MAX_RECENT_IDS) {
-        recentlySentIds.delete(recentlySentIds.values().next().value);
-      }
-    }
+    trackSentMessageId(sent);
 
     res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {
