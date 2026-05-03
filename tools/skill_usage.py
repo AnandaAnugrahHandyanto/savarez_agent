@@ -11,8 +11,9 @@ Design notes:
   - Atomic writes via tempfile + os.replace (same pattern as .bundled_manifest).
   - All counter bumps are best-effort: failures log at DEBUG and return silently.
     A broken sidecar never breaks the underlying tool call.
-  - Provenance filter: "agent-created" == not in .bundled_manifest AND not in
-    .hub/lock.json. The curator only ever mutates agent-created skills.
+  - Provenance filter: "agent-created" == not in .bundled_manifest, not in
+    .hub/lock.json, and not in the user-owned skills/me/ namespace. The
+    curator only ever mutates agent-created skills.
 
 Lifecycle states:
     active    -> default
@@ -148,12 +149,27 @@ def _read_hub_installed_names() -> Set[str]:
     return set()
 
 
+def _is_user_owned_skill_path(skill_md: Path, base: Path) -> bool:
+    """Return True for personal skills that should never enter curation.
+
+    The ``skills/me/`` namespace is the documented convention for user-authored
+    personal skills. Those skills may not appear in bundled or hub manifests, so
+    path-based protection keeps the curator from treating them as agent-created.
+    """
+    try:
+        rel = skill_md.relative_to(base)
+    except ValueError:
+        return False
+    return bool(rel.parts and rel.parts[0] == "me")
+
+
 def list_agent_created_skill_names() -> List[str]:
-    """Enumerate skills that were authored by the agent (or user), NOT by a
-    bundled or hub-installed source.
+    """Enumerate skills that were authored by the agent, NOT by a bundled,
+    hub-installed, or user-owned personal source.
 
     The curator operates exclusively on this set. Bundled / hub skills are
-    maintained by their upstream sources and must never be pruned here.
+    maintained by their upstream sources and personal skills are maintained by
+    the user; neither class should be pruned here.
     """
     base = _skills_dir()
     if not base.exists():
@@ -172,6 +188,8 @@ def list_agent_created_skill_names() -> List[str]:
             continue
         parts = rel.parts
         if parts and (parts[0].startswith(".") or parts[0] == "node_modules"):
+            continue
+        if _is_user_owned_skill_path(skill_md, base):
             continue
         name = _read_skill_name(skill_md, fallback=skill_md.parent.name)
         if name in off_limits:

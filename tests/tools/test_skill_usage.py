@@ -252,6 +252,30 @@ def test_agent_created_skips_archive_and_hub_dirs(skills_home):
     assert "old-skill" not in names
 
 
+def test_agent_created_excludes_user_personal_namespace(skills_home):
+    from tools.skill_usage import list_agent_created_skill_names
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "workflow", category="me")
+    _write_skill(skills_dir, "agent-created")
+
+    names = list_agent_created_skill_names()
+
+    assert "agent-created" in names
+    assert "workflow" not in names
+
+
+def test_personal_namespace_excluded_from_curator_report(skills_home):
+    from tools.skill_usage import agent_created_report
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "personal-workflow", category="me")
+    _write_skill(skills_dir, "scratch-skill")
+
+    names = {r["name"] for r in agent_created_report()}
+
+    assert "scratch-skill" in names
+    assert "personal-workflow" not in names
+
+
 # ---------------------------------------------------------------------------
 # Archive / restore
 # ---------------------------------------------------------------------------
