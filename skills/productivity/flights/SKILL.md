@@ -75,11 +75,21 @@ JSON object with:
 
 ## Pitfalls
 
-- IATA codes must be uppercase (script uppercases automatically)
+- IATA codes must be uppercase (script uppercodes automatically)
 - Dates in the past will return empty results from SerpAPI
 - SerpAPI free tier has limited monthly searches — don't loop/retry excessively
 - Some routes return no "best_flights" — the script falls back to "other_flights"
 - `curl` is not available in this container — use the script (Python urllib) for all HTTP calls
+
+## Route Intelligence (California Short-Haul)
+
+**OAK ↔ SBA (Southwest only):** Only ~1 flight/day, departures mid-afternoon to evening (earliest ~14:25). NOT a morning-departure route. Route reportedly ends October 2026.
+
+**SFO ↔ SBA (United only, nonstop):** Best same-day options. First SFO→SBA: ~10:27–10:43 AM. Last SBA→SFO: ~8:24 PM (CRJ-700). Gives ~9.5 hours in SB — workable but not a full day.
+
+**SFO is the correct airport** if you need a real early-morning departure to SB with evening return. OAK Southwest flights don't depart until the afternoon.
+
+| Route Intelligence (California Short-Haul) | `references/sfo-sba-may30-2026.md` — May 30, 2026 schedule sample |
 
 ## Troubleshooting
 
