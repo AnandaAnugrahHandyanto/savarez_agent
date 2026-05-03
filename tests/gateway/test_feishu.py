@@ -2510,6 +2510,81 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(elements, [{"tag": "md", "text": "可以用 **粗体** 和 *斜体*。"}])
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_extracts_interactive_card_marker(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = (
+            "## Response\n"
+            "说明文字不应透传到飞书卡片正文\n\n"
+            "<!-- HERMES_FEISHU_INTERACTIVE_CARD_JSON_START -->\n"
+            '{"header":{"title":{"tag":"plain_text","content":"分公司考勤异常日报 | 5月2日"}},"elements":[{"tag":"markdown","content":"日报摘要"}]}'
+            "\n<!-- HERMES_FEISHU_INTERACTIVE_CARD_JSON_END -->\n"
+            "MEDIA:/tmp/report.xlsx"
+        )
+
+        msg_type, payload = adapter._build_outbound_payload(content)
+
+        self.assertEqual(msg_type, "interactive")
+        self.assertEqual(
+            json.loads(payload),
+            {
+                "header": {"title": {"tag": "plain_text", "content": "分公司考勤异常日报 | 5月2日"}},
+                "elements": [{"tag": "markdown", "content": "日报摘要"}],
+            },
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_interactive_for_marker_wrapped_card(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_interactive_marker"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = (
+            "## Response\n"
+            "【测试补发】\n\n"
+            "<!-- HERMES_FEISHU_INTERACTIVE_CARD_JSON_START -->\n"
+            '{"header":{"title":{"tag":"plain_text","content":"门店多周期整体同比报表 | 周报 | 4月26日"}},"elements":[{"tag":"markdown","content":"周报摘要"}]}'
+            "\n<!-- HERMES_FEISHU_INTERACTIVE_CARD_JSON_END -->\n"
+            "MEDIA:/tmp/weekly.xlsx"
+        )
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=content))
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
+        self.assertEqual(
+            json.loads(captured["request"].request_body.content),
+            {
+                "header": {"title": {"tag": "plain_text", "content": "门店多周期整体同比报表 | 周报 | 4月26日"}},
+                "elements": [{"tag": "markdown", "content": "周报摘要"}],
+            },
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_splits_fenced_code_blocks_into_separate_post_rows(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

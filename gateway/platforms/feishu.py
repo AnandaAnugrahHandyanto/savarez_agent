@@ -153,6 +153,10 @@ _MARKDOWN_HINT_RE = re.compile(
     r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
     re.MULTILINE,
 )
+_FEISHU_INTERACTIVE_CARD_BLOCK_RE = re.compile(
+    r"<!--\s*HERMES_FEISHU_INTERACTIVE_CARD_JSON_START\s*-->\s*(?P<payload>.+?)\s*<!--\s*HERMES_FEISHU_INTERACTIVE_CARD_JSON_END\s*-->",
+    re.DOTALL,
+)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -511,7 +515,7 @@ def _strip_markdown_to_plain_text(text: str) -> str:
 
     Delegates common markdown stripping to the shared helper and adds
     Feishu-specific patterns (blockquotes, strikethrough, underline tags,
-    horizontal rules, \\r\\n normalisation).
+    horizontal rules, \r\n normalisation).
     """
     from gateway.platforms.helpers import strip_markdown
     plain = text.replace("\r\n", "\n")
@@ -522,6 +526,32 @@ def _strip_markdown_to_plain_text(text: str) -> str:
     plain = re.sub(r"<u>([\s\S]*?)</u>", r"\1", plain)
     plain = strip_markdown(plain)
     return plain
+
+
+def _extract_feishu_interactive_card_payload(text: str) -> Optional[str]:
+    """Return a validated Feishu interactive-card JSON payload embedded in text.
+
+    The marker can be surrounded by cron wrapper text or MEDIA lines. Only the JSON
+    between markers is sent to Feishu; wrapper/marker/media text must never leak as
+    visible chat content.
+    """
+
+    match = _FEISHU_INTERACTIVE_CARD_BLOCK_RE.search(text or "")
+    if not match:
+        return None
+
+    raw_payload = match.group("payload").strip()
+    try:
+        card = json.loads(raw_payload)
+    except Exception as exc:  # noqa: BLE001 - convert all parse failures to a clear send error
+        raise ValueError("Invalid Feishu interactive card marker JSON") from exc
+
+    if not isinstance(card, dict):
+        raise ValueError("Feishu interactive card marker JSON must be an object")
+    if not card.get("elements") and not card.get("i18n_elements"):
+        raise ValueError("Feishu interactive card marker JSON must contain elements")
+
+    return json.dumps(card, ensure_ascii=False)
 
 
 def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -> Optional[int]:
@@ -1701,6 +1731,26 @@ class FeishuAdapter(BasePlatformAdapter):
         """Send a Feishu message."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
+
+        try:
+            interactive_payload = _extract_feishu_interactive_card_payload(content)
+        except ValueError as exc:
+            logger.error("[Feishu] Invalid interactive card marker: %s", exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
+        if interactive_payload is not None:
+            try:
+                response = await self._feishu_send_with_retry(
+                    chat_id=chat_id,
+                    msg_type="interactive",
+                    payload=interactive_payload,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+                return self._finalize_send_result(response, "send failed")
+            except Exception as exc:
+                logger.error("[Feishu] Send interactive card error: %s", exc, exc_info=True)
+                return SendResult(success=False, error=str(exc))
 
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
@@ -3990,6 +4040,9 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        interactive_payload = _extract_feishu_interactive_card_payload(content)
+        if interactive_payload:
+            return "interactive", interactive_payload
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
