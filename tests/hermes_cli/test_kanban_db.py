@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -21,6 +22,68 @@ def kanban_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
+
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+def test_paths_use_shared_root_when_active_home_is_profile(tmp_path, monkeypatch):
+    """Profile workers must share the root Kanban board.
+
+    The dispatcher starts workers as ``hermes -p <assignee>``. Profile mode
+    sets HERMES_HOME to ``<root>/profiles/<assignee>``, but Kanban tasks,
+    workspaces, and logs are intentionally shared across profiles.
+    """
+    root = tmp_path / ".hermes"
+    profile_home = root / "profiles" / "researcher"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    assert kb.kanban_root() == root
+    assert kb.kanban_db_path() == root / "kanban.db"
+    assert kb.workspaces_root() == root / "kanban" / "workspaces"
+
+
+def test_default_spawn_writes_log_under_shared_root(tmp_path, monkeypatch):
+    root = tmp_path / ".hermes"
+    profile_home = root / "profiles" / "researcher"
+    workspace = root / "kanban" / "workspaces" / "t_profile"
+    workspace.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    class FakePopen:
+        pid = 4242
+
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+
+    task = kb.Task(
+        id="t_profile",
+        title="profile worker uses shared board",
+        body=None,
+        assignee="researcher",
+        status="ready",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="scratch",
+        workspace_path=str(workspace),
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+    )
+
+    assert kb._default_spawn(task, str(workspace)) == 4242
+    assert (root / "kanban" / "logs" / "t_profile.log").exists()
+    assert not (profile_home / "kanban" / "logs" / "t_profile.log").exists()
 
 
 # ---------------------------------------------------------------------------

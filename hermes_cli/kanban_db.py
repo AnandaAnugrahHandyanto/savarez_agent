@@ -61,16 +61,26 @@ _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
 # Paths
 # ---------------------------------------------------------------------------
 
+def kanban_root() -> Path:
+    """Return the shared Kanban root for the active Hermes installation.
+
+    Kanban is intentionally profile-agnostic: tasks assigned to different
+    profiles must all see the same board. In profile mode, ``HERMES_HOME``
+    points at ``<root>/profiles/<name>``, so use the profile root instead of
+    the active profile home.
+    """
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root()
+
+
 def kanban_db_path() -> Path:
-    """Return the path to ``kanban.db`` inside the active HERMES_HOME."""
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "kanban.db"
+    """Return the shared ``kanban.db`` path for this Hermes installation."""
+    return kanban_root() / "kanban.db"
 
 
 def workspaces_root() -> Path:
     """Return the directory under which ``scratch`` workspaces are created."""
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "kanban" / "workspaces"
+    return kanban_root() / "kanban" / "workspaces"
 
 
 # ---------------------------------------------------------------------------
@@ -2104,9 +2114,8 @@ def _default_spawn(task: Task, workspace: str) -> Optional[int]:
         "chat",
         "-q", prompt,
     ])
-    # Redirect output to a per-task log under HERMES_HOME/kanban/logs/.
-    from hermes_constants import get_hermes_home
-    log_dir = get_hermes_home() / "kanban" / "logs"
+    # Redirect output to a per-task log under the shared Kanban root.
+    log_dir = kanban_root() / "kanban" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{task.id}.log"
     _rotate_worker_log(log_path, DEFAULT_LOG_ROTATE_BYTES)
