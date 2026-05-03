@@ -5,6 +5,7 @@ import base64
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from gateway.config import PlatformConfig
@@ -307,6 +308,86 @@ class TestWeixinSendMessageIntegration:
             "hello",
             media_files=[("/tmp/demo.png", False)],
         )
+
+    def test_send_weixin_direct_reuses_live_adapter_on_same_loop(self, tmp_path):
+        adapter = _make_adapter()
+        adapter._token = "bot-token"
+        adapter._send_session = SimpleNamespace(
+            closed=False,
+            _loop=None,
+        )
+        adapter.send_document = AsyncMock(
+            return_value=weixin.SendResult(success=True, message_id="msg-live")
+        )
+
+        async def _run():
+            adapter._send_session._loop = asyncio.get_running_loop()
+            with patch.dict(weixin._LIVE_ADAPTERS, {"bot-token": adapter}, clear=True), \
+                 patch("gateway.platforms.weixin.get_hermes_home", return_value=tmp_path), \
+                 patch("gateway.platforms.weixin.aiohttp.ClientSession", side_effect=AssertionError("fallback session should not be created")):
+                result = await weixin.send_weixin_direct(
+                    extra={"account_id": "bot-account"},
+                    token="bot-token",
+                    chat_id="wxid_test123",
+                    message="",
+                    media_files=[(str(tmp_path / "demo.docx"), False)],
+                )
+
+            assert result["success"] is True
+            adapter.send_document.assert_awaited_once_with("wxid_test123", str(tmp_path / "demo.docx"))
+
+        (tmp_path / "demo.docx").write_bytes(b"doc")
+        asyncio.run(_run())
+
+    def test_send_weixin_direct_falls_back_to_fresh_session_for_cross_loop_media(self, tmp_path):
+        live_adapter = _make_adapter()
+        live_adapter._token = "bot-token"
+        other_loop = asyncio.new_event_loop()
+        live_adapter._send_session = SimpleNamespace(
+            closed=False,
+            _loop=other_loop,
+        )
+        live_adapter.send_document = AsyncMock(
+            side_effect=AssertionError("cross-loop live adapter session should not be reused")
+        )
+
+        created_session = SimpleNamespace(closed=False)
+
+        class _FakeClientSession:
+            def __init__(self, *args, **kwargs):
+                self.session = created_session
+
+            async def __aenter__(self):
+                return self.session
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+        async def _send_document(self, chat_id, file_path, caption=None, file_name=None, reply_to=None, metadata=None, **kwargs):
+            return weixin.SendResult(success=True, message_id="msg-fallback")
+
+        async def _run():
+            with patch.dict(weixin._LIVE_ADAPTERS, {"bot-token": live_adapter}, clear=True), \
+                 patch("gateway.platforms.weixin.get_hermes_home", return_value=tmp_path), \
+                 patch("gateway.platforms.weixin.aiohttp.ClientSession", _FakeClientSession), \
+                 patch.object(weixin.WeixinAdapter, "send_document", new=_send_document):
+                result = await weixin.send_weixin_direct(
+                    extra={"account_id": "bot-account"},
+                    token="bot-token",
+                    chat_id="wxid_test123",
+                    message="",
+                    media_files=[(str(tmp_path / "demo.docx"), False)],
+                )
+
+            assert result["success"] is True
+            assert result["message_id"] == "msg-fallback"
+            assert live_adapter.send_document.await_count == 0
+
+        try:
+            (tmp_path / "demo.docx").write_bytes(b"doc")
+            asyncio.run(_run())
+        finally:
+            other_loop.close()
 
 
 class TestWeixinChunkDelivery:
