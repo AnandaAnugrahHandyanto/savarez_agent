@@ -7,70 +7,76 @@ from pathlib import Path
 
 
 ANDROID_ABIS = ("arm64-v8a", "x86_64")
-NATIVE_EXECUTABLES = {
-    "bin/bash": "libhermes_android_bash.so",
-    "bin/llama-server": "libhermes_android_llama_server.so",
-    "bin/llama-server-bionic": "libhermes_android_llama_server_bionic_spawn.so",
+
+LAUNCHER_RENAMES = {
+    "bash": "libhermes_android_bash.so",
+    "llama-server": "libhermes_android_llama_server.so",
 }
-RUNTIME_LIBRARIES = {
-    "libandroid-spawn.so": "libandroid-spawn.so",
-    "libc++_shared.so": "libc++_shared.so",
+
+NEEDED_RENAMES = {
+    "libbusybox.so.1.37.0": "libbusybox.so",
+    "libbz2.so.1.0": "libbz2.so",
     "libcrypto.so.3": "libcrypto.so",
-    "libggml-base.so": "libggml-base.so",
-    "libggml-cpu.so": "libggml-cpu.so",
-    "libggml.so": "libggml.so",
-    "libllama-common.so": "libllama-common.so",
-    "libllama.so": "libllama.so",
-    "libmtmd.so": "libmtmd.so",
+    "libexpat.so.1": "libexpat.so",
+    "libhistory.so.8": "libhistory.so",
+    "liblzma.so.5": "liblzma.so",
+    "libncursesw.so.6": "libncursesw.so",
+    "libreadline.so.8": "libreadline.so",
     "libssl.so.3": "libssl.so",
+    "libz.so.1": "libz.so",
 }
 
 
-def patch_needed(path: Path, old_name: str, new_name: str) -> None:
-    if not path.is_file():
-        return
-    old = old_name.encode("utf-8") + b"\0"
-    new = new_name.encode("utf-8") + b"\0"
-    if len(new) > len(old):
-        raise ValueError(f"replacement {new_name!r} is longer than {old_name!r}")
+def packaged_library_name(name: str) -> str:
+    if name == "libc++_shared.so":
+        return ""
+    if ".so." in name:
+        return name.split(".so.", 1)[0] + ".so"
+    if name.endswith(".so"):
+        return name
+    return ""
+
+
+def patch_needed_names(path: Path) -> None:
     payload = path.read_bytes()
-    if old not in payload:
-        return
-    payload = payload.replace(old, new + (b"\0" * (len(old) - len(new))))
-    path.write_bytes(payload)
+    patched = payload
+    for old, new in NEEDED_RENAMES.items():
+        old_bytes = old.encode("ascii") + b"\0"
+        new_bytes = new.encode("ascii") + b"\0"
+        if len(new_bytes) > len(old_bytes):
+            raise ValueError(f"Replacement {new} is longer than {old}")
+        patched = patched.replace(old_bytes, new_bytes + (b"\0" * (len(old_bytes) - len(new_bytes))))
+    if patched != payload:
+        path.write_bytes(patched)
 
 
 def copy_abi(linux_assets_dir: Path, output_dir: Path, abi: str) -> None:
-    prefix_dir = linux_assets_dir / "hermes-linux" / abi / "prefix"
+    prefix = linux_assets_dir / "hermes-linux" / abi / "prefix"
+    bin_dir = prefix / "bin"
+    lib_dir = prefix / "lib"
     abi_output = output_dir / abi
     abi_output.mkdir(parents=True, exist_ok=True)
-    for source_relative, destination_name in NATIVE_EXECUTABLES.items():
-        source = prefix_dir / source_relative
+
+    for source_name, dest_name in LAUNCHER_RENAMES.items():
+        source = bin_dir / source_name
         if source.is_file():
-            destination = abi_output / destination_name
-            shutil.copy2(source, destination)
-            destination.chmod(0o755)
-    lib_dir = prefix_dir / "lib"
-    for source_name, destination_name in sorted(RUNTIME_LIBRARIES.items()):
-        source = lib_dir / source_name
-        if source.is_file():
-            destination = abi_output / destination_name
-            shutil.copy2(source, destination)
-            destination.chmod(0o755)
-    patch_needed(abi_output / "libllama-common.so", "libssl.so.3", "libssl.so")
-    patch_needed(abi_output / "libllama-common.so", "libcrypto.so.3", "libcrypto.so")
-    patch_needed(abi_output / "libssl.so", "libssl.so.3", "libssl.so")
-    patch_needed(abi_output / "libssl.so", "libcrypto.so.3", "libcrypto.so")
-    patch_needed(abi_output / "libcrypto.so", "libcrypto.so.3", "libcrypto.so")
+            shutil.copy2(source, abi_output / dest_name)
+
+    for source in lib_dir.glob("lib*.so*"):
+        if not source.is_file():
+            continue
+        dest_name = packaged_library_name(source.name)
+        if not dest_name:
+            continue
+        shutil.copy2(source, abi_output / dest_name)
+
+    for binary in abi_output.glob("lib*.so"):
+        patch_needed_names(binary)
 
 
 def prepare_native_libs(linux_assets_dir: Path, output_dir: Path) -> None:
     if output_dir.exists():
-        for item in output_dir.rglob("*"):
-            if item.is_file():
-                item.unlink()
-        for item in sorted((p for p in output_dir.rglob("*") if p.is_dir()), reverse=True):
-            item.rmdir()
+        shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     for abi in ANDROID_ABIS:
         copy_abi(linux_assets_dir, output_dir, abi)
