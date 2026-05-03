@@ -13105,8 +13105,11 @@ class GatewayRunner:
                                         caption=alt_text,
                                         metadata=_status_thread_metadata,
                                     )
-                                except Exception:
-                                    pass
+                                except Exception as img_e:
+                                    logger.warning(
+                                        "Failed to deliver queue image %s: %s",
+                                        image_url, img_e,
+                                    )
                             # Deliver extracted local files (bare paths)
                             for local_path in (local_files or []):
                                 try:
@@ -13115,8 +13118,11 @@ class GatewayRunner:
                                         file_path=local_path,
                                         metadata=_status_thread_metadata,
                                     )
-                                except Exception:
-                                    pass
+                                except Exception as doc_e:
+                                    logger.warning(
+                                        "Failed to deliver queue file %s: %s",
+                                        local_path, doc_e,
+                                    )
                             # Deliver extracted media files (PDFs, images, etc.)
                             for media_path, _is_voice in media_files:
                                 try:
