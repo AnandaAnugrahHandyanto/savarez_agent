@@ -48,6 +48,23 @@ DEFAULT_JUDGE_TIMEOUT = 30.0
 # Cap how much of the last response + recent messages we send to the judge.
 _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 
+_INFER_GOAL_MIN_CHARS = 80
+_INFER_GOAL_ACTION_WORDS = (
+    "build", "implement", "create", "write", "draft", "design", "fix",
+    "refactor", "migrate", "port", "investigate", "audit", "review",
+    "organize", "sync", "verify", "document", "update", "generate", "produce",
+)
+_INFER_GOAL_DURABLE_WORDS = (
+    "patch", "pr", "branch", "commit", "tests", "suite", "docs", "documentation",
+    "report", "plan", "design", "implementation", "workflow", "migration",
+    "ticket", "linear", "database", "db", "script", "artifact", "file",
+)
+_INFER_GOAL_LONG_RUNNING_MARKERS = (
+    "keep going", "until", "every", "all", "full", "end-to-end", "e2e",
+    "across", "multi-step", "long-running", "complete", "finish", "verify",
+    "then", "after", "and", "also",
+)
+
 
 CONTINUATION_PROMPT_TEMPLATE = (
     "[Continuing toward your standing goal]\n"
@@ -117,6 +134,58 @@ class GoalState:
             last_reason=data.get("last_reason"),
             paused_reason=data.get("paused_reason"),
         )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Permission-first inferred-goal helper
+# ──────────────────────────────────────────────────────────────────────
+
+
+def should_offer_inferred_goal(user_text: str, *, existing_goal: Optional[GoalState] = None) -> bool:
+    """Return True for only chunky, durable requests worth a standing goal prompt.
+
+    This intentionally uses conservative lexical heuristics. It must not create
+    or focus a goal: callers use the result only to ask the user for permission.
+    """
+    text = (user_text or "").strip()
+    lowered = text.lower()
+    if not text or lowered.startswith("/goal"):
+        return False
+    if existing_goal is not None and existing_goal.status in {"active", "paused"}:
+        return False
+    if len(text) < _INFER_GOAL_MIN_CHARS:
+        return False
+
+    action_hits = sum(1 for word in _INFER_GOAL_ACTION_WORDS if word in lowered)
+    durable_hits = sum(1 for word in _INFER_GOAL_DURABLE_WORDS if word in lowered)
+    long_running_hits = sum(1 for marker in _INFER_GOAL_LONG_RUNNING_MARKERS if marker in lowered)
+
+    # Require all three dimensions from the approved policy:
+    # multi-step/long-running, durable output, and concrete work. The stricter
+    # action threshold avoids prompting on ordinary informational questions.
+    return action_hits >= 2 and durable_hits >= 1 and long_running_hits >= 2
+
+
+def build_inferred_goal_permission_prompt(
+    user_text: str,
+    *,
+    existing_goal: Optional[GoalState] = None,
+) -> Optional[str]:
+    """Build a permission prompt for a candidate inferred standing goal.
+
+    The approved behavior is permission-first: Hermes/Enki may notice a durable
+    multi-turn objective, but must ask before activating/focusing it.
+    """
+    if not should_offer_inferred_goal(user_text, existing_goal=existing_goal):
+        return None
+    goal_text = (user_text or "").strip()
+    return (
+        "This looks like multi-step, long-running work with a durable output. "
+        "Before I treat it as a standing goal and keep continuing across turns, "
+        "I need your permission.\n\n"
+        f"Proposed standing goal:\n> {goal_text}\n\n"
+        "Reply with `/goal " + goal_text + "` to approve as-is, or clarify/reject in normal text."
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────

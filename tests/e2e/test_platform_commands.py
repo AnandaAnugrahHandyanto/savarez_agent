@@ -115,6 +115,33 @@ class TestSlashCommands:
         runner.request_restart.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_plaintext_chunky_durable_work_asks_goal_permission(self, adapter, runner, platform):
+        runner._handle_message_with_agent = AsyncMock(return_value="agent-handled")
+        text = (
+            "Fix every failing test in tests/hermes_cli, update the docs, "
+            "verify the full suite passes, and keep going until the patch is ready."
+        )
+
+        send = await send_and_capture(adapter, text, platform)
+
+        send.assert_called_once()
+        response_text = send.call_args[1].get("content") or send.call_args[0][1]
+        assert "standing goal" in response_text.lower()
+        assert "/goal" in response_text
+        runner._handle_message_with_agent.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_plaintext_ordinary_work_still_reaches_agent(self, adapter, runner, platform):
+        runner._handle_message_with_agent = AsyncMock(return_value="agent-handled")
+
+        send = await send_and_capture(adapter, "What is my Codex usage right now?", platform)
+
+        send.assert_called_once()
+        response_text = send.call_args[1].get("content") or send.call_args[0][1]
+        assert response_text == "agent-handled"
+        runner._handle_message_with_agent.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_personality_lists_options(self, adapter, platform):
         send = await send_and_capture(adapter, "/personality", platform)
 

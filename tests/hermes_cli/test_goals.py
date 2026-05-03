@@ -337,6 +337,47 @@ class TestGoalManager:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Inferred goal permission prompts
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestInferredGoalPermission:
+    def test_chunky_durable_request_requires_permission_prompt(self):
+        from hermes_cli.goals import build_inferred_goal_permission_prompt
+
+        text = (
+            "Fix every failing test in tests/hermes_cli, update the docs, "
+            "verify the full suite passes, and keep going until the patch is ready."
+        )
+
+        prompt = build_inferred_goal_permission_prompt(text)
+
+        assert prompt is not None
+        assert "standing goal" in prompt.lower()
+        assert "permission" in prompt.lower() or "approve" in prompt.lower()
+        assert "/goal" in prompt
+        assert text in prompt
+
+    def test_ordinary_single_turn_request_does_not_prompt(self):
+        from hermes_cli.goals import build_inferred_goal_permission_prompt
+
+        assert build_inferred_goal_permission_prompt("What is my Codex usage right now?") is None
+
+    def test_explicit_goal_command_does_not_prompt_for_inference(self):
+        from hermes_cli.goals import build_inferred_goal_permission_prompt
+
+        assert build_inferred_goal_permission_prompt("/goal Fix every lint error and verify tests") is None
+
+    def test_existing_active_goal_suppresses_inferred_prompt(self):
+        from hermes_cli.goals import GoalState, build_inferred_goal_permission_prompt
+
+        existing = GoalState(goal="existing goal", status="active")
+        text = "Build the dashboard, add tests, update docs, and keep going until everything is verified."
+
+        assert build_inferred_goal_permission_prompt(text, existing_goal=existing) is None
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Smoke: CommandDef is wired
 # ──────────────────────────────────────────────────────────────────────
 

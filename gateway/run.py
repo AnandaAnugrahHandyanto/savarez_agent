@@ -5412,6 +5412,26 @@ class GatewayRunner:
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
 
+        # Permission-first inferred goals: if ordinary text looks like the kind
+        # of chunky, cross-turn durable work that would otherwise need repeated
+        # "keep going", ask before activating/focusing a standing /goal. This
+        # deliberately returns a prompt instead of starting the agent so the
+        # user can approve with /goal, reject, or clarify.
+        if not command:
+            try:
+                from hermes_cli.goals import build_inferred_goal_permission_prompt
+
+                _mgr, _session_entry = self._get_goal_manager_for_event(event)
+                _existing_goal = _mgr.state if _mgr is not None else None
+                _goal_permission = build_inferred_goal_permission_prompt(
+                    event.text or "",
+                    existing_goal=_existing_goal,
+                )
+                if _goal_permission:
+                    return _goal_permission
+            except Exception as exc:
+                logger.debug("inferred goal permission check failed: %s", exc)
+
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
         # are numerous await points (hooks, vision enrichment, STT,
