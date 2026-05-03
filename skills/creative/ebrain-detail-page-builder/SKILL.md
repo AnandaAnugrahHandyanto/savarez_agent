@@ -23,7 +23,7 @@ The goal is not just to summarize the link. The Ebrain Detail Page Builder end-t
 3. visual/product-shape analysis
 4. B2C SmartStore/Coupang 상세페이지 section plan
 5. section-by-section Korean copy and image prompts
-6. GPT Image section generation with Korean text when requested
+6. GPT Image / ChatGPT image generation with Korean text when requested; prefer the user's configured ChatGPT/OpenAI OAuth/OAuth2-capable runtime when available, otherwise produce a prompt pack for manual or configured image generation
 7. OCR/vision QA and regeneration for failed sections
 8. intermediate section images used for production and QA
 9. final deliverable image 1: one product thumbnail/main image
@@ -202,7 +202,11 @@ Translate product facts into customer language:
 - Use scenes should be specific and everyday: 출퇴근, 등하교/캠퍼스, 산책, 야외활동, 책상, 사무실, 보관
 - Avoid B2B/판촉 language unless user requested it: 대량구매, 단체선물, 행사 담당자, 인쇄 가능, OEM
 
-Recommended flow:
+### 6. Adaptive Section Planning
+
+Do not force a fixed 17-section layout. Build the section count and order from the product, category, available source images, claim risk, target marketplace, and conversion goal.
+
+Use the recommended flow below as a menu, not a mandatory checklist:
 
 1. product-only main thumbnail
 2. hero stopper
@@ -223,9 +227,9 @@ Recommended flow:
 17. notice/checklist
 18. final CTA
 
-Adapt this by category; do not force all sections if the product needs a different route.
+Adapt this by category; do not force all sections if the product needs a different route. A simple low-risk product may need fewer sections, while a high-consideration or regulated product may need additional proof, comparison, ingredient/spec, safety, usage, or notice sections.
 
-### 6. Section Plan Template
+### 7. Product-Specific Section Plan Template
 
 For each section, define:
 
@@ -247,7 +251,7 @@ claim_risk:
 qa_criteria:
 ```
 
-Example electronics/fan section set:
+Example electronics/fan section set from the FHL25 pilot. This is an example only, not the required section count:
 
 ```text
 00_main_thumbnail_product_only.png
@@ -270,7 +274,7 @@ Example electronics/fan section set:
 17_final_cta_b2c.png
 ```
 
-### 7. Prompt Pack Creation
+### 8. Prompt Pack Creation
 
 For each GPT Image section prompt, include:
 
@@ -308,7 +312,15 @@ Product correction block must be concrete:
 
 For other products, rewrite this block from source image analysis.
 
-### 8. Image Generation Strategy
+### 9. Image Generation Strategy
+
+Image generation is runtime-dependent. The skill should not hard-code private API keys or assume one universal renderer. Preferred order:
+
+1. If the user's Hermes/OpenClaw environment has ChatGPT/OpenAI OAuth/OAuth2 image generation available, use that OAuth-authenticated runtime for GPT Image / ChatGPT image outputs.
+2. If a configured Hermes image-generation tool is available, use it with the approved section prompt.
+3. If direct image generation is unavailable, still produce the product-specific prompt pack so the user can paste it into ChatGPT Image manually.
+
+In all cases, keep the same QA gate: generated images must pass Korean text, product fidelity, unsupported-claim, and platform-risk checks before acceptance.
 
 Recommended generation order:
 
@@ -325,7 +337,7 @@ Recommended generation order:
 
 When the user explicitly wants direct Korean text in GPT Image, do it, but keep section copy short.
 
-### 9. QA Protocol
+### 10. QA Protocol
 
 For each generated image, ask vision QA:
 
@@ -356,7 +368,7 @@ Conditionally accept when:
 - product is stylized but still clearly the same category
 - a section is for internal review, not final upload
 
-### 10. Save and Verify Working Section Files
+### 11. Save and Verify Working Section Files
 
 Save accepted section images to the requested working folder for QA and stitching. These section files are production intermediates, not the final result package unless the user explicitly asks for all slices.
 
@@ -367,7 +379,7 @@ file "<path>"
 du -h "<path>"
 ```
 
-Recommended working filenames:
+Recommended working filenames are product-specific. The FHL25 pilot used names like these, but do not force every product to use exactly these 17 detail sections:
 
 ```text
 00_main_thumbnail_product_only_gpt2.png
@@ -386,7 +398,7 @@ Final customer-facing result should be reduced to exactly two image files:
 
 If older pilot filenames differ, keep them in the working folder but maintain a final ordered list for stitching.
 
-### 11. Create the Final Two Image Deliverables
+### 12. Create the Final Two Image Deliverables
 
 After all working sections pass QA, create exactly two final image deliverables:
 
@@ -465,7 +477,7 @@ Any unsafe claims visible?
 Is this usable as SmartStore/Coupang review preview?
 ```
 
-### 12. Obsidian Notes
+### 13. Obsidian Notes
 
 When the workflow is reusable or substantial, save notes:
 
