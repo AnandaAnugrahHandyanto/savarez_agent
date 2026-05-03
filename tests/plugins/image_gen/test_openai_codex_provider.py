@@ -86,6 +86,9 @@ class TestMetadata:
         assert schema["env_vars"] == []
         assert schema["badge"] == "free"
 
+    def test_supports_edit(self, provider):
+        assert provider.supports_edit() is True
+
 
 # ── Availability ────────────────────────────────────────────────────────────
 
@@ -281,6 +284,137 @@ class TestGenerate:
         assert result["success"] is False
         assert result["error_type"] == "api_error"
         assert "cloudflare 403" in result["error"]
+
+
+# ── Edit ────────────────────────────────────────────────────────────────────
+
+
+class TestEdit:
+    def test_edit_uses_input_image_content(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        source = tmp_path / "source.png"
+        source.write_bytes(bytes.fromhex(_PNG_HEX))
+
+        captured = {}
+
+        def _stream(**kwargs):
+            captured.update(kwargs)
+            output_item = SimpleNamespace(
+                type="image_generation_call",
+                status="generating",
+                id="ig_edit",
+                result=_b64_png(),
+            )
+            done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
+            final_response = SimpleNamespace(output=[], status="completed", output_text="")
+            return _FakeStream([done_event], final_response)
+
+        fake_client = SimpleNamespace(responses=SimpleNamespace(stream=_stream))
+        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+
+        result = provider.edit("make the background blue", str(source), aspect_ratio="square")
+
+        assert result["success"] is True
+        assert result["provider"] == "openai-codex"
+        assert result["source_image"] == str(source)
+        assert Path(result["image"]).exists()
+        assert Path(result["image"]).name.startswith("openai_codex_edit_")
+
+        content = captured["input"][0]["content"]
+        assert content[0] == {"type": "input_text", "text": "make the background blue"}
+        assert content[1]["type"] == "input_image"
+        assert content[1]["image_url"].startswith("data:image/png;base64,")
+
+        tool = captured["tools"][0]
+        assert tool["type"] == "image_generation"
+        assert tool["model"] == "gpt-image-2"
+        assert tool["action"] == "edit"
+        assert tool["size"] == "1024x1024"
+        assert tool["quality"] == "medium"
+
+    def test_edit_accepts_http_image_url(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        captured = {}
+
+        def _stream(**kwargs):
+            captured.update(kwargs)
+            output_item = SimpleNamespace(type="image_generation_call", result=_b64_png())
+            done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
+            return _FakeStream([done_event], SimpleNamespace(output=[]))
+
+        monkeypatch.setattr(
+            codex_plugin,
+            "_build_codex_client",
+            lambda: SimpleNamespace(responses=SimpleNamespace(stream=_stream)),
+        )
+
+        result = provider.edit("add a hat", "https://example.com/cat.png")
+
+        assert result["success"] is True
+        assert captured["input"][0]["content"][1] == {
+            "type": "input_image",
+            "image_url": "https://example.com/cat.png",
+        }
+
+    def test_edit_rejects_non_image_local_file(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        source = tmp_path / "secrets.txt"
+        source.write_text("not an image")
+        monkeypatch.setattr(
+            codex_plugin,
+            "_build_codex_client",
+            lambda: SimpleNamespace(responses=SimpleNamespace(stream=lambda **kwargs: None)),
+        )
+
+        result = provider.edit("make it blue", str(source))
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        assert "Reference image must be" in result["error"]
+
+    def test_edit_rejects_text_data_url(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(
+            codex_plugin,
+            "_build_codex_client",
+            lambda: SimpleNamespace(responses=SimpleNamespace(stream=lambda **kwargs: None)),
+        )
+
+        result = provider.edit("make it blue", "data:text/plain;base64,Zm9v")
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        assert "Unsupported reference image MIME type" in result["error"]
+
+    def test_edit_rejects_oversized_local_image(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        source = tmp_path / "huge.png"
+        source.write_bytes(bytes.fromhex(_PNG_HEX))
+        monkeypatch.setattr(codex_plugin, "_MAX_REFERENCE_IMAGE_BYTES", 4)
+        monkeypatch.setattr(
+            codex_plugin,
+            "_build_codex_client",
+            lambda: SimpleNamespace(responses=SimpleNamespace(stream=lambda **kwargs: None)),
+        )
+
+        result = provider.edit("make it blue", str(source))
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        assert "Reference image is too large" in result["error"]
+
+    def test_edit_missing_reference_image_returns_invalid_argument(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(
+            codex_plugin,
+            "_build_codex_client",
+            lambda: SimpleNamespace(responses=SimpleNamespace(stream=lambda **kwargs: None)),
+        )
+
+        result = provider.edit("add a hat", "/definitely/missing.png")
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        assert "Reference image not found" in result["error"]
 
 
 # ── Plugin entry point ──────────────────────────────────────────────────────

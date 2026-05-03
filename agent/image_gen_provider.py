@@ -142,6 +142,32 @@ class ImageGenProvider(abc.ABC):
         should ignore unknown keys.
         """
 
+    def supports_edit(self) -> bool:
+        """Return True when this backend supports reference-image editing."""
+        return False
+
+    def edit(
+        self,
+        prompt: str,
+        image: Any,
+        aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Edit an existing image using a prompt.
+
+        Providers that support image-to-image should override this method.
+        The default keeps older providers source-compatible while giving the
+        image_edit tool a uniform unsupported response.
+        """
+        aspect = resolve_aspect_ratio(aspect_ratio)
+        return error_response(
+            error=f"Image editing is not supported by provider '{self.name}'",
+            error_type="unsupported",
+            provider=self.name,
+            prompt=prompt or "",
+            aspect_ratio=aspect,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
