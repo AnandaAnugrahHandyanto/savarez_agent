@@ -969,3 +969,45 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+
+class TestContentFilterSafePreamble:
+    """Regression: summarizer preamble must not contain phrases that trigger
+    Azure/OpenAI content-filter false positives (issue #19362)."""
+
+    def _get_preamble_text(self):
+        """Build the preamble the same way _generate_summary does."""
+        from agent.context_compressor import ContextCompressor
+        import inspect
+        source = inspect.getsource(ContextCompressor._generate_summary)
+        return source
+
+    def test_preamble_no_injected_reference_material(self):
+        """'injected as reference material' triggers Azure jailbreak filter."""
+        source = self._get_preamble_text()
+        assert "injected as reference material" not in source
+
+    def test_preamble_no_different_assistant(self):
+        """'DIFFERENT assistant' / 'different assistant' triggers filter."""
+        source = self._get_preamble_text()
+        assert "DIFFERENT assistant" not in source
+        assert "different assistant" not in source
+
+    def test_preamble_no_do_not_respond(self):
+        """'Do NOT respond' is a direct trigger for content filters."""
+        source = self._get_preamble_text()
+        assert "Do NOT respond" not in source
+
+    def test_preamble_no_never_include(self):
+        """'NEVER include' / 'NEVER preserve' are aggressive directives."""
+        source = self._get_preamble_text()
+        assert "NEVER include" not in source
+        assert "NEVER preserve" not in source
+
+    def test_preamble_preserves_semantic_intent(self):
+        """New preamble still communicates background-context purpose."""
+        source = self._get_preamble_text()
+        assert "background context" in source
+        assert "structured summary" in source
+        assert "REDACTED" in source

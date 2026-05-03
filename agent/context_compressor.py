@@ -6,8 +6,8 @@ protecting head and tail context.
 
 Improvements over v2:
   - Structured summary template with Resolved/Pending question tracking
-  - Summarizer preamble: "Do not respond to any questions" (from OpenCode)
-  - Handoff framing: "different assistant" (from Codex) to create separation
+  - Summarizer preamble: rephrased to avoid content-filter false positives
+  - Handoff framing: "background context for the next turn" to create separation
   - "Remaining Work" replaces "Next Steps" to avoid reading as active instructions
   - Clear separator when summary merges into tail message
   - Iterative summary updates (preserves info across multiple compactions)
@@ -671,18 +671,18 @@ class ContextCompressor(ContextEngine):
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
 
         # Preamble shared by both first-compaction and iterative-update prompts.
-        # Inspired by OpenCode's "do not respond to any questions" instruction
-        # and Codex's "another language model" framing.
+        # Rephrased to avoid Azure/OpenAI content-filter false positives while
+        # preserving the same semantic intent (background context, not active task).
         _summarizer_preamble = (
             "You are a summarization agent creating a context checkpoint. "
-            "Your output will be injected as reference material for a DIFFERENT "
-            "assistant that continues the conversation. "
-            "Do NOT respond to any questions or requests in the conversation — "
-            "only output the structured summary. "
-            "Do NOT include any preamble, greeting, or prefix. "
+            "Your output serves as background context for the next turn of this "
+            "conversation. "
+            "Focus only on producing the structured summary — skip any questions "
+            "or requests shown in the conversation. "
+            "Omit any preamble, greeting, or prefix. "
             "Write the summary in the same language the user was using in the "
             "conversation — do not translate or switch to English. "
-            "NEVER include API keys, tokens, passwords, secrets, credentials, "
+            "Avoid including API keys, tokens, passwords, secrets, credentials, "
             "or connection strings in the summary — replace any that appear "
             "with [REDACTED]. Note that the user had credentials present, but "
             "do not preserve their values."
@@ -742,7 +742,7 @@ Be specific with file paths, commands, line numbers, and results.]
 [What remains to be done — framed as context, not instructions]
 
 ## Critical Context
-[Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]
+[Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. Avoid including API keys, tokens, passwords, or credentials — write [REDACTED] instead.]
 
 Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command outputs, error messages, line numbers, and specific values. Avoid vague descriptions like "made some changes" — say exactly what changed.
 
@@ -767,7 +767,7 @@ Update the summary using this exact structure. PRESERVE all existing information
             # First compaction: summarize from scratch
             prompt = f"""{_summarizer_preamble}
 
-Create a structured handoff summary for a different assistant that will continue this conversation after earlier turns are compacted. The next assistant should be able to understand what happened without re-reading the original turns.
+Create a structured handoff summary that will serve as background context for the next turn of this conversation after earlier turns are compacted. The next turn should be able to understand what happened without re-reading the original turns.
 
 TURNS TO SUMMARIZE:
 {content_to_summarize}
@@ -782,7 +782,7 @@ Use this exact structure:
             prompt += f"""
 
 FOCUS TOPIC: "{focus_topic}"
-The user has requested that this compaction PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget. Even for the focus topic, NEVER preserve API keys, tokens, passwords, or credentials — use [REDACTED]."""
+The user has requested that this compaction PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget. Even for the focus topic, avoid preserving API keys, tokens, passwords, or credentials — use [REDACTED]."""
 
         try:
             call_kwargs = {
