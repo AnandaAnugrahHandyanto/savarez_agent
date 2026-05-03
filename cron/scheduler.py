@@ -34,7 +34,7 @@ from typing import List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from hermes_cli.config import load_config
 from hermes_time import now as _hermes_now
 
@@ -571,23 +571,22 @@ def _get_script_timeout() -> int:
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
-    Scripts must reside within HERMES_HOME/scripts/.  Both relative and
-    absolute paths are resolved and validated against this directory to
-    prevent arbitrary script execution via path traversal or absolute
-    path injection.
+    Scripts must reside within the shared Hermes root ``scripts/`` directory.
+    Both relative and absolute paths are resolved and validated against this
+    directory to prevent arbitrary script execution via path traversal or
+    absolute path injection.
 
     Args:
-        script_path: Path to a Python script.  Relative paths are resolved
-            against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
-            are also validated to ensure they stay within the scripts dir.
+        script_path: Path to a Python script. Relative paths are resolved
+            against the shared Hermes root ``scripts/`` directory. Absolute
+            and ``~``-prefixed paths are also validated to ensure they stay
+            within that directory.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
         LLM can report the problem to the user.
     """
-    from hermes_constants import get_hermes_home
-
-    scripts_dir = get_hermes_home() / "scripts"
+    scripts_dir = get_default_hermes_root() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
 
@@ -598,7 +597,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         path = (scripts_dir / raw).resolve()
 
     # Guard against path traversal, absolute path injection, and symlink
-    # escape — scripts MUST reside within HERMES_HOME/scripts/.
+    # escape — scripts MUST reside within the shared Hermes root scripts/.
     try:
         path.relative_to(scripts_dir_resolved)
     except ValueError:
