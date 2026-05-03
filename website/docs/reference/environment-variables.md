@@ -6,7 +6,9 @@ description: "Complete reference of all environment variables used by Hermes Age
 
 # Environment Variables Reference
 
-All variables go in `~/.hermes/.env`. You can also set them with `hermes config set VAR value`.
+Put Hermes-managed variables in `~/.hermes/.env`. You can also set them with `hermes config set VAR value`.
+
+For operator shells that already keep provider keys in `~/.zshenv`, Hermes also reads simple `export KEY=value` lines as a fallback after the live process environment and `~/.hermes/.env`. Shell code is not executed.
 
 ## LLM Providers
 

@@ -164,9 +164,12 @@ Inside any `hermes chat` session:
 ### `hermes model` subcommand
 
 ```bash
-hermes model list                   # list authenticated providers + models
-hermes model set anthropic/claude-opus-4.7 --provider openrouter
+hermes model                        # provider setup + model picker
+hermes model --refresh              # refresh provider model catalogs, then exit
+hermes model --refresh --json       # same refresh, machine-readable output
 ```
+
+`hermes model --refresh` is the non-interactive path for keeping picker data fresh. It refreshes the models.dev cache, the hosted curated manifest, Ollama Cloud's cache, and the authenticated provider snapshot used by dashboard/TUI picker surfaces.
 
 ### Direct config edit
 

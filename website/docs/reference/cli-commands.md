@@ -149,6 +149,8 @@ Interactive provider + model selector. **This is the command for adding new prov
 
 ```bash
 hermes model
+hermes model --refresh          # refresh model catalogs without opening the picker
+hermes model --refresh --json   # machine-readable refresh status
 ```
 
 Use this when you want to:
@@ -158,6 +160,14 @@ Use this when you want to:
 - pick from provider-specific model lists
 - configure a custom/self-hosted endpoint
 - save the new default into config
+- refresh provider model catalogs without starting a chat or picker
+
+Options:
+
+| Option | Description |
+|--------|-------------|
+| `--refresh` | Refresh the models.dev cache, hosted curated manifest, Ollama Cloud cache, and authenticated picker snapshot, then exit. Does not require a TTY. |
+| `--json` | With `--refresh`, print the refresh result as JSON. Useful for automation and cron wrappers. |
 
 :::warning hermes model vs /model — know the difference
 **`hermes model`** (run from your terminal, outside any Hermes session) is the **full provider setup wizard**. It can add new providers, run OAuth flows, prompt for API keys, and configure endpoints.

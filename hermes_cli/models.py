@@ -3067,9 +3067,20 @@ def fetch_ollama_cloud_models(
 
     # 2. Live API probe
     if not api_key:
-        api_key = os.getenv("OLLAMA_API_KEY", "")
+        try:
+            from hermes_cli.config import get_env_value
+
+            api_key = get_env_value("OLLAMA_API_KEY") or ""
+        except Exception:
+            api_key = os.getenv("OLLAMA_API_KEY", "")
     if not base_url:
-        base_url = os.getenv("OLLAMA_BASE_URL", "") or "https://ollama.com/v1"
+        try:
+            from hermes_cli.config import get_env_value
+
+            base_url = get_env_value("OLLAMA_BASE_URL") or ""
+        except Exception:
+            base_url = os.getenv("OLLAMA_BASE_URL", "")
+        base_url = base_url or "https://ollama.com/v1"
 
     live_models: list[str] = []
     if api_key:
