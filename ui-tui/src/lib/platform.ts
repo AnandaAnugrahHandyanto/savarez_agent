@@ -98,7 +98,16 @@ export const DEFAULT_VOICE_RECORD_KEY: ParsedVoiceRecordKey = {
  * terminals (iTerm2 CSI-u, Ghostty, Kitty, WezTerm, Alacritty) spell
  * the platform action modifier ``super`` / ``win``, which match the
  * unambiguous ``key.super`` bit. macOS users on Terminal.app stick
- * with the documented ``ctrl+b``. */
+ * with the documented ``ctrl+b``.
+ *
+ * Cross-runtime parity: the ``ctrl`` / ``control`` / ``alt`` / ``option`` /
+ * ``opt`` spellings are normalized identically in the classic CLI
+ * (``hermes_cli/voice.py::normalize_voice_record_key_for_prompt_toolkit``)
+ * so one ``voice.record_key`` value binds the same shortcut in both
+ * runtimes (Copilot round-9 review on #19835). The ``super`` /
+ * ``win`` / ``windows`` spellings are TUI-only — prompt_toolkit has no
+ * super modifier, so the CLI will loudly reject them at startup rather
+ * than silently binding the wrong chord. */
 const _MOD_ALIASES: Record<string, VoiceRecordKeyMod> = {
   alt: 'alt',
   control: 'ctrl',

@@ -31,6 +31,58 @@ class TestPublicAPI:
         assert callable(speak_text)
 
 
+class TestNormalizeVoiceRecordKeyForPromptToolkit:
+    """Round-9 Copilot review regression on #19835.
+
+    Classic CLI only normalized ``ctrl+`` / ``alt+``, so TUI-valid
+    aliases like ``control+``, ``option+``, ``opt+`` silently bound a
+    different (or no) shortcut in the CLI. Normalizer now maps the
+    same set of aliases the TUI parser accepts, so one config value
+    binds identically in both runtimes.
+    """
+
+    def test_ctrl_and_alt_map_to_prompt_toolkit_form(self):
+        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
+
+        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+b") == "c-b"
+        assert normalize_voice_record_key_for_prompt_toolkit("alt+r") == "a-r"
+
+    def test_control_option_opt_aliases_match_tui_parser(self):
+        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
+
+        assert normalize_voice_record_key_for_prompt_toolkit("control+o") == "c-o"
+        assert normalize_voice_record_key_for_prompt_toolkit("option+space") == "a-space"
+        assert normalize_voice_record_key_for_prompt_toolkit("opt+enter") == "a-enter"
+
+    def test_case_insensitive(self):
+        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
+
+        assert normalize_voice_record_key_for_prompt_toolkit("Ctrl+B") == "c-b"
+        assert normalize_voice_record_key_for_prompt_toolkit("CONTROL+O") == "c-o"
+
+    def test_non_string_falls_back_to_default(self):
+        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
+
+        assert normalize_voice_record_key_for_prompt_toolkit(None) == "c-b"
+        assert normalize_voice_record_key_for_prompt_toolkit(1) == "c-b"
+        assert normalize_voice_record_key_for_prompt_toolkit(True) == "c-b"
+        assert normalize_voice_record_key_for_prompt_toolkit({}) == "c-b"
+
+    def test_empty_string_falls_back(self):
+        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
+
+        assert normalize_voice_record_key_for_prompt_toolkit("") == "c-b"
+
+    def test_super_win_aliases_left_as_is(self):
+        """prompt_toolkit has no super modifier, so super+ / win+ configs
+        round-trip unchanged and prompt_toolkit rejects them with a clear
+        error at startup — preferable to silently binding ctrl+b."""
+        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
+
+        assert normalize_voice_record_key_for_prompt_toolkit("super+b") == "super+b"
+        assert normalize_voice_record_key_for_prompt_toolkit("win+o") == "win+o"
+
+
 class TestStopWithoutStart:
     def test_returns_none_when_no_recording_active(self, monkeypatch):
         """Idempotent no-op: stop before start must not raise or touch state."""

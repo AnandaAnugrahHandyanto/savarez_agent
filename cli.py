@@ -8576,11 +8576,12 @@ class HermesCLI:
         tts_status = " (TTS enabled)" if self._voice_tts else ""
         try:
             from hermes_cli.config import load_config
+            from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
             _raw_ptt = load_config().get("voice", {}).get("record_key", "ctrl+b")
-            _ptt_key = _raw_ptt.lower().replace("ctrl+", "c-").replace("alt+", "a-")
+            _ptt_key = normalize_voice_record_key_for_prompt_toolkit(_raw_ptt)
         except Exception:
             _ptt_key = "c-b"
-        _ptt_display = _ptt_key.replace("c-", "Ctrl+").upper()
+        _ptt_display = _ptt_key.replace("c-", "Ctrl+").replace("a-", "Alt+").upper()
         _cprint(f"\n{_ACCENT}Voice mode enabled{tts_status}{_RST}")
         _cprint(f"  {_DIM}{_ptt_display} to start/stop recording{_RST}")
         _cprint(f"  {_DIM}/voice tts  to toggle speech output{_RST}")
@@ -8647,7 +8648,21 @@ class HermesCLI:
         _cprint(f"  TTS:       {'ON' if self._voice_tts else 'OFF'}")
         _cprint(f"  Recording: {'YES' if self._voice_recording else 'no'}")
         _raw_key = load_config().get("voice", {}).get("record_key", "ctrl+b")
-        _display_key = _raw_key.replace("ctrl+", "Ctrl+").upper() if "ctrl+" in _raw_key.lower() else _raw_key
+        # Display the configured key with canonical modifier casing so
+        # the status text matches what the TUI renders for the same
+        # config (Copilot round-9 review on #19835).
+        _display_key = _raw_key
+        _lower = _raw_key.lower() if isinstance(_raw_key, str) else ""
+        for alias, label in (
+            ("control+", "Ctrl+"),
+            ("ctrl+", "Ctrl+"),
+            ("option+", "Alt+"),
+            ("opt+", "Alt+"),
+            ("alt+", "Alt+"),
+        ):
+            if _lower.startswith(alias):
+                _display_key = label + _raw_key[len(alias):].upper()
+                break
         _cprint(f"  Record key: {_display_key}")
         _cprint(f"\n  {_BOLD}Requirements:{_RST}")
         for line in reqs["details"].split("\n"):
@@ -10537,12 +10552,16 @@ class HermesCLI:
             run_in_terminal(_suspend)
 
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
-        # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search)
-        # Config uses "ctrl+b" format; prompt_toolkit expects "c-b" format.
+        # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search).
+        # Config spellings (ctrl/control/alt/option/opt) are normalized to
+        # prompt_toolkit's c-x / a-x format via ``normalize_voice_record_key_for_prompt_toolkit``
+        # so the same config value binds identically in the TUI and CLI
+        # (Copilot round-9 review on #19835).
         try:
             from hermes_cli.config import load_config
+            from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
             _raw_key = load_config().get("voice", {}).get("record_key", "ctrl+b")
-            _voice_key = _raw_key.lower().replace("ctrl+", "c-").replace("alt+", "a-")
+            _voice_key = normalize_voice_record_key_for_prompt_toolkit(_raw_key)
         except Exception:
             _voice_key = "c-b"
 

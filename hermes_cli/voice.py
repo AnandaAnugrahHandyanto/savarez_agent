@@ -27,6 +27,48 @@ import sys
 import threading
 from typing import Any, Callable, Optional
 
+# Aliases normalized into prompt_toolkit's single-letter modifier format so
+# the same ``voice.record_key`` config value binds identically in the
+# classic CLI and the TUI. The TUI's own parser (``ui-tui/src/lib/platform.ts``)
+# accepts the same set; keeping this table in sync with
+# ``_MOD_ALIASES`` there is the contract that removes the cross-runtime
+# mismatch Copilot flagged in round-9 on #19835.
+#
+# ``super`` / ``win`` / ``windows`` are intentionally absent because
+# prompt_toolkit has no super/meta modifier for the Cmd key — those
+# spellings are TUI-only and fall through without rewriting, which the
+# prompt_toolkit add() call will reject so the user sees a startup
+# error instead of a silent no-op binding.
+_VOICE_RECORD_KEY_ALIASES = (
+    ("ctrl+", "c-"),
+    ("control+", "c-"),
+    ("alt+", "a-"),
+    ("option+", "a-"),
+    ("opt+", "a-"),
+)
+
+
+def normalize_voice_record_key_for_prompt_toolkit(raw: Any) -> str:
+    """Coerce ``voice.record_key`` into prompt_toolkit's ``c-x`` / ``a-x`` format.
+
+    Accepts any of the TUI-compatible modifier spellings (``ctrl+``,
+    ``control+``, ``alt+``, ``option+``, ``opt+``) so a config value
+    that works in the TUI also binds correctly in the classic CLI.
+    Non-string / unrecognised values fall back to the documented
+    ``c-b`` default, matching the TUI parser's fallback.
+    """
+    if not isinstance(raw, str):
+        return "c-b"
+
+    lowered = raw.lower()
+
+    for alias, normalized in _VOICE_RECORD_KEY_ALIASES:
+        if alias in lowered:
+            lowered = lowered.replace(alias, normalized)
+
+    return lowered or "c-b"
+
+
 from tools.voice_mode import (
     create_audio_recorder,
     is_whisper_hallucination,
