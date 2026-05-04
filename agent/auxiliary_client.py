@@ -107,6 +107,13 @@ from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_
 logger = logging.getLogger(__name__)
 
 
+def _openclaudecode_headers(base_url: str) -> Dict[str, str]:
+    """Headers for OpenClaudeCode's gateway, which blocks SDK fingerprints."""
+    if base_url_host_matches(base_url, "openclaudecode.cn"):
+        return {"User-Agent": "curl/8.7.1", "Accept": "*/*"}
+    return {}
+
+
 def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
     """Return False instead of raising when a patched symbol is not a type."""
     try:
@@ -1459,6 +1466,9 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     logger.debug("Auxiliary client: custom endpoint (%s, api_mode=%s)", model, custom_mode or "chat_completions")
     _clean_base, _dq = _extract_url_query_params(custom_base)
     _extra = {"default_query": _dq} if _dq else {}
+    _headers = _openclaudecode_headers(_clean_base)
+    if _headers:
+        _extra["default_headers"] = _headers
     if custom_mode == "codex_responses":
         real_client = OpenAI(api_key=custom_key, base_url=_clean_base, **_extra)
         return CodexAuxiliaryClient(real_client, model), model
@@ -1975,6 +1985,8 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         )
     elif base_url_host_matches(sync_base_url, "api.kimi.com"):
         async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+    elif _openclaudecode_headers(sync_base_url):
+        async_kwargs["default_headers"] = _openclaudecode_headers(sync_base_url)
     return AsyncOpenAI(**async_kwargs), model
 
 
@@ -2202,6 +2214,8 @@ def resolve_provider_client(
                 extra["default_headers"] = copilot_request_headers(
                     is_agent_turn=True, is_vision=is_vision
                 )
+            elif _openclaudecode_headers(custom_base):
+                extra["default_headers"] = _openclaudecode_headers(custom_base)
             client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base, custom_key)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
@@ -2267,6 +2281,9 @@ def resolve_provider_client(
                     raw_base_for_wrap = custom_base
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
+                _headers2 = _openclaudecode_headers(_clean_base2)
+                if _headers2:
+                    _extra2["default_headers"] = _headers2
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
                     provider, final_model, entry_api_mode or "chat_completions")
@@ -2390,6 +2407,8 @@ def resolve_provider_client(
             headers.update(copilot_request_headers(
                 is_agent_turn=True, is_vision=is_vision
             ))
+        elif _openclaudecode_headers(base_url):
+            headers.update(_openclaudecode_headers(base_url))
         client = OpenAI(api_key=api_key, base_url=base_url,
                         **({"default_headers": headers} if headers else {}))
 

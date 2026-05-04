@@ -832,6 +832,13 @@ def _routermint_headers() -> dict:
     }
 
 
+def _openclaudecode_headers(base_url: str) -> dict:
+    """Headers for OpenClaudeCode's gateway, which blocks SDK fingerprints."""
+    if base_url_host_matches(base_url, "openclaudecode.cn"):
+        return {"User-Agent": "curl/8.7.1", "Accept": "*/*"}
+    return {}
+
+
 def _pool_may_recover_from_rate_limit(pool) -> bool:
     """Decide whether to wait for credential-pool rotation instead of falling back.
 
@@ -1437,6 +1444,8 @@ class AIAgent:
                     client_kwargs["default_headers"] = {
                         "User-Agent": "claude-code/0.1.0",
                     }
+                elif _openclaudecode_headers(effective_base):
+                    client_kwargs["default_headers"] = _openclaudecode_headers(effective_base)
                 elif base_url_host_matches(effective_base, "portal.qwen.ai"):
                     client_kwargs["default_headers"] = _qwen_portal_headers()
                 elif base_url_host_matches(effective_base, "chatgpt.com"):
@@ -5575,6 +5584,12 @@ class AIAgent:
         # constructs a fresh one — no stale closed transport can be reused.
         # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
         # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
+        if "default_headers" not in client_kwargs:
+            openclaudecode_headers = _openclaudecode_headers(
+                str(client_kwargs.get("base_url", "") or "")
+            )
+            if openclaudecode_headers:
+                client_kwargs["default_headers"] = openclaudecode_headers
         if "http_client" not in client_kwargs:
             keepalive_http = self._build_keepalive_http_client(client_kwargs.get("base_url", ""))
             if keepalive_http is not None:
@@ -6194,6 +6209,8 @@ class AIAgent:
             self._client_kwargs["default_headers"] = copilot_default_headers()
         elif base_url_host_matches(base_url, "api.kimi.com"):
             self._client_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+        elif _openclaudecode_headers(base_url):
+            self._client_kwargs["default_headers"] = _openclaudecode_headers(base_url)
         elif base_url_host_matches(base_url, "portal.qwen.ai"):
             self._client_kwargs["default_headers"] = _qwen_portal_headers()
         elif base_url_host_matches(base_url, "chatgpt.com"):
