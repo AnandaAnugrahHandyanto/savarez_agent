@@ -488,6 +488,66 @@ def test_hermes_t_cli_profiles_config_runs_multiple_profiles_sequentially(tmp_pa
     assert payload["results"][1]["payload"]["suggestion"]["action"] == "sell"
 
 
+def test_hermes_t_cli_dispatch_flag_returns_dispatch_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from hermes_t import __main__ as cli_main
+
+    def fake_dispatch_pending_signal(*, store, profile_id: str, dispatch_target: str = "feishu"):
+        pending = store.load_pending_signal()
+        return {
+            "status": "sent",
+            "profile_id": profile_id,
+            "dispatch_target": dispatch_target,
+            "signal": {**pending, "status": "sent"},
+        }
+
+    monkeypatch.setattr(cli_main, "dispatch_pending_signal", fake_dispatch_pending_signal)
+
+    payload = cli_main._build_payload(
+        cli_main.build_runtime_parser().parse_args(
+            [
+                "--base-dir",
+                str(tmp_path),
+                "--profile-id",
+                "dispatch_cli",
+                "--symbol",
+                "688319",
+                "--trade-unit",
+                "10000",
+                "--signal",
+                "buy",
+                "--score",
+                "15",
+                "--dispatch",
+            ]
+        ),
+        cli_main.build_runtime_profile_from_args(
+            cli_main.build_runtime_parser().parse_args(
+                [
+                    "--base-dir",
+                    str(tmp_path),
+                    "--profile-id",
+                    "dispatch_cli",
+                    "--symbol",
+                    "688319",
+                    "--trade-unit",
+                    "10000",
+                    "--signal",
+                    "buy",
+                    "--score",
+                    "15",
+                    "--dispatch",
+                ]
+            )
+        ),
+    )
+
+    assert payload["pending"]["status"] == "pending"
+    assert payload["dispatch"]["status"] == "sent"
+    assert payload["dispatch"]["profile_id"] == "dispatch_cli"
+    assert payload["dispatch"]["dispatch_target"] == "feishu"
+    assert payload["dispatch"]["signal"]["status"] == "sent"
+
+
 def test_run_profiles_from_config_returns_summary_for_empty_profiles_list(tmp_path: Path):
     from hermes_t.orchestrator import run_profiles_from_config
     from hermes_t.tech_data import StaticTechDataProvider
@@ -568,6 +628,48 @@ def test_hermes_t_cli_profiles_config_falls_back_to_inline_signal_when_symbol_mi
 
     assert payload["results"][0]["payload"]["suggestion"]["action"] == "sell"
     assert payload["results"][1]["payload"]["suggestion"]["action"] == "buy"
+
+
+def test_hermes_t_cli_single_profile_quote_data_config_falls_back_to_inline_signal_when_symbol_missing(tmp_path: Path):
+    quote_path = tmp_path / "quotes.json"
+    quote_path.write_text(
+        json.dumps(
+            {
+                "000001": {"tech_data": {"signal": "sell", "score": 90}}
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.check_output(
+        [
+            sys.executable,
+            "-m",
+            "hermes_t",
+            "--base-dir",
+            str(tmp_path),
+            "--profile-id",
+            "single_missing_symbol",
+            "--symbol",
+            "688319",
+            "--trade-unit",
+            "10000",
+            "--quote-data-config",
+            str(quote_path),
+            "--signal",
+            "buy",
+            "--score",
+            "15",
+        ],
+        text=True,
+        cwd=Path(__file__).resolve().parent.parent,
+    )
+    payload = json.loads(result.strip())
+
+    assert payload["suggestion"]["action"] == "buy"
+    assert payload["pending"]["action"] == "buy"
+    assert payload["pending"]["seq"] == 1
 
 
 def test_hermes_t_cli_profiles_config_prefers_tech_data_config_over_quote_data_config(tmp_path: Path):

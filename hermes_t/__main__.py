@@ -14,7 +14,7 @@ from hermes_t.cli_shared import (
     build_runtime_store,
 )
 from hermes_t.orchestrator import run_profiles_from_config
-from hermes_t.runtime import run_runtime_cycle
+from hermes_t.runtime import dispatch_pending_signal, run_runtime_cycle
 from hermes_t.tech_data import build_tech_data_provider
 
 
@@ -24,7 +24,7 @@ def _resolve_tech_data(args: Namespace, profile: RuntimeProfile) -> dict[str, ob
             tech_data_config_path=args.tech_data_config,
             quote_data_config_path=args.quote_data_config,
             quote_snapshot_config_path=args.quote_snapshot_config,
-            default_tech_data={"signal": "hold", "score": 50},
+            default_tech_data={"signal": str(args.signal), "score": int(args.score)},
         )
         return provider.get(profile.symbol)
     return {
@@ -36,7 +36,7 @@ def _resolve_tech_data(args: Namespace, profile: RuntimeProfile) -> dict[str, ob
 def _build_payload(args: Namespace, profile: RuntimeProfile) -> dict[str, object]:
     store = build_runtime_store(args.base_dir, profile, prefer_legacy_olin_store=False)
     tech_data = _resolve_tech_data(args, profile)
-    return run_runtime_cycle(
+    payload = run_runtime_cycle(
         store=store,
         tech_data=tech_data,
         profile_id=profile.profile_id,
@@ -44,6 +44,12 @@ def _build_payload(args: Namespace, profile: RuntimeProfile) -> dict[str, object
         trade_unit=profile.trade_unit,
         max_trades=profile.max_trades,
     )
+    if args.dispatch:
+        payload["dispatch"] = dispatch_pending_signal(
+            store=store,
+            profile_id=profile.profile_id,
+        )
+    return payload
 
 
 def _build_profiles_payload(args: Namespace) -> dict[str, object]:
@@ -57,6 +63,7 @@ def _build_profiles_payload(args: Namespace) -> dict[str, object]:
         base_dir=args.base_dir,
         profiles_config_path=args.profiles_config,
         tech_data_provider=provider,
+        dispatch=args.dispatch,
     )
 
 

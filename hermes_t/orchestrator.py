@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes_t.cli_shared import RuntimeProfile
-from hermes_t.runtime import run_runtime_cycle
+from hermes_t.runtime import dispatch_pending_signal, run_runtime_cycle
 from hermes_t.store import TradingStateStore, validate_profile_id
 from hermes_t.tech_data import TechDataProvider
 
@@ -57,17 +57,24 @@ def run_profiles(
     base_dir: str | Path | None,
     profiles: list[RuntimeProfile],
     tech_data_provider: TechDataProvider,
+    dispatch: bool = False,
 ) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     for profile in profiles:
+        store = TradingStateStore(base_dir=base_dir, profile_id=profile.profile_id)
         payload = run_runtime_cycle(
-            store=TradingStateStore(base_dir=base_dir, profile_id=profile.profile_id),
+            store=store,
             tech_data=tech_data_provider.get(profile.symbol),
             profile_id=profile.profile_id,
             symbol=profile.symbol,
             trade_unit=profile.trade_unit,
             max_trades=profile.max_trades,
         )
+        if dispatch:
+            payload["dispatch"] = dispatch_pending_signal(
+                store=store,
+                profile_id=profile.profile_id,
+            )
         results.append(
             {
                 "profile_id": profile.profile_id,
@@ -86,6 +93,7 @@ def run_profiles_from_config(
     base_dir: str | Path | None,
     profiles_config_path: str | Path,
     tech_data_provider: TechDataProvider,
+    dispatch: bool = False,
 ) -> dict[str, Any]:
     payload = _load_profiles_payload(profiles_config_path)
     raw_profiles = payload.get("profiles")
@@ -97,4 +105,5 @@ def run_profiles_from_config(
         base_dir=base_dir,
         profiles=load_runtime_profiles_from_json(profiles_config_path),
         tech_data_provider=tech_data_provider,
+        dispatch=dispatch,
     )

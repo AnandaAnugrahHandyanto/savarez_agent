@@ -453,6 +453,47 @@ def test_run_runtime_cycle_blocked_buy_clears_stale_pending_signal(tmp_path: Pat
     assert store.load_pending_signal() == {}
 
 
+def test_run_runtime_cycle_blocked_buy_preserves_unrelated_pending_signal(tmp_path: Path):
+    from hermes_t.runtime import run_runtime_cycle
+    from hermes_t.store import TradingStateStore
+
+    store = TradingStateStore(base_dir=str(tmp_path), profile_id="blocked_buy_keeps_sell_pending")
+    existing_pending = {
+        "status": "pending",
+        "action": "sell",
+        "seq": 1,
+        "unit": 10000,
+        "symbol": "688319",
+        "text": "止盈第1次",
+    }
+    store.save_pending_signal(existing_pending)
+    store.save_execution_state(
+        {
+            "profile_id": "blocked_buy_keeps_sell_pending",
+            "symbol": "688319",
+            "buy_count": 2,
+            "sell_count": 0,
+            "hold_count": 0,
+            "max_trades": 2,
+            "trade_unit": 5000,
+        }
+    )
+
+    result = run_runtime_cycle(
+        store=store,
+        tech_data={"signal": "buy", "score": 10},
+        profile_id="blocked_buy_keeps_sell_pending",
+        symbol="688319",
+        trade_unit=5000,
+        max_trades=2,
+    )
+
+    assert result["suggestion"]["action"] == "hold"
+    assert result["suggestion"]["reason"] == "max_trades (2) reached"
+    assert result["pending"] == existing_pending
+    assert store.load_pending_signal() == existing_pending
+
+
 def test_run_runtime_cycle_tech_data_without_signal_falls_back_to_score(tmp_path: Path):
     from hermes_t.runtime import run_runtime_cycle
     from hermes_t.store import TradingStateStore
@@ -572,3 +613,251 @@ def test_run_runtime_cycle_summary_previous_counts_reflect_pre_cycle_state(tmp_p
     assert summary["buy_count"] == 2
     assert summary["sell_count"] == 2
     assert summary["hold_count"] == 3
+
+
+def test_dispatch_pending_signal_sends_and_persists_confirmation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import json
+
+    from hermes_t.runtime import dispatch_pending_signal, run_runtime_cycle
+    from hermes_t.store import TradingStateStore
+
+    sent_args: dict[str, object] = {}
+
+    def fake_send_message_tool(args, **_kwargs):
+        sent_args.update(args)
+        return json.dumps({"success": True, "platform": "feishu", "chat_id": "home_chat"})
+
+    monkeypatch.setattr("tools.send_message_tool.send_message_tool", fake_send_message_tool)
+
+    store = TradingStateStore(base_dir=str(tmp_path), profile_id="dispatch_ok")
+    result = run_runtime_cycle(
+        store=store,
+        tech_data={"signal": "buy", "score": 20},
+        profile_id="dispatch_ok",
+        symbol="688319",
+        trade_unit=10000,
+        max_trades=4,
+    )
+
+    pending = result["pending"]
+    dispatched = dispatch_pending_signal(store=store, profile_id="dispatch_ok", dispatch_target="feishu")
+
+    assert sent_args["target"] == "feishu"
+    assert sent_args["message"] == pending["text"]
+    assert dispatched["status"] == "sent"
+    assert dispatched["profile_id"] == "dispatch_ok"
+    assert dispatched["signal"]["status"] == "sent"
+    assert store.load_pending_signal()["status"] == "sent"
+    assert store.load_active_signal()["status"] == "sent"
+    push_state = store.load_push_state()
+    assert push_state["last_status"] == "sent"
+    history = store.read_signal_send_history()
+    assert len(history) == 1
+    assert history[0]["status"] == "sent"
+
+
+def test_dispatch_pending_signal_records_failure_without_clearing_pending(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import json
+
+    from hermes_t.runtime import dispatch_pending_signal, run_runtime_cycle
+    from hermes_t.store import TradingStateStore
+
+    def fake_send_message_tool(_args, **_kwargs):
+        return json.dumps({"success": False, "error": "gateway timeout"})
+
+    monkeypatch.setattr("tools.send_message_tool.send_message_tool", fake_send_message_tool)
+
+    store = TradingStateStore(base_dir=str(tmp_path), profile_id="dispatch_failed")
+    result = run_runtime_cycle(
+        store=store,
+        tech_data={"signal": "buy", "score": 10},
+        profile_id="dispatch_failed",
+        symbol="688319",
+        trade_unit=10000,
+        max_trades=4,
+    )
+
+    pending = result["pending"]
+    dispatched = dispatch_pending_signal(store=store, profile_id="dispatch_failed", dispatch_target="feishu")
+
+    assert pending["status"] == "pending"
+    assert dispatched["status"] == "failed"
+    assert dispatched["error"] == "gateway timeout"
+    assert dispatched["signal"]["status"] == "failed"
+    assert store.load_pending_signal()["status"] == "failed"
+    assert store.load_pending_signal()["error"] == "gateway timeout"
+    assert store.load_active_signal()["status"] == "failed"
+    push_state = store.load_push_state()
+    assert push_state["last_status"] == "failed"
+    history = store.read_signal_send_history()
+    assert len(history) == 1
+    assert history[0]["status"] == "failed"
+
+
+def test_retry_failed_signal_reopens_failed_pending_for_redispatch(tmp_path: Path):
+    from hermes_t.runtime import retry_failed_signal
+    from hermes_t.store import TradingStateStore
+
+    store = TradingStateStore(base_dir=str(tmp_path), profile_id="retry_failed")
+    failed_signal = {
+        "status": "failed",
+        "action": "buy",
+        "seq": 1,
+        "unit": 10000,
+        "symbol": "688319",
+        "text": "低吸第1次",
+        "profile_id": "retry_failed",
+        "dispatch_target": "feishu",
+        "dispatched_at": "2026-05-04T00:00:00+00:00",
+        "error": "gateway timeout",
+    }
+    store.save_pending_signal(failed_signal)
+    store.save_active_signal(failed_signal)
+    store.save_push_state(
+        {
+            "profile_id": "retry_failed",
+            "last_status": "failed",
+            "last_target": "feishu",
+            "last_signal_text": failed_signal["text"],
+            "last_dispatched_at": failed_signal["dispatched_at"],
+        }
+    )
+
+    retried = retry_failed_signal(store=store, profile_id="retry_failed")
+
+    assert retried["status"] == "pending"
+    assert retried["profile_id"] == "retry_failed"
+    assert retried["signal"]["status"] == "pending"
+    assert "error" not in retried["signal"]
+    assert "dispatched_at" not in retried["signal"]
+    assert store.load_pending_signal()["status"] == "pending"
+    assert "error" not in store.load_pending_signal()
+    assert store.load_active_signal()["status"] == "pending"
+    push_state = store.load_push_state()
+    assert push_state["last_status"] == "pending"
+    assert push_state["last_target"] == "feishu"
+    assert push_state["last_signal_text"] == failed_signal["text"]
+
+
+def test_retry_failed_signal_returns_noop_when_no_failed_signal_exists(tmp_path: Path):
+    from hermes_t.runtime import retry_failed_signal
+    from hermes_t.store import TradingStateStore
+
+    store = TradingStateStore(base_dir=str(tmp_path), profile_id="retry_noop")
+    store.save_pending_signal({"status": "sent", "action": "buy"})
+
+    result = retry_failed_signal(store=store, profile_id="retry_noop")
+
+    assert result == {
+        "status": "noop",
+        "profile_id": "retry_noop",
+        "reason": "no failed signal to retry",
+        "signal": {"status": "sent", "action": "buy"},
+    }
+
+
+def test_retry_failed_signal_allows_dispatch_again_after_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import json
+
+    from hermes_t.runtime import dispatch_pending_signal, retry_failed_signal, run_runtime_cycle
+    from hermes_t.store import TradingStateStore
+
+    call_count = {"count": 0}
+
+    def fake_send_message_tool(_args, **_kwargs):
+        call_count["count"] += 1
+        if call_count["count"] == 1:
+            return json.dumps({"success": False, "error": "gateway timeout"})
+        return json.dumps({"success": True, "platform": "feishu", "chat_id": "home_chat"})
+
+    monkeypatch.setattr("tools.send_message_tool.send_message_tool", fake_send_message_tool)
+
+    store = TradingStateStore(base_dir=str(tmp_path), profile_id="retry_dispatch")
+    result = run_runtime_cycle(
+        store=store,
+        tech_data={"signal": "buy", "score": 10},
+        profile_id="retry_dispatch",
+        symbol="688319",
+        trade_unit=10000,
+        max_trades=4,
+    )
+    assert result["pending"]["status"] == "pending"
+
+    failed = dispatch_pending_signal(store=store, profile_id="retry_dispatch", dispatch_target="feishu")
+    assert failed["status"] == "failed"
+    assert store.load_pending_signal()["status"] == "failed"
+
+    reopened = retry_failed_signal(store=store, profile_id="retry_dispatch")
+    assert reopened["status"] == "pending"
+    assert store.load_pending_signal()["status"] == "pending"
+
+    resent = dispatch_pending_signal(store=store, profile_id="retry_dispatch", dispatch_target="feishu")
+    assert resent["status"] == "sent"
+    assert resent["signal"]["status"] == "sent"
+    assert store.load_pending_signal()["status"] == "sent"
+    history = store.read_signal_send_history()
+    assert len(history) == 2
+    assert [row["status"] for row in history] == ["failed", "sent"]
+
+
+def test_build_review_summary_returns_empty_defaults_for_new_profile(tmp_path: Path):
+    from hermes_t.runtime import build_review_summary
+    from hermes_t.store import TradingStateStore
+
+    store = TradingStateStore(base_dir=str(tmp_path), profile_id="review_empty")
+
+    summary = build_review_summary(store=store, profile_id="review_empty")
+
+    assert summary == {
+        "profile_id": "review_empty",
+        "pending": {},
+        "active": {},
+        "push_state": {},
+        "dispatch_ledger_tail": [],
+        "signal_send_history_tail": [],
+        "counts": {
+            "dispatch_ledger_count": 0,
+            "signal_send_history_count": 0,
+        },
+    }
+
+
+
+def test_build_review_summary_collects_current_state_and_tail_history(tmp_path: Path):
+    from hermes_t.runtime import build_review_summary
+    from hermes_t.store import TradingStateStore
+
+    store = TradingStateStore(base_dir=str(tmp_path), profile_id="review_populated")
+    pending = {"status": "pending", "action": "buy", "text": "低吸第1次"}
+    active = {"status": "sent", "action": "sell", "text": "止盈第1次"}
+    push_state = {"last_status": "sent", "last_target": "feishu", "last_signal_text": "止盈第1次"}
+    store.save_pending_signal(pending)
+    store.save_active_signal(active)
+    store.save_push_state(push_state)
+
+    for idx in range(1, 5):
+        ledger_row = {"status": "sent" if idx % 2 == 0 else "failed", "timestamp": f"t{idx}", "seq": idx}
+        history_row = {"status": "sent" if idx % 2 == 0 else "failed", "timestamp": f"h{idx}", "seq": idx}
+        store.append_dispatch_ledger(ledger_row)
+        store.append_signal_send_history(history_row)
+
+    summary = build_review_summary(store=store, profile_id="review_populated", history_limit=2)
+
+    assert summary["profile_id"] == "review_populated"
+    assert summary["pending"] == pending
+    assert summary["active"] == active
+    assert summary["push_state"] == push_state
+    assert summary["counts"] == {
+        "dispatch_ledger_count": 4,
+        "signal_send_history_count": 4,
+    }
+    assert summary["dispatch_ledger_tail"] == [
+        {"status": "sent", "timestamp": "t2", "seq": 2},
+        {"status": "failed", "timestamp": "t3", "seq": 3},
+        {"status": "sent", "timestamp": "t4", "seq": 4},
+    ][-2:]
+    assert summary["signal_send_history_tail"] == [
+        {"status": "sent", "timestamp": "h2", "seq": 2},
+        {"status": "failed", "timestamp": "h3", "seq": 3},
+        {"status": "sent", "timestamp": "h4", "seq": 4},
+    ][-2:]
