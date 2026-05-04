@@ -15,8 +15,11 @@ from tools import browser_tool as bt
 
 
 @pytest.fixture(autouse=True)
-def _reset_chromium_cache():
+def _reset_chromium_cache(monkeypatch):
     bt._cached_chromium_installed = None
+    monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+    monkeypatch.setattr(bt.shutil, "which", lambda name: None)
+    monkeypatch.setattr(bt, "_SYSTEM_CHROMIUM_PATHS", ())
     yield
     bt._cached_chromium_installed = None
 
@@ -41,6 +44,50 @@ class TestChromiumSearchRoots:
 
 
 class TestChromiumInstalled:
+    def test_true_when_agent_browser_executable_path_points_to_file(self, monkeypatch, tmp_path):
+        browser = tmp_path / "chrome"
+        browser.write_text("#!/bin/sh\n")
+        browser.chmod(0o755)
+        monkeypatch.setenv("AGENT_BROWSER_EXECUTABLE_PATH", str(browser))
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path / "empty"))
+        monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "fakehome"))
+
+        assert bt._chromium_installed() is True
+
+    def test_true_when_agent_browser_executable_path_resolves_on_path(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("AGENT_BROWSER_EXECUTABLE_PATH", "custom-chrome")
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path / "empty"))
+        monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "fakehome"))
+        monkeypatch.setattr(
+            bt.shutil,
+            "which",
+            lambda name: "/usr/local/bin/custom-chrome" if name == "custom-chrome" else None,
+        )
+
+        assert bt._chromium_installed() is True
+
+    def test_true_when_system_chromium_binary_on_path(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path / "empty"))
+        monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "fakehome"))
+        monkeypatch.setattr(
+            bt.shutil,
+            "which",
+            lambda name: "/usr/bin/google-chrome" if name == "google-chrome" else None,
+        )
+
+        assert bt._chromium_installed() is True
+
+    def test_true_when_system_chromium_known_path_exists(self, monkeypatch, tmp_path):
+        browser = tmp_path / "opt" / "google" / "chrome" / "chrome"
+        browser.parent.mkdir(parents=True)
+        browser.write_text("#!/bin/sh\n")
+        browser.chmod(0o755)
+        monkeypatch.setattr(bt, "_SYSTEM_CHROMIUM_PATHS", (str(browser),))
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path / "empty"))
+        monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "fakehome"))
+
+        assert bt._chromium_installed() is True
+
     def test_true_when_chromium_dir_present(self, monkeypatch, tmp_path):
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
         (tmp_path / "chromium-1208").mkdir()

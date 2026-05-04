@@ -2725,6 +2725,33 @@ def cleanup_all_browsers() -> None:
 # Cache for Chromium discovery. Invalidated by _reset_browser_caches.
 _cached_chromium_installed: Optional[bool] = None
 
+_SYSTEM_CHROMIUM_BINARIES = (
+    "google-chrome",
+    "google-chrome-stable",
+    "chromium-browser",
+    "chromium",
+    "chrome",
+    "brave-browser",
+    "microsoft-edge",
+    "chrome.exe",
+    "msedge.exe",
+    "brave.exe",
+    "chromium.exe",
+)
+
+_SYSTEM_CHROMIUM_PATHS = (
+    "/opt/google/chrome/chrome",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/snap/bin/chromium",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+)
+
 
 def _chromium_search_roots() -> List[str]:
     """Directories to scan for a Chromium / headless-shell build.
@@ -2754,11 +2781,26 @@ def _chromium_search_roots() -> List[str]:
     return roots
 
 
+def _is_browser_executable(path: str) -> bool:
+    """Return True when *path* names a browser executable on disk or PATH."""
+    candidate = path.strip()
+    if not candidate:
+        return False
+    if candidate.startswith("~"):
+        candidate = os.path.expanduser(candidate)
+    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        return True
+    return shutil.which(candidate) is not None
+
+
 def _chromium_installed() -> bool:
     """Return True when a usable Chromium (or headless-shell) build is on disk.
 
     agent-browser (0.26+) downloads Playwright's chromium / headless-shell
     builds into ``PLAYWRIGHT_BROWSERS_PATH`` and won't start without them.
+    It can also launch a user-provided browser via
+    ``AGENT_BROWSER_EXECUTABLE_PATH`` or common system Chrome/Chromium
+    installations.
     When the CLI is present but no browser build is, the first browser tool
     call hangs for the full command timeout (often ~30s each) before
     surfacing a useless error. Guarding the tool behind this check prevents
@@ -2767,6 +2809,21 @@ def _chromium_installed() -> bool:
     global _cached_chromium_installed
     if _cached_chromium_installed is not None:
         return _cached_chromium_installed
+
+    configured_browser = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "")
+    if configured_browser and _is_browser_executable(configured_browser):
+        _cached_chromium_installed = True
+        return True
+
+    for name in _SYSTEM_CHROMIUM_BINARIES:
+        if shutil.which(name):
+            _cached_chromium_installed = True
+            return True
+
+    for path in _SYSTEM_CHROMIUM_PATHS:
+        if _is_browser_executable(path):
+            _cached_chromium_installed = True
+            return True
 
     for root in _chromium_search_roots():
         if not root or not os.path.isdir(root):
