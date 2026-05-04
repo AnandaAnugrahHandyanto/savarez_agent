@@ -6,6 +6,16 @@ from hermes_t.signal_policy import DEFAULT_SIGNAL_POLICY, SignalPolicy, render_s
 from hermes_t.store import TradingStateStore
 
 
+def _coerce_total_shares(value: object) -> int:
+    """Best-effort coercion for persisted total_shares values."""
+    if value in (None, ""):
+        return 0
+    try:
+        return int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 def run_runtime_cycle(
     *,
     store: TradingStateStore,
@@ -58,41 +68,54 @@ def run_runtime_cycle(
     # Evaluate the action
     pending: dict = {}
     suggestion: dict = {"action": action}
+    existing_pending = store.load_pending_signal()
 
-    if action == "buy":
+    if action == "buy" and buy_count + 1 > max_trades:
+        # Blocked by max_trades; clear any stale pending buy so dispatcher does not retry it.
+        store.clear_pending_signal()
+        suggestion = {"action": "hold", "reason": f"max_trades ({max_trades}) reached"}
+        hold_count += 1
+    elif action != "hold" and existing_pending.get("status") == "pending":
+        pending = existing_pending
+        suggestion = {"action": "hold", "reason": "pending signal unresolved"}
+        hold_count += 1
+    elif action == "buy":
         seq = buy_count + 1
-        if seq > max_trades:
-            # Blocked by max_trades
-            store.clear_pending_signal()
-            suggestion = {"action": "hold", "reason": f"max_trades ({max_trades}) reached"}
-            hold_count += 1
-        else:
-            pending = {
-                "status": "pending",
-                "action": "buy",
-                "seq": seq,
-                "unit": trade_unit,
-                "symbol": symbol,
-                "text": render_signal_text("buy", seq, policy),
-            }
-            suggestion["seq"] = seq
-            suggestion["unit"] = trade_unit
-            suggestion["text"] = pending["text"]
-            buy_count = seq
-    elif action == "sell":
-        seq = sell_count + 1
         pending = {
             "status": "pending",
-            "action": "sell",
+            "action": "buy",
             "seq": seq,
             "unit": trade_unit,
             "symbol": symbol,
-            "text": render_signal_text("sell", seq, policy),
+            "text": render_signal_text("buy", seq, policy),
         }
         suggestion["seq"] = seq
         suggestion["unit"] = trade_unit
         suggestion["text"] = pending["text"]
-        sell_count = seq
+        buy_count = seq
+    elif action == "sell":
+        position = store.load_position() or {}
+        position_symbol = str(position.get("symbol", "")).strip()
+        symbol_matches = position_symbol == str(symbol).strip()
+        total_shares = _coerce_total_shares(position.get("total_shares", 0))
+        if not symbol_matches or total_shares <= 0:
+            suggestion = {"action": "hold", "reason": "no sellable position"}
+            pending = existing_pending if existing_pending.get("status") == "pending" else {}
+            hold_count += 1
+        else:
+            seq = sell_count + 1
+            pending = {
+                "status": "pending",
+                "action": "sell",
+                "seq": seq,
+                "unit": trade_unit,
+                "symbol": symbol,
+                "text": render_signal_text("sell", seq, policy),
+            }
+            suggestion["seq"] = seq
+            suggestion["unit"] = trade_unit
+            suggestion["text"] = pending["text"]
+            sell_count = seq
     else:
         # hold — clear any existing pending signal
         store.clear_pending_signal()

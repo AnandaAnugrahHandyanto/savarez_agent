@@ -119,6 +119,7 @@ def test_run_runtime_cycle_with_sell_score_outputs_sell_suggestion(tmp_path: Pat
     from hermes_t.store import TradingStateStore
 
     store = TradingStateStore(base_dir=str(tmp_path), profile_id="sell_test")
+    store.save_position({"symbol": "688319", "total_shares": 220000})
     result = run_runtime_cycle(
         store=store,
         tech_data={"signal": "sell", "score": 85},
@@ -157,6 +158,178 @@ def test_run_runtime_cycle_with_hold_score_clears_pending(tmp_path: Path):
     assert result["suggestion"]["action"] == "hold"
 
 
+def test_run_runtime_cycle_keeps_existing_pending_signal_when_new_action_arrives(tmp_path: Path):
+    from hermes_t.runtime import run_runtime_cycle
+    from hermes_t.store import TradingStateStore
+
+    store = TradingStateStore(base_dir=str(tmp_path), profile_id="keep_pending")
+    existing_pending = {
+        "status": "pending",
+        "action": "buy",
+        "seq": 1,
+        "unit": 5000,
+        "symbol": "688319",
+        "text": "低吸第1次",
+    }
+    store.save_pending_signal(existing_pending)
+
+    result = run_runtime_cycle(
+        store=store,
+        tech_data={"signal": "sell", "score": 85},
+        profile_id="keep_pending",
+        symbol="688319",
+        trade_unit=10000,
+        max_trades=4,
+    )
+
+    assert result["suggestion"]["action"] == "hold"
+    assert result["suggestion"]["reason"] == "pending signal unresolved"
+    assert result["pending"] == existing_pending
+    assert store.load_pending_signal() == existing_pending
+    assert result["summary"]["sell_count"] == 0
+    assert result["summary"]["hold_count"] == 1
+
+
+def test_run_runtime_cycle_sell_without_position_is_held(tmp_path: Path):
+    from hermes_t.runtime import run_runtime_cycle
+    from hermes_t.store import TradingStateStore
+
+    store = TradingStateStore(base_dir=str(tmp_path), profile_id="sell_without_position")
+
+    result = run_runtime_cycle(
+        store=store,
+        tech_data={"signal": "sell", "score": 85},
+        profile_id="sell_without_position",
+        symbol="688319",
+        trade_unit=10000,
+        max_trades=4,
+    )
+
+    assert result["suggestion"]["action"] == "hold"
+    assert result["suggestion"]["reason"] == "no sellable position"
+    assert result["pending"] == {}
+    assert store.load_pending_signal() == {}
+    assert result["summary"]["sell_count"] == 0
+    assert result["summary"]["hold_count"] == 1
+
+
+def test_run_runtime_cycle_sell_without_position_preserves_existing_pending(tmp_path: Path):
+    from hermes_t.runtime import run_runtime_cycle
+    from hermes_t.store import TradingStateStore
+
+    store = TradingStateStore(base_dir=str(tmp_path), profile_id="sell_without_position_pending")
+    existing_pending = {
+        "status": "pending",
+        "action": "sell",
+        "seq": 1,
+        "unit": 10000,
+        "symbol": "688319",
+        "text": "止盈第1次",
+    }
+    store.save_pending_signal(existing_pending)
+
+    result = run_runtime_cycle(
+        store=store,
+        tech_data={"signal": "sell", "score": 85},
+        profile_id="sell_without_position_pending",
+        symbol="688319",
+        trade_unit=10000,
+        max_trades=4,
+    )
+
+    assert result["suggestion"]["action"] == "hold"
+    assert result["suggestion"]["reason"] == "pending signal unresolved"
+    assert result["pending"] == existing_pending
+    assert store.load_pending_signal() == existing_pending
+    assert result["summary"]["sell_count"] == 0
+    assert result["summary"]["hold_count"] == 1
+
+
+
+def test_run_runtime_cycle_sell_without_position_blocks_symbol_mismatch(tmp_path: Path):
+    from hermes_t.runtime import run_runtime_cycle
+    from hermes_t.store import TradingStateStore
+
+    store = TradingStateStore(base_dir=str(tmp_path), profile_id="sell_symbol_mismatch")
+    store.save_position({"symbol": "000001", "total_shares": 220000})
+
+    result = run_runtime_cycle(
+        store=store,
+        tech_data={"signal": "sell", "score": 85},
+        profile_id="sell_symbol_mismatch",
+        symbol="688319",
+        trade_unit=10000,
+        max_trades=4,
+    )
+
+    assert result["suggestion"]["action"] == "hold"
+    assert result["suggestion"]["reason"] == "no sellable position"
+    assert result["pending"] == {}
+    assert result["summary"]["sell_count"] == 0
+
+
+def test_run_runtime_cycle_sell_with_string_total_shares_outputs_sell_suggestion(tmp_path: Path):
+    from hermes_t.runtime import run_runtime_cycle
+    from hermes_t.store import TradingStateStore
+
+    store = TradingStateStore(base_dir=str(tmp_path), profile_id="sell_with_string_position")
+    store.save_position({"symbol": "688319", "total_shares": "220000"})
+
+    result = run_runtime_cycle(
+        store=store,
+        tech_data={"signal": "sell", "score": 85},
+        profile_id="sell_with_string_position",
+        symbol="688319",
+        trade_unit=10000,
+        max_trades=4,
+    )
+
+    assert result["suggestion"]["action"] == "sell"
+    assert result["pending"]["action"] == "sell"
+
+
+def test_run_runtime_cycle_sell_with_non_finite_total_shares_is_held(tmp_path: Path):
+    from hermes_t.runtime import run_runtime_cycle
+    from hermes_t.store import TradingStateStore
+
+    store = TradingStateStore(base_dir=str(tmp_path), profile_id="sell_with_inf_position")
+    store.save_position({"symbol": "688319", "total_shares": "inf"})
+
+    result = run_runtime_cycle(
+        store=store,
+        tech_data={"signal": "sell", "score": 85},
+        profile_id="sell_with_inf_position",
+        symbol="688319",
+        trade_unit=10000,
+        max_trades=4,
+    )
+
+    assert result["suggestion"]["action"] == "hold"
+    assert result["suggestion"]["reason"] == "no sellable position"
+    assert result["pending"] == {}
+
+
+def test_run_runtime_cycle_sell_with_position_outputs_sell_suggestion(tmp_path: Path):
+    from hermes_t.runtime import run_runtime_cycle
+    from hermes_t.store import TradingStateStore
+
+    store = TradingStateStore(base_dir=str(tmp_path), profile_id="sell_with_position")
+    store.save_position({"symbol": "688319", "total_shares": 220000})
+
+    result = run_runtime_cycle(
+        store=store,
+        tech_data={"signal": "sell", "score": 85},
+        profile_id="sell_with_position",
+        symbol="688319",
+        trade_unit=10000,
+        max_trades=4,
+    )
+
+    assert result["suggestion"]["action"] == "sell"
+    assert result["suggestion"]["unit"] == 10000
+    assert result["pending"]["status"] == "pending"
+    assert result["pending"]["action"] == "sell"
+
 def test_run_runtime_cycle_buy_increments_seq(tmp_path: Path):
     from hermes_t.runtime import run_runtime_cycle
     from hermes_t.store import TradingStateStore
@@ -172,6 +345,7 @@ def test_run_runtime_cycle_buy_increments_seq(tmp_path: Path):
         max_trades=4,
     )
     assert result_1["pending"]["seq"] == 1
+    store.clear_pending_signal()
 
     result_2 = run_runtime_cycle(
         store=store,
@@ -183,6 +357,37 @@ def test_run_runtime_cycle_buy_increments_seq(tmp_path: Path):
     )
     assert result_2["pending"]["seq"] == 2
     assert result_2["pending"]["unit"] == 7000
+
+
+def test_run_runtime_cycle_same_action_pending_is_preserved(tmp_path: Path):
+    from hermes_t.runtime import run_runtime_cycle
+    from hermes_t.store import TradingStateStore
+
+    store = TradingStateStore(base_dir=str(tmp_path), profile_id="same_action_pending")
+    existing_pending = {
+        "status": "pending",
+        "action": "buy",
+        "seq": 1,
+        "unit": 5000,
+        "symbol": "688319",
+    }
+    store.save_pending_signal(existing_pending)
+
+    result = run_runtime_cycle(
+        store=store,
+        tech_data={"signal": "buy", "score": 15},
+        profile_id="same_action_pending",
+        symbol="688319",
+        trade_unit=7000,
+        max_trades=4,
+    )
+
+    assert result["suggestion"]["action"] == "hold"
+    assert result["suggestion"]["reason"] == "pending signal unresolved"
+    assert result["pending"] == existing_pending
+    assert store.load_pending_signal() == existing_pending
+    assert result["summary"]["buy_count"] == 0
+    assert result["summary"]["hold_count"] == 1
 
 
 def test_run_runtime_cycle_honors_max_trades(tmp_path: Path):
@@ -201,6 +406,7 @@ def test_run_runtime_cycle_honors_max_trades(tmp_path: Path):
             max_trades=max_trades,
         )
         assert result["pending"]["seq"] == i + 1
+        store.clear_pending_signal()
 
     # Third buy should be blocked
     result = run_runtime_cycle(
@@ -316,6 +522,7 @@ def test_run_runtime_cycle_honors_signal_policy_override(tmp_path: Path):
         )
     )
     store = TradingStateStore(base_dir=str(tmp_path), profile_id="custom_policy")
+    store.save_position({"symbol": "688319", "total_shares": 220000})
 
     result = run_runtime_cycle(
         store=store,
@@ -330,7 +537,7 @@ def test_run_runtime_cycle_honors_signal_policy_override(tmp_path: Path):
     assert result["suggestion"]["action"] == "sell"
     assert result["suggestion"]["text"] == "止盈卖出"
     assert result["pending"]["action"] == "sell"
-
+    assert result["pending"]["text"] == "止盈卖出"
 
 def test_run_runtime_cycle_summary_previous_counts_reflect_pre_cycle_state(tmp_path: Path):
     from hermes_t.runtime import run_runtime_cycle

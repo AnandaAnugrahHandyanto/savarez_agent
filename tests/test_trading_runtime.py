@@ -303,6 +303,13 @@ def test_build_runtime_store_returns_trading_state_store(tmp_path: Path):
 
 def test_hermes_t_cli_outputs_runtime_cycle_json(tmp_path: Path):
     """CLI should execute run_runtime_cycle() and output runtime result JSON."""
+    profile_dir = tmp_path / "test_profile"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    (profile_dir / "position.json").write_text(
+        json.dumps({"symbol": "688319", "total_shares": 220000}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
     result = subprocess.check_output(
         [
             sys.executable,
@@ -440,6 +447,12 @@ def test_hermes_t_cli_profiles_config_runs_multiple_profiles_sequentially(tmp_pa
         ),
         encoding="utf-8",
     )
+    test_alt_dir = tmp_path / "test_alt"
+    test_alt_dir.mkdir(parents=True, exist_ok=True)
+    (test_alt_dir / "position.json").write_text(
+        json.dumps({"symbol": "000001", "total_shares": 5000}, ensure_ascii=False),
+        encoding="utf-8",
+    )
     quote_path = tmp_path / "quotes.json"
     quote_path.write_text(
         json.dumps(
@@ -513,6 +526,12 @@ def test_hermes_t_cli_profiles_config_falls_back_to_inline_signal_when_symbol_mi
             },
             ensure_ascii=False,
         ),
+        encoding="utf-8",
+    )
+    olin_dir = tmp_path / "olin"
+    olin_dir.mkdir(parents=True, exist_ok=True)
+    (olin_dir / "position.json").write_text(
+        json.dumps({"symbol": "688319", "total_shares": 220000}, ensure_ascii=False),
         encoding="utf-8",
     )
     quote_path = tmp_path / "quotes.json"
@@ -701,6 +720,13 @@ def test_hermes_t_cli_with_quote_data_config_uses_file_provider(tmp_path: Path):
     import sys
     from pathlib import Path
 
+    profile_dir = tmp_path / "quote_cli_test"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    (profile_dir / "position.json").write_text(
+        json.dumps({"symbol": "688319", "total_shares": 220000}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
     quote_path = tmp_path / "quotes.json"
     quote_path.write_text(
         json.dumps(
@@ -732,7 +758,7 @@ def test_hermes_t_cli_with_quote_data_config_uses_file_provider(tmp_path: Path):
     payload = json.loads(result.strip())
 
     assert payload["suggestion"]["action"] == "sell"
-    assert payload["pending"]["status"] == "pending"
+    assert payload["suggestion"]["unit"] == 10000
 
 
 def test_hermes_t_cli_with_quote_snapshot_config_uses_snapshot_provider(tmp_path: Path):
