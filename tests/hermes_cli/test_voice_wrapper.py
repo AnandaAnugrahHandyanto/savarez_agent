@@ -82,6 +82,112 @@ class TestNormalizeVoiceRecordKeyForPromptToolkit:
         assert normalize_voice_record_key_for_prompt_toolkit("super+b") == "super+b"
         assert normalize_voice_record_key_for_prompt_toolkit("win+o") == "win+o"
 
+    # Round-10 Copilot review regressions on #19835.
+    def test_strips_whitespace_within_and_around(self):
+        """``ctrl + b`` / ``  option + space  `` are accepted by the TUI
+        parser; the CLI normalizer must mirror that or the same config
+        binds different shortcuts across runtimes."""
+        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
+
+        assert normalize_voice_record_key_for_prompt_toolkit("ctrl + b") == "c-b"
+        assert normalize_voice_record_key_for_prompt_toolkit("  option + space  ") == "a-space"
+
+    def test_named_key_aliases_collapse_to_prompt_toolkit_canonical(self):
+        """TUI accepts ``return`` / ``esc`` / ``bs`` / ``del`` etc.;
+        CLI must collapse to prompt_toolkit's canonical spelling
+        (``enter`` / ``escape`` / ``backspace`` / ``delete``)."""
+        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
+
+        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+return") == "c-enter"
+        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+esc") == "c-escape"
+        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+bs") == "c-backspace"
+        assert normalize_voice_record_key_for_prompt_toolkit("alt+del") == "a-delete"
+
+    def test_typoed_named_keys_fall_back_to_default(self):
+        """``ctrl+spcae`` would otherwise pass through as ``c-spcae`` and
+        prompt_toolkit would reject it at startup — fall back instead."""
+        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
+
+        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+spcae") == "c-b"
+        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+f5") == "c-b"
+
+    def test_bare_char_and_multi_modifier_fall_back(self):
+        """TUI parser rejects bare-char (``o``) and multi-modifier
+        (``ctrl+alt+r``) configs; the CLI normalizer must match."""
+        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
+
+        assert normalize_voice_record_key_for_prompt_toolkit("o") == "c-b"
+        assert normalize_voice_record_key_for_prompt_toolkit("b") == "c-b"
+        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+alt+r") == "c-b"
+
+    def test_reserved_ctrl_chars_fall_back(self):
+        """``ctrl+c`` / ``ctrl+d`` / ``ctrl+l`` are always claimed by
+        the CLI's prompt_toolkit input layer or terminal driver; match
+        the TUI parser's rejection to keep /voice status honest."""
+        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
+
+        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+c") == "c-b"
+        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+d") == "c-b"
+        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+l") == "c-b"
+
+    def test_unknown_modifier_falls_back(self):
+        """``meta+b`` is ambiguous on the wire (Alt on xterm, Cmd on
+        legacy macOS), same class as the TUI parser's rejection."""
+        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
+
+        assert normalize_voice_record_key_for_prompt_toolkit("meta+b") == "c-b"
+        assert normalize_voice_record_key_for_prompt_toolkit("shift+b") == "c-b"
+
+
+class TestFormatVoiceRecordKeyForStatus:
+    """Round-10 Copilot review regression on #19835.
+
+    ``/voice status`` used to print the raw scalar (``True`` / ``1``)
+    for non-string configs even though the actual binding falls back
+    to Ctrl+B. The formatter routes through the same normalizer so
+    status always matches what the CLI actually binds.
+    """
+
+    def test_ctrl_and_alt_letter_keys_render_canonically(self):
+        from hermes_cli.voice import format_voice_record_key_for_status
+
+        assert format_voice_record_key_for_status("ctrl+b") == "Ctrl+B"
+        assert format_voice_record_key_for_status("ctrl+o") == "Ctrl+O"
+        assert format_voice_record_key_for_status("alt+r") == "Alt+R"
+
+    def test_named_keys_render_in_title_case(self):
+        from hermes_cli.voice import format_voice_record_key_for_status
+
+        assert format_voice_record_key_for_status("ctrl+space") == "Ctrl+Space"
+        assert format_voice_record_key_for_status("alt+enter") == "Alt+Enter"
+        assert format_voice_record_key_for_status("ctrl+esc") == "Ctrl+Escape"
+
+    def test_aliases_render_via_normalized_form(self):
+        from hermes_cli.voice import format_voice_record_key_for_status
+
+        assert format_voice_record_key_for_status("control+o") == "Ctrl+O"
+        assert format_voice_record_key_for_status("option+space") == "Alt+Space"
+        assert format_voice_record_key_for_status("opt+enter") == "Alt+Enter"
+
+    def test_non_string_scalar_falls_back_to_ctrl_b_label(self):
+        from hermes_cli.voice import format_voice_record_key_for_status
+
+        # Copilot round-10 regression: previously /voice status printed
+        # the raw scalar ("True" / "1") even though the actual binding
+        # fell back to Ctrl+B.
+        assert format_voice_record_key_for_status(True) == "Ctrl+B"
+        assert format_voice_record_key_for_status(1) == "Ctrl+B"
+        assert format_voice_record_key_for_status(None) == "Ctrl+B"
+        assert format_voice_record_key_for_status({}) == "Ctrl+B"
+
+    def test_malformed_configs_fall_back_to_ctrl_b(self):
+        from hermes_cli.voice import format_voice_record_key_for_status
+
+        assert format_voice_record_key_for_status("ctrl+spcae") == "Ctrl+B"
+        assert format_voice_record_key_for_status("ctrl+alt+r") == "Ctrl+B"
+        assert format_voice_record_key_for_status("") == "Ctrl+B"
+        assert format_voice_record_key_for_status("  ") == "Ctrl+B"
+
 
 class TestStopWithoutStart:
     def test_returns_none_when_no_recording_active(self, monkeypatch):

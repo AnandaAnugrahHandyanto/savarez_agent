@@ -8576,12 +8576,16 @@ class HermesCLI:
         tts_status = " (TTS enabled)" if self._voice_tts else ""
         try:
             from hermes_cli.config import load_config
-            from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
+            from hermes_cli.voice import (
+                format_voice_record_key_for_status,
+                normalize_voice_record_key_for_prompt_toolkit,
+            )
             _raw_ptt = load_config().get("voice", {}).get("record_key", "ctrl+b")
             _ptt_key = normalize_voice_record_key_for_prompt_toolkit(_raw_ptt)
+            _ptt_display = format_voice_record_key_for_status(_raw_ptt)
         except Exception:
             _ptt_key = "c-b"
-        _ptt_display = _ptt_key.replace("c-", "Ctrl+").replace("a-", "Alt+").upper()
+            _ptt_display = "Ctrl+B"
         _cprint(f"\n{_ACCENT}Voice mode enabled{tts_status}{_RST}")
         _cprint(f"  {_DIM}{_ptt_display} to start/stop recording{_RST}")
         _cprint(f"  {_DIM}/voice tts  to toggle speech output{_RST}")
@@ -8648,21 +8652,13 @@ class HermesCLI:
         _cprint(f"  TTS:       {'ON' if self._voice_tts else 'OFF'}")
         _cprint(f"  Recording: {'YES' if self._voice_recording else 'no'}")
         _raw_key = load_config().get("voice", {}).get("record_key", "ctrl+b")
-        # Display the configured key with canonical modifier casing so
-        # the status text matches what the TUI renders for the same
-        # config (Copilot round-9 review on #19835).
-        _display_key = _raw_key
-        _lower = _raw_key.lower() if isinstance(_raw_key, str) else ""
-        for alias, label in (
-            ("control+", "Ctrl+"),
-            ("ctrl+", "Ctrl+"),
-            ("option+", "Alt+"),
-            ("opt+", "Alt+"),
-            ("alt+", "Alt+"),
-        ):
-            if _lower.startswith(alias):
-                _display_key = label + _raw_key[len(alias):].upper()
-                break
+        # Route through the shared formatter so malformed configs (non-string
+        # scalars, whitespace, typoed named keys, multi-modifier chords, etc.)
+        # surface as the documented default the CLI actually binds —
+        # otherwise status would advertise a shortcut that never fires
+        # (Copilot round-10 on #19835). Mirrors TUI ``formatVoiceRecordKey``.
+        from hermes_cli.voice import format_voice_record_key_for_status
+        _display_key = format_voice_record_key_for_status(_raw_key)
         _cprint(f"  Record key: {_display_key}")
         _cprint(f"\n  {_BOLD}Requirements:{_RST}")
         for line in reqs["details"].split("\n"):

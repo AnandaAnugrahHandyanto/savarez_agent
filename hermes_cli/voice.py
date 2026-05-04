@@ -27,46 +27,145 @@ import sys
 import threading
 from typing import Any, Callable, Optional
 
-# Aliases normalized into prompt_toolkit's single-letter modifier format so
-# the same ``voice.record_key`` config value binds identically in the
-# classic CLI and the TUI. The TUI's own parser (``ui-tui/src/lib/platform.ts``)
-# accepts the same set; keeping this table in sync with
-# ``_MOD_ALIASES`` there is the contract that removes the cross-runtime
-# mismatch Copilot flagged in round-9 on #19835.
-#
-# ``super`` / ``win`` / ``windows`` are intentionally absent because
-# prompt_toolkit has no super/meta modifier for the Cmd key — those
-# spellings are TUI-only and fall through without rewriting, which the
-# prompt_toolkit add() call will reject so the user sees a startup
-# error instead of a silent no-op binding.
-_VOICE_RECORD_KEY_ALIASES = (
-    ("ctrl+", "c-"),
-    ("control+", "c-"),
-    ("alt+", "a-"),
-    ("option+", "a-"),
-    ("opt+", "a-"),
-)
+# Modifier aliases mirrored from the TUI parser (``ui-tui/src/lib/platform.ts``)
+# ``_MOD_ALIASES`` table — the contract that removes the cross-runtime
+# mismatch Copilot flagged in round-9 on #19835. ``super``/``win``/
+# ``windows`` are intentionally absent: prompt_toolkit has no super/meta
+# modifier for the Cmd key, so those spellings are TUI-only; the
+# normalizer passes them through unchanged and prompt_toolkit's
+# ``add()`` call loudly rejects them at startup rather than silently
+# binding the wrong chord.
+_VOICE_MOD_ALIASES = {
+    "ctrl": "c-",
+    "control": "c-",
+    "alt": "a-",
+    "option": "a-",
+    "opt": "a-",
+}
+
+# Named keys prompt_toolkit accepts in ``c-<name>`` / ``a-<name>`` form.
+# Aliases collapse to prompt_toolkit's canonical spelling so the same
+# config value binds identically in both runtimes (Copilot round-10 on
+# #19835).
+_VOICE_NAMED_KEYS = {
+    "space": "space",
+    "spc": "space",
+    "enter": "enter",
+    "return": "enter",
+    "ret": "enter",
+    "tab": "tab",
+    "escape": "escape",
+    "esc": "escape",
+    "backspace": "backspace",
+    "bs": "backspace",
+    "delete": "delete",
+    "del": "delete",
+}
+
+# ``useInputHandlers()`` intercepts these before the voice check runs,
+# so a binding like ``ctrl+c`` (interrupt), ``ctrl+d`` (quit), or
+# ``ctrl+l`` (clear screen) would be advertised in /voice status but
+# never fire push-to-talk — the same blocklist the TUI parser uses.
+_VOICE_RESERVED_CTRL_CHARS = frozenset({"c", "d", "l"})
+
+_DEFAULT_PT_KEY = "c-b"
 
 
 def normalize_voice_record_key_for_prompt_toolkit(raw: Any) -> str:
     """Coerce ``voice.record_key`` into prompt_toolkit's ``c-x`` / ``a-x`` format.
 
-    Accepts any of the TUI-compatible modifier spellings (``ctrl+``,
-    ``control+``, ``alt+``, ``option+``, ``opt+``) so a config value
-    that works in the TUI also binds correctly in the classic CLI.
-    Non-string / unrecognised values fall back to the documented
-    ``c-b`` default, matching the TUI parser's fallback.
+    Mirrors the TUI parser contract (``ui-tui/src/lib/platform.ts``)
+    so one config value binds the same shortcut in both runtimes:
+
+    * non-string / empty / typo'd / bare-char / multi-modifier / reserved
+      ``ctrl+c|d|l`` → documented default ``c-b``
+    * single-char keys: ``ctrl+o`` → ``c-o``
+    * named keys: ``ctrl+space`` → ``c-space`` (aliases collapse:
+      ``ctrl+return`` → ``c-enter``)
+    * ``super`` / ``win`` / ``windows`` pass through unrewritten so
+      prompt_toolkit rejects them loudly at startup (TUI-only bindings)
     """
     if not isinstance(raw, str):
-        return "c-b"
+        return _DEFAULT_PT_KEY
 
-    lowered = raw.lower()
+    lowered = raw.strip().lower()
+    if not lowered:
+        return _DEFAULT_PT_KEY
 
-    for alias, normalized in _VOICE_RECORD_KEY_ALIASES:
-        if alias in lowered:
-            lowered = lowered.replace(alias, normalized)
+    parts = [p.strip() for p in lowered.split("+") if p.strip()]
+    if not parts:
+        return _DEFAULT_PT_KEY
 
-    return lowered or "c-b"
+    # Multi-modifier chords like ``ctrl+alt+r`` bind different shortcuts
+    # in prompt_toolkit (a-c-r form) and hermes-ink rejects them; collapse
+    # to the documented default instead of silently diverging.
+    if len(parts) > 2:
+        return _DEFAULT_PT_KEY
+
+    # Bare char / bare named key (no explicit modifier) — the CLI's
+    # prompt_toolkit binds the raw key without a modifier, which the TUI
+    # parser refuses; reject here too so both runtimes agree.
+    if len(parts) == 1:
+        return _DEFAULT_PT_KEY
+
+    modifier_token, key_token = parts
+
+    # TUI-only super / win / windows modifiers pass through unchanged so
+    # prompt_toolkit's ``add()`` call rejects the config at startup
+    # rather than the CLI silently falling back to Ctrl+B.
+    if modifier_token in {"super", "win", "windows"}:
+        return f"{modifier_token}+{key_token}"
+
+    normalized_mod = _VOICE_MOD_ALIASES.get(modifier_token)
+    if not normalized_mod:
+        return _DEFAULT_PT_KEY
+
+    # Single-char key: reject reserved-ctrl chords that the TUI would
+    # also block at parse time.
+    if len(key_token) == 1:
+        if normalized_mod == "c-" and key_token in _VOICE_RESERVED_CTRL_CHARS:
+            return _DEFAULT_PT_KEY
+        return f"{normalized_mod}{key_token}"
+
+    # Multi-char key token must be a known named key; typos like
+    # ``ctrl+spcae`` fall back to the default rather than being passed
+    # through as ``c-spcae`` (which prompt_toolkit would reject).
+    named = _VOICE_NAMED_KEYS.get(key_token)
+    if not named:
+        return _DEFAULT_PT_KEY
+
+    return f"{normalized_mod}{named}"
+
+
+def format_voice_record_key_for_status(raw: Any) -> str:
+    """Render ``voice.record_key`` for ``/voice status`` in CLI-friendly form.
+
+    Mirrors the TUI's ``formatVoiceRecordKey``: returns ``Ctrl+B`` /
+    ``Alt+Space`` / ``Ctrl+Enter``. Malformed configs surface as the
+    documented default so status never advertises a shortcut that
+    won't bind (Copilot round-10 on #19835).
+    """
+    normalized = normalize_voice_record_key_for_prompt_toolkit(raw)
+
+    if normalized.startswith("c-"):
+        prefix, key = "Ctrl+", normalized[2:]
+    elif normalized.startswith("a-"):
+        prefix, key = "Alt+", normalized[2:]
+    elif "+" in normalized:
+        # ``super+<key>`` / ``win+<key>`` — CLI won't bind them, but
+        # render in title case so status output is still readable.
+        mod, key = normalized.split("+", 1)
+        prefix = mod[0].upper() + mod[1:] + "+"
+    else:
+        return "Ctrl+B"
+
+    if not key:
+        return prefix.rstrip("+")
+
+    if len(key) == 1:
+        return prefix + key.upper()
+
+    return prefix + key[0].upper() + key[1:]
 
 
 from tools.voice_mode import (
