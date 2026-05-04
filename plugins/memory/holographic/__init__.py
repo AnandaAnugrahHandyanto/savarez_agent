@@ -215,7 +215,7 @@ class HolographicMemoryProvider(MemoryProvider):
                 "Use fact_feedback to rate facts after using them (trains trust scores)."
             )
         return (
-            "# Holographic Memory\n"
+            f"# Holographic Memory\n"
             f"Active. {total} facts stored with entity resolution and trust scoring.\n"
             "Use fact_store to search, probe entities, reason across entities, or add facts.\n"
             "Use fact_store(action='episodes') to browse conversation episodes.\n"
@@ -264,8 +264,10 @@ class HolographicMemoryProvider(MemoryProvider):
         """Mirror built-in memory writes as facts."""
         if action == "add" and self._store and content:
             try:
+                # Resolve first-person pronouns so facts are entity-searchable
+                resolved = FactRetriever.pronoun_resolve(content)
                 category = "user_pref" if target == "user" else "general"
-                fact_id = self._store.add_fact(content, category=category)
+                fact_id = self._store.add_fact(resolved, category=category)
                 if fact_id and self._current_episode_id:
                     self._store.link_fact_to_episode(fact_id, self._current_episode_id)
             except Exception as e:
@@ -284,8 +286,10 @@ class HolographicMemoryProvider(MemoryProvider):
             retriever = self._retriever
 
             if action == "add":
+                # Resolve first-person pronouns before storing
+                resolved = FactRetriever.pronoun_resolve(args["content"])
                 fact_id = store.add_fact(
-                    args["content"],
+                    resolved,
                     category=args.get("category", "general"),
                     tags=args.get("tags", ""),
                 )
@@ -410,7 +414,10 @@ class HolographicMemoryProvider(MemoryProvider):
             for pattern in _PREF_PATTERNS:
                 if pattern.search(content):
                     try:
-                        self._store.add_fact(content[:400], category="user_pref")
+                        resolved = FactRetriever.pronoun_resolve(content[:400])
+                        fact_id = self._store.add_fact(resolved, category="user_pref")
+                        if fact_id and self._current_episode_id:
+                            self._store.link_fact_to_episode(fact_id, self._current_episode_id)
                         extracted += 1
                     except Exception:
                         pass
@@ -419,7 +426,10 @@ class HolographicMemoryProvider(MemoryProvider):
             for pattern in _DECISION_PATTERNS:
                 if pattern.search(content):
                     try:
-                        self._store.add_fact(content[:400], category="project")
+                        resolved = FactRetriever.pronoun_resolve(content[:400])
+                        fact_id = self._store.add_fact(resolved, category="project")
+                        if fact_id and self._current_episode_id:
+                            self._store.link_fact_to_episode(fact_id, self._current_episode_id)
                         extracted += 1
                     except Exception:
                         pass
