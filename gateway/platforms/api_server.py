@@ -49,6 +49,7 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from tools.transcription_tools import SUPPORTED_FORMATS
 
 logger = logging.getLogger(__name__)
 
@@ -240,10 +241,11 @@ def _normalize_multimodal_content(content: Any) -> Any:
                     "invalid_content_part:"
                     "input_audio.data must be a non-empty base64-encoded string."
                 )
-            if fmt not in ("wav", "mp3"):
+            if f".{fmt}" not in SUPPORTED_FORMATS:
                 raise ValueError(
                     "invalid_content_part:"
-                    f"input_audio.format must be 'wav' or 'mp3', got {fmt!r}."
+                    f"unsupported audio format {fmt!r}. "
+                    f"Supported: {', '.join(sorted(f.lstrip('.') for f in SUPPORTED_FORMATS))}"
                 )
             normalized_parts.append({
                 "type": "input_audio",

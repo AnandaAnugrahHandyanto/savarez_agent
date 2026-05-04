@@ -137,10 +137,10 @@ class TestNormalizeInputAudio:
             _normalize_multimodal_content([
                 {
                     "type": "input_audio",
-                    "input_audio": {"data": _b64_audio(), "format": "ogg"},
+                    "input_audio": {"data": _b64_audio(), "format": "xyz"},
                 },
             ])
-        assert "must be 'wav' or 'mp3'" in str(exc.value)
+        assert "unsupported audio format" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
