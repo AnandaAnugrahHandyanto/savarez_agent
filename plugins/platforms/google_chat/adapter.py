@@ -44,7 +44,7 @@ import os
 import random
 import re
 from pathlib import Path as _Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
     import httplib2
@@ -118,6 +118,45 @@ _MAX_TEXT_LENGTH = 4000
 
 # Per-space rate-limit hit counter threshold; warn if exceeded.
 _RATE_LIMIT_WARN_THRESHOLD = 5
+
+# Outbound retry parameters. Google's Chat REST API returns transient 5xx
+# and 429 occasionally — without a retry wrapper, single hiccups drop
+# user-visible messages. Backoff stays bounded so a true outage is still
+# surfaced quickly. Pattern lifted from PR #14965.
+_RETRY_MAX_ATTEMPTS = 3
+_RETRY_BASE_DELAY = 1.0
+_RETRY_MAX_DELAY = 8.0
+_RETRY_JITTER = 0.3
+_RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+
+def _is_retryable_error(exc: BaseException) -> bool:
+    """Classify outbound API errors as transient (retryable) vs permanent.
+
+    Retries are applied to:
+      - HTTP 429 (rate-limited)
+      - HTTP 5xx (server errors)
+      - Network/transport failures (timeout, connection reset, DNS)
+
+    Authentication errors (401/403), client errors (4xx other than 429),
+    and well-formed non-retryable failures are NOT retried — those
+    indicate a misconfiguration or revoked token, not a hiccup.
+    """
+    # googleapiclient.errors.HttpError carries resp.status
+    resp = getattr(exc, "resp", None)
+    status = getattr(resp, "status", None)
+    if isinstance(status, int):
+        return status in _RETRYABLE_HTTP_STATUSES
+    # Fallback heuristics for SSL/socket errors that don't carry an
+    # HTTP status: text matches against common transport-layer wording.
+    text = str(exc).lower()
+    if "timeout" in text or "timed out" in text:
+        return True
+    if "connection" in text and ("reset" in text or "refused" in text or "aborted" in text):
+        return True
+    if "broken pipe" in text or "remote disconnected" in text:
+        return True
+    return False
 
 # Sentinel kept in ``_typing_messages`` after ``send()`` patches the typing
 # marker into the agent's real response. Two purposes:
@@ -430,47 +469,77 @@ class GoogleChatAdapter(BasePlatformAdapter):
     # Configuration loading and validation
     # ------------------------------------------------------------------
     def _load_sa_credentials(self) -> Any:
-        """Load Service Account credentials from env or config.extra.
+        """Load Service Account credentials from env or config.extra,
+        falling back to Application Default Credentials.
 
-        Priority: explicit path in ``extra['service_account_json']`` ->
-        ``GOOGLE_APPLICATION_CREDENTIALS`` env var. google-auth will also
-        pick up GOOGLE_APPLICATION_CREDENTIALS automatically if we call
-        ``google.auth.default()`` but the explicit path helps with
-        deterministic error messages.
+        Priority:
+          1. Explicit ``extra['service_account_json']`` (path or inline JSON)
+          2. ``GOOGLE_APPLICATION_CREDENTIALS`` env var (path)
+          3. Application Default Credentials via ``google.auth.default()``
+             — works on Cloud Run / GCE / GKE with a workload identity
+             attached, or locally via ``gcloud auth application-default
+             login``. Lets operators run the gateway in GCP without
+             managing SA key files. Pattern lifted from PR #14965.
         """
         sa_path = (
             self.config.extra.get("service_account_json")
             or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         )
-        if not sa_path:
-            raise ValueError(
-                "No Service Account credentials configured. Set "
-                "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON or GOOGLE_APPLICATION_CREDENTIALS."
-            )
-        # Inline JSON (rare, but supported).
-        if sa_path.lstrip().startswith("{"):
+        if sa_path:
+            # Inline JSON (rare, but supported).
+            if sa_path.lstrip().startswith("{"):
+                try:
+                    info = json.loads(sa_path)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"Inline SA JSON is not valid JSON: {exc}"
+                    ) from exc
+                return service_account.Credentials.from_service_account_info(
+                    info, scopes=_CHAT_SCOPES
+                )
+            if not os.path.exists(sa_path):
+                raise FileNotFoundError(
+                    f"Service Account JSON file not found at configured path."
+                )
+            # Validate file parses before handing to google-auth for nicer error.
             try:
-                info = json.loads(sa_path)
+                with open(sa_path, "r", encoding="utf-8") as fh:
+                    info = json.load(fh)
             except json.JSONDecodeError as exc:
-                raise ValueError(f"Inline SA JSON is not valid JSON: {exc}") from exc
+                raise ValueError(
+                    f"Service Account JSON file is not valid JSON: {exc}"
+                ) from exc
             return service_account.Credentials.from_service_account_info(
                 info, scopes=_CHAT_SCOPES
             )
-        if not os.path.exists(sa_path):
-            raise FileNotFoundError(
-                f"Service Account JSON file not found at configured path."
-            )
-        # Validate file parses before handing to google-auth for nicer error.
+
+        # No explicit SA configured — try ADC. This is the Cloud Run / GCE
+        # path; google-auth picks up the workload identity automatically.
         try:
-            with open(sa_path, "r", encoding="utf-8") as fh:
-                info = json.load(fh)
-        except json.JSONDecodeError as exc:
+            import google.auth as google_auth
+        except ImportError:
+            google_auth = None  # type: ignore[assignment]
+        if google_auth is None:
             raise ValueError(
-                f"Service Account JSON file is not valid JSON: {exc}"
+                "No Service Account credentials configured. Set "
+                "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON or GOOGLE_APPLICATION_CREDENTIALS, "
+                "or install google-auth to use Application Default Credentials."
+            )
+        try:
+            credentials, _project = google_auth.default(scopes=_CHAT_SCOPES)
+        except Exception as exc:
+            raise ValueError(
+                "No Service Account credentials configured and Application "
+                "Default Credentials are unavailable. Set "
+                "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON or run "
+                "``gcloud auth application-default login``. "
+                f"ADC error: {exc}"
             ) from exc
-        return service_account.Credentials.from_service_account_info(
-            info, scopes=_CHAT_SCOPES
+        logger.info(
+            "[GoogleChat] No SA JSON configured; using Application "
+            "Default Credentials"
         )
+        return credentials
 
     def _validate_config(self) -> Tuple[str, str]:
         """Return (project_id, subscription_path) after validation.
@@ -1846,6 +1915,52 @@ class GoogleChatAdapter(BasePlatformAdapter):
         """
         return AuthorizedHttp(self._credentials, http=httplib2.Http(timeout=30))
 
+    async def _call_with_retry(
+        self,
+        sync_fn: Callable[[], Any],
+        *,
+        op_name: str = "chat-api-call",
+    ) -> Any:
+        """Run ``sync_fn`` in a thread with bounded retry + jittered backoff.
+
+        Wraps a sync Chat API call (typically a ``.execute()``) so transient
+        429/5xx/timeout failures don't drop user-visible messages. Permanent
+        failures (auth, client errors, validation) bubble up on the first
+        attempt — see :func:`_is_retryable_error`. Cancellation propagates
+        immediately, no extra retries after a CancelledError.
+
+        Pattern lifted from PR #14965.
+        """
+        delay = _RETRY_BASE_DELAY
+        last_exc: Optional[BaseException] = None
+        for attempt in range(1, _RETRY_MAX_ATTEMPTS + 1):
+            try:
+                return await asyncio.to_thread(sync_fn)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                last_exc = exc
+                retryable = _is_retryable_error(exc)
+                if not retryable or attempt >= _RETRY_MAX_ATTEMPTS:
+                    raise
+                jitter = delay * _RETRY_JITTER * random.random()
+                wait = min(delay + jitter, _RETRY_MAX_DELAY + _RETRY_JITTER)
+                logger.warning(
+                    "[GoogleChat] %s attempt %d/%d failed (%s); "
+                    "retrying in %.2fs",
+                    op_name, attempt, _RETRY_MAX_ATTEMPTS,
+                    _redact_sensitive(str(exc)), wait,
+                )
+                try:
+                    await asyncio.sleep(wait)
+                except asyncio.CancelledError:
+                    raise
+                delay = min(delay * 2, _RETRY_MAX_DELAY)
+        # Defensive — the loop above always either returns or re-raises.
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError(f"{op_name}: retry loop exited without result")
+
     async def _create_message(
         self, chat_id: str, body: Dict[str, Any]
     ) -> SendResult:
@@ -1879,7 +1994,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 .execute(http=self._new_authed_http())
             )
 
-        resp = await asyncio.to_thread(_do_create)
+        resp = await self._call_with_retry(_do_create, op_name="messages.create")
         # Track outbound destination thread in the persistent count store
         # so a future user "Reply in thread" on the bot's message resolves
         # to a known thread (prev_count >= 1 → side thread). Without

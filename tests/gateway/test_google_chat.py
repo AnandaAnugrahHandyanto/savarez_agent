@@ -15,6 +15,7 @@ import asyncio
 import json
 import os
 import sys
+import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -2129,6 +2130,156 @@ class TestMediaDelegation:
                                           None, mime_hint="application/pdf")
         assert result.success is False
         assert "not found" in (result.error or "").lower()
+
+
+# ===========================================================================
+# Outbound retry (transient API failure handling)
+# ===========================================================================
+
+
+class TestOutboundRetry:
+    """Outbound message creation retries on transient failures.
+
+    Without retry, a single 503/429 from Google's Chat REST API drops the
+    user-visible reply. The retry wrapper handles 429/5xx/timeout/connection
+    errors with exponential backoff + jitter; permanent errors (auth,
+    client errors) bubble up on the first attempt.
+
+    Pattern lifted from PR #14965 by @ArnarValur.
+    """
+
+    @pytest.mark.asyncio
+    async def test_retries_on_503_then_succeeds(self, adapter, monkeypatch):
+        """A 503 from messages.create triggers backoff + retry.
+
+        On the second attempt the call succeeds, so the user sees the
+        reply with no visible failure. The wrapper's sleep is patched
+        out so the test runs instantly.
+        """
+        from plugins.platforms.google_chat import adapter as gc_mod
+        async def _no_sleep(*_a, **_kw):
+            return None
+        monkeypatch.setattr(gc_mod.asyncio, "sleep", _no_sleep)
+
+        # First attempt 503, second attempt OK.
+        execute = MagicMock()
+        execute.execute.side_effect = [
+            _FakeHttpError(status=503, reason="Service unavailable"),
+            {"name": "spaces/S/messages/M", "thread": {"name": "spaces/S/threads/T"}},
+        ]
+        adapter._chat_api.spaces.return_value.messages.return_value.create.return_value = execute
+
+        result = await adapter._create_message("spaces/S", {"text": "hi"})
+
+        assert result.success is True
+        assert result.message_id == "spaces/S/messages/M"
+        # Two execute() calls — initial + one retry.
+        assert execute.execute.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_gives_up_after_max_attempts(self, adapter, monkeypatch):
+        """Three consecutive 503s exhaust the retry budget; the call raises."""
+        from plugins.platforms.google_chat import adapter as gc_mod
+        async def _no_sleep(*_a, **_kw):
+            return None
+        monkeypatch.setattr(gc_mod.asyncio, "sleep", _no_sleep)
+
+        execute = MagicMock()
+        execute.execute.side_effect = _FakeHttpError(status=503, reason="Down")
+        adapter._chat_api.spaces.return_value.messages.return_value.create.return_value = execute
+
+        with pytest.raises(_FakeHttpError):
+            await adapter._create_message("spaces/S", {"text": "hi"})
+        # _RETRY_MAX_ATTEMPTS = 3 → 3 calls total.
+        assert execute.execute.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_does_not_retry_on_400(self, adapter, monkeypatch):
+        """A 400 (client error) is permanent — no retry, fails immediately."""
+        from plugins.platforms.google_chat import adapter as gc_mod
+        async def _no_sleep(*_a, **_kw):
+            return None
+        monkeypatch.setattr(gc_mod.asyncio, "sleep", _no_sleep)
+
+        execute = MagicMock()
+        execute.execute.side_effect = _FakeHttpError(status=400, reason="Bad request")
+        adapter._chat_api.spaces.return_value.messages.return_value.create.return_value = execute
+
+        with pytest.raises(_FakeHttpError):
+            await adapter._create_message("spaces/S", {"text": "hi"})
+        # Only one attempt — 400 is not retryable.
+        assert execute.execute.call_count == 1
+
+    def test_is_retryable_error_classifier(self):
+        """Spot-check the retryable-error taxonomy."""
+        from plugins.platforms.google_chat.adapter import _is_retryable_error
+
+        # Retryable: 429, 5xx, timeout-flavored exceptions
+        assert _is_retryable_error(_FakeHttpError(status=429, reason="rate"))
+        assert _is_retryable_error(_FakeHttpError(status=500, reason="oops"))
+        assert _is_retryable_error(_FakeHttpError(status=502, reason="bad gw"))
+        assert _is_retryable_error(_FakeHttpError(status=503, reason="down"))
+        assert _is_retryable_error(_FakeHttpError(status=504, reason="gw timeout"))
+        assert _is_retryable_error(TimeoutError("connection timed out"))
+        assert _is_retryable_error(ConnectionResetError("connection reset"))
+        # NOT retryable: client errors, auth, programmer errors
+        assert not _is_retryable_error(_FakeHttpError(status=400, reason="bad"))
+        assert not _is_retryable_error(_FakeHttpError(status=401, reason="auth"))
+        assert not _is_retryable_error(_FakeHttpError(status=403, reason="forbidden"))
+        assert not _is_retryable_error(_FakeHttpError(status=404, reason="not found"))
+        assert not _is_retryable_error(ValueError("typed wrong thing"))
+
+
+class TestADCFallback:
+    """When no SA JSON is configured, fall back to Application Default Credentials.
+
+    Critical for Cloud Run / GCE / GKE deploys where workload identity
+    means key files are unnecessary and a security risk to manage.
+    Pattern lifted from PR #14965.
+    """
+
+    def test_load_credentials_uses_adc_when_no_sa_path(self, adapter, monkeypatch):
+        """No SA path → google.auth.default() is called."""
+        adapter.config.extra.pop("service_account_json", None)
+        monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+        monkeypatch.delenv("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON", raising=False)
+
+        adc_creds = MagicMock(name="adc_credentials")
+        fake_default = MagicMock(return_value=(adc_creds, "fake-project"))
+        # ``google`` is mocked at module load via _ensure_google_mocks; patch
+        # the attribute path the adapter uses (``google.auth.default``).
+        google_pkg = sys.modules.get("google") or types.SimpleNamespace()
+        fake_auth_module = types.SimpleNamespace(default=fake_default)
+        monkeypatch.setattr(google_pkg, "auth", fake_auth_module, raising=False)
+        monkeypatch.setitem(sys.modules, "google", google_pkg)
+        monkeypatch.setitem(sys.modules, "google.auth", fake_auth_module)
+
+        result = adapter._load_sa_credentials()
+
+        assert result is adc_creds
+        fake_default.assert_called_once()
+
+    def test_load_credentials_raises_when_no_sa_and_adc_unavailable(
+        self, adapter, monkeypatch
+    ):
+        """ADC failure surfaces a useful error pointing at the two fixes."""
+        adapter.config.extra.pop("service_account_json", None)
+        monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+        monkeypatch.delenv("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON", raising=False)
+
+        def _boom(*_a, **_kw):
+            raise Exception("no credentials")
+        google_pkg = sys.modules.get("google") or types.SimpleNamespace()
+        fake_auth_module = types.SimpleNamespace(default=_boom)
+        monkeypatch.setattr(google_pkg, "auth", fake_auth_module, raising=False)
+        monkeypatch.setitem(sys.modules, "google", google_pkg)
+        monkeypatch.setitem(sys.modules, "google.auth", fake_auth_module)
+
+        with pytest.raises(ValueError) as ei:
+            adapter._load_sa_credentials()
+        msg = str(ei.value).lower()
+        assert "default credentials" in msg or "adc" in msg
+        assert "google_chat_service_account_json" in msg
 
 
 # ===========================================================================
