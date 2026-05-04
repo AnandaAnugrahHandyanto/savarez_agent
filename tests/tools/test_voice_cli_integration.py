@@ -147,6 +147,51 @@ class TestVoiceCommandParsing:
             assert subcommand == expected, f"Failed for {command!r}: got {subcommand!r}"
 
 
+
+
+class TestVoiceTranscriptDraftMode:
+    def test_auto_submit_false_inserts_transcript_into_editable_prompt(self):
+        cli = _make_voice_cli()
+        buffer = MagicMock()
+        app = SimpleNamespace(current_buffer=buffer, invalidate=MagicMock())
+        cli._app = app
+
+        with patch("hermes_cli.config.load_config", return_value={"voice": {"auto_submit": False}}):
+            submitted = cli._handle_voice_transcript("first batch")
+
+        assert submitted is False
+        assert cli._pending_input.empty()
+        buffer.insert_text.assert_called_once_with("first batch")
+        app.invalidate.assert_called_once()
+
+    def test_auto_submit_true_queues_transcript_for_immediate_request(self):
+        cli = _make_voice_cli()
+
+        with patch("hermes_cli.config.load_config", return_value={"voice": {"auto_submit": True}}):
+            submitted = cli._handle_voice_transcript("send now")
+
+        assert submitted is True
+        assert cli._pending_input.get_nowait() == "send now"
+
+    def test_draft_mode_separates_batches_with_space_when_prompt_has_text(self):
+        cli = _make_voice_cli()
+        class FakeBuffer:
+            text = "first batch"
+            def __init__(self):
+                self.inserted = []
+            def insert_text(self, text):
+                self.inserted.append(text)
+                self.text += text
+        buffer = FakeBuffer()
+        cli._app = SimpleNamespace(current_buffer=buffer, invalidate=MagicMock())
+
+        with patch("hermes_cli.config.load_config", return_value={"voice": {"auto_submit": False}}):
+            submitted = cli._handle_voice_transcript("second batch")
+
+        assert submitted is False
+        assert buffer.inserted == [" second batch"]
+
+
 # ============================================================================
 # Voice state thread safety
 # ============================================================================

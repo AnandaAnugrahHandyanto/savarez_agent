@@ -2556,23 +2556,29 @@ class HermesCLI:
             return f"  {txt}  ({elapsed_str})"
         return f"  {txt}"
 
-    def _get_voice_status_fragments(self, width: Optional[int] = None):
+    def _get_voice_status_fragments(self, width: Optional[int] = None) -> list:
         """Return the voice status bar fragments for the interactive TUI."""
         width = width or self._get_tui_terminal_width()
         compact = self._use_minimal_tui_chrome(width=width)
+        try:
+            from hermes_cli.config import load_config
+            raw_key = load_config().get("voice", {}).get("record_key", "ctrl+b")
+            key_display = str(raw_key).replace("ctrl+", "Ctrl+").replace("alt+", "Alt+")
+        except Exception:
+            key_display = "Ctrl+B"
         if self._voice_recording:
             if compact:
                 return [("class:voice-status-recording", " ● REC ")]
-            return [("class:voice-status-recording", " ● REC  Ctrl+B to stop ")]
+            return [("class:voice-status-recording", f" ● REC  {key_display} to stop ")]
         if self._voice_processing:
             if compact:
                 return [("class:voice-status", " ◉ STT ")]
             return [("class:voice-status", " ◉ Transcribing... ")]
         if compact:
-            return [("class:voice-status", " 🎤 Ctrl+B ")]
+            return [("class:voice-status", f" 🎤 {key_display} ")]
         tts = " | TTS on" if self._voice_tts else ""
         cont = " | Continuous" if self._voice_continuous else ""
-        return [("class:voice-status", f" 🎤 Voice mode{tts}{cont}  —  Ctrl+B to record ")]
+        return [("class:voice-status", f" 🎤 Voice mode{tts}{cont}  —  {key_display} to record ")]
 
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         """Return a compact one-line session status string for the TUI footer."""
@@ -8306,8 +8312,41 @@ class HermesCLI:
                 time.sleep(0.15)
         threading.Thread(target=_refresh_level, daemon=True).start()
 
+    def _handle_voice_transcript(self, transcript: str) -> bool:
+        """Route a voice transcript to immediate submit or the editable prompt.
+
+        Returns True when the transcript was submitted as a request, False when
+        it was inserted into the current prompt draft for review/editing.
+        """
+        try:
+            from hermes_cli.config import load_config
+            voice_cfg = load_config().get("voice", {})
+            auto_submit = bool(voice_cfg.get("auto_submit", True))
+        except Exception:
+            auto_submit = True
+
+        if auto_submit:
+            self._pending_input.put(transcript)
+            return True
+
+        app = getattr(self, "_app", None)
+        buffer = getattr(app, "current_buffer", None) if app else None
+        if buffer is None:
+            # Non-interactive fallback: preserve old behavior when there is no
+            # editable prompt to receive the transcript.
+            self._pending_input.put(transcript)
+            return True
+
+        existing = getattr(buffer, "text", "") or ""
+        prefix = "" if not existing or existing.endswith((" ", "\n")) else " "
+        buffer.insert_text(prefix + transcript)
+        if app:
+            app.invalidate()
+        _cprint(f"{_DIM}Transcript inserted into draft. Edit if needed, then press Enter.{_RST}")
+        return False
+
     def _voice_stop_and_transcribe(self):
-        """Stop recording, transcribe via STT, and queue the transcript as input."""
+        """Stop recording, transcribe via STT, and route the transcript as input."""
         # Atomic guard: only one thread can enter stop-and-transcribe.
         # Set _voice_processing immediately so concurrent Ctrl+B presses
         # don't race into the START path while recorder.stop() holds its lock.
@@ -8359,8 +8398,7 @@ class HermesCLI:
                 self._attached_images.clear()
                 if hasattr(self, '_app') and self._app:
                     self._app.invalidate()
-                self._pending_input.put(transcript)
-                submitted = True
+                submitted = self._handle_voice_transcript(transcript)
             elif result.get("success"):
                 _cprint(f"{_DIM}No speech detected.{_RST}")
             else:
@@ -11707,6 +11745,11 @@ class HermesCLI:
         # Run the application with patch_stdout for proper output handling
         try:
             with patch_stdout():
+                try:
+                    if bool((self.config.get("voice") or {}).get("start_enabled", False)):
+                        self._enable_voice_mode()
+                except Exception as e:
+                    _cprint(f"\n{_DIM}Could not enable voice mode at startup: {e}{_RST}")
                 # Set the custom handler on prompt_toolkit's event loop
                 try:
                     import asyncio as _aio
