@@ -2583,22 +2583,36 @@ class HermesCLI:
         """Return the configured voice push-to-talk key formatted for UI.
 
         Shared helper so every voice-facing status line / placeholder /
-        recording hint advertises the SAME label. Without this every
-        site rendered a hardcoded ``Ctrl+B`` even after round-9 wired
-        the formatter into ``/voice on`` and ``/voice status`` —
-        non-default configs left the status bar, recording hint, and
-        composer placeholder all lying about the shortcut (Copilot
-        round-12 on #19835).
+        recording hint advertises the SAME label as the registered
+        prompt_toolkit binding.
+
+        Cached at startup (see ``set_voice_record_key_cache``) rather
+        than re-read per render. Two reasons (Copilot round-13 on
+        #19835):
+
+        * The prompt_toolkit binding is registered once at session
+          start via ``@kb.add(_voice_key)``; re-reading config per
+          render meant the status bar could advertise a new shortcut
+          after a config edit while the actual binding was still the
+          startup chord — exactly the display/binding drift this PR
+          is trying to eliminate.
+        * The label is on the hot render path (status bar + composer
+          placeholder invalidated every 150ms during recording), so
+          reading config on every call added avoidable UI overhead.
+        """
+        return getattr(self, "_voice_record_key_display_cache", None) or "Ctrl+B"
+
+    def set_voice_record_key_cache(self, raw_key: object) -> None:
+        """Populate the voice label cache from a raw ``voice.record_key``.
+
+        Called at CLI startup after the prompt_toolkit binding is
+        registered so the cached label always matches the live binding.
         """
         try:
-            from hermes_cli.config import load_config
-            from hermes_cli.voice import (
-                format_voice_record_key_for_status,
-                voice_record_key_from_config,
-            )
-            return format_voice_record_key_for_status(voice_record_key_from_config(load_config()))
+            from hermes_cli.voice import format_voice_record_key_for_status
+            self._voice_record_key_display_cache = format_voice_record_key_for_status(raw_key)
         except Exception:
-            return "Ctrl+B"
+            self._voice_record_key_display_cache = "Ctrl+B"
 
     def _get_voice_status_fragments(self, width: Optional[int] = None):
         """Return the voice status bar fragments for the interactive TUI."""
@@ -10607,6 +10621,7 @@ class HermesCLI:
         # configs silently fall back to the default here since prompt_toolkit
         # has no super modifier — log a warning so users notice the
         # TUI/CLI split instead of a silent mismatch (round-11).
+        _raw_key: object = "ctrl+b"
         try:
             from hermes_cli.config import load_config
             from hermes_cli.voice import (
@@ -10628,6 +10643,13 @@ class HermesCLI:
                 )
         except Exception:
             _voice_key = "c-b"
+
+        # Cache the UI label here — same ``_raw_key`` that drives the
+        # prompt_toolkit binding below. Every status / placeholder /
+        # recording-hint render reads this cached value so display can
+        # never drift from the live keybinding even if the user edits
+        # voice.record_key mid-session (Copilot round-13 on #19835).
+        self.set_voice_record_key_cache(_raw_key)
 
         @kb.add(_voice_key)
         def handle_voice_record(event):
