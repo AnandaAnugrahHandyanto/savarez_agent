@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _job_uses_pinned_model
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -68,6 +68,31 @@ class TestResolveOrigin:
         """
         job = {"origin": non_dict_origin}
         assert _resolve_origin(job) is None
+
+
+class TestModelSource:
+    def test_global_model_source_inherits_runtime_config(self):
+        assert _job_uses_pinned_model({
+            "model_source": "global",
+            "model": "mimo-v2.5-pro",
+            "provider": "xiaomi-mimo-cn",
+        }) is False
+
+    def test_pinned_model_source_uses_job_override(self):
+        assert _job_uses_pinned_model({
+            "model_source": "pinned",
+            "model": "mimo-v2.5-pro",
+            "provider": "xiaomi-mimo-cn",
+        }) is True
+
+    def test_legacy_job_with_model_remains_pinned(self):
+        assert _job_uses_pinned_model({
+            "model": "mimo-v2.5-pro",
+            "provider": "xiaomi-mimo-cn",
+        }) is True
+
+    def test_legacy_job_without_model_inherits_global(self):
+        assert _job_uses_pinned_model({}) is False
 
 
 class TestResolveDeliveryTarget:
