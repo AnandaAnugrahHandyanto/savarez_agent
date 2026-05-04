@@ -135,17 +135,6 @@ def _has_provider_env_config(content: str) -> bool:
     return any(key in content for key in _PROVIDER_ENV_HINTS)
 
 
-def _is_openai_codex_only_policy() -> bool:
-    """Return True when Hermes is configured for subscription-backed Codex only."""
-    try:
-        import yaml as _yaml
-
-        config_path = HERMES_HOME / "config.yaml"
-        policy_config = _yaml.safe_load(config_path.read_text()) or {}
-        return (policy_config.get("codex") or {}).get("policy") == "openai-codex-only"
-    except Exception:
-        return False
-
 
 def _primary_codex_home_for_doctor() -> Path | None:
     """Read the non-secret account ledger and return the primary CODEX_HOME."""
@@ -514,8 +503,10 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
 
 def run_doctor(args):
     """Run diagnostic checks."""
+    from hermes_cli.auth import is_openai_codex_only_policy
+
     should_fix = getattr(args, 'fix', False)
-    openai_only_policy = _is_openai_codex_only_policy()
+    openai_only_policy = is_openai_codex_only_policy()
 
     # Doctor runs from the interactive CLI, so CLI-gated tool availability
     # checks (like cronjob management) should see the same context as `hermes`.
