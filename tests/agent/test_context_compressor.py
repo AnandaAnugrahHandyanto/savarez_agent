@@ -3,7 +3,11 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
+from agent.context_compressor import (
+    ContextCompressor,
+    SUMMARY_PREFIX,
+    _build_summary_prompt,
+)
 
 
 @pytest.fixture()
@@ -18,6 +22,48 @@ def compressor():
             quiet_mode=True,
         )
         return c
+
+
+class TestSummaryPromptBuilder:
+    def test_prompt_is_decision_packet_not_chronological_run_log(self):
+        prompt = _build_summary_prompt(
+            previous_summary=None,
+            content_to_summarize="USER: fix the cache bug\nASSISTANT: read files",
+            summary_budget=1200,
+        )
+
+        assert "decision-quality handoff checkpoint" in prompt
+        assert "Compress for continuity, not chronology" in prompt
+        assert "## Evidence & Verification" in prompt
+        assert "Omit mechanical lookup/scroll/poll chatter" in prompt
+        assert "Keep the packet dense" in prompt
+        assert "TURNS TO SUMMARIZE" in prompt
+        assert "PREVIOUS SUMMARY" not in prompt
+
+    def test_iterative_prompt_uses_same_packet_structure(self):
+        prompt = _build_summary_prompt(
+            previous_summary="## Active Task\nOld task",
+            content_to_summarize="USER: new request",
+            summary_budget=900,
+        )
+
+        assert "PREVIOUS SUMMARY" in prompt
+        assert "NEW TURNS TO INCORPORATE" in prompt
+        assert "## Evidence & Verification" in prompt
+        assert "decision-quality handoff checkpoint" in prompt
+        assert "Update \"Active State\", \"Evidence & Verification\"" in prompt
+
+    def test_focus_topic_prioritizes_verification_evidence(self):
+        prompt = _build_summary_prompt(
+            previous_summary=None,
+            content_to_summarize="USER: compress around database migration",
+            summary_budget=900,
+            focus_topic="database migration",
+        )
+
+        assert 'FOCUS TOPIC: "database migration"' in prompt
+        assert "verification evidence" in prompt
+        assert "NEVER preserve API keys" in prompt
 
 
 class TestShouldCompress:
@@ -190,6 +236,28 @@ class TestNonStringContent:
 
         kwargs = mock_call.call_args.kwargs
         assert "temperature" not in kwargs
+
+    def test_generate_summary_sends_decision_packet_prompt_to_aux_llm(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "ok"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "fix the cache bug"},
+            {"role": "assistant", "content": "I inspected cache.py"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            c._generate_summary(messages, focus_topic="cache bug")
+
+        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+        assert "decision-quality handoff checkpoint" in prompt
+        assert "## Evidence & Verification" in prompt
+        assert 'FOCUS TOPIC: "cache bug"' in prompt
+        assert "fix the cache bug" in prompt
 
     def test_summary_call_passes_live_main_runtime(self):
         mock_response = MagicMock()
