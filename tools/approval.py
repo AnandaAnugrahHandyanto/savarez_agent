@@ -303,6 +303,8 @@ def _sudo_stdin_block_result(description: str) -> dict:
 # =========================================================================
 
 DANGEROUS_PATTERNS = [
+    (r'\b(cat|less|more|head|tail|sed|awk|grep|rg|ripgrep|find|ls|tar|zip)\b.*(auth\.json\b|\.codex\b|/opt/data/(auth\.json|sessions|cron|memories|state\.db)|hermes-data\b)', "read or package sensitive Hermes/Codex files"),
+    (r'\b(curl|wget|scp|rsync|rclone|gh|git)\b.*(@|--data|--data-binary|-d\s|upload|release\s+upload|push\b).*(auth\.json\b|\.codex\b|/opt/data/(auth\.json|sessions|cron|memories|state\.db)|hermes-data\b)', "possible upload of sensitive Hermes/Codex files"),
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
