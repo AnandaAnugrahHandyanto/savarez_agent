@@ -3641,6 +3641,94 @@ class TestSaveSessionLogAtomicWrite:
         assert call_args.kwargs["default"] is str
 
 
+class TestSaveSessionLogRedactsSecrets:
+    """Regression: session_*.json must not contain plaintext credentials (#19845)."""
+
+    def test_redacts_api_key_in_message_content(self, agent, tmp_path):
+        agent.session_log_file = tmp_path / "session.json"
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {
+                "role": "tool",
+                "content": 'Response: Authorization: Bearer sk-proj-abc123def456ghi789jkl012mno',
+            },
+        ]
+
+        with patch("run_agent.atomic_json_write") as mock_write:
+            agent._save_session_log(messages)
+
+        payload = mock_write.call_args.args[1]
+        tool_msg = payload["messages"][1]
+        assert "sk-proj-abc123def456ghi789jkl012mno" not in tool_msg["content"]
+        assert "***" in tool_msg["content"] or "REDACTED" in tool_msg["content"]
+
+    def test_redacts_api_key_in_user_message(self, agent, tmp_path):
+        agent.session_log_file = tmp_path / "session.json"
+        messages = [
+            {"role": "user", "content": "My key is sk-ant-api03-abc123def456ghi789jkl012mno please use it"},
+        ]
+
+        with patch("run_agent.atomic_json_write") as mock_write:
+            agent._save_session_log(messages)
+
+        payload = mock_write.call_args.args[1]
+        user_msg = payload["messages"][0]
+        assert "sk-ant-api03-abc123def456ghi789jkl012mno" not in user_msg["content"]
+
+    def test_redacts_system_prompt_credentials(self, agent, tmp_path):
+        agent.session_log_file = tmp_path / "session.json"
+        agent._cached_system_prompt = "Use key sk-proj-realkey1234567890123456 for API calls"
+        messages = [{"role": "user", "content": "test"}]
+
+        with patch("run_agent.atomic_json_write") as mock_write:
+            agent._save_session_log(messages)
+
+        payload = mock_write.call_args.args[1]
+        assert "sk-proj-realkey1234567890123456" not in payload["system_prompt"]
+
+    def test_redacts_list_type_content(self, agent, tmp_path):
+        agent.session_log_file = tmp_path / "session.json"
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Key: gsk_abc123def456ghi789jkl012mno"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+                ],
+            },
+        ]
+
+        with patch("run_agent.atomic_json_write") as mock_write:
+            agent._save_session_log(messages)
+
+        payload = mock_write.call_args.args[1]
+        parts = payload["messages"][0]["content"]
+        text_part = parts[0]
+        assert "gsk_abc123def456ghi789jkl012mno" not in text_part["text"]
+        # Image URL should be preserved
+        assert parts[1]["image_url"]["url"].startswith("data:image")
+
+    def test_no_redaction_when_disabled(self, agent, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_REDACT_SECRETS", "0")
+        # Re-import to pick up the env change
+        import importlib
+        import agent.redact as redact_mod
+        old_val = redact_mod._REDACT_ENABLED
+        redact_mod._REDACT_ENABLED = False
+        try:
+            agent.session_log_file = tmp_path / "session.json"
+            messages = [{"role": "user", "content": "Key: sk-proj-test1234567890123456"}]
+
+            with patch("run_agent.atomic_json_write") as mock_write:
+                agent._save_session_log(messages)
+
+            payload = mock_write.call_args.args[1]
+            # When disabled, content passes through unchanged
+            assert "sk-proj-test1234567890123456" in payload["messages"][0]["content"]
+        finally:
+            redact_mod._REDACT_ENABLED = old_val
+
+
 # ===================================================================
 # Anthropic adapter integration fixes
 # ===================================================================
