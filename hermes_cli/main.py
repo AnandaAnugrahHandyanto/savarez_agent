@@ -9239,13 +9239,62 @@ Examples:
         help="Interactive skill configuration — enable/disable individual skills",
     )
 
+    # Lifecycle sub-actions backed by tools.skill_usage (the curator sidecar).
+    skills_stats = skills_subparsers.add_parser(
+        "stats",
+        help="Show skill usage statistics (uses, views, last activity, idle days)",
+    )
+    skills_stats.add_argument(
+        "--days",
+        type=int,
+        default=None,
+        help="Only show usage from the last N days",
+    )
+
+    skills_archive = skills_subparsers.add_parser(
+        "archive",
+        help="Archive a skill (move to .archive/ — excluded from prompt)",
+    )
+    skills_archive.add_argument("name", help="Skill name to archive")
+
+    skills_restore = skills_subparsers.add_parser(
+        "restore",
+        help="Restore an archived skill",
+    )
+    skills_restore.add_argument("name", help="Skill name to restore")
+
+    skills_prune = skills_subparsers.add_parser(
+        "prune",
+        help="Bulk archive skills idle for N days (default 90)",
+    )
+    skills_prune.add_argument(
+        "--days",
+        type=int,
+        default=90,
+        help="Archive skills idle for at least N days (default: 90)",
+    )
+    skills_prune.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip the confirmation prompt",
+    )
+    skills_prune.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be archived without doing it",
+    )
+
     def cmd_skills(args):
-        # Route 'config' action to skills_config module
-        if getattr(args, "skills_action", None) == "config":
+        action = getattr(args, "skills_action", None)
+        if action == "config":
             _require_tty("skills config")
             from hermes_cli.skills_config import skills_command as skills_config_command
 
             skills_config_command(args)
+        elif action in ("stats", "archive", "restore", "prune"):
+            from hermes_cli.skills_config import skills_overflow_command
+
+            skills_overflow_command(args)
         else:
             from hermes_cli.skills_hub import skills_command
 

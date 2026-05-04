@@ -175,3 +175,267 @@ def skills_command(args=None):
     save_disabled_skills(config, new_disabled, platform)
     enabled_count = len(skills) - len(new_disabled)
     print(color(f"✓ Saved: {enabled_count} enabled, {len(new_disabled)} disabled ({platform_label}).", Colors.GREEN))
+
+
+# ─── Lifecycle Commands (stats / archive / restore / prune) ──────────────────
+#
+# These four verbs are the user-facing surface for the curator's sidecar
+# telemetry (~/.hermes/skills/.usage.json). The curator background task
+# (agent/curator.py) consumes the same data to decide auto-transitions; this
+# CLI lets users inspect and override those decisions manually.
+
+def skills_overflow_command(args):
+    """Dispatch for `hermes skills {stats,archive,restore,prune}`."""
+    action = args.skills_action
+    if action == "stats":
+        _cmd_stats(getattr(args, "days", None))
+    elif action == "archive":
+        _cmd_archive(args.name)
+    elif action == "restore":
+        _cmd_restore(args.name)
+    elif action == "prune":
+        _cmd_prune(
+            getattr(args, "days", 90),
+            getattr(args, "yes", False),
+            getattr(args, "dry_run", False),
+        )
+
+
+def _parse_iso(ts):
+    """Parse an ISO timestamp into a tz-aware datetime, or None on failure."""
+    if not ts:
+        return None
+    import datetime as _dt
+    try:
+        dt = _dt.datetime.fromisoformat(str(ts))
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_dt.timezone.utc)
+    return dt
+
+
+def _format_relative(iso_ts: Optional[str]) -> str:
+    """Render an ISO timestamp as a relative phrase (e.g. '3d ago')."""
+    if not iso_ts:
+        return "never"
+    import datetime as _dt
+    dt = _parse_iso(iso_ts)
+    if dt is None:
+        return "?"
+    delta = (_dt.datetime.now(_dt.timezone.utc) - dt).total_seconds()
+    if delta < 60:
+        return "just now"
+    if delta < 3600:
+        return f"{int(delta / 60)}m ago"
+    if delta < 86400:
+        return f"{int(delta / 3600)}h ago"
+    if delta < 172800:
+        return "yesterday"
+    if delta < 604800:
+        return f"{int(delta / 86400)}d ago"
+    return dt.strftime("%Y-%m-%d")
+
+
+def _idle_days(record: dict) -> Optional[int]:
+    """Days since last activity, falling back to created_at when no activity.
+
+    Returns None only if both fields are missing/unparseable — never-tracked
+    skills shouldn't get pruned by accident.
+    """
+    import datetime as _dt
+    dt = _parse_iso(record.get("last_activity_at")) or _parse_iso(record.get("created_at"))
+    if dt is None:
+        return None
+    return max(0, (_dt.datetime.now(_dt.timezone.utc) - dt).days)
+
+
+def _activity_sort_key(iso_ts) -> float:
+    """Convert an ISO timestamp to unix seconds for sorting; 0 if missing."""
+    dt = _parse_iso(iso_ts)
+    return dt.timestamp() if dt else 0.0
+
+
+def _cmd_stats(since_days: Optional[int]) -> None:
+    """Print a per-skill usage table, ranked by activity_count desc."""
+    from tools.skill_usage import agent_created_report
+
+    rows = agent_created_report()
+    if not rows:
+        print(color("  No agent-created skills tracked yet.", Colors.DIM))
+        print("  (Bundled and hub-installed skills are excluded from curator stats.)")
+        return
+
+    if since_days is not None:
+        import datetime as _dt
+        cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=since_days)
+        rows = [
+            r for r in rows
+            if (dt := _parse_iso(r.get("last_activity_at"))) is not None and dt >= cutoff
+        ]
+        if not rows:
+            print(color(f"  No activity in the last {since_days} day(s).", Colors.DIM))
+            return
+
+    rows.sort(key=lambda r: (
+        -int(r.get("activity_count") or 0),
+        -_activity_sort_key(r.get("last_activity_at")),
+    ))
+
+    title = f"Skill usage (last {since_days} days)" if since_days is not None else "Skill usage"
+
+    try:
+        from rich.console import Console
+        from rich.table import Table
+    except ImportError:
+        # Plain-text fallback — unlikely (rich is a runtime dep) but defensive.
+        print(f"\n{title}")
+        print(f"{'Skill':<30} {'Uses':>5} {'Views':>5} {'Patch':>5} "
+              f"{'Last activity':<14} {'Idle':>6} {'State':<10} Pin")
+        print("─" * 90)
+        for r in rows:
+            idle = _idle_days(r)
+            print(
+                f"{str(r['name'])[:29]:<30} "
+                f"{(r.get('use_count') or 0):>5} "
+                f"{(r.get('view_count') or 0):>5} "
+                f"{(r.get('patch_count') or 0):>5} "
+                f"{_format_relative(r.get('last_activity_at'))[:13]:<14} "
+                f"{('—' if idle is None else f'{idle}d'):>6} "
+                f"{str(r.get('state') or 'active')[:9]:<10} "
+                f"{'pinned' if r.get('pinned') else ''}"
+            )
+        print(f"\n{len(rows)} skill(s)")
+        return
+
+    c = Console()
+    t = Table(title=title)
+    t.add_column("Skill", style="bold")
+    t.add_column("Uses", justify="right")
+    t.add_column("Views", justify="right")
+    t.add_column("Patches", justify="right")
+    t.add_column("Last activity")
+    t.add_column("Idle", justify="right")
+    t.add_column("State")
+    t.add_column("Pin")
+    for r in rows:
+        idle = _idle_days(r)
+        t.add_row(
+            str(r["name"]),
+            str(r.get("use_count") or 0),
+            str(r.get("view_count") or 0),
+            str(r.get("patch_count") or 0),
+            _format_relative(r.get("last_activity_at")),
+            "—" if idle is None else f"{idle}d",
+            str(r.get("state") or "active"),
+            "📌" if r.get("pinned") else "",
+        )
+    c.print(t)
+
+
+def _cmd_archive(name: str) -> None:
+    """Archive a single skill. Refuses if the skill is pinned."""
+    import sys
+    from tools.skill_usage import archive_skill, get_record
+
+    if get_record(name).get("pinned"):
+        print(
+            color(
+                f"Refusing: '{name}' is pinned. "
+                f"Unpin first: hermes curator unpin {name}",
+                Colors.RED,
+            ),
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    ok, msg = archive_skill(name)
+    if ok:
+        print(color(f"✓ {msg}", Colors.GREEN))
+    else:
+        print(color(f"✗ {msg}", Colors.RED), file=sys.stderr)
+        sys.exit(1)
+
+
+def _cmd_restore(name: str) -> None:
+    """Restore a single archived skill."""
+    import sys
+    from tools.skill_usage import restore_skill
+
+    ok, msg = restore_skill(name)
+    if ok:
+        print(color(f"✓ {msg}", Colors.GREEN))
+    else:
+        print(color(f"✗ {msg}", Colors.RED), file=sys.stderr)
+        sys.exit(1)
+
+
+def _cmd_prune(days: int, skip_confirm: bool, dry_run: bool) -> None:
+    """Bulk-archive skills idle for ≥ N days. Pinned skills are exempt."""
+    import sys
+    if days < 1:
+        print(
+            color(f"--days must be ≥ 1 (got {days})", Colors.RED),
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    from tools.skill_usage import agent_created_report, archive_skill
+
+    candidates = []
+    for r in agent_created_report():
+        if r.get("pinned"):
+            continue
+        if r.get("state") == "archived":
+            continue
+        idle = _idle_days(r)
+        if idle is None or idle < days:
+            continue
+        candidates.append((r["name"], idle, r.get("last_activity_at")))
+
+    if not candidates:
+        print(color(f"  Nothing to prune (no skills idle ≥ {days} days).", Colors.DIM))
+        return
+
+    candidates.sort(key=lambda c: -c[1])
+
+    print(color(
+        f"\nSkills idle ≥ {days} days ({len(candidates)} candidate(s)):",
+        Colors.BOLD,
+    ))
+    print(f"  {'Skill':<32} {'Idle':>8}  Last activity")
+    print("  " + "─" * 70)
+    for name, idle, last in candidates:
+        print(f"  {name[:31]:<32} {f'{idle}d':>8}  {_format_relative(last)}")
+    print()
+
+    if dry_run:
+        print(color("  Dry run — no changes made.", Colors.DIM))
+        return
+
+    if not skip_confirm:
+        try:
+            answer = input(
+                color(f"Archive these {len(candidates)} skill(s)? [y/N]: ", Colors.YELLOW)
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.")
+            return
+        if answer not in ("y", "yes"):
+            print("Aborted.")
+            return
+
+    archived = 0
+    failed = 0
+    for name, _idle, _last in candidates:
+        ok, msg = archive_skill(name)
+        if ok:
+            print(color(f"  ✓ {name}: {msg}", Colors.GREEN))
+            archived += 1
+        else:
+            print(color(f"  ✗ {name}: {msg}", Colors.RED))
+            failed += 1
+
+    summary = f"\nArchived {archived}/{len(candidates)}"
+    if failed:
+        summary += f" — {failed} failed"
+    print(color(summary, Colors.GREEN if not failed else Colors.YELLOW))
