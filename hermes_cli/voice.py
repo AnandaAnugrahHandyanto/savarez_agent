@@ -71,6 +71,28 @@ _VOICE_RESERVED_CTRL_CHARS = frozenset({"c", "d", "l"})
 _DEFAULT_PT_KEY = "c-b"
 
 
+def voice_record_key_from_config(cfg: Any) -> Any:
+    """Shape-safe ``cfg.voice.record_key`` lookup.
+
+    ``load_config()`` deep-merges raw YAML and preserves scalar
+    overrides, so a hand-edited ``voice: true`` / ``voice: cmd+b``
+    leaves ``cfg["voice"]`` as a bool/str instead of a dict, and the
+    naive ``.get("voice", {}).get("record_key")`` chain raises
+    AttributeError before voice can even start (Copilot round-11 on
+    #19835). Return ``None`` for malformed shapes so call sites can
+    feed the result straight into the normalizer/formatter and get
+    the documented default.
+    """
+    if not isinstance(cfg, dict):
+        return None
+
+    voice = cfg.get("voice")
+    if not isinstance(voice, dict):
+        return None
+
+    return voice.get("record_key")
+
+
 def normalize_voice_record_key_for_prompt_toolkit(raw: Any) -> str:
     """Coerce ``voice.record_key`` into prompt_toolkit's ``c-x`` / ``a-x`` format.
 
@@ -110,11 +132,14 @@ def normalize_voice_record_key_for_prompt_toolkit(raw: Any) -> str:
 
     modifier_token, key_token = parts
 
-    # TUI-only super / win / windows modifiers pass through unchanged so
-    # prompt_toolkit's ``add()`` call rejects the config at startup
-    # rather than the CLI silently falling back to Ctrl+B.
+    # ``super`` / ``win`` / ``windows`` are TUI-only (prompt_toolkit has
+    # no super modifier, so ``@kb.add(super+b)`` crashes the CLI at
+    # startup). Fall back to the documented default here; the CLI
+    # binding site is expected to log a warning when the configured
+    # value is one of these spellings so users know the TUI+CLI
+    # runtimes diverge on that shortcut (Copilot round-11 on #19835).
     if modifier_token in {"super", "win", "windows"}:
-        return f"{modifier_token}+{key_token}"
+        return _DEFAULT_PT_KEY
 
     normalized_mod = _VOICE_MOD_ALIASES.get(modifier_token)
     if not normalized_mod:

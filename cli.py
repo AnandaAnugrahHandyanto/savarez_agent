@@ -8579,8 +8579,12 @@ class HermesCLI:
             from hermes_cli.voice import (
                 format_voice_record_key_for_status,
                 normalize_voice_record_key_for_prompt_toolkit,
+                voice_record_key_from_config,
             )
-            _raw_ptt = load_config().get("voice", {}).get("record_key", "ctrl+b")
+            # Shape-safe extractor — malformed voice: YAML (bool/scalar/list)
+            # falls back to None instead of raising AttributeError
+            # (Copilot round-11 on #19835).
+            _raw_ptt = voice_record_key_from_config(load_config())
             _ptt_key = normalize_voice_record_key_for_prompt_toolkit(_raw_ptt)
             _ptt_display = format_voice_record_key_for_status(_raw_ptt)
         except Exception:
@@ -8651,13 +8655,17 @@ class HermesCLI:
         _cprint(f"  Mode:      {'ON' if self._voice_mode else 'OFF'}")
         _cprint(f"  TTS:       {'ON' if self._voice_tts else 'OFF'}")
         _cprint(f"  Recording: {'YES' if self._voice_recording else 'no'}")
-        _raw_key = load_config().get("voice", {}).get("record_key", "ctrl+b")
-        # Route through the shared formatter so malformed configs (non-string
-        # scalars, whitespace, typoed named keys, multi-modifier chords, etc.)
-        # surface as the documented default the CLI actually binds —
-        # otherwise status would advertise a shortcut that never fires
-        # (Copilot round-10 on #19835). Mirrors TUI ``formatVoiceRecordKey``.
-        from hermes_cli.voice import format_voice_record_key_for_status
+        # Shape-safe extractor + shared formatter so malformed configs
+        # (non-string scalars, whitespace, typoed named keys, multi-modifier
+        # chords, or ``voice:`` itself being a non-dict) surface as the
+        # documented default the CLI actually binds — status never
+        # advertises a shortcut that can't fire (Copilot round-10/11 on
+        # #19835). Mirrors TUI ``formatVoiceRecordKey``.
+        from hermes_cli.voice import (
+            format_voice_record_key_for_status,
+            voice_record_key_from_config,
+        )
+        _raw_key = voice_record_key_from_config(load_config())
         _display_key = format_voice_record_key_for_status(_raw_key)
         _cprint(f"  Record key: {_display_key}")
         _cprint(f"\n  {_BOLD}Requirements:{_RST}")
@@ -10552,12 +10560,29 @@ class HermesCLI:
         # Config spellings (ctrl/control/alt/option/opt) are normalized to
         # prompt_toolkit's c-x / a-x format via ``normalize_voice_record_key_for_prompt_toolkit``
         # so the same config value binds identically in the TUI and CLI
-        # (Copilot round-9 review on #19835).
+        # (Copilot round-9 review on #19835). ``super``/``win``/``windows``
+        # configs silently fall back to the default here since prompt_toolkit
+        # has no super modifier — log a warning so users notice the
+        # TUI/CLI split instead of a silent mismatch (round-11).
         try:
             from hermes_cli.config import load_config
-            from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
-            _raw_key = load_config().get("voice", {}).get("record_key", "ctrl+b")
+            from hermes_cli.voice import (
+                normalize_voice_record_key_for_prompt_toolkit,
+                voice_record_key_from_config,
+            )
+            _raw_key = voice_record_key_from_config(load_config())
             _voice_key = normalize_voice_record_key_for_prompt_toolkit(_raw_key)
+            if (
+                isinstance(_raw_key, str)
+                and _raw_key.strip().lower().split("+", 1)[0].strip() in {"super", "win", "windows"}
+                and _voice_key == "c-b"
+            ):
+                logger.warning(
+                    "voice.record_key %r uses a TUI-only modifier (super/win); "
+                    "CLI fell back to Ctrl+B. Use ctrl+<key> or alt+<key> for "
+                    "cross-runtime parity.",
+                    _raw_key,
+                )
         except Exception:
             _voice_key = "c-b"
 

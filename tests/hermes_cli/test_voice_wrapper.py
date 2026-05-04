@@ -73,14 +73,17 @@ class TestNormalizeVoiceRecordKeyForPromptToolkit:
 
         assert normalize_voice_record_key_for_prompt_toolkit("") == "c-b"
 
-    def test_super_win_aliases_left_as_is(self):
-        """prompt_toolkit has no super modifier, so super+ / win+ configs
-        round-trip unchanged and prompt_toolkit rejects them with a clear
-        error at startup — preferable to silently binding ctrl+b."""
+    def test_super_win_fall_back_to_default_in_cli(self):
+        """prompt_toolkit has no super modifier, so ``super+b`` / ``win+o``
+        would crash the classic CLI at startup if passed through. Fall
+        back to the documented default; the CLI binding site is
+        expected to warn so users know the shortcut is TUI-only
+        (Copilot round-11 on #19835)."""
         from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
 
-        assert normalize_voice_record_key_for_prompt_toolkit("super+b") == "super+b"
-        assert normalize_voice_record_key_for_prompt_toolkit("win+o") == "win+o"
+        assert normalize_voice_record_key_for_prompt_toolkit("super+b") == "c-b"
+        assert normalize_voice_record_key_for_prompt_toolkit("win+o") == "c-b"
+        assert normalize_voice_record_key_for_prompt_toolkit("windows+o") == "c-b"
 
     # Round-10 Copilot review regressions on #19835.
     def test_strips_whitespace_within_and_around(self):
@@ -137,6 +140,53 @@ class TestNormalizeVoiceRecordKeyForPromptToolkit:
 
         assert normalize_voice_record_key_for_prompt_toolkit("meta+b") == "c-b"
         assert normalize_voice_record_key_for_prompt_toolkit("shift+b") == "c-b"
+
+
+class TestVoiceRecordKeyFromConfig:
+    """Round-11 Copilot review regression on #19835.
+
+    ``load_config()`` preserves YAML scalar overrides, so a hand-edited
+    ``voice: true`` or ``voice: cmd+b`` made the naive
+    ``cfg.get('voice', {}).get('record_key')`` chain raise
+    AttributeError before voice could run. The shape-safe extractor
+    returns None for every malformed shape so the call-site fallback
+    (``normalize_…`` / ``format_…``) surfaces the documented default.
+    """
+
+    def test_dict_voice_with_string_record_key(self):
+        from hermes_cli.voice import voice_record_key_from_config
+
+        assert voice_record_key_from_config({"voice": {"record_key": "ctrl+o"}}) == "ctrl+o"
+
+    def test_non_dict_config_root(self):
+        from hermes_cli.voice import voice_record_key_from_config
+
+        for bad_root in (None, True, 1, "ctrl+b", [], ["ctrl+b"]):
+            assert voice_record_key_from_config(bad_root) is None, bad_root
+
+    def test_non_dict_voice_entry(self):
+        from hermes_cli.voice import voice_record_key_from_config
+
+        for bad_voice in (None, True, "cmd+b", 42, ["ctrl+b"]):
+            assert voice_record_key_from_config({"voice": bad_voice}) is None, bad_voice
+
+    def test_missing_record_key_returns_none(self):
+        from hermes_cli.voice import voice_record_key_from_config
+
+        assert voice_record_key_from_config({"voice": {"beep_enabled": True}}) is None
+        assert voice_record_key_from_config({}) is None
+
+    def test_normalizer_accepts_extractor_output_directly(self):
+        """voice_record_key_from_config + normalize_… must compose —
+        None / non-string scalars all fall back to c-b."""
+        from hermes_cli.voice import (
+            normalize_voice_record_key_for_prompt_toolkit,
+            voice_record_key_from_config,
+        )
+
+        for raw in (None, True, 1, "cmd+b", ["ctrl+b"]):
+            extracted = voice_record_key_from_config({"voice": raw})
+            assert normalize_voice_record_key_for_prompt_toolkit(extracted) == "c-b"
 
 
 class TestFormatVoiceRecordKeyForStatus:
