@@ -2872,6 +2872,8 @@ _PLATFORMS = [
              "help": "For DMs, this is your user ID. You can set it later by typing /set-home in chat."},
             {"name": "TRUECONF_VERIFY_SSL", "prompt": "Use SSL verifying for messaging platfotm (default true). Type 0 to disable.", "password": False,
              "help": "May be usufel for some reasons (self-signed SSL cert, problems while authorizing etc.)."},
+            {"name": "TRUECONF_PARSE_MODE", "prompt": "Define parsing mode for messages must be sent by bot (default HTML because it has better support in TrueConf).", "password": False,
+             "help": "Select from: HTML, MARKDOWN, TEXT."},
         ],
     },
 ]

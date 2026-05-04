@@ -121,6 +121,15 @@ TRUECONF_VERIFY_SSL=false
 Disabling SSL verification reduces security. Only use this for TrueConf servers you trust.
 :::
 
+## Parse mode
+
+TrueConf Bot API supports three message formatting types:
+*  text – plain text. All characters will be preserved and displayed.
+*  markdown - basic Markdown formatting is supported. Special characters are converted into formatted text (bold, italic, links, etc.);
+*  html - HTML tags will be interpreted and displayed as formatted text.
+
+HTML is the default mode for adapter because of better support by API.
+
 ## Home Channel
 
 Use the `/sethome` command in any TrueConf chat (DM or group) to designate it as the **home channel**. Scheduled tasks (cron jobs) deliver their results to this channel.

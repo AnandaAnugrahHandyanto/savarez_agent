@@ -56,6 +56,7 @@ def _make_adapter(**kwargs):
         "TRUECONF_PASSWORD": config.extra.get("password", ""),
         "TRUECONF_VERIFY_SSL": "true",
         "TRUECONF_ALLOW_ALL_USERS": "true",
+        "TRUECONF_PARSE_MODE": "HTML",
     }, clear=False):
         adapter = TrueConfAdapter(config)
         # Mock the internal bot/dispatcher/router since we don't want real connections

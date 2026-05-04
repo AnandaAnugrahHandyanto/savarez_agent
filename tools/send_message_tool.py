@@ -1754,6 +1754,7 @@ async def _send_trueconf(pconfig, chat_id, message):
     import asyncio
     try:
         from trueconf import Bot
+        from trueconf.enums import ParseMode
     except ImportError:
         return _error("python-trueconf-bot not installed")
 
@@ -1763,12 +1764,19 @@ async def _send_trueconf(pconfig, chat_id, message):
     verify_ssl = pconfig.extra.get("verify_ssl", True)
     if os.getenv("TRUECONF_VERIFY_SSL", "").lower() in ("false", "0", "no"):
         verify_ssl = False
+    parse_mode = os.getenv("TRUECONF_PARSE_MODE").lower()
+    if parse_mode == "html":
+        parse_mode = ParseMode.HTML
+    elif parse_mode == "markdown":
+        parse_mode = ParseMode.MARKDOWN
+    else:
+        parse_mode = ParseMode.TEXT
 
     try:
         bot = Bot.from_credentials(server, username, password, verify_ssl=verify_ssl)
         await bot.start()
         await asyncio.sleep(3)
-        result = await bot.send_message(chat_id, message)
+        result = await bot.send_message(chat_id, message, parse_mode)
         await bot.shutdown()
 
         if result:

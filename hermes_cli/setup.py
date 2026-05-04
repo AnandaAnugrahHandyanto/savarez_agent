@@ -2357,6 +2357,10 @@ def _setup_trueconf():
     save_env_value("TRUECONF_VERIFY_SSL", str(use_ssl))
     print_success(f"Allow SSL: {use_ssl}")
 
+    parse_mode = prompt("Define parsing mode for messages must be sent by bot (default HTML because it has better support in TrueConf). Select from: HTML, MARKDOWN, TEXT.", "HTML")
+    save_env_value("TRUECONF_PARSE_MODE", parse_mode)
+    print_success(f"Parse mode: {parse_mode}")
+
 
 def _setup_webhooks():
     """Configure webhook integration."""

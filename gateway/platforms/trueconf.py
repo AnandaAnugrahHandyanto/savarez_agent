@@ -11,6 +11,7 @@ Env vars:
   - TRUECONF_ALLOW_ALL_USERS Set to "true" to allow all users
   - TRUECONF_HOME_CHANNEL  Default chat ID for cron delivery
   - TRUECONF_VERIFY_SSL     Set to "false" or "0" to skip SSL verification
+  - TRUECONF_PARSE_MODE     Parse mode for messages: "html" (default), "markdown", or "text"
 """
 
 import asyncio
@@ -150,6 +151,15 @@ class TrueConfAdapter(BasePlatformAdapter):
         self._bot_task: Optional[asyncio.Task] = None
         self._allowed_users: Optional[set] = None
         self._allow_all: bool = False
+
+        # Parse mode: read from TRUECONF_PARSE_MODE, default to "html"
+        self._parse_mode: str = os.getenv("TRUECONF_PARSE_MODE", "html").strip().lower()
+        if self._parse_mode not in ("markdown", "html", "text"):
+            logger.warning(
+                "TrueConf: invalid TRUECONF_PARSE_MODE '%s', defaulting to 'html'",
+                self._parse_mode
+            )
+            self._parse_mode = "html"
 
         # Bot's favorites chat_id for echo detection
         self._favorites_chat_id: Optional[str] = None
@@ -647,6 +657,48 @@ class TrueConfAdapter(BasePlatformAdapter):
         # Tool names are typically lowercase with underscores
         return bool(re.match(r'^\S+\s+[a-z_]+:', content))
 
+    @staticmethod
+    def _markdown_to_html(text: str) -> str:
+        """
+        Convert basic Markdown to HTML for TrueConf.
+        Handles: **bold**, *italic*, __bold__, _italic_, ~~strikethrough~~, `code`, [link](url)
+        """
+        import re
+        
+        # Process code first (to avoid inner processing)
+        # Inline code: `code` -> <code>code</code>
+        text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
+        
+        # Bold: **text** -> <b>text</b>
+        text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+        
+        # Bold: __text__ -> <b>text</b>
+        text = re.sub(r'__(.+?)__', r'<b>\1</b>', text)
+        
+        # Italic: *text* -> <i>text</i>
+        text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
+        
+        # Italic: _text_ -> <i>text</i>
+        text = re.sub(r'_(.+?)_', r'<i>\1</i>', text)
+        
+        # Strikethrough: ~~text~~ -> <s>text</s>
+        text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text)
+        
+        # Links: [text](url) -> <a href="url">text</a>
+        text = re.sub(r'\[([^\]]+)\]\(([^\)]+)\)', r'<a href="\2">\1</a>', text)
+        
+        return text
+
+    def _get_parse_mode(self):
+        """Get the ParseMode based on TRUECONF_PARSE_MODE setting."""
+        if self._parse_mode == "html":
+            return ParseMode.HTML
+        elif self._parse_mode == "markdown":
+            return ParseMode.MARKDOWN
+        else:
+            return ParseMode.TEXT
+
+
     # ------------------------------------------------------------------
     # Outbound sending
     # ------------------------------------------------------------------
@@ -704,11 +756,16 @@ class TrueConfAdapter(BasePlatformAdapter):
                 return SendResult(success=False, message_id=None, error="Empty message")
 
             try:
+                # Convert markdown to HTML if needed
+                text_to_send = clean_text
+                if self._parse_mode == "html":
+                    text_to_send = self._markdown_to_html(clean_text)
+                
                 result = await asyncio.wait_for(
                     self._bot.send_message(
                         chat_id=resolved,
-                        text=clean_text,
-                        parse_mode=ParseMode.MARKDOWN,
+                        text=text_to_send,
+                        parse_mode=self._get_parse_mode(),
                         reply_message_id=reply_to,
                     ),
                     timeout=60.0,
@@ -760,12 +817,19 @@ class TrueConfAdapter(BasePlatformAdapter):
             last_error: Optional[str] = None
 
             for chunk in chunks:
+                # Convert markdown to HTML if needed
+                if self._parse_mode == "html":
+                    chunk = self._markdown_to_html(chunk)
+
+                # Log raw chunk before sending to debug markdown issues
+                logger.info(f"Chunk: {chunk}")
+
                 try:
                     result = await asyncio.wait_for(
                         self._bot.send_message(
                             chat_id=resolved_chat_id,
                             text=chunk,
-                            parse_mode=ParseMode.MARKDOWN,
+                            parse_mode=self._get_parse_mode(),
                             reply_message_id=reply_to,
                         ),
                         timeout=60.0,
@@ -821,13 +885,18 @@ class TrueConfAdapter(BasePlatformAdapter):
             from trueconf.types import FSInputFile
             file_data = FSInputFile(image_path)
 
+            # Convert caption markdown to HTML if needed
+            caption_to_send = caption
+            if caption and self._parse_mode == "html":
+                caption_to_send = self._markdown_to_html(caption)
+
             result = await asyncio.wait_for(
                 self._bot.send_photo(
                     chat_id=resolved,
                     file=file_data,
                     preview=None,
-                    caption=caption,
-                    parse_mode=ParseMode.MARKDOWN,
+                    caption=caption_to_send,
+                    parse_mode=self._get_parse_mode(),
                     reply_message_id=reply_to,
                 ),
                 timeout=120.0,
@@ -898,12 +967,17 @@ class TrueConfAdapter(BasePlatformAdapter):
             from trueconf.types import FSInputFile
             file_data = FSInputFile(file_path)
 
+            # Convert caption markdown to HTML if needed
+            caption_to_send = caption
+            if caption and self._parse_mode == "html":
+                caption_to_send = self._markdown_to_html(caption)
+
             result = await asyncio.wait_for(
                 self._bot.send_document(
                     chat_id=resolved,
                     file=file_data,
-                    caption=caption,
-                    parse_mode=ParseMode.MARKDOWN,
+                    caption=caption_to_send,
+                    parse_mode=self._get_parse_mode(),
                     reply_message_id=reply_to,
                 ),
                 timeout=120.0,
@@ -1010,11 +1084,17 @@ class TrueConfAdapter(BasePlatformAdapter):
             from trueconf.enums import ParseMode
             # Note: TrueConf Bot API edit_message does NOT accept chat_id parameter
             # The API identifies the message by message_id alone
+            
+            # Convert markdown to HTML if needed
+            text_to_send = clean_text
+            if self._parse_mode == "html":
+                text_to_send = self._markdown_to_html(clean_text)
+
             result: EditMessageResponse = await asyncio.wait_for(
                 self._bot.edit_message(
                     message_id=message_id,
-                    text=clean_text,
-                    parse_mode=ParseMode.MARKDOWN,
+                    text=text_to_send,
+                    parse_mode=self._get_parse_mode(),
                 ),
                 timeout=30.0,
             )
