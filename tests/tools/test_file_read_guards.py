@@ -561,6 +561,46 @@ class TestLargeFileHint(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Redaction hint
+# ---------------------------------------------------------------------------
+
+class TestReadFileRedactionHint(unittest.TestCase):
+    """Reads that redact secrets should tell the model the file was masked."""
+
+    def setUp(self):
+        _read_tracker.clear()
+
+    def tearDown(self):
+        _read_tracker.clear()
+
+    @patch("tools.file_tools._get_file_ops")
+    @patch("tools.file_tools.redact_sensitive_text")
+    def test_redacted_read_gets_hint(self, mock_redact, mock_ops):
+        original = "     1|SECRET_KEY=os.environ.get('SECRET_KEY', 'value')\n"
+        redacted = "     1|SECRET_KEY=os.env...EY', 'value')\n"
+        mock_ops.return_value = _make_fake_ops(content=original, file_size=len(original))
+        mock_redact.return_value = redacted
+
+        result = json.loads(read_file_tool("/tmp/config.py", task_id="redact_hint"))
+
+        self.assertEqual(result["content"], redacted)
+        self.assertIn("_hint", result)
+        self.assertIn("Secret redaction", result["_hint"])
+        self.assertIn("not literal file corruption", result["_hint"])
+
+    @patch("tools.file_tools._get_file_ops")
+    @patch("tools.file_tools.redact_sensitive_text")
+    def test_unredacted_read_has_no_redaction_hint(self, mock_redact, mock_ops):
+        content = "     1|DEBUG=True\n"
+        mock_ops.return_value = _make_fake_ops(content=content, file_size=len(content))
+        mock_redact.return_value = content
+
+        result = json.loads(read_file_tool("/tmp/config.py", task_id="no_redact_hint"))
+
+        self.assertNotIn("_hint", result)
+
+
+# ---------------------------------------------------------------------------
 # Config override
 # ---------------------------------------------------------------------------
 
