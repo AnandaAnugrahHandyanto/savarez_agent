@@ -293,6 +293,7 @@ def _resolve_runtime_from_pool_entry(
         "source": getattr(entry, "source", "pool"),
         "credential_pool": pool,
         "requested_provider": requested_provider,
+        "default_headers": {"User-Agent": "KimiCLI/1.30.0"} if provider in ("kimi-coding", "kimi-coding-cn") else None,
     }
 
 
@@ -884,6 +885,7 @@ def _resolve_explicit_runtime(
             "api_key": api_key,
             "source": "explicit",
             "requested_provider": requested_provider,
+            "default_headers": {"User-Agent": "KimiCLI/1.30.0"} if provider in ("kimi-coding", "kimi-coding-cn") else None,
         }
 
     return None

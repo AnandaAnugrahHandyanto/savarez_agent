@@ -845,6 +845,7 @@ def _build_child_agent(
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
+    override_default_headers: Optional[Dict[str, str]] = None,
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
@@ -983,7 +984,7 @@ def _build_child_agent(
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or parent_agent.base_url
     effective_api_key = override_api_key or parent_api_key
-    effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
+    effective_default_headers = override_default_headers or getattr(parent_agent, "_client_kwargs", {}).get("default_headers")
     effective_acp_command = override_acp_command or getattr(
         parent_agent, "acp_command", None
     )
@@ -1062,6 +1063,7 @@ def _build_child_agent(
         provider_sort=parent_agent.provider_sort,
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent
+        request_overrides={"default_headers": effective_default_headers} if effective_default_headers else None,
     )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     # Set delegation depth so children can't spawn grandchildren
@@ -1074,6 +1076,22 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+
+    # Apply default_headers from delegation config if provided
+    if effective_default_headers and hasattr(child, '_client_kwargs'):
+        child._client_kwargs = child._client_kwargs or {}
+        existing_headers = child._client_kwargs.get('default_headers') or {}
+        if isinstance(existing_headers, dict):
+            existing_headers.update(effective_default_headers)
+        else:
+            existing_headers = dict(effective_default_headers)
+        child._client_kwargs['default_headers'] = existing_headers
+        # Rebuild the OpenAI client with the new headers
+        try:
+            if hasattr(child, '_create_openai_client'):
+                child.client = child._create_openai_client(child._client_kwargs, reason="delegate_headers", shared=True)
+        except Exception as exc:
+            logger.debug("Failed to rebuild client with delegation headers: %s", exc)
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
@@ -1962,6 +1980,7 @@ def delegate_task(
                 override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
+                override_default_headers=creds.get("default_headers"),
                 override_acp_command=t.get("acp_command")
                 or acp_command
                 or creds.get("command"),
@@ -2254,16 +2273,21 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
 
     if configured_base_url:
-        api_key = configured_api_key or os.getenv("OPENAI_API_KEY", "").strip()
+        api_key = (
+            configured_api_key
+            or os.getenv("OPENAI_API_KEY", "").strip()
+            or os.getenv("ANTHROPIC_API_KEY", "").strip()
+        )
         if not api_key:
             raise ValueError(
                 "Delegation base_url is configured but no API key was found. "
-                "Set delegation.api_key or OPENAI_API_KEY."
+                "Set delegation.api_key or OPENAI_API_KEY or ANTHROPIC_API_KEY."
             )
 
         base_lower = configured_base_url.lower()
         provider = "custom"
         api_mode = "chat_completions"
+        extra_headers = {}
         if (
             base_url_hostname(configured_base_url) == "chatgpt.com"
             and "/backend-api/codex" in base_lower
@@ -2276,14 +2300,18 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         elif "api.kimi.com/coding" in base_lower:
             provider = "custom"
             api_mode = "anthropic_messages"
+            extra_headers = {"User-Agent": "KimiCLI/1.30.0"}
 
-        return {
+        result = {
             "model": configured_model,
             "provider": provider,
             "base_url": configured_base_url,
             "api_key": api_key,
             "api_mode": api_mode,
         }
+        if extra_headers:
+            result["default_headers"] = extra_headers
+        return result
 
     if not configured_provider:
         # No provider override — child inherits everything from parent
