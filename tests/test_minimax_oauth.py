@@ -29,6 +29,7 @@ from hermes_cli.auth import (
     MINIMAX_OAUTH_CN_BASE,
     MINIMAX_OAUTH_CN_INFERENCE,
     MINIMAX_OAUTH_REFRESH_SKEW_SECONDS,
+    _minimax_normalize_verification_uri,
     _minimax_pkce_pair,
     _minimax_request_user_code,
     _minimax_poll_token,
@@ -464,3 +465,46 @@ def test_get_minimax_oauth_auth_status_logged_in():
 
     assert status["logged_in"] is True
     assert status["region"] == "global"
+
+
+# ---------------------------------------------------------------------------
+# 16. test_normalize_verification_uri rewrites stale www.minimax.io host
+# ---------------------------------------------------------------------------
+
+def test_normalize_verification_uri_rewrites_stale_host():
+    # Real-world payload from issue #19337: server hands back www.minimax.io,
+    # which 307-redirects to the marketing homepage. Live UI is on
+    # platform.minimax.io.
+    stale = "https://www.minimax.io/oauth-authorize?user_code=ABCD&client=OpenClaw"
+    rewritten = _minimax_normalize_verification_uri(stale)
+
+    assert rewritten == (
+        "https://platform.minimax.io/oauth-authorize"
+        "?user_code=ABCD&client=OpenClaw"
+    )
+
+
+def test_normalize_verification_uri_preserves_unrelated_urls():
+    # Other hosts pass through unchanged so we don't accidentally rewrite
+    # a corrected server response or an unrelated URL.
+    untouched = [
+        "https://platform.minimax.io/oauth-authorize?user_code=X",
+        "https://api.minimax.io/oauth/code",
+        "https://www.minimax.io/about",  # different path, not authorize
+        "https://minimax.io/oauth-authorize?u=1",  # apex host, not www
+        "https://www.minimaxi.com/oauth-authorize",  # CN cousin, different brand
+    ]
+    for url in untouched:
+        assert _minimax_normalize_verification_uri(url) == url
+
+
+def test_normalize_verification_uri_handles_bad_input():
+    # Robust against odd inputs — empty, malformed, out-of-range port.
+    # A bad port causes urlparse().port to raise ValueError; the helper
+    # must catch that and return the original string unchanged.
+    assert _minimax_normalize_verification_uri("") == ""
+    assert _minimax_normalize_verification_uri("not a url") == "not a url"
+    assert (
+        _minimax_normalize_verification_uri("https://www.minimax.io:999999/oauth-authorize")
+        == "https://www.minimax.io:999999/oauth-authorize"
+    )

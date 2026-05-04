@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import httpx
 import yaml
@@ -4138,6 +4138,41 @@ def _codex_device_code_login() -> Dict[str, Any]:
 
 # ==================== MiniMax Portal OAuth ====================
 
+# MiniMax's OAuth code endpoint returns a verification_uri pointing at
+# https://www.minimax.io/oauth-authorize?... but that page was retired and
+# 307-redirects to the marketing homepage, leaving users stranded. The live
+# approval UI is on https://platform.minimax.io. This rewrite is a defensive
+# client-side workaround; it can be removed once MiniMax updates the server
+# response. See issue #19337.
+_MINIMAX_STALE_AUTHORIZE_HOST = "www.minimax.io"
+_MINIMAX_LIVE_AUTHORIZE_HOST = "platform.minimax.io"
+
+
+def _minimax_normalize_verification_uri(url: str) -> str:
+    """Rewrite MiniMax's stale www.minimax.io/oauth-authorize host to the live
+    platform.minimax.io host. Returns the URL unchanged for any other host or
+    path.
+    """
+    try:
+        parts = urlparse(url)
+        # parts.hostname / parts.port are properties that re-parse netloc and
+        # can raise ValueError on malformed authority components (e.g. an
+        # out-of-range port). Touch them inside the try so any failure falls
+        # through to returning the input unchanged.
+        host = parts.hostname
+        port = parts.port
+    except (ValueError, TypeError):
+        return url
+    if host == _MINIMAX_STALE_AUTHORIZE_HOST and parts.path.startswith(
+        "/oauth-authorize"
+    ):
+        netloc = _MINIMAX_LIVE_AUTHORIZE_HOST
+        if port:
+            netloc = f"{netloc}:{port}"
+        return urlunparse(parts._replace(netloc=netloc))
+    return url
+
+
 def _minimax_pkce_pair() -> tuple:
     """Generate (code_verifier, code_challenge_S256, state) for MiniMax OAuth."""
     import secrets
@@ -4290,7 +4325,9 @@ def _minimax_oauth_login(
             client_id=pconfig.client_id,
             code_challenge=challenge, state=state,
         )
-        verification_url = str(code_data["verification_uri"])
+        verification_url = _minimax_normalize_verification_uri(
+            str(code_data["verification_uri"])
+        )
         user_code = str(code_data["user_code"])
 
         print()
