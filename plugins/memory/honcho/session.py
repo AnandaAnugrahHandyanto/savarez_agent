@@ -590,7 +590,13 @@ class HonchoSessionManager:
             logger.warning("Honcho dialectic query failed: %s", e)
             return ""
 
-    def prefetch_context(self, session_key: str, user_message: str | None = None) -> None:
+    def prefetch_context(
+        self,
+        session_key: str,
+        user_message: str | None = None,
+        *,
+        summary_only: bool = False,
+    ) -> None:
         """
         Fire get_prefetch_context in a background thread, caching the result.
 
@@ -598,7 +604,11 @@ class HonchoSessionManager:
         a synchronous HTTP round-trip blocking every response.
         """
         def _run():
-            result = self.get_prefetch_context(session_key, user_message)
+            result = self.get_prefetch_context(
+                session_key,
+                user_message,
+                summary_only=summary_only,
+            )
             if result:
                 self.set_context_result(session_key, result)
 
@@ -621,7 +631,13 @@ class HonchoSessionManager:
         with self._prefetch_cache_lock:
             return self._context_cache.pop(session_key, {})
 
-    def get_prefetch_context(self, session_key: str, user_message: str | None = None) -> dict[str, str]:
+    def get_prefetch_context(
+        self,
+        session_key: str,
+        user_message: str | None = None,
+        *,
+        summary_only: bool = False,
+    ) -> dict[str, str]:
         """
         Pre-fetch user and AI peer context from Honcho.
 
@@ -634,6 +650,7 @@ class HonchoSessionManager:
         Args:
             session_key: The session key to get context for.
             user_message: Unused; kept for call-site compatibility.
+            summary_only: When True, only fetch the session summary.
 
         Returns:
             Dictionary with 'representation', 'card', 'ai_representation',
@@ -657,6 +674,9 @@ class HonchoSessionManager:
                     result["summary"] = ctx.summary.content
         except Exception as e:
             logger.debug("Failed to fetch session summary from Honcho: %s", e)
+
+        if summary_only:
+            return result
 
         try:
             user_ctx = self._fetch_peer_context(session.user_peer_id, target=session.user_peer_id)

@@ -264,6 +264,9 @@ class TestPeerLookupHelpers:
 
     def test_get_prefetch_context_fetches_user_and_ai_from_peer_api(self):
         mgr, session = self._make_cached_manager()
+        honcho_session = MagicMock()
+        honcho_session.context.return_value = SimpleNamespace(summary=None)
+        mgr._sessions_cache[session.honcho_session_id] = honcho_session
         user_peer = MagicMock()
         user_peer.context.return_value = SimpleNamespace(
             representation="User representation",
@@ -290,8 +293,24 @@ class TestPeerLookupHelpers:
             "ai_representation": "AI representation",
             "ai_card": "Role: Assistant",
         }
+        honcho_session.context.assert_called_once_with(summary=True)
         user_peer.context.assert_called_once_with(target=session.user_peer_id)
         ai_peer.context.assert_called_once_with(target=session.assistant_peer_id)
+
+    def test_get_prefetch_context_summary_only_skips_peer_fetches(self):
+        mgr, session = self._make_cached_manager()
+        honcho_session = MagicMock()
+        honcho_session.context.return_value = SimpleNamespace(
+            summary=SimpleNamespace(content="Venue summary only")
+        )
+        mgr._sessions_cache[session.honcho_session_id] = honcho_session
+        mgr._fetch_peer_context = MagicMock()
+
+        result = mgr.get_prefetch_context(session.key, summary_only=True)
+
+        assert result == {"summary": "Venue summary only"}
+        honcho_session.context.assert_called_once_with(summary=True)
+        mgr._fetch_peer_context.assert_not_called()
 
     def test_get_ai_representation_uses_peer_api(self):
         mgr, session = self._make_cached_manager()
@@ -654,6 +673,137 @@ class TestToolsModeInitBehavior:
         )
         assert cfg.peer_name is None
         assert mock_manager_cls.call_args.kwargs["runtime_user_peer_name"] == "8439114563"
+
+
+class TestRecoveryAfterInitFailure:
+    def test_hybrid_init_failure_preserves_retry_state(self):
+        """Hybrid/context mode should retain enough state to retry after Honcho comes back."""
+        from plugins.memory.honcho.client import HonchoClientConfig
+        from unittest.mock import patch
+
+        cfg = HonchoClientConfig(api_key="test-key", enabled=True, recall_mode="hybrid")
+        provider = HonchoMemoryProvider()
+
+        with patch(
+            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            return_value=cfg,
+        ), patch.object(provider, "_do_session_init", side_effect=ConnectionError("down")):
+            provider.initialize(
+                session_id="test-session-001",
+                user_id="guy",
+                gateway_session_key="agent:test:discord:group:1:2",
+            )
+
+        assert provider._config is cfg
+        assert provider._session_initialized is False
+        assert provider._lazy_init_session_id == "test-session-001"
+        assert provider._lazy_init_kwargs == {
+            "user_id": "guy",
+            "gateway_session_key": "agent:test:discord:group:1:2",
+        }
+
+    def test_hybrid_tool_call_retries_after_failed_initialize(self):
+        """A later tool call should recover the session once Honcho is back."""
+        from plugins.memory.honcho.client import HonchoClientConfig
+        from unittest.mock import patch
+
+        cfg = HonchoClientConfig(api_key="test-key", enabled=True, recall_mode="hybrid")
+        provider = HonchoMemoryProvider()
+        manager = MagicMock()
+        manager.create_conclusion.return_value = True
+
+        def flaky_init(*args, **kwargs):
+            if not getattr(provider, "_retry_seen", False):
+                provider._retry_seen = True
+                raise ConnectionError("down")
+            provider._manager = manager
+            provider._session_initialized = True
+            provider._session_key = "agent:test:discord:group:1:2"
+
+        with patch(
+            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            return_value=cfg,
+        ), patch.object(provider, "_do_session_init", side_effect=flaky_init):
+            provider.initialize(
+                session_id="test-session-001",
+                user_id="guy",
+                gateway_session_key="agent:test:discord:group:1:2",
+            )
+            result = provider.handle_tool_call(
+                "honcho_conclude",
+                {"conclusion": "Recovered write works"},
+            )
+
+        assert "Conclusion saved for user" in result
+        manager.create_conclusion.assert_called_once_with(
+            "agent:test:discord:group:1:2",
+            "Recovered write works",
+            peer="user",
+        )
+
+
+class TestVenueAwareAutoInjection:
+    def test_group_sessions_only_auto_inject_session_summary(self):
+        provider = HonchoMemoryProvider()
+        provider._platform = "discord"
+        provider._chat_type = "group"
+        provider._session_key = "agent:test:discord:group:1:2"
+        provider._manager = MagicMock()
+        provider._turn_count = 1
+        provider._manager.get_prefetch_context.return_value = {
+            "summary": "Shared venue summary",
+            "representation": "Private user detail",
+            "card": "Card detail",
+            "ai_representation": "AI detail",
+            "ai_card": "AI card detail",
+        }
+        provider._manager.pop_context_result.return_value = {}
+
+        result = provider.prefetch("What changed?")
+
+        assert result == "## Session Summary\nShared venue summary"
+        provider._manager.get_prefetch_context.assert_called_once_with(
+            "agent:test:discord:group:1:2",
+            summary_only=True,
+        )
+
+    def test_dm_sessions_keep_richer_auto_injection(self):
+        provider = HonchoMemoryProvider()
+        provider._platform = "discord"
+        provider._chat_type = "dm"
+
+        formatted = provider._format_first_turn_context(
+            {
+                "summary": "DM summary",
+                "representation": "Stable preference",
+                "card": "Known fact",
+            }
+        )
+
+        assert "## Session Summary\nDM summary" in formatted
+        assert "## User Representation\nStable preference" in formatted
+        assert "## User Peer Card\nKnown fact" in formatted
+
+    def test_group_queue_prefetch_skips_dialectic(self):
+        provider = HonchoMemoryProvider()
+        provider._platform = "discord"
+        provider._chat_type = "group"
+        provider._session_key = "agent:test:discord:group:1:2"
+        provider._manager = MagicMock()
+        provider._turn_count = 3
+        provider._context_cadence = 1
+
+        from unittest.mock import patch
+
+        with patch("plugins.memory.honcho.threading.Thread") as mock_thread:
+            provider.queue_prefetch("Need a quick recap")
+
+        provider._manager.prefetch_context.assert_called_once_with(
+            "agent:test:discord:group:1:2",
+            "Need a quick recap",
+            summary_only=True,
+        )
+        mock_thread.assert_not_called()
 
 
 class TestPerSessionMigrateGuard:
