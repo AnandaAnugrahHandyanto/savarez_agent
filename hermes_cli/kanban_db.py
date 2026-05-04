@@ -90,6 +90,7 @@ from typing import Any, Iterable, Optional
 
 VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "archived"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+CODEX_ASSIGNEES = {"codex", "codex-cli", "codex-worker", "openai-codex"}
 
 # A running task's claim is valid for 15 minutes; after that the next
 # dispatcher tick reclaims it.  Workers that outlive this window should call
@@ -2263,6 +2264,8 @@ def block_task(
     task_id: str,
     *,
     reason: Optional[str] = None,
+    error: Optional[str] = None,
+    metadata: Optional[dict] = None,
 ) -> bool:
     """Transition ``running -> blocked``."""
     with write_txn(conn):
@@ -2284,14 +2287,18 @@ def block_task(
             conn, task_id,
             outcome="blocked", status="blocked",
             summary=reason,
+            error=error,
+            metadata=metadata,
         )
         # Synthesize a run when blocking a never-claimed task so the
         # reason is preserved in attempt history.
-        if run_id is None and reason:
+        if run_id is None and (reason or error or metadata):
             run_id = _synthesize_ended_run(
                 conn, task_id,
                 outcome="blocked",
                 summary=reason,
+                error=error,
+                metadata=metadata,
             )
         _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
         return True
@@ -3000,6 +3007,79 @@ def _rotate_worker_log(log_path: Path, max_bytes: int) -> None:
         pass
 
 
+def is_codex_assignee(assignee: Optional[str]) -> bool:
+    """Return True when ``assignee`` should run through Codex CLI."""
+    return (assignee or "").strip().lower() in CODEX_ASSIGNEES
+
+
+def _worker_spawn_env(task: Task, workspace: str, *, board: Optional[str]) -> dict[str, str]:
+    """Build the shared Kanban worker environment pins."""
+    env = dict(os.environ)
+    if task.tenant:
+        env["HERMES_TENANT"] = task.tenant
+    env["HERMES_KANBAN_TASK"] = task.id
+    env["HERMES_KANBAN_WORKSPACE"] = workspace
+    # Pin the shared board + workspaces root the dispatcher resolved, so
+    # that even when a worker activates a profile, its kanban paths still
+    # match the dispatcher's. Belt-and-braces with the
+    # `get_default_hermes_root()` resolution in `kanban_home()` — symmetric
+    # resolution is the norm, but unusual symlink / Docker layouts are caught
+    # here too.
+    env["HERMES_KANBAN_DB"] = str(kanban_db_path(board=board))
+    env["HERMES_KANBAN_WORKSPACES_ROOT"] = str(workspaces_root(board=board))
+    # Board slug — the final defense-in-depth pin. If the worker ever
+    # resolves kanban paths without the DB / workspaces env vars, the board
+    # slug still forces it to the right directory.
+    resolved_board = _normalize_board_slug(board) or get_current_board()
+    env["HERMES_KANBAN_BOARD"] = resolved_board
+    return env
+
+
+def _spawn_codex_worker(
+    task: Task,
+    workspace: str,
+    *,
+    board: Optional[str] = None,
+) -> Optional[int]:
+    """Fire-and-forget Hermes-owned Codex CLI worker subprocess."""
+    import subprocess
+
+    env = _worker_spawn_env(task, workspace, board=board)
+    env["HERMES_PROFILE"] = "codex-worker"
+    resolved_board = _normalize_board_slug(board) or get_current_board()
+    cmd = [
+        sys.executable,
+        "-m", "hermes_cli.codex_worker",
+        "--task-id", task.id,
+        "--workspace", workspace,
+        "--board", resolved_board,
+    ]
+
+    log_dir = worker_logs_dir(board=board)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{task.id}.log"
+    _rotate_worker_log(log_path, DEFAULT_LOG_ROTATE_BYTES)
+
+    log_f = open(log_path, "ab")
+    try:
+        proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
+            cmd,
+            cwd=workspace if os.path.isdir(workspace) else None,
+            stdin=subprocess.DEVNULL,
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+            env=env,
+            start_new_session=True,
+        )
+    except FileNotFoundError:
+        log_f.close()
+        raise RuntimeError(
+            "`python -m hermes_cli.codex_worker` could not be launched. "
+            "Activate the Hermes venv before running the kanban dispatcher."
+        )
+    return proc.pid
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -3022,29 +3102,15 @@ def _default_spawn(
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
 
+    if is_codex_assignee(task.assignee):
+        return _spawn_codex_worker(task, workspace, board=board)
+
     from hermes_cli.profiles import normalize_profile_name
 
     profile_arg = normalize_profile_name(task.assignee)
 
     prompt = f"work kanban task {task.id}"
-    env = dict(os.environ)
-    if task.tenant:
-        env["HERMES_TENANT"] = task.tenant
-    env["HERMES_KANBAN_TASK"] = task.id
-    env["HERMES_KANBAN_WORKSPACE"] = workspace
-    # Pin the shared board + workspaces root the dispatcher resolved, so
-    # that even when the worker activates a profile (`hermes -p <name>`
-    # rewrites HERMES_HOME), its kanban paths still match the
-    # dispatcher's. Belt-and-braces with the `get_default_hermes_root()`
-    # resolution in `kanban_home()` — symmetric resolution is the norm,
-    # but unusual symlink / Docker layouts are caught here too.
-    env["HERMES_KANBAN_DB"] = str(kanban_db_path(board=board))
-    env["HERMES_KANBAN_WORKSPACES_ROOT"] = str(workspaces_root(board=board))
-    # Board slug — the final defense-in-depth pin. If the worker ever
-    # resolves kanban paths without the DB / workspaces env vars, the
-    # board slug still forces it to the right directory.
-    resolved_board = _normalize_board_slug(board) or get_current_board()
-    env["HERMES_KANBAN_BOARD"] = resolved_board
+    env = _worker_spawn_env(task, workspace, board=board)
     # HERMES_PROFILE is the author the kanban_comment tool defaults to.
     # `hermes -p <assignee>` activates the profile, but the env var is
     # what the tool reads — set it explicitly here so comments are
