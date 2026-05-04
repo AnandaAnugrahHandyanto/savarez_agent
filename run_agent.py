@@ -10418,6 +10418,14 @@ class AIAgent:
         from hermes_logging import set_session_context
         set_session_context(self.session_id)
 
+        # Publish active runtime (provider/model/base_url/api_key) into
+        # thread-local storage so auxiliary resolution paths that lack a
+        # direct agent reference (e.g. browser_tool.py vision) can read the
+        # live runtime instead of falling back to stale config.yaml values.
+        # Cleared on next call or thread exit.
+        from agent.auxiliary_client import set_agent_runtime_override  # noqa: E402
+        set_agent_runtime_override(self._current_main_runtime())
+
         # If the previous turn activated fallback, restore the primary
         # runtime so this turn gets a fresh attempt with the preferred model.
         # No-op when _fallback_activated is False (gateway, first turn, etc.).

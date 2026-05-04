@@ -68,6 +68,47 @@ if TYPE_CHECKING:
 
 _OPENAI_CLS_CACHE: Optional[type] = None
 
+# ── Thread-local carrier for active AIAgent runtime state ──────────────────
+#
+# Tool handlers (e.g. browser_vision in browser_tool.py) are called from the
+# agent loop but do not hold a direct reference to the AIAgent instance.
+# When such a handler calls call_llm(task="vision", ...), the resolution chain
+# has no way to reach self.provider / self.model.  This thread-local slot lets
+# run_conversation() push the live runtime at session start and pop it at exit,
+# so every downstream call — even from deep tool stacks — automatically picks
+# up the active provider/model without any signature changes on tool handlers.
+#
+_AGENT_RUNTIME_TLS = threading.local()
+
+
+def set_agent_runtime_override(runtime: Optional[Dict[str, str]]) -> None:
+    """Push the active AIAgent runtime into thread-local storage."""
+    _AGENT_RUNTIME_TLS.override = runtime
+
+
+def get_agent_runtime_override() -> Optional[Dict[str, str]]:
+    """Read the active AIAgent runtime from thread-local storage.
+
+    Returns ``None`` when no override is set (e.g. CLI mode, tests, or
+    callers that pass ``runtime_override`` explicitly).
+    """
+    return getattr(_AGENT_RUNTIME_TLS, "override", None)
+
+
+def clear_agent_runtime_override() -> None:
+    """Remove the thread-local runtime override."""
+    try:
+        delattr(_AGENT_RUNTIME_TLS, "override")
+    except AttributeError:
+        pass
+
+
+def _effective_override(runtime_override: Optional[Dict[str, str]] = None) -> Optional[Dict[str, str]]:
+    """Return the explicit param if given; otherwise fall back to TLS."""
+    if runtime_override is not None:
+        return runtime_override
+    return get_agent_runtime_override()
+
 
 def _load_openai_cls() -> type:
     """Import and cache ``openai.OpenAI``."""
@@ -2526,7 +2567,9 @@ def get_text_auxiliary_client(
     Callers may override the returned model via config.yaml
     (e.g. auxiliary.compression.model, auxiliary.web_extract.model).
     """
-    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
+    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+        task or None, runtime_override=_effective_override(main_runtime),  # type: ignore[arg-type]
+    )
     return resolve_provider_client(
         provider,
         model=model,
@@ -2544,7 +2587,9 @@ def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Di
     (AsyncCodexAuxiliaryClient, model) which wraps the Responses API.
     Returns (None, None) when no provider is available.
     """
-    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
+    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+        task or None, runtime_override=_effective_override(main_runtime),  # type: ignore[arg-type]
+    )
     return resolve_provider_client(
         provider,
         model=model,
@@ -2625,6 +2670,7 @@ def resolve_vision_provider_client(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
     async_mode: bool = False,
+    main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
     """Resolve the client actually used for vision tasks.
 
@@ -2632,9 +2678,15 @@ def resolve_vision_provider_client(
     provider overrides still use the generic provider router for non-standard
     backends, so users can intentionally force experimental providers. Auto mode
     stays conservative and only tries vision backends known to work today.
+
+    Args:
+        main_runtime: Optional dict from active AIAgent carrying live
+            provider/model/base_url/api_key.  When provided, vision
+            resolution uses the runtime state before falling back to config.
     """
     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
-        "vision", provider, model, base_url, api_key
+        "vision", provider, model, base_url, api_key,
+        runtime_override=main_runtime,  # type: ignore[arg-type]
     )
     requested = _normalize_vision_provider(requested)
 
@@ -2672,8 +2724,9 @@ def resolve_vision_provider_client(
         #   2. OpenRouter  (vision-capable aggregator fallback)
         #   3. Nous Portal (vision-capable aggregator fallback)
         #   4. Stop
-        main_provider = _read_main_provider()
-        main_model = _read_main_model()
+        _runtime = _normalize_main_runtime(main_runtime)
+        main_provider = _runtime.get("provider", "") or _read_main_provider()
+        main_model = _runtime.get("model", "") or _read_main_model()
         if main_provider and main_provider not in ("auto", ""):
             vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
             if main_provider == "nous":
@@ -3087,18 +3140,21 @@ def _resolve_task_provider_model(
     model: str = None,
     base_url: str = None,
     api_key: str = None,
+    *,
+    runtime_override: Optional[Dict[str, str]] = None,
 ) -> Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Determine provider + model for a call.
 
     Priority:
       1. Explicit provider/model/base_url/api_key args (always win)
       2. Config file (auxiliary.{task}.provider/model/base_url)
-      3. "auto" (full auto-detection chain)
+      3. Runtime override from active AIAgent (live state after /model switch)
+      4. ``"auto"`` (full auto-detection chain)
 
     Returns (provider, model, base_url, api_key, api_mode) where model may
     be None (use provider default). When base_url is set, provider is forced
-    to "custom" and the task uses that direct endpoint. api_mode is one of
-    "chat_completions", "codex_responses", or None (auto-detect).
+    to ``"custom"`` and the task uses that direct endpoint. api_mode is one of
+    ``"chat_completions"``, ``"codex_responses"``, or None (auto-detect).
     """
     cfg_provider = None
     cfg_model = None
@@ -3129,6 +3185,31 @@ def _resolve_task_provider_model(
         if cfg_provider and cfg_provider != "auto":
             return cfg_provider, resolved_model, None, None, resolved_api_mode
 
+    # ── Step 3: Active AIAgent runtime override ────────────────────────────
+    # When the user switches models mid-session (/model command), the live
+    # AIAgent instance carries the new provider/model/base_url/api_key.
+    # Config.yaml still has the old value until next startup.  This step
+    # injects the live state so auxiliary tasks immediately follow the
+    # active model without requiring a restart.
+    effective_override = _effective_override(runtime_override)
+    if effective_override:
+        rt_provider = effective_override.get("provider", "").strip()
+        rt_model = effective_override.get("model", "").strip() or None
+        rt_base_url = effective_override.get("base_url", "").strip() or None
+        rt_api_key = effective_override.get("api_key", "").strip() or None
+        rt_api_mode = effective_override.get("api_mode", "").strip() or None
+        if rt_base_url:
+            return "custom", rt_model or resolved_model, rt_base_url, rt_api_key, rt_api_mode or resolved_api_mode
+        if rt_provider and rt_provider not in ("auto", "", "none"):
+            return (
+                rt_provider,
+                rt_model or resolved_model,
+                rt_base_url,
+                rt_api_key,
+                rt_api_mode or resolved_api_mode,
+            )
+
+    if task:
         return "auto", resolved_model, None, None, resolved_api_mode
 
     return "auto", resolved_model, None, None, resolved_api_mode
@@ -3405,6 +3486,7 @@ def call_llm(
             base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key,
             async_mode=False,
+            main_runtime=main_runtime,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
             logger.warning(
@@ -3415,6 +3497,7 @@ def call_llm(
                 provider="auto",
                 model=resolved_model,
                 async_mode=False,
+                main_runtime=main_runtime,
             )
         if client is None:
             raise RuntimeError(
