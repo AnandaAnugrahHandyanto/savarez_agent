@@ -82,7 +82,7 @@ const inferInteractive = (env: NodeJS.ProcessEnv, login: boolean): boolean =>
   Boolean(login || normalizeText(env.PS1) || normalizeText(env.PROMPT))
 
 export function detectShellSignals(input: ShellSignalInput): ShellSignals {
-  const env = input.env
+  const env = input.env ?? process.env
   const login = normalizeText(input.argv0)?.startsWith('-') ?? false
   const executableName = normalizeShellName(input.executable)
 
