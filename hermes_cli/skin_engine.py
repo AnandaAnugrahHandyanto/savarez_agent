@@ -65,6 +65,7 @@ All fields are optional. Missing values inherit from the ``default`` skin.
     # Branding: text strings used throughout the CLI
     branding:
       agent_name: "Hermes Agent"          # Banner title, status display
+      startup_layout: "classic"           # Startup layout: classic or operator
       welcome: "Welcome message"          # Shown at CLI startup
       goodbye: "Goodbye! ⚕"              # Shown on exit
       response_label: " ⚕ Hermes "       # Response box header label

@@ -61,6 +61,10 @@ export function Banner({ t }: { t: Theme }) {
 export function SessionPanel({ info, sid, t }: SessionPanelProps) {
   const cols = useStdout().stdout?.columns ?? 100
   const heroLines = caduceus(t.color, t.bannerHero || undefined)
+  const operatorLayout = t.brand.startupLayout === 'operator'
+  const toolCount = flat(info.tools).length
+  const skillCount = flat(info.skills).length
+  const mcpCount = info.mcp_servers?.filter(s => s.connected).length ?? 0
   const leftW = Math.min((artWidth(heroLines) || CADUCEUS_WIDTH) + 4, Math.floor(cols * 0.4))
   const wide = cols >= 90 && leftW + 40 < cols
   const w = Math.max(20, wide ? cols - leftW - 14 : cols - 12)
@@ -151,57 +155,110 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
           </Text>
         </Box>
 
-        {section('Tools', info.tools, 8, 'more toolsets…')}
-        {section('Skills', info.skills)}
-
-        {info.mcp_servers && info.mcp_servers.length > 0 && (
-          <Box flexDirection="column" marginTop={1}>
-            <Text bold color={t.color.accent}>
-              MCP Servers
+        {operatorLayout ? (
+          <Box flexDirection="column">
+            <Text color={t.color.text} wrap="truncate">
+              <Text color={t.color.label}>Mode: </Text>
+              Operator cockpit
+              <Text color={t.color.muted}> · resume, decide, delegate</Text>
             </Text>
 
-            {info.mcp_servers.map(s => (
-              <Text key={s.name} wrap="truncate">
-                <Text color={t.color.muted}>{`  ${s.name} `}</Text>
-                <Text color={t.color.muted}>{`[${s.transport}]`}</Text>
-                <Text color={t.color.muted}>: </Text>
-                {s.connected ? (
-                  <Text color={t.color.text}>
-                    {s.tools} tool{s.tools === 1 ? '' : 's'}
-                  </Text>
-                ) : (
-                  <Text color={t.color.error}>failed</Text>
-                )}
+            <Text color={t.color.text} wrap="truncate">
+              <Text color={t.color.label}>Stack: </Text>
+              {info.model.split('/').pop()}
+              <Text color={t.color.muted}> · </Text>
+              {toolCount} tools
+              <Text color={t.color.muted}> · </Text>
+              {skillCount} skills
+              {mcpCount ? <Text color={t.color.muted}> · {mcpCount} MCP</Text> : null}
+            </Text>
+
+            <Text color={t.color.text} wrap="truncate-end">
+              <Text color={t.color.label}>CWD: </Text>
+              {info.cwd || process.cwd()}
+            </Text>
+
+            {sid ? (
+              <Text wrap="truncate">
+                <Text color={t.color.label}>Session: </Text>
+                <Text color={t.color.sessionBorder}>{sid}</Text>
               </Text>
-            ))}
+            ) : null}
+
+            <Box flexDirection="column" marginTop={1}>
+              <Text bold color={t.color.accent}>Mission filter</Text>
+              <Text color={t.color.text}>1 effort/stress  2 Flaire $50k/mo  3 property simple</Text>
+              <Text color={t.color.muted}>4 80kg  5 compound knowledge  6 Crockd break-even</Text>
+            </Box>
+
+            <Box flexDirection="column" marginTop={1}>
+              <Text bold color={t.color.accent}>Fast moves</Text>
+              <Text color={t.color.text}>/resume continue work  /new fresh task  /tools capabilities</Text>
+              <Text color={t.color.muted}>Use 1/2/3 for decisions, 4 for something else.</Text>
+            </Box>
+
+            {typeof info.update_behind === 'number' && info.update_behind > 0 && (
+              <Text bold color={t.color.warn}>
+                Update available: {info.update_behind} {info.update_behind === 1 ? 'commit' : 'commits'} behind ·{' '}
+                {info.update_command || 'hermes update'}
+              </Text>
+            )}
           </Box>
-        )}
+        ) : (
+          <>
+            {section('Tools', info.tools, 8, 'more toolsets…')}
+            {section('Skills', info.skills)}
 
-        <Text />
+            {info.mcp_servers && info.mcp_servers.length > 0 && (
+              <Box flexDirection="column" marginTop={1}>
+                <Text bold color={t.color.accent}>
+                  MCP Servers
+                </Text>
 
-        <Text color={t.color.text}>
-          {flat(info.tools).length} tools{' · '}
-          {flat(info.skills).length} skills
-          {info.mcp_servers?.length ? ` · ${info.mcp_servers.length} MCP` : ''}
-          {' · '}
-          <Text color={t.color.muted}>/help for commands</Text>
-        </Text>
+                {info.mcp_servers.map(s => (
+                  <Text key={s.name} wrap="truncate">
+                    <Text color={t.color.muted}>{`  ${s.name} `}</Text>
+                    <Text color={t.color.muted}>{`[${s.transport}]`}</Text>
+                    <Text color={t.color.muted}>: </Text>
+                    {s.connected ? (
+                      <Text color={t.color.text}>
+                        {s.tools} tool{s.tools === 1 ? '' : 's'}
+                      </Text>
+                    ) : (
+                      <Text color={t.color.error}>failed</Text>
+                    )}
+                  </Text>
+                ))}
+              </Box>
+            )}
 
-        {typeof info.update_behind === 'number' && info.update_behind > 0 && (
-          <Text bold color={t.color.warn}>
-            ! {info.update_behind} {info.update_behind === 1 ? 'commit' : 'commits'} behind
-            <Text bold={false} color={t.color.warn} dimColor>
-              {' '}
-              - run{' '}
+            <Text />
+
+            <Text color={t.color.text}>
+              {toolCount} tools{' · '}
+              {skillCount} skills
+              {info.mcp_servers?.length ? ` · ${info.mcp_servers.length} MCP` : ''}
+              {' · '}
+              <Text color={t.color.muted}>/help for commands</Text>
             </Text>
-            <Text bold color={t.color.warn}>
-              {info.update_command || 'hermes update'}
-            </Text>
-            <Text bold={false} color={t.color.warn} dimColor>
-              {' '}
-              to update
-            </Text>
-          </Text>
+
+            {typeof info.update_behind === 'number' && info.update_behind > 0 && (
+              <Text bold color={t.color.warn}>
+                ! {info.update_behind} {info.update_behind === 1 ? 'commit' : 'commits'} behind
+                <Text bold={false} color={t.color.warn} dimColor>
+                  {' '}
+                  - run{' '}
+                </Text>
+                <Text bold color={t.color.warn}>
+                  {info.update_command || 'hermes update'}
+                </Text>
+                <Text bold={false} color={t.color.warn} dimColor>
+                  {' '}
+                  to update
+                </Text>
+              </Text>
+            )}
+          </>
         )}
       </Box>
     </Box>
