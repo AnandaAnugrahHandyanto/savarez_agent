@@ -5940,11 +5940,11 @@ OFFICIAL_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
 SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
 
 
-def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
-    """Get the URL of the origin remote, or None if not set."""
+def _get_remote_url(git_cmd: list[str], cwd: Path, remote: str) -> Optional[str]:
+    """Get the URL of a git remote, or None if it is not configured."""
     try:
         result = subprocess.run(
-            git_cmd + ["remote", "get-url", "origin"],
+            git_cmd + ["remote", "get-url", remote],
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -5954,6 +5954,27 @@ def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
+    """Get the URL of the origin remote, or None if not set."""
+    return _get_remote_url(git_cmd, cwd, "origin")
+
+
+def _preferred_update_remote(git_cmd: list[str], cwd: Path, origin_url: Optional[str]) -> str:
+    """Choose which remote `hermes update` should trust for code updates.
+
+    Prefer the official `upstream` remote when `origin` points to a fork and the
+    configured upstream URL is the canonical Hermes repository.
+    """
+    if not _is_fork(origin_url):
+        return "origin"
+
+    upstream_url = _get_remote_url(git_cmd, cwd, "upstream")
+    if upstream_url and not _is_fork(upstream_url):
+        return "upstream"
+
+    return "origin"
 
 
 def _is_fork(origin_url: Optional[str]) -> bool:
@@ -6807,10 +6828,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # Detect if we're updating from a fork (before any branch logic)
     origin_url = _get_origin_url(git_cmd, PROJECT_ROOT)
     is_fork = _is_fork(origin_url)
+    update_remote = _preferred_update_remote(git_cmd, PROJECT_ROOT, origin_url)
 
     if is_fork:
         print("⚠ Updating from fork:")
         print(f"  {origin_url}")
+        if update_remote == "upstream":
+            print("  Using official upstream remote for updates.")
         print()
 
     if use_zip_update:
@@ -6823,7 +6847,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print("→ Fetching updates...")
         fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin"],
+            git_cmd + ["fetch", update_remote],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -6840,7 +6864,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     "✗ Authentication failed — check your git credentials or SSH key."
                 )
             else:
-                print(f"✗ Failed to fetch updates from origin.")
+                print(f"✗ Failed to fetch updates from {update_remote}.")
                 if stderr:
                     print(f"  {stderr.splitlines()[0]}")
             sys.exit(1)
@@ -6886,7 +6910,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Check if there are updates
         result = subprocess.run(
-            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
+            git_cmd + ["rev-list", f"HEAD..{update_remote}/{branch}", "--count"],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -6938,7 +6962,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         update_succeeded = False
         try:
             pull_result = subprocess.run(
-                git_cmd + ["pull", "--ff-only", "origin", branch],
+                git_cmd + ["pull", "--ff-only", update_remote, branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
@@ -6951,17 +6975,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
                 )
                 reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                    git_cmd + ["reset", "--hard", f"{update_remote}/{branch}"],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
                 )
                 if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
+                    print(f"✗ Failed to reset to {update_remote}/{branch}.")
                     if reset_result.stderr.strip():
                         print(f"  {reset_result.stderr.strip()}")
                     print(
-                        "  Try manually: git fetch origin && git reset --hard origin/main"
+                        f"  Try manually: git fetch {update_remote} && git reset --hard {update_remote}/main"
                     )
                     sys.exit(1)
             update_succeeded = True
@@ -6996,7 +7020,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Fork upstream sync logic (only for main branch on forks)
         if is_fork and branch == "main":
-            _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
+            if update_remote == "upstream":
+                print("→ Syncing fork...")
+                if _sync_fork_with_upstream(git_cmd, PROJECT_ROOT):
+                    print("  ✓ Fork synced with upstream")
+                else:
+                    print("  ℹ Updated from upstream but couldn't push to fork (no write access?)")
+                    print("    Your local repo is updated, but your fork on GitHub may be behind.")
+            else:
+                _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra
         # breaks on this machine, keep base deps and reinstall the remaining extras
