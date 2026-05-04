@@ -2320,26 +2320,35 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load delegation config fresh from disk on every call.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    Always reads ``hermes_cli/config.py:load_config()`` so that
+    ``delegation.model`` / ``delegation.provider`` / ``delegation.*`` knobs
+    take effect immediately after ``hermes config set ...`` writes to
+    config.yaml — without requiring the running process (CLI, gateway, cron)
+    to be restarted.
+
+    Previous versions consulted ``cli.CLI_CONFIG`` first, but that dict is
+    initialized once at module import time and never refreshed, so config
+    changes were silently ignored by long-lived sessions. The disk read is
+    cheap (config.yaml is small and only consulted at delegation boundaries).
+    See issue #18946.
+
+    Falls back to ``cli.CLI_CONFIG`` only if the disk read fails entirely
+    (preserves behaviour in test contexts where ``hermes_cli.config`` may
+    not be importable but ``cli.CLI_CONFIG`` has been mocked in).
     """
-    try:
-        from cli import CLI_CONFIG
-
-        cfg = CLI_CONFIG.get("delegation", {})
-        if cfg:
-            return cfg
-    except Exception:
-        pass
     try:
         from hermes_cli.config import load_config
 
         full = load_config()
         return full.get("delegation", {})
+    except Exception:
+        pass
+    try:
+        from cli import CLI_CONFIG
+
+        return CLI_CONFIG.get("delegation", {})
     except Exception:
         return {}
 
