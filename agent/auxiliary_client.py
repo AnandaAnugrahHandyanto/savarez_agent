@@ -1669,6 +1669,25 @@ def _is_connection_error(exc: Exception) -> bool:
     return False
 
 
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Detect rate-limit (HTTP 429) errors that warrant trying a fallback provider.
+
+    Distinct from _is_payment_error() which handles billing/quota exhaustion
+    (e.g. 429 with "credits" in message).  This catches genuine API rate limiting
+    where retrying after a short wait on an alternative provider is the right move.
+    """
+    status = getattr(exc, "status_code", None)
+    if status == 429:
+        err_lower = str(exc).lower()
+        # Exclude billing/quota 429s — those are handled by _is_payment_error.
+        if not any(kw in err_lower for kw in (
+            "credits", "insufficient funds", "can only afford",
+            "billing", "payment required", "quota",
+        )):
+            return True
+    return False
+
+
 def _is_auth_error(exc: Exception) -> bool:
     """Detect auth failures that should trigger provider-specific refresh."""
     status = getattr(exc, "status_code", None)
@@ -3609,13 +3628,21 @@ def call_llm(
         # Codex/OAuth tokens that authenticate but whose endpoint is down,
         # and providers the user never configured that got picked up by
         # the auto-detection chain.
-        should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
+        should_fallback = (_is_payment_error(first_err)
+                            or _is_connection_error(first_err)
+                            or _is_rate_limit_error(first_err))
         # Only try alternative providers when the user didn't explicitly
         # configure this task's provider.  Explicit provider = hard constraint;
         # auto (the default) = best-effort fallback chain.  (#7559)
+        # Rate-limit errors are an exception: hitting 429 on a configured
+        # provider (e.g. custom:zai) does NOT mean "don't use alternatives"
+        # — it means this specific provider is throttling us.  (#xxxx)
         is_auto = resolved_provider in ("auto", "", None)
+        is_auto = is_auto or _is_rate_limit_error(first_err)
         if should_fallback and is_auto:
-            reason = "payment error" if _is_payment_error(first_err) else "connection error"
+            reason = ("rate limit error" if _is_rate_limit_error(first_err)
+                      else "payment error" if _is_payment_error(first_err)
+                      else "connection error")
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
             fb_client, fb_model, fb_label = _try_payment_fallback(
@@ -3887,11 +3914,16 @@ async def async_call_llm(
                     return _validate_llm_response(
                         await retry_client.chat.completions.create(**retry_kwargs), task)
 
-        # ── Payment / connection fallback (mirrors sync call_llm) ─────
-        should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
+        # ── Payment / connection / rate-limit fallback (mirrors sync call_llm) ─────
+        should_fallback = (_is_payment_error(first_err)
+                            or _is_connection_error(first_err)
+                            or _is_rate_limit_error(first_err))
         is_auto = resolved_provider in ("auto", "", None)
+        is_auto = is_auto or _is_rate_limit_error(first_err)
         if should_fallback and is_auto:
-            reason = "payment error" if _is_payment_error(first_err) else "connection error"
+            reason = ("rate limit error" if _is_rate_limit_error(first_err)
+                      else "payment error" if _is_payment_error(first_err)
+                      else "connection error")
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
             fb_client, fb_model, fb_label = _try_payment_fallback(
