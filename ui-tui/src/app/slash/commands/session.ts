@@ -221,7 +221,7 @@ export const sessionCommands: SlashCommand[] = [
       ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action }).then(
         ctx.guarded<VoiceToggleResponse>(r => {
           ctx.voice.setVoiceEnabled(!!r.enabled)
-          const recordKeyDisplay = formatVoiceRecordKey(r.record_key ?? ctx.voice.recordKey)
+          const recordKeyDisplay = formatVoiceRecordKey(ctx.voice.recordKey)
 
           // Match CLI's _show_voice_status / _enable_voice_mode /
           // _toggle_voice_tts output shape so users don't have to learn

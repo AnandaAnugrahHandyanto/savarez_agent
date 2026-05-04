@@ -173,20 +173,20 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('usage: /skills'))
   })
 
-  it('/voice status displays the configured record key from the gateway', async () => {
+  it('/voice status displays the active frontend record key state', async () => {
     const rpc = vi.fn(() => Promise.resolve({ enabled: false, record_key: 'ctrl+o', tts: false }))
-    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc }, voice: { ...buildVoice(), recordKey: 'alt+o' } })
 
     expect(createSlashHandler(ctx)('/voice status')).toBe(true)
 
     await vi.waitFor(() => {
-      expect(ctx.transcript.sys).toHaveBeenCalledWith('  Record key: Ctrl+O')
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('  Record key: Alt+O')
     })
   })
 
-  it('/voice on displays the configured record key from the gateway', async () => {
-    const rpc = vi.fn(() => Promise.resolve({ enabled: true, record_key: 'alt+o', tts: false }))
-    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+  it('/voice on displays the active frontend record key state', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ enabled: true, record_key: 'ctrl+o', tts: false }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc }, voice: { ...buildVoice(), recordKey: 'alt+o' } })
 
     expect(createSlashHandler(ctx)('/voice on')).toBe(true)
 
