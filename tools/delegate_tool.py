@@ -27,7 +27,6 @@ import time
 from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
-    as_completed,
 )
 from typing import Any, Dict, List, Optional
 
@@ -994,6 +993,14 @@ def _build_child_agent(
         else (getattr(parent_agent, "acp_args", []) or [])
     )
 
+    # When override_provider is set (e.g. delegation.provider: minimax-cn),
+    # the subagent must use direct API calls — not the parent's ACP transport.
+    # Inheriting acp_command unconditionally causes run_agent.py to initialize
+    # CopilotACPClient, bypassing override credentials entirely (issue #16816).
+    if override_provider and not override_acp_command:
+        effective_acp_command = None
+        effective_acp_args = []
+
     if override_acp_command:
         # If explicitly forcing an ACP transport override, the provider MUST be copilot-acp
         # so run_agent.py initializes the CopilotACPClient.
@@ -1019,6 +1026,12 @@ def _build_child_agent(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
+    # Inherit the parent's fallback provider chain so subagents can recover
+    # from rate-limits and credential exhaustion exactly like the top-level
+    # agent does.  _fallback_chain is a list accepted by AIAgent's
+    # fallback_model parameter (which handles both list and dict forms).
+    parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -1031,6 +1044,7 @@ def _build_child_agent(
         max_tokens=getattr(parent_agent, "max_tokens", None),
         reasoning_config=child_reasoning,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
+        fallback_model=parent_fallback,
         enabled_toolsets=child_toolsets,
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,
@@ -1616,6 +1630,19 @@ def _run_single_child(
             # parent thread can fire subagent_stop with the correct role.
             # Stripped before the dict is serialised back to the model.
             "_child_role": getattr(child, "_delegate_role", None),
+            # Captured before child.close() so the parent aggregator can fold
+            # the child's total spend into the parent's session cost.  Port of
+            # Kilo-Org/kilocode#9448 — previously the footer only reflected the
+            # parent's direct API calls and under-counted subagent-heavy runs.
+            # Stripped before the dict is serialised back to the model.
+            "_child_cost_usd": (
+                float(getattr(child, "session_estimated_cost_usd", 0.0) or 0.0)
+                if isinstance(
+                    getattr(child, "session_estimated_cost_usd", 0.0),
+                    (int, float),
+                )
+                else 0.0
+            ),
         }
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
@@ -2112,8 +2139,20 @@ def delegate_task(
         from hermes_cli.plugins import invoke_hook as _invoke_hook
     except Exception:
         _invoke_hook = None
+    # Aggregate child spend here so the parent's footer/UI reflect the true
+    # cost of a subagent-heavy turn.  Port of Kilo-Org/kilocode#9448.  Each
+    # child's cost was captured in _run_single_child before its AIAgent was
+    # closed; we fold them into the parent in one pass alongside the
+    # subagent_stop hook loop so we don't walk `results` twice.
+    _children_cost_total = 0.0
     for entry in results:
         child_role = entry.pop("_child_role", None)
+        child_cost = entry.pop("_child_cost_usd", 0.0)
+        try:
+            if child_cost:
+                _children_cost_total += float(child_cost)
+        except (TypeError, ValueError):
+            pass
         if _invoke_hook is None:
             continue
         try:
@@ -2127,6 +2166,28 @@ def delegate_task(
             )
         except Exception:
             logger.debug("subagent_stop hook invocation failed", exc_info=True)
+
+    # Fold the aggregated child cost into the parent's session total.  This is
+    # additive — each delegate_task call contributes its own children — so
+    # nested orchestrator→worker trees roll up naturally: each layer's own
+    # delegate_task() folds its direct children in, and when the orchestrator
+    # itself finishes, its parent folds the orchestrator's now-inflated total
+    # on top.  Degrades silently if the parent lacks the counter (older test
+    # fixtures, etc.).
+    if _children_cost_total > 0.0:
+        try:
+            current = float(getattr(parent_agent, "session_estimated_cost_usd", 0.0) or 0.0)
+            parent_agent.session_estimated_cost_usd = current + _children_cost_total
+            # Upgrade the cost_source so the UI doesn't label a partially-real
+            # total as "none" when the parent itself hadn't billed any calls
+            # yet (rare but possible when the parent's only action this turn
+            # was delegate_task).
+            if getattr(parent_agent, "session_cost_source", "none") in (None, "", "none"):
+                parent_agent.session_cost_source = "subagent"
+            if getattr(parent_agent, "session_cost_status", "unknown") in (None, "", "unknown"):
+                parent_agent.session_cost_status = "estimated"
+        except Exception:
+            logger.debug("Subagent cost rollup failed", exc_info=True)
 
     total_duration = round(time.monotonic() - overall_start, 2)
 
@@ -2238,7 +2299,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
-        runtime = resolve_runtime_provider(requested=configured_provider)
+        runtime = resolve_runtime_provider(requested=configured_provider, target_model=configured_model)
     except Exception as exc:
         raise ValueError(
             f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
@@ -2255,7 +2316,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         )
 
     return {
-        "model": configured_model,
+        "model": configured_model or runtime.get("model") or None,
         "provider": runtime.get("provider"),
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
@@ -2312,10 +2373,29 @@ DELEGATE_TASK_SCHEMA = {
         "WHEN NOT TO USE (use these instead):\n"
         "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
         "- Single tool call -> just call the tool directly\n"
-        "- Tasks needing user interaction -> subagents cannot use clarify\n\n"
+        "- Tasks needing user interaction -> subagents cannot use clarify\n"
+        "- Durable long-running work that must outlive the current turn -> "
+        "use cronjob (action='create') or terminal(background=True, "
+        "notify_on_complete=True) instead. delegate_task runs SYNCHRONOUSLY "
+        "inside the parent turn: if the parent is interrupted (user sends a "
+        "new message, /stop, /new) the child is cancelled with status="
+        "'interrupted' and its work is discarded. Children cannot continue "
+        "in the background.\n\n"
         "IMPORTANT:\n"
         "- Subagents have NO memory of your conversation. Pass all relevant "
         "info (file paths, error messages, constraints) via the 'context' field.\n"
+        "- If the user is writing in a non-English language, or asked for "
+        "output in a specific language / tone / style, say so in 'context' "
+        "(e.g. \"respond in Chinese\", \"return output in Japanese\"). "
+        "Otherwise subagents default to English and their summaries will "
+        "contaminate your final reply with the wrong language.\n"
+        "- Subagent summaries are SELF-REPORTS, not verified facts. A subagent "
+        "that claims \"uploaded successfully\" or \"file written\" may be wrong. "
+        "For operations with external side-effects (HTTP POST/PUT, remote "
+        "writes, file creation at shared paths, publishing), require the "
+        "subagent to return a verifiable handle (URL, ID, absolute path, HTTP "
+        "status) and verify it yourself — fetch the URL, stat the file, read "
+        "back the content — before telling the user the operation succeeded.\n"
         "- Leaf subagents (role='leaf', the default) CANNOT call: "
         "delegate_task, clarify, memory, send_message, execute_code.\n"
         "- Orchestrator subagents (role='orchestrator') retain "
