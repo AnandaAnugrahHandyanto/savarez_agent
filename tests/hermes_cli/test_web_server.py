@@ -1985,9 +1985,12 @@ class TestPtyWebSocket:
         monkeypatch.setattr(self.ws_module, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", False)
         from starlette.websockets import WebSocketDisconnect
 
+        # After the accept-before-close fix (#19914), the server accepts the
+        # WebSocket handshake first (HTTP 101), then sends a close frame.
+        # WebSocketDisconnect is raised when the client tries to receive.
         with pytest.raises(WebSocketDisconnect) as exc:
-            with self.client.websocket_connect(self._url()):
-                pass
+            with self.client.websocket_connect(self._url()) as conn:
+                conn.receive_bytes()  # triggers the close frame
         assert exc.value.code == 4403
 
     def test_rejects_missing_token(self, monkeypatch):
@@ -1998,9 +2001,10 @@ class TestPtyWebSocket:
         )
         from starlette.websockets import WebSocketDisconnect
 
+        # After the accept-before-close fix (#19914), receive triggers disconnect.
         with pytest.raises(WebSocketDisconnect) as exc:
-            with self.client.websocket_connect("/api/pty"):
-                pass
+            with self.client.websocket_connect("/api/pty") as conn:
+                conn.receive_bytes()
         assert exc.value.code == 4401
 
     def test_rejects_bad_token(self, monkeypatch):
@@ -2011,9 +2015,10 @@ class TestPtyWebSocket:
         )
         from starlette.websockets import WebSocketDisconnect
 
+        # After the accept-before-close fix (#19914), receive triggers disconnect.
         with pytest.raises(WebSocketDisconnect) as exc:
-            with self.client.websocket_connect(self._url(token="wrong")):
-                pass
+            with self.client.websocket_connect(self._url(token="wrong")) as conn:
+                conn.receive_bytes()
         assert exc.value.code == 4401
 
     def test_streams_child_stdout_to_client(self, monkeypatch):
@@ -2207,9 +2212,10 @@ class TestPtyWebSocket:
     def test_events_rejects_missing_channel(self):
         from starlette.websockets import WebSocketDisconnect
 
+        # After the accept-before-close fix (#19914), receive triggers disconnect.
         with pytest.raises(WebSocketDisconnect) as exc:
             with self.client.websocket_connect(
                 f"/api/events?token={self.token}"
-            ):
-                pass
+            ) as conn:
+                conn.receive_text()
         assert exc.value.code == 4400

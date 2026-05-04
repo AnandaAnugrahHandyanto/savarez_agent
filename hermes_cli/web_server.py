@@ -2993,11 +2993,19 @@ def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
 
 @app.websocket("/api/pty")
 async def pty_ws(ws: WebSocket) -> None:
+    # FastAPI / Starlette 0.136+ changed WebSocket close() semantics:
+    # calling ws.close() before ws.accept() hangs because the ASGI
+    # websocket.connect message must be consumed (via accept) before a
+    # close frame can be sent.  Accept the handshake first, then reject
+    # with a close code so the client always gets a clean response.
+    # Fixes #19914.
+    await ws.accept()
+
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
         await ws.close(code=4403)
         return
 
-    # --- auth + loopback check (before accept so we can close cleanly) ---
+    # --- auth + loopback check ---
     token = ws.query_params.get("token", "")
     expected = _SESSION_TOKEN
     if not hmac.compare_digest(token.encode(), expected.encode()):
@@ -3007,8 +3015,6 @@ async def pty_ws(ws: WebSocket) -> None:
     if not _ws_client_is_allowed(ws):
         await ws.close(code=4403)
         return
-
-    await ws.accept()
 
     # --- spawn PTY ------------------------------------------------------
     resume = ws.query_params.get("resume") or None
@@ -3102,6 +3108,9 @@ async def pty_ws(ws: WebSocket) -> None:
 
 @app.websocket("/api/ws")
 async def gateway_ws(ws: WebSocket) -> None:
+    # Accept before any close -- see pty_ws for rationale (fixes #19914).
+    await ws.accept()
+
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
         await ws.close(code=4403)
         return
@@ -3117,7 +3126,8 @@ async def gateway_ws(ws: WebSocket) -> None:
 
     from tui_gateway.ws import handle_ws
 
-    await handle_ws(ws)
+    # handle_ws calls ws.accept() itself -- skip it since we already accepted.
+    await handle_ws(ws, already_accepted=True)
 
 
 # ---------------------------------------------------------------------------
@@ -3134,6 +3144,9 @@ async def gateway_ws(ws: WebSocket) -> None:
 
 @app.websocket("/api/pub")
 async def pub_ws(ws: WebSocket) -> None:
+    # Accept before any close -- see pty_ws for rationale (fixes #19914).
+    await ws.accept()
+
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
         await ws.close(code=4403)
         return
@@ -3151,8 +3164,6 @@ async def pub_ws(ws: WebSocket) -> None:
     if not channel:
         await ws.close(code=4400)
         return
-
-    await ws.accept()
 
     try:
         while True:
@@ -3163,6 +3174,9 @@ async def pub_ws(ws: WebSocket) -> None:
 
 @app.websocket("/api/events")
 async def events_ws(ws: WebSocket) -> None:
+    # Accept before any close -- see pty_ws for rationale (fixes #19914).
+    await ws.accept()
+
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
         await ws.close(code=4403)
         return
@@ -3180,8 +3194,6 @@ async def events_ws(ws: WebSocket) -> None:
     if not channel:
         await ws.close(code=4400)
         return
-
-    await ws.accept()
 
     async with _event_lock:
         _event_channels.setdefault(channel, set()).add(ws)
