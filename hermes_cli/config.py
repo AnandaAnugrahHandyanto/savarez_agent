@@ -403,6 +403,12 @@ DEFAULT_CONFIG = {
         # remains available as a tool regardless of this setting — the routing
         # only controls how inbound user images are presented.
         "image_input_mode": "auto",
+        # Stay-awake inhibitor: prevent the OS from sleeping while the
+        # agent is actively working (in run_conversation).  Applies to
+        # both CLI and gateway runs — disabled by default.  Only prevents
+        # system/idle sleep, NOT display sleep (the screen may dim).
+        # No-op on platforms where the inhibitor is unavailable.
+        "stay_awake": False,
     },
     
     "terminal": {

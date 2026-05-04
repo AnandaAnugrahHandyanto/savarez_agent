@@ -2065,6 +2065,8 @@ class HermesCLI:
             cp_cfg = {"enabled": cp_cfg}
         self.checkpoints_enabled = checkpoints or cp_cfg.get("enabled", False)
         self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 50)
+        # Stay-awake: prevent OS sleep while agent is working
+        self.stay_awake = CLI_CONFIG["agent"].get("stay_awake", False)
         self.pass_session_id = pass_session_id
         # --ignore-rules: honor either the constructor flag or the env var set
         # by `hermes chat --ignore-rules` in hermes_cli/main.py. When true we
@@ -3522,6 +3524,7 @@ class HermesCLI:
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
                 pass_session_id=self.pass_session_id,
+                stay_awake=self.stay_awake,
                 skip_context_files=self.ignore_rules,
                 skip_memory=self.ignore_rules,
                 tool_progress_callback=self._on_tool_progress,

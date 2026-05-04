@@ -1506,6 +1506,20 @@ class GatewayRunner:
         return None
 
     @staticmethod
+    def _load_stay_awake() -> bool:
+        """Load stay_awake setting from config.yaml agent section."""
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                return bool(cfg.get("agent", {}).get("stay_awake", False))
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
     def _load_show_reasoning() -> bool:
         """Load show_reasoning toggle from config.yaml display section."""
         try:
@@ -6928,6 +6942,7 @@ class GatewayRunner:
                     thread_id=source.thread_id,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    stay_awake=self._load_stay_awake(),
                 )
                 try:
                     return agent.run_conversation(
