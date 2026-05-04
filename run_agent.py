@@ -94,6 +94,13 @@ from agent.model_metadata import (
     query_ollama_num_ctx,
 )
 from agent.context_compressor import ContextCompressor
+from agent.turn_summaries import (
+    SUMMARY_PROMPT_INSTRUCTION,
+    extract_summary,
+    load_summaries,
+    save_summaries,
+    inject_summaries_into_messages,
+)
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
@@ -1558,6 +1565,7 @@ class AIAgent:
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
+        turn_summaries_enabled = str(_compression_cfg.get("turn_summaries", True)).lower() in ("true", "1", "yes")
 
         # Read optional explicit context_length override for the auxiliary
         # compression model. Custom endpoints often cannot report this via
@@ -1716,6 +1724,7 @@ class AIAgent:
                 api_mode=self.api_mode,
             )
         self.compression_enabled = compression_enabled
+        self.turn_summaries_enabled = turn_summaries_enabled and compression_enabled
 
         # Reject models whose context window is below the minimum required
         # for reliable tool-calling workflows (64K tokens).
@@ -1758,6 +1767,7 @@ class AIAgent:
             working_dir=os.getenv("TERMINAL_CWD") or None,
         )
         self._user_turn_count = 0
+        self._turn_summaries: List[str] = []
 
         # Cumulative token usage for the session
         self.session_prompt_tokens = 0
@@ -4119,6 +4129,11 @@ class AIAgent:
                     prompt_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
         # so it can refer the user to them rather than reinventing answers.
+
+        # Per-turn summary instruction: asks the model to output a <summary>
+        # tag at the end of each response, enabling incremental context
+        # compression across turns.
+        prompt_parts.append(SUMMARY_PROMPT_INSTRUCTION)
 
         # Note: ephemeral_system_prompt is NOT included here. It's injected at
         # API-call time only so it stays out of the cached/stored system prompt.
@@ -7593,6 +7608,11 @@ class AIAgent:
                 force=True,
             )
 
+        # Clear turn summaries after batch compression — the old session's
+        # summaries are no longer relevant once context is compacted.
+        # The new session starts fresh with no summaries.
+        self._turn_summaries = []
+
         # Update token estimate after compaction so pressure calculations
         # use the post-compression count, not the stale pre-compression one.
         _compressed_est = (
@@ -8738,6 +8758,20 @@ class AIAgent:
 
         # Initialize conversation (copy to avoid mutating the caller's list)
         messages = list(conversation_history) if conversation_history else []
+
+        # ── Per-turn summary injection (GenericAgent pattern) ──────────
+        # Load previously stored summaries and inject them as context.
+        # This gives the model a compressed view of recent turns without
+        # re-reading the full history.  Summaries are stored in a sidecar
+        # JSON file per session and persist across turn boundaries.
+        if self.session_id and getattr(self, "turn_summaries_enabled", False):
+            try:
+                _stored = load_summaries(self.session_id)
+                if _stored:
+                    self._turn_summaries = _stored
+                    messages = inject_summaries_into_messages(messages, _stored)
+            except Exception as _ts_err:
+                logger.debug("Failed to load turn summaries: %s", _ts_err)
 
         # Hydrate todo store from conversation history (gateway creates a fresh
         # AIAgent per message, so the in-memory store is empty -- we need to
@@ -11636,7 +11670,15 @@ class AIAgent:
                     
                     # Strip <think> blocks from user-facing response (keep raw in messages for trajectory)
                     final_response = self._strip_think_blocks(final_response).strip()
-                    
+
+                    # Extract per-turn summary from <summary> tag (GenericAgent pattern).
+                    # The model appends a <summary> block at the end of each response.
+                    # We extract it, store it, and remove it from the user-facing response.
+                    if getattr(self, "turn_summaries_enabled", False):
+                        final_response, _turn_summary = extract_summary(final_response)
+                        if _turn_summary:
+                            self._turn_summaries.append(_turn_summary)
+
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
 
                     # Pop thinking-only prefill message(s) before appending
@@ -11738,6 +11780,13 @@ class AIAgent:
 
         # Persist session to both JSON log and SQLite
         self._persist_session(messages, conversation_history)
+
+        # Persist turn summaries to sidecar file for next turn's injection
+        if self.session_id and self._turn_summaries and getattr(self, "turn_summaries_enabled", False):
+            try:
+                save_summaries(self.session_id, self._turn_summaries)
+            except Exception as _ts_err:
+                logger.debug("Failed to save turn summaries: %s", _ts_err)
 
         # ── Turn-exit diagnostic log ─────────────────────────────────────
         # Always logged at INFO so agent.log captures WHY every turn ended.
