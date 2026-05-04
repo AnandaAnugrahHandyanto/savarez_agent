@@ -542,6 +542,13 @@ def resolve_billing_route(
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")
 
 
+# Pattern for Bedrock regional inference-profile prefixes.
+# e.g. "eu.anthropic.claude-sonnet-4-6", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+_BEDROCK_REGIONAL_PREFIX_RE = re.compile(
+    r"^(?:eu|us|apac|au)\.anthropic\."
+)
+
+
 def _normalize_anthropic_model_name(model: str) -> str:
     """Normalize Anthropic model name variants to canonical form.
 
@@ -572,6 +579,53 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
             entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
             if entry:
                 return entry
+
+    # Fallback: match unversioned model aliases (e.g. "claude-sonnet-4"
+    # matches "claude-sonnet-4-20250514").  Only consider entries for the
+    # same provider whose canonical name starts with the requested model.
+    for (p, m), candidate in _OFFICIAL_DOCS_PRICING.items():
+        if p == route.provider and (
+            m.startswith(model + "-")
+            or model.startswith(m + "-")
+        ):
+            return candidate
+
+    # Bedrock regional inference-profile IDs carry a region prefix
+    # (e.g. "eu.anthropic.claude-sonnet-4-6").  Strip it and retry
+    # against both the bedrock pricing table and the underlying
+    # provider's (anthropic) pricing entries.
+    if route.provider == "bedrock":
+        # First try stripping just the region prefix (eu./us./apac./au.)
+        # to match bedrock entries like ("bedrock", "anthropic.claude-sonnet-4-6")
+        region_stripped = re.sub(r"^(?:eu|us|apac|au)\.", "", model)
+        if region_stripped != model:
+            bedrock_key = ("bedrock", region_stripped)
+            entry = _OFFICIAL_DOCS_PRICING.get(bedrock_key)
+            if entry is not None:
+                return entry
+            for (p, m), candidate in _OFFICIAL_DOCS_PRICING.items():
+                if p == "bedrock" and (
+                    m.startswith(region_stripped + "-")
+                    or region_stripped.startswith(m + "-")
+                ):
+                    return candidate
+
+        # Also try resolving against anthropic entries by stripping the
+        # full regional + vendor prefix
+        stripped = _BEDROCK_REGIONAL_PREFIX_RE.sub("", model)
+        if stripped != model or model.startswith("anthropic."):
+            anthropic_model = stripped.removeprefix("anthropic.")
+            anthropic_key = ("anthropic", anthropic_model)
+            entry = _OFFICIAL_DOCS_PRICING.get(anthropic_key)
+            if entry is not None:
+                return entry
+            for (p, m), candidate in _OFFICIAL_DOCS_PRICING.items():
+                if p == "anthropic" and (
+                    m.startswith(anthropic_model + "-")
+                    or anthropic_model.startswith(m + "-")
+                ):
+                    return candidate
+
     return None
 
 
