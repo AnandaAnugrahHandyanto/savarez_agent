@@ -751,7 +751,7 @@ class TrueConfAdapter(BasePlatformAdapter):
                     error=f"Chat ID not resolved for {chat_id}"
                 )
 
-            clean_text = content.strip().replace("\n\n", "\n")
+            clean_text = content.strip()
             if not clean_text:
                 return SendResult(success=False, message_id=None, error="Empty message")
 
@@ -799,7 +799,7 @@ class TrueConfAdapter(BasePlatformAdapter):
                     error=f"Chat ID not resolved for {chat_id}"
                 )
 
-            clean_text = content.strip().replace("\n\n", "\n")
+            clean_text = content.strip()
             if not clean_text:
                 return SendResult(
                     success=False, message_id=None,
