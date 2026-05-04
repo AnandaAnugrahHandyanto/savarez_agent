@@ -3999,6 +3999,10 @@ def _mount_plugin_api_routes():
 # Mount plugin API routes before the SPA catch-all.
 _mount_plugin_api_routes()
 
+# Vedere Sentry standardization — see vedere-shared@main golden files
+from .sentry_webhook import register_sentry_webhook
+register_sentry_webhook(app)
+
 mount_spa(app)
 
 
