@@ -1990,6 +1990,50 @@ def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optio
         return model_name
 
 
+def _builtin_provider_no_key_error(provider_id: str) -> RuntimeError:
+    """Build a user-friendly RuntimeError for a built-in provider whose API
+    key could not be resolved.
+
+    Built-in providers (deepseek, openai, anthropic, …) read their credentials
+    from environment variables *only* — the ``api_key`` field in config.yaml is
+    reserved for ``provider: custom`` / ``custom_providers`` entries and is
+    intentionally ignored for built-in providers to avoid accidentally
+    persisting secrets to disk.
+
+    The error message explains this distinction and offers two paths forward:
+    1. Set the expected environment variable.
+    2. Switch to ``provider: custom`` with the provider's official base_url
+       so config.yaml ``api_key`` is honoured.
+    """
+    _env_hint = f"{provider_id.upper()}_API_KEY"
+    _base_url_hint = ""
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        pcfg = PROVIDER_REGISTRY.get(provider_id)
+        if pcfg:
+            if pcfg.api_key_env_vars:
+                _env_hint = pcfg.api_key_env_vars[0]
+            if pcfg.inference_base_url:
+                _base_url_hint = pcfg.inference_base_url
+    except Exception:
+        pass
+
+    _custom_hint = (
+        f"\n  Alternatively, use provider: custom with base_url: {_base_url_hint}"
+        " in config.yaml so the api_key field is honoured."
+        if _base_url_hint
+        else ""
+    )
+    return RuntimeError(
+        f"Provider '{provider_id}' is set in config.yaml but no API key was found.\n"
+        f"  Note: for built-in providers the config.yaml api_key field is ignored;"
+        " credentials must come from the environment.\n"
+        f"  Set the {_env_hint} environment variable and restart Hermes."
+        f"{_custom_hint}\n"
+        "  Or switch to a different provider with `hermes model`."
+    )
+
+
 def resolve_provider_client(
     provider: str,
     model: str = None,
@@ -3437,11 +3481,7 @@ def call_llm(
             # through OpenRouter (which causes confusing 404s).
             _explicit = (resolved_provider or "").strip().lower()
             if _explicit and _explicit not in ("auto", "openrouter", "custom"):
-                raise RuntimeError(
-                    f"Provider '{_explicit}' is set in config.yaml but no API key "
-                    f"was found. Set the {_explicit.upper()}_API_KEY environment "
-                    f"variable, or switch to a different provider with `hermes model`."
-                )
+                raise _builtin_provider_no_key_error(_explicit)
             # For auto/custom with no credentials, try the full auto chain
             # rather than hardcoding OpenRouter (which may be depleted).
             # Pass model=None so each provider uses its own default —
@@ -3747,11 +3787,7 @@ async def async_call_llm(
         if client is None:
             _explicit = (resolved_provider or "").strip().lower()
             if _explicit and _explicit not in ("auto", "openrouter", "custom"):
-                raise RuntimeError(
-                    f"Provider '{_explicit}' is set in config.yaml but no API key "
-                    f"was found. Set the {_explicit.upper()}_API_KEY environment "
-                    f"variable, or switch to a different provider with `hermes model`."
-                )
+                raise _builtin_provider_no_key_error(_explicit)
             if not resolved_base_url:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)

@@ -1505,11 +1505,8 @@ class AIAgent:
                                 _fb_resolved = True
                                 break
                         if not _fb_resolved:
-                            raise RuntimeError(
-                                f"Provider '{_explicit}' is set in config.yaml but no API key "
-                                f"was found. Set the {_env_hint} environment "
-                                f"variable, or switch to a different provider with `hermes model`."
-                            )
+                            from agent.auxiliary_client import _builtin_provider_no_key_error
+                            raise _builtin_provider_no_key_error(_explicit)
                     if not getattr(self, "_fallback_activated", False):
                         # No provider configured — reject with a clear message.
                         raise RuntimeError(
