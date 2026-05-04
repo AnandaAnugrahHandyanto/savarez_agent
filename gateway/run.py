@@ -621,6 +621,9 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        # Propagate model from custom_provider config so gateway agents pick
+        # it up without requiring a separate model.default in config.yaml.
+        "model": runtime.get("model"),
     }
 
 
@@ -1501,6 +1504,13 @@ class GatewayRunner:
             )
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
+        # Use model from custom_provider config when config.yaml has no model.default.
+        # _resolve_runtime_agent_kwargs propagates the custom_providers model field;
+        # pop it here so it never leaks into the AIAgent **runtime kwargs.
+        runtime_model = runtime_kwargs.pop("model", None)
+        if not model and runtime_model:
+            model = runtime_model
+
         if override and resolved_session_key:
             model, runtime_kwargs = self._apply_session_model_override(
                 resolved_session_key, model, runtime_kwargs
