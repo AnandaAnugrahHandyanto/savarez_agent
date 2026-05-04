@@ -3627,16 +3627,12 @@ def call_llm(
         # refused, timeout), try alternative providers.  This handles stale
         # Codex/OAuth tokens that authenticate but whose endpoint is down,
         # and providers the user never configured that got picked up by
-        # the auto-detection chain.
-        should_fallback = (_is_payment_error(first_err)
-                            or _is_connection_error(first_err)
-                            or _is_rate_limit_error(first_err))
-        # Only try alternative providers when the user didn't explicitly
-        # configure this task's provider.  Explicit provider = hard constraint;
-        # auto (the default) = best-effort fallback chain.  (#7559)
-        # Rate-limit errors are an exception: hitting 429 on a configured
-        # provider (e.g. custom:zai) does NOT mean "don't use alternatives"
-        # — it means this specific provider is throttling us.  (#xxxx)
+# ── Universal fallback: try alternative providers on any error ─────────
+        # Any LLM error (rate-limit, payment, connection, auth, model not found,
+        # server error, etc.) warrants trying another provider before giving up.
+        # Only skip fallback when the user explicitly set a provider (is_auto=False)
+        # and the error is NOT a rate-limit 429 — those should always retry elsewhere.
+        should_fallback = True  # try fallback on any error
         is_auto = resolved_provider in ("auto", "", None)
         is_auto = is_auto or _is_rate_limit_error(first_err)
         if should_fallback and is_auto:
@@ -3914,10 +3910,9 @@ async def async_call_llm(
                     return _validate_llm_response(
                         await retry_client.chat.completions.create(**retry_kwargs), task)
 
-        # ── Payment / connection / rate-limit fallback (mirrors sync call_llm) ─────
-        should_fallback = (_is_payment_error(first_err)
-                            or _is_connection_error(first_err)
-                            or _is_rate_limit_error(first_err))
+        # ── Universal fallback (mirrors sync call_llm) ───────────────────────────
+        # Any error = try fallback; rate-limit 429 always overrides explicit provider.
+        should_fallback = True
         is_auto = resolved_provider in ("auto", "", None)
         is_auto = is_auto or _is_rate_limit_error(first_err)
         if should_fallback and is_auto:
