@@ -1,10 +1,10 @@
 name: mnemoria
-version: 0.1.0
+version: 0.2.0
 description: |
   Mnemoria cognitive memory system — combines ACT-R activation scoring, Hebbian link formation,
   RL Q-value reranking with structured memory (typed facts, scopes, supersession, gauge pressure).
 pip_dependencies:
-  - mnemoria
+  - mnemoria>=0.3.5
 provider: mnemoria
 memory_provider: true
 
