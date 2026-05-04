@@ -56,8 +56,10 @@ def _make_mock_client():
         entities=None,
         tags=None,
         update_mode=None,
-        retain_async=None,
     ):
+        return SimpleNamespace(ok=True)
+
+    async def _aretain_batch(bank_id, items, document_id=None):
         return SimpleNamespace(ok=True)
 
     client = MagicMock()
@@ -73,7 +75,7 @@ def _make_mock_client():
     client.areflect = AsyncMock(
         return_value=SimpleNamespace(text="Synthesized answer")
     )
-    client.aretain_batch = AsyncMock()
+    client.aretain_batch = AsyncMock(side_effect=_aretain_batch)
     client.aclose = AsyncMock()
     return client
 
@@ -675,7 +677,7 @@ class TestSyncTurn:
         call_kwargs = p._client.aretain_batch.call_args.kwargs
         assert call_kwargs["bank_id"] == "test-bank"
         assert call_kwargs["document_id"].startswith("session-1-")
-        assert call_kwargs["retain_async"] is True
+        assert "retain_async" not in call_kwargs
         assert len(call_kwargs["items"]) == 1
         item = call_kwargs["items"][0]
         assert item["context"] == "conversation between Hermes Agent and the User"
@@ -716,14 +718,14 @@ class TestSyncTurn:
         assert "session1" in item["tags"]
         assert "session:test-session" in item["tags"]
 
-    def test_sync_turn_uses_aretain_batch(self, provider):
-        """sync_turn should use aretain_batch with retain_async."""
+    def test_sync_turn_uses_aretain_batch_without_legacy_async_param(self, provider):
+        """sync_turn should use aretain_batch without the legacy async kwarg."""
         provider.sync_turn("hello", "hi")
         provider._retain_queue.join()
         provider._client.aretain_batch.assert_called_once()
         call_kwargs = provider._client.aretain_batch.call_args.kwargs
         assert call_kwargs["document_id"].startswith("test-session-")
-        assert call_kwargs["retain_async"] is True
+        assert "retain_async" not in call_kwargs
         assert len(call_kwargs["items"]) == 1
         assert call_kwargs["items"][0]["context"] == "conversation between Hermes Agent and the User"
 
@@ -745,7 +747,7 @@ class TestSyncTurn:
         p._client.aretain_batch.assert_called_once()
         call_kwargs = p._client.aretain_batch.call_args.kwargs
         assert call_kwargs["document_id"].startswith("test-session-")
-        assert call_kwargs["retain_async"] is False
+        assert "retain_async" not in call_kwargs
         item = call_kwargs["items"][0]
         content = json.loads(item["content"])
         assert len(content) == 3

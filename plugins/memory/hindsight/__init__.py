@@ -1333,14 +1333,17 @@ class HindsightMemoryProvider(MemoryProvider):
             )
             item.pop("bank_id", None)
             item.pop("retain_async", None)
-            logger.debug("Hindsight retain: bank=%s, doc=%s, async=%s, content_len=%d, num_turns=%d",
+            logger.debug("Hindsight retain: bank=%s, doc=%s, async_config=%s, content_len=%d, num_turns=%d",
                          bank_id, document_id, retain_async_flag, len(content), num_turns)
+            # Do not forward retain_async to aretain_batch. Current Hindsight
+            # servers treat batch retains as asynchronous already and log
+            # "Unknown parameters ignored: [async]" when the client sends the
+            # legacy async flag through the /memories endpoint.
             self._run_hindsight_operation(
                 lambda client: client.aretain_batch(
                     bank_id=bank_id,
                     items=[item],
                     document_id=document_id,
-                    retain_async=retain_async_flag,
                 )
             )
             logger.debug("Hindsight retain succeeded")
@@ -1504,7 +1507,6 @@ class HindsightMemoryProvider(MemoryProvider):
                             bank_id=self._bank_id,
                             items=[item],
                             document_id=old_document_id,
-                            retain_async=self._retain_async,
                         )
                     )
                 except Exception as e:
