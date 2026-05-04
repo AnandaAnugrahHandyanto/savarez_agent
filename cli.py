@@ -8631,22 +8631,11 @@ class HermesCLI:
         # _voice_message_prefix property and its usage in _process_message().
 
         tts_status = " (TTS enabled)" if self._voice_tts else ""
-        try:
-            from hermes_cli.config import load_config
-            from hermes_cli.voice import (
-                format_voice_record_key_for_status,
-                normalize_voice_record_key_for_prompt_toolkit,
-                voice_record_key_from_config,
-            )
-            # Shape-safe extractor — malformed voice: YAML (bool/scalar/list)
-            # falls back to None instead of raising AttributeError
-            # (Copilot round-11 on #19835).
-            _raw_ptt = voice_record_key_from_config(load_config())
-            _ptt_key = normalize_voice_record_key_for_prompt_toolkit(_raw_ptt)
-            _ptt_display = format_voice_record_key_for_status(_raw_ptt)
-        except Exception:
-            _ptt_key = "c-b"
-            _ptt_display = "Ctrl+B"
+        # Use the startup-pinned cache so the advertised shortcut always
+        # matches the live prompt_toolkit binding — reading live config
+        # here would drift after a mid-session config edit (Copilot
+        # round-14 on #19835, same class as round-13).
+        _ptt_display = self._voice_record_key_label()
         _cprint(f"\n{_ACCENT}Voice mode enabled{tts_status}{_RST}")
         _cprint(f"  {_DIM}{_ptt_display} to start/stop recording{_RST}")
         _cprint(f"  {_DIM}/voice tts  to toggle speech output{_RST}")
@@ -8703,7 +8692,6 @@ class HermesCLI:
 
     def _show_voice_status(self):
         """Show current voice mode status."""
-        from hermes_cli.config import load_config
         from tools.voice_mode import check_voice_requirements
 
         reqs = check_voice_requirements()
@@ -8712,19 +8700,11 @@ class HermesCLI:
         _cprint(f"  Mode:      {'ON' if self._voice_mode else 'OFF'}")
         _cprint(f"  TTS:       {'ON' if self._voice_tts else 'OFF'}")
         _cprint(f"  Recording: {'YES' if self._voice_recording else 'no'}")
-        # Shape-safe extractor + shared formatter so malformed configs
-        # (non-string scalars, whitespace, typoed named keys, multi-modifier
-        # chords, or ``voice:`` itself being a non-dict) surface as the
-        # documented default the CLI actually binds — status never
-        # advertises a shortcut that can't fire (Copilot round-10/11 on
-        # #19835). Mirrors TUI ``formatVoiceRecordKey``.
-        from hermes_cli.voice import (
-            format_voice_record_key_for_status,
-            voice_record_key_from_config,
-        )
-        _raw_key = voice_record_key_from_config(load_config())
-        _display_key = format_voice_record_key_for_status(_raw_key)
-        _cprint(f"  Record key: {_display_key}")
+        # Display the startup-pinned label so /voice status always
+        # matches the live prompt_toolkit binding (Copilot round-14 on
+        # #19835, same class as round-13). Reading live config here
+        # would drift after a mid-session config edit.
+        _cprint(f"  Record key: {self._voice_record_key_label()}")
         _cprint(f"\n  {_BOLD}Requirements:{_RST}")
         for line in reqs["details"].split("\n"):
             _cprint(f"    {line}")

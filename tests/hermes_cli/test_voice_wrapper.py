@@ -141,6 +141,35 @@ class TestNormalizeVoiceRecordKeyForPromptToolkit:
         assert normalize_voice_record_key_for_prompt_toolkit("meta+b") == "c-b"
         assert normalize_voice_record_key_for_prompt_toolkit("shift+b") == "c-b"
 
+    # Round-14 Copilot review regression on #19835. On macOS the TUI
+    # parser rejects alt+c/d/l because hermes-ink reports Alt as
+    # ``key.meta`` and isActionMod(darwin) accepts it. The CLI
+    # normalizer must mirror that platform-gated rejection so shared
+    # configs like ``option+c`` don't bind Alt+C in the CLI while the
+    # TUI falls back to Ctrl+B.
+    def test_alt_cdl_rejected_on_macos(self, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+
+        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
+
+        assert normalize_voice_record_key_for_prompt_toolkit("alt+c") == "c-b"
+        assert normalize_voice_record_key_for_prompt_toolkit("alt+d") == "c-b"
+        assert normalize_voice_record_key_for_prompt_toolkit("alt+l") == "c-b"
+        assert normalize_voice_record_key_for_prompt_toolkit("option+c") == "c-b"
+        assert normalize_voice_record_key_for_prompt_toolkit("opt+d") == "c-b"
+        # Other alt letters still bind on darwin.
+        assert normalize_voice_record_key_for_prompt_toolkit("alt+r") == "a-r"
+        assert normalize_voice_record_key_for_prompt_toolkit("alt+space") == "a-space"
+
+    def test_alt_cdl_allowed_on_non_macos(self, monkeypatch):
+        monkeypatch.setattr("sys.platform", "linux")
+
+        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
+
+        assert normalize_voice_record_key_for_prompt_toolkit("alt+c") == "a-c"
+        assert normalize_voice_record_key_for_prompt_toolkit("alt+d") == "a-d"
+        assert normalize_voice_record_key_for_prompt_toolkit("alt+l") == "a-l"
+
 
 class TestVoiceRecordKeyFromConfig:
     """Round-11 Copilot review regression on #19835.

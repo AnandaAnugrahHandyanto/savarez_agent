@@ -72,6 +72,14 @@ _VOICE_NAMED_KEYS = {
 # never fire push-to-talk — the same blocklist the TUI parser uses.
 _VOICE_RESERVED_CTRL_CHARS = frozenset({"c", "d", "l"})
 
+# On macOS the classic CLI's prompt_toolkit bindings for copy / exit /
+# clear also claim ``a-c`` / ``a-d`` / ``a-l`` via the action-modifier
+# lookup, and hermes-ink reports Alt as ``key.meta`` on many terminals.
+# Mirror the TUI parser's darwin-only reservation so ``option+c`` etc.
+# don't bind Alt+C in the CLI while the TUI silently falls back to
+# Ctrl+B (Copilot round-14 on #19835).
+_VOICE_RESERVED_ALT_CHARS_MAC = frozenset({"c", "d", "l"})
+
 _DEFAULT_PT_KEY = "c-b"
 
 
@@ -152,9 +160,15 @@ def normalize_voice_record_key_for_prompt_toolkit(raw: Any) -> str:
         return _DEFAULT_PT_KEY
 
     # Single-char key: reject reserved-ctrl chords that the TUI would
-    # also block at parse time.
+    # also block at parse time, plus the mac-only alt reservation.
     if len(key_token) == 1:
         if normalized_mod == "c-" and key_token in _VOICE_RESERVED_CTRL_CHARS:
+            return _DEFAULT_PT_KEY
+        if (
+            normalized_mod == "a-"
+            and sys.platform == "darwin"
+            and key_token in _VOICE_RESERVED_ALT_CHARS_MAC
+        ):
             return _DEFAULT_PT_KEY
         return f"{normalized_mod}{key_token}"
 
