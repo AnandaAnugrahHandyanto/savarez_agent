@@ -1,7 +1,32 @@
-import json
 import os
-import signal
 import sys
+
+# Guard against a local utils/ (or other package) in CWD shadowing installed
+# Hermes modules. hermes_cli sets HERMES_PYTHON_SRC_ROOT before spawning this
+# subprocess; inserting it first ensures the installed packages win.
+_src_root = os.environ.get("HERMES_PYTHON_SRC_ROOT", "")
+_cwd = os.path.abspath(os.getcwd())
+
+
+def _is_cwd_import_path(path: str) -> bool:
+    if path in ("", "."):
+        return True
+    try:
+        return os.path.abspath(path) == _cwd
+    except (OSError, TypeError):
+        return False
+
+
+# Strip CWD entries — '', '.', and the absolute cwd can all let local project
+# directories shadow installed packages when Python is launched with ``-m``.
+sys.path = [p for p in sys.path if not _is_cwd_import_path(p)]
+if _src_root:
+    _src_root_abs = os.path.abspath(_src_root)
+    sys.path = [p for p in sys.path if os.path.abspath(p or _cwd) != _src_root_abs]
+    sys.path.insert(0, _src_root)
+
+import json
+import signal
 import time
 import traceback
 
