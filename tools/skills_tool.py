@@ -928,8 +928,43 @@ def skill_view(
                     },
                     ensure_ascii=False,
                 )
-            # Plugin itself not found — fall through to flat-tree scan
-            # which will return a normal "not found" with suggestions.
+            # Plugin itself not found — check whether the prefix looks like a
+            # regular skill category before falling through to flat-tree scan.
+            category_skills = [
+                s["name"]
+                for s in _find_all_skills()
+                if s.get("category") == namespace
+            ]
+            if category_skills:
+                sample = ", ".join(category_skills[:10])
+                if bare in category_skills:
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "error": (
+                                f"'{namespace}:{bare}' looks like a category-qualified skill, "
+                                f"not a plugin skill. Skill '{bare}' is listed under the "
+                                f"'{namespace}' category."
+                            ),
+                            "hint": f"Use skill_view('{bare}') or skills_list(category='{namespace}')",
+                            "available_skills": category_skills[:20],
+                        },
+                        ensure_ascii=False,
+                    )
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            f"'{namespace}' looks like a regular skill category, not a plugin namespace. "
+                            f"Use skills_list(category='{namespace}') to browse it."
+                        ),
+                        "hint": f"Category '{namespace}' contains: {sample}",
+                        "available_skills": category_skills[:20],
+                    },
+                    ensure_ascii=False,
+                )
+            # No matching category found — fall through to flat-tree scan which
+            # will return a normal "not found" with suggestions.
 
         from agent.skill_utils import get_external_skills_dirs
 

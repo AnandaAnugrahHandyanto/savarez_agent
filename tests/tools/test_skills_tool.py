@@ -420,6 +420,16 @@ class TestSkillView:
         assert "not found" in result["error"].lower()
         assert "available_skills" in result
 
+    def test_view_category_qualified_skill_shows_helpful_hint(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "hermes-agent", category="autonomous-ai-agents")
+            raw = skill_view("autonomous-ai-agents:hermes-agent")
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "looks like a category-qualified skill" in result["error"]
+        assert result["hint"] == "Use skill_view('hermes-agent') or skills_list(category='autonomous-ai-agents')"
+        assert result["available_skills"] == ["hermes-agent"]
+
     def test_view_reference_file(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             skill_dir = _make_skill(tmp_path, "my-skill")
