@@ -32,6 +32,31 @@ from typing import List, Optional
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
+
+class SealedProfileError(RuntimeError):
+    """Raised when a profile-mutating operation is attempted in sealed mode.
+
+    Sealed mode (``HERMES_SEALED=true``) locks the runtime to a single
+    profile; mutation operations (create/delete/rename/import/export/use)
+    refuse to run because the deployment posture is "this binary serves
+    one profile, period". See :func:`hermes_constants.is_sealed`.
+    """
+
+
+def _enforce_not_sealed(operation: str) -> None:
+    """Raise :class:`SealedProfileError` when running in sealed mode.
+
+    Mutation entry points call this at the top to refuse cleanly with a
+    helpful message rather than failing later in unexpected ways.
+    """
+    from hermes_constants import is_sealed
+    if is_sealed():
+        raise SealedProfileError(
+            f"Cannot {operation}: hermes-agent is running in sealed mode "
+            f"(HERMES_SEALED=true). The runtime is locked to a single "
+            f"profile and refuses profile management operations."
+        )
+
 # Directories bootstrapped inside every new profile
 _PROFILE_DIRS = [
     "memories",
@@ -347,13 +372,24 @@ def _count_skills(profile_dir: Path) -> int:
 # ---------------------------------------------------------------------------
 
 def list_profiles() -> List[ProfileInfo]:
-    """Return info for all profiles, including the default."""
+    """Return info for all profiles, including the default.
+
+    In sealed mode (``HERMES_SEALED=true``), reports only the configured
+    profile (resolved via :func:`hermes_constants.get_sealed_profile_name`).
+    Sealed deployments treat sibling profiles as not-existing — by-design
+    information hiding for multi-tenant isolation.
+    """
+    from hermes_constants import is_sealed, get_sealed_profile_name
+
     profiles = []
     wrapper_dir = _get_wrapper_dir()
 
-    # Default profile
+    sealed = is_sealed()
+    sealed_name = get_sealed_profile_name() if sealed else None
+
+    # Default profile (skipped in sealed mode unless sealed_name == "default")
     default_home = _get_default_hermes_home()
-    if default_home.is_dir():
+    if default_home.is_dir() and (not sealed or sealed_name == "default"):
         model, provider = _read_config_model(default_home)
         profiles.append(ProfileInfo(
             name="default",
@@ -366,7 +402,7 @@ def list_profiles() -> List[ProfileInfo]:
             skill_count=_count_skills(default_home),
         ))
 
-    # Named profiles
+    # Named profiles (sealed mode filters to sealed_name only)
     profiles_root = _get_profiles_root()
     if profiles_root.is_dir():
         for entry in sorted(profiles_root.iterdir()):
@@ -374,6 +410,8 @@ def list_profiles() -> List[ProfileInfo]:
                 continue
             name = entry.name
             if not _PROFILE_ID_RE.match(name):
+                continue
+            if sealed and name != sealed_name:
                 continue
             model, provider = _read_config_model(entry)
             alias_path = wrapper_dir / name
@@ -401,6 +439,9 @@ def create_profile(
 ) -> Path:
     """Create a new profile directory.
 
+    Refuses with :class:`SealedProfileError` when running in sealed mode
+    (``HERMES_SEALED=true``).
+
     Parameters
     ----------
     name:
@@ -421,6 +462,7 @@ def create_profile(
     Path
         The newly created profile directory.
     """
+    _enforce_not_sealed("create profile")
     validate_profile_name(name)
 
     if name == "default":
@@ -538,8 +580,11 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     Stops the gateway if running. Disables systemd/launchd service first
     to prevent auto-restart.
 
+    Refuses with :class:`SealedProfileError` when running in sealed mode.
+
     Returns the path that was removed.
     """
+    _enforce_not_sealed("delete profile")
     validate_profile_name(name)
 
     if name == "default":
@@ -729,7 +774,22 @@ def set_active_profile(name: str) -> None:
     """Set the sticky active profile.
 
     Writes to ``~/.hermes/active_profile``. Use ``"default"`` to clear.
+
+    In sealed mode (``HERMES_SEALED=true``), only accepts the configured
+    sealed profile name (no-op when already that value); raises
+    :class:`SealedProfileError` for any other name.
     """
+    from hermes_constants import is_sealed, get_sealed_profile_name
+    if is_sealed():
+        sealed_name = get_sealed_profile_name()
+        if name != sealed_name:
+            raise SealedProfileError(
+                f"Cannot switch to profile '{name}': hermes-agent is running "
+                f"in sealed mode (HERMES_SEALED=true). The runtime is locked "
+                f"to profile '{sealed_name}'."
+            )
+        # No-op: already on the sealed profile.
+        return
     validate_profile_name(name)
     if name != "default" and not profile_exists(name):
         raise FileNotFoundError(
@@ -807,10 +867,14 @@ def _default_export_ignore(root_dir: Path):
 def export_profile(name: str, output_path: str) -> Path:
     """Export a profile to a tar.gz archive.
 
+    Refuses with :class:`SealedProfileError` when running in sealed mode
+    — sealed images are not authorized to export their profile data.
+
     Returns the output file path.
     """
     import tempfile
 
+    _enforce_not_sealed("export profile")
     validate_profile_name(name)
     profile_dir = get_profile_dir(name)
     if not profile_dir.is_dir():
@@ -927,11 +991,14 @@ def _inspect_profile_archive_roots(archive: Path) -> set[str]:
 def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     """Import a profile from a tar.gz archive.
 
+    Refuses with :class:`SealedProfileError` when running in sealed mode.
+
     If *name* is not given, infers it from the archive's top-level directory.
     Returns the imported profile directory.
     """
     import tempfile
 
+    _enforce_not_sealed("import profile")
     archive = Path(archive_path)
     if not archive.exists():
         raise FileNotFoundError(f"Archive not found: {archive}")
@@ -1046,8 +1113,11 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
 def rename_profile(old_name: str, new_name: str) -> Path:
     """Rename a profile: directory, wrapper script, service, active_profile.
 
+    Refuses with :class:`SealedProfileError` when running in sealed mode.
+
     Returns the new profile directory.
     """
+    _enforce_not_sealed("rename profile")
     validate_profile_name(old_name)
     validate_profile_name(new_name)
 
