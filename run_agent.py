@@ -1946,6 +1946,11 @@ class AIAgent:
         # Persist for reuse on switch_model / fallback activation. Must come
         # AFTER the custom_providers branch so per-model overrides aren't lost.
         self._config_context_length = _config_context_length
+        # Persist custom_providers so _check_compression_model_feasibility can
+        # thread the list into get_model_context_length for the auxiliary
+        # compression model — otherwise per-model context_length overrides
+        # declared in custom_providers are silently ignored there. (#19539)
+        self._custom_providers = _custom_providers
 
         self._ensure_lmstudio_runtime_loaded(_config_context_length)
 
@@ -2659,6 +2664,7 @@ class AIAgent:
                 api_key=aux_api_key,
                 config_context_length=getattr(self, "_aux_compression_context_length_config", None),
                 provider=getattr(self, "provider", ""),
+                custom_providers=getattr(self, "_custom_providers", None),
             )
 
             # Hard floor: the auxiliary compression model must have at least

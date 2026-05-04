@@ -182,6 +182,7 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
         api_key="sk-custom",
         config_context_length=1_000_000,
         provider="openrouter",
+        custom_providers=None,
     )
 
 
@@ -205,6 +206,7 @@ def test_feasibility_check_ignores_invalid_context_length(mock_get_client, mock_
         api_key="sk-test",
         config_context_length=None,
         provider="openrouter",
+        custom_providers=None,
     )
 
 
@@ -258,6 +260,7 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
         api_key="sk-custom",
         config_context_length=1_000_000,
         provider="",
+        custom_providers=getattr(agent, "_custom_providers", None),
     )
 
 
@@ -442,3 +445,65 @@ def test_run_conversation_clears_warning_after_replay(mock_get_client, mock_ctx_
         agent._compression_warning = None
 
     assert len(callback_events) == 0
+
+
+# ── custom_providers context_length override (#19539) ───────────────
+
+
+@patch("agent.auxiliary_client._resolve_task_provider_model")
+@patch("agent.model_metadata.get_model_context_length")
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_custom_providers_context_length_passed_to_feasibility_check(
+    mock_get_client, mock_ctx_len, mock_resolve
+):
+    """custom_providers per-model context_length must be threaded into the
+    compression feasibility check.  Without the fix, get_model_context_length
+    is called without custom_providers and ignores the user's override, causing
+    a spurious low-context warning / auto-threshold-lowering.  (#19539)"""
+    agent = _make_agent(main_context=200_000, threshold_percent=0.50)
+
+    # Simulate a custom provider override of 500_000 tokens for the aux model.
+    custom_providers_cfg = [
+        {
+            "name": "my-openai-compatible",
+            "base_url": "https://custom.example.com/v1",
+            "models": {
+                "my-local-llm": {"context_length": 500_000},
+            },
+        }
+    ]
+    agent._custom_providers = custom_providers_cfg
+
+    mock_client = MagicMock()
+    mock_client.base_url = "https://custom.example.com/v1"
+    mock_client.api_key = "sk-custom"
+    mock_get_client.return_value = (mock_client, "my-local-llm")
+    mock_resolve.return_value = ("my-openai-compatible", None, None, None, None)
+
+    # Return 256_000 when custom_providers is NOT passed (old behaviour) so we
+    # can assert that the patched call received the list.
+    captured_calls = []
+
+    def _side_effect(*args, **kwargs):
+        captured_calls.append(kwargs)
+        cp = kwargs.get("custom_providers")
+        if cp:
+            # Simulate get_model_context_length honouring the override.
+            return 500_000
+        return 256_000  # old behaviour — no custom_providers forwarded
+
+    mock_ctx_len.side_effect = _side_effect
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+    agent._check_compression_model_feasibility()
+
+    # The feasibility call must have forwarded _custom_providers.
+    assert any(
+        call.get("custom_providers") == custom_providers_cfg
+        for call in captured_calls
+    ), "get_model_context_length was not called with custom_providers — fix not applied"
+
+    # With the override respected (500K > 100K threshold) no warning should fire.
+    assert len(messages) == 0, f"Unexpected warning: {messages}"
+    assert agent._compression_warning is None
