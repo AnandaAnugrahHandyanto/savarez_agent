@@ -570,8 +570,16 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Redact secrets (after guard check to skip oversized content) ──
         if result.content:
+            original_content = result.content
             result.content = redact_sensitive_text(result.content)
             result_dict["content"] = result.content
+            if result.content != original_content:
+                result_dict.setdefault("_hint", (
+                    "Secret redaction was applied to this read_file output. "
+                    "Masked substrings are not literal file corruption or "
+                    "line truncation; inspect surrounding non-sensitive text "
+                    "or ask the user before editing redacted values."
+                ))
 
         # Large-file hint: if the file is big and the caller didn't ask
         # for a narrow window, nudge toward targeted reads.
