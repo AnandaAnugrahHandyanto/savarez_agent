@@ -21,7 +21,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set, Union
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +171,7 @@ class ToolRegistry:
         """Return a stable snapshot of toolset availability checks."""
         return self._snapshot_state()[1]
 
-    def _evaluate_toolset_check(self, toolset: str, check: Callable | None) -> bool:
+    def _evaluate_toolset_check(self, toolset: str, check: Optional[Callable]) -> bool:
         """Run a toolset check, treating missing or failing checks as unavailable/available."""
         if not check:
             return True
@@ -234,7 +234,7 @@ class ToolRegistry:
         is_async: bool = False,
         description: str = "",
         emoji: str = "",
-        max_result_size_chars: int | float | None = None,
+        max_result_size_chars: Optional[Union[int, float]] = None,
     ):
         """Register a tool.  Called at module-import time by each tool file."""
         with self._lock:
@@ -367,7 +367,7 @@ class ToolRegistry:
     # Query helpers  (replace redundant dicts in model_tools.py)
     # ------------------------------------------------------------------
 
-    def get_max_result_size(self, name: str, default: int | float | None = None) -> int | float:
+    def get_max_result_size(self, name: str, default: Optional[Union[int, float]] = None) -> Union[int, float]:
         """Return per-tool max result size, or *default* (or global default)."""
         entry = self.get_entry(name)
         if entry and entry.max_result_size_chars is not None:
