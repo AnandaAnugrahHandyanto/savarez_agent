@@ -1,5 +1,6 @@
 """Unit tests for hermes_cli/feishu_auth.py — Feishu OAuth device flow."""
 
+import asyncio
 import json
 import os
 import stat
@@ -153,9 +154,34 @@ class TestBeginDeviceAuthorization(unittest.TestCase):
 
         _, _, payload = mock_api.call_args[0]
         self.assertEqual(payload["scope"], FEISHU_DEFAULT_SCOPE)
+        self.assertIn("offline_access", payload["scope"].split())
+
+    def test_default_scope_includes_task_comment_write(self):
+        from hermes_cli.feishu_auth import FEISHU_DEFAULT_SCOPE
+
+        self.assertIn("task:comment:write", FEISHU_DEFAULT_SCOPE.split())
+
+    def test_default_scope_includes_document_comment_write(self):
+        from hermes_cli.feishu_auth import FEISHU_DEFAULT_SCOPE
+
+        scopes = FEISHU_DEFAULT_SCOPE.split()
+        self.assertIn("docs:document.comment:create", scopes)
+        self.assertIn("docs:document.comment:write_only", scopes)
+
+    def test_default_scope_includes_drive_export_readonly(self):
+        from hermes_cli.feishu_auth import FEISHU_DEFAULT_SCOPE
+
+        self.assertIn("drive:export:readonly", FEISHU_DEFAULT_SCOPE.split())
+
+    def test_default_scope_includes_task_section_scopes(self):
+        from hermes_cli.feishu_auth import FEISHU_DEFAULT_SCOPE
+
+        scopes = FEISHU_DEFAULT_SCOPE.split()
+        self.assertIn("task:section:read", scopes)
+        self.assertIn("task:section:write", scopes)
 
     @patch("hermes_cli.feishu_auth._api_post")
-    def test_uses_custom_scope_when_provided(self, mock_api):
+    def test_uses_custom_scope_with_offline_access_when_provided(self, mock_api):
         mock_api.return_value = {
             "device_code": "dc",
             "user_code": "UC",
@@ -168,7 +194,7 @@ class TestBeginDeviceAuthorization(unittest.TestCase):
         begin_device_authorization("app_id", scope="calendar:calendar")
 
         _, _, payload = mock_api.call_args[0]
-        self.assertEqual(payload["scope"], "calendar:calendar")
+        self.assertEqual(payload["scope"], "calendar:calendar offline_access")
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +367,104 @@ class TestSaveAndLoadUat(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["access_token"], "old_tok")
 
+    # ----- US-001: per-user UAT storage -----
+
+    def test_save_uat_per_user_writes_to_per_user_dir(self):
+        """save_uat(per_user=True) writes to ~/.hermes/feishu_uat/<open_id>.json."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            uat_dir = Path(tmpdir) / ".hermes" / "feishu_uat"
+            with patch("hermes_cli.feishu_auth.FEISHU_UAT_DIR", uat_dir):
+                save_uat(
+                    access_token="uat_user_a",
+                    refresh_token="ref_user_a",
+                    open_id="ou_alice",
+                    expires_in=7200,
+                    refresh_expires_in=2592000,
+                    scope="calendar:calendar",
+                    app_id="app_123",
+                    per_user=True,
+                )
+            per_user_path = uat_dir / "ou_alice.json"
+            self.assertTrue(per_user_path.exists())
+            data = json.loads(per_user_path.read_text())
+            self.assertEqual(data["access_token"], "uat_user_a")
+            self.assertEqual(data["user_open_id"], "ou_alice")
+
+    def test_save_uat_default_writes_to_legacy_path_for_backcompat(self):
+        """save_uat() without per_user keeps the legacy single-file path."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            legacy_path = Path(tmpdir) / ".hermes" / "feishu_uat.json"
+            uat_dir = Path(tmpdir) / ".hermes" / "feishu_uat"
+            with patch("hermes_cli.feishu_auth.FEISHU_UAT_PATH", legacy_path), \
+                 patch("hermes_cli.feishu_auth.FEISHU_UAT_DIR", uat_dir):
+                save_uat(
+                    access_token="legacy_tok",
+                    refresh_token="legacy_ref",
+                    open_id="ou_bob",
+                    expires_in=7200,
+                    refresh_expires_in=2592000,
+                    scope="",
+                    app_id="app",
+                )
+            self.assertTrue(legacy_path.exists())
+            self.assertFalse((uat_dir / "ou_bob.json").exists())
+
+    def test_save_uat_per_user_file_mode_is_0600(self):
+        """Per-user UAT file inherits the 0600 mode for security."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            uat_dir = Path(tmpdir) / ".hermes" / "feishu_uat"
+            with patch("hermes_cli.feishu_auth.FEISHU_UAT_DIR", uat_dir):
+                save_uat(
+                    access_token="t", refresh_token="r", open_id="ou_charlie",
+                    expires_in=7200, refresh_expires_in=2592000, scope="", app_id="app",
+                    per_user=True,
+                )
+            per_user_path = uat_dir / "ou_charlie.json"
+            mode = stat.S_IMODE(per_user_path.stat().st_mode)
+            self.assertEqual(mode, 0o600)
+
+    def test_load_uat_with_open_id_reads_per_user_file(self):
+        """load_uat(open_id=...) reads ~/.hermes/feishu_uat/<open_id>.json."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            uat_dir = Path(tmpdir) / "feishu_uat"
+            uat_dir.mkdir(parents=True)
+            (uat_dir / "ou_dave.json").write_text(json.dumps({
+                "access_token": "tok_dave",
+                "user_open_id": "ou_dave",
+                "expires_at": 99999999999999,
+            }))
+            with patch("hermes_cli.feishu_auth.FEISHU_UAT_DIR", uat_dir):
+                result = load_uat(open_id="ou_dave")
+            self.assertIsNotNone(result)
+            self.assertEqual(result["access_token"], "tok_dave")
+            self.assertEqual(result["user_open_id"], "ou_dave")
+
+    def test_load_uat_without_open_id_still_reads_legacy_file(self):
+        """load_uat() with no arg keeps reading the legacy single-file path."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            legacy = Path(tmpdir) / "feishu_uat.json"
+            legacy.write_text(json.dumps({
+                "access_token": "legacy_tok",
+                "user_open_id": "ou_legacy",
+                "expires_at": 99999999999999,
+            }))
+            with patch("hermes_cli.feishu_auth.FEISHU_UAT_PATH", legacy):
+                result = load_uat()
+            self.assertIsNotNone(result)
+            self.assertEqual(result["access_token"], "legacy_tok")
+
+    def test_per_user_uat_path_rejects_path_traversal(self):
+        """_per_user_uat_path refuses slashes, dotdot, null, backslash."""
+        from hermes_cli.feishu_auth import _per_user_uat_path
+        for evil in ("../etc/passwd", "ou/with/slash", "ou\\back", "ou\x00null", "", None, "..", "ou/"):
+            with self.assertRaises((ValueError, TypeError)):
+                _per_user_uat_path(evil)  # type: ignore[arg-type]
+
 
 # ---------------------------------------------------------------------------
 # wait_for_authorization_success
@@ -462,6 +586,240 @@ class TestWaitForAuthorizationSuccess(unittest.TestCase):
             wait_for_authorization_success("dc", "app", interval=0, expires_in=60)
 
         self.assertIn("authorization failed", str(ctx.exception))
+
+
+# ---------------------------------------------------------------------------
+# US-002: chat_mode_device_flow (multi-user async device flow)
+# ---------------------------------------------------------------------------
+
+
+class TestChatModeDeviceFlow(unittest.IsolatedAsyncioTestCase):
+    """Tests for chat_mode_device_flow async multi-user device flow."""
+
+    def _begin_response(self) -> dict:
+        return {
+            "device_code": "dc_chat_test",
+            "user_code": "ABCD-1234",
+            "verification_uri": "https://accounts.feishu.cn/oauth/v1/device/verify",
+            "verification_uri_complete": "https://accounts.feishu.cn/oauth/v1/device/verify?user_code=ABCD-1234",
+            "expires_in": 600,
+            "interval": 0,  # zero so tests run instantly
+        }
+
+    async def test_success_path_invokes_on_success_and_persists_per_user_uat(self):
+        from hermes_cli.feishu_auth import chat_mode_device_flow
+
+        urls: list = []
+        successes: list = []
+        errors: list = []
+
+        async def on_url(uri, code, exp_in):
+            urls.append((uri, code, exp_in))
+
+        async def on_success(open_id, scope):
+            successes.append((open_id, scope))
+
+        async def on_error(reason):
+            errors.append(reason)
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            uat_dir = Path(tmpdir) / "feishu_uat"
+
+            with patch("hermes_cli.feishu_auth.begin_device_authorization",
+                       return_value=self._begin_response()), \
+                 patch("hermes_cli.feishu_auth.poll_device_token",
+                       return_value={
+                           "access_token": "uat_chat_xyz",
+                           "refresh_token": "ref_chat_xyz",
+                           "open_id": "ou_chat_user",
+                           "expires_in": 7200,
+                           "refresh_expires_in": 2592000,
+                           "scope": "calendar:calendar",
+                           "error": None,
+                       }), \
+                 patch("hermes_cli.feishu_auth.FEISHU_UAT_DIR", uat_dir):
+                result = await chat_mode_device_flow(
+                    client_id="app_test",
+                    client_secret="secret_test",
+                    scope="calendar:calendar",
+                    on_verification_url=on_url,
+                    on_success=on_success,
+                    on_error=on_error,
+                )
+
+            # Assertions stay INSIDE TemporaryDirectory so uat_dir is still on disk.
+            self.assertEqual(result, ("uat_chat_xyz", "ref_chat_xyz", "ou_chat_user"))
+            self.assertEqual(len(urls), 1)
+            self.assertEqual(urls[0][1], "ABCD-1234")
+            self.assertEqual(len(successes), 1)
+            self.assertEqual(successes[0], ("ou_chat_user", "calendar:calendar offline_access"))
+            self.assertEqual(errors, [])
+            self.assertTrue((uat_dir / "ou_chat_user.json").exists())
+            data = json.loads((uat_dir / "ou_chat_user.json").read_text())
+            self.assertEqual(data["access_token"], "uat_chat_xyz")
+
+    async def test_access_denied_invokes_on_error_returns_none(self):
+        from hermes_cli.feishu_auth import chat_mode_device_flow
+
+        errors: list = []
+
+        async def on_url(*_a):
+            pass
+
+        async def on_success(*_a):
+            self.fail("on_success must not be called on denial")
+
+        async def on_error(reason):
+            errors.append(reason)
+
+        with patch("hermes_cli.feishu_auth.begin_device_authorization",
+                   return_value=self._begin_response()), \
+             patch("hermes_cli.feishu_auth.poll_device_token",
+                   return_value={
+                       "access_token": None,
+                       "error": "access_denied",
+                       "error_description": "user denied",
+                   }):
+            result = await chat_mode_device_flow(
+                client_id="app",
+                client_secret="secret",
+                scope=None,
+                on_verification_url=on_url,
+                on_success=on_success,
+                on_error=on_error,
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("access_denied", errors[0])
+
+    async def test_init_failure_invokes_on_error_with_init_failed_prefix(self):
+        from hermes_cli.feishu_auth import chat_mode_device_flow, FeishuAuthError
+
+        errors: list = []
+
+        async def on_url(*_a):
+            pass
+
+        async def on_success(*_a):
+            pass
+
+        async def on_error(reason):
+            errors.append(reason)
+
+        with patch("hermes_cli.feishu_auth.begin_device_authorization",
+                   side_effect=FeishuAuthError("400 invalid_request")):
+            result = await chat_mode_device_flow(
+                client_id="app", client_secret="secret", scope=None,
+                on_verification_url=on_url, on_success=on_success, on_error=on_error,
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("init failed", errors[0])
+
+    async def test_slow_down_increases_interval_then_succeeds(self):
+        from hermes_cli.feishu_auth import chat_mode_device_flow
+
+        # First poll = slow_down, second poll = success
+        poll_calls = []
+
+        def fake_poll(device_code, client_id, client_secret=None):
+            poll_calls.append(1)
+            if len(poll_calls) == 1:
+                return {"access_token": None, "error": "slow_down",
+                        "error_description": "slow down"}
+            return {
+                "access_token": "uat_after_slow",
+                "refresh_token": "ref",
+                "open_id": "ou_user2",
+                "expires_in": 7200,
+                "refresh_expires_in": 2592000,
+                "scope": "calendar:calendar",
+                "error": None,
+            }
+
+        async def on_url(*_a): pass
+        async def on_success(*_a): pass
+        errors: list = []
+        async def on_error(r): errors.append(r)
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            uat_dir = Path(tmpdir) / "feishu_uat"
+            with patch("hermes_cli.feishu_auth.begin_device_authorization",
+                       return_value=self._begin_response()), \
+                 patch("hermes_cli.feishu_auth.poll_device_token", side_effect=fake_poll), \
+                 patch("hermes_cli.feishu_auth.FEISHU_UAT_DIR", uat_dir):
+                result = await chat_mode_device_flow(
+                    client_id="app", client_secret="secret", scope="calendar:calendar",
+                    on_verification_url=on_url, on_success=on_success, on_error=on_error,
+                )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result[2], "ou_user2")  # open_id
+        self.assertGreaterEqual(len(poll_calls), 2)
+        self.assertEqual(errors, [])
+
+    async def test_cancel_event_aborts_polling(self):
+        from hermes_cli.feishu_auth import chat_mode_device_flow
+
+        cancel = asyncio.Event()
+        cancel.set()  # immediately cancel
+
+        errors: list = []
+
+        async def on_url(*_a): pass
+        async def on_success(*_a): self.fail("success must not run when cancelled")
+        async def on_error(reason): errors.append(reason)
+
+        with patch("hermes_cli.feishu_auth.begin_device_authorization",
+                   return_value=self._begin_response()), \
+             patch("hermes_cli.feishu_auth.poll_device_token",
+                   return_value={"access_token": None, "error": "authorization_pending"}):
+            result = await chat_mode_device_flow(
+                client_id="app", client_secret="secret", scope=None,
+                on_verification_url=on_url, on_success=on_success, on_error=on_error,
+                cancel_event=cancel,
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("cancelled", errors[0].lower())
+
+    async def test_token_response_missing_open_id_triggers_on_error(self):
+        from hermes_cli.feishu_auth import chat_mode_device_flow
+
+        errors: list = []
+
+        async def on_url(*_a): pass
+        async def on_success(*_a): self.fail("success must not run on bad token")
+        async def on_error(reason): errors.append(reason)
+
+        # Token endpoint omits open_id (Feishu's actual behavior); fetch_user_info
+        # is the fallback hop that supplies it. We mock that hop returning a
+        # blank open_id so the final guard fires on_error.
+        with patch("hermes_cli.feishu_auth.begin_device_authorization",
+                   return_value=self._begin_response()), \
+             patch("hermes_cli.feishu_auth.poll_device_token",
+                   return_value={
+                       "access_token": "uat_no_oid",
+                       "refresh_token": "r",
+                       "open_id": "",  # missing
+                       "expires_in": 7200, "refresh_expires_in": 2592000,
+                       "scope": "", "error": None,
+                   }), \
+             patch("hermes_cli.feishu_auth.fetch_user_info",
+                   return_value={"open_id": ""}):
+            result = await chat_mode_device_flow(
+                client_id="app", client_secret="secret", scope=None,
+                on_verification_url=on_url, on_success=on_success, on_error=on_error,
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("missing", errors[0].lower())
 
 
 if __name__ == "__main__":

@@ -112,6 +112,10 @@ def _handle_feishu_doc_read(args: dict, **kwargs) -> str:
     except ImportError:
         return tool_error("lark_oapi not installed")
 
+    if not use_uat and get_client() is None:
+        logger.info("feishu_doc_read: no thread-local client; falling back to UAT")
+        use_uat = True
+
     if use_uat:
         # UAT path: build client from disk token
         try:

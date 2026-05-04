@@ -17,6 +17,7 @@ from gateway.platforms.cards.streaming_controller import (
     TERMINAL_PHASES,
     _build_final_card,
     _build_streaming_card,
+    build_streaming_cardkit_initial_card,
 )
 
 
@@ -33,6 +34,12 @@ def _make_controller(message_id="om_test"):
     mock_client = MagicMock()
     mock_client.request = MagicMock(return_value=MagicMock(code=0, msg="ok"))
     return StreamingCardController(message_id=message_id, client=mock_client)
+
+
+async def _wait_pending_flush(ctrl: StreamingCardController) -> None:
+    task = getattr(ctrl, "_pending_flush_task", None)
+    if task is not None and not task.done():
+        await task
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +178,26 @@ class TestAccumulatorBlocks(unittest.TestCase):
         self.assertIsNone(ctrl.tool_use.tool_args)
         self.assertFalse(ctrl.tool_use.is_active)
 
+    def test_each_tool_call_uses_its_own_elapsed_timer(self):
+        ctrl = _make_controller()
+        now = 100.0
+
+        def fake_time():
+            return now
+
+        with patch("gateway.platforms.cards.streaming_controller.time.time", fake_time):
+            ctrl.start_tool_use("first_tool")
+            now = 101.0
+            ctrl.complete_tool_use()
+
+            now = 200.0
+            ctrl.start_tool_use("second_tool")
+            now = 200.25
+            ctrl.complete_tool_use()
+
+        self.assertEqual(ctrl.tool_use.steps[0]["elapsed_ms"], 1000)
+        self.assertEqual(ctrl.tool_use.steps[1]["elapsed_ms"], 250)
+
     def test_add_text_chunk_ignored_when_terminal(self):
         ctrl = _make_controller()
         with patch.object(ctrl, "_flush_final", new=AsyncMock()):
@@ -236,6 +263,24 @@ class TestFlushThrottle(unittest.TestCase):
         # _perform_flush should not be called because _pending_flush was already set
         mock_pf.assert_not_called()
 
+    def test_schedule_flush_returns_without_waiting_for_network_flush(self):
+        """Scheduling a flush should not block token ingestion on CardKit RTT."""
+        ctrl = _make_controller()
+
+        async def slow_flush():
+            await asyncio.sleep(0.05)
+
+        async def run():
+            with patch.object(ctrl, "_perform_flush", new=AsyncMock(side_effect=slow_flush)) as mock_pf:
+                start = time.monotonic()
+                await ctrl._schedule_flush()
+                elapsed = time.monotonic() - start
+                self.assertLess(elapsed, 0.03)
+                await _wait_pending_flush(ctrl)
+                mock_pf.assert_awaited_once()
+
+        _run(run())
+
     def test_on_enter_terminal_phase_clears_pending_flush(self):
         ctrl = _make_controller()
         ctrl._pending_flush = True
@@ -293,10 +338,31 @@ class TestToCardJson(unittest.TestCase):
 class TestCardBuilders(unittest.TestCase):
     """Tests for module-level card builder helper functions."""
 
+    def _collect_tags(self, value):
+        tags = []
+        if isinstance(value, dict):
+            tag = value.get("tag")
+            if tag:
+                tags.append(tag)
+            for child in value.values():
+                tags.extend(self._collect_tags(child))
+        elif isinstance(value, list):
+            for child in value:
+                tags.extend(self._collect_tags(child))
+        return tags
+
     def test_build_streaming_card_schema_is_2_0(self):
         card = _build_streaming_card(text="hello", is_streaming=True)
         self.assertEqual(card.get("schema"), "2.0")
         self.assertIn("body", card)
+
+    def test_build_streaming_card_omits_unsupported_v2_note_tag(self):
+        card = _build_streaming_card(text="partial", is_streaming=True)
+        self.assertNotIn("note", self._collect_tags(card))
+
+    def test_build_final_card_omits_unsupported_v2_note_tag(self):
+        card = _build_final_card(text="final answer", elapsed_ms=1500)
+        self.assertNotIn("note", self._collect_tags(card))
 
     def test_build_streaming_card_includes_generating_note(self):
         card = _build_streaming_card(text="partial", is_streaming=True)
@@ -328,6 +394,138 @@ class TestCardBuilders(unittest.TestCase):
         card = _build_final_card(text="answer", tool_steps=steps)
         card_str = json.dumps(card)
         self.assertIn("web_search", card_str)
+
+    def test_build_final_card_places_diagnostics_before_answer(self):
+        steps = [{"name": "web_search", "elapsed_ms": 300}]
+        card = _build_final_card(
+            text="完整结果",
+            reasoning_text="内部思考",
+            tool_steps=steps,
+        )
+        elements = card["body"]["elements"]
+
+        self.assertEqual(elements[0]["tag"], "collapsible_panel")
+        self.assertEqual(elements[1]["tag"], "markdown")
+        self.assertIn("Tool calls", elements[1]["content"])
+        self.assertEqual(elements[2]["tag"], "markdown")
+        self.assertEqual(elements[2]["content"], "完整结果")
+        card_str = json.dumps(card, ensure_ascii=False)
+        self.assertLess(card_str.index("Reasoning"), card_str.index("Tool calls"))
+        self.assertLess(card_str.index("Tool calls"), card_str.index("完整结果"))
+
+    def test_cardkit_stream_content_places_diagnostics_before_answer(self):
+        ctrl = StreamingCardController(
+            message_id="om_cardkit",
+            client=None,
+            card_id="card_123",
+        )
+        ctrl.reasoning.accumulated_reasoning_text = "内部思考"
+        ctrl.reasoning.is_reasoning_phase = True
+        ctrl.tool_use.steps.append({"name": "web_search", "elapsed_ms": 300})
+        ctrl.text.accumulated_text = "正在返回结果"
+
+        content = ctrl._build_cardkit_stream_content()
+
+        self.assertLess(content.index("Tool calls"), content.index("正在返回结果"))
+
+    def test_build_final_card_strips_feishu_image_resource_link_targets(self):
+        url = (
+            "https://s1-imfile.feishucdn.com/static-resource/v1/avatar"
+            "?image_size=240x240&format=png"
+        )
+        card = _build_final_card(text=f"| 头像 | [查看头像]({url}) |")
+
+        answer = card["body"]["elements"][0]["content"]
+
+        self.assertIn("查看头像", answer)
+        self.assertNotIn("feishucdn.com/static-resource", answer)
+
+    def test_cardkit_stream_content_strips_feishu_image_resource_link_targets(self):
+        url = (
+            "https://s1-imfile.feishucdn.com/static-resource/v1/avatar"
+            "?image_size=240x240&format=png"
+        )
+        ctrl = StreamingCardController(
+            message_id="om_cardkit",
+            client=None,
+            card_id="card_123",
+        )
+        ctrl.text.accumulated_text = f"头像：[查看头像]({url})"
+
+        content = ctrl._build_cardkit_stream_content()
+
+        self.assertIn("查看头像", content)
+        self.assertNotIn("feishucdn.com/static-resource", content)
+
+    def test_card_markdown_preserves_normal_links(self):
+        card = _build_final_card(text="[打开文档](https://example.com/doc)")
+
+        answer = card["body"]["elements"][0]["content"]
+
+        self.assertIn("[打开文档](https://example.com/doc)", answer)
+
+    def test_cardkit_stream_content_hides_reasoning_after_answer_starts(self):
+        ctrl = StreamingCardController(
+            message_id="om_cardkit",
+            client=None,
+            card_id="card_123",
+        )
+        ctrl.reasoning.accumulated_reasoning_text = "内部思考应折叠到最终卡片"
+        ctrl.reasoning.is_reasoning_phase = True
+        ctrl.tool_use.steps.append({"name": "web_search", "elapsed_ms": 300})
+        ctrl.text.accumulated_text = "正在返回结果"
+
+        content = ctrl._build_cardkit_stream_content()
+
+        self.assertIn("Tool calls", content)
+        self.assertIn("web_search", content)
+        self.assertIn("Reasoning", content)
+        self.assertIn("正在返回结果", content)
+        self.assertNotIn("Thinking", content)
+        self.assertNotIn("内部思考应折叠到最终卡片", content)
+        self.assertLess(content.index("Reasoning"), content.index("正在返回结果"))
+
+    def test_cardkit_stream_content_keeps_reasoning_folded_before_answer(self):
+        ctrl = StreamingCardController(
+            message_id="om_cardkit",
+            client=None,
+            card_id="card_123",
+        )
+        ctrl.reasoning.accumulated_reasoning_text = "这段很长的内部思考不应在流式卡片中展开"
+        ctrl.reasoning.is_reasoning_phase = True
+
+        content = ctrl._build_cardkit_stream_content()
+
+        self.assertIn("Reasoning", content)
+        self.assertNotIn("Thinking", content)
+        self.assertNotIn("这段很长的内部思考不应在流式卡片中展开", content)
+
+    def test_cardkit_stream_content_shows_ephemeral_status_before_agent_events(self):
+        ctrl = StreamingCardController(
+            message_id="om_cardkit",
+            client=None,
+            card_id="card_123",
+        )
+        _run(ctrl.set_status("Hermes 正在准备响应...."))
+
+        content = ctrl._build_cardkit_stream_content()
+
+        self.assertIn("Hermes 正在准备响应....", content)
+        self.assertNotIn("Reasoning", content)
+
+    def test_cardkit_status_is_not_kept_after_answer_starts(self):
+        ctrl = StreamingCardController(
+            message_id="om_cardkit",
+            client=None,
+            card_id="card_123",
+        )
+        _run(ctrl.set_status("Hermes 正在准备响应...."))
+        _run(ctrl.add_text_chunk("answer"))
+
+        content = ctrl._build_cardkit_stream_content()
+
+        self.assertIn("answer", content)
+        self.assertNotIn("Hermes 正在准备响应", content)
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +655,205 @@ class TestActiveToolRendering(unittest.TestCase):
         self.assertIn("code_runner", card_str)
         # Completed steps show elapsed ms, not "running"
         self.assertNotIn("running", card_str)
+
+
+class TestToolUseStreaming(unittest.TestCase):
+    """Tool events should make an otherwise empty card visibly update."""
+
+    def test_mark_tool_started_flushes_tool_status(self):
+        ctrl = _make_controller()
+        async def run():
+            with patch.object(ctrl, "_perform_flush", new=AsyncMock()) as flush:
+                await ctrl.mark_tool_started("feishu_task_tasklist", {"action": "patch"})
+                await _wait_pending_flush(ctrl)
+                flush.assert_awaited()
+
+        _run(run())
+
+        self.assertEqual(ctrl.phase, Phase.STREAMING)
+        card = ctrl.to_card_json()
+        card_str = json.dumps(card, ensure_ascii=False)
+        self.assertIn("feishu_task_tasklist", card_str)
+        self.assertIn("running", card_str)
+
+    def test_mark_tool_completed_records_step_and_flushes(self):
+        ctrl = _make_controller()
+        async def run():
+            with patch.object(ctrl, "_perform_flush", new=AsyncMock()):
+                await ctrl.mark_tool_started("feishu_task_tasklist")
+                await _wait_pending_flush(ctrl)
+            with patch.object(ctrl, "_perform_flush", new=AsyncMock()) as flush:
+                await ctrl.mark_tool_completed({"name": "feishu_task_tasklist", "duration": 1.2})
+                await _wait_pending_flush(ctrl)
+                flush.assert_awaited()
+
+        _run(run())
+        card = ctrl.to_card_json()
+        card_str = json.dumps(card, ensure_ascii=False)
+        self.assertIn("feishu_task_tasklist", card_str)
+
+
+class TestCardKitStreaming(unittest.TestCase):
+    """CardKit mode should use native cardElement.content typewriter APIs."""
+
+    def test_initial_card_contains_streaming_element_id(self):
+        card = build_streaming_cardkit_initial_card()
+        self.assertTrue(card["config"]["streaming_mode"])
+        self.assertEqual(
+            card["body"]["elements"][0]["element_id"],
+            "streaming_content",
+        )
+
+    def test_text_chunk_flushes_via_cardkit_content(self):
+        content_calls = []
+
+        class _CardElementAPI:
+            def content(self, request):
+                content_calls.append(request)
+                return MagicMock(code=0, msg="ok")
+
+        client = MagicMock()
+        client.cardkit.v1.card_element = _CardElementAPI()
+        ctrl = StreamingCardController(
+            message_id="om_cardkit",
+            client=client,
+            card_id="card_123",
+        )
+
+        async def run():
+            await ctrl.add_text_chunk("Hello")
+            await _wait_pending_flush(ctrl)
+
+        _run(run())
+
+        self.assertEqual(len(content_calls), 1)
+        request = content_calls[0]
+        self.assertEqual(request.card_id, "card_123")
+        self.assertEqual(request.element_id, "streaming_content")
+        self.assertEqual(request.request_body.content, "Hello")
+        self.assertEqual(request.request_body.sequence, 2)
+        client.request.assert_not_called()
+
+    def test_final_card_closes_streaming_mode_and_updates_cardkit_card(self):
+        settings_calls = []
+        update_calls = []
+
+        class _CardAPI:
+            def settings(self, request):
+                settings_calls.append(request)
+                return MagicMock(code=0, msg="ok")
+
+            def update(self, request):
+                update_calls.append(request)
+                return MagicMock(code=0, msg="ok")
+
+        class _CardElementAPI:
+            def content(self, request):
+                return MagicMock(code=0, msg="ok")
+
+        client = MagicMock()
+        client.cardkit.v1.card = _CardAPI()
+        client.cardkit.v1.card_element = _CardElementAPI()
+        ctrl = StreamingCardController(
+            message_id="om_cardkit",
+            client=client,
+            card_id="card_123",
+        )
+
+        async def run():
+            await ctrl.add_text_chunk("Hello")
+            await ctrl.mark_completed()
+
+        _run(run())
+
+        self.assertEqual(len(settings_calls), 1)
+        self.assertEqual(settings_calls[0].card_id, "card_123")
+        self.assertEqual(
+            json.loads(settings_calls[0].request_body.settings),
+            {"streaming_mode": False},
+        )
+        self.assertEqual(len(update_calls), 1)
+        self.assertEqual(update_calls[0].card_id, "card_123")
+        final_card = json.loads(update_calls[0].request_body.card.data)
+        final_card_text = json.dumps(final_card, ensure_ascii=False)
+        self.assertIn("Hello", final_card_text)
+        client.request.assert_not_called()
+
+    def test_final_card_uses_original_cardkit_id_after_content_stream_failure(self):
+        settings_calls = []
+        update_calls = []
+
+        class _CardAPI:
+            def settings(self, request):
+                settings_calls.append(request)
+                return MagicMock(code=0, msg="ok")
+
+            def update(self, request):
+                update_calls.append(request)
+                return MagicMock(code=0, msg="ok")
+
+        class _CardElementAPI:
+            def content(self, request):
+                return MagicMock(code=230020, msg="rate limited")
+
+        client = MagicMock()
+        client.cardkit.v1.card = _CardAPI()
+        client.cardkit.v1.card_element = _CardElementAPI()
+        ctrl = StreamingCardController(
+            message_id="om_cardkit",
+            client=client,
+            card_id="card_123",
+        )
+
+        async def run_chunk():
+            await ctrl.add_text_chunk("Hello")
+            await _wait_pending_flush(ctrl)
+
+        _run(run_chunk())
+        self.assertIsNone(ctrl.card_kit.card_id)
+        _run(ctrl.mark_completed())
+
+        self.assertEqual(len(settings_calls), 1)
+        self.assertEqual(settings_calls[0].card_id, "card_123")
+        self.assertEqual(len(update_calls), 1)
+        self.assertEqual(update_calls[0].card_id, "card_123")
+        client.request.assert_not_called()
+
+    def test_final_card_retries_transient_cardkit_update_failure(self):
+        settings_calls = []
+        update_calls = []
+
+        class _CardAPI:
+            def settings(self, request):
+                settings_calls.append(request)
+                return MagicMock(code=0, msg="ok")
+
+            def update(self, request):
+                update_calls.append(request)
+                if len(update_calls) == 1:
+                    return MagicMock(code=500, msg="temporary")
+                return MagicMock(code=0, msg="ok")
+
+        class _CardElementAPI:
+            def content(self, request):
+                return MagicMock(code=0, msg="ok")
+
+        client = MagicMock()
+        client.cardkit.v1.card = _CardAPI()
+        client.cardkit.v1.card_element = _CardElementAPI()
+        ctrl = StreamingCardController(
+            message_id="om_cardkit",
+            client=client,
+            card_id="card_123",
+        )
+
+        _run(ctrl.add_text_chunk("Hello"))
+        _run(ctrl.mark_completed())
+
+        self.assertEqual(len(settings_calls), 2)
+        self.assertEqual(len(update_calls), 2)
+        self.assertEqual(update_calls[-1].card_id, "card_123")
+        client.request.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -144,12 +144,131 @@ class TestCalendarListEvents(unittest.TestCase):
 
         self.assertIn("events", result)
         self.assertEqual(len(result["events"]), 1)
+        builder.queries.assert_called_once_with([
+            ("start_time", "1704038400"),
+            ("end_time", "1704124799"),
+            ("user_id_type", "open_id"),
+        ])
+
+    def test_keeps_epoch_seconds_when_listing_events(self):
+        try:
+            import lark_oapi  # noqa: F401
+        except ImportError:
+            self.skipTest("lark_oapi not installed")
+
+        handler = self._get_handler()
+        mock_fc = _make_mock_fc()
+        mock_fc.sdk.request.return_value = _make_sdk_response(code=0, data={"items": []})
+
+        import lark_oapi as lark_mod
+        from lark_oapi.core.model import base_request as br_mod
+
+        builder = MagicMock()
+        for m in ["http_method", "uri", "token_types", "paths", "queries", "build"]:
+            getattr(builder, m).return_value = builder
+        mock_br = MagicMock()
+        mock_br.builder.return_value = builder
+
+        opt_b = MagicMock()
+        opt_b.user_access_token.return_value = opt_b
+        opt_b.build.return_value = MagicMock()
+        mock_ro = MagicMock()
+        mock_ro.builder.return_value = opt_b
+
+        with patch("tools.feishu_calendar_tool.FeishuClient.for_user", return_value=mock_fc), \
+             patch("tools.feishu_calendar_tool._resolve_calendar_id", return_value="cal_primary"), \
+             patch.object(br_mod, "BaseRequest", mock_br), \
+             patch.object(lark_mod, "RequestOption", mock_ro), \
+             patch.object(lark_mod, "AccessTokenType", MagicMock()), \
+             patch("lark_oapi.core.enum.HttpMethod", MagicMock()):
+            json.loads(handler({
+                "start_time": "1704038400",
+                "end_time": "1704124799",
+                "calendar_id": "cal_primary",
+            }))
+
+        builder.queries.assert_called_once_with([
+            ("start_time", "1704038400"),
+            ("end_time", "1704124799"),
+            ("user_id_type", "open_id"),
+        ])
 
     def test_schema_has_required_start_and_end_time(self):
         entry = registry.get_entry("feishu_calendar_list_events")
         req = entry.schema["parameters"].get("required", [])
         self.assertIn("start_time", req)
         self.assertIn("end_time", req)
+
+
+class TestCalendarFreebusy(unittest.TestCase):
+    """Tests for feishu_calendar_freebusy handler."""
+
+    def _get_handler(self):
+        entry = registry.get_entry("feishu_calendar_freebusy")
+        return entry.handler
+
+    def test_defaults_to_current_user_and_current_time_window(self):
+        try:
+            import lark_oapi  # noqa: F401
+        except ImportError:
+            self.skipTest("lark_oapi not installed")
+
+        handler = self._get_handler()
+        mock_fc = _make_mock_fc(user_open_id="ou_current")
+        mock_fc.sdk.request.return_value = _make_sdk_response(
+            code=0,
+            data={"freebusy_lists": [{"user_id": "ou_current", "items": []}]},
+        )
+
+        import lark_oapi as lark_mod
+        from lark_oapi.core.model import base_request as br_mod
+
+        builder = MagicMock()
+        for m in ["http_method", "uri", "token_types", "queries", "body", "build"]:
+            getattr(builder, m).return_value = builder
+        mock_br = MagicMock()
+        mock_br.builder.return_value = builder
+
+        opt_b = MagicMock()
+        opt_b.user_access_token.return_value = opt_b
+        opt_b.build.return_value = MagicMock()
+        mock_ro = MagicMock()
+        mock_ro.builder.return_value = opt_b
+
+        with patch("tools.feishu_calendar_tool.FeishuClient.for_user", return_value=mock_fc), \
+             patch.object(br_mod, "BaseRequest", mock_br), \
+             patch.object(lark_mod, "RequestOption", mock_ro), \
+             patch.object(lark_mod, "AccessTokenType", MagicMock()), \
+             patch("lark_oapi.core.enum.HttpMethod", MagicMock()):
+            result = json.loads(handler({}))
+
+        self.assertIn("freebusy_lists", result)
+        body = builder.body.call_args.args[0]
+        self.assertEqual(body["user_ids"], ["ou_current"])
+        self.assertIn("time_min", body)
+        self.assertIn("time_max", body)
+
+    def test_schema_allows_omitting_defaults(self):
+        entry = registry.get_entry("feishu_calendar_freebusy")
+        req = entry.schema["parameters"].get("required", [])
+        self.assertEqual(req, [])
+
+
+class TestCalendarCreateEvent(unittest.TestCase):
+    """Tests for feishu_calendar_create_event helpers."""
+
+    def test_event_time_payload_converts_rfc3339_to_epoch_seconds(self):
+        from tools.feishu_calendar_tool import _event_time_payload
+
+        self.assertEqual(
+            _event_time_payload("2026-05-04T10:00:00+08:00"),
+            {"timestamp": "1777860000"},
+        )
+
+    def test_event_time_payload_keeps_epoch_seconds(self):
+        from tools.feishu_calendar_tool import _event_time_payload
+
+        self.assertEqual(_event_time_payload("1777850400"), {"timestamp": "1777850400"})
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +309,34 @@ class TestBitableListRecords(unittest.TestCase):
         props = entry.schema["parameters"].get("properties", {})
         self.assertIn("app_token", props)
         self.assertIn("table_id", props)
+
+
+class TestSearchGlobal(unittest.TestCase):
+    """Tests for feishu_search_global fallback behavior."""
+
+    def _get_handler(self):
+        entry = registry.get_entry("feishu_search_global")
+        return entry.handler
+
+    def test_falls_back_to_wiki_search_when_global_endpoint_unavailable(self):
+        handler = self._get_handler()
+        mock_fc = _make_mock_fc()
+        mock_fc.do_request.side_effect = [
+            (-1, "not found", {}),
+            (0, "success", {"items": [{"title": "API 文档"}]}),
+        ]
+
+        with patch("tools.feishu_search_tool.FeishuClient.for_user", return_value=mock_fc):
+            result = json.loads(handler({"query": "API 文档"}))
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["fallback"], "feishu_wiki_search")
+        self.assertEqual(result["items"][0]["title"], "API 文档")
+        self.assertEqual(mock_fc.do_request.call_count, 2)
+        self.assertEqual(
+            mock_fc.do_request.call_args_list[1].args[:2],
+            ("POST", "/open-apis/wiki/v1/nodes/search"),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -435,6 +582,26 @@ class TestDocReadUatBranch(unittest.TestCase):
 
         self.assertIn("error", result)
 
+    def test_use_uat_false_without_thread_client_falls_back_to_uat(self):
+        try:
+            import lark_oapi  # noqa: F401
+        except ImportError:
+            self.skipTest("lark_oapi not installed")
+
+        import tools.feishu_doc_tool as doc_tool
+
+        doc_tool.set_client(None)
+        handler = self._get_handler()
+
+        with patch(
+            "tools.feishu_oapi_client.FeishuClient.for_user",
+            side_effect=NeedAuthorizationError(reason="no file"),
+        ):
+            result = json.loads(handler({"doc_token": "doc_abc", "use_uat": False}))
+
+        self.assertIn("error", result)
+        self.assertNotIn("not in a Feishu comment context", result["error"])
+
     def test_schema_has_use_uat_parameter(self):
         entry = registry.get_entry("feishu_doc_read")
         props = entry.schema["parameters"].get("properties", {})
@@ -504,6 +671,38 @@ class TestToolsMetadataCompleteness(unittest.TestCase):
                 any("bitable" in s for s in scopes),
                 f"{tool} missing bitable scope, got: {scopes}",
             )
+
+    def test_search_message_declares_message_scope(self):
+        self.assertEqual(
+            TOOLS_METADATA["feishu_search_message"]["scopes"],
+            ["search:message"],
+        )
+
+    def test_im_send_as_user_declares_feishu_scope_name(self):
+        self.assertEqual(
+            TOOLS_METADATA["feishu_im_send_message_as_user"]["scopes"],
+            ["im:message.send_as_user"],
+        )
+        self.assertEqual(
+            TOOLS_METADATA["feishu_im_reply_message_as_user"]["scopes"],
+            ["im:message.send_as_user"],
+        )
+
+    def test_task_comment_declares_comment_write_scope(self):
+        self.assertEqual(
+            TOOLS_METADATA["feishu_task_add_comment"]["scopes"],
+            ["task:comment:write"],
+        )
+
+    def test_drive_comment_tools_declare_document_comment_scopes(self):
+        self.assertEqual(
+            TOOLS_METADATA["feishu_drive_add_comment"]["scopes"],
+            ["docs:document.comment:create"],
+        )
+        self.assertEqual(
+            TOOLS_METADATA["feishu_drive_reply_comment"]["scopes"],
+            ["docs:document.comment:write_only"],
+        )
 
 
 if __name__ == "__main__":

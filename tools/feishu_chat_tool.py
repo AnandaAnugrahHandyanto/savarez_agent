@@ -59,6 +59,14 @@ def _auth_error_message(exc: Exception) -> str:
     return str(exc)
 
 
+def _current_chat_id() -> str:
+    try:
+        from gateway.session_context import get_session_env
+        return get_session_env("HERMES_SESSION_CHAT_ID", "").strip()
+    except Exception:
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # feishu_chat_get_info
 # ---------------------------------------------------------------------------
@@ -76,7 +84,10 @@ FEISHU_CHAT_GET_INFO_SCHEMA = {
         "properties": {
             "chat_id": {
                 "type": "string",
-                "description": "The chat group ID (e.g. oc_xxx).",
+                "description": (
+                    "The chat group ID (e.g. oc_xxx). Optional; defaults to the "
+                    "current Feishu chat when called from a gateway conversation."
+                ),
             },
             "user_id_type": {
                 "type": "string",
@@ -84,7 +95,7 @@ FEISHU_CHAT_GET_INFO_SCHEMA = {
                 "default": "open_id",
             },
         },
-        "required": ["chat_id"],
+        "required": [],
     },
 }
 
@@ -99,9 +110,9 @@ def _handle_chat_get_info(args: dict, **kwargs) -> str:
     Returns:
         JSON string (tool_error or tool_result).
     """
-    chat_id = args.get("chat_id", "").strip()
+    chat_id = (args.get("chat_id") or "").strip() or _current_chat_id()
     if not chat_id:
-        return tool_error("chat_id is required")
+        return tool_error("chat_id is required when no current gateway chat is available")
 
     logger.info("feishu_chat_get_info: chat_id=%s", chat_id)
 
@@ -154,7 +165,10 @@ FEISHU_CHAT_LIST_MEMBERS_SCHEMA = {
         "properties": {
             "chat_id": {
                 "type": "string",
-                "description": "The chat group ID (e.g. oc_xxx).",
+                "description": (
+                    "The chat group ID (e.g. oc_xxx). Optional; defaults to the "
+                    "current Feishu chat when called from a gateway conversation."
+                ),
             },
             "page_size": {
                 "type": "integer",
@@ -171,7 +185,7 @@ FEISHU_CHAT_LIST_MEMBERS_SCHEMA = {
                 "default": "open_id",
             },
         },
-        "required": ["chat_id"],
+        "required": [],
     },
 }
 
@@ -186,9 +200,9 @@ def _handle_chat_list_members(args: dict, **kwargs) -> str:
     Returns:
         JSON string (tool_error or tool_result).
     """
-    chat_id = args.get("chat_id", "").strip()
+    chat_id = (args.get("chat_id") or "").strip() or _current_chat_id()
     if not chat_id:
-        return tool_error("chat_id is required")
+        return tool_error("chat_id is required when no current gateway chat is available")
 
     logger.info("feishu_chat_list_members: chat_id=%s", chat_id)
 

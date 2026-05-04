@@ -13,6 +13,7 @@ auth exceptions via ``raise_for_feishu_errcode``.
 
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 
 from tools.feishu_oapi_client import (
     AppScopeMissingError,
@@ -115,6 +116,38 @@ def _auth_error_message(exc: Exception) -> str:
     return str(exc)
 
 
+def _normalize_instance_time(value) -> str:
+    """Return Feishu instance_view time as Unix epoch seconds."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.isdigit():
+        return text
+
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(
+            "time must be Unix epoch seconds or ISO 8601/RFC3339 with timezone"
+        ) from exc
+
+    if parsed.tzinfo is None:
+        raise ValueError(
+            "ISO 8601/RFC3339 time must include timezone, e.g. +08:00 or Z"
+        )
+    return str(int(parsed.timestamp()))
+
+
+def _event_time_payload(value) -> dict:
+    return {"timestamp": _normalize_instance_time(value)}
+
+
+def _default_rfc3339_window(hours: int = 1) -> tuple[str, str]:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    end = now + timedelta(hours=hours)
+    return now.isoformat(), end.isoformat()
+
+
 # ---------------------------------------------------------------------------
 # feishu_calendar_list_events
 # ---------------------------------------------------------------------------
@@ -127,7 +160,7 @@ FEISHU_CALENDAR_LIST_EVENTS_SCHEMA = {
         "List calendar events in a time range as the signed-in user. "
         "Uses the instance_view endpoint which auto-expands recurring events. "
         "The time range must be under 40 days. "
-        "Times must be ISO 8601 / RFC 3339 with timezone, e.g. '2024-01-01T00:00:00+08:00'."
+        "Times should be Unix epoch seconds; ISO 8601 / RFC 3339 with timezone is also accepted."
     ),
     "parameters": {
         "type": "object",
@@ -135,15 +168,17 @@ FEISHU_CALENDAR_LIST_EVENTS_SCHEMA = {
             "start_time": {
                 "type": "string",
                 "description": (
-                    "Range start time in ISO 8601 / RFC 3339 format with timezone, "
-                    "e.g. '2024-01-01T00:00:00+08:00'. Range must be under 40 days."
+                    "Range start time as Unix epoch seconds, e.g. '1704038400'. "
+                    "ISO 8601 / RFC 3339 with timezone is accepted and converted. "
+                    "Range must be under 40 days."
                 ),
             },
             "end_time": {
                 "type": "string",
                 "description": (
-                    "Range end time in ISO 8601 / RFC 3339 format with timezone, "
-                    "e.g. '2024-01-01T23:59:59+08:00'. Range must be under 40 days."
+                    "Range end time as Unix epoch seconds, e.g. '1704124799'. "
+                    "ISO 8601 / RFC 3339 with timezone is accepted and converted. "
+                    "Range must be under 40 days."
                 ),
             },
             "calendar_id": {
@@ -166,8 +201,12 @@ def _handle_calendar_list_events(args: dict, **kwargs) -> str:
     Returns:
         JSON string via tool_result or tool_error.
     """
-    start_time = (args.get("start_time") or "").strip()
-    end_time = (args.get("end_time") or "").strip()
+    try:
+        start_time = _normalize_instance_time(args.get("start_time"))
+        end_time = _normalize_instance_time(args.get("end_time"))
+    except ValueError as exc:
+        return tool_error(str(exc))
+
     if not start_time or not end_time:
         return tool_error("start_time and end_time are required")
 
@@ -496,9 +535,15 @@ def _handle_calendar_create_event(args: dict, **kwargs) -> str:
         return tool_error("lark_oapi not installed")
 
     # Build event body
+    try:
+        start_payload = _event_time_payload(start_time)
+        end_payload = _event_time_payload(end_time)
+    except ValueError as exc:
+        return tool_error(str(exc))
+
     event_body: dict = {
-        "start_time": {"timestamp": start_time},
-        "end_time": {"timestamp": end_time},
+        "start_time": start_payload,
+        "end_time": end_payload,
         "attendee_ability": "can_modify_event",
         "need_notification": True,
     }
@@ -633,7 +678,8 @@ FEISHU_CALENDAR_FREEBUSY_SCHEMA = {
     "description": (
         "Query free/busy status for 1-10 users as the signed-in user. "
         "Returns busy time blocks per user within the given time range. "
-        "Useful for finding a suitable meeting slot. "
+        "Use this when the user asks whether they are busy/free now or asks for 忙闲. "
+        "If user_ids/start/end are omitted, queries the signed-in user for the next hour. "
         "Times must be ISO 8601 / RFC 3339 with timezone, e.g. '2024-01-01T09:00:00+08:00'."
     ),
     "parameters": {
@@ -641,25 +687,28 @@ FEISHU_CALENDAR_FREEBUSY_SCHEMA = {
         "properties": {
             "user_ids": {
                 "type": "array",
-                "description": "List of user open_ids (ou_xxx) to query (1-10 users).",
+                "description": (
+                    "List of user open_ids (ou_xxx) to query (1-10 users). "
+                    "Optional; defaults to the signed-in user."
+                ),
                 "items": {"type": "string"},
             },
             "start": {
                 "type": "string",
                 "description": (
                     "Query start time in ISO 8601 / RFC 3339 format with timezone, "
-                    "e.g. '2024-01-01T09:00:00+08:00'."
+                    "e.g. '2024-01-01T09:00:00+08:00'. Optional; defaults to now."
                 ),
             },
             "end": {
                 "type": "string",
                 "description": (
                     "Query end time in ISO 8601 / RFC 3339 format with timezone, "
-                    "e.g. '2024-01-01T18:00:00+08:00'."
+                    "e.g. '2024-01-01T18:00:00+08:00'. Optional; defaults to one hour after start."
                 ),
             },
         },
-        "required": ["user_ids", "start", "end"],
+        "required": [],
     },
 }
 
@@ -674,9 +723,26 @@ def _handle_calendar_freebusy(args: dict, **kwargs) -> str:
     Returns:
         JSON string via tool_result or tool_error.
     """
+    try:
+        fc = FeishuClient.for_user()
+    except NeedAuthorizationError as exc:
+        return tool_error(_auth_error_message(exc))
+    except ValueError as exc:
+        return tool_error(f"Feishu configuration error: {exc}")
+
     user_ids = args.get("user_ids") or []
+    if isinstance(user_ids, str):
+        user_ids = [user_ids]
+    user_ids = [str(user_id).strip() for user_id in user_ids if str(user_id).strip()]
+    if not user_ids and fc.user_open_id:
+        user_ids = [fc.user_open_id]
+
     start = (args.get("start") or "").strip()
     end = (args.get("end") or "").strip()
+    if not start or not end:
+        default_start, default_end = _default_rfc3339_window()
+        start = start or default_start
+        end = end or default_end
 
     if not user_ids:
         return tool_error("user_ids is required (list of 1-10 open_ids)")
@@ -684,15 +750,6 @@ def _handle_calendar_freebusy(args: dict, **kwargs) -> str:
         return tool_error(
             f"user_ids count exceeds limit: maximum 10 users (got {len(user_ids)})"
         )
-    if not start or not end:
-        return tool_error("start and end are required")
-
-    try:
-        fc = FeishuClient.for_user()
-    except NeedAuthorizationError as exc:
-        return tool_error(_auth_error_message(exc))
-    except ValueError as exc:
-        return tool_error(f"Feishu configuration error: {exc}")
 
     logger.info(
         "freebusy: user_ids=%d start=%s end=%s", len(user_ids), start, end

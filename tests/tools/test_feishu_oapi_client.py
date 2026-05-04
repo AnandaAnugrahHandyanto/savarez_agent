@@ -1,5 +1,6 @@
 """Unit tests for tools/feishu_oapi_client.py — FeishuClient factory and error classes."""
 
+import asyncio
 import json
 import os
 import time
@@ -219,13 +220,188 @@ class TestFeishuClientForUser(unittest.TestCase):
         self.assertTrue(client.ephemeral)
 
     def test_raises_value_error_when_env_vars_missing(self):
-        with patch.dict(os.environ, {}, clear=True):
-            # Remove relevant keys
-            env = {k: v for k, v in os.environ.items()
-                   if k not in ("FEISHU_APP_ID", "FEISHU_APP_SECRET")}
-            with patch.dict(os.environ, env, clear=True):
-                with self.assertRaises(ValueError):
-                    FeishuClient.for_user()
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("tools.feishu_oapi_client._resolve_feishu_credentials",
+                   return_value=("", "", "feishu")):
+            with self.assertRaises(ValueError):
+                FeishuClient.for_user()
+
+    # ----- US-004: ContextVar propagation -----
+
+    @patch.dict(os.environ, {"FEISHU_APP_ID": "app_id", "FEISHU_APP_SECRET": "secret"})
+    def test_for_user_uses_contextvar_when_no_arg(self):
+        """US-004: for_user() with no arg reads current_sender_open_id contextvar."""
+        from tools.feishu_oapi_client import sender_open_id_scope
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            uat_dir = Path(tmpdir) / "feishu_uat"
+            uat_dir.mkdir()
+            future_ms = int(time.time() * 1000) + 7200 * 1000
+            (uat_dir / "ou_ctx_user.json").write_text(json.dumps({
+                "access_token": "ctxvar_tok",
+                "expires_at": future_ms,
+                "user_open_id": "ou_ctx_user",
+            }))
+
+            with patch("tools.feishu_oapi_client.FEISHU_UAT_DIR", uat_dir), \
+                 patch("tools.feishu_oapi_client.FeishuClient._build_sdk", return_value=MagicMock()):
+                with sender_open_id_scope("ou_ctx_user"):
+                    client = FeishuClient.for_user()  # NO arg
+
+            self.assertEqual(client.access_token, "ctxvar_tok")
+            self.assertEqual(client.user_open_id, "ou_ctx_user")
+
+    @patch.dict(os.environ, {"FEISHU_APP_ID": "app_id", "FEISHU_APP_SECRET": "secret"})
+    def test_for_user_arg_overrides_contextvar(self):
+        """Explicit user_open_id arg wins over contextvar."""
+        from tools.feishu_oapi_client import sender_open_id_scope
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            uat_dir = Path(tmpdir) / "feishu_uat"
+            uat_dir.mkdir()
+            future_ms = int(time.time() * 1000) + 7200 * 1000
+            (uat_dir / "ou_ctx.json").write_text(json.dumps({
+                "access_token": "ctx_tok", "expires_at": future_ms, "user_open_id": "ou_ctx",
+            }))
+            (uat_dir / "ou_arg.json").write_text(json.dumps({
+                "access_token": "arg_tok", "expires_at": future_ms, "user_open_id": "ou_arg",
+            }))
+
+            with patch("tools.feishu_oapi_client.FEISHU_UAT_DIR", uat_dir), \
+                 patch("tools.feishu_oapi_client.FeishuClient._build_sdk", return_value=MagicMock()):
+                with sender_open_id_scope("ou_ctx"):
+                    client = FeishuClient.for_user(user_open_id="ou_arg")  # arg wins
+
+            self.assertEqual(client.access_token, "arg_tok")
+
+    @patch.dict(os.environ, {"FEISHU_APP_ID": "app_id", "FEISHU_APP_SECRET": "secret"})
+    def test_for_user_auto_refreshes_expiring_per_user_uat(self):
+        """Per-user tool calls refresh an expiring UAT immediately, not only via daemon."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            uat_dir = Path(tmpdir) / "feishu_uat"
+            uat_dir.mkdir()
+            near_ms = int(time.time() * 1000) + 30 * 1000
+            uat_path = uat_dir / "ou_refresh.json"
+            uat_path.write_text(json.dumps({
+                "access_token": "old_tok",
+                "refresh_token": "old_refresh",
+                "expires_at": near_ms,
+                "user_open_id": "ou_refresh",
+            }))
+            calls = []
+
+            def fake_refresh(open_id, app_id, app_secret):
+                calls.append((open_id, app_id, app_secret))
+                uat_path.write_text(json.dumps({
+                    "access_token": "new_tok",
+                    "refresh_token": "new_refresh",
+                    "expires_at": int(time.time() * 1000) + 7200 * 1000,
+                    "user_open_id": "ou_refresh",
+                }))
+
+            with patch("tools.feishu_oapi_client.FEISHU_UAT_DIR", uat_dir), \
+                 patch("hermes_cli.feishu_auth.refresh_uat_for_user", side_effect=fake_refresh), \
+                 patch("tools.feishu_oapi_client.FeishuClient._build_sdk", return_value=MagicMock()):
+                client = FeishuClient.for_user(user_open_id="ou_refresh")
+
+            self.assertEqual(calls, [("ou_refresh", "app_id", "secret")])
+            self.assertEqual(client.access_token, "new_tok")
+
+    def test_sender_open_id_scope_resets_after_with_block(self):
+        """ContextVar reverts after sender_open_id_scope() exits (no leak)."""
+        from tools.feishu_oapi_client import sender_open_id_scope, current_sender_open_id
+        self.assertIsNone(current_sender_open_id.get())
+        with sender_open_id_scope("ou_inside"):
+            self.assertEqual(current_sender_open_id.get(), "ou_inside")
+        # After exit
+        self.assertIsNone(current_sender_open_id.get())
+
+    def test_sender_open_id_scope_resets_even_on_exception(self):
+        """ContextVar reverts even if the with-block raises."""
+        from tools.feishu_oapi_client import sender_open_id_scope, current_sender_open_id
+        self.assertIsNone(current_sender_open_id.get())
+        with self.assertRaises(RuntimeError):
+            with sender_open_id_scope("ou_with_err"):
+                raise RuntimeError("boom")
+        self.assertIsNone(current_sender_open_id.get())
+
+    @patch.dict(os.environ, {"FEISHU_APP_ID": "app_id", "FEISHU_APP_SECRET": "secret"})
+    def test_for_user_falls_back_to_legacy_when_contextvar_unset(self):
+        """No arg + no contextvar → legacy single-file path."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            legacy = Path(tmpdir) / "feishu_uat.json"
+            future_ms = int(time.time() * 1000) + 7200 * 1000
+            legacy.write_text(json.dumps({
+                "access_token": "legacy_only_tok",
+                "expires_at": future_ms,
+                "user_open_id": "ou_legacy",
+            }))
+
+            with patch("tools.feishu_oapi_client.FEISHU_UAT_PATH", legacy), \
+                 patch("tools.feishu_oapi_client.FeishuClient._build_sdk", return_value=MagicMock()):
+                # No sender_open_id_scope, no arg
+                client = FeishuClient.for_user()
+
+            self.assertEqual(client.access_token, "legacy_only_tok")
+
+
+class TestSenderContextVarConcurrentIsolation(unittest.IsolatedAsyncioTestCase):
+    """US-004 AC#5: concurrent async tasks must not bleed open_id into each other."""
+
+    async def test_concurrent_async_tasks_have_isolated_contextvars(self):
+        from tools.feishu_oapi_client import sender_open_id_scope, current_sender_open_id
+        observed: dict = {}
+
+        async def worker(name: str, oid: str):
+            with sender_open_id_scope(oid):
+                # Yield control so scheduler interleaves the two workers
+                await asyncio.sleep(0)
+                observed[name] = current_sender_open_id.get()
+
+        await asyncio.gather(
+            worker("alice", "ou_alice_concurrent"),
+            worker("bob", "ou_bob_concurrent"),
+        )
+
+        self.assertEqual(observed["alice"], "ou_alice_concurrent")
+        self.assertEqual(observed["bob"], "ou_bob_concurrent")
+        # After all tasks finish the outer (main) contextvar is still unset
+        self.assertIsNone(current_sender_open_id.get())
+
+
+    @patch.dict(os.environ, {"FEISHU_APP_ID": "app_id", "FEISHU_APP_SECRET": "secret"})
+    def test_for_user_with_open_id_loads_per_user_uat_not_legacy(self):
+        """US-001 AC#5: for_user('ou_xxx') reads per-user file, ignores legacy single file."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            legacy = Path(tmpdir) / "feishu_uat.json"
+            uat_dir = Path(tmpdir) / "feishu_uat"
+            uat_dir.mkdir()
+            future_ms = int(time.time() * 1000) + 7200 * 1000
+            # Legacy single file has a token for "ou_legacy"
+            legacy.write_text(json.dumps({
+                "access_token": "legacy_token",
+                "expires_at": future_ms,
+                "user_open_id": "ou_legacy",
+            }))
+            # Per-user file for "ou_alice" has a different token
+            (uat_dir / "ou_alice.json").write_text(json.dumps({
+                "access_token": "alice_token",
+                "expires_at": future_ms,
+                "user_open_id": "ou_alice",
+            }))
+
+            with patch("tools.feishu_oapi_client.FEISHU_UAT_PATH", legacy), \
+                 patch("tools.feishu_oapi_client.FEISHU_UAT_DIR", uat_dir), \
+                 patch("tools.feishu_oapi_client.FeishuClient._build_sdk", return_value=MagicMock()):
+                client = FeishuClient.for_user(user_open_id="ou_alice")
+
+        # AC: for_user('ou_alice') gives Alice's token, NOT legacy
+        self.assertEqual(client.access_token, "alice_token")
+        self.assertEqual(client.user_open_id, "ou_alice")
+        self.assertNotEqual(client.access_token, "legacy_token")
 
 
 # ---------------------------------------------------------------------------
@@ -256,12 +432,11 @@ class TestFeishuClientForTenant(unittest.TestCase):
         self.assertIs(c1, c2)
 
     def test_raises_value_error_when_env_missing(self):
-        with patch.dict(os.environ, {}, clear=True):
-            env = {k: v for k, v in os.environ.items()
-                   if k not in ("FEISHU_APP_ID", "FEISHU_APP_SECRET")}
-            with patch.dict(os.environ, env, clear=True):
-                with self.assertRaises(ValueError):
-                    FeishuClient.for_tenant()
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("tools.feishu_oapi_client._resolve_feishu_credentials",
+                   return_value=("", "", "feishu")):
+            with self.assertRaises(ValueError):
+                FeishuClient.for_tenant()
 
 
 # ---------------------------------------------------------------------------
@@ -356,6 +531,29 @@ class TestFeishuClientDoRequest(unittest.TestCase):
         self.assertEqual(msg, "ok")
         self.assertEqual(data.get("key"), "val")
 
+    def test_do_request_preserves_patch_and_delete_methods(self):
+        client = self._make_client(access_token="uat_tok")
+
+        mock_response = MagicMock()
+        mock_response.code = 0
+        mock_response.msg = "ok"
+        mock_response.raw = None
+        mock_response.data = {}
+        client.sdk.request = MagicMock(return_value=mock_response)
+
+        try:
+            import lark_oapi  # noqa: F401
+        except ImportError:
+            self.skipTest("lark_oapi not installed")
+
+        client.do_request("PATCH", "/open-apis/x", use_uat=True)
+        patch_request = client.sdk.request.call_args.args[0]
+        client.do_request("DELETE", "/open-apis/x", use_uat=True)
+        delete_request = client.sdk.request.call_args.args[0]
+
+        self.assertEqual(getattr(patch_request, "http_method", None).name, "PATCH")
+        self.assertEqual(getattr(delete_request, "http_method", None).name, "DELETE")
+
 
 # ---------------------------------------------------------------------------
 # TOOLS_METADATA registry
@@ -406,6 +604,109 @@ class TestToolsMetadata(unittest.TestCase):
 
         self.assertIn("feishu_im_send_message_as_user", TOOLS_METADATA)
         self.assertIn("feishu_im_reply_message_as_user", TOOLS_METADATA)
+
+
+class TestUatCrossContextFallback(unittest.TestCase):
+    """US-004: cross-context UAT fallback safety net.
+
+    Feishu has separate `open_id` namespaces for the messaging layer
+    (sender_id.open_id in events) and the OAuth user_info layer (the open_id
+    stamped into a UAT after device flow). When the contextvar carries a
+    messaging-layer open_id but the UAT was saved under the user_info
+    open_id, the per-user file lookup misses. The fallback below picks the
+    freshest valid UAT in the dir.
+    """
+
+    def _write_uat(self, path: Path, *, expires_at_ms: int, mtime=None) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "access_token": f"tok_{path.stem}",
+            "user_open_id": path.stem,
+            "expires_at": expires_at_ms,
+        }))
+        if mtime is not None:
+            os.utime(path, (mtime, mtime))
+
+    def test_find_latest_returns_freshest_non_expired_uat(self):
+        from tools.feishu_oapi_client import _find_latest_valid_uat_path
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            uat_dir = Path(tmpdir)
+            future_ms = int(time.time() * 1000) + 7200 * 1000
+            now = time.time()
+            # 3 valid UATs with different mtimes; expect the newest mtime to win.
+            self._write_uat(uat_dir / "ou_old.json", expires_at_ms=future_ms, mtime=now - 300)
+            self._write_uat(uat_dir / "ou_mid.json", expires_at_ms=future_ms, mtime=now - 100)
+            self._write_uat(uat_dir / "ou_new.json", expires_at_ms=future_ms, mtime=now)
+
+            with patch("tools.feishu_oapi_client.FEISHU_UAT_DIR", uat_dir):
+                result = _find_latest_valid_uat_path()
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result.name, "ou_new.json")
+
+    def test_find_latest_skips_sidecar_and_non_json_files(self):
+        from tools.feishu_oapi_client import _find_latest_valid_uat_path
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            uat_dir = Path(tmpdir)
+            future_ms = int(time.time() * 1000) + 7200 * 1000
+            self._write_uat(uat_dir / "ou_real.json", expires_at_ms=future_ms)
+            # Sidecars (needs_reauth) and dotfiles must be ignored
+            (uat_dir / "ou_real.needs_reauth").write_text('{"reason":"x"}')
+            (uat_dir / ".hidden.json").write_text("{}")
+            (uat_dir / "junk.txt").write_text("nope")
+
+            with patch("tools.feishu_oapi_client.FEISHU_UAT_DIR", uat_dir):
+                result = _find_latest_valid_uat_path()
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result.name, "ou_real.json")
+
+    def test_find_latest_returns_none_when_all_expired(self):
+        from tools.feishu_oapi_client import _find_latest_valid_uat_path
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            uat_dir = Path(tmpdir)
+            past_ms = 1000  # ancient
+            self._write_uat(uat_dir / "ou_a.json", expires_at_ms=past_ms)
+            self._write_uat(uat_dir / "ou_b.json", expires_at_ms=past_ms)
+
+            with patch("tools.feishu_oapi_client.FEISHU_UAT_DIR", uat_dir):
+                result = _find_latest_valid_uat_path()
+
+            self.assertIsNone(result)
+
+    def test_find_latest_skips_explicit_skip_path_for_recursion_guard(self):
+        from tools.feishu_oapi_client import _find_latest_valid_uat_path
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            uat_dir = Path(tmpdir)
+            future_ms = int(time.time() * 1000) + 7200 * 1000
+            now = time.time()
+            self._write_uat(uat_dir / "ou_skip.json", expires_at_ms=future_ms, mtime=now)        # newest
+            self._write_uat(uat_dir / "ou_keep.json", expires_at_ms=future_ms, mtime=now - 300)  # older
+
+            with patch("tools.feishu_oapi_client.FEISHU_UAT_DIR", uat_dir):
+                result = _find_latest_valid_uat_path(skip=uat_dir / "ou_skip.json")
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result.name, "ou_keep.json")
+
+    def test_load_uat_returns_fallback_when_per_user_path_missing(self):
+        from tools.feishu_oapi_client import _load_uat
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            uat_dir = Path(tmpdir)
+            future_ms = int(time.time() * 1000) + 7200 * 1000
+            # Caller asks for ou_messaging (doesn't exist), fallback should
+            # find ou_oauth (the freshest valid one in the dir).
+            self._write_uat(uat_dir / "ou_oauth.json", expires_at_ms=future_ms)
+
+            with patch("tools.feishu_oapi_client.FEISHU_UAT_DIR", uat_dir):
+                data = _load_uat(open_id="ou_messaging_missing")
+
+            self.assertEqual(data["access_token"], "tok_ou_oauth")
 
 
 if __name__ == "__main__":

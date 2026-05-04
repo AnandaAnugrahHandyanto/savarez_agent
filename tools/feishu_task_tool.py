@@ -34,7 +34,7 @@ TOOLS_METADATA["feishu_task_list"] = {"identity": "user", "scopes": ["task:task"
 TOOLS_METADATA["feishu_task_get"] = {"identity": "user", "scopes": ["task:task"]}
 TOOLS_METADATA["feishu_task_create"] = {"identity": "user", "scopes": ["task:task"]}
 TOOLS_METADATA["feishu_task_update"] = {"identity": "user", "scopes": ["task:task"]}
-TOOLS_METADATA["feishu_task_add_comment"] = {"identity": "user", "scopes": ["task:task"]}
+TOOLS_METADATA["feishu_task_add_comment"] = {"identity": "user", "scopes": ["task:comment:write"]}
 
 
 def _check_feishu():
@@ -430,7 +430,7 @@ def _handle_task_update(args: dict, **kwargs) -> str:
 # feishu_task_add_comment
 # ---------------------------------------------------------------------------
 
-_TASK_COMMENT_URI = "/open-apis/task/v2/tasks/:task_guid/comments"
+_TASK_COMMENT_URI = "/open-apis/task/v2/comments"
 
 FEISHU_TASK_ADD_COMMENT_SCHEMA = {
     "name": "feishu_task_add_comment",
@@ -465,11 +465,14 @@ def _handle_task_add_comment(args: dict, **kwargs) -> str:
     if not content:
         return tool_error("content is required")
 
-    body = {"content": content}
+    body = {
+        "content": content,
+        "resource_type": "task",
+        "resource_id": task_id,
+    }
 
     code, msg, data = _do_request(
         client, "POST", _TASK_COMMENT_URI,
-        paths={"task_guid": task_id},
         queries=[("user_id_type", "open_id")],
         body=body,
     )
@@ -482,7 +485,7 @@ def _handle_task_add_comment(args: dict, **kwargs) -> str:
         return tool_error(f"Add comment failed: code={code} msg={msg}")
 
     logger.info("feishu_task_add_comment: commented on task %s", task_id)
-    return tool_result(success=True, data=data)
+    return tool_result({"success": True, "data": data})
 
 
 # ---------------------------------------------------------------------------

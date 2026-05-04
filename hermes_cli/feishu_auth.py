@@ -14,6 +14,7 @@ Entry point for ``hermes setup feishu-uat``:  feishu_qr_auth(client_id)
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -22,7 +23,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Awaitable, Callable, Optional, Tuple
 
 import requests
 
@@ -47,20 +48,50 @@ FEISHU_OPEN_BASE_URL = os.environ.get(
 # it is a privileged scope. Pass it explicitly via --scope if needed.
 # TODO(worker-3): update feishu-uat-tools.md setup command to reflect this change.
 FEISHU_DEFAULT_SCOPE = (
+    # NOTE: Feishu deprecated the `docs:document*` scope namespace in favour
+    # of `docx:document*`. Apps that pass the old names get a hard
+    # invalid_scope rejection on the entire batch even when 9/10 scopes are
+    # valid. The list below is the conservative set that ships clean against
+    # any modern app config — callers wanting docx access should pass
+    # `docx:document:readonly` / `docx:document:write_only` explicitly via
+    # `/feishu_auth <scope...>`.
     "calendar:calendar "
     "drive:drive "
-    "docs:document:readonly "
-    "docs:document "
+    "drive:export:readonly "
+    "docs:document.comment:create "
+    "docs:document.comment:write_only "
     "bitable:app "
     "wiki:wiki:readonly "
     "sheets:spreadsheet "
     "task:task:write "
     "task:task:read "
-    "contact:user.base:readonly"
+    "task:section:write "
+    "task:section:read "
+    "task:comment:write "
+    "contact:user.base:readonly "
+    "offline_access"
 )
 
-# Path to persisted UAT token file
+# Path to persisted UAT token file (legacy single-user single-file location)
 FEISHU_UAT_PATH = get_hermes_home() / "feishu_uat.json"
+
+# Per-user UAT directory: ~/.hermes/feishu_uat/<open_id>.json
+# Multi-user mode (1 bot serving many users) writes one file per user_open_id.
+FEISHU_UAT_DIR = get_hermes_home() / "feishu_uat"
+
+
+def _per_user_uat_path(open_id: str) -> "Path":
+    """Return the per-user UAT file path for a given Feishu open_id.
+
+    Open_ids start with 'ou_' and consist of [A-Za-z0-9_-]; the function refuses
+    anything else to avoid path traversal (slash, dot, null, etc.).
+    """
+    if not open_id or not isinstance(open_id, str):
+        raise ValueError("open_id must be a non-empty string")
+    # Defensive: reject anything that could escape the directory.
+    if "/" in open_id or "\\" in open_id or ".." in open_id or "\0" in open_id:
+        raise ValueError(f"open_id contains illegal characters: {open_id!r}")
+    return FEISHU_UAT_DIR / f"{open_id}.json"
 
 # Polling backoff cap in seconds (RFC 8628 §3.5)
 _POLL_INTERVAL_CAP = 30
@@ -95,6 +126,30 @@ def _safe_error_text(exc: BaseException) -> str:
     return text
 
 
+def _refresh_token_expires_in(data: dict, default: int = 2592000) -> int:
+    """Return refresh-token TTL from Feishu v2 token responses.
+
+    Feishu's current OAuth v2 docs name the field ``refresh_token_expires_in``.
+    Older code/tests used ``refresh_expires_in``; accept both to stay backward
+    compatible with saved fixtures and mocked responses.
+    """
+    raw = data.get("refresh_token_expires_in")
+    if raw is None:
+        raw = data.get("refresh_expires_in", default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _scope_with_offline_access(scope: Optional[str]) -> str:
+    """Return a normalized OAuth scope string that can receive refresh_token."""
+    parts = [part for part in (scope or FEISHU_DEFAULT_SCOPE).split() if part]
+    if "offline_access" not in parts:
+        parts.append("offline_access")
+    return " ".join(dict.fromkeys(parts))
+
+
 # ---------------------------------------------------------------------------
 # Internal HTTP helper
 # ---------------------------------------------------------------------------
@@ -116,10 +171,23 @@ def _api_post(path: str, base_url: str, payload: dict) -> dict:
     url = f"{base_url}{path}"
     try:
         resp = requests.post(url, json=payload, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
     except requests.RequestException as exc:
         raise FeishuAuthError(f"Network error calling {url}: {exc}") from exc
+
+    # RFC 6749 / RFC 8628: 4xx responses MAY carry a JSON OAuth error body
+    # (e.g. authorization_pending, slow_down). Feishu actually returns 400
+    # for pending state. We must parse the JSON body before treating 4xx
+    # as fatal, so the caller can distinguish recoverable from terminal errors.
+    try:
+        data = resp.json()
+    except ValueError:
+        data = None
+
+    if not isinstance(data, dict):
+        body = (resp.text or "")[:500]
+        raise FeishuAuthError(
+            f"HTTP {resp.status_code} from {url} — non-JSON body: {body}"
+        )
 
     # RFC 6749 / Feishu error model: error field present means failure
     # "authorization_pending" and "slow_down" are handled by the caller
@@ -139,12 +207,16 @@ def _api_post(path: str, base_url: str, payload: dict) -> dict:
 def begin_device_authorization(
     client_id: str,
     scope: Optional[str] = None,
+    client_secret: Optional[str] = None,
 ) -> dict:
     """Start a Feishu device-flow authorization.
 
     Args:
         client_id: Feishu app ID (FEISHU_APP_ID).
         scope: Space-separated OAuth scopes. Defaults to FEISHU_DEFAULT_SCOPE.
+        client_secret: Feishu app secret (FEISHU_APP_SECRET). Required by the
+            Feishu device_authorization endpoint even though RFC 8628 lists it
+            as optional — Feishu returns 400 invalid_request without it.
 
     Returns:
         Dict with keys: device_code, user_code, verification_uri,
@@ -154,10 +226,9 @@ def begin_device_authorization(
         FeishuAuthError: If the API call fails or required fields are missing.
     """
     payload: dict = {"client_id": client_id}
-    if scope:
-        payload["scope"] = scope
-    else:
-        payload["scope"] = FEISHU_DEFAULT_SCOPE
+    if client_secret:
+        payload["client_secret"] = client_secret
+    payload["scope"] = _scope_with_offline_access(scope)
 
     data = _api_post(
         "/oauth/v1/device_authorization",
@@ -193,12 +264,19 @@ def begin_device_authorization(
 # Step 3: poll for token
 # ---------------------------------------------------------------------------
 
-def poll_device_token(device_code: str, client_id: str) -> dict:
+def poll_device_token(
+    device_code: str,
+    client_id: str,
+    client_secret: Optional[str] = None,
+) -> dict:
     """Poll the Feishu token endpoint once for a device code grant.
 
     Args:
         device_code: The device_code from begin_device_authorization().
         client_id: Feishu app ID.
+        client_secret: Feishu app secret. Required by Feishu's token endpoint
+            for confidential clients; without it the endpoint cannot
+            authenticate the client and the flow can never succeed.
 
     Returns:
         Dict with keys: access_token?, refresh_token?, open_id?,
@@ -212,6 +290,8 @@ def poll_device_token(device_code: str, client_id: str) -> dict:
         "client_id": client_id,
         "device_code": device_code,
     }
+    if client_secret:
+        payload["client_secret"] = client_secret
 
     # _api_post raises on hard errors; authorization_pending / slow_down pass through
     try:
@@ -228,7 +308,7 @@ def poll_device_token(device_code: str, client_id: str) -> dict:
         "refresh_token": str(data.get("refresh_token", "")).strip() or None,
         "open_id": str(data.get("open_id", "")).strip() or None,
         "expires_in": int(data.get("expires_in", 7200)),
-        "refresh_expires_in": int(data.get("refresh_expires_in", 2592000)),
+        "refresh_expires_in": _refresh_token_expires_in(data),
         "token_type": str(data.get("token_type", "Bearer")).strip(),
         "scope": str(data.get("scope", "")).strip(),
         "error": str(data.get("error") or data.get("error_code", "")).strip() or None,
@@ -246,6 +326,7 @@ def wait_for_authorization_success(
     interval: int = 3,
     expires_in: int = 1800,
     on_waiting: Optional[callable] = None,
+    client_secret: Optional[str] = None,
 ) -> Tuple[str, str, str, int, int]:
     """Block until Feishu device authorization succeeds or times out.
 
@@ -255,6 +336,8 @@ def wait_for_authorization_success(
         interval: Initial poll interval in seconds.
         expires_in: Total timeout in seconds.
         on_waiting: Optional callback invoked on each pending poll iteration.
+        client_secret: Feishu app secret (required by Feishu's token endpoint
+            even though RFC 8628 device_code grant lists it as optional).
 
     Returns:
         Tuple of (access_token, refresh_token, open_id, expires_in, refresh_expires_in).
@@ -272,7 +355,9 @@ def wait_for_authorization_success(
         time.sleep(current_interval)
 
         try:
-            result = poll_device_token(device_code, client_id)
+            result = poll_device_token(
+                device_code, client_id, client_secret=client_secret,
+            )
         except FeishuAuthError:
             if retry_start == 0.0:
                 retry_start = time.monotonic()
@@ -303,7 +388,7 @@ def wait_for_authorization_success(
             refresh = result.get("refresh_token") or ""
             open_id = result.get("open_id") or ""
             tok_expires_in = int(result.get("expires_in") or 7200)
-            tok_refresh_expires_in = int(result.get("refresh_expires_in") or 2592000)
+            tok_refresh_expires_in = _refresh_token_expires_in(result)
             return token, refresh, open_id, tok_expires_in, tok_refresh_expires_in
 
         # Authorization explicitly denied or expired
@@ -329,8 +414,14 @@ def save_uat(
     refresh_expires_in: int,
     scope: str,
     app_id: str,
+    per_user: bool = False,
 ) -> None:
-    """Persist UAT tokens to ~/.hermes/feishu_uat.json (mode 0600).
+    """Persist UAT tokens to disk (mode 0600).
+
+    By default writes to the legacy single-file location
+    (~/.hermes/feishu_uat.json) to preserve back-compat with single-user mode.
+    When ``per_user=True``, writes to ~/.hermes/feishu_uat/<open_id>.json so
+    multi-user (chat-mode device flow) deployments can keep one file per user.
 
     Args:
         access_token: Feishu user access token.
@@ -340,6 +431,8 @@ def save_uat(
         refresh_expires_in: refresh_token TTL in seconds.
         scope: Granted OAuth scopes string.
         app_id: Feishu app ID that obtained these tokens.
+        per_user: When True, write to ~/.hermes/feishu_uat/<open_id>.json
+            instead of the legacy single-file location.
     """
     now_ms = int(time.time() * 1000)
     token_data = {
@@ -352,7 +445,8 @@ def save_uat(
         "scope": scope,
         "granted_at": now_ms,
     }
-    parent = FEISHU_UAT_PATH.parent
+    target_path = _per_user_uat_path(open_id) if per_user else FEISHU_UAT_PATH
+    parent = target_path.parent
     parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     os.chmod(parent, 0o700)
     # Atomic write: write to a temp file then os.replace to avoid partial reads
@@ -361,29 +455,36 @@ def save_uat(
         os.chmod(tmp_path, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(token_data, fh, indent=2)
-        os.replace(tmp_path, FEISHU_UAT_PATH)
+        os.replace(tmp_path, target_path)
     except Exception:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
         raise
-    logger.info("Feishu UAT saved to %s/%s", display_hermes_home(), "feishu_uat.json")
+    logger.info("Feishu UAT saved to %s", target_path)
 
 
-def load_uat() -> Optional[dict]:
-    """Load stored UAT from ~/.hermes/feishu_uat.json.
+def load_uat(open_id: Optional[str] = None) -> Optional[dict]:
+    """Load stored UAT from disk.
 
-    Returns:
-        Token dict or None if the file is missing or unreadable.
+    With ``open_id``, loads ~/.hermes/feishu_uat/<open_id>.json. Without it,
+    loads the legacy single-file location ~/.hermes/feishu_uat.json. Returns
+    ``None`` if the target file is missing or unreadable (the caller decides
+    whether absence means "needs auth" or "no such user").
+
+    Args:
+        open_id: Optional Feishu user open_id. When supplied the per-user path
+            is read; otherwise the legacy single-file path is read.
     """
-    if not FEISHU_UAT_PATH.exists():
+    target_path = _per_user_uat_path(open_id) if open_id else FEISHU_UAT_PATH
+    if not target_path.exists():
         return None
     try:
-        with open(FEISHU_UAT_PATH, encoding="utf-8") as fh:
+        with open(target_path, encoding="utf-8") as fh:
             return json.load(fh)
     except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("Failed to load feishu UAT from %s/%s: %s", display_hermes_home(), "feishu_uat.json", exc)
+        logger.warning("Failed to load feishu UAT from %s: %s", target_path, exc)
         return None
 
 
@@ -454,11 +555,335 @@ def refresh_uat(client_id: str, client_secret: str) -> None:
         refresh_token=new_refresh_token or refresh_token,
         open_id=data.get("user_open_id", ""),
         expires_in=int(resp_data.get("expires_in") or 7200),
-        refresh_expires_in=int(resp_data.get("refresh_expires_in") or 2592000),
+        refresh_expires_in=_refresh_token_expires_in(resp_data),
         scope=str(resp_data.get("scope", "")).strip() or data.get("scope", ""),
         app_id=data.get("app_id", client_id),
     )
     logger.info("Feishu UAT refreshed for user %s", data.get("user_open_id", "unknown"))
+
+
+def fetch_user_info(access_token: str) -> dict:
+    """GET /authen/v1/user_info to resolve the calling UAT's open_id / name.
+
+    Feishu's token endpoint does NOT include open_id in its response, so chat-mode
+    device flow has to make this extra hop after a successful token exchange to
+    know which file to persist the UAT under. Mirrors openclaw-lark's
+    fetchUserInfo step.
+
+    Args:
+        access_token: A fresh user_access_token returned by the token endpoint.
+
+    Returns:
+        Dict with keys ``open_id`` (always), ``union_id`` / ``user_id`` / ``name``
+        (when provided by Feishu).
+
+    Raises:
+        FeishuAuthError: On network error, non-zero code, or missing data envelope.
+    """
+    url = f"{FEISHU_OPEN_BASE_URL}/open-apis/authen/v1/user_info"
+    try:
+        resp = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        raise FeishuAuthError(f"Network error calling {url}: {exc}") from exc
+
+    try:
+        body = resp.json()
+    except ValueError as exc:
+        raise FeishuAuthError(
+            f"Non-JSON response from {url}: {(resp.text or '')[:200]}"
+        ) from exc
+
+    code = body.get("code")
+    data = body.get("data") or {}
+    if code != 0 or not data:
+        msg = body.get("msg") or "unknown"
+        raise FeishuAuthError(f"user_info failed: code={code} msg={msg}")
+
+    return {
+        "open_id": str(data.get("open_id") or "").strip(),
+        "union_id": str(data.get("union_id") or "").strip() or None,
+        "user_id": str(data.get("user_id") or "").strip() or None,
+        "name": str(data.get("name") or "").strip() or None,
+    }
+
+
+def refresh_uat_for_user(
+    user_open_id: str,
+    client_id: str,
+    client_secret: str,
+) -> None:
+    """Refresh a per-user UAT (~/.hermes/feishu_uat/<open_id>.json).
+
+    Used by the background refresh daemon (US-007). Unlike ``refresh_uat``
+    (which destroys the legacy file on hard errors), this does NOT delete
+    the per-user file — the daemon decides whether to mark it needs_reauth
+    or just retry on the next tick. Concurrent refresh attempts on the same
+    open_id are the caller's responsibility to serialize.
+
+    Args:
+        user_open_id: Feishu user open_id whose UAT should be refreshed.
+        client_id: Feishu app ID.
+        client_secret: Feishu app secret.
+
+    Raises:
+        NeedAuthorizationError: token file missing / refresh_token rejected.
+        FeishuAuthError: transient network/API error.
+    """
+    from tools.feishu_oapi_client import NeedAuthorizationError
+
+    target_path = _per_user_uat_path(user_open_id)
+    if not target_path.exists():
+        raise NeedAuthorizationError(
+            user_open_id=user_open_id,
+            reason=f"no per-user UAT file at {target_path}",
+        )
+
+    with open(target_path, encoding="utf-8") as fh:
+        data = json.load(fh)
+
+    refresh_token = data.get("refresh_token", "")
+    if not refresh_token:
+        raise NeedAuthorizationError(
+            user_open_id=user_open_id,
+            reason="no refresh_token in per-user UAT",
+        )
+
+    payload = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }
+
+    resp_data = _api_post(
+        "/open-apis/authen/v2/oauth/token",
+        FEISHU_OPEN_BASE_URL,
+        payload,
+    )
+
+    if resp_data.get("error"):
+        raise NeedAuthorizationError(
+            user_open_id=user_open_id,
+            reason=f"refresh error: {resp_data.get('error')}",
+        )
+
+    new_access_token = str(resp_data.get("access_token", "")).strip()
+    if not new_access_token:
+        raise NeedAuthorizationError(
+            user_open_id=user_open_id,
+            reason="refresh response missing access_token",
+        )
+
+    new_refresh_token = str(resp_data.get("refresh_token", "")).strip() or refresh_token
+    save_uat(
+        access_token=new_access_token,
+        refresh_token=new_refresh_token,
+        open_id=user_open_id,
+        expires_in=int(resp_data.get("expires_in") or 7200),
+        refresh_expires_in=_refresh_token_expires_in(resp_data),
+        scope=str(resp_data.get("scope", "")).strip() or data.get("scope", ""),
+        app_id=data.get("app_id", client_id),
+        per_user=True,
+    )
+    logger.info("Feishu UAT refreshed (per-user) for %s", user_open_id)
+
+
+# ---------------------------------------------------------------------------
+# Chat-mode device flow (multi-user / per-user)
+# ---------------------------------------------------------------------------
+#
+# Sync ``feishu_qr_auth(...)`` is the CLI entry point — it prints a QR code,
+# blocks the terminal, and writes to the legacy single-user UAT path.
+#
+# ``chat_mode_device_flow(...)`` is the async multi-user entry point — it does
+# NOT print to stdout. Callers (e.g. the feishu gateway adapter) supply async
+# callbacks so the verification URI / user_code / success / error events can be
+# rendered as Feishu cards back to the requesting chat user. On success, the
+# UAT is persisted to the per-user file ``~/.hermes/feishu_uat/<open_id>.json``
+# (NOT the legacy single-file path).
+
+# Terminal poll error codes (RFC 6749 §5.2 + RFC 8628 §3.5).
+_TERMINAL_POLL_ERRORS = frozenset({
+    "access_denied",       # User denied authorization
+    "expired_token",       # device_code expired before user authorized
+    "invalid_grant",       # device_code rejected by server
+    "invalid_client",      # client credentials wrong
+    "unauthorized_client", # app not configured for device_code grant
+    "server_error",        # 5xx from authorization server
+    "invalid_request",     # malformed payload
+})
+
+
+async def chat_mode_device_flow(
+    client_id: str,
+    client_secret: str,
+    scope: Optional[str],
+    on_verification_url: Callable[[str, str, int], Awaitable[None]],
+    on_success: Callable[[str, str], Awaitable[None]],
+    on_error: Callable[[str], Awaitable[None]],
+    cancel_event: Optional[asyncio.Event] = None,
+) -> Optional[Tuple[str, str, str]]:
+    """Run a Feishu OAuth 2.0 device flow without any terminal output.
+
+    Designed for multi-user chat-driven UX (`/feishu_auth` slash command from
+    a Feishu bot). The caller wires async callbacks so the verification URI
+    can be rendered as a card to the requesting user, and success/failure can
+    be reported back to the same chat.
+
+    On success, the UAT is persisted to ~/.hermes/feishu_uat/<open_id>.json
+    (per-user mode) — NOT the legacy single-file location.
+
+    Args:
+        client_id: Feishu app ID.
+        client_secret: Feishu app secret (Feishu requires it on both
+            device_authorization and token endpoints).
+        scope: Optional space-separated scope override; defaults to
+            FEISHU_DEFAULT_SCOPE when None.
+        on_verification_url: Async callback invoked with
+            (verification_uri_complete, user_code, expires_in_seconds) once the
+            device code is obtained, before polling begins.
+        on_success: Async callback invoked with (user_open_id, granted_scope)
+            after a successful token exchange and UAT persist.
+        on_error: Async callback invoked with a single human-readable reason
+            string when the flow fails or is cancelled.
+        cancel_event: Optional asyncio.Event a caller can set to abort the
+            poll loop early (between sleep and next poll).
+
+    Returns:
+        (access_token, refresh_token, user_open_id) on success, or None on
+        any failure / cancellation / timeout. on_success / on_error is always
+        invoked exactly once before returning.
+    """
+    # Step 1: device authorization (network call → run in thread pool)
+    try:
+        auth_data = await asyncio.to_thread(
+            begin_device_authorization, client_id, scope, client_secret
+        )
+    except FeishuAuthError as exc:
+        await on_error(f"init failed: {exc}")
+        return None
+
+    verification_uri = auth_data["verification_uri_complete"]
+    user_code = auth_data["user_code"]
+    expires_in = int(auth_data.get("expires_in", 1800))
+    interval = max(int(auth_data.get("interval", 5)), 2)
+    device_code = auth_data["device_code"]
+
+    # Notify caller — they render the URL/user_code as a card to the chat user.
+    try:
+        await on_verification_url(verification_uri, user_code, expires_in)
+    except Exception as exc:  # caller's renderer must not break the flow
+        logger.warning("on_verification_url callback raised: %s", exc)
+
+    # Step 2: poll loop with slow_down handling and cancellation support.
+    deadline = time.monotonic() + expires_in
+    current_interval = interval
+    token_data: Optional[dict] = None
+
+    while time.monotonic() < deadline:
+        if cancel_event is not None and cancel_event.is_set():
+            await on_error("cancelled by user")
+            return None
+
+        await asyncio.sleep(current_interval)
+
+        if cancel_event is not None and cancel_event.is_set():
+            await on_error("cancelled by user")
+            return None
+
+        try:
+            result = await asyncio.to_thread(
+                poll_device_token, device_code, client_id, client_secret
+            )
+        except FeishuAuthError as exc:
+            # Transient network/HTTP error — keep polling within the deadline.
+            logger.debug("chat-mode poll transient error: %s", exc)
+            continue
+
+        error = result.get("error")
+
+        # Success: token endpoint returned access_token (and no error).
+        if result.get("access_token") and not error:
+            token_data = result
+            break
+
+        # Still waiting for user to scan/approve.
+        if not error or error == "authorization_pending":
+            continue
+
+        # Server asks us to slow down.
+        if error == "slow_down":
+            current_interval = min(current_interval + 5, _POLL_INTERVAL_CAP)
+            continue
+
+        # Terminal error.
+        if error in _TERMINAL_POLL_ERRORS:
+            description = result.get("error_description") or error
+            await on_error(f"{error}: {description}")
+            return None
+
+        # Unknown error treated as terminal (avoid infinite loop on edge cases).
+        description = result.get("error_description") or "unknown error"
+        await on_error(f"{error}: {description}")
+        return None
+
+    if token_data is None:
+        await on_error("authorization timed out — please retry")
+        return None
+
+    access_token = (token_data.get("access_token") or "").strip()
+    refresh_token = (token_data.get("refresh_token") or "").strip()
+    open_id = (token_data.get("open_id") or "").strip()
+    expires_in_t = int(token_data.get("expires_in", 7200))
+    refresh_expires_in_t = _refresh_token_expires_in(token_data)
+    granted_scope = _scope_with_offline_access(token_data.get("scope") or scope)
+
+    if not access_token:
+        await on_error("token response missing access_token")
+        return None
+
+    # Feishu's v2 token endpoint does NOT include open_id in its response —
+    # we have to GET /authen/v1/user_info with the new access_token to learn
+    # who the user is. Mirrors openclaw-lark's fetchUserInfo step.
+    if not open_id:
+        try:
+            user_info = await asyncio.to_thread(fetch_user_info, access_token)
+            open_id = (user_info.get("open_id") or "").strip()
+        except FeishuAuthError as exc:
+            await on_error(f"user_info lookup failed: {exc}")
+            return None
+
+    if not open_id:
+        await on_error("user_info response missing open_id")
+        return None
+
+    # Step 3: persist per-user UAT.
+    try:
+        await asyncio.to_thread(
+            save_uat,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            open_id=open_id,
+            expires_in=expires_in_t,
+            refresh_expires_in=refresh_expires_in_t,
+            scope=granted_scope,
+            app_id=client_id,
+            per_user=True,
+        )
+    except Exception as exc:
+        await on_error(f"failed to save UAT: {exc}")
+        return None
+
+    try:
+        await on_success(open_id, granted_scope)
+    except Exception as exc:
+        logger.warning("on_success callback raised: %s", exc)
+
+    return access_token, refresh_token, open_id
 
 
 # ---------------------------------------------------------------------------
@@ -552,12 +977,15 @@ def render_qr_to_terminal(url: str) -> bool:
 def feishu_qr_auth(
     client_id: str,
     scope: Optional[str] = None,
+    client_secret: Optional[str] = None,
 ) -> Optional[Tuple[str, str]]:
     """Run the interactive QR-code Feishu device-flow authorization.
 
     Args:
         client_id: Feishu app ID (FEISHU_APP_ID env var value).
         scope: Override OAuth scopes. Defaults to FEISHU_DEFAULT_SCOPE.
+        client_secret: Feishu app secret (required by Feishu's device_authorization
+            endpoint even though RFC 8628 lists it as optional).
 
     Returns:
         (access_token, refresh_token) on success, or None on failure/cancel.
@@ -568,7 +996,7 @@ def feishu_qr_auth(
     print_info("  Initializing Feishu user authorization (OAuth device flow)...")
 
     try:
-        auth_data = begin_device_authorization(client_id, scope)
+        auth_data = begin_device_authorization(client_id, scope, client_secret=client_secret)
     except FeishuAuthError as exc:
         print_error(f"  Authorization init failed: {exc}")
         return None
@@ -610,6 +1038,7 @@ def feishu_qr_auth(
                 interval=auth_data["interval"],
                 expires_in=auth_data["expires_in"],
                 on_waiting=_on_waiting,
+                client_secret=client_secret,
             )
         )
     except FeishuAuthError as exc:
@@ -625,7 +1054,7 @@ def feishu_qr_auth(
             open_id=open_id,
             expires_in=tok_expires_in,
             refresh_expires_in=tok_refresh_expires_in,
-            scope=scope or FEISHU_DEFAULT_SCOPE,
+            scope=_scope_with_offline_access(scope),
             app_id=client_id,
         )
     except OSError as exc:
@@ -666,6 +1095,14 @@ def cmd_feishu_auth_setup(args) -> None:
         )
         return
 
+    client_secret = get_env_value("FEISHU_APP_SECRET") or ""
+    if not client_secret:
+        print_error(
+            "  FEISHU_APP_SECRET is not set. Feishu's device_authorization"
+            " endpoint rejects requests without it (HTTP 400 invalid_request)."
+        )
+        return
+
     # Check for existing token
     existing = load_uat()
     if existing:
@@ -702,7 +1139,7 @@ def cmd_feishu_auth_setup(args) -> None:
         scope = getattr(args, "scope", None) or ""
 
     scope = scope.strip() or None
-    result = feishu_qr_auth(client_id=client_id, scope=scope)
+    result = feishu_qr_auth(client_id=client_id, scope=scope, client_secret=client_secret)
     if result is None:
         import sys
         sys.exit(1)

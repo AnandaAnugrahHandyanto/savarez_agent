@@ -9,6 +9,7 @@ Uses FeishuClient.for_user() (UAT) for all operations; scope: sheets:spreadsheet
 """
 
 import logging
+import re
 
 from tools.feishu_oapi_client import (
     AppScopeMissingError,
@@ -74,6 +75,106 @@ def _get_user_client():
         return None
 
 
+_SHEETS_QUERY_URI = "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/query"
+
+
+def _column_letter(index: int) -> str:
+    result = ""
+    while index > 0:
+        index -= 1
+        result = chr(ord("A") + (index % 26)) + result
+        index //= 26
+    return result or "A"
+
+
+def _looks_like_cell_range(value: str) -> bool:
+    return bool(re.match(r"^[A-Za-z]+[0-9]+(?::[A-Za-z]+[0-9]+)?$", value.strip()))
+
+
+def _query_sheets(client: FeishuClient, spreadsheet_token: str, api_name: str) -> list[dict]:
+    code, msg, data = client.do_request(
+        "GET",
+        _SHEETS_QUERY_URI,
+        paths={"spreadsheet_token": spreadsheet_token},
+        use_uat=True,
+    )
+    if code != 0:
+        raise_for_feishu_errcode(
+            code,
+            msg or "",
+            api_name=api_name,
+            user_open_id=getattr(client, "user_open_id", "unknown"),
+        )
+        raise RuntimeError(f"Query sheets failed: code={code} msg={msg}")
+    sheets = data.get("sheets") or []
+    if not sheets:
+        raise RuntimeError("spreadsheet has no worksheets")
+    return sheets
+
+
+def _sheet_ref_to_id(ref: str, sheets: list[dict]) -> str | None:
+    target = ref.strip()
+    if not target:
+        return None
+    target_lower = target.lower()
+    for sheet in sheets:
+        sheet_id = str(sheet.get("sheet_id") or sheet.get("sheetId") or "").strip()
+        title = str(sheet.get("title") or "").strip()
+        index = sheet.get("index")
+        if target == sheet_id or target_lower == title.lower() or target == str(index):
+            return sheet_id or None
+    return None
+
+
+def _resolve_sheet_range(
+    client: FeishuClient,
+    spreadsheet_token: str,
+    range_val: str,
+    *,
+    api_name: str,
+    values: list | None = None,
+) -> str:
+    """Resolve friendly sheet titles and A1-only ranges to Feishu sheet IDs."""
+    range_val = (range_val or "").strip()
+    sheets: list[dict] | None = None
+
+    def ensure_sheets() -> list[dict]:
+        nonlocal sheets
+        if sheets is None:
+            sheets = _query_sheets(client, spreadsheet_token, api_name)
+        return sheets
+
+    def first_sheet_id() -> str:
+        sheet_id = _sheet_ref_to_id("", ensure_sheets())
+        if sheet_id:
+            return sheet_id
+        first = ensure_sheets()[0]
+        resolved = str(first.get("sheet_id") or first.get("sheetId") or "").strip()
+        if not resolved:
+            raise RuntimeError("spreadsheet has no worksheets")
+        return resolved
+
+    if not range_val:
+        sheet_id = first_sheet_id()
+        if values:
+            rows = len(values)
+            columns = max((len(row) for row in values if isinstance(row, list)), default=1)
+            return f"{sheet_id}!A1:{_column_letter(columns)}{rows}"
+        return sheet_id
+
+    if "!" in range_val:
+        prefix, suffix = range_val.split("!", 1)
+        sheets_list = ensure_sheets()
+        sheet_id = _sheet_ref_to_id(prefix, sheets_list) or prefix.strip()
+        return f"{sheet_id}!{suffix.strip()}"
+
+    if _looks_like_cell_range(range_val):
+        return f"{first_sheet_id()}!{range_val}"
+
+    sheets_list = ensure_sheets()
+    return _sheet_ref_to_id(range_val, sheets_list) or range_val
+
+
 # ---------------------------------------------------------------------------
 # feishu_sheets_read_range
 # ---------------------------------------------------------------------------
@@ -110,7 +211,7 @@ FEISHU_SHEETS_READ_RANGE_SCHEMA = {
                 "default": "ToString",
             },
         },
-        "required": ["spreadsheet_token", "range"],
+        "required": ["spreadsheet_token"],
     },
 }
 
@@ -130,8 +231,6 @@ def _handle_sheets_read_range(args: dict, **kwargs) -> str:
 
     if not spreadsheet_token:
         return tool_error("spreadsheet_token is required")
-    if not range_val:
-        return tool_error("range is required")
 
     value_render_option = args.get("value_render_option", "ToString") or "ToString"
 
@@ -145,6 +244,17 @@ def _handle_sheets_read_range(args: dict, **kwargs) -> str:
         return tool_error(
             "Feishu user token not available. Run 'hermes feishu-uat' to authorize."
         )
+    try:
+        range_val = _resolve_sheet_range(
+            client,
+            spreadsheet_token,
+            range_val,
+            api_name="feishu.sheets.read_range",
+        )
+    except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+        return tool_error(_auth_error_message(e))
+    except RuntimeError as e:
+        return tool_error(str(e))
 
     queries = [
         ("valueRenderOption", value_render_option),
@@ -220,7 +330,7 @@ FEISHU_SHEETS_WRITE_RANGE_SCHEMA = {
                 },
             },
         },
-        "required": ["spreadsheet_token", "range", "values"],
+        "required": ["spreadsheet_token", "values"],
     },
 }
 
@@ -241,8 +351,6 @@ def _handle_sheets_write_range(args: dict, **kwargs) -> str:
 
     if not spreadsheet_token:
         return tool_error("spreadsheet_token is required")
-    if not range_val:
-        return tool_error("range is required")
     if not isinstance(values, list) or not values:
         return tool_error("values must be a non-empty 2D array")
 
@@ -256,6 +364,18 @@ def _handle_sheets_write_range(args: dict, **kwargs) -> str:
         return tool_error(
             "Feishu user token not available. Run 'hermes feishu-uat' to authorize."
         )
+    try:
+        range_val = _resolve_sheet_range(
+            client,
+            spreadsheet_token,
+            range_val,
+            api_name="feishu.sheets.write_range",
+            values=values,
+        )
+    except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+        return tool_error(_auth_error_message(e))
+    except RuntimeError as e:
+        return tool_error(str(e))
 
     body = {"valueRange": {"range": range_val, "values": values}}
 
@@ -330,7 +450,7 @@ FEISHU_SHEETS_APPEND_ROWS_SCHEMA = {
                 },
             },
         },
-        "required": ["spreadsheet_token", "range", "values"],
+        "required": ["spreadsheet_token", "values"],
     },
 }
 
@@ -351,8 +471,6 @@ def _handle_sheets_append_rows(args: dict, **kwargs) -> str:
 
     if not spreadsheet_token:
         return tool_error("spreadsheet_token is required")
-    if not range_val:
-        return tool_error("range is required")
     if not isinstance(values, list) or not values:
         return tool_error("values must be a non-empty 2D array")
 
@@ -366,6 +484,17 @@ def _handle_sheets_append_rows(args: dict, **kwargs) -> str:
         return tool_error(
             "Feishu user token not available. Run 'hermes feishu-uat' to authorize."
         )
+    try:
+        range_val = _resolve_sheet_range(
+            client,
+            spreadsheet_token,
+            range_val,
+            api_name="feishu.sheets.append_rows",
+        )
+    except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+        return tool_error(_auth_error_message(e))
+    except RuntimeError as e:
+        return tool_error(str(e))
 
     body = {"valueRange": {"range": range_val, "values": values}}
 

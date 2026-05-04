@@ -7,7 +7,7 @@ Provides two tools:
 Both use user_access_token (UAT) so messages are sent under the user's identity,
 not the bot's. The FeishuClient.for_user() factory loads the UAT from disk.
 
-Required scope: im:message:send_as_user
+Required scope: im:message.send_as_user
 """
 
 import json
@@ -32,12 +32,12 @@ logger = logging.getLogger(__name__)
 
 TOOLS_METADATA["feishu_im_send_message_as_user"] = {
     "identity": "user",
-    "scopes": ["im:message:send_as_user"],
+    "scopes": ["im:message.send_as_user"],
 }
 
 TOOLS_METADATA["feishu_im_reply_message_as_user"] = {
     "identity": "user",
-    "scopes": ["im:message:send_as_user"],
+    "scopes": ["im:message.send_as_user"],
 }
 
 

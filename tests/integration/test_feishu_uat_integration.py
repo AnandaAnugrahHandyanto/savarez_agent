@@ -233,6 +233,61 @@ class TestDeviceFlowEndToEnd:
         assert data["access_token"] == "u-final-token"
         assert data["user_open_id"] == "ou_final_user"
 
+    def test_refresh_uat_for_user_persists_refresh_token_expires_in(self, tmp_path, monkeypatch):
+        """Refresh flow honors Feishu v2's refresh_token_expires_in response field."""
+        import hermes_cli.feishu_auth as feishu_auth
+
+        uat_dir = tmp_path / "feishu_uat"
+        uat_dir.mkdir()
+        uat_path = uat_dir / "ou_refresh_user.json"
+        uat_path.write_text(
+            json.dumps(
+                {
+                    "app_id": "cli_old",
+                    "user_open_id": "ou_refresh_user",
+                    "access_token": "old_access",
+                    "refresh_token": "old_refresh",
+                    "expires_at": 1000,
+                    "refresh_expires_at": _future_expires_at_ms(3600),
+                    "scope": "calendar:calendar offline_access",
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(feishu_auth, "FEISHU_UAT_DIR", uat_dir)
+        captured = {}
+
+        def fake_api_post(path, base_url, payload):
+            captured["path"] = path
+            captured["base_url"] = base_url
+            captured["payload"] = payload
+            return {
+                "code": 0,
+                "access_token": "new_access",
+                "expires_in": 7200,
+                "refresh_token": "new_refresh",
+                "refresh_token_expires_in": 604800,
+                "token_type": "Bearer",
+                "scope": "calendar:calendar offline_access",
+            }
+
+        monkeypatch.setattr(feishu_auth, "_api_post", fake_api_post)
+        before_ms = int(time.time() * 1000)
+
+        feishu_auth.refresh_uat_for_user("ou_refresh_user", "cli_new", "sec_new")
+
+        assert captured["path"] == "/open-apis/authen/v2/oauth/token"
+        assert captured["payload"] == {
+            "grant_type": "refresh_token",
+            "refresh_token": "old_refresh",
+            "client_id": "cli_new",
+            "client_secret": "sec_new",
+        }
+        data = json.loads(uat_path.read_text(encoding="utf-8"))
+        assert data["access_token"] == "new_access"
+        assert data["refresh_token"] == "new_refresh"
+        assert before_ms + 604800 * 1000 <= data["refresh_expires_at"] < before_ms + 604801 * 1000
+
 
 # ===========================================================================
 # Scenario 2 — Tool call chain (UAT injection)

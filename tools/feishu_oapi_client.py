@@ -12,14 +12,17 @@ Four semantic error classes surface auth failures to callers:
   - ``UserScopeInsufficientError``  — token valid but scope insufficient
 
 Token management:
-  - ``_load_uat()`` reads ~/.hermes/feishu_uat.json; if access_token expires
-    within 60 s it raises NeedAuthorizationError (no auto-refresh daemon).
+  - ``_load_uat()`` reads ~/.hermes/feishu_uat.json or per-user
+    ~/.hermes/feishu_uat/<open_id>.json; if access_token expires within 60 s,
+    it attempts a refresh_token exchange before raising NeedAuthorizationError.
   - TOOLS_METADATA is a registry for Phase 2 workers to declare per-tool
     scopes and preferred identity.  Starts empty; workers append entries.
 """
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import logging
 import os
@@ -36,6 +39,109 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 FEISHU_UAT_PATH = get_hermes_home() / "feishu_uat.json"
+
+# Per-user UAT directory: ~/.hermes/feishu_uat/<open_id>.json
+# Multi-user (chat-mode device flow) deployments write one file per open_id.
+FEISHU_UAT_DIR = get_hermes_home() / "feishu_uat"
+
+# Per-task sender open_id propagation (US-004).
+# The feishu adapter sets this ContextVar before invoking the LLM agent's tool
+# handler for an inbound message; UAT factory methods read it when callers do
+# not pass an explicit user_open_id, enabling multi-user routing without
+# modifying every tool's signature. ContextVar is naturally task-isolated under
+# asyncio so concurrent inbound messages do not bleed open_id into each other.
+current_sender_open_id: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "current_sender_open_id", default=None
+)
+
+
+@contextlib.contextmanager
+def sender_open_id_scope(open_id: Optional[str]):
+    """Set ``current_sender_open_id`` for the duration of the with-block.
+
+    Resets the contextvar in finally so leakage across requests is impossible
+    even if an exception escapes. ``open_id=None`` is a no-op (used when the
+    inbound event has no resolvable sender, e.g. card actions on a synthetic
+    event).
+    """
+    if open_id is None:
+        yield
+        return
+    token = current_sender_open_id.set(open_id)
+    try:
+        yield
+    finally:
+        current_sender_open_id.reset(token)
+
+
+def _per_user_uat_path_oapi(open_id: str) -> "Path":
+    """Return per-user UAT path; reject anything that could escape the dir."""
+    if not open_id or not isinstance(open_id, str):
+        raise ValueError("open_id must be a non-empty string")
+    if "/" in open_id or "\\" in open_id or ".." in open_id or "\0" in open_id:
+        raise ValueError(f"open_id contains illegal characters: {open_id!r}")
+    return FEISHU_UAT_DIR / f"{open_id}.json"
+
+
+def _find_latest_valid_uat_path(skip: Optional["Path"] = None) -> Optional["Path"]:
+    """Return the freshest UAT file in FEISHU_UAT_DIR whose access_token is
+    not yet within the expiry headroom. Returns None when nothing usable
+    exists. ``skip`` is excluded from the candidate set (avoid recursion when
+    the caller's primary lookup just missed).
+    """
+    if not FEISHU_UAT_DIR.exists():
+        return None
+    now_ms = int(time.time() * 1000)
+    headroom_ms = _ACCESS_TOKEN_EXPIRY_HEADROOM_S * 1000
+    candidates: list[tuple[float, "Path"]] = []
+    for entry in FEISHU_UAT_DIR.iterdir():
+        if not entry.is_file() or entry.suffix != ".json" or entry.name.startswith("."):
+            continue
+        if skip is not None and entry == skip:
+            continue
+        try:
+            with open(entry, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not data.get("access_token"):
+            continue
+        if int(data.get("expires_at", 0)) <= now_ms + headroom_ms:
+            continue
+        candidates.append((entry.stat().st_mtime, entry))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
+def _try_refresh_uat(
+    *,
+    open_id: Optional[str],
+    target_path: "Path",
+    data: dict,
+) -> Optional[dict]:
+    """Refresh an expiring UAT file in-place and return the reloaded data."""
+    if not data.get("refresh_token"):
+        return None
+    app_id, app_secret, _domain = _resolve_feishu_credentials()
+    if not (app_id and app_secret):
+        return None
+    try:
+        if open_id:
+            from hermes_cli.feishu_auth import refresh_uat_for_user
+
+            refresh_uat_for_user(open_id, app_id, app_secret)
+        else:
+            from hermes_cli.feishu_auth import refresh_uat
+
+            refresh_uat(app_id, app_secret)
+        logger.info("UAT auto-refreshed for user %s", data.get("user_open_id") or open_id or "unknown")
+        with open(target_path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception as exc:
+        logger.debug("Auto-refresh failed: %s", exc)
+        return None
 
 # Access token refresh headroom — treat token as expired this many seconds early
 _ACCESS_TOKEN_EXPIRY_HEADROOM_S = 60
@@ -57,6 +163,25 @@ TOOLS_METADATA: dict[str, dict] = {
         "scopes": ["authen:user.employee_id:read"],
     },
 }
+
+
+def _resolve_feishu_credentials() -> tuple[str, str, str]:
+    """Resolve (app_id, app_secret, domain) with env→.env→config.yaml fallback.
+
+    Mirrors gateway/platforms/feishu.py so UAT tools share a single credential
+    source with the gateway adapter without requiring duplication in .env.
+    """
+    app_id = os.getenv("FEISHU_APP_ID", "").strip()
+    app_secret = os.getenv("FEISHU_APP_SECRET", "").strip()
+    domain = os.getenv("FEISHU_DOMAIN", "").strip().lower()
+    if not (app_id and app_secret) or not domain:
+        from hermes_cli.config import get_env_value
+        app_id = app_id or (get_env_value("FEISHU_APP_ID") or "").strip()
+        app_secret = app_secret or (get_env_value("FEISHU_APP_SECRET") or "").strip()
+        domain = domain or (get_env_value("FEISHU_DOMAIN") or "").strip().lower()
+    if not domain:
+        domain = "feishu"
+    return app_id, app_secret, domain
 
 
 # ---------------------------------------------------------------------------
@@ -196,8 +321,15 @@ def raise_for_feishu_errcode(
 # UAT loader
 # ---------------------------------------------------------------------------
 
-def _load_uat() -> dict:
-    """Load UAT from ~/.hermes/feishu_uat.json and validate freshness.
+def _load_uat(open_id: Optional[str] = None) -> dict:
+    """Load UAT from disk and validate freshness.
+
+    With ``open_id``, reads ~/.hermes/feishu_uat/<open_id>.json (per-user mode).
+    Without it, falls back to the legacy single-file path ~/.hermes/feishu_uat.json
+    so single-user deployments continue to work unchanged.
+
+    Args:
+        open_id: Optional Feishu user open_id for the per-user UAT file.
 
     Returns:
         Token dict with at least access_token, refresh_token, user_open_id.
@@ -206,23 +338,41 @@ def _load_uat() -> dict:
         NeedAuthorizationError: File missing, unreadable, or access_token
             expires within _ACCESS_TOKEN_EXPIRY_HEADROOM_S seconds.
     """
-    if not FEISHU_UAT_PATH.exists():
-        raise NeedAuthorizationError(
-            reason="no token file found; run 'hermes feishu-auth' first"
+    target_path = _per_user_uat_path_oapi(open_id) if open_id else FEISHU_UAT_PATH
+    if not target_path.exists():
+        # Cross-context fallback applies only to per-user lookups (open_id given).
+        # Legacy single-file lookups (open_id is None) keep strict semantics so
+        # callers asking "is there ANY UAT" get the original NeedAuthorization
+        # error instead of being silently routed to a per-user file.
+        fallback = (
+            _find_latest_valid_uat_path(skip=target_path) if open_id else None
         )
+        if fallback is not None:
+            logger.info(
+                "[feishu] _load_uat fallback: %s missing, using freshest UAT %s",
+                target_path.name, fallback.name,
+            )
+            target_path = fallback
+        else:
+            raise NeedAuthorizationError(
+                user_open_id=open_id or "unknown",
+                reason=f"no token file at {target_path}; run 'hermes feishu-auth' or send /feishu_auth",
+            )
 
     try:
-        with open(FEISHU_UAT_PATH, encoding="utf-8") as fh:
+        with open(target_path, encoding="utf-8") as fh:
             data = json.load(fh)
     except (json.JSONDecodeError, OSError) as exc:
         raise NeedAuthorizationError(
-            reason=f"token file unreadable: {exc}"
+            user_open_id=open_id or "unknown",
+            reason=f"token file unreadable: {exc}",
         ) from exc
 
     access_token = data.get("access_token", "")
     if not access_token:
         raise NeedAuthorizationError(
-            reason="token file has no access_token; re-run 'hermes feishu-auth'"
+            user_open_id=open_id or "unknown",
+            reason="token file has no access_token; re-run 'hermes feishu-auth'",
         )
 
     expires_at_ms = data.get("expires_at", 0)
@@ -231,24 +381,41 @@ def _load_uat() -> dict:
 
     if now_ms >= expires_at_ms - headroom_ms:
         user_open_id = data.get("user_open_id", "unknown")
-        # Attempt automatic refresh before failing
-        app_id = os.getenv("FEISHU_APP_ID", "").strip()
-        app_secret = os.getenv("FEISHU_APP_SECRET", "").strip()
-        if app_id and app_secret:
-            try:
-                from hermes_cli.feishu_auth import refresh_uat
-                refresh_uat(app_id, app_secret)
-                logger.info("UAT auto-refreshed for user %s", user_open_id)
-                # Re-read the freshly saved token
-                with open(FEISHU_UAT_PATH, encoding="utf-8") as fh:
-                    return json.load(fh)
-            except Exception as exc:
-                logger.debug("Auto-refresh failed: %s", exc)
+        refreshed = _try_refresh_uat(open_id=open_id, target_path=target_path, data=data)
+        if refreshed is not None:
+            logger.info(
+                "[feishu] _load_uat for_user access_token sender=%s path=%s refreshed=True",
+                refreshed.get("user_open_id") or refreshed.get("open_id") or open_id or "unknown",
+                target_path.name,
+            )
+            return refreshed
+        # Cross-context fallback (per-user lookups only — legacy single-file
+        # callers keep strict expiry semantics).
+        if open_id:
+            fallback = _find_latest_valid_uat_path(skip=target_path)
+            if fallback is not None:
+                logger.info(
+                    "[feishu] _load_uat fallback: %s expired, using freshest UAT %s",
+                    target_path.name, fallback.name,
+                )
+                with open(fallback, encoding="utf-8") as fh:
+                    fallback_data = json.load(fh)
+                logger.info(
+                    "[feishu] _load_uat for_user access_token sender=%s path=%s fallback=True",
+                    fallback_data.get("user_open_id") or fallback_data.get("open_id") or open_id or "unknown",
+                    fallback.name,
+                )
+                return fallback_data
         raise NeedAuthorizationError(
             user_open_id=user_open_id,
             reason="access_token expired or expiring soon; re-run 'hermes feishu-auth'",
         )
 
+    logger.info(
+        "[feishu] _load_uat for_user access_token sender=%s path=%s",
+        data.get("user_open_id") or data.get("open_id") or open_id or "unknown",
+        target_path.name,
+    )
     return data
 
 
@@ -300,7 +467,8 @@ class FeishuClient:
     def for_tenant(cls) -> "FeishuClient":
         """Create or reuse a TAT (tenant_access_token) lark Client.
 
-        Reads FEISHU_APP_ID and FEISHU_APP_SECRET from the environment.
+        Reads FEISHU_APP_ID and FEISHU_APP_SECRET from env, ~/.hermes/.env, or
+        platforms.feishu.extra in ~/.hermes/config.yaml (in that order).
 
         Returns:
             FeishuClient configured for tenant identity.
@@ -308,9 +476,7 @@ class FeishuClient:
         Raises:
             ValueError: If FEISHU_APP_ID or FEISHU_APP_SECRET are unset.
         """
-        app_id = os.getenv("FEISHU_APP_ID", "").strip()
-        app_secret = os.getenv("FEISHU_APP_SECRET", "").strip()
-        domain = os.getenv("FEISHU_DOMAIN", "feishu").strip().lower()
+        app_id, app_secret, domain = _resolve_feishu_credentials()
 
         if not app_id or not app_secret:
             raise ValueError(
@@ -333,13 +499,20 @@ class FeishuClient:
         return instance
 
     @classmethod
-    def for_user(cls) -> "FeishuClient":
+    def for_user(cls, user_open_id: Optional[str] = None) -> "FeishuClient":
         """Create a UAT (user_access_token) lark Client from disk storage.
 
-        Loads ~/.hermes/feishu_uat.json, validates token freshness, and builds
-        a client.  The ``access_token`` attribute holds the raw UAT string;
-        pass it to ``RequestOption.builder().user_access_token(...)`` for SDK
-        calls that support USER token type.
+        With ``user_open_id``, loads ~/.hermes/feishu_uat/<user_open_id>.json
+        (per-user / multi-user mode). Without it, loads the legacy single-file
+        path ~/.hermes/feishu_uat.json (single-user / CLI mode).
+
+        The ``access_token`` attribute holds the raw UAT string; pass it to
+        ``RequestOption.builder().user_access_token(...)`` for SDK calls that
+        support USER token type.
+
+        Args:
+            user_open_id: Optional Feishu user open_id used to select the
+                per-user UAT file in chat-mode (multi-user) deployments.
 
         Returns:
             FeishuClient with access_token set.
@@ -348,9 +521,7 @@ class FeishuClient:
             NeedAuthorizationError: Token missing, expired, or expiring soon.
             ValueError: If FEISHU_APP_ID / FEISHU_APP_SECRET unset.
         """
-        app_id = os.getenv("FEISHU_APP_ID", "").strip()
-        app_secret = os.getenv("FEISHU_APP_SECRET", "").strip()
-        domain = os.getenv("FEISHU_DOMAIN", "feishu").strip().lower()
+        app_id, app_secret, domain = _resolve_feishu_credentials()
 
         if not app_id or not app_secret:
             raise ValueError(
@@ -358,16 +529,23 @@ class FeishuClient:
                 "Run 'hermes setup' to configure the Feishu bot."
             )
 
-        uat_data = _load_uat()
+        # US-004: when no explicit open_id is passed, fall back to the
+        # contextvar set by the feishu adapter for the current message. If
+        # the contextvar is also unset, _load_uat receives None and reads
+        # the legacy single-file path (single-user / CLI mode).
+        if user_open_id is None:
+            user_open_id = current_sender_open_id.get()
+
+        uat_data = _load_uat(open_id=user_open_id)
         access_token = uat_data["access_token"]
-        user_open_id = uat_data.get("user_open_id", "")
+        loaded_open_id = uat_data.get("user_open_id", "")
 
         return cls(
             app_id=app_id,
             app_secret=app_secret,
             domain=domain,
             access_token=access_token,
-            user_open_id=user_open_id,
+            user_open_id=loaded_open_id,
             ephemeral=True,
         )
 
@@ -470,11 +648,11 @@ class FeishuClient:
         """Execute a BaseRequest and return (code, msg, data_dict).
 
         Args:
-            method: HTTP method string "GET" or "POST".
+            method: HTTP method string "GET", "POST", "PUT", "DELETE", or "PATCH".
             uri: Feishu open-api URI, e.g. "/open-apis/calendar/v4/events".
             paths: Path parameter substitutions dict.
             queries: List of (key, value) query parameter tuples.
-            body: JSON body dict (POST only).
+            body: JSON body dict for methods that accept request bodies.
             use_uat: If True, inject UAT via RequestOption instead of TAT.
 
         Returns:
@@ -497,7 +675,16 @@ class FeishuClient:
                        "call FeishuClient.for_user() or run 'hermes feishu-auth'",
             )
 
-        http_method = HttpMethod.GET if method.upper() == "GET" else HttpMethod.POST
+        method_map = {
+            "GET": HttpMethod.GET,
+            "POST": HttpMethod.POST,
+            "PUT": HttpMethod.PUT,
+            "DELETE": HttpMethod.DELETE,
+            "PATCH": HttpMethod.PATCH,
+        }
+        http_method = method_map.get(method.upper())
+        if http_method is None:
+            raise ValueError(f"Unsupported Feishu HTTP method: {method}")
 
         builder = (
             BaseRequest.builder()

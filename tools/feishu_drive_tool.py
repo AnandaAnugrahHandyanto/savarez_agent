@@ -35,11 +35,11 @@ TOOLS_METADATA["feishu_drive_list_comment_replies"] = {
 }
 TOOLS_METADATA["feishu_drive_reply_comment"] = {
     "identity": "user",
-    "scopes": ["drive:drive"],
+    "scopes": ["docs:document.comment:write_only"],
 }
 TOOLS_METADATA["feishu_drive_add_comment"] = {
     "identity": "user",
-    "scopes": ["drive:drive"],
+    "scopes": ["docs:document.comment:create"],
 }
 
 # Thread-local storage for the lark client injected by feishu_comment handler.
@@ -262,7 +262,7 @@ FEISHU_DRIVE_LIST_COMMENTS_SCHEMA = {
                     "If true, use user_access_token (UAT) identity instead of "
                     "tenant identity. Requires a valid UAT on disk."
                 ),
-                "default": False,
+                "default": True,
             },
         },
         "required": ["file_token"],
@@ -271,7 +271,7 @@ FEISHU_DRIVE_LIST_COMMENTS_SCHEMA = {
 
 
 def _handle_list_comments(args: dict, **kwargs) -> str:
-    use_uat = bool(args.get("use_uat", False))
+    use_uat = bool(args.get("use_uat", True))
     file_token = args.get("file_token", "").strip()
     logger.info("feishu_drive_list_comments: file_token=%s use_uat=%s", file_token, use_uat)
     resolved, err = _resolve_client_for_uat(use_uat)
@@ -359,7 +359,7 @@ FEISHU_DRIVE_LIST_REPLIES_SCHEMA = {
                     "If true, use user_access_token (UAT) identity instead of "
                     "tenant identity. Requires a valid UAT on disk."
                 ),
-                "default": False,
+                "default": True,
             },
         },
         "required": ["file_token", "comment_id"],
@@ -368,7 +368,7 @@ FEISHU_DRIVE_LIST_REPLIES_SCHEMA = {
 
 
 def _handle_list_replies(args: dict, **kwargs) -> str:
-    use_uat = bool(args.get("use_uat", False))
+    use_uat = bool(args.get("use_uat", True))
     file_token = args.get("file_token", "").strip()
     comment_id = args.get("comment_id", "").strip()
     logger.info("feishu_drive_list_comment_replies: file_token=%s comment_id=%s use_uat=%s", file_token, comment_id, use_uat)
@@ -453,7 +453,7 @@ FEISHU_DRIVE_REPLY_SCHEMA = {
                     "If true, use user_access_token (UAT) identity instead of "
                     "tenant identity. Requires a valid UAT on disk."
                 ),
-                "default": False,
+                "default": True,
             },
         },
         "required": ["file_token", "comment_id", "content"],
@@ -462,7 +462,7 @@ FEISHU_DRIVE_REPLY_SCHEMA = {
 
 
 def _handle_reply_comment(args: dict, **kwargs) -> str:
-    use_uat = bool(args.get("use_uat", False))
+    use_uat = bool(args.get("use_uat", True))
     file_token = args.get("file_token", "").strip()
     comment_id = args.get("comment_id", "").strip()
     logger.info("feishu_drive_reply_comment: file_token=%s comment_id=%s use_uat=%s", file_token, comment_id, use_uat)
@@ -502,6 +502,30 @@ def _handle_reply_comment(args: dict, **kwargs) -> str:
             body=body,
         )
     if code != 0:
+        if code == 1069302:
+            fallback_body = {
+                "file_type": file_type,
+                "reply_elements": [
+                    {"type": "text", "text": content},
+                ],
+            }
+            if use_uat:
+                fallback_code, fallback_msg, fallback_data = _do_request_uat(
+                    resolved, "POST", _ADD_COMMENT_URI,
+                    paths={"file_token": file_token},
+                    body=fallback_body,
+                )
+            else:
+                fallback_code, fallback_msg, fallback_data = _do_request(
+                    resolved, "POST", _ADD_COMMENT_URI,
+                    paths={"file_token": file_token},
+                    body=fallback_body,
+                )
+            if fallback_code == 0:
+                result = dict(fallback_data or {})
+                result["fallback"] = "whole_document_comment"
+                return tool_result(result)
+            msg = f"{msg}; fallback add comment failed: code={fallback_code} msg={fallback_msg}"
         try:
             raise_for_feishu_errcode(code, msg or "", api_name="feishu.drive.reply_comment")
         except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
@@ -547,7 +571,7 @@ FEISHU_DRIVE_ADD_COMMENT_SCHEMA = {
                     "If true, use user_access_token (UAT) identity instead of "
                     "tenant identity. Requires a valid UAT on disk."
                 ),
-                "default": False,
+                "default": True,
             },
         },
         "required": ["file_token", "content"],
@@ -556,7 +580,7 @@ FEISHU_DRIVE_ADD_COMMENT_SCHEMA = {
 
 
 def _handle_add_comment(args: dict, **kwargs) -> str:
-    use_uat = bool(args.get("use_uat", False))
+    use_uat = bool(args.get("use_uat", True))
     file_token = args.get("file_token", "").strip()
     logger.info("feishu_drive_add_comment: file_token=%s use_uat=%s", file_token, use_uat)
     resolved, err = _resolve_client_for_uat(use_uat)

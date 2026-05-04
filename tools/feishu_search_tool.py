@@ -5,7 +5,7 @@ Provides:
   ``feishu_search_global``   -- global content search (POST /search/v2/search)
 
 Uses FeishuClient.for_user() with UAT (user_access_token) identity.
-Requires scope: search:search
+Requires scope: search:message for message search and search:search for global search.
 """
 
 import logging
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 TOOLS_METADATA["feishu_search_message"] = {
     "identity": "user",
-    "scopes": ["search:search"],
+    "scopes": ["search:message"],
 }
 
 TOOLS_METADATA["feishu_search_global"] = {
@@ -184,6 +184,7 @@ def _handle_search_message(args: dict, **kwargs) -> str:
 # ---------------------------------------------------------------------------
 
 _SEARCH_GLOBAL_URI = "/open-apis/search/v2/search"
+_WIKI_SEARCH_FALLBACK_URI = "/open-apis/wiki/v1/nodes/search"
 
 FEISHU_SEARCH_GLOBAL_SCHEMA = {
     "name": "feishu_search_global",
@@ -257,6 +258,28 @@ def _handle_search_global(args: dict, **kwargs) -> str:
         return tool_error(str(exc))
 
     if code != 0:
+        if code in (-1, 404):
+            try:
+                fallback_code, fallback_msg, fallback_data = client.do_request(
+                    "POST",
+                    _WIKI_SEARCH_FALLBACK_URI,
+                    body={"query": query, "page_size": min(int(page_size or 20), 50)},
+                    use_uat=True,
+                )
+            except RuntimeError as exc:
+                return tool_error(str(exc))
+            if fallback_code == 0:
+                logger.info(
+                    "feishu_search_global: global endpoint unavailable, "
+                    "fell back to wiki search for query=%r",
+                    query,
+                )
+                return tool_result({
+                    **fallback_data,
+                    "fallback": "feishu_wiki_search",
+                    "original_error": {"code": code, "msg": msg},
+                })
+            msg = f"{msg}; wiki fallback failed: code={fallback_code} msg={fallback_msg}"
         try:
             raise_for_feishu_errcode(code, msg or "", api_name="feishu.search.global")
         except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
