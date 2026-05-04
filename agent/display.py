@@ -14,7 +14,6 @@ from difflib import unified_diff
 from pathlib import Path
 
 from hermes_cli.shared_utils import safe_json_loads
-from agent.tool_result_classification import file_mutation_result_landed
 
 # ANSI escape codes for coloring tool failure indicators
 _RED = "\033[31m"
