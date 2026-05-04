@@ -65,6 +65,8 @@ export const api = {
     fetchJSON<AnalyticsResponse>(`/api/analytics/usage?days=${days}`),
   getModelsAnalytics: (days: number) =>
     fetchJSON<ModelsAnalyticsResponse>(`/api/analytics/models?days=${days}`),
+  getMissionControlOverview: () =>
+    fetchJSON<MissionControlOverviewResponse>("/api/mission-control/overview"),
   getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
@@ -468,6 +470,78 @@ export interface AnalyticsResponse {
   skills: {
     summary: AnalyticsSkillsSummary;
     top_skills: AnalyticsSkillEntry[];
+  };
+}
+
+export interface MissionControlProject {
+  id: string;
+  name: string;
+  bucket: string;
+  priority: string;
+  brief: string;
+  brief_path: string | null;
+  updated_at: number | null;
+}
+
+export interface MissionControlUsageWindow {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_tokens?: number;
+  reasoning_tokens?: number;
+  total_tokens?: number;
+  estimated_cost?: number;
+  actual_cost?: number;
+  sessions?: number;
+  api_calls?: number;
+}
+
+export interface MissionControlAgentProcess {
+  pid: number;
+  agent_type: string;
+  label: string;
+  status: string;
+  elapsed: string;
+  command: string;
+  current_work: string;
+}
+
+export interface MissionControlOverviewResponse {
+  generated_at: number;
+  status: StatusResponse;
+  usage: {
+    today: MissionControlUsageWindow;
+    period_days: number;
+    period: MissionControlUsageWindow;
+    by_model: Array<AnalyticsModelEntry & { billing_provider?: string | null; actual_cost?: number }>;
+  };
+  projects: {
+    root: string;
+    inventory_path: string;
+    buckets: Record<string, MissionControlProject[]>;
+    counts: Record<string, number>;
+    total: number;
+  };
+  agents: {
+    processes: MissionControlAgentProcess[];
+    active_processes: number;
+    active_sessions: number;
+  };
+  sessions: {
+    active: SessionInfo[];
+    recent: SessionInfo[];
+    total: number;
+  };
+  cron: {
+    total: number;
+    enabled: number;
+    paused: number;
+    upcoming: CronJob[];
+  };
+  skills: {
+    total: number;
+    enabled: number;
+    disabled: number;
+    top_categories: Array<{ category: string; count: number }>;
   };
 }
 

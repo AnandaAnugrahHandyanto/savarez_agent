@@ -614,6 +614,371 @@ async def get_status():
 
 
 # ---------------------------------------------------------------------------
+# Mission Control overview (read-only)
+# ---------------------------------------------------------------------------
+
+_MISSION_CONTROL_AGENT_KEYWORDS = ("hermes", "openclaw", "claude", "codex", "opencode")
+_MISSION_CONTROL_EXCLUDE_PROCESS_MARKERS = (
+    "hermes dashboard",
+    "hermes_cli.main dashboard",
+    "hermes_cli.web_server",
+    "uvicorn",
+    "fastapi.testclient",
+    "/api/mission-control/overview",
+    "chrome_crashpad_handler",
+)
+_PROJECT_BUCKETS = ("current", "planning", "future", "archive")
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except Exception:
+        return default
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _project_name_from_markdown(path: Path) -> str:
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("# "):
+                return stripped[2:].strip()
+    except Exception:
+        pass
+    return path.stem.replace("-", " ").title()
+
+
+def _read_mission_control_projects(projects_root: Optional[Path] = None) -> Dict[str, Any]:
+    """Read the local Hermes project index and group it by bucket.
+
+    This is intentionally read-only and tolerant of partial/missing project
+    state.  The project index is user-maintained operational context, not a
+    hard dependency for starting the dashboard.
+    """
+    root = projects_root or (get_hermes_home() / "projects")
+    buckets: Dict[str, List[Dict[str, Any]]] = {bucket: [] for bucket in _PROJECT_BUCKETS}
+    inventory_path = root / "inventory.json"
+
+    if inventory_path.exists():
+        try:
+            raw = json.loads(inventory_path.read_text(encoding="utf-8"))
+            for item in raw.get("projects", []) if isinstance(raw, dict) else []:
+                if not isinstance(item, dict):
+                    continue
+                bucket = str(item.get("bucket") or "planning").lower()
+                if bucket not in buckets:
+                    buckets[bucket] = []
+                brief = str(item.get("brief") or "")
+                brief_path = root / brief if brief else None
+                enriched = {
+                    "id": item.get("id") or (brief_path.stem if brief_path else item.get("name", "project")),
+                    "name": item.get("name") or item.get("id") or "Untitled project",
+                    "bucket": bucket,
+                    "priority": item.get("priority") or "",
+                    "brief": brief,
+                    "brief_path": str(brief_path) if brief_path else None,
+                    "updated_at": brief_path.stat().st_mtime if brief_path and brief_path.exists() else None,
+                }
+                buckets[bucket].append(enriched)
+        except Exception:
+            _log.exception("Failed to read mission-control project inventory")
+
+    # Fallback for homes with markdown briefs but no inventory.json.
+    if not any(buckets.values()) and root.exists():
+        for bucket in _PROJECT_BUCKETS:
+            bucket_dir = root / bucket
+            if not bucket_dir.is_dir():
+                continue
+            for brief_path in sorted(bucket_dir.glob("*.md")):
+                buckets[bucket].append({
+                    "id": brief_path.stem,
+                    "name": _project_name_from_markdown(brief_path),
+                    "bucket": bucket,
+                    "priority": "",
+                    "brief": f"{bucket}/{brief_path.name}",
+                    "brief_path": str(brief_path),
+                    "updated_at": brief_path.stat().st_mtime,
+                })
+
+    for values in buckets.values():
+        values.sort(key=lambda p: (str(p.get("priority") or "P9"), str(p.get("name") or "")))
+
+    counts = {bucket: len(items) for bucket, items in buckets.items()}
+    return {
+        "root": str(root),
+        "inventory_path": str(inventory_path),
+        "buckets": buckets,
+        "counts": counts,
+        "total": sum(counts.values()),
+    }
+
+
+def _classify_agent_process(args: str, command: str = "") -> str:
+    lower = f"{command} {args}".lower()
+    if "openclaw" in lower:
+        return "openclaw"
+    if "claude" in lower:
+        return "claude"
+    if "opencode" in lower:
+        return "opencode"
+    if "codex" in lower:
+        return "codex"
+    if "hermes" in lower:
+        return "hermes"
+    return "agent"
+
+
+def _parse_agent_process_line(line: str) -> Optional[Dict[str, Any]]:
+    """Parse one `ps -axo pid=,etime=,comm=,args=` line for agent processes."""
+    parts = line.strip().split(None, 3)
+    if len(parts) < 4:
+        return None
+    pid_raw, elapsed, command, args = parts
+    searchable = f"{command} {args}".lower()
+    if not any(k in searchable for k in _MISSION_CONTROL_AGENT_KEYWORDS):
+        return None
+    if any(marker in searchable for marker in _MISSION_CONTROL_EXCLUDE_PROCESS_MARKERS):
+        return None
+    if "/applications/claude.app/" in searchable and "claude-code" not in searchable:
+        return None
+    pid = _safe_int(pid_raw, -1)
+    if pid <= 0 or pid == os.getpid():
+        return None
+    agent_type = _classify_agent_process(args, command)
+    label = agent_type.capitalize()
+    if agent_type == "hermes":
+        if "gateway" in searchable:
+            label = "Hermes Gateway"
+        elif "cron" in searchable:
+            label = "Hermes Cron"
+        else:
+            label = "Hermes Agent"
+    command_display = Path(command).name or command
+    return {
+        "pid": pid,
+        "agent_type": agent_type,
+        "label": label,
+        "status": "running",
+        "elapsed": elapsed,
+        # Do not expose raw command-line arguments in the dashboard. Agent CLI
+        # invocations often carry prompts, bearer tokens, API keys, file paths,
+        # or OAuth/session material. The raw args are only used locally above to
+        # classify the process; the read-only API returns safe metadata only.
+        "command": command_display,
+        "current_work": f"{label} process detected",
+    }
+
+
+def _scan_mission_control_agents(limit: int = 25) -> List[Dict[str, Any]]:
+    try:
+        output = subprocess.check_output(
+            ["ps", "-axo", "pid=,etime=,comm=,args="],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+    except Exception:
+        return []
+    agents: List[Dict[str, Any]] = []
+    seen: set[int] = set()
+    for line in output.splitlines():
+        parsed = _parse_agent_process_line(line)
+        if not parsed:
+            continue
+        pid = parsed["pid"]
+        if pid in seen:
+            continue
+        seen.add(pid)
+        agents.append(parsed)
+        if len(agents) >= limit:
+            break
+    return agents
+
+
+def _mission_control_usage(days: int = 7) -> Dict[str, Any]:
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        now = time.time()
+        lt = time.localtime(now)
+        today_start = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, lt.tm_wday, lt.tm_yday, lt.tm_isdst))
+        period_start = now - (days * 86400)
+
+        def totals_since(cutoff: float) -> Dict[str, Any]:
+            cur = db._conn.execute("""
+                SELECT COALESCE(SUM(input_tokens), 0) as input_tokens,
+                       COALESCE(SUM(output_tokens), 0) as output_tokens,
+                       COALESCE(SUM(cache_read_tokens), 0) as cache_read_tokens,
+                       COALESCE(SUM(reasoning_tokens), 0) as reasoning_tokens,
+                       COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
+                       COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
+                       COUNT(*) as sessions,
+                       COALESCE(SUM(api_call_count), 0) as api_calls
+                FROM sessions WHERE started_at > ?
+            """, (cutoff,))
+            row = dict(cur.fetchone())
+            total_tokens = _safe_int(row.get("input_tokens")) + _safe_int(row.get("output_tokens"))
+            return {
+                "input_tokens": _safe_int(row.get("input_tokens")),
+                "output_tokens": _safe_int(row.get("output_tokens")),
+                "cache_read_tokens": _safe_int(row.get("cache_read_tokens")),
+                "reasoning_tokens": _safe_int(row.get("reasoning_tokens")),
+                "total_tokens": total_tokens,
+                "estimated_cost": _safe_float(row.get("estimated_cost")),
+                "actual_cost": _safe_float(row.get("actual_cost")),
+                "sessions": _safe_int(row.get("sessions")),
+                "api_calls": _safe_int(row.get("api_calls")),
+            }
+
+        cur = db._conn.execute("""
+            SELECT model,
+                   billing_provider,
+                   COALESCE(SUM(input_tokens), 0) as input_tokens,
+                   COALESCE(SUM(output_tokens), 0) as output_tokens,
+                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
+                   COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
+                   COUNT(*) as sessions
+            FROM sessions
+            WHERE started_at > ? AND model IS NOT NULL AND model != ''
+            GROUP BY model, billing_provider
+            ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
+            LIMIT 8
+        """, (period_start,))
+        by_model = [dict(r) for r in cur.fetchall()]
+        return {
+            "today": totals_since(today_start),
+            "period_days": days,
+            "period": totals_since(period_start),
+            "by_model": by_model,
+        }
+    except Exception:
+        _log.exception("Failed to compute mission-control usage")
+        return {
+            "today": {},
+            "period_days": days,
+            "period": {},
+            "by_model": [],
+        }
+    finally:
+        db.close()
+
+
+def _mission_control_sessions(limit: int = 8) -> Dict[str, Any]:
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        sessions = db.list_sessions_rich(limit=limit)
+        now = time.time()
+        active = []
+        for session in sessions:
+            session["is_active"] = (
+                session.get("ended_at") is None
+                and (now - session.get("last_active", session.get("started_at", 0))) < 300
+            )
+            if session["is_active"]:
+                active.append(session)
+        return {"active": active, "recent": sessions, "total": db.session_count()}
+    except Exception:
+        _log.exception("Failed to read mission-control sessions")
+        return {"active": [], "recent": [], "total": 0}
+    finally:
+        db.close()
+
+
+def _mission_control_cron(limit: int = 8) -> Dict[str, Any]:
+    try:
+        from cron.jobs import list_jobs
+        jobs = list_jobs(include_disabled=True)
+        enabled = [
+            job for job in jobs
+            if job.get("enabled", True) and str(job.get("state") or "").lower() != "paused"
+        ]
+        jobs_sorted = sorted(
+            enabled,
+            key=lambda job: str(job.get("next_run_at") or "9999-99-99"),
+        )
+        return {
+            "total": len(jobs),
+            "enabled": len(enabled),
+            "paused": len(jobs) - len(enabled),
+            "upcoming": jobs_sorted[:limit],
+        }
+    except Exception:
+        _log.exception("Failed to read mission-control cron jobs")
+        return {"total": 0, "enabled": 0, "paused": 0, "upcoming": []}
+
+
+def _mission_control_skills(limit: int = 8) -> Dict[str, Any]:
+    try:
+        from tools.skills_tool import _find_all_skills
+        from hermes_cli.skills_config import get_disabled_skills
+
+        config = load_config()
+        disabled = get_disabled_skills(config)
+        # Historical quirk: skip_disabled=True means "do not apply the disabled
+        # filter" in _find_all_skills, so this returns both enabled and disabled
+        # skills. Count only disabled names that are present in the discovered
+        # set, because config can retain names for removed skills.
+        skills = _find_all_skills(skip_disabled=True)
+        disabled_names = set(disabled)
+        categories: Dict[str, int] = {}
+        for skill in skills:
+            if skill.get("name") in disabled_names:
+                continue
+            cat = skill.get("category") or "general"
+            categories[cat] = categories.get(cat, 0) + 1
+        disabled_count = sum(1 for skill in skills if skill.get("name") in disabled_names)
+        top_categories = [
+            {"category": category, "count": count}
+            for category, count in sorted(categories.items(), key=lambda item: item[1], reverse=True)[:limit]
+        ]
+        return {
+            "total": len(skills),
+            "enabled": len(skills) - disabled_count,
+            "disabled": disabled_count,
+            "top_categories": top_categories,
+        }
+    except Exception:
+        _log.exception("Failed to read mission-control skills")
+        return {"total": 0, "enabled": 0, "disabled": 0, "top_categories": []}
+
+
+@app.get("/api/mission-control/overview")
+async def get_mission_control_overview():
+    """Return a read-only mission-control snapshot for the dashboard."""
+    status = await get_status()
+    sessions = _mission_control_sessions()
+    agents = _scan_mission_control_agents()
+    return {
+        "generated_at": time.time(),
+        "status": status,
+        "usage": _mission_control_usage(days=7),
+        "projects": _read_mission_control_projects(),
+        "agents": {
+            "processes": agents,
+            "active_processes": len(agents),
+            "active_sessions": len(sessions.get("active", [])),
+        },
+        "sessions": sessions,
+        "cron": _mission_control_cron(),
+        "skills": _mission_control_skills(),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Gateway + update actions (invoked from the Status page).
 #
 # Both commands are spawned as detached subprocesses so the HTTP request

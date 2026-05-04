@@ -70,6 +70,10 @@ def test_auth_add_anthropic_oauth_persists_pool_entry(tmp_path, monkeypatch):
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
     token = _jwt_with_email("claude@example.com")
     monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: None,
+    )
+    monkeypatch.setattr(
         "agent.anthropic_adapter.run_hermes_oauth_login_pure",
         lambda: {
             "access_token": token,
@@ -95,6 +99,60 @@ def test_auth_add_anthropic_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["source"] == "manual:hermes_pkce"
     assert entry["refresh_token"] == "refresh-token"
     assert entry["expires_at_ms"] == 1711234567000
+
+
+def test_auth_add_anthropic_oauth_links_existing_claude_code_credentials(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    token = _jwt_with_email("claude-code@example.com")
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: {
+            "accessToken": token,
+            "refreshToken": "refresh-token",
+            "expiresAt": 1711234567000,
+        },
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.is_claude_code_token_valid",
+        lambda creds: True,
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.run_hermes_oauth_login_pure",
+        lambda: pytest.fail("should use existing Claude Code credentials"),
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "anthropic"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_Args())
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["anthropic"]
+    claude_code_entries = [item for item in entries if item["source"] == "manual:claude_code"]
+    assert len(claude_code_entries) == 1
+    entry = claude_code_entries[0]
+    assert entry["label"] == "claude-code@example.com"
+    assert entry["source"] == "manual:claude_code"
+    assert entry["auth_type"] == "oauth"
+    assert entry["access_token"] == token
+    assert entry["refresh_token"] == "refresh-token"
+    assert entry["expires_at_ms"] == 1711234567000
+    assert not any(item["source"] == "manual:hermes_pkce" for item in entries)
+
+    from agent.credential_pool import load_pool
+
+    reloaded_pool = load_pool("anthropic")
+    assert any(entry.source == "manual:claude_code" for entry in reloaded_pool.entries())
 
 
 def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):

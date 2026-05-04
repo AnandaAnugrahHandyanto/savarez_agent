@@ -221,6 +221,50 @@ def auth_add_command(args) -> None:
     if provider == "anthropic":
         from agent import anthropic_adapter as anthropic_mod
 
+        # Prefer an existing Claude Code OAuth login when available. This lets
+        # `hermes auth add anthropic --type oauth` link the user's Claude
+        # Pro/Max subscription without launching a second browser/PKCE flow.
+        cc_creds = None
+        try:
+            cc_creds = anthropic_mod.read_claude_code_credentials()
+        except Exception:
+            cc_creds = None
+        if cc_creds and (
+            anthropic_mod.is_claude_code_token_valid(cc_creds)
+            or bool(cc_creds.get("refreshToken"))
+        ):
+            access_token = cc_creds.get("accessToken", "")
+            label = (getattr(args, "label", None) or "").strip() or label_from_token(
+                access_token,
+                "claude_code",
+            )
+            existing = next(
+                (
+                    item for item in pool.entries()
+                    if item.auth_type == AUTH_TYPE_OAUTH
+                    and item.source in {"claude_code", f"{SOURCE_MANUAL}:claude_code"}
+                ),
+                None,
+            )
+            if existing is not None:
+                print(f'{provider} Claude Code OAuth credential already exists: "{existing.label}"')
+                return
+            entry = PooledCredential(
+                provider=provider,
+                id=uuid.uuid4().hex[:6],
+                label=label,
+                auth_type=AUTH_TYPE_OAUTH,
+                priority=0,
+                source=f"{SOURCE_MANUAL}:claude_code",
+                access_token=access_token,
+                refresh_token=cc_creds.get("refreshToken"),
+                expires_at_ms=cc_creds.get("expiresAt"),
+                base_url=_provider_base_url(provider),
+            )
+            pool.add_entry(entry)
+            print(f'Added {provider} Claude Code OAuth credential #{len(pool.entries())}: "{entry.label}"')
+            return
+
         creds = anthropic_mod.run_hermes_oauth_login_pure()
         if not creds:
             raise SystemExit("Anthropic OAuth login did not return credentials.")

@@ -56,6 +56,11 @@ AUTH_TYPE_API_KEY = "api_key"
 
 SOURCE_MANUAL = "manual"
 
+
+def _is_claude_code_source(source: str) -> bool:
+    return source in {"claude_code", f"{SOURCE_MANUAL}:claude_code"}
+
+
 STRATEGY_FILL_FIRST = "fill_first"
 STRATEGY_ROUND_ROBIN = "round_robin"
 STRATEGY_RANDOM = "random"
@@ -427,7 +432,7 @@ class CredentialPool:
         writes the new pair to ~/.claude/.credentials.json. The pool entry's
         refresh token becomes stale. This method detects that and syncs.
         """
-        if self.provider != "anthropic" or entry.source != "claude_code":
+        if self.provider != "anthropic" or not _is_claude_code_source(entry.source):
             return entry
         try:
             from agent.anthropic_adapter import read_claude_code_credentials
@@ -659,7 +664,7 @@ class CredentialPool:
                 # Keep ~/.claude/.credentials.json in sync so that the
                 # fallback path (resolve_anthropic_token) and other profiles
                 # see the latest tokens.
-                if entry.source == "claude_code":
+                if _is_claude_code_source(entry.source):
                     try:
                         from agent.anthropic_adapter import _write_claude_code_credentials
                         _write_claude_code_credentials(
@@ -721,7 +726,7 @@ class CredentialPool:
             # For anthropic claude_code entries: the refresh token may have been
             # consumed by another process. Check if ~/.claude/.credentials.json
             # has a newer token pair and retry once.
-            if self.provider == "anthropic" and entry.source == "claude_code":
+            if self.provider == "anthropic" and _is_claude_code_source(entry.source):
                 synced = self._sync_anthropic_entry_from_credentials_file(entry)
                 if synced.refresh_token != entry.refresh_token:
                     logger.debug("Retrying refresh with synced token from credentials file")
@@ -835,7 +840,7 @@ class CredentialPool:
             # For anthropic claude_code entries, sync from the credentials file
             # before any status/refresh checks. This picks up tokens refreshed
             # by other processes (Claude Code CLI, other Hermes profiles).
-            if (self.provider == "anthropic" and entry.source == "claude_code"
+            if (self.provider == "anthropic" and _is_claude_code_source(entry.source)
                     and entry.last_status == STATUS_EXHAUSTED):
                 synced = self._sync_anthropic_entry_from_credentials_file(entry)
                 if synced is not entry:
