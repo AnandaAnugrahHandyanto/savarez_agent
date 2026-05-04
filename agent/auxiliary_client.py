@@ -233,6 +233,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "kilocode": "google/gemini-3-flash-preview",
     "ollama-cloud": "nemotron-3-nano:30b",
     "tencent-tokenhub": "hy3-preview",
+    "deepseek": "deepseek-vl2-flash",
 }
 
 # Vision-specific model overrides for direct providers.
@@ -2559,6 +2560,7 @@ def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Di
 _VISION_AUTO_PROVIDER_ORDER = (
     "openrouter",
     "nous",
+    "deepseek",
 )
 
 
@@ -2586,6 +2588,8 @@ def _resolve_strict_vision_backend(
         return _try_anthropic()
     if provider == "custom":
         return _try_custom_endpoint()
+    if provider == "deepseek":
+        return _resolve_api_key_provider("deepseek")
     return None, None
 
 
