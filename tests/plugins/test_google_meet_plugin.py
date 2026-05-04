@@ -754,6 +754,20 @@ def test_detect_admission_true_when_probe_returns_true():
     assert _detect_admission(_FakePage()) is True
 
 
+def test_enable_captions_js_clicks_caption_button_before_keyboard_fallback():
+    from plugins.google_meet.meet_bot import _enable_captions_js
+
+    js = _enable_captions_js()
+
+    assert 'aria-label*="caption" i' in js
+    assert 'aria-label*="자막" i' in js
+    assert "btn.click()" in js
+    assert "return 'clicked'" in js
+    assert "return 'shortcut'" in js
+    assert "KeyboardEvent('keydown'" in js
+    assert "KeyC" in js
+
+
 def test_click_join_noops_when_already_in_call(monkeypatch):
     from plugins.google_meet.meet_bot import _BotState, _click_join
 
@@ -874,6 +888,26 @@ def test_detect_denied_returns_false_on_error():
         def evaluate(self, _js): raise RuntimeError("boom")
 
     assert _detect_denied(_FakePage()) is False
+
+
+def test_detect_no_other_participants_returns_false_on_error():
+    from plugins.google_meet.meet_bot import _detect_no_other_participants
+
+    class _FakePage:
+        def evaluate(self, _js): raise RuntimeError("boom")
+
+    assert _detect_no_other_participants(_FakePage()) is False
+
+
+def test_detect_no_other_participants_matches_meet_alone_text():
+    from plugins.google_meet.meet_bot import _detect_no_other_participants
+
+    class _FakePage:
+        def evaluate(self, js):
+            assert "only one here" in js
+            return True
+
+    assert _detect_no_other_participants(_FakePage()) is True
 
 
 # ---------------------------------------------------------------------------

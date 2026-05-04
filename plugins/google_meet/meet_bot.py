@@ -245,19 +245,39 @@ _CAPTION_OBSERVER_JS = r"""
 
 
 def _enable_captions_js() -> str:
-    """Return a small JS snippet that tries to click the 'Turn on captions' button.
+    """Return JS that tries to enable Meet captions.
 
-    Best-effort — Meet's caption toggle is keyboard-accessible via ``c``. We
-    dispatch that keystroke as a cheap fallback. Real click targeting is too
-    brittle to rely on.
+    Prefer clicking the visible captions control first; the keyboard shortcut
+    can fail in headless/persistent-profile mode when focus is inside Meet's
+    call surface or a modal. Keep the ``c`` shortcut as a fallback.
     """
     return r"""
     (() => {
+      const selectors = [
+        'button[aria-label*="caption" i]',
+        'button[aria-label*="자막" i]',
+        '[role="button"][aria-label*="caption" i]',
+        '[role="button"][aria-label*="자막" i]',
+      ];
+      for (const selector of selectors) {
+        const buttons = Array.from(document.querySelectorAll(selector));
+        const btn = buttons.find((b) => {
+          const label = (b.getAttribute('aria-label') || '').toLowerCase();
+          const pressed = b.getAttribute('aria-pressed');
+          if (pressed === 'true') return false;
+          if (/turn off captions|자막 사용 중지/i.test(label)) return false;
+          return b.offsetParent !== null || b.getClientRects().length > 0;
+        });
+        if (btn) {
+          btn.click();
+          return 'clicked';
+        }
+      }
       const ev = new KeyboardEvent('keydown', {
         key: 'c', code: 'KeyC', keyCode: 67, which: 67, bubbles: true,
       });
       document.body.dispatchEvent(ev);
-      return true;
+      return 'shortcut';
     })();
     """
 
@@ -611,7 +631,15 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
 
             # Install caption observer and attempt to enable captions.
             try:
-                page.evaluate(_enable_captions_js())
+                caption_result = page.evaluate(_enable_captions_js())
+                # If the DOM click path did not find a visible captions
+                # control, use Playwright's real keyboard event as a stronger
+                # fallback than synthetic JS keydown.
+                if caption_result != "clicked":
+                    try:
+                        page.keyboard.press("c")
+                    except Exception:
+                        pass
                 state.set(captions_enabled_attempted=True)
             except Exception:
                 pass
@@ -658,6 +686,9 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                 os.environ.get("HERMES_MEET_LOBBY_TIMEOUT", "300")
             )
             last_admission_check = 0.0
+            last_alone_check = 0.0
+            alone_since: Optional[float] = None
+            alone_grace_s = float(os.environ.get("HERMES_MEET_ALONE_GRACE", "120"))
             while not stop_flag["stop"]:
                 now = time.time()
                 if deadline and now > deadline:
@@ -689,6 +720,21 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                             leave_reason="denied",
                         )
                         break
+
+                # Once admitted, leave automatically after everyone else is
+                # gone for a short grace period. This supports the intended
+                # transcribe-only mode: the user manually starts the bot, then
+                # the bot exits when the meeting really ends.
+                if state.in_call and (now - last_alone_check) > 10.0:
+                    last_alone_check = now
+                    if _detect_no_other_participants(page):
+                        if alone_since is None:
+                            alone_since = now
+                        elif (now - alone_since) >= alone_grace_s:
+                            state.set(leave_reason="everyone_left")
+                            break
+                    else:
+                        alone_since = None
 
                 try:
                     queued = page.evaluate("window.__hermesMeetDrain && window.__hermesMeetDrain()")
@@ -824,6 +870,31 @@ def _detect_denied(page) -> bool:
       if (/You can't join this video call/i.test(text)) return true;
       if (/You were removed from the meeting/i.test(text)) return true;
       if (/No one responded to your request to join/i.test(text)) return true;
+      return false;
+    })();
+    """
+    try:
+        return bool(page.evaluate(probe))
+    except Exception:
+        return False
+
+
+def _detect_no_other_participants(page) -> bool:
+    """True when Meet indicates the bot is alone in the call.
+
+    This is intentionally conservative and text-based because Meet's people
+    panel DOM changes often. The strings below are the high-signal empty-room
+    prompts shown after everyone else has left or before anyone else joins.
+    """
+    probe = r"""
+    (() => {
+      const text = document.body ? document.body.innerText || '' : '';
+      if (/you(?:'|’)?re the only one here/i.test(text)) return true;
+      if (/you're the only one in this call/i.test(text)) return true;
+      if (/no one else is here/i.test(text)) return true;
+      if (/waiting for others to join/i.test(text)) return true;
+      if (/다른 참여자가 없습니다/i.test(text)) return true;
+      if (/나만 참여 중/i.test(text)) return true;
       return false;
     })();
     """
