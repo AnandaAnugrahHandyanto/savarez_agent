@@ -5,6 +5,7 @@ export type TerminalFamily =
   | 'wezterm'
   | 'ghostty'
   | 'iterm2'
+  | 'warp'
   | 'windows-terminal'
   | 'vscode-xtermjs'
   | 'vte'
@@ -59,7 +60,7 @@ export type TerminalCapabilities = {
   diagnostics: string[]
 }
 
-const MODERN_CSI_U_FAMILIES = new Set<TerminalFamily>(['wezterm', 'ghostty', 'iterm2', 'vscode-xtermjs'])
+const MODERN_CSI_U_FAMILIES = new Set<TerminalFamily>(['wezterm', 'ghostty', 'iterm2', 'warp', 'vscode-xtermjs'])
 
 function isXtermLike(term?: string): boolean {
   return typeof term === 'string' && /^xterm(?:$|[-_])/i.test(term)
@@ -73,6 +74,7 @@ function detectExplicitTerminalFamily(s: TerminalSignals): TerminalFamily | unde
   if (s.env.WEZTERM_PANE || term === 'wezterm') return 'wezterm'
   if (s.env.GHOSTTY_RESOURCES_DIR || term.toLowerCase().includes('ghostty')) return 'ghostty'
   if (s.env.ITERM_SESSION_ID || termProgram === 'iTerm.app' || s.env.LC_TERMINAL === 'iTerm2') return 'iterm2'
+  if (termProgram === 'WarpTerminal' || termProgram === 'warp' || term.toLowerCase().includes('warp')) return 'warp'
   if (s.env.WT_SESSION) return 'windows-terminal'
   if (termProgram === 'vscode') return 'vscode-xtermjs'
   if (s.env.VTE_VERSION) return 'vte'
