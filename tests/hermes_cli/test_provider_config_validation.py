@@ -180,3 +180,114 @@ class TestNormalizeCustomProviderEntry:
         result = _normalize_custom_provider_entry(entry)
         assert result is not None
         assert "models" not in result
+
+    def test_id_field_recognized_as_provider_name(self):
+        """Entry using 'id' instead of 'name' should be accepted."""
+        entry = {
+            "id": "manifest",
+            "base_url": "http://127.0.0.1:38238/v1",
+            "api_key": "sk-test",
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["name"] == "manifest"
+        assert result["base_url"] == "http://127.0.0.1:38238/v1"
+
+    def test_id_field_does_not_warn_as_unknown_key(self, caplog):
+        """'id' should not trigger the unknown-key warning."""
+        entry = {
+            "id": "my-provider",
+            "base_url": "https://api.example.com/v1",
+        }
+        with caplog.at_level(logging.WARNING):
+            result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert not any("unknown config keys" in r.message.lower() for r in caplog.records)
+
+    def test_name_takes_precedence_over_id(self):
+        """When both 'name' and 'id' are present, 'name' wins."""
+        entry = {
+            "name": "winner",
+            "id": "loser",
+            "base_url": "https://api.example.com/v1",
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["name"] == "winner"
+
+    def test_models_list_of_dicts_parsed(self):
+        """Models written as list-of-dicts with id+context_length should
+        be normalized to dict shape with metadata preserved."""
+        entry = {
+            "name": "manifest",
+            "base_url": "http://127.0.0.1:38238/v1",
+            "models": [
+                {"id": "auto", "context_length": 200000},
+                {"id": "llama3", "context_length": 128000},
+            ],
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["models"] == {
+            "auto": {"context_length": 200000},
+            "llama3": {"context_length": 128000},
+        }
+
+    def test_models_list_of_dicts_with_name_key(self):
+        """Models dict entries using 'name' instead of 'id' should work."""
+        entry = {
+            "name": "test",
+            "base_url": "https://api.example.com/v1",
+            "models": [
+                {"name": "gpt-4o", "context_length": 128000},
+            ],
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["models"] == {"gpt-4o": {"context_length": 128000}}
+
+    def test_models_mixed_list_of_strings_and_dicts(self):
+        """Mixed list of plain strings and dict entries should all be parsed."""
+        entry = {
+            "name": "test",
+            "base_url": "https://api.example.com/v1",
+            "models": [
+                "plain-model",
+                {"id": "dict-model", "context_length": 64000},
+            ],
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["models"] == {
+            "plain-model": {},
+            "dict-model": {"context_length": 64000},
+        }
+
+    def test_models_dict_entry_without_id_or_name_skipped(self):
+        """Dict entries with no id/name/model key should be skipped."""
+        entry = {
+            "name": "test",
+            "base_url": "https://api.example.com/v1",
+            "models": [
+                {"context_length": 64000},  # no id
+                {"id": "valid", "context_length": 32000},
+            ],
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["models"] == {"valid": {"context_length": 32000}}
+
+    def test_models_dict_entry_strips_id_and_name_from_metadata(self):
+        """id/name/model keys should be stripped from the metadata dict."""
+        entry = {
+            "name": "test",
+            "base_url": "https://api.example.com/v1",
+            "models": [
+                {"id": "m1", "name": "Model One", "model": "m1", "context_length": 100000},
+            ],
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        # Only context_length should remain; id/name/model stripped
+        assert result["models"] == {"m1": {"context_length": 100000}}
+

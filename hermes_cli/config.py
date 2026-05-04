@@ -2045,7 +2045,7 @@ def _normalize_custom_provider_entry(
         "rateLimitDelay": "rate_limit_delay",
     }
     _KNOWN_KEYS = {
-        "name", "api", "url", "base_url", "api_key", "key_env",
+        "id", "name", "api", "url", "base_url", "api_key", "key_env",
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
     }
@@ -2085,7 +2085,7 @@ def _normalize_custom_provider_entry(
         return None
 
     name = ""
-    raw_name = entry.get("name")
+    raw_name = entry.get("name") or entry.get("id")
     if isinstance(raw_name, str) and raw_name.strip():
         name = raw_name.strip()
     elif provider_key.strip():
@@ -2126,9 +2126,18 @@ def _normalize_custom_provider_entry(
         # a plain list of model ids. Preserve them by converting to the dict
         # shape downstream code expects; otherwise normalize silently drops
         # the list and /model shows the provider with (0) models.
-        normalized["models"] = {
-            str(m): {} for m in models if isinstance(m, str) and m.strip()
-        }
+        models_dict: Dict[str, Any] = {}
+        for m in models:
+            if isinstance(m, str) and m.strip():
+                models_dict[m.strip()] = {}
+            elif isinstance(m, dict):
+                model_id = m.get("id") or m.get("name") or m.get("model")
+                if model_id and isinstance(model_id, str) and model_id.strip():
+                    models_dict[model_id.strip()] = {
+                        k: v for k, v in m.items()
+                        if k not in ("id", "name", "model")
+                    }
+        normalized["models"] = models_dict
 
     context_length = entry.get("context_length")
     if isinstance(context_length, int) and context_length > 0:
