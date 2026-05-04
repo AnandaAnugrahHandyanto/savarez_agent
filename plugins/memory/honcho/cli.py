@@ -710,15 +710,14 @@ def cmd_status(args) -> None:
 def _show_peer_cards(hcfg, client) -> None:
     """Fetch and display peer cards for the active profile.
 
-    Uses get_or_create to ensure the session exists with peers configured.
-    This is idempotent -- if the session already exists on the server it's
-    just retrieved, not duplicated.
+    Seeds a local session stub so peer lookups can resolve identities without
+    creating a remote Honcho session as a side effect.
     """
     try:
         from plugins.memory.honcho.session import HonchoSessionManager
         mgr = HonchoSessionManager(honcho=client, config=hcfg)
         session_key = hcfg.resolve_session_name()
-        mgr.get_or_create(session_key)
+        mgr.prime_session_stub(session_key)
 
         # User peer card
         card = mgr.get_peer_card(session_key)

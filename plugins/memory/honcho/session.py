@@ -65,6 +65,21 @@ class HonchoSession:
         self.updated_at = datetime.now()
 
 
+def _observation_metadata(
+    *,
+    user_observe_me: bool,
+    user_observe_others: bool,
+    ai_observe_me: bool,
+    ai_observe_others: bool,
+) -> dict[str, bool]:
+    return {
+        "user_observe_me": bool(user_observe_me),
+        "user_observe_others": bool(user_observe_others),
+        "ai_observe_me": bool(ai_observe_me),
+        "ai_observe_others": bool(ai_observe_others),
+    }
+
+
 class HonchoSessionManager:
     """
     Manages conversation sessions using Honcho.
@@ -146,6 +161,60 @@ class HonchoSessionManager:
             )
             self._async_thread.start()
 
+    def _default_observation_metadata(self) -> dict[str, bool]:
+        return _observation_metadata(
+            user_observe_me=self._user_observe_me,
+            user_observe_others=self._user_observe_others,
+            ai_observe_me=self._ai_observe_me,
+            ai_observe_others=self._ai_observe_others,
+        )
+
+    def _session_observation_metadata(self, session: HonchoSession | None) -> dict[str, bool]:
+        if session and session.metadata:
+            merged = self._default_observation_metadata()
+            merged.update({k: bool(v) for k, v in session.metadata.items() if k in merged})
+            return merged
+        return self._default_observation_metadata()
+
+    def _resolve_session_peer_ids(self, key: str) -> tuple[str, str]:
+        """Resolve user/assistant peer ids for a session key without touching Honcho."""
+        pin_peer_name = (
+            self._config is not None
+            and bool(getattr(self._config, "peer_name", None))
+            and getattr(self._config, "pin_peer_name", False) is True
+        )
+        if self._runtime_user_peer_name and not pin_peer_name:
+            user_peer_id = self._sanitize_id(self._runtime_user_peer_name)
+        elif self._config and self._config.peer_name:
+            user_peer_id = self._sanitize_id(self._config.peer_name)
+        else:
+            parts = key.split(":", 1)
+            channel = parts[0] if len(parts) > 1 else "default"
+            chat_id = parts[1] if len(parts) > 1 else key
+            user_peer_id = self._sanitize_id(f"user-{channel}-{chat_id}")
+
+        assistant_peer_id = self._sanitize_id(
+            self._config.ai_peer if self._config else "hermes-assistant"
+        )
+        return user_peer_id, assistant_peer_id
+
+    def prime_session_stub(self, key: str) -> HonchoSession:
+        """Seed a local cached session shell without creating a remote Honcho session."""
+        with self._cache_lock:
+            if key in self._cache:
+                return self._cache[key]
+        user_peer_id, assistant_peer_id = self._resolve_session_peer_ids(key)
+        session = HonchoSession(
+            key=key,
+            user_peer_id=user_peer_id,
+            assistant_peer_id=assistant_peer_id,
+            honcho_session_id=self._sanitize_id(key),
+            metadata=self._default_observation_metadata(),
+        )
+        with self._cache_lock:
+            self._cache[key] = session
+        return session
+
     @property
     def honcho(self) -> Honcho:
         """Get the Honcho client, initializing if needed."""
@@ -200,25 +269,36 @@ class HonchoSessionManager:
 
             session.add_peers([(user_peer, user_config), (assistant_peer, ai_config)])
 
-            # Sync back: server-side config (set via Honcho UI) wins over
-            # local defaults. Read the effective config after add_peers.
-            # Note: observation booleans are manager-scoped, not per-session.
-            # Last session init wins. Fine for CLI; gateway should scope per-session.
+            effective_obs = self._default_observation_metadata()
             try:
                 server_user = session.get_peer_configuration(user_peer)
                 server_ai = session.get_peer_configuration(assistant_peer)
-                if server_user.observe_me is not None:
-                    self._user_observe_me = server_user.observe_me
-                if server_user.observe_others is not None:
-                    self._user_observe_others = server_user.observe_others
-                if server_ai.observe_me is not None:
-                    self._ai_observe_me = server_ai.observe_me
-                if server_ai.observe_others is not None:
-                    self._ai_observe_others = server_ai.observe_others
+                effective_obs = _observation_metadata(
+                    user_observe_me=(
+                        server_user.observe_me
+                        if getattr(server_user, "observe_me", None) is not None
+                        else self._user_observe_me
+                    ),
+                    user_observe_others=(
+                        server_user.observe_others
+                        if getattr(server_user, "observe_others", None) is not None
+                        else self._user_observe_others
+                    ),
+                    ai_observe_me=(
+                        server_ai.observe_me
+                        if getattr(server_ai, "observe_me", None) is not None
+                        else self._ai_observe_me
+                    ),
+                    ai_observe_others=(
+                        server_ai.observe_others
+                        if getattr(server_ai, "observe_others", None) is not None
+                        else self._ai_observe_others
+                    ),
+                )
                 logger.debug(
                     "Honcho observation synced from server: user(me=%s,others=%s) ai(me=%s,others=%s)",
-                    self._user_observe_me, self._user_observe_others,
-                    self._ai_observe_me, self._ai_observe_others,
+                    effective_obs["user_observe_me"], effective_obs["user_observe_others"],
+                    effective_obs["ai_observe_me"], effective_obs["ai_observe_others"],
                 )
             except Exception as e:
                 logger.debug("Honcho get_peer_configuration failed (using local config): %s", e)
@@ -282,38 +362,7 @@ class HonchoSessionManager:
                 logger.debug("Local session cache hit: %s", key)
                 return self._cache[key]
 
-        # Determine peer IDs — no lock needed (read-only, no shared state mutation).
-        # Gateway sessions normally use the runtime user identity (the
-        # platform-native ID: Telegram UID, Discord snowflake, Slack user,
-        # etc.) so multi-user bots scope memory per user.  For a single-user
-        # deployment the config-supplied ``peer_name`` is an unambiguous
-        # identity and we should keep it unified across platforms — see
-        # #14984.  Opt into that with ``hosts.<host>.pinPeerName: true`` in
-        # ``honcho.json`` (or root-level ``pinPeerName: true``).
-        # `is True` (not `bool(...)`) is deliberate: several multi-user tests
-        # pass a ``MagicMock`` for ``config`` where ``mock.pin_peer_name``
-        # silently returns another MagicMock — truthy by default.  Requiring
-        # strict ``True`` keeps pinning as opt-in even for callers that
-        # haven't updated their mocks yet; real configs built via
-        # ``from_global_config`` always produce a proper boolean.
-        pin_peer_name = (
-            self._config is not None
-            and bool(getattr(self._config, "peer_name", None))
-            and getattr(self._config, "pin_peer_name", False) is True
-        )
-        if self._runtime_user_peer_name and not pin_peer_name:
-            user_peer_id = self._sanitize_id(self._runtime_user_peer_name)
-        elif self._config and self._config.peer_name:
-            user_peer_id = self._sanitize_id(self._config.peer_name)
-        else:
-            parts = key.split(":", 1)
-            channel = parts[0] if len(parts) > 1 else "default"
-            chat_id = parts[1] if len(parts) > 1 else key
-            user_peer_id = self._sanitize_id(f"user-{channel}-{chat_id}")
-
-        assistant_peer_id = self._sanitize_id(
-            self._config.ai_peer if self._config else "hermes-assistant"
-        )
+        user_peer_id, assistant_peer_id = self._resolve_session_peer_ids(key)
 
         # All expensive I/O outside the lock — Honcho's persistence is source of truth
         honcho_session_id = self._sanitize_id(key)
@@ -339,6 +388,7 @@ class HonchoSessionManager:
             assistant_peer_id=assistant_peer_id,
             honcho_session_id=honcho_session_id,
             messages=local_messages,
+            metadata=locals().get("effective_obs", self._default_observation_metadata()),
         )
 
         # Write to cache under lock — only one writer wins
@@ -566,7 +616,7 @@ class HonchoSessionManager:
             level = self._default_reasoning_level()
 
         try:
-            if self._ai_observe_others:
+            if self._session_observation_metadata(session)["ai_observe_others"]:
                 # AI peer can observe other peers — use assistant as observer.
                 ai_peer_obj = self._get_or_create_peer(session.assistant_peer_id)
                 if target_peer_id == session.assistant_peer_id:
@@ -1017,7 +1067,7 @@ class HonchoSessionManager:
         if target_peer_id == session.assistant_peer_id:
             return session.assistant_peer_id, session.assistant_peer_id
 
-        if self._ai_observe_others:
+        if self._session_observation_metadata(session)["ai_observe_others"]:
             return session.assistant_peer_id, target_peer_id
 
         return target_peer_id, None
@@ -1119,7 +1169,7 @@ class HonchoSessionManager:
             if target_peer_id == session.assistant_peer_id:
                 assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
                 conclusions_scope = assistant_peer.conclusions_of(session.assistant_peer_id)
-            elif self._ai_observe_others:
+            elif self._session_observation_metadata(session)["ai_observe_others"]:
                 assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
                 conclusions_scope = assistant_peer.conclusions_of(target_peer_id)
             else:
@@ -1155,7 +1205,7 @@ class HonchoSessionManager:
             if target_peer_id == session.assistant_peer_id:
                 observer = self._get_or_create_peer(session.assistant_peer_id)
                 scope = observer.conclusions_of(session.assistant_peer_id)
-            elif self._ai_observe_others:
+            elif self._session_observation_metadata(session)["ai_observe_others"]:
                 observer = self._get_or_create_peer(session.assistant_peer_id)
                 scope = observer.conclusions_of(target_peer_id)
             else:

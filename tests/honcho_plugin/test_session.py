@@ -212,6 +212,36 @@ class TestPeerLookupHelpers:
         assert mgr.get_peer_card(session.key) == ["Name: Robert"]
         assistant_peer.get_card.assert_called_once_with(target=session.user_peer_id)
 
+    def test_search_context_uses_per_session_observation_flags(self):
+        mgr = HonchoSessionManager()
+        shared_session = HonchoSession(
+            key="discord:thread",
+            user_peer_id="guy",
+            assistant_peer_id="hermes",
+            honcho_session_id="discord-thread",
+            metadata={"ai_observe_others": True},
+        )
+        private_session = HonchoSession(
+            key="discord:dm",
+            user_peer_id="guy",
+            assistant_peer_id="hermes",
+            honcho_session_id="discord-dm",
+            metadata={"ai_observe_others": False},
+        )
+        mgr._cache[shared_session.key] = shared_session
+        mgr._cache[private_session.key] = private_session
+
+        mgr._fetch_peer_context = MagicMock(return_value={
+            "representation": "Stable fact",
+            "card": ["prefers concise replies"],
+        })
+
+        mgr.search_context(shared_session.key, "prefs")
+        mgr.search_context(private_session.key, "prefs")
+
+        assert mgr._fetch_peer_context.call_args_list[0].kwargs["target"] == shared_session.user_peer_id
+        assert mgr._fetch_peer_context.call_args_list[1].kwargs["target"] is None
+
     def test_search_context_uses_assistant_perspective_with_target(self):
         mgr, session = self._make_cached_manager()
         assistant_peer = MagicMock()
@@ -673,6 +703,43 @@ class TestToolsModeInitBehavior:
         )
         assert cfg.peer_name is None
         assert mock_manager_cls.call_args.kwargs["runtime_user_peer_name"] == "8439114563"
+
+    def test_shared_venue_keeps_configured_observation_flags(self):
+        """Shared venues should use summary-only auto-injection without mutating observation config."""
+        from plugins.memory.honcho.client import HonchoClientConfig
+        from unittest.mock import patch, MagicMock
+
+        cfg = HonchoClientConfig(
+            api_key="test-key",
+            enabled=True,
+            recall_mode="hybrid",
+            user_observe_me=True,
+            user_observe_others=False,
+            ai_observe_me=False,
+            ai_observe_others=True,
+        )
+        provider = HonchoMemoryProvider()
+        mock_manager = MagicMock()
+        mock_session = MagicMock()
+        mock_session.messages = []
+        mock_manager.get_or_create.return_value = mock_session
+
+        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager) as mock_manager_cls, \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            provider.initialize(
+                session_id="test-session-001",
+                platform="discord",
+                chat_type="thread",
+                gateway_session_key="agent:test:discord:thread:1:1:2",
+            )
+
+        manager_cfg = mock_manager_cls.call_args.kwargs["config"]
+        assert manager_cfg.user_observe_me is True
+        assert manager_cfg.user_observe_others is False
+        assert manager_cfg.ai_observe_me is False
+        assert manager_cfg.ai_observe_others is True
 
 
 class TestRecoveryAfterInitFailure:

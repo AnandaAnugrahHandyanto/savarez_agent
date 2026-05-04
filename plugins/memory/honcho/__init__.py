@@ -302,10 +302,10 @@ class HonchoMemoryProvider(MemoryProvider):
                 logger.debug("Honcho not configured — plugin inactive")
                 return
 
-            self._config = cfg
             self._platform = platform or "cli"
             self._chat_type = str(kwargs.get("chat_type") or "").strip().lower()
             self._thread_id = kwargs.get("thread_id")
+            self._config = cfg
             # Preserve enough state to retry session init later if Honcho is
             # temporarily down during agent startup. This is used by
             # _ensure_session() for tools, hybrid, and context modes.
