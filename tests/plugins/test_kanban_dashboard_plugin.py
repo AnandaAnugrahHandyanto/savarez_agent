@@ -514,16 +514,18 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     c = TestClient(app)
 
     # No token → policy violation close.
+    # After the accept-before-close fix, the server accepts first then closes,
+    # so WebSocketDisconnect is raised on receive, not on connect.
     from starlette.websockets import WebSocketDisconnect
     with pytest.raises(WebSocketDisconnect) as exc:
-        with c.websocket_connect("/api/plugins/kanban/events"):
-            pass
+        with c.websocket_connect("/api/plugins/kanban/events") as conn:
+            conn.receive_text()
     assert exc.value.code == 1008
 
     # Wrong token → policy violation close.
     with pytest.raises(WebSocketDisconnect) as exc:
-        with c.websocket_connect("/api/plugins/kanban/events?token=nope"):
-            pass
+        with c.websocket_connect("/api/plugins/kanban/events?token=nope") as conn:
+            conn.receive_text()
     assert exc.value.code == 1008
 
     # Correct token → accepted (connect then close cleanly from our side).

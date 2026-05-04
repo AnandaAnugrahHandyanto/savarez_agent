@@ -109,9 +109,18 @@ class WSTransport:
         self._closed = True
 
 
-async def handle_ws(ws: Any) -> None:
-    """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``."""
-    await ws.accept()
+async def handle_ws(ws: Any, *, already_accepted: bool = False) -> None:
+    """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``.
+
+    Parameters
+    ----------
+    already_accepted:
+        Pass ``True`` when the caller has already called ``ws.accept()`` to
+        avoid a double-accept error (FastAPI 0.136+ raises on the second call).
+        Fixes #19914.
+    """
+    if not already_accepted:
+        await ws.accept()
 
     transport = WSTransport(ws, asyncio.get_running_loop())
 
