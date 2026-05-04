@@ -219,3 +219,50 @@ class TestEdgeCases:
         result = _detect_file_drop(str(link))
         assert result is not None
         assert result["is_image"] is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: quoted relative paths (issue #15197)
+# ---------------------------------------------------------------------------
+
+class TestQuotedRelativePaths:
+    """Quoted relative paths like \"./image.png\" were missed by starts_like_path."""
+
+    def test_double_quote_dot_slash_path(self, tmp_image):
+        user_input = f'"{tmp_image}" analyze this'
+        result = _detect_file_drop(user_input)
+        assert result is not None
+        assert result["path"] == tmp_image
+        assert result["remainder"] == "analyze this"
+
+    def test_single_quote_dot_slash_path(self, tmp_image):
+        user_input = f"'{tmp_image}' analyze this"
+        result = _detect_file_drop(user_input)
+        assert result is not None
+        assert result["path"] == tmp_image
+        assert result["remainder"] == "analyze this"
+
+    def test_double_quote_relative_with_spaces(self, tmp_image_with_spaces):
+        user_input = f'"{tmp_image_with_spaces}" what is this?'
+        result = _detect_file_drop(user_input)
+        assert result is not None
+        assert result["path"] == tmp_image_with_spaces
+        assert result["remainder"] == "what is this?"
+
+    def test_single_quote_relative_with_spaces(self, tmp_image_with_spaces):
+        user_input = f"'{tmp_image_with_spaces}' what is this?"
+        result = _detect_file_drop(user_input)
+        assert result is not None
+        assert result["path"] == tmp_image_with_spaces
+        assert result["remainder"] == "what is this?"
+
+    def test_double_quote_dot_dot_path(self, tmp_path):
+        subdir = tmp_path / "sub"
+        subdir.mkdir()
+        img = subdir / "photo.png"
+        img.write_bytes(b"fake")
+        cwd = str(tmp_path)
+        user_input = f'"{cwd}/../{tmp_path.name}/sub/photo.png"'
+        result = _detect_file_drop(user_input)
+        assert result is not None
+        assert result["path"] == img
