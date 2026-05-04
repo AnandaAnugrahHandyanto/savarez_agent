@@ -124,9 +124,11 @@ Disabling SSL verification reduces security. Only use this for TrueConf servers 
 ## Parse mode
 
 TrueConf Bot API supports three message formatting types:
-*  text – plain text. All characters will be preserved and displayed.
-*  markdown - basic Markdown formatting is supported. Special characters are converted into formatted text (bold, italic, links, etc.);
-*  html - HTML tags will be interpreted and displayed as formatted text.
+*  `text` – plain text. All characters will be preserved and displayed.
+*  `markdown` - basic Markdown formatting is supported. Special characters are converted into formatted text (bold, italic, links, etc.);
+*  `html` - HTML tags will be interpreted and displayed as formatted text.
+
+You can select parse mode for bot messages by the `TRUECONF_PARSE_MODE` variable.
 
 HTML is the default mode for adapter because of better support by API.
 
