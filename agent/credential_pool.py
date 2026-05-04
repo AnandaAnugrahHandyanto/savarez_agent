@@ -817,6 +817,89 @@ class CredentialPool:
             return False
         return False
 
+    def select_for_introspection(self) -> Optional[PooledCredential]:
+        """Return a credential for account-level introspection endpoints.
+
+        ``select()`` intentionally filters out entries that are currently
+        exhausted for inference so the runtime does not keep retrying known
+        quota/rate-limit failures. Account/usage endpoints are different: a
+        caller may need the same OAuth token specifically to inspect the quota
+        state that made the credential exhausted in the first place.
+
+        This method therefore includes exhausted entries, while avoiding all
+        runtime-selection side effects: it does not rotate entries, acquire
+        leases, update ``_current_id``, increment usage counters, or clear an
+        exhausted status just because a reset window is still active. It may
+        still sync token state from provider auth stores and refresh expiring
+        OAuth access tokens so callers do not need to duplicate provider-specific
+        credential handling.
+        """
+        with self._lock:
+            current = self.current()
+            candidates: List[PooledCredential] = []
+            if current is not None:
+                candidates.append(current)
+            candidates.extend(
+                entry for entry in self._entries
+                if current is None or entry.id != current.id
+            )
+
+            for entry in candidates:
+                # Pick up tokens refreshed by another process before deciding
+                # whether this entry can be used for introspection. Unlike
+                # _available_entries(), do this regardless of exhaustion status:
+                # introspection callers frequently run when every inference
+                # credential is exhausted.
+                if self.provider == "anthropic" and entry.source == "claude_code":
+                    synced = self._sync_anthropic_entry_from_credentials_file(entry)
+                    if synced is not entry:
+                        entry = synced
+                elif self.provider == "nous" and entry.source == "device_code":
+                    synced = self._sync_nous_entry_from_auth_store(entry)
+                    if synced is not entry:
+                        entry = synced
+                elif self.provider == "openai-codex" and entry.source == "device_code":
+                    synced = self._sync_codex_entry_from_auth_store(entry)
+                    if synced is not entry:
+                        entry = synced
+
+                if not entry.access_token:
+                    continue
+
+                if self._entry_needs_refresh(entry):
+                    preserved_status = {
+                        "last_status": entry.last_status,
+                        "last_status_at": entry.last_status_at,
+                        "last_error_code": entry.last_error_code,
+                        "last_error_reason": entry.last_error_reason,
+                        "last_error_message": entry.last_error_message,
+                        "last_error_reset_at": entry.last_error_reset_at,
+                    }
+                    refreshed = self._refresh_entry(entry, force=False)
+                    if refreshed is None:
+                        if preserved_status["last_status"] == STATUS_EXHAUSTED:
+                            current_entry = next(
+                                (
+                                    candidate for candidate in self._entries
+                                    if candidate.id == entry.id
+                                ),
+                                entry,
+                            )
+                            restored = replace(current_entry, **preserved_status)
+                            self._replace_entry(current_entry, restored)
+                            self._persist()
+                        continue
+                    if preserved_status["last_status"] == STATUS_EXHAUSTED:
+                        restored = replace(refreshed, **preserved_status)
+                        self._replace_entry(refreshed, restored)
+                        self._persist()
+                        refreshed = restored
+                    entry = refreshed
+
+                return entry
+
+            return None
+
     def select(self) -> Optional[PooledCredential]:
         with self._lock:
             return self._select_unlocked()

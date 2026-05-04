@@ -1568,3 +1568,108 @@ def test_codex_exhausted_entry_stays_stuck_without_auth_store_update(tmp_path, m
     # still skips it.
     available = pool._available_entries(clear_expired=True, refresh=False)
     assert available == []
+
+
+def test_select_for_introspection_returns_exhausted_codex_entry(tmp_path, monkeypatch):
+    """Usage/quota probes must be able to read an exhausted Codex OAuth token.
+
+    ``select()`` should keep refusing the entry for inference, but account-level
+    introspection still needs the token to ask the provider when the limit resets.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+    from dataclasses import replace as dc_replace
+
+    _write_auth_store(tmp_path, _codex_auth_store("access-same", "refresh-same"))
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    assert entry is not None
+
+    now = time.time()
+    exhausted = dc_replace(
+        entry,
+        last_status=STATUS_EXHAUSTED,
+        last_status_at=now,
+        last_error_code=429,
+        last_error_reason="rate_limit_exceeded",
+        last_error_message="quota reset later",
+        last_error_reset_at=now + 3600,
+    )
+    pool._replace_entry(entry, exhausted)
+    pool._persist()
+    pool._current_id = None
+
+    assert pool.select() is None
+    assert pool.current() is None
+
+    introspection_entry = pool.select_for_introspection()
+
+    assert introspection_entry is not None
+    assert introspection_entry.access_token == "access-same"
+    assert introspection_entry.last_status == STATUS_EXHAUSTED
+    assert introspection_entry.last_error_code == 429
+    assert pool.current() is None
+    assert pool.select() is None
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = auth_payload["credential_pool"]["openai-codex"][0]
+    assert persisted["last_status"] == STATUS_EXHAUSTED
+    assert persisted["last_error_code"] == 429
+
+
+def test_select_for_introspection_refreshes_expired_codex_token_without_clearing_exhaustion(
+    tmp_path,
+    monkeypatch,
+):
+    """Refreshing an expired access token must not imply quota recovery."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+    from dataclasses import replace as dc_replace
+
+    expired_access_token = "header.eyJleHAiOjB9.sig"
+    _write_auth_store(tmp_path, _codex_auth_store(expired_access_token, "refresh-OLD"))
+
+    monkeypatch.setattr(
+        "agent.credential_pool.auth_mod.refresh_codex_oauth_pure",
+        lambda access_token, refresh_token: {
+            "access_token": "access-FRESH",
+            "refresh_token": "refresh-FRESH",
+            "last_refresh": "2026-05-04T00:00:00Z",
+        },
+    )
+
+    pool = load_pool("openai-codex")
+    entry = pool.entries()[0]
+    now = time.time()
+    exhausted = dc_replace(
+        entry,
+        last_status=STATUS_EXHAUSTED,
+        last_status_at=now,
+        last_error_code=429,
+        last_error_reason="rate_limit_exceeded",
+        last_error_message="quota reset later",
+        last_error_reset_at=now + 3600,
+    )
+    pool._replace_entry(entry, exhausted)
+    pool._persist()
+
+    introspection_entry = pool.select_for_introspection()
+
+    assert introspection_entry is not None
+    assert introspection_entry.access_token == "access-FRESH"
+    assert introspection_entry.refresh_token == "refresh-FRESH"
+    assert introspection_entry.last_status == STATUS_EXHAUSTED
+    assert introspection_entry.last_error_code == 429
+    assert pool.select() is None
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    provider_tokens = auth_payload["providers"]["openai-codex"]["tokens"]
+    assert provider_tokens["access_token"] == "access-FRESH"
+    assert provider_tokens["refresh_token"] == "refresh-FRESH"
+
+    persisted = auth_payload["credential_pool"]["openai-codex"][0]
+    assert persisted["access_token"] == "access-FRESH"
+    assert persisted["refresh_token"] == "refresh-FRESH"
+    assert persisted["last_status"] == STATUS_EXHAUSTED
+    assert persisted["last_error_code"] == 429
