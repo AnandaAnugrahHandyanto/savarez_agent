@@ -784,9 +784,10 @@ export function useMainApp(gw: GatewayClient) {
       queueEditIdx: composerState.queueEditIdx,
       queuedDisplay: composerState.queuedDisplay,
       submit,
-      updateInput: composerActions.setInput
+      updateInput: composerActions.setInput,
+      voiceRecordKey
     }),
-    [cols, composerActions, composerState, empty, pagerPageSize, submit]
+    [cols, composerActions, composerState, empty, pagerPageSize, submit, voiceRecordKey]
   )
 
   // Pass current progress through unfrozen — streaming update throttling
