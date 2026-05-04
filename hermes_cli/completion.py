@@ -199,8 +199,10 @@ def generate_zsh(parser: argparse.ArgumentParser) -> str:
 
     return f"""#compdef hermes
 # Hermes Agent zsh completion
-# Add to ~/.zshrc:
-#   eval "$(hermes completion zsh)"
+# Install by saving to a file in your fpath (e.g. ~/.zsh/completions/_hermes):
+#   hermes completion zsh > ~/.zsh/completions/_hermes
+#   # Ensure fpath includes that directory before compinit in ~/.zshrc:
+#   fpath=(~/.zsh/completions $fpath)
 
 _hermes_profiles() {{
     local -a profiles
@@ -237,8 +239,6 @@ _hermes() {{
             ;;
     esac
 }}
-
-_hermes "$@"
 """
 
 
