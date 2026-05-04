@@ -1672,7 +1672,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
         thread_id = self._resolve_thread_id(reply_to, metadata, chat_id=chat_id)
         self.pause_typing_for_chat(chat_id)
         try:
-            chunks = self._chunk_text(content)
+            # Convert standard Markdown emitted by the LLM to Chat's dialect
+            # and strip invisible Unicode that renders as tofu (□). Runs
+            # BEFORE chunking so the size limit applies to the rendered
+            # form, not the source markdown.
+            chunks = self._chunk_text(self.format_message(content))
             if not chunks:
                 return SendResult(success=False, error="empty message")
 
@@ -1867,6 +1871,107 @@ class GoogleChatAdapter(BasePlatformAdapter):
             chunks.append(remaining[:cut])
             remaining = remaining[cut:].lstrip()
         return chunks
+
+    # ------------------------------------------------------------------
+    # Outbound formatting
+    # ------------------------------------------------------------------
+    # Invisible Unicode codepoints that render as tofu (□) in Google
+    # Chat's restricted font stack. ZWJ/ZWNJ/ZWS are the glue inside
+    # composite emoji and bidirectional text; Variation Selectors
+    # control text-vs-emoji presentation but Chat ignores them and
+    # often shows a blank box. Pattern lifted from PR #14965.
+    _INVISIBLE_RE = re.compile(
+        "["
+        "​"          # Zero-Width Space
+        "‌"          # Zero-Width Non-Joiner
+        "‍"          # Zero-Width Joiner (ZWJ)
+        "‎‏"    # LTR / RTL marks
+        "⁠"          # Word Joiner
+        "﻿"          # BOM / Zero-Width No-Break Space
+        "︀-️"   # Variation Selectors 1-16 (VS1–VS16)
+        "\U000e0100-\U000e01ef"  # Variation Selectors 17-256
+        "]"
+    )
+
+    @classmethod
+    def format_message(cls, content: str) -> str:
+        """Convert standard Markdown to Google Chat's formatting dialect.
+
+        Google Chat renders a small subset: ``*bold*``, ``_italic_``,
+        ``~strikethrough~``, fenced/inline code. Standard Markdown
+        constructs (``**bold**``, ``# headers``, ``[text](url)``) do
+        not render and need conversion before they reach Chat.
+
+        Code blocks (fenced AND inline) are protected from transformation
+        via placeholder substitution so backticks-wrapped content with
+        literal asterisks or brackets stays intact. Invisible Unicode
+        codepoints that render as tofu in Chat's restricted font stack
+        are stripped at the end. Empty/None input passes through.
+
+        Pattern lifted from PR #14965.
+        """
+        if not content:
+            return content
+
+        text = content
+        placeholders: Dict[str, str] = {}
+        counter = [0]
+
+        def _ph(value: str) -> str:
+            key = f"\x00GC{counter[0]}\x00"
+            counter[0] += 1
+            placeholders[key] = value
+            return key
+
+        # Protect fenced and inline code blocks from transformation.
+        # Fenced blocks first (``` ... ```), then inline code (`...`).
+        text = re.sub(
+            r"(```(?:[^\n]*\n)?[\s\S]*?```)",
+            lambda m: _ph(m.group(0)),
+            text,
+        )
+        text = re.sub(r"(`[^`]+`)", lambda m: _ph(m.group(0)), text)
+
+        # Headers (## Title) → *Title* (Chat has no header support).
+        text = re.sub(
+            r"^#{1,6}\s+(.+)$",
+            lambda m: _ph(f"*{m.group(1).strip()}*"),
+            text,
+            flags=re.MULTILINE,
+        )
+
+        # Bold+italic: ***text*** → *_text_*
+        text = re.sub(
+            r"\*\*\*(.+?)\*\*\*",
+            lambda m: _ph(f"*_{m.group(1)}_*"),
+            text,
+        )
+
+        # Bold: **text** → *text* (Chat uses single asterisks).
+        text = re.sub(
+            r"\*\*(.+?)\*\*",
+            lambda m: _ph(f"*{m.group(1)}*"),
+            text,
+        )
+
+        # Markdown links [text](url) → <url|text> (Slack-style angle-bracket).
+        text = re.sub(
+            r"\[([^\]]+)\]\(([^)]+)\)",
+            lambda m: _ph(f"<{m.group(2)}|{m.group(1)}>"),
+            text,
+        )
+
+        # Strip invisible Unicode that renders as tofu.
+        text = cls._INVISIBLE_RE.sub("", text)
+
+        # Collapse double spaces left over from stripped chars.
+        text = re.sub(r"  +", " ", text)
+
+        # Restore protected regions.
+        for key, value in placeholders.items():
+            text = text.replace(key, value)
+
+        return text
 
     def _resolve_thread_id(
         self,

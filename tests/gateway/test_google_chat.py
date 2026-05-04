@@ -2230,6 +2230,129 @@ class TestOutboundRetry:
         assert not _is_retryable_error(ValueError("typed wrong thing"))
 
 
+class TestFormatMessage:
+    """Markdown→Chat dialect conversion + invisible Unicode stripping.
+
+    `format_message` runs on EVERY outbound message, so the regex
+    behavior is the safety surface. Tests cover happy paths, code-block
+    protection, edge cases the LLM emits in practice (URLs with parens,
+    unmatched syntax, mixed bold+italic), and the Unicode strip's
+    interaction with composite emoji.
+
+    Pattern lifted from PR #14965 by @ArnarValur.
+    """
+
+    def test_bold_double_asterisk_to_single(self):
+        """**bold** → *bold* (Chat's bold syntax uses single asterisks)."""
+        out = GoogleChatAdapter.format_message("hello **world**")
+        assert out == "hello *world*"
+
+    def test_bold_italic_combo_to_chat_dialect(self):
+        """***x*** → *_x_* (bold-italic compound)."""
+        out = GoogleChatAdapter.format_message("***fancy*** word")
+        assert out == "*_fancy_* word"
+
+    def test_markdown_link_to_chat_anglebracket(self):
+        """[text](url) → <url|text> (Slack-style anglebracket links)."""
+        out = GoogleChatAdapter.format_message("see [docs](https://example.com)")
+        assert out == "see <https://example.com|docs>"
+
+    def test_header_to_bold_at_line_start_only(self):
+        """# Title → *Title* but only at line-start; mid-line `#` untouched."""
+        out = GoogleChatAdapter.format_message("# Heading\nbody with # mid-line hash")
+        assert out == "*Heading*\nbody with # mid-line hash"
+
+    def test_fenced_code_block_protected(self):
+        """**asterisks** inside a fenced code block do NOT convert.
+
+        Without protection, the regex would mangle code samples emitted
+        by the LLM (e.g. Python or shell with literal `**` operators).
+        """
+        src = "before\n```python\nx = 2 ** 10\n```\nafter"
+        out = GoogleChatAdapter.format_message(src)
+        # Code block content survives verbatim.
+        assert "```python\nx = 2 ** 10\n```" in out
+        # Surrounding text untouched (no asterisks to convert).
+        assert out.startswith("before")
+        assert out.endswith("after")
+
+    def test_inline_code_protected(self):
+        """`**text**` inside inline backticks does NOT convert."""
+        out = GoogleChatAdapter.format_message("see `**literal**` for syntax")
+        assert "`**literal**`" in out
+
+    def test_url_with_parens_in_path(self):
+        """`[txt](https://x.com/foo(bar))` — pin the documented limitation.
+
+        The regex captures the URL up to the FIRST closing paren, so
+        URLs with parens in the path get truncated. This pins the
+        behavior so any future regex change is intentional. Real
+        Wikipedia / docs URLs with parens (e.g. ``Halting_(disambiguation)``)
+        are an edge case; the LLM rarely emits them and operators can
+        URL-encode if needed.
+        """
+        out = GoogleChatAdapter.format_message("[wiki](https://x.com/foo(bar))")
+        # URL captured up to first ')'; trailing paren left as text.
+        assert "<https://x.com/foo(bar|wiki>" in out
+
+    def test_mixed_bold_italic_orderings(self):
+        """**bold** _italic_ in the same line — both surface conversions."""
+        # Italic stays as `_italic_` (Chat's italic dialect matches our
+        # input form, no transform needed).
+        out = GoogleChatAdapter.format_message("**bold** and _italic_ together")
+        assert "*bold*" in out
+        assert "_italic_" in out
+
+    def test_strips_zwj_and_variation_selector(self):
+        """ZWJ (U+200D) + Variation Selector 16 (U+FE0F) get stripped.
+
+        These appear in composite emoji like 👨‍👩‍👧 (family) — Chat's
+        restricted font can't render them and shows tofu. Stripping
+        means the underlying base emoji renders cleanly even if the
+        composite breaks; better than tofu boxes.
+        """
+        # Family emoji: man + ZWJ + woman + ZWJ + girl.
+        src = "hello \U0001f468‍\U0001f469‍\U0001f467 world"
+        out = GoogleChatAdapter.format_message(src)
+        assert "‍" not in out  # ZWJ gone
+        # Base codepoints survive (man, woman, girl).
+        assert "\U0001f468" in out
+        assert "\U0001f469" in out
+        assert "\U0001f467" in out
+
+    def test_strips_bom_and_bidi_marks(self):
+        """BOM, LTR/RTL marks stripped — they break Chat's font rendering."""
+        src = "﻿ hello ‎ world ‏"
+        out = GoogleChatAdapter.format_message(src)
+        assert "﻿" not in out
+        assert "‎" not in out
+        assert "‏" not in out
+        assert "hello" in out and "world" in out
+
+    def test_empty_and_none_safe(self):
+        """Empty / None pass through without raising.
+
+        The double-space collapser runs on every non-empty input — that's
+        intentional cleanup after Unicode stripping. So pure-whitespace
+        input collapses to a single space; documented as expected.
+        """
+        assert GoogleChatAdapter.format_message("") == ""
+        assert GoogleChatAdapter.format_message(None) is None
+        # Multi-space input collapses to single space (the cleanup step
+        # runs unconditionally; cheap correctness over rare preservation).
+        assert GoogleChatAdapter.format_message("   ") == " "
+
+    def test_unmatched_asterisks_left_alone(self):
+        """A lone `**` with no closing pair is not transformed.
+
+        Defensive: the regex requires a closing `**`. Unmatched syntax
+        from a partial LLM stream stays visible as-is rather than
+        consuming the rest of the message.
+        """
+        out = GoogleChatAdapter.format_message("rate is ** TBD")
+        assert "**" in out  # not converted
+
+
 class TestADCFallback:
     """When no SA JSON is configured, fall back to Application Default Credentials.
 
