@@ -1363,7 +1363,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
-        _skill_outcome = (False, error_msg[:200] if error_msg else None)
+        # error_msg is always a non-empty f-string here; slice unconditionally.
+        _skill_outcome = (False, error_msg[:200])
 
         output = f"""# Cron Job: {job_name} (FAILED)
 
@@ -1402,17 +1403,39 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             # sourced from the agent session row. Slash-command and
             # ad-hoc skill_view calls are not tracked here in v1.
             if _skill_outcome is not None and _invoked_at is not None:
-                _job_skills = job.get("skills") or []
+                _job_skills = [
+                    str(_s).strip() for _s in (job.get("skills") or [])
+                    if str(_s).strip()
+                ]
                 if _job_skills:
                     try:
                         _completed_at = _hermes_now().timestamp()
                         _sess = _session_db.get_session(_cron_session_id) or {}
                         _success_flag, _end_reason_val = _skill_outcome
                         _duration = _completed_at - _invoked_at
-                        for _skill_name in _job_skills:
-                            _sn = str(_skill_name).strip()
-                            if not _sn:
-                                continue
+                        # P2.1 — multi-skill cost split. When a cron loads
+                        # >1 skill, the underlying agent run is shared and
+                        # the session-row cost is therefore SHARED. Splitting
+                        # evenly avoids each skill's ema_cost_per_call double-
+                        # counting the same dollars. Single-skill crons (the
+                        # current analyzer pattern) get exclusive attribution
+                        # unchanged. v2 candidate: introduce an `attribution`
+                        # column to make this explicit per-row.
+                        _n_skills = max(1, len(_job_skills))
+                        _split = lambda v: (
+                            (v / _n_skills) if _n_skills > 1 and v is not None
+                            else v
+                        )
+                        _split_int = lambda v: (
+                            (int(v) // _n_skills) if _n_skills > 1
+                            else int(v)
+                        )
+                        _shared_cost = _split(_sess.get("estimated_cost_usd"))
+                        _shared_in = _split_int(_sess.get("input_tokens") or 0)
+                        _shared_out = _split_int(_sess.get("output_tokens") or 0)
+                        _shared_cr = _split_int(_sess.get("cache_read_tokens") or 0)
+                        _shared_cw = _split_int(_sess.get("cache_write_tokens") or 0)
+                        for _sn in _job_skills:
                             _session_db.record_skill_invocation(
                                 skill_name=_sn,
                                 invoked_at=_invoked_at,
@@ -1422,18 +1445,23 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                                 duration_seconds=_duration,
                                 model=_sess.get("model"),
                                 provider=_sess.get("billing_provider"),
-                                input_tokens=int(_sess.get("input_tokens") or 0),
-                                output_tokens=int(_sess.get("output_tokens") or 0),
-                                cache_read_tokens=int(_sess.get("cache_read_tokens") or 0),
-                                cache_write_tokens=int(_sess.get("cache_write_tokens") or 0),
-                                estimated_cost_usd=_sess.get("estimated_cost_usd"),
+                                input_tokens=_shared_in,
+                                output_tokens=_shared_out,
+                                cache_read_tokens=_shared_cr,
+                                cache_write_tokens=_shared_cw,
+                                estimated_cost_usd=_shared_cost,
                                 success=_success_flag,
                                 end_reason=_end_reason_val,
                             )
                     except (Exception, KeyboardInterrupt) as e:
-                        logger.debug(
+                        # Build #87 telemetry foundation: a silent failure here
+                        # means the dashboard goes blank with no signal of
+                        # the regression. Surface at WARNING so the operator
+                        # sees it; keep the swallow so a broken writer can't
+                        # fail a cron run.
+                        logger.warning(
                             "Job '%s': failed to record skill invocations: %s",
-                            job_id, e,
+                            job_id, e, exc_info=True,
                         )
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")

@@ -21,6 +21,7 @@ import re
 import sqlite3
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
@@ -124,7 +125,8 @@ CREATE INDEX IF NOT EXISTS idx_skill_invocations_skill ON skill_invocations(skil
 CREATE INDEX IF NOT EXISTS idx_skill_invocations_cron ON skill_invocations(cron_id, invoked_at DESC);
 CREATE INDEX IF NOT EXISTS idx_skill_invocations_session ON skill_invocations(session_id);
 
-CREATE VIEW IF NOT EXISTS skill_stats_daily AS
+DROP VIEW IF EXISTS skill_stats_daily;
+CREATE VIEW skill_stats_daily AS
 SELECT
     skill_name,
     model,
@@ -133,6 +135,7 @@ SELECT
     COUNT(*) AS invocation_count,
     SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS success_count,
     SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failure_count,
+    SUM(duration_seconds) AS total_duration_s,
     AVG(duration_seconds) AS avg_duration_s,
     SUM(estimated_cost_usd) AS total_cost_usd,
     AVG(estimated_cost_usd) AS avg_cost_usd,
@@ -788,10 +791,20 @@ class SessionDB:
         """Per-(skill_name, model) exponentially-weighted moving averages.
 
         Reads ``skill_stats_daily`` for the last *window_days* and applies
-        exponential weighting where the most recent day has weight ``alpha``,
-        the next has ``alpha * (1-alpha)``, and so on. The default
-        ``alpha=0.3`` gives roughly a 5-day half-life — recent behaviour
-        dominates without dropping older data on a hard window.
+        **calendar-aware** exponential weighting: each day's weight is
+        ``alpha * (1-alpha) ** age_in_days`` where ``age_in_days`` is the
+        actual UTC-day distance from today, NOT the row's index in the
+        result set. Days with no data correctly get zero weight (they're
+        absent from the result), and gaps don't compress older data.
+
+        Cost / duration EMAs are **volume-weighted**: a day with 100 fast
+        calls weighs more than a day with 1 slow call within the same EMA
+        term, computed as ``sum(w_d * total_d) / sum(w_d * count_d)``
+        across days. Avoids the per-day-average × per-day-weight bias that
+        favoured low-volume early-shadow days.
+
+        Half-life heuristic for α=0.3 is ~1.94 calendar days (``ln(2) /
+        ln(1/(1-α))``). Use α≈0.129 for a true 5-day half-life.
 
         Returns a list of dicts (one per (skill_name, model) bucket) with
         keys::
@@ -803,7 +816,9 @@ class SessionDB:
 
         Sorted by ``last_invoked_at`` descending so the dashboard surfaces
         currently-active skills first. Buckets with zero rows in the window
-        are silently omitted.
+        are silently omitted. Buckets where every weighted-count term is
+        zero (e.g. all rows have NULL ``invocation_count``) get NaN-safe
+        zeros for cost/duration EMAs.
         """
         if window_days <= 0 or alpha <= 0 or alpha >= 1:
             return []
@@ -811,7 +826,8 @@ class SessionDB:
         sql = (
             "SELECT skill_name, model, provider, day, "
             "invocation_count, success_count, failure_count, "
-            "avg_duration_s, avg_cost_usd, avg_quality_score, last_invoked_at "
+            "total_duration_s, total_cost_usd, "
+            "avg_quality_score, last_invoked_at "
             "FROM skill_stats_daily "
             "WHERE last_invoked_at >= ? "
             "ORDER BY skill_name, model, day"
@@ -825,11 +841,25 @@ class SessionDB:
             key = (r["skill_name"], r["model"])
             groups.setdefault(key, []).append(r)
 
+        # Calendar-aware day-age helper. Cron writes ``DATE(invoked_at,
+        # 'unixepoch')`` which is UTC by SQLite contract, so we compare
+        # against UTC today.
+        today_utc = datetime.now(timezone.utc).date()
+
+        def _day_age(day_str: str) -> int:
+            try:
+                d = datetime.strptime(day_str, "%Y-%m-%d").date()
+            except (TypeError, ValueError):
+                return 0
+            return max(0, (today_utc - d).days)
+
         out: List[Dict[str, Any]] = []
         for (skill_name, model), rs in groups.items():
             rs.sort(key=lambda r: r["day"])
             n = len(rs)
-            raw_weights = [alpha * (1 - alpha) ** (n - 1 - i) for i in range(n)]
+
+            # Calendar-aware geometric weights.
+            raw_weights = [alpha * (1 - alpha) ** _day_age(r["day"]) for r in rs]
             wsum = sum(raw_weights)
             weights = (
                 [w / wsum for w in raw_weights]
@@ -847,14 +877,27 @@ class SessionDB:
                 )
                 for w, r in zip(weights, rs)
             )
-            ema_duration = sum(
-                w * float(r["avg_duration_s"] or 0.0)
+
+            # Volume-weighted EMA: numerator is sum(w_d * total_d), denominator
+            # is sum(w_d * count_d). When count_d = 0 for every day, fall back
+            # to 0.0 (skill ran but every row was excluded — rare).
+            weighted_count_sum = sum(
+                w * int(r["invocation_count"] or 0)
                 for w, r in zip(weights, rs)
             )
-            ema_cost = sum(
-                w * float(r["avg_cost_usd"] or 0.0)
-                for w, r in zip(weights, rs)
-            )
+            if weighted_count_sum > 0:
+                ema_duration = sum(
+                    w * float(r["total_duration_s"] or 0.0)
+                    for w, r in zip(weights, rs)
+                ) / weighted_count_sum
+                ema_cost = sum(
+                    w * float(r["total_cost_usd"] or 0.0)
+                    for w, r in zip(weights, rs)
+                ) / weighted_count_sum
+            else:
+                ema_duration = 0.0
+                ema_cost = 0.0
+
             last_invoked = max(float(r["last_invoked_at"] or 0.0) for r in rs)
             provider_latest = rs[-1].get("provider")
 
