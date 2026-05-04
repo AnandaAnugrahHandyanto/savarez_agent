@@ -396,6 +396,76 @@ class TestResolveVisionMainFirst:
         assert provider == "nous"
         mock_strict.assert_called_once_with("nous", None)
 
+    def test_runtime_override_wins_over_config_for_vision(self):
+        """main_runtime kwarg overrides config-read main provider/model in vision auto."""
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="openrouter",
+        ), patch(
+            "agent.auxiliary_client._read_main_model",
+            return_value="config/cfg-model",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve, patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", None, None, None, None),
+        ):
+            mock_resolve.return_value = (MagicMock(), "runtime-model")
+
+            from agent.auxiliary_client import resolve_vision_provider_client
+
+            provider, _client, _model = resolve_vision_provider_client(
+                main_runtime={
+                    "provider": "anthropic",
+                    "model": "runtime-model",
+                    "base_url": "",
+                    "api_key": "",
+                    "api_mode": "",
+                },
+            )
+
+        # Runtime override wins — vision routes to anthropic/runtime-model
+        # even though config still says openrouter/cfg-model.
+        assert provider == "anthropic"
+        assert mock_resolve.call_args.args[0] == "anthropic"
+        assert mock_resolve.call_args.args[1] == "runtime-model"
+        assert mock_resolve.call_args.kwargs.get("is_vision") is True
+
+    def test_call_llm_vision_forwards_main_runtime(self):
+        """call_llm(task='vision', main_runtime=...) reaches resolve_vision_provider_client."""
+        captured: dict = {}
+
+        def _fake_vision(**kwargs):
+            captured.update(kwargs)
+            mock_client = MagicMock()
+            mock_client.chat.completions.create.return_value = MagicMock(
+                choices=[MagicMock(message=MagicMock(content="ok"))],
+            )
+            return "anthropic", mock_client, "runtime-vision-model"
+
+        with patch(
+            "agent.auxiliary_client.resolve_vision_provider_client",
+            side_effect=_fake_vision,
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", None, None, None, None),
+        ):
+            from agent.auxiliary_client import call_llm
+
+            runtime = {
+                "provider": "anthropic",
+                "model": "runtime-vision-model",
+                "base_url": "",
+                "api_key": "",
+                "api_mode": "",
+            }
+            call_llm(
+                task="vision",
+                main_runtime=runtime,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert captured.get("main_runtime") == runtime
+
 
 # ── Constant cleanup ────────────────────────────────────────────────────────
 

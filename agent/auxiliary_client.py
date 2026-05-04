@@ -2625,6 +2625,7 @@ def resolve_vision_provider_client(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
     async_mode: bool = False,
+    main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
     """Resolve the client actually used for vision tasks.
 
@@ -2632,11 +2633,19 @@ def resolve_vision_provider_client(
     provider overrides still use the generic provider router for non-standard
     backends, so users can intentionally force experimental providers. Auto mode
     stays conservative and only tries vision backends known to work today.
+
+    When ``main_runtime`` is provided, its provider/model take precedence over
+    the config-read main provider/model in the auto branch — keeping vision in
+    sync with the live agent runtime after a ``/model`` switch or fallback
+    activation. External callers without an active agent (config feasibility
+    checks, gateway probes) may omit it and the existing config fallback
+    applies.
     """
     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         "vision", provider, model, base_url, api_key
     )
     requested = _normalize_vision_provider(requested)
+    runtime = _normalize_main_runtime(main_runtime)
 
     def _finalize(resolved_provider: str, sync_client: Any, default_model: Optional[str]):
         if sync_client is None:
@@ -2672,8 +2681,11 @@ def resolve_vision_provider_client(
         #   2. OpenRouter  (vision-capable aggregator fallback)
         #   3. Nous Portal (vision-capable aggregator fallback)
         #   4. Stop
-        main_provider = _read_main_provider()
-        main_model = _read_main_model()
+        # Runtime overrides config so vision tracks /model switches and
+        # fallback activations live, instead of reading the stale config.yaml
+        # the agent was started with.
+        main_provider = runtime.get("provider") or _read_main_provider()
+        main_model = runtime.get("model") or _read_main_model()
         if main_provider and main_provider not in ("auto", ""):
             vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
             if main_provider == "nous":
@@ -3405,6 +3417,7 @@ def call_llm(
             base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key,
             async_mode=False,
+            main_runtime=main_runtime,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
             logger.warning(
@@ -3415,6 +3428,7 @@ def call_llm(
                 provider="auto",
                 model=resolved_model,
                 async_mode=False,
+                main_runtime=main_runtime,
             )
         if client is None:
             raise RuntimeError(
@@ -3568,6 +3582,7 @@ def call_llm(
                         provider=resolved_provider,
                         model=final_model,
                         async_mode=False,
+                        main_runtime=main_runtime,
                     )[1:]
                     if task == "vision"
                     else _get_cached_client(
@@ -3695,6 +3710,7 @@ async def async_call_llm(
     model: str = None,
     base_url: str = None,
     api_key: str = None,
+    main_runtime: Optional[Dict[str, Any]] = None,
     messages: list,
     temperature: float = None,
     max_tokens: int = None,
@@ -3718,6 +3734,7 @@ async def async_call_llm(
             base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key,
             async_mode=True,
+            main_runtime=main_runtime,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
             logger.warning(
@@ -3728,6 +3745,7 @@ async def async_call_llm(
                 provider="auto",
                 model=resolved_model,
                 async_mode=True,
+                main_runtime=main_runtime,
             )
         if client is None:
             raise RuntimeError(
@@ -3743,6 +3761,7 @@ async def async_call_llm(
             base_url=resolved_base_url,
             api_key=resolved_api_key,
             api_mode=resolved_api_mode,
+            main_runtime=main_runtime,
         )
         if client is None:
             _explicit = (resolved_provider or "").strip().lower()
@@ -3755,7 +3774,8 @@ async def async_call_llm(
             if not resolved_base_url:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)
-                client, final_model = _get_cached_client("auto", async_mode=True)
+                client, final_model = _get_cached_client(
+                    "auto", async_mode=True, main_runtime=main_runtime)
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
@@ -3859,6 +3879,7 @@ async def async_call_llm(
                         provider=resolved_provider,
                         model=final_model,
                         async_mode=True,
+                        main_runtime=main_runtime,
                     )
                 else:
                     retry_client, retry_model = _get_cached_client(
@@ -3868,6 +3889,7 @@ async def async_call_llm(
                         base_url=resolved_base_url,
                         api_key=resolved_api_key,
                         api_mode=resolved_api_mode,
+                        main_runtime=main_runtime,
                     )
                 if retry_client is not None:
                     retry_kwargs = _build_call_kwargs(
