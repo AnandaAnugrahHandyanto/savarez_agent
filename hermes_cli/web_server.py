@@ -994,6 +994,8 @@ def get_model_options():
             user_providers=user_providers,
             custom_providers=custom_providers,
             max_models=50,
+            configured_only=str(model_cfg.get("picker_mode", "all")).strip().lower() == "configured"
+                if isinstance(model_cfg, dict) else False,
         )
         return {
             "providers": providers,

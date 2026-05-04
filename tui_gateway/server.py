@@ -4902,6 +4902,9 @@ def _(rid, params: dict) -> dict:
             if isinstance(cfg.get("custom_providers"), list)
             else []
         )
+        model_cfg = cfg.get("model", {}) if cfg else {}
+        picker_mode = str(model_cfg.get("picker_mode", "all")).strip().lower()
+        configured_only = picker_mode == "configured"
         authenticated = list_authenticated_providers(
             current_provider=current_provider,
             current_base_url=current_base_url,
@@ -4909,6 +4912,7 @@ def _(rid, params: dict) -> dict:
             user_providers=user_provs,
             custom_providers=custom_provs,
             max_models=50,
+            configured_only=configured_only,
         )
 
         # Mark authenticated providers and build lookup by slug
@@ -5028,6 +5032,7 @@ def _(rid, params: dict) -> dict:
                 else []
             ),
             max_models=50,
+            configured_only=False,  # model switch: always show all for discovery
         )
 
         # Find the newly-authenticated provider
