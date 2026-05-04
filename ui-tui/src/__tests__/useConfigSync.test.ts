@@ -336,4 +336,20 @@ describe('applyDisplay → voice.record_key (#18994)', () => {
       applyDisplay({ config: { display: {}, voice: { record_key: 'alt+r' } } }, setBell)
     ).not.toThrow()
   })
+
+  it('does not reset voiceRecordKey when cfg is null (transient RPC failure)', () => {
+    const setBell = vi.fn()
+    const setVoiceRecordKey = vi.fn()
+
+    // quietRpc() collapses request failures to null. Resetting the
+    // cached shortcut on every null would clobber a custom binding
+    // after one transient error until the next successful poll
+    // (Copilot round-8 review on #19835).
+    applyDisplay(null, setBell, setVoiceRecordKey)
+
+    expect(setVoiceRecordKey).not.toHaveBeenCalled()
+    // bell is still applied (defaults to false on null), so the setter
+    // runs — we specifically only skip voiceRecordKey.
+    expect(setBell).toHaveBeenCalledWith(false)
+  })
 })

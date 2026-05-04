@@ -130,24 +130,29 @@ const _NAMED_KEY_ALIASES: Record<string, VoiceRecordKeyNamed> = {
   tab: 'tab'
 }
 
-/** ``useInputHandlers()`` and terminal-level shortcuts intercept these
- * before the voice check runs, so bindings like ``ctrl+c`` (interrupt),
- * ``ctrl+d`` (quit), ``ctrl+l`` (clear screen), or ``ctrl+x`` (queue-edit
- * cut) would be advertised in /voice status but never reliably fire
- * push-to-talk. On macOS the same dead action chords also apply to
- * ``super+c`` / ``super+d`` / ``super+l`` when the parser treats them as
- * action-modifier bindings. Reject them at parse time so the user gets
- * the documented working shortcut instead of a dead one. */
-const _RESERVED_CTRL_CHARS = new Set(['c', 'd', 'l', 'x'])
+/** ``useInputHandlers()`` intercepts these unconditionally before the
+ * voice check runs, so a binding like ``ctrl+c`` (interrupt),
+ * ``ctrl+d`` (quit), or ``ctrl+l`` (clear screen) would be advertised
+ * in /voice status but never fire push-to-talk. Reject at parse time
+ * so the user gets the documented Ctrl+B instead of a dead shortcut
+ * (Copilot round-4 review on #19835).
+ *
+ * ``ctrl+x`` is intentionally NOT here — it's only claimed during
+ * queue-edit (``queueEditIdx !== null``), so the voice binding works
+ * for most of the session and matches CLI parity for ``ctrl+<letter>``
+ * bindings (Copilot round-8 review on #19835). */
+const _RESERVED_CTRL_CHARS = new Set(['c', 'd', 'l'])
 
-/** On macOS the action-modifier also intercepts standard editor chords
- * via ``isCopyShortcut`` / ``isAction`` in ``useInputHandlers()``:
+/** On macOS the action-modifier intercepts these editor chords via
+ * ``isCopyShortcut`` / ``isAction`` in ``useInputHandlers()``:
  *  - super+c → copy
  *  - super+d → exit
  *  - super+l → clear screen
  *  - super+v → paste (also claimed at the TextInput layer)
- * Reject at parse time for the same reason as ``_RESERVED_CTRL_CHARS``
- * (Copilot round-7 review on #19835). */
+ * On Linux/Windows those globals key off Ctrl instead of Super, so
+ * super+<letter> bindings don't collide. Gate the rejection to darwin
+ * at parse time so kitty/CSI-u ``super+<key>`` configs still work for
+ * non-mac users (Copilot round-8 review on #19835). */
 const _RESERVED_SUPER_CHARS = new Set(['c', 'd', 'l', 'v'])
 
 interface RuntimeKeyEvent {
@@ -259,11 +264,13 @@ export const parseVoiceRecordKey = (raw: unknown): ParsedVoiceRecordKey => {
     return DEFAULT_VOICE_RECORD_KEY
   }
 
-  // Same for ``super+c`` / ``super+d`` / ``super+l`` / ``super+v`` —
-  // on macOS those are copy / exit / clear / paste and get claimed
+  // Same for ``super+c`` / ``super+d`` / ``super+l`` / ``super+v`` on
+  // macOS only — those are copy / exit / clear / paste and get claimed
   // by ``isCopyShortcut`` / ``isAction`` / the TextInput paste layer
-  // before voice has a chance to toggle.
-  if (mod === 'super' && last.length === 1 && _RESERVED_SUPER_CHARS.has(last)) {
+  // before voice has a chance to toggle. On Linux/Windows the TUI
+  // globals key off Ctrl (not Super), so kitty/CSI-u ``super+<letter>``
+  // bindings stay usable for non-mac users.
+  if (isMac && mod === 'super' && last.length === 1 && _RESERVED_SUPER_CHARS.has(last)) {
     return DEFAULT_VOICE_RECORD_KEY
   }
 

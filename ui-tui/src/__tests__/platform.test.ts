@@ -210,10 +210,15 @@ describe('parseVoiceRecordKey (#18994)', () => {
     // Alt-modifier versions of those letters are NOT intercepted, so
     // they remain usable.
     expect(parseVoiceRecordKey('alt+c').mod).toBe('alt')
+    // ``ctrl+x`` is intentionally allowed — only intercepted during
+    // queue-edit (``queueEditIdx !== null``), so the voice binding
+    // works for most of the session (Copilot round-8 review).
+    expect(parseVoiceRecordKey('ctrl+x').mod).toBe('ctrl')
+    expect(parseVoiceRecordKey('ctrl+x').ch).toBe('x')
   })
 
-  it('rejects super+{c,d,l,v} — mac action-mod chords are claimed before voice', async () => {
-    const { DEFAULT_VOICE_RECORD_KEY, parseVoiceRecordKey } = await importPlatform('linux')
+  it('rejects super+{c,d,l,v} on macOS — action-mod chords are claimed before voice', async () => {
+    const { DEFAULT_VOICE_RECORD_KEY, parseVoiceRecordKey } = await importPlatform('darwin')
 
     // On macOS super+c/d/l/v are copy / exit / clear / paste. Reject at
     // parse time so /voice status doesn't advertise dead bindings.
@@ -224,6 +229,19 @@ describe('parseVoiceRecordKey (#18994)', () => {
     // Other super letters still work (no global chord claims them).
     expect(parseVoiceRecordKey('super+b').mod).toBe('super')
     expect(parseVoiceRecordKey('super+o').mod).toBe('super')
+  })
+
+  it('allows super+{c,d,l,v} on Linux/Windows — those globals key off Ctrl, not Super', async () => {
+    const { parseVoiceRecordKey } = await importPlatform('linux')
+
+    // Kitty/CSI-u users on non-mac report Cmd/Super as ``key.super``,
+    // but the TUI's global shortcuts (copy/exit/clear/paste) key off
+    // Ctrl there, so ``super+<letter>`` doesn't collide. Reject would
+    // silently coerce valid configs to Ctrl+B (Copilot round-8 review).
+    expect(parseVoiceRecordKey('super+c').mod).toBe('super')
+    expect(parseVoiceRecordKey('super+d').mod).toBe('super')
+    expect(parseVoiceRecordKey('super+l').mod).toBe('super')
+    expect(parseVoiceRecordKey('super+v').mod).toBe('super')
   })
 
   // Round-5 Copilot review regressions on #19835.

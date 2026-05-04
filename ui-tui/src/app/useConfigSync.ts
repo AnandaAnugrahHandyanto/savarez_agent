@@ -108,7 +108,14 @@ export const applyDisplay = (
   const d = cfg?.config?.display ?? {}
 
   setBell(!!d.bell_on_complete)
-  if (setVoiceRecordKey) {
+  // Only push the voice record key when the RPC actually returned a
+  // config payload. ``quietRpc()`` collapses failures to ``null``; if we
+  // reset the cached shortcut on every null we would clobber a custom
+  // binding after one transient RPC error until the next config edit
+  // (Copilot round-8 review on #19835). The mtime-poll loop advances
+  // ``mtimeRef`` before this call, so staying silent on null preserves
+  // the last-good state and lets the next successful poll refresh it.
+  if (setVoiceRecordKey && cfg) {
     setVoiceRecordKey(_voiceRecordKeyFromConfig(cfg))
   }
   patchUiState({
