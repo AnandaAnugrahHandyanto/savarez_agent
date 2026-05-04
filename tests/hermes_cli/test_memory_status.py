@@ -40,8 +40,9 @@ class TestMemoryStatusClarity:
             "the memory framework with the built-in storage backend"
         )
         # Should display the corrected label (not the old ambiguous "Built-in")
-        assert "Memory subsystem" in out
-        assert "active" in out.lower()
+        # Tighter: checks the exact label+status combination, not just any "active" substring
+        # (old output "Built-in:  always active" also contains "active")
+        assert "Memory subsystem:  active" in out
         assert "Built-in" not in out
 
     def test_with_provider_does_not_imply_builtin_store_running(self, capfd):
