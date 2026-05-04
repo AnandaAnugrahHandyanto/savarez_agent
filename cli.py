@@ -2419,6 +2419,10 @@ class HermesCLI:
         agent = getattr(self, "agent", None)
         model_name = (getattr(agent, "model", None) or self.model or "unknown")
         model_short = model_name.split("/")[-1] if "/" in model_name else model_name
+        # Strip "global.<provider>." prefix used by Bedrock cross-region inference
+        # e.g. "global.anthropic.claude-sonnet-4-6" → "claude-sonnet-4-6"
+        import re as _re
+        model_short = _re.sub(r"^global\.[^.]+\.", "", model_short)
         if model_short.endswith(".gguf"):
             model_short = model_short[:-5]
         if len(model_short) > 26:
