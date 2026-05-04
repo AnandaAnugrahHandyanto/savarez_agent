@@ -17,6 +17,7 @@ Usage:
     hermes cron                # Manage cron jobs
     hermes cron list           # List cron jobs
     hermes cron status         # Check if cron scheduler is running
+    hermes verify              # Run verification checks and write evidence reports
     hermes doctor              # Check configuration and dependencies
     hermes honcho setup                    # Configure Honcho AI memory integration
     hermes honcho status                   # Show Honcho config and connection status
@@ -10003,6 +10004,13 @@ Examples:
             sys.exit(1)
 
     acp_parser.set_defaults(func=cmd_acp)
+
+    # =========================================================================
+    # verify command
+    # =========================================================================
+    from hermes_cli.verification.cli import add_verify_parser
+
+    add_verify_parser(subparsers)
 
     # =========================================================================
     # profile command
