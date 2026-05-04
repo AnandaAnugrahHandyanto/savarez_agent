@@ -569,7 +569,21 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "no_agent": {
                 "type": "boolean",
-                "description": "When True, skip the LLM entirely — run ``script`` on schedule and deliver its stdout as the message. Empty stdout (or wakeAgent=false gate) means silent run (no delivery). Requires ``script`` to be set. Ideal for bash watchdogs, periodic metric pings, threshold alerts, and any recurring task that produces the exact message text you want to send. No token spend, no model override honoured. Default: False."
+                "default": False,
+                "description": (
+                    "Default: False (LLM-driven job — the agent runs the prompt each tick). "
+                    "Set True to skip the LLM entirely: the scheduler just runs ``script`` on schedule and delivers its stdout verbatim. No tokens, no agent loop, no model override honoured. "
+                    "\n\n"
+                    "REQUIREMENTS when True: ``script`` MUST be set (``prompt`` and ``skills`` are ignored). "
+                    "\n\n"
+                    "DELIVERY SEMANTICS when True: "
+                    "(a) non-empty stdout is sent verbatim as the message; "
+                    "(b) EMPTY stdout means SILENT — nothing is sent to the user and they won't see anything happened, so design your script to stay quiet when there's nothing to report (the watchdog pattern); "
+                    "(c) non-zero exit / timeout sends an error alert so a broken watchdog can't fail silently. "
+                    "\n\n"
+                    "WHEN TO USE True: recurring script-only pings where the script itself produces the exact message text (memory/disk/GPU watchdogs, threshold alerts, heartbeats, CI notifications, API pollers with a fixed output shape). "
+                    "WHEN TO USE False (default): anything that needs reasoning — summarize a feed, draft a daily briefing, pick interesting items, rephrase data for a human, follow conditional logic based on content."
+                ),
             },
             "context_from": {
                 "type": "array",
