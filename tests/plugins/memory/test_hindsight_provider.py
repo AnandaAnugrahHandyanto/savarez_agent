@@ -5,6 +5,7 @@ prefetch (auto_recall, preamble, query truncation), sync_turn (auto_retain,
 turn counting, tags), and schema completeness.
 """
 
+import concurrent.futures
 import json
 import re
 import sys
@@ -23,6 +24,7 @@ from plugins.memory.hindsight import (
     _materialize_embedded_profile_env,
     _normalize_retain_tags,
     _resolve_bank_id_template,
+    _run_sync,
     _sanitize_bank_segment,
 )
 
@@ -146,6 +148,39 @@ def provider_with_config(tmp_path, monkeypatch):
     return _make
 
 
+def test_run_sync_cancels_future_on_timeout(monkeypatch):
+    class FutureStub:
+        cancelled = False
+
+        def result(self, timeout=None):
+            raise concurrent.futures.TimeoutError()
+
+        def cancel(self):
+            self.cancelled = True
+
+    future = FutureStub()
+
+    def fake_run_coroutine_threadsafe(coro, loop):
+        return future
+
+    async def noop():
+        return None
+
+    monkeypatch.setattr("plugins.memory.hindsight._get_loop", lambda: object())
+    monkeypatch.setattr(
+        "plugins.memory.hindsight.asyncio.run_coroutine_threadsafe",
+        fake_run_coroutine_threadsafe,
+    )
+    coro = noop()
+    try:
+        with pytest.raises(concurrent.futures.TimeoutError):
+            _run_sync(coro, timeout=0.01)
+    finally:
+        coro.close()
+
+    assert future.cancelled is True
+
+
 def test_normalize_retain_tags_accepts_csv_and_dedupes():
     assert _normalize_retain_tags("agent:fakeassistantname, source_system:hermes-agent, agent:fakeassistantname") == [
         "agent:fakeassistantname",
@@ -226,6 +261,7 @@ class TestConfig:
             recall_prompt_preamble="Custom preamble:",
             recall_max_input_chars=500,
             bank_mission="Test agent mission",
+            bank_config_timeout=7,
         )
         assert p._tags == ["tag1", "tag2"]
         assert p._retain_tags == ["tag1", "tag2"]
@@ -244,6 +280,7 @@ class TestConfig:
         assert p._recall_prompt_preamble == "Custom preamble:"
         assert p._recall_max_input_chars == 500
         assert p._bank_mission == "Test agent mission"
+        assert p._bank_config_timeout == 7
 
 
 class TestBankConfigSync:
@@ -300,6 +337,23 @@ class TestBankConfigSync:
             "test-bank",
             {"retain_mission": "Extract durable facts"},
         )
+
+    def test_bank_config_sync_uses_bank_config_timeout(self, provider):
+        provider._bank_mission = "Reflect like Hermes"
+        provider._bank_config_timeout = 3
+        calls = []
+
+        def run_operation(operation, *, timeout=None):
+            calls.append(timeout)
+            if len(calls) == 1:
+                return {"bank_id": "test-bank", "config": {}, "overrides": {}}
+            return None
+
+        provider._run_hindsight_operation = run_operation
+
+        provider._sync_bank_config_if_needed()
+
+        assert calls == [3, 3]
 
     def test_bank_config_sync_failure_is_non_fatal(self, provider, caplog):
         provider._bank_mission = "Reflect like Hermes"

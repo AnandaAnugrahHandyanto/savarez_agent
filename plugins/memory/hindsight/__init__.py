@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import concurrent.futures
 import importlib
 import json
 import logging
@@ -51,6 +52,7 @@ _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
 _MIN_CLIENT_VERSION = "0.4.22"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
+_DEFAULT_BANK_CONFIG_TIMEOUT = 10  # seconds — optional startup sync should not block chat startup
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 _VALID_BUDGETS = {"low", "mid", "high"}
 _PROVIDER_DEFAULT_MODELS = {
@@ -128,7 +130,11 @@ def _run_sync(coro, timeout: float = _DEFAULT_TIMEOUT):
     """Schedule *coro* on the shared loop and block until done."""
     loop = _get_loop()
     future = asyncio.run_coroutine_threadsafe(coro, loop)
-    return future.result(timeout=timeout)
+    try:
+        return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +232,10 @@ def _load_config() -> dict:
         "mode": os.environ.get("HINDSIGHT_MODE", "cloud"),
         "apiKey": os.environ.get("HINDSIGHT_API_KEY", ""),
         "timeout": _parse_int_setting(os.environ.get("HINDSIGHT_TIMEOUT"), _DEFAULT_TIMEOUT),
+        "bank_config_timeout": _parse_int_setting(
+            os.environ.get("HINDSIGHT_BANK_CONFIG_TIMEOUT"),
+            _DEFAULT_BANK_CONFIG_TIMEOUT,
+        ),
         "idle_timeout": _parse_int_setting(os.environ.get("HINDSIGHT_IDLE_TIMEOUT"), _DEFAULT_IDLE_TIMEOUT),
         "retain_tags": os.environ.get("HINDSIGHT_RETAIN_TAGS", ""),
         "retain_source": os.environ.get("HINDSIGHT_RETAIN_SOURCE", ""),
@@ -460,6 +470,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._turn_index = 0
         self._client = None
         self._timeout = _DEFAULT_TIMEOUT
+        self._bank_config_timeout = _DEFAULT_BANK_CONFIG_TIMEOUT
         self._idle_timeout = _DEFAULT_IDLE_TIMEOUT
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
@@ -781,6 +792,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
+            {"key": "bank_config_timeout", "description": "Timeout in seconds for optional Hindsight bank config sync during initialization", "default": _DEFAULT_BANK_CONFIG_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
         ]
 
@@ -829,9 +841,10 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._client = Hindsight(**kwargs)
         return self._client
 
-    def _run_sync(self, coro):
+    def _run_sync(self, coro, *, timeout: float | None = None):
         """Schedule *coro* on the shared loop using the configured timeout."""
-        return _run_sync(coro, timeout=self._timeout)
+        effective_timeout = self._timeout if timeout is None else timeout
+        return _run_sync(coro, timeout=effective_timeout)
 
     def _is_retriable_embedded_connection_error(self, exc: Exception) -> bool:
         """Return True for stale embedded-daemon connection failures."""
@@ -915,11 +928,11 @@ class HindsightMemoryProvider(MemoryProvider):
         except Exception as exc:
             logger.debug("Hindsight atexit shutdown failed: %s", exc)
 
-    def _run_hindsight_operation(self, operation):
+    def _run_hindsight_operation(self, operation, *, timeout: float | None = None):
         """Run an async Hindsight client operation, retrying once after idle shutdown."""
         client = self._get_client()
         try:
-            return self._run_sync(operation(client))
+            return self._run_sync(operation(client), timeout=timeout)
         except Exception as exc:
             if not self._is_retriable_embedded_connection_error(exc):
                 raise
@@ -930,7 +943,7 @@ class HindsightMemoryProvider(MemoryProvider):
             self._client = None
             client = self._get_client()
             self._client = client
-            return self._run_sync(operation(client))
+            return self._run_sync(operation(client), timeout=timeout)
 
     def _desired_bank_config_updates(self) -> Dict[str, Any]:
         """Return bank config overrides requested by Hermes config.
@@ -960,7 +973,8 @@ class HindsightMemoryProvider(MemoryProvider):
 
         try:
             current = self._run_hindsight_operation(
-                lambda client: client._aget_bank_config(self._bank_id)
+                lambda client: client._aget_bank_config(self._bank_id),
+                timeout=self._bank_config_timeout,
             )
             overrides = current.get("overrides", {}) if isinstance(current, dict) else {}
             updates = {
@@ -977,7 +991,8 @@ class HindsightMemoryProvider(MemoryProvider):
                 sorted(updates),
             )
             self._run_hindsight_operation(
-                lambda client: client._aupdate_bank_config(self._bank_id, updates)
+                lambda client: client._aupdate_bank_config(self._bank_id, updates),
+                timeout=self._bank_config_timeout,
             )
         except Exception as exc:
             logger.warning(
@@ -1044,6 +1059,12 @@ class HindsightMemoryProvider(MemoryProvider):
         self._timeout = _parse_int_setting(
             self._config.get("timeout") if self._config.get("timeout") is not None else os.environ.get("HINDSIGHT_TIMEOUT"),
             _DEFAULT_TIMEOUT,
+        )
+        self._bank_config_timeout = _parse_int_setting(
+            self._config.get("bank_config_timeout")
+            if self._config.get("bank_config_timeout") is not None
+            else os.environ.get("HINDSIGHT_BANK_CONFIG_TIMEOUT"),
+            _DEFAULT_BANK_CONFIG_TIMEOUT,
         )
         self._idle_timeout = _parse_int_setting(
             self._config.get("idle_timeout") if self._config.get("idle_timeout") is not None else os.environ.get("HINDSIGHT_IDLE_TIMEOUT"),
