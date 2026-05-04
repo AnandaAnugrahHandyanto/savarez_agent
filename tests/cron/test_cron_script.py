@@ -69,6 +69,20 @@ class TestJobScriptField:
         job = create_job(prompt="Hello", schedule="every 1h", script="  ")
         assert job.get("script") is None
 
+    def test_create_job_script_skip_if_empty_stored(self, cron_env):
+        from cron.jobs import create_job, get_job
+
+        job = create_job(
+            prompt="Hello",
+            schedule="every 1h",
+            script="noop.py",
+            script_skip_if_empty=True,
+        )
+        assert job["script_skip_if_empty"] is True
+
+        loaded = get_job(job["id"])
+        assert loaded["script_skip_if_empty"] is True
+
     def test_update_job_add_script(self, cron_env):
         from cron.jobs import create_job, update_job
 
@@ -244,6 +258,20 @@ class TestCronjobToolScript:
         assert result["success"] is True
         assert result["job"]["script"] == "monitor.py"
 
+    def test_create_with_script_skip_if_empty(self, cron_env, monkeypatch):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Monitor things",
+            script="monitor.py",
+            script_skip_if_empty=True,
+        ))
+        assert result["success"] is True
+        assert result["job"]["script_skip_if_empty"] is True
+
     def test_update_script(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
@@ -262,6 +290,26 @@ class TestCronjobToolScript:
         ))
         assert update_result["success"] is True
         assert update_result["job"]["script"] == "new_script.py"
+
+    def test_update_script_skip_if_empty(self, cron_env, monkeypatch):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        create_result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Monitor things",
+            script="monitor.py",
+        ))
+        job_id = create_result["job_id"]
+
+        update_result = json.loads(cronjob(
+            action="update",
+            job_id=job_id,
+            script_skip_if_empty=True,
+        ))
+        assert update_result["success"] is True
+        assert update_result["job"]["script_skip_if_empty"] is True
 
     def test_clear_script(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
@@ -298,6 +346,22 @@ class TestCronjobToolScript:
         assert list_result["success"] is True
         assert len(list_result["jobs"]) == 1
         assert list_result["jobs"][0]["script"] == "data_collector.py"
+
+    def test_list_shows_script_skip_if_empty(self, cron_env, monkeypatch):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Monitor things",
+            script="data_collector.py",
+            script_skip_if_empty=True,
+        )
+
+        list_result = json.loads(cronjob(action="list"))
+        assert list_result["success"] is True
+        assert list_result["jobs"][0]["script_skip_if_empty"] is True
 
 
 class TestScriptPathContainment:
