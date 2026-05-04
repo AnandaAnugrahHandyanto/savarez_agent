@@ -463,6 +463,19 @@ def test_start_realtime_env_vars_threaded_through():
     assert captured_env["HERMES_MEET_REALTIME_KEY"] == "sk-test"
 
 
+def test_pid_alive_treats_zombie_as_dead(monkeypatch):
+    from plugins.google_meet import process_manager as pm
+
+    class _FakeCompleted:
+        returncode = 0
+        stdout = "Z\n"
+
+    monkeypatch.setattr(pm.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(pm.subprocess, "run", lambda *a, **k: _FakeCompleted())
+
+    assert pm._pid_alive(12345) is False
+
+
 def test_start_threads_chrome_profile_env_var():
     from plugins.google_meet import process_manager as pm
 

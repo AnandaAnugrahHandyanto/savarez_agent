@@ -70,11 +70,29 @@ def _clear_active() -> None:
 
 
 def _pid_alive(pid: int) -> bool:
-    # ``os.kill(pid, 0)`` is NOT a no-op on Windows (bpo-14484) — it
-    # routes through GenerateConsoleCtrlEvent and can kill the target.
-    # Use the cross-platform existence check.
+    # ``os.kill(pid, 0)`` is NOT a no-op on Windows (bpo-14484), so use the
+    # gateway's cross-platform existence check first.
     from gateway.status import _pid_exists
-    return _pid_exists(pid)
+
+    if not _pid_exists(pid):
+        return False
+
+    # On POSIX, a zombie child can still appear to exist. For Meet bot
+    # lifecycle management that should count as dead so stop()/status don't
+    # wait on a useless process handle.
+    try:
+        proc = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+        if proc.returncode == 0 and proc.stdout.strip().startswith("Z"):
+            return False
+    except Exception:
+        pass
+    return True
 
 
 # ---------------------------------------------------------------------------
