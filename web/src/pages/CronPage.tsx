@@ -22,10 +22,26 @@ function formatTime(iso?: string | null): string {
 const STATUS_TONE: Record<string, "success" | "warning" | "destructive"> = {
   enabled: "success",
   scheduled: "success",
+  running: "warning",
   paused: "warning",
   error: "destructive",
   completed: "destructive",
 };
+
+function jobSortTime(job: CronJob): number {
+  const primary = job.current_run_started_at || job.last_run_at || job.next_run_at;
+  if (!primary) return 0;
+  const ms = new Date(primary).getTime();
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function sortCronJobs(jobs: CronJob[]): CronJob[] {
+  return [...jobs].sort((a, b) => {
+    if (a.state === "running" && b.state !== "running") return -1;
+    if (b.state === "running" && a.state !== "running") return 1;
+    return jobSortTime(b) - jobSortTime(a);
+  });
+}
 
 export default function CronPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
@@ -43,13 +59,15 @@ export default function CronPage() {
   const loadJobs = useCallback(() => {
     api
       .getCronJobs()
-      .then(setJobs)
+      .then((nextJobs) => setJobs(sortCronJobs(nextJobs)))
       .catch(() => showToast(t.common.loading, "error"))
       .finally(() => setLoading(false));
   }, [showToast, t.common.loading]);
 
   useEffect(() => {
     loadJobs();
+    const intervalId = window.setInterval(loadJobs, 3000);
+    return () => window.clearInterval(intervalId);
   }, [loadJobs]);
 
   const handleCreate = async () => {
@@ -286,6 +304,11 @@ export default function CronPage() {
                 )}
                 <div className="flex items-center gap-4 text-xs text-muted-foreground">
                   <span className="font-mono">{job.schedule_display}</span>
+                  {job.current_run_started_at && (
+                    <span>
+                      Running since: {formatTime(job.current_run_started_at)}
+                    </span>
+                  )}
                   <span>
                     {t.cron.last}: {formatTime(job.last_run_at)}
                   </span>

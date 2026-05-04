@@ -20,6 +20,7 @@ from cron.jobs import (
     resume_job,
     remove_job,
     mark_job_run,
+    mark_job_started,
     advance_next_run,
     get_due_jobs,
     save_job_output,
@@ -675,6 +676,30 @@ class TestEnabledToolsets:
         update_job(job["id"], {"enabled_toolsets": ["web", "delegation"]})
         fetched = get_job(job["id"])
         assert fetched["enabled_toolsets"] == ["web", "delegation"]
+
+
+class TestJobRunState:
+    def test_mark_job_started_makes_running_state_visible(self, tmp_cron_dir):
+        job = create_job(prompt="Visible run", schedule="every 1h")
+
+        assert mark_job_started(job["id"]) is True
+
+        fetched = get_job(job["id"])
+        assert fetched["state"] == "running"
+        assert fetched["current_run_started_at"]
+        assert fetched["last_status"] == "running"
+        assert fetched["last_error"] is None
+
+    def test_mark_job_run_clears_running_state(self, tmp_cron_dir):
+        job = create_job(prompt="Visible run", schedule="every 1h")
+        mark_job_started(job["id"])
+
+        mark_job_run(job["id"], True)
+
+        fetched = get_job(job["id"])
+        assert fetched["state"] == "scheduled"
+        assert fetched["last_status"] == "ok"
+        assert "current_run_started_at" not in fetched
 
 
 class TestSaveJobOutput:

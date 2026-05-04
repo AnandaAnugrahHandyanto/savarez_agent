@@ -675,6 +675,24 @@ def remove_job(job_id: str) -> bool:
     return False
 
 
+def mark_job_started(job_id: str) -> bool:
+    """Mark a job as actively running so dashboards can show manual triggers immediately."""
+    with _jobs_file_lock:
+        jobs = load_jobs()
+        for job in jobs:
+            if job["id"] == job_id:
+                now = _hermes_now().isoformat()
+                job["state"] = "running"
+                job["last_status"] = "running"
+                job["last_error"] = None
+                job["last_delivery_error"] = None
+                job["current_run_started_at"] = now
+                save_jobs(jobs)
+                return True
+        logger.warning("mark_job_started: job_id %s not found, skipping save", job_id)
+        return False
+
+
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                  delivery_error: Optional[str] = None):
     """
@@ -694,6 +712,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_run_at"] = now
                 job["last_status"] = "ok" if success else "error"
                 job["last_error"] = error if not success else None
+                job.pop("current_run_started_at", None)
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
                 

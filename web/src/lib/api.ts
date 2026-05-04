@@ -381,6 +381,8 @@ export interface CronJob {
   deliver?: string;
   last_run_at?: string | null;
   next_run_at?: string | null;
+  current_run_started_at?: string | null;
+  last_status?: string | null;
   last_error?: string | null;
 }
 

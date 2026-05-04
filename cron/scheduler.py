@@ -1302,6 +1302,8 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
         def _process_job(job: dict) -> bool:
             """Run one due job end-to-end: execute, save, deliver, mark."""
+            from cron.jobs import mark_job_started
+            mark_job_started(job["id"])
             try:
                 success, output, final_response, error = run_job(job)
 
