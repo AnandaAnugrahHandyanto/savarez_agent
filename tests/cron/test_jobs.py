@@ -233,6 +233,35 @@ class TestJobCRUD:
         job = create_job(prompt="Test", schedule="30m")
         assert job["deliver"] == "local"
 
+    def test_default_model_source_inherits_global_model(self, tmp_cron_dir):
+        job = create_job(prompt="Test", schedule="30m")
+        assert job["model"] is None
+        assert job["provider"] is None
+        assert job["model_source"] == "global"
+
+    def test_model_override_pins_job_model(self, tmp_cron_dir):
+        job = create_job(
+            prompt="Test",
+            schedule="30m",
+            model="mimo-v2.5-pro",
+            provider="xiaomi-mimo-cn",
+        )
+        assert job["model"] == "mimo-v2.5-pro"
+        assert job["provider"] == "xiaomi-mimo-cn"
+        assert job["model_source"] == "pinned"
+
+    def test_explicit_global_model_source_does_not_pin_override(self, tmp_cron_dir):
+        job = create_job(
+            prompt="Test",
+            schedule="30m",
+            model="old-model",
+            provider="old-provider",
+            model_source="global",
+        )
+        assert job["model"] == "old-model"
+        assert job["provider"] == "old-provider"
+        assert job["model_source"] == "global"
+
 
 class TestUpdateJob:
     def test_update_name(self, tmp_cron_dir):
@@ -249,6 +278,33 @@ class TestUpdateJob:
         # Verify persisted to disk
         fetched = get_job(job["id"])
         assert fetched["name"] == "New Name"
+
+    def test_updating_model_pins_model_source(self, tmp_cron_dir):
+        job = create_job(prompt="Check server status", schedule="every 1h")
+        assert job["model_source"] == "global"
+
+        updated = update_job(
+            job["id"],
+            {"model": "qwen3.6-plus", "provider": "alibaba-coding-plan"},
+        )
+
+        assert updated["model"] == "qwen3.6-plus"
+        assert updated["provider"] == "alibaba-coding-plan"
+        assert updated["model_source"] == "pinned"
+
+    def test_explicit_global_update_keeps_inheritance(self, tmp_cron_dir):
+        job = create_job(
+            prompt="Check server status",
+            schedule="every 1h",
+            model="mimo-v2.5-pro",
+            provider="xiaomi-mimo-cn",
+        )
+
+        updated = update_job(job["id"], {"model_source": "global"})
+
+        assert updated["model"] == "mimo-v2.5-pro"
+        assert updated["provider"] == "xiaomi-mimo-cn"
+        assert updated["model_source"] == "global"
 
     def test_update_schedule(self, tmp_cron_dir):
         job = create_job(prompt="Daily report", schedule="every 1h")

@@ -43,6 +43,25 @@ JOBS_FILE = CRON_DIR / "jobs.json"
 _jobs_file_lock = threading.Lock()
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
+MODEL_SOURCE_GLOBAL = "global"
+MODEL_SOURCE_PINNED = "pinned"
+
+
+def _normalize_model_source(value: Optional[str], *, has_override: bool) -> str:
+    """Normalize how a cron job resolves its model at run time.
+
+    ``global`` means the job follows the active global config whenever it runs.
+    ``pinned`` means the job uses its stored model/provider/base_url override.
+
+    When callers omit the field, infer the legacy-compatible behavior:
+    jobs with an override are pinned; jobs without one inherit the global model.
+    """
+    text = str(value or "").strip().lower().replace("-", "_")
+    if text in {"global", "inherit", "inherited", "default", "auto"}:
+        return MODEL_SOURCE_GLOBAL
+    if text in {"pinned", "pin", "fixed", "override"}:
+        return MODEL_SOURCE_PINNED
+    return MODEL_SOURCE_PINNED if has_override else MODEL_SOURCE_GLOBAL
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -431,6 +450,7 @@ def create_job(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    model_source: Optional[str] = None,
     script: Optional[str] = None,
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
@@ -451,6 +471,8 @@ def create_job(
         model: Optional per-job model override
         provider: Optional per-job provider override
         base_url: Optional per-job base URL override
+        model_source: "global" to follow the global model at run time, or
+                      "pinned" to use the per-job model/provider override.
         script: Optional path to a Python script whose stdout is injected into the
                 prompt each run.  The script runs before the agent turn, and its output
                 is prepended as context.  Useful for data collection / change detection.
@@ -494,6 +516,10 @@ def create_job(
     normalized_model = normalized_model or None
     normalized_provider = normalized_provider or None
     normalized_base_url = normalized_base_url or None
+    normalized_model_source = _normalize_model_source(
+        model_source,
+        has_override=bool(normalized_model or normalized_provider or normalized_base_url),
+    )
     normalized_script = str(script).strip() if isinstance(script, str) else None
     normalized_script = normalized_script or None
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
@@ -518,6 +544,7 @@ def create_job(
         "model": normalized_model,
         "provider": normalized_provider,
         "base_url": normalized_base_url,
+        "model_source": normalized_model_source,
         "script": normalized_script,
         "context_from": context_from,
         "schedule": parsed_schedule,
@@ -584,6 +611,18 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updates["workdir"] = _normalize_workdir(_wd)
 
         updated = _apply_skill_fields({**job, **updates})
+
+        if "model_source" in updates:
+            updated["model_source"] = _normalize_model_source(
+                updates.get("model_source"),
+                has_override=bool(updated.get("model") or updated.get("provider") or updated.get("base_url")),
+            )
+        elif any(key in updates for key in ("model", "provider", "base_url")):
+            updated["model_source"] = _normalize_model_source(
+                None,
+                has_override=bool(updated.get("model") or updated.get("provider") or updated.get("base_url")),
+            )
+
         schedule_changed = "schedule" in updates
 
         if "skills" in updates or "skill" in updates:

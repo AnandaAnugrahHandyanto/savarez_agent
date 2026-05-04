@@ -117,15 +117,18 @@ def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None)
 
 
 def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
-    """Resolve a model override object into (provider, model) for job storage.
+    """Resolve a model override object into (provider, model, model_source).
 
     If provider is omitted, pins the current main provider from config so the
     job doesn't drift when the user later changes their default via hermes model.
 
-    Returns (provider_str_or_none, model_str_or_none).
+    Returns (provider_str_or_none, model_str_or_none, model_source_or_none).
     """
     if not model_obj or not isinstance(model_obj, dict):
-        return (None, None)
+        return (None, None, None)
+    source = str(model_obj.get("source") or model_obj.get("model_source") or "").strip().lower()
+    if source in {"global", "inherit", "inherited", "default", "auto"}:
+        return (None, None, "global")
     model_name = (model_obj.get("model") or "").strip() or None
     provider_name = (model_obj.get("provider") or "").strip() or None
     if model_name and not provider_name:
@@ -138,7 +141,7 @@ def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
                 provider_name = model_cfg.get("provider") or None
         except Exception:
             pass  # Best-effort; provider stays None
-    return (provider_name, model_name)
+    return (provider_name, model_name, "pinned" if model_name or provider_name else None)
 
 
 def _normalize_optional_job_value(value: Optional[Any], *, strip_trailing_slash: bool = False) -> Optional[str]:
@@ -257,6 +260,7 @@ def cronjob(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    model_source: Optional[str] = None,
     reason: Optional[str] = None,
     script: Optional[str] = None,
     context_from: Optional[Union[str, List[str]]] = None,
@@ -310,6 +314,7 @@ def cronjob(
                 model=_normalize_optional_job_value(model),
                 provider=_normalize_optional_job_value(provider),
                 base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
+                model_source=_normalize_optional_job_value(model_source),
                 script=_normalize_optional_job_value(script),
                 context_from=context_from,
                 enabled_toolsets=enabled_toolsets or None,
@@ -396,6 +401,8 @@ def cronjob(
                 updates["provider"] = _normalize_optional_job_value(provider)
             if base_url is not None:
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
+            if model_source is not None:
+                updates["model_source"] = _normalize_optional_job_value(model_source)
             if script is not None:
                 # Pass empty string to clear an existing script
                 if script:
@@ -509,8 +516,12 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "model": {
                 "type": "object",
-                "description": "Optional per-job model override. If provider is omitted, the current main provider is pinned at creation time so the job stays stable.",
+                "description": "Optional per-job model setting. Omit to inherit the global model. Set {\"source\":\"global\"} to explicitly follow the global model, or include model/provider to pin a fixed override. If provider is omitted with a pinned model, the current main provider is pinned at creation time.",
                 "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Optional: 'global'/'inherit' to follow the global model, or 'pinned' to use this object's model/provider override."
+                    },
                     "provider": {
                         "type": "string",
                         "description": "Provider name (e.g. 'openrouter', 'anthropic'). Omit to use and pin the current provider."
@@ -520,7 +531,6 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                         "description": "Model name (e.g. 'anthropic/claude-sonnet-4', 'claude-sonnet-4')"
                     }
                 },
-                "required": ["model"]
             },
             "script": {
                 "type": "string",
@@ -589,6 +599,7 @@ registry.register(
         skills=args.get("skills"),
         model=_mo[1],
         provider=_mo[0] or args.get("provider"),
+        model_source=_mo[2] or args.get("model_source"),
         base_url=args.get("base_url"),
         reason=args.get("reason"),
         script=args.get("script"),

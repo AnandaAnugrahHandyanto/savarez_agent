@@ -41,6 +41,21 @@ from hermes_time import now as _hermes_now
 logger = logging.getLogger(__name__)
 
 
+def _job_uses_pinned_model(job: dict) -> bool:
+    """Return whether a cron job should use its stored model override.
+
+    New jobs persist ``model_source`` explicitly. Legacy jobs do not, so keep
+    the historical behavior: if a model/provider/base_url is stored, treat it as
+    pinned; otherwise inherit the global config at run time.
+    """
+    source = str((job or {}).get("model_source") or "").strip().lower().replace("-", "_")
+    if source in {"global", "inherit", "inherited", "default", "auto"}:
+        return False
+    if source in {"pinned", "pin", "fixed", "override"}:
+        return True
+    return bool((job or {}).get("model") or (job or {}).get("provider") or (job or {}).get("base_url"))
+
+
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     """Resolve the toolset list for a cron job.
 
@@ -942,7 +957,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 else str(delivery_target["thread_id"])
             )
 
-        model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+        use_pinned_model = _job_uses_pinned_model(job)
+        model = (job.get("model") if use_pinned_model else None) or os.getenv("HERMES_MODEL") or ""
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
@@ -953,7 +969,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 with open(_cfg_path) as _f:
                     _cfg = yaml.safe_load(_f) or {}
                 _model_cfg = _cfg.get("model", {})
-                if not job.get("model"):
+                if not use_pinned_model:
                     if isinstance(_model_cfg, str):
                         model = _model_cfg
                     elif isinstance(_model_cfg, dict):
@@ -1005,9 +1021,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         from hermes_cli.auth import AuthError
         try:
             runtime_kwargs = {
-                "requested": job.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER"),
+                "requested": (job.get("provider") if use_pinned_model else None) or os.getenv("HERMES_INFERENCE_PROVIDER"),
             }
-            if job.get("base_url"):
+            if use_pinned_model and job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
             runtime = resolve_runtime_provider(**runtime_kwargs)
         except AuthError as auth_exc:
