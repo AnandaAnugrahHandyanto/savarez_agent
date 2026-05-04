@@ -2840,7 +2840,7 @@ class TelegramAdapter(BasePlatformAdapter):
     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
         """Apply Telegram group trigger rules.
 
-        DMs remain unrestricted. Group/supergroup messages are accepted when:
+        DMs remain unrestricted (except bot-authored messages). Group/supergroup messages are accepted when:
         - the chat is explicitly allowlisted in ``free_response_chats``
         - ``require_mention`` is disabled
         - the message replies to the bot
@@ -2854,6 +2854,11 @@ class TelegramAdapter(BasePlatformAdapter):
         mentioning the bot (``@botname /command``), both of which are
         recognised as mentions by :meth:`_message_mentions_bot`.
         """
+        # Ignore messages authored by the bot itself (prevents self-ingestion)
+        from_user = getattr(message, "from_user", None)
+        if from_user and getattr(from_user, "is_bot", False):
+            return False
+
         if not self._is_group_chat(message):
             return True
         thread_id = getattr(message, "message_thread_id", None)
