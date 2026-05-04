@@ -168,6 +168,46 @@ class TestGenerate:
         }
         assert codex_plugin._extract_image_b64(payload) == _b64_png()
 
+    @pytest.mark.parametrize("quality,expected_tier", [
+        ("low", "gpt-image-2-low"),
+        ("medium", "gpt-image-2-medium"),
+        ("high", "gpt-image-2-high"),
+    ])
+    def test_per_call_quality_overrides_configured_tier(self, provider, monkeypatch, quality, expected_tier):
+        monkeypatch.setenv("OPENAI_IMAGE_MODEL", "gpt-image-2-medium")
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        captured = {}
+
+        def _collect(token, *, prompt, size, quality):
+            captured.update({"token": token, "prompt": prompt, "size": size, "quality": quality})
+            return _b64_png()
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        result = provider.generate("a cat", quality=quality)
+
+        assert result["model"] == expected_tier
+        assert result["quality"] == quality
+        assert captured["quality"] == quality
+
+    def test_invalid_per_call_quality_falls_back_to_configured_tier(self, provider, monkeypatch):
+        monkeypatch.setenv("OPENAI_IMAGE_MODEL", "gpt-image-2-high")
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        captured = {}
+
+        def _collect(token, *, prompt, size, quality):
+            captured.update({"token": token, "prompt": prompt, "size": size, "quality": quality})
+            return _b64_png()
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        result = provider.generate("a cat", quality="ultra")
+
+        assert result["model"] == "gpt-image-2-high"
+        assert result["quality"] == "high"
+        assert captured["quality"] == "high"
+
+
     def test_sse_parser_handles_event_and_data_lines(self):
         class _Response:
             def iter_lines(self):
