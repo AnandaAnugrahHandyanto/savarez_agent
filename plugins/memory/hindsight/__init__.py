@@ -348,12 +348,26 @@ def _embedded_profile_env_path(config: dict[str, Any]):
 
 
 def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None):
-    """Write the profile-scoped env file that standalone hindsight-embed uses."""
+    """Write the profile-scoped env file that standalone hindsight-embed uses.
+
+    Preserve additional HINDSIGHT_API_* tuning keys so local memory/concurrency
+    settings are not discarded when Hermes re-materializes the embedded profile.
+    Core provider/model/key values are still generated from Hermes config.
+    """
     profile_env = _embedded_profile_env_path(config)
     profile_env.parent.mkdir(parents=True, exist_ok=True)
+
+    preserved_env: dict[str, str] = {}
+    if profile_env.exists():
+        preserved_env.update(_load_simple_env(profile_env))
+    for key, value in os.environ.items():
+        if key.startswith("HINDSIGHT_API_") or key.startswith("HINDSIGHT_EMBED_"):
+            preserved_env.setdefault(key, value)
+
     env_values = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
+    preserved_env.update(env_values)
     profile_env.write_text(
-        "".join(f"{key}={value}\n" for key, value in env_values.items()),
+        "".join(f"{key}={value}\n" for key, value in preserved_env.items()),
         encoding="utf-8",
     )
     return profile_env

@@ -20,6 +20,7 @@ from plugins.memory.hindsight import (
     RETAIN_SCHEMA,
     _load_config,
     _build_embedded_profile_env,
+    _materialize_embedded_profile_env,
     _normalize_retain_tags,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
@@ -272,6 +273,87 @@ class TestConfig:
         })
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "42"
+
+    def test_materialized_embedded_profile_env_preserves_existing_tuning_keys(self, tmp_path, monkeypatch):
+        user_home = tmp_path / "user-home"
+        user_home.mkdir()
+        monkeypatch.setenv("HOME", str(user_home))
+        profile_dir = user_home / ".hindsight" / "profiles"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "hermes.env").write_text(
+            "HINDSIGHT_API_DB_POOL_MAX_SIZE=7\n"
+            "HINDSIGHT_EMBED_WORKER_MAX_SLOTS=2\n",
+            encoding="utf-8",
+        )
+
+        profile_env = _materialize_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "llm_api_key": "fresh-key",
+        })
+
+        env = dict(line.split("=", 1) for line in profile_env.read_text(encoding="utf-8").splitlines())
+        assert env["HINDSIGHT_API_DB_POOL_MAX_SIZE"] == "7"
+        assert env["HINDSIGHT_EMBED_WORKER_MAX_SLOTS"] == "2"
+        assert env["HINDSIGHT_API_LLM_API_KEY"] == "fresh-key"
+
+    def test_materialized_embedded_profile_env_generated_core_values_override_stale_existing_values(
+        self, tmp_path, monkeypatch
+    ):
+        user_home = tmp_path / "user-home"
+        user_home.mkdir()
+        monkeypatch.setenv("HOME", str(user_home))
+        profile_dir = user_home / ".hindsight" / "profiles"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "hermes.env").write_text(
+            "HINDSIGHT_API_LLM_PROVIDER=anthropic\n"
+            "HINDSIGHT_API_LLM_API_KEY=stale-key\n"
+            "HINDSIGHT_API_LLM_MODEL=claude-haiku-4-5\n"
+            "HINDSIGHT_API_LOG_LEVEL=debug\n"
+            "HINDSIGHT_API_LLM_BASE_URL=http://stale.example/v1\n",
+            encoding="utf-8",
+        )
+
+        profile_env = _materialize_embedded_profile_env({
+            "llm_provider": "openai_compatible",
+            "llm_model": "fresh-model",
+            "llm_api_key": "fresh-key",
+            "llm_base_url": "http://fresh.example/v1",
+        })
+
+        env = dict(line.split("=", 1) for line in profile_env.read_text(encoding="utf-8").splitlines())
+        assert env["HINDSIGHT_API_LLM_PROVIDER"] == "openai"
+        assert env["HINDSIGHT_API_LLM_API_KEY"] == "fresh-key"
+        assert env["HINDSIGHT_API_LLM_MODEL"] == "fresh-model"
+        assert env["HINDSIGHT_API_LOG_LEVEL"] == "info"
+        assert env["HINDSIGHT_API_LLM_BASE_URL"] == "http://fresh.example/v1"
+
+    def test_materialized_embedded_profile_env_includes_process_env_without_overriding_file_values(
+        self, tmp_path, monkeypatch
+    ):
+        user_home = tmp_path / "user-home"
+        user_home.mkdir()
+        monkeypatch.setenv("HOME", str(user_home))
+        monkeypatch.setenv("HINDSIGHT_API_DB_POOL_MAX_SIZE", "99")
+        monkeypatch.setenv("HINDSIGHT_API_REQUEST_TIMEOUT", "45")
+        monkeypatch.setenv("HINDSIGHT_EMBED_WORKER_MAX_SLOTS", "4")
+        profile_dir = user_home / ".hindsight" / "profiles"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "hermes.env").write_text(
+            "HINDSIGHT_API_DB_POOL_MAX_SIZE=7\n",
+            encoding="utf-8",
+        )
+
+        profile_env = _materialize_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "llm_api_key": "fresh-key",
+        })
+
+        env = dict(line.split("=", 1) for line in profile_env.read_text(encoding="utf-8").splitlines())
+        assert env["HINDSIGHT_API_DB_POOL_MAX_SIZE"] == "7"
+        assert env["HINDSIGHT_API_REQUEST_TIMEOUT"] == "45"
+        assert env["HINDSIGHT_EMBED_WORKER_MAX_SLOTS"] == "4"
 
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}
