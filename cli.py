@@ -334,6 +334,7 @@ def load_cli_config() -> Dict[str, Any]:
             "show_reasoning": False,
             "streaming": True,
             "busy_input_mode": "interrupt",
+            "warp_notifications": "auto",  # auto | on | off: Warp CLI-agent notifications
 
             "skin": "default",
         },
@@ -2294,6 +2295,80 @@ class HermesCLI:
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
+
+        # Warp Terminal CLI-agent notifications (OSC 777).  Disabled unless
+        # Warp advertises WARP_CLI_AGENT_PROTOCOL_VERSION=1 or the user forces
+        # display.warp_notifications / HERMES_WARP_NOTIFICATIONS to on.
+        self._warp_session_started = False
+        self._warp_turn_needs_stop = False
+        try:
+            from hermes_cli.warp_notifications import WarpAgentNotifier
+            self._warp_notifier = WarpAgentNotifier.from_config(
+                CLI_CONFIG,
+                session_id=self.session_id,
+                cwd=os.getcwd(),
+            )
+        except Exception:
+            self._warp_notifier = None
+
+    def _warp_notify(self, event: str, **fields) -> bool:
+        """Best-effort Warp CLI-agent notification emission."""
+        notifier = getattr(self, "_warp_notifier", None)
+        if notifier is None:
+            return False
+        try:
+            notifier.session_id = self.session_id
+            notifier.cwd = os.getcwd()
+            if not notifier.project:
+                try:
+                    from hermes_cli.warp_notifications import project_name_for_cwd
+                    notifier.project = project_name_for_cwd(notifier.cwd)
+                except Exception:
+                    pass
+            return notifier.emit(event, **fields)
+        except Exception:
+            logging.debug("Warp notification emit failed for %s", event, exc_info=True)
+            return False
+
+    def _warp_notify_session_start(self) -> None:
+        """Emit exactly one session_start event for Warp's CLI-agent listener."""
+        if getattr(self, "_warp_session_started", False):
+            return
+        notifier = getattr(self, "_warp_notifier", None)
+        if notifier is None or not getattr(notifier, "enabled", False):
+            self._warp_session_started = True
+            return
+        try:
+            from hermes_cli import __version__ as _hermes_version
+        except Exception:
+            _hermes_version = None
+        if self._warp_notify(
+            "session_start",
+            summary="Hermes session started",
+            plugin_version=_hermes_version,
+        ):
+            self._warp_session_started = True
+
+    def _warp_notify_prompt_submit(self) -> None:
+        self._warp_notify_session_start()
+        if self._warp_notify("prompt_submit", summary="Hermes is working"):
+            self._warp_turn_needs_stop = True
+
+    def _warp_notify_stop(self, *, failed: bool = False, interrupted: bool = False) -> None:
+        if interrupted:
+            summary = "Hermes was interrupted"
+            response = "Interrupted"
+        elif failed:
+            summary = "Hermes stopped with an error"
+            response = "Error"
+        else:
+            summary = "Hermes finished"
+            response = "Response ready"
+        self._warp_notify("stop", summary=summary, response=response)
+        self._warp_turn_needs_stop = False
+
+    def _warp_notify_permission_replied(self) -> None:
+        self._warp_notify("permission_replied", summary="User replied")
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -8073,6 +8148,19 @@ class HermesCLI:
         """
         if event_type == "tool.completed":
             self._tool_start_time = 0.0
+            if function_name and not function_name.startswith("_"):
+                duration = kwargs.get("duration", 0.0)
+                is_error = kwargs.get("is_error", False)
+                try:
+                    duration_f = float(duration)
+                except (TypeError, ValueError):
+                    duration_f = 0.0
+                status = "failed" if is_error else "completed"
+                self._warp_notify(
+                    "tool_complete",
+                    summary=f"Tool {function_name} {status} ({duration_f:.1f}s)",
+                    tool_name=function_name,
+                )
             # Print stacked scrollback line for "all" / "new" modes
             if function_name and self.tool_progress_mode in ("all", "new"):
                 duration = kwargs.get("duration", 0.0)
@@ -8620,6 +8708,10 @@ class HermesCLI:
         self._clarify_deadline = _time.monotonic() + timeout
         # Open-ended questions skip straight to freetext input
         self._clarify_freetext = is_open_ended
+        self._warp_notify(
+            "question_asked",
+            summary="Hermes needs your answer",
+        )
 
         # Trigger prompt_toolkit repaint from this (non-main) thread
         self._invalidate()
@@ -8638,6 +8730,7 @@ class HermesCLI:
             try:
                 result = response_queue.get(timeout=1)
                 self._clarify_deadline = 0
+                self._warp_notify_permission_replied()
                 return result
             except queue.Empty:
                 remaining = self._clarify_deadline - _time.monotonic()
@@ -8657,6 +8750,7 @@ class HermesCLI:
         self._clarify_freetext = False
         self._clarify_deadline = 0
         self._invalidate()
+        self._warp_notify_permission_replied()
         _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
         return (
             "The user did not provide a response within the time limit. "
@@ -8738,6 +8832,11 @@ class HermesCLI:
                 "response_queue": response_queue,
             }
             self._approval_deadline = _time.monotonic() + timeout
+            self._warp_notify(
+                "permission_request",
+                summary="Dangerous command approval requested",
+                tool_name="terminal",
+            )
 
             self._invalidate()
 
@@ -8748,6 +8847,7 @@ class HermesCLI:
                     self._approval_state = None
                     self._approval_deadline = 0
                     self._invalidate()
+                    self._warp_notify_permission_replied()
                     return result
                 except queue.Empty:
                     remaining = self._approval_deadline - _time.monotonic()
@@ -8761,6 +8861,7 @@ class HermesCLI:
             self._approval_state = None
             self._approval_deadline = 0
             self._invalidate()
+            self._warp_notify_permission_replied()
             _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
             return "deny"
 
@@ -9140,10 +9241,11 @@ class HermesCLI:
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
 
-        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
-        print(flush=True)
-        
         try:
+            self._warp_notify_prompt_submit()
+            ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+            print(flush=True)
+
             # Run the conversation with interrupt monitoring
             result = None
 
@@ -9462,6 +9564,10 @@ class HermesCLI:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
 
             response_previewed = result.get("response_previewed", False) if result else False
+            self._warp_notify_stop(
+                failed=bool(result and result.get("failed")),
+                interrupted=bool(result and result.get("interrupted")),
+            )
 
             # Display reasoning (thinking) box if enabled and available.
             # Skip when streaming already showed reasoning live.  Use the
@@ -9587,6 +9693,16 @@ class HermesCLI:
             print(f"Error: {e}")
             return None
         finally:
+            # If a turn emitted prompt_submit but exited before the normal
+            # response path, close the Warp lifecycle so the tab state does not
+            # remain stuck as "working" after errors or interrupts.
+            if getattr(self, "_warp_turn_needs_stop", False):
+                exc_type, _, _ = sys.exc_info()
+                interrupted = bool(getattr(self, "_should_exit", False) or exc_type is KeyboardInterrupt)
+                self._warp_notify_stop(
+                    failed=not interrupted,
+                    interrupted=interrupted,
+                )
             # Ensure streaming TTS resources are cleaned up even on error.
             # Normal path sends the sentinel at line ~3568; this is a safety
             # net for exception paths that skip it.  Duplicate sentinels are
@@ -11711,6 +11827,8 @@ class HermesCLI:
                     self.agent.interrupt()
                 except Exception:
                     pass
+            if getattr(self, "_warp_turn_needs_stop", False):
+                self._warp_notify_stop(interrupted=True)
             # Shut down voice recorder (release persistent audio stream)
             if hasattr(self, '_voice_recorder') and self._voice_recorder:
                 try:
@@ -12002,27 +12120,42 @@ def main(
                     # status lines).  The response is printed once below.
                     cli.agent.stream_delta_callback = None
                     cli.agent.tool_gen_callback = None
-                    result = cli.agent.run_conversation(
-                        user_message=effective_query,
-                        conversation_history=cli.conversation_history,
-                    )
-                    # Sync session_id if mid-run compression created a
-                    # continuation session. The exit line below reports
-                    # session_id to stderr for automation wrappers; without
-                    # this sync it would point at the ended parent.
-                    if (
-                        getattr(cli.agent, "session_id", None)
-                        and cli.agent.session_id != cli.session_id
-                    ):
-                        cli.session_id = cli.agent.session_id
-                    response = result.get("final_response", "") if isinstance(result, dict) else str(result)
-                    if response:
-                        print(response)
-                    # Session ID goes to stderr so piped stdout is clean.
-                    print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
-                    
-                    # Ensure proper exit code for automation wrappers
-                    sys.exit(1 if isinstance(result, dict) and result.get("failed") else 0)
+                    cli._warp_notify_prompt_submit()
+                    result = None
+                    try:
+                        result = cli.agent.run_conversation(
+                            user_message=effective_query,
+                            conversation_history=cli.conversation_history,
+                        )
+                        # Sync session_id if mid-run compression created a
+                        # continuation session. The exit line below reports
+                        # session_id to stderr for automation wrappers; without
+                        # this sync it would point at the ended parent.
+                        if (
+                            getattr(cli.agent, "session_id", None)
+                            and cli.agent.session_id != cli.session_id
+                        ):
+                            cli.session_id = cli.agent.session_id
+                        response = result.get("final_response", "") if isinstance(result, dict) else str(result)
+                        cli._warp_notify_stop(
+                            failed=bool(isinstance(result, dict) and result.get("failed")),
+                            interrupted=bool(isinstance(result, dict) and result.get("interrupted")),
+                        )
+                        if response:
+                            print(response)
+                        # Session ID goes to stderr so piped stdout is clean.
+                        print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+
+                        # Ensure proper exit code for automation wrappers
+                        sys.exit(1 if isinstance(result, dict) and result.get("failed") else 0)
+                    except KeyboardInterrupt:
+                        if getattr(cli, "_warp_turn_needs_stop", False):
+                            cli._warp_notify_stop(interrupted=True)
+                        raise
+                    except BaseException:
+                        if getattr(cli, "_warp_turn_needs_stop", False):
+                            cli._warp_notify_stop(failed=True)
+                        raise
             
             # Exit with error code if credentials or agent init fails
             sys.exit(1)

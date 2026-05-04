@@ -775,6 +775,7 @@ DEFAULT_CONFIG = {
         # users aren't surprised.  HERMES_TUI_RESUME=<id> always wins.
         "tui_auto_resume_recent": False,
         "bell_on_complete": False,
+        "warp_notifications": "auto",  # auto | on | off: emit Warp CLI-agent OSC notifications when available
         "show_reasoning": False,
         "streaming": False,
         "final_response_markdown": "strip",  # render | strip | raw
