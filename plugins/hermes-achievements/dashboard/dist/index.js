@@ -303,6 +303,20 @@
       }
     }
 
+    // Build the pre-filled tweet text. Keep it short so X doesn't truncate
+    // when the user hasn't attached the PNG yet — they'll copy-image and
+    // paste in the same flow.
+    function tweetText() {
+      const tierPart = achievement.tier ? (achievement.tier + " tier ") : "";
+      return "Just unlocked " + tierPart + "\"" + achievement.name + "\" in Hermes Agent ☤\n\n" +
+        "@NousResearch · https://hermes-agent.nousresearch.com";
+    }
+
+    function shareOnX() {
+      const url = "https://x.com/intent/post?text=" + encodeURIComponent(tweetText());
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+
     return React.createElement("div", {
       className: "ha-share-backdrop",
       onClick: function (e) { if (e.target === e.currentTarget) onClose(); },
@@ -320,17 +334,23 @@
         React.createElement("div", { className: "ha-share-actions" },
           React.createElement("button", {
             className: "ha-share-btn ha-share-btn-primary",
-            onClick: download,
-            disabled: status !== "ready" && status !== "copied",
-          }, "Download PNG"),
+            onClick: shareOnX,
+            title: "Opens X with a pre-filled post",
+          }, "Share on X"),
           React.createElement("button", {
             className: "ha-share-btn",
             onClick: copyToClipboard,
             disabled: status !== "ready" && status !== "copied",
-          }, status === "copied" ? "Copied ✓" : "Copy image")
+            title: "Copy the image to paste into your post",
+          }, status === "copied" ? "Copied ✓" : "Copy image"),
+          React.createElement("button", {
+            className: "ha-share-btn",
+            onClick: download,
+            disabled: status !== "ready" && status !== "copied",
+          }, "Download PNG")
         ),
         React.createElement("p", { className: "ha-share-hint" },
-          "1200×630 PNG — fits X/Twitter, Discord, LinkedIn, Bluesky link previews. Paste the downloaded image into your post, or use Copy to paste the image directly in apps that accept clipboard images."
+          "Share on X opens a pre-filled post in a new tab. Click Copy image first if you want the 1200×630 badge attached — X lets you paste it right into the tweet composer. Download PNG saves the file for use anywhere."
         )
       )
     );

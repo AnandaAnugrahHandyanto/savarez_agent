@@ -141,6 +141,6 @@
 .ha-share-btn { border: 1px solid var(--color-border); background: color-mix(in srgb, var(--color-card) 72%, transparent); color: var(--color-foreground); padding: .5rem .85rem; font-size: .82rem; font-family: var(--font-mono, ui-monospace, monospace); text-transform: uppercase; letter-spacing: .08em; cursor: pointer; transition: border-color .12s ease, background .12s ease; }
 .ha-share-btn:hover:not(:disabled) { border-color: var(--color-ring); background: color-mix(in srgb, var(--color-primary) 16%, var(--color-card)); }
 .ha-share-btn:disabled { opacity: .5; cursor: not-allowed; }
-.ha-share-btn-primary { border-color: #67e8f9; color: #67e8f9; background: color-mix(in srgb, #67e8f9 10%, transparent); }
-.ha-share-btn-primary:hover:not(:disabled) { background: color-mix(in srgb, #67e8f9 22%, var(--color-card)); }
+.ha-share-btn-primary { border-color: #ffffff; color: #ffffff; background: #000000; }
+.ha-share-btn-primary:hover:not(:disabled) { background: #1a1a1a; border-color: #67e8f9; color: #67e8f9; }
 .ha-share-hint { margin: 0; color: var(--color-muted-foreground); font-size: .76rem; line-height: 1.45; }
