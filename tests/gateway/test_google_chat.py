@@ -563,6 +563,101 @@ class TestOnPubsubMessage:
         msg.ack.assert_called_once()
 
 
+class TestExtractMessagePayload:
+    """Three Pub/Sub envelope formats are accepted.
+
+    The Workspace Add-ons format (current default) was already exercised
+    by the rest of TestOnPubsubMessage; these tests pin the contract for
+    the two alternative formats so the multi-format helper does not
+    regress when operators have non-standard Chat app configurations.
+
+    Patterns adapted from PR #14965 by @ArnarValur.
+    """
+
+    def test_native_chat_api_format_extracts_msg_and_space(self):
+        """Format 2: top-level ``message`` + ``space`` + ``type=MESSAGE``.
+
+        Used by Chat apps configured WITHOUT the Workspace Add-ons
+        wrapper — events arrive directly from the Chat API publisher.
+        """
+        envelope = {
+            "type": "MESSAGE",
+            "message": {
+                "name": "spaces/S/messages/M.M",
+                "sender": {
+                    "name": "users/12345",
+                    "email": "alice@example.com",
+                    "displayName": "Alice",
+                    "type": "HUMAN",
+                },
+                "text": "hello",
+                "argumentText": "hello",
+                "thread": {"name": "spaces/S/threads/T"},
+            },
+            "space": {"name": "spaces/S", "spaceType": "DIRECT_MESSAGE"},
+        }
+        result = GoogleChatAdapter._extract_message_payload(envelope, ce_type="")
+        assert result is not None
+        msg, space, fmt = result
+        assert fmt == "native_chat_api"
+        assert msg.get("name") == "spaces/S/messages/M.M"
+        assert msg.get("sender", {}).get("email") == "alice@example.com"
+        assert space.get("name") == "spaces/S"
+        assert space.get("spaceType") == "DIRECT_MESSAGE"
+
+    def test_native_chat_api_format_drops_non_message_events(self):
+        """Format 2 with ``type != MESSAGE`` returns None — caller acks."""
+        envelope = {
+            "type": "ADDED_TO_SPACE",
+            "message": {"name": "spaces/S/messages/M"},
+            "space": {"name": "spaces/S"},
+        }
+        assert GoogleChatAdapter._extract_message_payload(envelope) is None
+
+    def test_relay_flat_format_synthesizes_chat_api_shape(self):
+        """Format 3: flat fields from a custom Cloud Run relay.
+
+        Some self-hosted setups put a relay in front of Pub/Sub to keep
+        GCP credentials off the Hermes host. The relay flattens Chat
+        events into top-level ``sender_email`` / ``text`` / ``space_name``
+        / etc. The helper synthesizes a Chat-API-shaped ``message`` dict
+        so downstream code (``_dispatch_message`` →
+        ``_build_message_event``) consumes it without branching.
+        """
+        envelope = {
+            "event_type": "MESSAGE",
+            "sender_email": "bob@example.com",
+            "sender_display_name": "Bob",
+            "text": "ping",
+            "space_name": "spaces/RELAY",
+            "thread_name": "spaces/RELAY/threads/T1",
+            "message_name": "spaces/RELAY/messages/M.M",
+        }
+        result = GoogleChatAdapter._extract_message_payload(envelope)
+        assert result is not None
+        msg, space, fmt = result
+        assert fmt == "relay_flat"
+        # Synthesized to look like the canonical Chat API shape so
+        # _build_message_event reads it the same way as format 1/2.
+        assert msg["text"] == "ping"
+        assert msg["argumentText"] == "ping"
+        assert msg["sender"]["email"] == "bob@example.com"
+        assert msg["sender"]["displayName"] == "Bob"
+        assert msg["sender"]["type"] == "HUMAN"
+        # Resource name is unknown for relay events; helper synthesizes
+        # a deterministic surrogate so dedup keys stay stable across
+        # at-least-once redelivery.
+        assert msg["sender"]["name"].startswith("users/relay-")
+        assert msg["thread"]["name"] == "spaces/RELAY/threads/T1"
+        assert msg["name"] == "spaces/RELAY/messages/M.M"
+        assert space["name"] == "spaces/RELAY"
+
+    def test_unrecognized_envelope_returns_none(self):
+        """Random JSON with no known shape returns None (caller acks)."""
+        envelope = {"foo": "bar", "baz": 123}
+        assert GoogleChatAdapter._extract_message_payload(envelope) is None
+
+
 # ===========================================================================
 # _build_message_event — payload parsing
 # ===========================================================================

@@ -854,6 +854,101 @@ class GoogleChatAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Inbound event handling (Pub/Sub callback runs in a thread)
     # ------------------------------------------------------------------
+    @staticmethod
+    def _extract_message_payload(
+        envelope: Dict[str, Any], ce_type: str = ""
+    ) -> Optional[Tuple[Dict[str, Any], Dict[str, Any], str]]:
+        """Detect Pub/Sub envelope format and return ``(message, space, format_name)``.
+
+        Three known formats are accepted. Returns ``None`` when the envelope
+        is unrecognized, is a non-MESSAGE event, or otherwise should be
+        silently dropped.
+
+        Format 1 — Workspace Add-ons (canonical, ce-type-driven)::
+
+            {"chat": {"messagePayload": {"message": {...}, "space": {...}}}}
+
+        Format 2 — Native Chat API Pub/Sub (alternative configuration where
+        the Chat app publishes events directly without the Workspace
+        Add-ons wrapper)::
+
+            {"type": "MESSAGE", "message": {...}, "space": {...}}
+
+        Format 3 — Relay / flat (a custom Cloud Run relay that flattens the
+        Chat event into top-level fields)::
+
+            {"event_type": "MESSAGE", "sender_email": "...", "text": "...",
+             "space_name": "spaces/X", "thread_name": "spaces/X/threads/Y",
+             "message_name": "spaces/X/messages/M.M"}
+
+        For format 3 the helper synthesizes a Chat-API-shaped ``message``
+        dict so downstream code (``_dispatch_message`` →
+        ``_build_message_event``) can consume it without branching.
+        """
+        # Format 1: Workspace Add-ons. The chat block carries one of
+        # messagePayload / membershipPayload / cardClickedPayload depending
+        # on the ce-type. ``_on_pubsub_message`` handles the membership and
+        # card branches before reaching this helper, so here we only accept
+        # message payloads.
+        chat_block = envelope.get("chat") or {}
+        msg_payload_wrapper = chat_block.get("messagePayload") if chat_block else None
+        if msg_payload_wrapper:
+            msg = msg_payload_wrapper.get("message") or {}
+            space = msg_payload_wrapper.get("space") or msg.get("space") or {}
+            return msg, space, "workspace_addons"
+
+        # Format 2: Native Chat API Pub/Sub. Detected by a top-level
+        # ``message`` object plus a ``type`` field; only MESSAGE events
+        # flow through here.
+        if isinstance(envelope.get("message"), dict):
+            if envelope.get("type", "") != "MESSAGE":
+                return None
+            msg = envelope["message"]
+            space = envelope.get("space") or msg.get("space") or {}
+            return msg, space, "native_chat_api"
+
+        # Format 3: Relay / flat. A custom Cloud Run relay typically
+        # forwards Chat events with this shape so the bot can run without
+        # direct GCP credentials.
+        if "event_type" in envelope or "sender_email" in envelope:
+            if envelope.get("event_type", "MESSAGE") != "MESSAGE":
+                return None
+            sender_email = (envelope.get("sender_email") or "").strip()
+            sender_display = (
+                envelope.get("sender_display_name")
+                or sender_email
+                or "Unknown"
+            )
+            # The Chat resource name is unknown for relay events; synthesize
+            # a stable surrogate from the sender email so dedup keys and
+            # session IDs stay deterministic across redelivery.
+            sender_name_surrogate = (
+                "users/relay-"
+                + (sender_email or "unknown").replace("@", "_at_").replace(".", "_")
+            )
+            text = envelope.get("text", "") or ""
+            msg: Dict[str, Any] = {
+                "name": envelope.get("message_name", "") or "",
+                "sender": {
+                    "name": sender_name_surrogate,
+                    "email": sender_email,
+                    "displayName": sender_display,
+                    "type": "HUMAN",
+                },
+                "text": text,
+                "argumentText": text,
+            }
+            thread_name = envelope.get("thread_name") or ""
+            if thread_name:
+                msg["thread"] = {"name": thread_name}
+            space = {
+                "name": envelope.get("space_name", "") or "",
+                "spaceType": envelope.get("space_type", "SPACE"),
+            }
+            return msg, space, "relay_flat"
+
+        return None
+
     def _on_pubsub_message(self, message: Any) -> None:
         """Pub/Sub callback — parse envelope and dispatch to asyncio loop.
 
@@ -938,16 +1033,16 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 return
 
             # --- Message events ---
-            msg_payload_wrapper = chat_block.get("messagePayload") or {}
-            if not msg_payload_wrapper:
+            extracted = self._extract_message_payload(envelope, ce_type)
+            if extracted is None:
                 logger.debug(
-                    "[GoogleChat] Envelope missing messagePayload; ce-type=%s", ce_type
+                    "[GoogleChat] Envelope did not match a known message format; "
+                    "ce-type=%s, keys=%s", ce_type, list(envelope.keys())
                 )
                 message.ack()
                 return
 
-            msg = msg_payload_wrapper.get("message") or {}
-            space = msg_payload_wrapper.get("space") or msg.get("space") or {}
+            msg, space, _fmt = extracted
             sender = msg.get("sender") or {}
             sender_type = sender.get("type") or ""
 
