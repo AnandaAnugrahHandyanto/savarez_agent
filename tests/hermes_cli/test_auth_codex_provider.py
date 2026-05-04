@@ -47,6 +47,40 @@ def _setup_hermes_auth(hermes_home: Path, *, access_token: str = "access", refre
     return auth_file
 
 
+def _setup_hermes_codex_pool_auth(
+    hermes_home: Path,
+    *,
+    access_token: str = "pool-access",
+    refresh_token: str = "pool-refresh",
+    account_id: str = "acct_pool",
+):
+    """Write Codex tokens only into credential_pool.openai-codex."""
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    auth_store = {
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "codex-pool-1",
+                    "label": "ChatGPT plan",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "source": "manual:device_code",
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                    "base_url": "https://chatgpt.com/backend-api/codex",
+                    "last_refresh": "2026-05-01T00:00:00Z",
+                    "account_id": account_id,
+                }
+            ]
+        },
+    }
+    auth_file = hermes_home / "auth.json"
+    auth_file.write_text(json.dumps(auth_store, indent=2))
+    return auth_file
+
+
 def _jwt_with_exp(exp_epoch: int) -> str:
     payload = {"exp": exp_epoch}
     encoded = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).rstrip(b"=").decode("utf-8")
@@ -61,6 +95,33 @@ def test_read_codex_tokens_success(tmp_path, monkeypatch):
     data = _read_codex_tokens()
     assert data["tokens"]["access_token"] == "access"
     assert data["tokens"]["refresh_token"] == "refresh"
+
+
+def test_read_codex_tokens_from_credential_pool_when_singleton_missing(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    _setup_hermes_codex_pool_auth(hermes_home)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    data = _read_codex_tokens()
+
+    assert data["tokens"]["access_token"] == "pool-access"
+    assert data["tokens"]["refresh_token"] == "pool-refresh"
+    assert data["tokens"]["account_id"] == "acct_pool"
+    assert data["last_refresh"] == "2026-05-01T00:00:00Z"
+    assert data["source"] == "credential_pool:openai-codex:codex-pool-1"
+
+
+def test_resolve_codex_runtime_credentials_from_credential_pool_when_singleton_missing(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    _setup_hermes_codex_pool_auth(hermes_home, access_token="pool-runtime")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    creds = resolve_codex_runtime_credentials(refresh_if_expiring=False)
+
+    assert creds["api_key"] == "pool-runtime"
+    assert creds["provider"] == "openai-codex"
+    assert creds["base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert creds["source"] == "credential_pool:openai-codex:codex-pool-1"
 
 
 def test_read_codex_tokens_missing(tmp_path, monkeypatch):

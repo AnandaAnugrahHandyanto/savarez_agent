@@ -24,6 +24,8 @@ class _Response:
 class _Client:
     def __init__(self, payload):
         self._payload = payload
+        self.last_url = None
+        self.last_headers = None
 
     def __enter__(self):
         return self
@@ -32,6 +34,8 @@ class _Client:
         return False
 
     def get(self, url, headers=None):
+        self.last_url = url
+        self.last_headers = dict(headers or {})
         return _Response(self._payload)
 
 
@@ -93,6 +97,34 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
     assert "Credits balance: $12.50" in snapshot.details
+
+
+def test_fetch_account_usage_codex_uses_pool_account_id(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "pool-access",
+            "source": "credential_pool:openai-codex:codex-pool-1",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._read_codex_tokens",
+        lambda: {"tokens": {"access_token": "pool-access", "account_id": "acct_pool"}},
+    )
+    client = _Client({"plan_type": "plus", "rate_limit": {}})
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: client,
+    )
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert snapshot.plan == "Plus"
+    assert client.last_headers["Authorization"] == "Bearer pool-access"
+    assert client.last_headers["ChatGPT-Account-Id"] == "acct_pool"
 
 
 def test_render_account_usage_lines_includes_reset_and_provider():

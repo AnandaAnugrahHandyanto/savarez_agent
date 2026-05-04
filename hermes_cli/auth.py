@@ -2191,6 +2191,35 @@ def _is_remote_session() -> bool:
 # where one app's refresh invalidates the other's session.
 # =============================================================================
 
+def _codex_pool_entry_state(auth_store: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return the first usable credential_pool.openai-codex entry as token state."""
+    pool = auth_store.get("credential_pool")
+    entries = pool.get("openai-codex") if isinstance(pool, dict) else None
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        access_token = entry.get("access_token")
+        if not isinstance(access_token, str) or not access_token.strip():
+            continue
+        refresh_token = entry.get("refresh_token")
+        tokens = {
+            "access_token": access_token.strip(),
+            "refresh_token": refresh_token.strip() if isinstance(refresh_token, str) else "",
+        }
+        account_id = entry.get("account_id")
+        if isinstance(account_id, str) and account_id.strip():
+            tokens["account_id"] = account_id.strip()
+        return {
+            "tokens": tokens,
+            "last_refresh": entry.get("last_refresh"),
+            "base_url": entry.get("base_url"),
+            "source": f"credential_pool:openai-codex:{entry.get('id') or entry.get('label') or 'entry'}",
+        }
+    return None
+
+
 def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     """Read Codex OAuth tokens from Hermes auth store (~/.hermes/auth.json).
     
@@ -2202,7 +2231,7 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
             auth_store = _load_auth_store()
     else:
         auth_store = _load_auth_store()
-    state = _load_provider_state(auth_store, "openai-codex")
+    state = _load_provider_state(auth_store, "openai-codex") or _codex_pool_entry_state(auth_store)
     if not state:
         raise AuthError(
             "No Codex credentials stored. Run `hermes auth` to authenticate.",
@@ -2234,10 +2263,15 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
             code="codex_auth_missing_refresh_token",
             relogin_required=True,
         )
-    return {
+    result = {
         "tokens": tokens,
         "last_refresh": state.get("last_refresh"),
     }
+    if state.get("source"):
+        result["source"] = state.get("source")
+    if state.get("base_url"):
+        result["base_url"] = state.get("base_url")
+    return result
 
 
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
@@ -2445,6 +2479,7 @@ def resolve_codex_runtime_credentials(
 
     base_url = (
         os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+        or str(data.get("base_url") or "").strip().rstrip("/")
         or DEFAULT_CODEX_BASE_URL
     )
 
@@ -2452,7 +2487,7 @@ def resolve_codex_runtime_credentials(
         "provider": "openai-codex",
         "base_url": base_url,
         "api_key": access_token,
-        "source": "hermes-auth-store",
+        "source": data.get("source") or "hermes-auth-store",
         "last_refresh": data.get("last_refresh"),
         "auth_mode": "chatgpt",
     }
