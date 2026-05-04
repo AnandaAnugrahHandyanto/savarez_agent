@@ -156,6 +156,42 @@ def test_voice_toggle_handles_non_dict_voice_cfg(monkeypatch):
         )
 
 
+def test_voice_record_start_handles_non_dict_voice_cfg(monkeypatch):
+    """Round-7 Copilot review regression on #19835.
+
+    The ``voice.record`` start path previously read
+    ``_load_cfg().get("voice", {}).get(...)`` without any shape checks.
+    When ``voice`` is a non-dict (bool/scalar/list) ``get`` raises
+    AttributeError and the handler returns 5025 instead of falling
+    back to the VAD defaults. Now it uses ``_voice_cfg_dict()`` and
+    non-numeric silence values are coerced to the documented defaults.
+    """
+    captured: dict = {}
+
+    def fake_start_continuous(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.voice",
+        types.SimpleNamespace(start_continuous=fake_start_continuous, stop_continuous=lambda: None),
+    )
+    monkeypatch.setenv("HERMES_VOICE", "1")
+
+    for bad in (True, "cmd+b", None, 42, ["ctrl+b"], {"silence_threshold": "loud"}):
+        captured.clear()
+        monkeypatch.setattr(server, "_load_cfg", lambda b=bad: {"voice": b})
+
+        resp = server.dispatch(
+            {"id": "voice-record", "method": "voice.record", "params": {"action": "start"}}
+        )
+
+        assert "result" in resp, f"voice.record raised for voice={bad!r}: {resp.get('error')}"
+        assert resp["result"]["status"] == "recording"
+        assert captured["silence_threshold"] == 200
+        assert captured["silence_duration"] == 3.0
+
+
 def test_voice_toggle_tts_branch_also_carries_record_key(monkeypatch):
     """Round-2 Copilot review regression on #19835.
 

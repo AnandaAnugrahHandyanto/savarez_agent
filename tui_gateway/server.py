@@ -5278,22 +5278,26 @@ def _voice_tts_enabled() -> bool:
     return os.environ.get("HERMES_VOICE_TTS", "").strip() == "1"
 
 
-def _voice_record_key() -> str:
-    """Current ``voice.record_key`` value, documented default on error.
+def _voice_cfg_dict() -> dict:
+    """Shape-safe accessor for the ``voice:`` block in config.yaml.
 
     ``_load_cfg()`` returns raw ``yaml.safe_load()`` output, so both the
     root AND ``voice`` may be any YAML scalar / list / None. A hand-edit
-    like ``voice: true`` or ``voice: cmd+b`` (string where a dict is
-    expected) or even a malformed top-level config that parses to a
-    scalar would otherwise break ``.get("record_key")`` and take every
-    ``voice.toggle`` branch down with it (Copilot round-3/round-4
-    review on #19835). Coerce through ``isinstance`` at every level so
-    malformed config falls back to the documented default instead of
-    crashing /voice.
+    like ``voice: true`` or a malformed top-level config that parses to
+    a scalar would otherwise break ``.get("…")`` and take every
+    ``voice.*`` branch down with it (Copilot round-3..7 review on
+    #19835). Coerce through ``isinstance`` at every level so malformed
+    config falls back to an empty dict instead of crashing /voice.
     """
     cfg = _load_cfg()
     voice_cfg = cfg.get("voice") if isinstance(cfg, dict) else None
-    record_key = voice_cfg.get("record_key") if isinstance(voice_cfg, dict) else None
+
+    return voice_cfg if isinstance(voice_cfg, dict) else {}
+
+
+def _voice_record_key() -> str:
+    """Current ``voice.record_key`` value, documented default on error."""
+    record_key = _voice_cfg_dict().get("record_key")
 
     return str(record_key) if isinstance(record_key, str) and record_key else "ctrl+b"
 
@@ -5419,15 +5423,19 @@ def _(rid, params: dict) -> dict:
 
             from hermes_cli.voice import start_continuous
 
-            voice_cfg = _load_cfg().get("voice", {})
+            # Shape-safe lookups: malformed ``voice:`` YAML (bool/scalar/list)
+            # must not crash /voice with a 5025 — fall back to VAD defaults.
+            voice_cfg = _voice_cfg_dict()
+            threshold = voice_cfg.get("silence_threshold")
+            duration = voice_cfg.get("silence_duration")
             start_continuous(
                 on_transcript=lambda t: _voice_emit("voice.transcript", {"text": t}),
                 on_status=lambda s: _voice_emit("voice.status", {"state": s}),
                 on_silent_limit=lambda: _voice_emit(
                     "voice.transcript", {"no_speech_limit": True}
                 ),
-                silence_threshold=voice_cfg.get("silence_threshold", 200),
-                silence_duration=voice_cfg.get("silence_duration", 3.0),
+                silence_threshold=threshold if isinstance(threshold, (int, float)) else 200,
+                silence_duration=duration if isinstance(duration, (int, float)) else 3.0,
             )
             return _ok(rid, {"status": "recording"})
 

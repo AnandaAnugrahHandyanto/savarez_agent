@@ -207,10 +207,23 @@ describe('parseVoiceRecordKey (#18994)', () => {
     expect(parseVoiceRecordKey('ctrl+c')).toEqual(DEFAULT_VOICE_RECORD_KEY)
     expect(parseVoiceRecordKey('ctrl+d')).toEqual(DEFAULT_VOICE_RECORD_KEY)
     expect(parseVoiceRecordKey('ctrl+l')).toEqual(DEFAULT_VOICE_RECORD_KEY)
-    // Alt- and super-modifier versions of those letters are NOT
-    // intercepted, so they remain usable.
+    // Alt-modifier versions of those letters are NOT intercepted, so
+    // they remain usable.
     expect(parseVoiceRecordKey('alt+c').mod).toBe('alt')
-    expect(parseVoiceRecordKey('super+l').mod).toBe('super')
+  })
+
+  it('rejects super+{c,d,l,v} — mac action-mod chords are claimed before voice', async () => {
+    const { DEFAULT_VOICE_RECORD_KEY, parseVoiceRecordKey } = await importPlatform('linux')
+
+    // On macOS super+c/d/l/v are copy / exit / clear / paste. Reject at
+    // parse time so /voice status doesn't advertise dead bindings.
+    expect(parseVoiceRecordKey('super+c')).toEqual(DEFAULT_VOICE_RECORD_KEY)
+    expect(parseVoiceRecordKey('super+d')).toEqual(DEFAULT_VOICE_RECORD_KEY)
+    expect(parseVoiceRecordKey('super+l')).toEqual(DEFAULT_VOICE_RECORD_KEY)
+    expect(parseVoiceRecordKey('super+v')).toEqual(DEFAULT_VOICE_RECORD_KEY)
+    // Other super letters still work (no global chord claims them).
+    expect(parseVoiceRecordKey('super+b').mod).toBe('super')
+    expect(parseVoiceRecordKey('super+o').mod).toBe('super')
   })
 
   // Round-5 Copilot review regressions on #19835.

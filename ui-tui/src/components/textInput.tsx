@@ -707,6 +707,15 @@ export function TextInput({
     (inp: string, k: Key, event: InputEvent) => {
       const eventRaw = event.keypress.raw
 
+      // Configured voice shortcut wins over composer-level defaults like
+      // paste/copy so users who bind voice to ctrl+v / alt+v / cmd+v
+      // actually get voice toggled instead of a paste (Copilot round-7
+      // follow-up on #19835). The pass-through predicate is a no-op for
+      // ordinary typing and plain paste when voice is unbound to 'v'.
+      if (shouldPassThroughToGlobalHandler(inp, k, voiceRecordKey)) {
+        return
+      }
+
       if (
         eventRaw === '\x1bv' ||
         eventRaw === '\x1bV' ||
@@ -749,12 +758,6 @@ export function TextInput({
           return
         }
 
-        return
-      }
-
-      // Chords claimed by useInputHandlers — pass through instead of letting
-      // them fall into text-editing behavior here.
-      if (shouldPassThroughToGlobalHandler(inp, k, voiceRecordKey)) {
         return
       }
 

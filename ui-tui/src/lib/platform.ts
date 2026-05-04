@@ -138,6 +138,16 @@ const _NAMED_KEY_ALIASES: Record<string, VoiceRecordKeyNamed> = {
  * round-4 review on #19835). */
 const _RESERVED_CTRL_CHARS = new Set(['c', 'd', 'l'])
 
+/** On macOS the action-modifier also intercepts standard editor chords
+ * via ``isCopyShortcut`` / ``isAction`` in ``useInputHandlers()``:
+ *  - super+c → copy
+ *  - super+d → exit
+ *  - super+l → clear screen
+ *  - super+v → paste (also claimed at the TextInput layer)
+ * Reject at parse time for the same reason as ``_RESERVED_CTRL_CHARS``
+ * (Copilot round-7 review on #19835). */
+const _RESERVED_SUPER_CHARS = new Set(['c', 'd', 'l', 'v'])
+
 interface RuntimeKeyEvent {
   alt?: boolean
   backspace?: boolean
@@ -244,6 +254,14 @@ export const parseVoiceRecordKey = (raw: unknown): ParsedVoiceRecordKey => {
   // check — ``ctrl+c`` / ``ctrl+d`` / ``ctrl+l`` would never actually
   // fire push-to-talk, so advertising them in /voice status is a lie.
   if (mod === 'ctrl' && last.length === 1 && _RESERVED_CTRL_CHARS.has(last)) {
+    return DEFAULT_VOICE_RECORD_KEY
+  }
+
+  // Same for ``super+c`` / ``super+d`` / ``super+l`` / ``super+v`` —
+  // on macOS those are copy / exit / clear / paste and get claimed
+  // by ``isCopyShortcut`` / ``isAction`` / the TextInput paste layer
+  // before voice has a chance to toggle.
+  if (mod === 'super' && last.length === 1 && _RESERVED_SUPER_CHARS.has(last)) {
     return DEFAULT_VOICE_RECORD_KEY
   }
 
