@@ -104,6 +104,7 @@ class Platform(Enum):
     MSGRAPH_WEBHOOK = "msgraph_webhook"
     TEAMS = "teams"
     FEISHU = "feishu"
+    YUANBAO = "yuanbao"
     WECOM = "wecom"
     WECOM_CALLBACK = "wecom_callback"
     WEIXIN = "weixin"
