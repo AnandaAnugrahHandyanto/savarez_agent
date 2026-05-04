@@ -264,6 +264,50 @@ class TestIterativeSummaryFidelity:
         )
 
 
+class TestSummaryQualityGate:
+    def _msgs(self):
+        return [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+    def test_retries_once_when_summary_looks_like_direct_response(self):
+        bad = MagicMock()
+        bad.choices = [MagicMock()]
+        bad.choices[0].message.content = "Sure, I can do that now."
+        good = MagicMock()
+        good.choices = [MagicMock()]
+        good.choices[0].message.content = "## Active Task\nTask\n## Completed Actions\nDone\n## Remaining Work\nNone"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        with patch("agent.context_compressor.call_llm", side_effect=[bad, good]) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert result is not None
+        assert "Sure, I can" not in result
+        assert "## Active Task" in result
+
+    def test_repeated_quality_failure_falls_back_without_storing_bad_summary(self):
+        bad = MagicMock()
+        bad.choices = [MagicMock()]
+        bad.choices[0].message.content = "Here is the implementation you asked for."
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        with patch("agent.context_compressor.call_llm", side_effect=[bad, bad]) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert result is None
+        assert c._previous_summary is None
+        assert c._last_summary_error is not None
+        assert "looks_like_direct_response" in c._last_summary_error
+
+
 class TestSummaryFailureCooldown:
     def test_summary_failure_enters_cooldown_and_skips_retry(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):

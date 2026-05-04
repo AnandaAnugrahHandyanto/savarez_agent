@@ -72,6 +72,11 @@ _IMAGE_TOKEN_ESTIMATE = 1600
 # for tail-cut decisions.
 _IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
+_SUMMARY_DIRECT_RESPONSE_RE = re.compile(
+    r"^\s*(sure|certainly|of course|here(?:'|’)s|here is|i can|i will|i(?:'|’)ll|okay|ok[,!.])\b",
+    re.IGNORECASE,
+)
+_REQUIRED_STRUCTURED_SECTIONS = ("## Active Task", "## Completed Actions", "## Remaining Work")
 
 
 def _content_length_for_budget(raw_content: Any) -> int:
@@ -458,6 +463,7 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_error: Optional[str] = None
         self._last_aux_model_failure_model: Optional[str] = None
         self._summary_transient_retry_used: bool = False
+        self._summary_quality_retry_used: bool = False
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -712,6 +718,38 @@ class ContextCompressor(ContextEngine):
 
         return "\n\n".join(parts)
 
+    def _summary_quality_issues(self, summary: str) -> list[str]:
+        """Return quality-gate issues for a generated compaction summary.
+
+        The gate is deliberately conservative: terse summaries from tests and
+        small transcripts are still accepted, but direct assistant responses
+        and malformed structured outputs are rejected before they can become
+        authoritative handoff context.
+        """
+        text = (summary or "").strip()
+        if not text:
+            return ["empty"]
+        issues: list[str] = []
+        # A compaction summary must not answer the user's request. These
+        # phrases indicate the summarizer followed conversation content instead
+        # of the handoff prompt.
+        if _SUMMARY_DIRECT_RESPONSE_RE.search(text):
+            issues.append("looks_like_direct_response")
+        # If the model attempted the requested markdown structure, require the
+        # core continuity sections to be present together. This catches partial
+        # or truncated structured summaries while allowing intentionally small
+        # test summaries that do not use headings at all.
+        if "##" in text:
+            missing = [section for section in _REQUIRED_STRUCTURED_SECTIONS if section not in text]
+            if missing:
+                issues.append("missing_sections=" + ",".join(missing))
+        # The normalized prefix is added by _with_summary_prefix(); if the model
+        # emits it itself, normalization is safe, but repeated prompt wrappers
+        # are a sign of degraded output quality.
+        if text.count(SUMMARY_PREFIX) > 1 or text.count(LEGACY_SUMMARY_PREFIX) > 1:
+            issues.append("duplicate_summary_prefix")
+        return issues
+
     def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None) -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
@@ -889,12 +927,25 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
             summary = redact_sensitive_text(content.strip())
+            quality_issues = self._summary_quality_issues(summary)
+            if quality_issues:
+                err_text = "summary quality check failed: " + ", ".join(quality_issues)
+                if not getattr(self, "_summary_quality_retry_used", False):
+                    self._summary_quality_retry_used = True
+                    logger.warning("%s; retrying summary generation once", err_text)
+                    return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+                self._summary_failure_cooldown_until = time.monotonic() + 60
+                self._last_summary_error = err_text
+                self._summary_quality_retry_used = False
+                logger.warning("%s; using fallback context marker", err_text)
+                return None
             # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._summary_failure_cooldown_until = 0.0
             self._summary_model_fallen_back = False
             self._last_summary_error = None
             self._summary_transient_retry_used = False
+            self._summary_quality_retry_used = False
             return self._with_summary_prefix(summary)
         except RuntimeError:
             # No provider configured — long cooldown, unlikely to self-resolve

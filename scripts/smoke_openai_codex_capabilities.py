@@ -4,12 +4,15 @@
 This script intentionally uses provider='openai-codex' and Hermes auth (usually
 ~/.hermes/auth.json / credential_pool.openai-codex). It does not read or require
 a direct OPENAI_API_KEY.
+
+It can also run as a lightweight capability monitor: write the latest matrix,
+append history JSONL, compare against a known-good baseline, and fail only on
+regressions when requested.
 """
 
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import sys
 from dataclasses import asdict, dataclass
@@ -32,6 +35,8 @@ _RED_32_PNG = (
 
 DEFAULT_MODELS = ["gpt-5.5", "gpt-5.4-mini", "gpt-5.3-codex"]
 FEATURES = ("text", "tools", "structured", "vision")
+DEFAULT_MONITOR_DIR = Path.home() / ".hermes" / "diagnostics" / "codex_capability"
+DEFAULT_BASELINE_PATH = DEFAULT_MONITOR_DIR / "baseline.json"
 
 
 @dataclass
@@ -135,24 +140,126 @@ def run_one(model: str, feature: str, timeout: float) -> SmokeResult:
     return SmokeResult(model, feature, ok, detail, started, _now())
 
 
-def main() -> int:
+def results_to_dicts(results: list[SmokeResult]) -> list[dict[str, Any]]:
+    return [asdict(result) for result in results]
+
+
+def matrix_key(result: SmokeResult | dict[str, Any]) -> str:
+    if isinstance(result, SmokeResult):
+        return f"{result.model}:{result.feature}"
+    return f"{result.get('model')}:{result.get('feature')}"
+
+
+def resolve_baseline_path(path: Path | None) -> Path | None:
+    if path is None:
+        return None
+    raw = str(path).strip()
+    if raw in {"latest", "default"}:
+        return DEFAULT_BASELINE_PATH if DEFAULT_BASELINE_PATH.exists() else None
+    return path
+
+
+def load_results(path: Path) -> list[dict[str, Any]]:
+    data = json.loads(path.read_text())
+    if isinstance(data, dict) and "results" in data:
+        data = data["results"]
+    if not isinstance(data, list):
+        raise ValueError(f"Expected list of results in {path}")
+    return data
+
+
+def find_regressions(current: list[SmokeResult], baseline: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    current_by_key = {matrix_key(result): result for result in current}
+    regressions: list[dict[str, Any]] = []
+    for previous in baseline:
+        if not previous.get("ok"):
+            continue
+        key = matrix_key(previous)
+        now_result = current_by_key.get(key)
+        if now_result is None:
+            regressions.append({"key": key, "previous": previous, "current": None, "reason": "missing"})
+        elif not now_result.ok:
+            regressions.append(
+                {"key": key, "previous": previous, "current": asdict(now_result), "reason": "failed"}
+            )
+    return regressions
+
+
+def write_json(path: Path, results: list[SmokeResult], regressions: list[dict[str, Any]] | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "provider": "openai-codex",
+        "generated_at": _now(),
+        "results": results_to_dicts(results),
+        "regressions": regressions or [],
+    }
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+
+
+def append_jsonl(path: Path, results: list[SmokeResult]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    run_id = _now()
+    with path.open("a", encoding="utf-8") as handle:
+        for result in results:
+            row = asdict(result)
+            row["schema_version"] = 1
+            row["provider"] = "openai-codex"
+            row["run_id"] = run_id
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", action="append", dest="models", help="Model to test; repeatable.")
     parser.add_argument("--feature", choices=FEATURES, action="append", dest="features", help="Feature to test; repeatable.")
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--json", action="store_true", help="Emit JSON only.")
+    parser.add_argument("--output", type=Path, help="Write latest monitor payload JSON to this path.")
+    parser.add_argument("--jsonl", type=Path, help="Append individual result rows to this JSONL history path.")
+    parser.add_argument("--baseline", type=Path, help="Compare against a known-good baseline JSON payload/list.")
+    parser.add_argument("--write-baseline", type=Path, help="Write current results as the new baseline JSON payload.")
+    parser.add_argument(
+        "--fail-on-regression",
+        action="store_true",
+        help="Exit 1 only when a previously passing baseline item fails or is missing.",
+    )
+    return parser
+
+
+def main() -> int:
+    parser = build_arg_parser()
     args = parser.parse_args()
 
     models = args.models or DEFAULT_MODELS
     features = args.features or list(FEATURES)
     results = [run_one(model, feature, args.timeout) for model in models for feature in features]
 
+    regressions: list[dict[str, Any]] = []
+    baseline_path = resolve_baseline_path(args.baseline)
+    if baseline_path:
+        regressions = find_regressions(results, load_results(baseline_path))
+
+    if args.output:
+        write_json(args.output, results, regressions)
+    if args.jsonl:
+        append_jsonl(args.jsonl, results)
+    if args.write_baseline:
+        write_json(args.write_baseline, results)
+
     if args.json:
-        print(json.dumps([asdict(result) for result in results], indent=2))
+        print(json.dumps(results_to_dicts(results), indent=2))
     else:
         for result in results:
             status = "PASS" if result.ok else "FAIL"
             print(f"{status} {result.model} {result.feature}: {result.detail}")
+        if regressions:
+            print("REGRESSIONS:")
+            for regression in regressions:
+                print(f"FAIL {regression['key']}: {regression['reason']}")
+
+    if regressions and args.fail_on_regression:
+        return 1
     return 0 if all(result.ok for result in results) else 1
 
 
