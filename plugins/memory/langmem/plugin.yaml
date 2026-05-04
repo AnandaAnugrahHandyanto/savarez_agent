@@ -1,0 +1,5 @@
+name: langmem
+version: 0.1.0
+description: "LangMem-backed local memory provider with Hermes-managed SQLite persistence and FTS search."
+pip_dependencies:
+  - langmem==0.0.30
