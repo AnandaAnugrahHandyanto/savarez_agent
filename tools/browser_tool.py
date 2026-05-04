@@ -2344,7 +2344,7 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         }, ensure_ascii=False)
 
 
-def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> str:
+def browser_vision(question: str, annotate: bool = False, full_page: bool = True, task_id: Optional[str] = None) -> str:
     """
     Take a screenshot of the current page and analyze it with vision AI.
     
@@ -2359,6 +2359,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     Args:
         question: What you want to know about the page visually
         annotate: If True, overlay numbered [N] labels on interactive elements
+        full_page: If True, capture the entire page. If False, capture only the viewport.
         task_id: Task identifier for session isolation
         
     Returns:
@@ -2387,7 +2388,8 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         screenshot_args = []
         if annotate:
             screenshot_args.append("--annotate")
-        screenshot_args.append("--full")
+        if full_page:
+            screenshot_args.append("--full")
         screenshot_args.append(str(screenshot_path))
         result = _run_browser_command(
             effective_task_id, 
