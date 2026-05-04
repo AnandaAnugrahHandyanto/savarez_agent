@@ -18,7 +18,15 @@ class Mem0Backend(ABC):
         ...
 
     @abstractmethod
-    def add(self, messages: list, *, user_id: str, agent_id: str, infer: bool = False) -> dict:
+    def add(
+        self,
+        messages: list,
+        *,
+        user_id: str,
+        agent_id: str,
+        infer: bool = False,
+        metadata: dict | None = None,
+    ) -> dict:
         ...
 
     @abstractmethod
@@ -56,8 +64,19 @@ class PlatformBackend(Mem0Backend):
         count = response.get("count", len(results)) if isinstance(response, dict) else len(results)
         return {"results": results, "count": count}
 
-    def add(self, messages: list, *, user_id: str, agent_id: str, infer: bool = False) -> dict:
-        return self._client.add(messages, user_id=user_id, agent_id=agent_id, infer=infer)
+    def add(
+        self,
+        messages: list,
+        *,
+        user_id: str,
+        agent_id: str,
+        infer: bool = False,
+        metadata: dict | None = None,
+    ) -> dict:
+        kwargs: dict[str, Any] = {"user_id": user_id, "agent_id": agent_id, "infer": infer}
+        if metadata:
+            kwargs["metadata"] = metadata
+        return self._client.add(messages, **kwargs)
 
     def update(self, memory_id: str, text: str) -> dict:
         self._client.update(memory_id=memory_id, text=text)
@@ -162,8 +181,19 @@ class OSSBackend(Mem0Backend):
         results = _unwrap_results(response)
         return {"results": results, "count": len(results)}
 
-    def add(self, messages: list, *, user_id: str, agent_id: str, infer: bool = False) -> dict:
-        return self._memory.add(messages, user_id=user_id, agent_id=agent_id, infer=infer)
+    def add(
+        self,
+        messages: list,
+        *,
+        user_id: str,
+        agent_id: str,
+        infer: bool = False,
+        metadata: dict | None = None,
+    ) -> dict:
+        kwargs: dict[str, Any] = {"user_id": user_id, "agent_id": agent_id, "infer": infer}
+        if metadata:
+            kwargs["metadata"] = metadata
+        return self._memory.add(messages, **kwargs)
 
     def update(self, memory_id: str, text: str) -> dict:
         self._memory.update(memory_id, data=text)

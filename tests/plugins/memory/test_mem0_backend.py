@@ -77,6 +77,27 @@ class TestPlatformBackend:
         call = client.calls[0]
         assert call[2]["user_id"] == "u1"
         assert call[2]["infer"] is False
+        # metadata kwarg should be omitted entirely when not provided so we
+        # don't surprise older mem0 client versions with an unknown kwarg.
+        assert "metadata" not in call[2]
+
+    def test_add_forwards_metadata_when_present(self):
+        backend, client = self._make()
+        msgs = [{"role": "user", "content": "hi"}]
+        backend.add(
+            msgs,
+            user_id="u1",
+            agent_id="hermes",
+            infer=False,
+            metadata={"channel": "telegram"},
+        )
+        assert client.calls[0][2]["metadata"] == {"channel": "telegram"}
+
+    def test_add_omits_empty_metadata(self):
+        backend, client = self._make()
+        msgs = [{"role": "user", "content": "hi"}]
+        backend.add(msgs, user_id="u1", agent_id="hermes", infer=False, metadata={})
+        assert "metadata" not in client.calls[0][2]
 
     def test_update_forwards(self):
         backend, client = self._make()

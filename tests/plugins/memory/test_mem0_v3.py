@@ -22,8 +22,12 @@ class FakeBackend:
         self.captured.append(("get_all", {"filters": filters, "page": page, "page_size": page_size}))
         return self._all_results
 
-    def add(self, messages, *, user_id, agent_id, infer=False):
-        self.captured.append(("add", messages, {"user_id": user_id, "agent_id": agent_id, "infer": infer}))
+    def add(self, messages, *, user_id, agent_id, infer=False, metadata=None):
+        self.captured.append((
+            "add",
+            messages,
+            {"user_id": user_id, "agent_id": agent_id, "infer": infer, "metadata": metadata},
+        ))
         return {"status": "PENDING", "event_id": "evt-test-123"}
 
     def update(self, memory_id, text):
@@ -375,3 +379,85 @@ class TestMem0ModeSwitch:
         assert "mem0_search" in block
         assert "mem0_list" in block
         assert "OSS" in block
+
+
+class TestMem0UserIdResolution:
+    """user_id resolution: configured override > gateway-native id > placeholder.
+
+    Same human across CLI / Telegram / Discord / Slack / etc. should map to
+    the same memory store when MEM0_USER_ID is set, and only fall back to the
+    gateway-native id when it isn't.
+    """
+
+    def _provider(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        provider = Mem0MemoryProvider()
+        # Skip backend instantiation — we only care about identity resolution.
+        provider._create_backend = lambda: None  # type: ignore[method-assign]
+        return provider
+
+    def test_env_override_beats_gateway_native_id(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MEM0_USER_ID", "ryan@example.com")
+        provider = self._provider(monkeypatch, tmp_path)
+        provider.initialize("test", user_id="123456789", platform="telegram")
+        assert provider._user_id == "ryan@example.com"
+
+    def test_file_override_beats_gateway_native_id(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("MEM0_USER_ID", raising=False)
+        (tmp_path / "mem0.json").write_text('{"user_id": "ryan@example.com"}')
+        provider = self._provider(monkeypatch, tmp_path)
+        provider.initialize("test", user_id="123456789", platform="telegram")
+        assert provider._user_id == "ryan@example.com"
+
+    def test_unset_falls_back_to_gateway_native_id(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("MEM0_USER_ID", raising=False)
+        provider = self._provider(monkeypatch, tmp_path)
+        provider.initialize("test", user_id="123456789", platform="telegram")
+        assert provider._user_id == "123456789"
+
+    def test_unset_and_no_kwargs_falls_back_to_default(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("MEM0_USER_ID", raising=False)
+        provider = self._provider(monkeypatch, tmp_path)
+        provider.initialize("test")
+        assert provider._user_id == "hermes-user"
+
+    def test_legacy_placeholder_in_config_does_not_override_kwargs(self, monkeypatch, tmp_path):
+        # Setup wizard historically wrote {"user_id": "hermes-user"} as the
+        # suggested default. Treat that placeholder as unset so users on
+        # gateways still get gateway-native ids — not silent collisions.
+        monkeypatch.delenv("MEM0_USER_ID", raising=False)
+        (tmp_path / "mem0.json").write_text('{"user_id": "hermes-user"}')
+        provider = self._provider(monkeypatch, tmp_path)
+        provider.initialize("test", user_id="123456789", platform="telegram")
+        assert provider._user_id == "123456789"
+
+
+class TestMem0WriteMetadata:
+    """Writes carry metadata.channel so per-channel filtered views are possible
+    without coupling identity to the channel.
+    """
+
+    def _make_provider(self, channel: str = "cli"):
+        provider = Mem0MemoryProvider()
+        provider._user_id = "u123"
+        provider._agent_id = "hermes"
+        provider._channel = channel
+        provider._backend = FakeBackend()
+        return provider
+
+    def test_add_tool_passes_channel_metadata(self):
+        provider = self._make_provider("telegram")
+        provider.handle_tool_call("mem0_add", {"content": "user likes dark mode"})
+        call = provider._backend.captured[-1]
+        assert call[2]["metadata"] == {"channel": "telegram"}
+
+    def test_sync_turn_passes_channel_metadata(self):
+        provider = self._make_provider("discord")
+        provider.sync_turn("hi", "hello", session_id="s")
+        # sync_turn fires a daemon thread; wait for it.
+        if provider._sync_thread:
+            provider._sync_thread.join(timeout=5.0)
+        adds = [c for c in provider._backend.captured if c[0] == "add"]
+        assert adds, "expected an add call from sync_turn"
+        assert adds[-1][2]["metadata"] == {"channel": "discord"}

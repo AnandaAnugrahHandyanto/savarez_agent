@@ -8,7 +8,11 @@ Original PR #2933 by kartik-mem0, adapted to MemoryProvider ABC.
 Config via environment variables:
   MEM0_MODE          — Backend mode: "platform" (default) or "oss"
   MEM0_API_KEY       — Mem0 Platform API key (required for platform mode)
-  MEM0_USER_ID       — User identifier (default: hermes-user)
+  MEM0_USER_ID       — Canonical user identifier. When set, it is applied
+                       uniformly across every gateway (CLI, Telegram, Slack,
+                       Discord, …) so the same human gets one merged memory
+                       store. When unset, the gateway-native id (e.g. Telegram
+                       numeric id, Discord snowflake) is used instead.
   MEM0_AGENT_ID      — Agent identifier (default: hermes)
 
 Or via $HERMES_HOME/mem0.json.
@@ -38,6 +42,13 @@ _BREAKER_COOLDOWN_SECS = 120
 
 _CLIENT_ERROR_TYPES = ("MemoryNotFoundError", "ValidationError")
 
+# Sentinel returned when neither MEM0_USER_ID nor a gateway-native id is
+# available. Treated as "no operator-configured user_id" by initialize() so
+# that legacy mem0.json files written by the setup wizard (which historically
+# wrote this exact placeholder) still allow gateway-native ids to flow
+# through instead of silently overriding them with the placeholder.
+_DEFAULT_USER_ID = "hermes-user"
+
 
 def _is_client_error(exc: Exception) -> bool:
     """True for user-caused errors (bad ID, not found) that should NOT trip circuit breaker."""
@@ -64,10 +75,15 @@ def _load_config() -> dict:
     config = {
         "mode": os.environ.get("MEM0_MODE", "platform"),
         "api_key": os.environ.get("MEM0_API_KEY", ""),
-        "user_id": os.environ.get("MEM0_USER_ID", "hermes-user"),
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
         "oss": {},
     }
+    # Only carry user_id when the operator explicitly configured one (env or
+    # mem0.json). An absent key tells initialize() to fall back to the
+    # gateway-native id from kwargs instead of overriding it with a placeholder.
+    env_user_id = os.environ.get("MEM0_USER_ID")
+    if env_user_id:
+        config["user_id"] = env_user_id
 
     config_path = get_hermes_home() / "mem0.json"
     if config_path.exists():
@@ -173,8 +189,9 @@ class Mem0MemoryProvider(MemoryProvider):
         self._backend = None
         self._mode = "platform"
         self._api_key = ""
-        self._user_id = "hermes-user"
+        self._user_id = _DEFAULT_USER_ID
         self._agent_id = "hermes"
+        self._channel = "cli"  # gateway channel name (cli/telegram/discord/...)
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
@@ -273,16 +290,40 @@ class Mem0MemoryProvider(MemoryProvider):
         self._config = _load_config()
         self._mode = self._config.get("mode", "platform")
         self._api_key = self._config.get("api_key", "")
-        self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")
+        # Resolution order for user_id:
+        #   1. Operator-configured MEM0_USER_ID (env or $HERMES_HOME/mem0.json) —
+        #      the canonical principal, applied across every gateway so the same
+        #      human gets one merged memory store.
+        #   2. Gateway-native id from kwargs (Telegram numeric id, Discord
+        #      snowflake, etc.) — preserves per-platform isolation when no
+        #      override is configured.
+        #   3. Hardcoded fallback _DEFAULT_USER_ID (CLI with no auth).
+        # The literal _DEFAULT_USER_ID string is treated as unset so users who
+        # ran the setup wizard with the suggested default still get gateway-
+        # native ids instead of being silently bucketed together.
+        configured = self._config.get("user_id")
+        if configured == _DEFAULT_USER_ID:
+            configured = None
+        self._user_id = configured or kwargs.get("user_id") or _DEFAULT_USER_ID
         self._agent_id = self._config.get("agent_id", "hermes")
+        self._channel = kwargs.get("platform") or "cli"
         self._backend = self._create_backend()
         if self._backend and hasattr(self._backend, "close"):
             atexit.register(self._shutdown_backend)
         capture_event("hermes.plugin.registered", {"mode": self._mode}, api_key=self._api_key, mode=self._mode)
 
     def _read_filters(self) -> Dict[str, Any]:
-        """Filters for search/get_all — scoped to user only for cross-session recall."""
+        # Scoped to user_id only — by design — so recall surfaces memories
+        # written from any gateway/agent under this principal. Writes attach
+        # agent_id (and metadata.channel) so per-agent / per-channel views are
+        # still possible at query time when needed; reads default to the wider
+        # cross-agent recall.
         return {"user_id": self._user_id}
+
+    def _write_metadata(self) -> Dict[str, Any]:
+        # Tag every write with the gateway channel so the dashboard can offer
+        # per-channel filtered views without coupling identity to the channel.
+        return {"channel": self._channel} if self._channel else {}
 
     def system_prompt_block(self) -> str:
         mode_label = "platform (cloud API)" if self._mode == "platform" else "OSS (self-hosted)"
@@ -340,7 +381,13 @@ class Mem0MemoryProvider(MemoryProvider):
                     {"role": "user", "content": user_content},
                     {"role": "assistant", "content": assistant_content},
                 ]
-                self._backend.add(messages, user_id=self._user_id, agent_id=self._agent_id, infer=True)
+                self._backend.add(
+                    messages,
+                    user_id=self._user_id,
+                    agent_id=self._agent_id,
+                    infer=True,
+                    metadata=self._write_metadata(),
+                )
                 self._record_success()
                 latency = (time.monotonic() - start) * 1000
                 capture_event("hermes.hook.capture", {
@@ -439,8 +486,10 @@ class Mem0MemoryProvider(MemoryProvider):
             try:
                 result = self._backend.add(
                     [{"role": "user", "content": content}],
-                    user_id=self._user_id, agent_id=self._agent_id,
+                    user_id=self._user_id,
+                    agent_id=self._agent_id,
                     infer=False,
+                    metadata=self._write_metadata(),
                 )
                 self._record_success()
                 latency = (time.monotonic() - start) * 1000
