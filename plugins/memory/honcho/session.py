@@ -659,7 +659,8 @@ class HonchoSessionManager:
             logger.debug("Failed to fetch session summary from Honcho: %s", e)
 
         try:
-            user_ctx = self._fetch_peer_context(session.user_peer_id, target=session.user_peer_id)
+            observer_peer_id, target_peer_id = self._resolve_observer_target(session, "user")
+            user_ctx = self._fetch_peer_context(observer_peer_id, target=target_peer_id)
             result["representation"] = user_ctx["representation"]
             result["card"] = "\n".join(user_ctx["card"])
         except Exception as e:
@@ -929,18 +930,17 @@ class HonchoSessionManager:
 
         honcho_session = self._sessions_cache.get(session.honcho_session_id)
         if not honcho_session:
-            # Fall back to peer-level context, respecting the requested peer
-            peer_id = self._resolve_peer_id(session, peer)
-            if peer_id is None:
-                peer_id = session.user_peer_id
-            return self._fetch_peer_context(peer_id, target=peer_id)
+            # Fall back to peer-level context, respecting the same observer/target
+            # routing used by profile/search/prefetch paths.
+            observer_peer_id, target_peer_id = self._resolve_observer_target(session, peer)
+            return self._fetch_peer_context(observer_peer_id, target=target_peer_id)
 
         try:
-            peer_id = self._resolve_peer_id(session, peer)
+            observer_peer_id, target_peer_id = self._resolve_observer_target(session, peer)
             ctx = honcho_session.context(
                 summary=True,
-                peer_target=peer_id,
-                peer_perspective=session.user_peer_id if peer == "user" else session.assistant_peer_id,
+                peer_target=target_peer_id or observer_peer_id,
+                peer_perspective=observer_peer_id,
             )
 
             result: dict[str, Any] = {}
@@ -1163,13 +1163,13 @@ class HonchoSessionManager:
         if not session:
             return None
         try:
-            peer_id = self._resolve_peer_id(session, peer)
-            if peer_id is None:
+            observer_peer_id, target_peer_id = self._resolve_observer_target(session, peer)
+            if observer_peer_id is None:
                 logger.warning("Could not resolve peer '%s' for set_peer_card in session '%s'", peer, session_key)
                 return None
-            peer_obj = self._get_or_create_peer(peer_id)
-            result = peer_obj.set_card(card)
-            logger.info("Updated peer card for %s (%d facts)", peer_id, len(card))
+            peer_obj = self._get_or_create_peer(observer_peer_id)
+            result = peer_obj.set_card(card, target=target_peer_id) if target_peer_id is not None else peer_obj.set_card(card)
+            logger.debug("Updated peer card (%d facts)", len(card))
             return result
         except Exception as e:
             logger.error("Failed to set peer card: %s", e)
