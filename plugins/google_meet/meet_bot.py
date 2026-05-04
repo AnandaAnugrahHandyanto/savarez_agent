@@ -569,6 +569,9 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             # we're authed, we instead see "Join now".
             _try_guest_name(page, guest_name)
             _click_join(page, state)
+            if state.error:
+                state.set(exited=True, leave_reason="join_button_not_found")
+                return 6
 
             # Install caption observer and attempt to enable captions.
             try:
@@ -814,21 +817,63 @@ def _looks_like_human_speaker(speaker: str, bot_guest_name: str) -> bool:
 
 
 def _click_join(page, state: _BotState) -> None:
-    """Click 'Join now' or 'Ask to join' if either button is visible.
+    """Click 'Join now' or 'Ask to join' once Meet's pre-join UI is ready.
+
+    Meet often renders the pre-join controls after ``domcontentloaded`` by a
+    few seconds. A single immediate probe can silently miss the button, leaving
+    the bot alive but not actually requesting admission. Poll briefly and make
+    the failure visible in status.json so smoke tests don't look like a stuck
+    lobby.
 
     Flags ``lobby_waiting`` when we hit the "waiting for host to admit you"
     state so the agent can surface that in status.
     """
-    for label in ("Join now", "Ask to join"):
+    deadline = time.time() + float(os.environ.get("HERMES_MEET_JOIN_BUTTON_TIMEOUT", "30"))
+    last_error: Optional[str] = None
+    expanded_other_ways = False
+    dismissed_switch_hint = False
+    while time.time() < deadline:
+        if not dismissed_switch_hint:
+            try:
+                got_it = page.get_by_role("button", name="Got it", exact=True).first
+                if got_it.count() and got_it.is_visible():
+                    got_it.click(timeout=3_000)
+                    dismissed_switch_hint = True
+            except Exception as e:
+                last_error = str(e)
+
+        for label in ("Join now", "Join here too", "Ask to join"):
+            try:
+                btn = page.get_by_role("button", name=label, exact=False).first
+                if btn.count() and btn.is_visible():
+                    btn.click(timeout=3_000)
+                    if label == "Ask to join":
+                        state.set(lobby_waiting=True)
+                    return
+            except Exception as e:
+                last_error = str(e)
+                continue
+
+        # If the same Google account is already in the meeting elsewhere,
+        # Meet may hide the safe second-device path behind "Other ways to
+        # join" and show a prominent "Switch here" button instead. Do not
+        # click "Switch here" because it would steal the user's active call;
+        # expand the menu and prefer "Join here too".
+        if not expanded_other_ways:
+            try:
+                other = page.get_by_role("button", name="Other ways to join", exact=False).first
+                if other.count() and other.is_visible():
+                    other.click(timeout=3_000)
+                    expanded_other_ways = True
+            except Exception as e:
+                last_error = str(e)
+
         try:
-            btn = page.get_by_role("button", name=label, exact=False).first
-            if btn.count() and btn.is_visible():
-                btn.click(timeout=3_000)
-                if label == "Ask to join":
-                    state.set(lobby_waiting=True)
-                break
-        except Exception:
-            continue
+            page.wait_for_timeout(500)
+        except Exception as e:
+            last_error = str(e)
+            break
+    state.set(error=("join button not found" + (f": {last_error}" if last_error else "")))
 
 
 def _parse_duration(raw: str) -> Optional[float]:
