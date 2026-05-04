@@ -2121,6 +2121,25 @@ class AIAgent:
                     self._ollama_num_ctx = _detected
             except Exception as exc:
                 logger.debug("Ollama num_ctx detection failed: %s", exc)
+        # When /api/show detection fails (LAN latency timeout, model not found, or
+        # missing GGUF context_length metadata) and the user has explicitly set
+        # model.context_length in config.yaml, use that value as num_ctx.  Without
+        # this fallback Ollama defaults to 2048 tokens, which is smaller than
+        # hermes's system prompt alone and causes silent truncation that makes the
+        # model appear to forget earlier turns in the same session.  Refs #14420.
+        if (
+            self._ollama_num_ctx is None
+            and _config_context_length
+            and _ollama_num_ctx_override is None
+            and self.base_url
+            and is_local_endpoint(self.base_url)
+        ):
+            self._ollama_num_ctx = _config_context_length
+            logger.info(
+                "Ollama num_ctx: /api/show detection failed; using model.context_length=%d "
+                "from config. Set model.ollama_num_ctx in config.yaml to pin a specific value.",
+                _config_context_length,
+            )
         # Cap auto-detected ollama_num_ctx to the user's explicit context_length.
         # Without this, GGUF metadata can advertise 256K+ which Ollama honours
         # by allocating that much VRAM — blowing up small GPUs even though the
@@ -2138,7 +2157,7 @@ class AIAgent:
             self._ollama_num_ctx = _config_context_length
         if self._ollama_num_ctx and not self.quiet_mode:
             logger.info(
-                "Ollama num_ctx: will request %d tokens (model max from /api/show)",
+                "Ollama num_ctx: will request %d tokens",
                 self._ollama_num_ctx,
             )
 

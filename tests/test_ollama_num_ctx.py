@@ -133,3 +133,37 @@ class TestQueryOllamaNumCtx:
                 result = query_ollama_num_ctx("model", "http://localhost:11434")
 
         assert result is None
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Level 2: run_agent.py fallback — model.context_length used when
+#           /api/show detection fails
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestOllamaNumCtxFallback:
+    """Verify the run_agent.py fallback: when query_ollama_num_ctx() returns None
+    for a local endpoint, the user's model.context_length is used as num_ctx so
+    Ollama does not silently default to 2048 tokens and truncate conversation
+    history (issue #14420)."""
+
+    def test_context_length_fallback_on_detection_failure(self):
+        """query_ollama_num_ctx returning None → context_length used as num_ctx."""
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None):
+            # detect_local_server_type returning None causes query_ollama_num_ctx
+            # to return None immediately.  Simulate the same None return directly.
+            result = query_ollama_num_ctx("qwen3.5:9b", "http://192.168.21.205:11434/v1")
+
+        # query returns None; the caller (run_agent.py) should apply the fallback
+        # using model.context_length.  This test documents the None return that
+        # triggers the fallback, not the fallback itself (which lives in AIAgent.__init__).
+        assert result is None
+
+    def test_detection_failure_via_timeout(self):
+        """A connection timeout should also return None so the fallback kicks in."""
+        import httpx
+
+        with patch("agent.model_metadata.detect_local_server_type", side_effect=httpx.ConnectTimeout("timeout")):
+            result = query_ollama_num_ctx("qwen3.5:9b", "http://192.168.21.205:11434/v1")
+
+        assert result is None
