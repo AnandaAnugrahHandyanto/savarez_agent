@@ -25,11 +25,13 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     repo_dir.mkdir()
     (repo_dir / ".git").mkdir()
 
+    cache_rev = f"git:{repo_dir}:abc123"
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3}))
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3, "rev": cache_rev}))
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    with patch("hermes_cli.banner.subprocess.run") as mock_run:
+    with patch("hermes_cli.banner._local_git_cache_rev", return_value=cache_rev), \
+         patch("hermes_cli.banner.subprocess.run") as mock_run:
         result = check_for_updates()
 
     assert result == 3
@@ -44,18 +46,71 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
     repo_dir.mkdir()
     (repo_dir / ".git").mkdir()
 
+    cache_rev = f"git:{repo_dir}:abc123"
+
     # Write an expired cache (timestamp far in the past)
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": 0, "behind": 1}))
+    cache_file.write_text(json.dumps({"ts": 0, "behind": 1, "rev": cache_rev}))
 
     mock_result = MagicMock(returncode=0, stdout="5\n")
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    with patch("hermes_cli.banner.subprocess.run", return_value=mock_result) as mock_run:
+    with patch("hermes_cli.banner._local_git_cache_rev", return_value=cache_rev), \
+         patch("hermes_cli.banner.subprocess.run", return_value=mock_result) as mock_run:
         result = check_for_updates()
 
     assert result == 5
     assert mock_run.call_count == 2  # git fetch + git rev-list
+
+
+def test_check_for_updates_invalidates_stale_local_cache(tmp_path, monkeypatch):
+    """Fresh local-git caches without the current HEAD must not be trusted."""
+    from hermes_cli.banner import check_for_updates
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    # This is the historical stale cache shape that caused `hermes --version`
+    # to keep reporting a false commits-behind notice after the checkout updated.
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 174}))
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.banner._local_git_cache_rev", return_value=f"git:{repo_dir}:current"), \
+         patch("hermes_cli.banner.subprocess.run", return_value=MagicMock(returncode=0, stdout="0\n")) as mock_run:
+        result = check_for_updates()
+
+    assert result == 0
+    assert mock_run.call_count == 2  # git fetch + git rev-list
+    cached = json.loads(cache_file.read_text())
+    assert cached["behind"] == 0
+    assert cached["rev"] == f"git:{repo_dir}:current"
+
+
+def test_check_for_updates_invalidates_when_upstream_ref_changes(tmp_path, monkeypatch):
+    """Fresh cache with same HEAD but old origin/main must not be trusted."""
+    from hermes_cli.banner import check_for_updates
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    old_cache_rev = f"git:{repo_dir}:HEAD=current:origin/main=old-upstream"
+    new_cache_rev = f"git:{repo_dir}:HEAD=current:origin/main=new-upstream"
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 0, "rev": old_cache_rev}))
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.banner._local_git_cache_rev", return_value=new_cache_rev), \
+         patch("hermes_cli.banner.subprocess.run", return_value=MagicMock(returncode=0, stdout="20\n")) as mock_run:
+        result = check_for_updates()
+
+    assert result == 20
+    assert mock_run.call_count == 2  # git fetch + git rev-list
+    cached = json.loads(cache_file.read_text())
+    assert cached["behind"] == 20
+    assert cached["rev"] == new_cache_rev
 
 
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
