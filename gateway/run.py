@@ -12246,6 +12246,22 @@ class GatewayRunner:
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
+            def _progress_edit_requires_send_only(error: str) -> bool:
+                err = (error or "").lower()
+                return any(
+                    pattern in err
+                    for pattern in (
+                        "flood",
+                        "retry after",
+                        "too many requests",
+                        "edit not supported",
+                        "editing not supported",
+                        "can't edit",
+                        "cannot edit",
+                        "edit_message not implemented",
+                    )
+                )
+
             while True:
                 try:
                     if not _run_still_current():
@@ -12324,16 +12340,36 @@ class GatewayRunner:
                         )
                         if not result.success:
                             _err = (getattr(result, "error", "") or "").lower()
-                            if "flood" in _err or "retry after" in _err:
-                                # Flood control hit — disable further edits,
-                                # switch to sending new messages only for
-                                # important updates.  Don't block 23s.
+                            if _progress_edit_requires_send_only(_err):
+                                # Platform-level or flood-control failure:
+                                # disable edits and fall back to fresh sends.
                                 logger.info(
-                                    "[%s] Progress edits disabled due to flood control",
+                                    "[%s] Progress edits disabled after edit failure: %s",
                                     adapter.name,
+                                    _err or "unknown error",
                                 )
-                            can_edit = False
-                            await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                                can_edit = False
+                                await adapter.send(
+                                    chat_id=source.chat_id,
+                                    content=msg,
+                                    metadata=_progress_metadata,
+                                )
+                            else:
+                                # Recoverable failure (for example, the old
+                                # progress message disappeared or changed
+                                # threads). Re-send the full accumulated body
+                                # as a new progress anchor and keep editing on.
+                                progress_msg_id = None
+                                resend = await adapter.send(
+                                    chat_id=source.chat_id,
+                                    content=full_text,
+                                    metadata=_progress_metadata,
+                                )
+                                if resend.success and resend.message_id:
+                                    progress_msg_id = resend.message_id
+                                    can_edit = True
+                                else:
+                                    can_edit = False
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message

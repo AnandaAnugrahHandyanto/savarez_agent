@@ -18,8 +18,10 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
     def __init__(self, platform=Platform.TELEGRAM):
         super().__init__(PlatformConfig(enabled=True, token="***"), platform)
         self.sent = []
+        self.sent_message_ids = []
         self.edits = []
         self.typing = []
+        self._send_seq = 0
 
     async def connect(self) -> bool:
         return True
@@ -28,6 +30,8 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         return None
 
     async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self._send_seq += 1
+        message_id = f"progress-{self._send_seq}"
         self.sent.append(
             {
                 "chat_id": chat_id,
@@ -36,7 +40,8 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
                 "metadata": metadata,
             }
         )
-        return SendResult(success=True, message_id="progress-1")
+        self.sent_message_ids.append(message_id)
+        return SendResult(success=True, message_id=message_id)
 
     async def edit_message(self, chat_id, message_id, content) -> SendResult:
         self.edits.append(
@@ -86,6 +91,46 @@ class FakeAgent:
             "messages": [],
             "api_calls": 1,
         }
+
+
+class RecoveringAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "terminal", "pwd", {})
+        time.sleep(0.15)
+        self.tool_progress_callback("tool.started", "browser_navigate", "https://example.com", {})
+        time.sleep(0.15)
+        self.tool_progress_callback("tool.started", "execute_code", "print(1)", {})
+        time.sleep(0.15)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class RecoveringProgressAdapter(ProgressCaptureAdapter):
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self._edit_results = [
+            SendResult(success=False, error="message to edit not found"),
+            SendResult(success=True, message_id="progress-2"),
+        ]
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        if self._edit_results:
+            return self._edit_results.pop(0)
+        return SendResult(success=True, message_id=message_id)
 
 
 class LongPreviewAgent:
@@ -209,6 +254,62 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     ]
     assert adapter.edits
     assert all(call["metadata"] == {"thread_id": "17585"} for call in adapter.typing)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_recovers_after_edit_failure(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = RecoveringAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = RecoveringProgressAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+
+    monotonic_value = {"value": -2.0}
+
+    def _fake_monotonic():
+        monotonic_value["value"] += 2.0
+        return monotonic_value["value"]
+
+    monkeypatch.setattr(gateway_run.time, "monotonic", _fake_monotonic)
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-recover",
+        session_key="agent:main:telegram:group:-1001:17585",
+    )
+
+    assert result["final_response"] == "done"
+    progress_ids = [
+        message_id
+        for call, message_id in zip(adapter.sent, adapter.sent_message_ids)
+        if any(
+            marker in call["content"]
+            for marker in ("terminal", "browser_navigate", "execute_code")
+        )
+    ][:2]
+    assert len(progress_ids) == 2
+    assert [call["message_id"] for call in adapter.edits] == progress_ids
+    assert progress_ids[0] != progress_ids[1]
 
 
 @pytest.mark.asyncio
