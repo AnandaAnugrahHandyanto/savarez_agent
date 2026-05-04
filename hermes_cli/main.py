@@ -5293,12 +5293,14 @@ def _run_npm_install_deterministic(
 ) -> subprocess.CompletedProcess:
     """Run a deterministic npm install that does not mutate ``package-lock.json``.
 
-    Prefers ``npm ci`` (strict, lockfile-preserving) when a lockfile is present;
-    falls back to ``npm install`` only if ``npm ci`` fails (e.g. lockfile out of
-    sync on a WIP checkout).  Without this, ``npm install`` on npm ≥ 10 silently
-    rewrites committed lockfiles (stripping ``"peer": true`` etc.), which leaves
-    the working tree dirty and causes the next ``hermes update`` to stash the
-    lockfile — repeatedly.
+    Prefers ``npm ci`` (strict, lockfile-preserving) when a lockfile is present.
+    If ``npm ci`` fails (for example because a WIP checkout's lockfile is out of
+    sync), fall back to ``npm install --package-lock=false`` so the update can
+    still refresh ``node_modules`` without silently rewriting committed
+    lockfiles.  Plain ``npm install`` on npm ≥ 10 rewrites lockfiles (stripping
+    ``"peer": true`` and adding optional peer metadata), leaving the working
+    tree dirty and causing the next ``hermes update`` to stash the same lockfile
+    again.
     """
     lockfile = cwd / "package-lock.json"
     if lockfile.exists():
@@ -5312,9 +5314,10 @@ def _run_npm_install_deterministic(
         )
         if ci_result.returncode == 0:
             return ci_result
-        # Fall through to `npm install` — lockfile may be out of sync on a
-        # WIP fork/branch, or `npm ci` may not be available on very old npm.
-    install_cmd = [npm, "install", *extra_args]
+        # Fall through to `npm install --package-lock=false` — lockfile may be
+        # out of sync on a WIP fork/branch, or `npm ci` may not be available on
+        # very old npm, but update/install flows must not dirty the checkout.
+    install_cmd = [npm, "install", "--package-lock=false", *extra_args]
     return subprocess.run(
         install_cmd,
         cwd=cwd,

@@ -13,7 +13,11 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import _web_ui_build_needed, _build_web_ui
+from hermes_cli.main import (
+    _build_web_ui,
+    _run_npm_install_deterministic,
+    _web_ui_build_needed,
+)
 
 
 def _touch(path: Path, offset: float = 0.0) -> None:
@@ -94,6 +98,60 @@ class TestWebUIBuildNeeded:
         _touch(dist_dir / ".vite" / "manifest.json", offset=-10)
         _touch(web_dir / "dist" / "assets" / "index.js")
         assert _web_ui_build_needed(web_dir) is False
+
+
+class TestNpmInstallDeterministic:
+    def test_uses_npm_ci_when_lockfile_is_present(self, tmp_path):
+        (tmp_path / "package-lock.json").write_text("{}")
+        success = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+
+        with patch("hermes_cli.main.subprocess.run", return_value=success) as mock_run:
+            result = _run_npm_install_deterministic(
+                "/usr/bin/npm",
+                tmp_path,
+                extra_args=("--silent", "--no-audit"),
+            )
+
+        assert result is success
+        mock_run.assert_called_once_with(
+            ["/usr/bin/npm", "ci", "--silent", "--no-audit"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_fallback_install_never_rewrites_lockfile(self, tmp_path):
+        (tmp_path / "package-lock.json").write_text("{}")
+        failed_ci = __import__("subprocess").CompletedProcess(
+            [], 1, stdout="", stderr="lockfile out of sync"
+        )
+        install_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+
+        with patch(
+            "hermes_cli.main.subprocess.run",
+            side_effect=[failed_ci, install_ok],
+        ) as mock_run:
+            result = _run_npm_install_deterministic(
+                "/usr/bin/npm",
+                tmp_path,
+                extra_args=("--silent", "--no-audit"),
+            )
+
+        assert result is install_ok
+        assert mock_run.call_args_list[0].args[0] == [
+            "/usr/bin/npm",
+            "ci",
+            "--silent",
+            "--no-audit",
+        ]
+        assert mock_run.call_args_list[1].args[0] == [
+            "/usr/bin/npm",
+            "install",
+            "--package-lock=false",
+            "--silent",
+            "--no-audit",
+        ]
 
 
 class TestBuildWebUISkipsWhenFresh:
