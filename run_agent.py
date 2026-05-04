@@ -1084,202 +1084,13 @@ class AIAgent:
         # same image history.
         self._anthropic_image_fallback_cache: Dict[str, str] = {}
 
-        # Initialize LLM client via centralized provider router.
-        # The router handles auth resolution, base URL, headers, and
-        # Codex/Anthropic wrapping for all known providers.
-        # raw_codex=True because the main agent needs direct responses.stream()
-        # access for Codex Responses API streaming.
-        self._anthropic_client = None
-        self._is_anthropic_oauth = False
 
-        # Resolve per-provider / per-model request timeout once up front so
-        # every client construction path below (Anthropic native, OpenAI-wire,
-        # router-based implicit auth) can apply it consistently.  Bedrock
-        # Claude uses its own timeout path and is not covered here.
-        _provider_timeout = get_provider_request_timeout(self.provider, self.model)
+        # ══════════════════════════════════════════════════════
+        # INIT PHASE 5: LLM Client (extracted)
+        # ══════════════════════════════════════════════════════
+        self._init_llm_client(api_key=api_key, base_url=base_url, raw_codex=True)
 
-        if self.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
-            # Bedrock + Claude → use AnthropicBedrock SDK for full feature parity
-            # (prompt caching, thinking budgets, adaptive thinking).
-            _is_bedrock_anthropic = self.provider == "bedrock"
-            if _is_bedrock_anthropic:
-                from agent.anthropic_adapter import build_anthropic_bedrock_client
-                _region_match = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
-                _br_region = _region_match.group(1) if _region_match else "us-east-1"
-                self._bedrock_region = _br_region
-                self._anthropic_client = build_anthropic_bedrock_client(_br_region)
-                self._anthropic_api_key = "aws-sdk"
-                self._anthropic_base_url = base_url
-                self._is_anthropic_oauth = False
-                self.api_key = "aws-sdk"
-                self.client = None
-                self._client_kwargs = {}
-                if not self.quiet_mode:
-                    print(f"🤖 AI Agent initialized with model: {self.model} (AWS Bedrock + AnthropicBedrock SDK, {_br_region})")
-            else:
-                # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
-                # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
-                # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
-                _is_native_anthropic = self.provider == "anthropic"
-                effective_key = (api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or "")
-                self.api_key = effective_key
-                self._anthropic_api_key = effective_key
-                self._anthropic_base_url = base_url
-                # Only mark the session as OAuth-authenticated when the token
-                # genuinely belongs to native Anthropic.  Third-party providers
-                # (MiniMax, Kimi, GLM, LiteLLM proxies) that accept the
-                # Anthropic protocol must never trip OAuth code paths — doing
-                # so injects Claude-Code identity headers and system prompts
-                # that cause 401/403 on their endpoints.  Guards #1739 and
-                # the third-party identity-injection bug.
-                from agent.anthropic_adapter import _is_oauth_token as _is_oat
-                self._is_anthropic_oauth = _is_oat(effective_key) if _is_native_anthropic else False
-                self._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
-                # No OpenAI client needed for Anthropic mode
-                self.client = None
-                self._client_kwargs = {}
-                if not self.quiet_mode:
-                    print(f"🤖 AI Agent initialized with model: {self.model} (Anthropic native)")
-                    if effective_key and len(effective_key) > 12:
-                        print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
-        elif self.api_mode == "bedrock_converse":
-            # AWS Bedrock — uses boto3 directly, no OpenAI client needed.
-            # Region is extracted from the base_url or defaults to us-east-1.
-            _region_match = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
-            self._bedrock_region = _region_match.group(1) if _region_match else "us-east-1"
-            # Guardrail config — read from config.yaml at init time.
-            self._bedrock_guardrail_config = None
-            try:
-                from hermes_cli.config import load_config as _load_br_cfg
-                _gr = _load_br_cfg().get("bedrock", {}).get("guardrail", {})
-                if _gr.get("guardrail_identifier") and _gr.get("guardrail_version"):
-                    self._bedrock_guardrail_config = {
-                        "guardrailIdentifier": _gr["guardrail_identifier"],
-                        "guardrailVersion": _gr["guardrail_version"],
-                    }
-                    if _gr.get("stream_processing_mode"):
-                        self._bedrock_guardrail_config["streamProcessingMode"] = _gr["stream_processing_mode"]
-                    if _gr.get("trace"):
-                        self._bedrock_guardrail_config["trace"] = _gr["trace"]
-            except Exception:
-                pass
-            self.client = None
-            self._client_kwargs = {}
-            if not self.quiet_mode:
-                _gr_label = " + Guardrails" if self._bedrock_guardrail_config else ""
-                print(f"🤖 AI Agent initialized with model: {self.model} (AWS Bedrock, {self._bedrock_region}{_gr_label})")
-        else:
-            if api_key and base_url:
-                # Explicit credentials from CLI/gateway — construct directly.
-                # The runtime provider resolver already handled auth for us.
-                client_kwargs = {"api_key": api_key, "base_url": base_url}
-                if _provider_timeout is not None:
-                    client_kwargs["timeout"] = _provider_timeout
-                if self.provider == "copilot-acp":
-                    client_kwargs["command"] = self.acp_command
-                    client_kwargs["args"] = self.acp_args
-                effective_base = base_url
-                if base_url_host_matches(effective_base, "openrouter.ai"):
-                    client_kwargs["default_headers"] = {
-                        "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-                        "X-OpenRouter-Title": "Hermes Agent",
-                        "X-OpenRouter-Categories": "productivity,cli-agent",
-                    }
-                elif base_url_host_matches(effective_base, "api.githubcopilot.com"):
-                    from hermes_cli.models import copilot_default_headers
-
-                    client_kwargs["default_headers"] = copilot_default_headers()
-                elif base_url_host_matches(effective_base, "api.kimi.com"):
-                    client_kwargs["default_headers"] = {
-                        "User-Agent": "claude-code/0.1.0",
-                    }
-                elif base_url_host_matches(effective_base, "portal.qwen.ai"):
-                    client_kwargs["default_headers"] = _qwen_portal_headers()
-                elif base_url_host_matches(effective_base, "chatgpt.com"):
-                    from agent.auxiliary_client import _codex_cloudflare_headers
-                    client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
-            else:
-                # No explicit creds — use the centralized provider router
-                from agent.auxiliary_client import resolve_provider_client
-                _routed_client, _ = resolve_provider_client(
-                    self.provider or "auto", model=self.model, raw_codex=True)
-                if _routed_client is not None:
-                    client_kwargs = {
-                        "api_key": _routed_client.api_key,
-                        "base_url": str(_routed_client.base_url),
-                    }
-                    if _provider_timeout is not None:
-                        client_kwargs["timeout"] = _provider_timeout
-                    # Preserve any default_headers the router set
-                    if hasattr(_routed_client, '_default_headers') and _routed_client._default_headers:
-                        client_kwargs["default_headers"] = dict(_routed_client._default_headers)
-                else:
-                    # When the user explicitly chose a non-OpenRouter provider
-                    # but no credentials were found, fail fast with a clear
-                    # message instead of silently routing through OpenRouter.
-                    _explicit = (self.provider or "").strip().lower()
-                    if _explicit and _explicit not in ("auto", "openrouter", "custom"):
-                        # Look up the actual env var name from the provider
-                        # config — some providers use non-standard names
-                        # (e.g. alibaba → DASHSCOPE_API_KEY, not ALIBABA_API_KEY).
-                        _env_hint = f"{_explicit.upper()}_API_KEY"
-                        try:
-                            from hermes_cli.auth import PROVIDER_REGISTRY
-                            _pcfg = PROVIDER_REGISTRY.get(_explicit)
-                            if _pcfg and _pcfg.api_key_env_vars:
-                                _env_hint = _pcfg.api_key_env_vars[0]
-                        except Exception:
-                            pass
-                        raise RuntimeError(
-                            f"Provider '{_explicit}' is set in config.yaml but no API key "
-                            f"was found. Set the {_env_hint} environment "
-                            f"variable, or switch to a different provider with `hermes model`."
-                        )
-                    # No provider configured — reject with a clear message.
-                    raise RuntimeError(
-                        "No LLM provider configured. Run `hermes model` to "
-                        "select a provider, or run `hermes setup` for first-time "
-                        "configuration."
-                    )
-            
-            self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
-
-            # Enable fine-grained tool streaming for Claude on OpenRouter.
-            # Without this, Anthropic buffers the entire tool call and goes
-            # silent for minutes while thinking — OpenRouter's upstream proxy
-            # times out during the silence.  The beta header makes Anthropic
-            # stream tool call arguments token-by-token, keeping the
-            # connection alive.
-            _effective_base = str(client_kwargs.get("base_url", "")).lower()
-            if base_url_host_matches(_effective_base, "openrouter.ai") and "claude" in (self.model or "").lower():
-                headers = client_kwargs.get("default_headers") or {}
-                existing_beta = headers.get("x-anthropic-beta", "")
-                _FINE_GRAINED = "fine-grained-tool-streaming-2025-05-14"
-                if _FINE_GRAINED not in existing_beta:
-                    if existing_beta:
-                        headers["x-anthropic-beta"] = f"{existing_beta},{_FINE_GRAINED}"
-                    else:
-                        headers["x-anthropic-beta"] = _FINE_GRAINED
-                    client_kwargs["default_headers"] = headers
-
-            self.api_key = client_kwargs.get("api_key", "")
-            self.base_url = client_kwargs.get("base_url", self.base_url)
-            try:
-                self.client = self._create_openai_client(client_kwargs, reason="agent_init", shared=True)
-                if not self.quiet_mode:
-                    print(f"🤖 AI Agent initialized with model: {self.model}")
-                    if base_url:
-                        print(f"🔗 Using custom base URL: {base_url}")
-                    # Always show API key info (masked) for debugging auth issues
-                    key_used = client_kwargs.get("api_key", "none")
-                    if key_used and key_used != "dummy-key" and len(key_used) > 12:
-                        print(f"🔑 Using API key: {key_used[:8]}...{key_used[-4:]}")
-                    else:
-                        print(f"⚠️  Warning: API key appears invalid or missing (got: '{key_used[:20] if key_used else 'none'}...')")
-            except Exception as e:
-                raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
-        
+        # ─── Tool Loading & Display Status ─────────────────────
         # Provider fallback chain — ordered list of backup providers tried
         # when the primary is exhausted (rate-limit, overload, connection
         # failure).  Supports both legacy single-dict ``fallback_model`` and
@@ -1354,6 +1165,8 @@ class AIAgent:
                 source = "Claude via OpenRouter"
             print(f"💾 Prompt caching: ENABLED ({source}, {self._cache_ttl} TTL)")
         
+
+        # ─── Session Setup ─────────────────────────────────────
         # Session logging setup - auto-save conversation trajectories for debugging
         self.session_start = datetime.now()
         if session_id:
@@ -1417,6 +1230,8 @@ class AIAgent:
         from tools.todo_tool import TodoStore
         self._todo_store = TodoStore()
         
+
+        # ─── Memory System ─────────────────────────────────────
         # Load config once for memory, skills, and compression sections
         try:
             from hermes_cli.config import load_config as _load_agent_config
@@ -1547,6 +1362,8 @@ class AIAgent:
             self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
         except Exception:
             pass
+
+        # ─── Context Compression & Engine ──────────────────────
 
         # Tool-use enforcement config: "auto" (default — matches hardcoded
         # model list), true (always), false (never), or list of substrings.
@@ -1852,6 +1669,226 @@ class AIAgent:
                 "anthropic_base_url": self._anthropic_base_url,
                 "is_anthropic_oauth": self._is_anthropic_oauth,
             })
+
+
+
+    # ══════════════════════════════════════════════════════════════
+    # EXTRACTED INIT METHOD
+    # ══════════════════════════════════════════════════════════════
+
+    # ─── LLM Client Initialization ───────────────────────────────
+    def _init_llm_client(self, api_key, base_url, raw_codex: bool = True):
+        """Initialize LLM client via centralized provider router.
+
+        Sets self.client, self._client_kwargs, and provider-specific
+        attributes (self._anthropic_client, self._bedrock_client, etc.).
+
+        Args:
+            api_key: API key from __init__ (may be empty/None).
+            base_url: Base URL from __init__ (may be empty/None).
+            raw_codex: If True, send raw JWT to Codex endpoints.
+        """
+        # Initialize LLM client via centralized provider router.
+        # The router handles auth resolution, base URL, headers, and
+        # Codex/Anthropic wrapping for all known providers.
+        # raw_codex=True because the main agent needs direct responses.stream()
+        # access for Codex Responses API streaming.
+        self._anthropic_client = None
+        self._is_anthropic_oauth = False
+
+        # Resolve per-provider / per-model request timeout once up front so
+        # every client construction path below (Anthropic native, OpenAI-wire,
+        # router-based implicit auth) can apply it consistently.  Bedrock
+        # Claude uses its own timeout path and is not covered here.
+        _provider_timeout = get_provider_request_timeout(self.provider, self.model)
+
+        if self.api_mode == "anthropic_messages":
+            from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
+            # Bedrock + Claude → use AnthropicBedrock SDK for full feature parity
+            # (prompt caching, thinking budgets, adaptive thinking).
+            _is_bedrock_anthropic = self.provider == "bedrock"
+            if _is_bedrock_anthropic:
+                from agent.anthropic_adapter import build_anthropic_bedrock_client
+                _region_match = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
+                _br_region = _region_match.group(1) if _region_match else "us-east-1"
+                self._bedrock_region = _br_region
+                self._anthropic_client = build_anthropic_bedrock_client(_br_region)
+                self._anthropic_api_key = "aws-sdk"
+                self._anthropic_base_url = base_url
+                self._is_anthropic_oauth = False
+                self.api_key = "aws-sdk"
+                self.client = None
+                self._client_kwargs = {}
+                if not self.quiet_mode:
+                    print(f"🤖 AI Agent initialized with model: {self.model} (AWS Bedrock + AnthropicBedrock SDK, {_br_region})")
+            else:
+                # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
+                # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
+                # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
+                _is_native_anthropic = self.provider == "anthropic"
+                effective_key = (api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or "")
+                self.api_key = effective_key
+                self._anthropic_api_key = effective_key
+                self._anthropic_base_url = base_url
+                # Only mark the session as OAuth-authenticated when the token
+                # genuinely belongs to native Anthropic.  Third-party providers
+                # (MiniMax, Kimi, GLM, LiteLLM proxies) that accept the
+                # Anthropic protocol must never trip OAuth code paths — doing
+                # so injects Claude-Code identity headers and system prompts
+                # that cause 401/403 on their endpoints.  Guards #1739 and
+                # the third-party identity-injection bug.
+                from agent.anthropic_adapter import _is_oauth_token as _is_oat
+                self._is_anthropic_oauth = _is_oat(effective_key) if _is_native_anthropic else False
+                self._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+                # No OpenAI client needed for Anthropic mode
+                self.client = None
+                self._client_kwargs = {}
+                if not self.quiet_mode:
+                    print(f"🤖 AI Agent initialized with model: {self.model} (Anthropic native)")
+                    if effective_key and len(effective_key) > 12:
+                        print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+        elif self.api_mode == "bedrock_converse":
+            # AWS Bedrock — uses boto3 directly, no OpenAI client needed.
+            # Region is extracted from the base_url or defaults to us-east-1.
+            _region_match = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
+            self._bedrock_region = _region_match.group(1) if _region_match else "us-east-1"
+            # Guardrail config — read from config.yaml at init time.
+            self._bedrock_guardrail_config = None
+            try:
+                from hermes_cli.config import load_config as _load_br_cfg
+                _gr = _load_br_cfg().get("bedrock", {}).get("guardrail", {})
+                if _gr.get("guardrail_identifier") and _gr.get("guardrail_version"):
+                    self._bedrock_guardrail_config = {
+                        "guardrailIdentifier": _gr["guardrail_identifier"],
+                        "guardrailVersion": _gr["guardrail_version"],
+                    }
+                    if _gr.get("stream_processing_mode"):
+                        self._bedrock_guardrail_config["streamProcessingMode"] = _gr["stream_processing_mode"]
+                    if _gr.get("trace"):
+                        self._bedrock_guardrail_config["trace"] = _gr["trace"]
+            except Exception:
+                pass
+            self.client = None
+            self._client_kwargs = {}
+            if not self.quiet_mode:
+                _gr_label = " + Guardrails" if self._bedrock_guardrail_config else ""
+                print(f"🤖 AI Agent initialized with model: {self.model} (AWS Bedrock, {self._bedrock_region}{_gr_label})")
+        else:
+            if api_key and base_url:
+                # Explicit credentials from CLI/gateway — construct directly.
+                # The runtime provider resolver already handled auth for us.
+                client_kwargs = {"api_key": api_key, "base_url": base_url}
+                if _provider_timeout is not None:
+                    client_kwargs["timeout"] = _provider_timeout
+                if self.provider == "copilot-acp":
+                    client_kwargs["command"] = self.acp_command
+                    client_kwargs["args"] = self.acp_args
+                effective_base = base_url
+                if base_url_host_matches(effective_base, "openrouter.ai"):
+                    client_kwargs["default_headers"] = {
+                        "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+                        "X-OpenRouter-Title": "Hermes Agent",
+                        "X-OpenRouter-Categories": "productivity,cli-agent",
+                    }
+                elif base_url_host_matches(effective_base, "api.githubcopilot.com"):
+                    from hermes_cli.models import copilot_default_headers
+
+                    client_kwargs["default_headers"] = copilot_default_headers()
+                elif base_url_host_matches(effective_base, "api.kimi.com"):
+                    client_kwargs["default_headers"] = {
+                        "User-Agent": "claude-code/0.1.0",
+                    }
+                elif base_url_host_matches(effective_base, "portal.qwen.ai"):
+                    client_kwargs["default_headers"] = _qwen_portal_headers()
+                elif base_url_host_matches(effective_base, "chatgpt.com"):
+                    from agent.auxiliary_client import _codex_cloudflare_headers
+                    client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
+            else:
+                # No explicit creds — use the centralized provider router
+                from agent.auxiliary_client import resolve_provider_client
+                _routed_client, _ = resolve_provider_client(
+                    self.provider or "auto", model=self.model, raw_codex=True)
+                if _routed_client is not None:
+                    client_kwargs = {
+                        "api_key": _routed_client.api_key,
+                        "base_url": str(_routed_client.base_url),
+                    }
+                    if _provider_timeout is not None:
+                        client_kwargs["timeout"] = _provider_timeout
+                    # Preserve any default_headers the router set
+                    if hasattr(_routed_client, '_default_headers') and _routed_client._default_headers:
+                        client_kwargs["default_headers"] = dict(_routed_client._default_headers)
+                else:
+                    # When the user explicitly chose a non-OpenRouter provider
+                    # but no credentials were found, fail fast with a clear
+                    # message instead of silently routing through OpenRouter.
+                    _explicit = (self.provider or "").strip().lower()
+                    if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+                        # Look up the actual env var name from the provider
+                        # config — some providers use non-standard names
+                        # (e.g. alibaba → DASHSCOPE_API_KEY, not ALIBABA_API_KEY).
+                        _env_hint = f"{_explicit.upper()}_API_KEY"
+                        try:
+                            from hermes_cli.auth import PROVIDER_REGISTRY
+                            _pcfg = PROVIDER_REGISTRY.get(_explicit)
+                            if _pcfg and _pcfg.api_key_env_vars:
+                                _env_hint = _pcfg.api_key_env_vars[0]
+                        except Exception:
+                            pass
+                        raise RuntimeError(
+                            f"Provider '{_explicit}' is set in config.yaml but no API key "
+                            f"was found. Set the {_env_hint} environment "
+                            f"variable, or switch to a different provider with `hermes model`."
+                        )
+                    # No provider configured — reject with a clear message.
+                    raise RuntimeError(
+                        "No LLM provider configured. Run `hermes model` to "
+                        "select a provider, or run `hermes setup` for first-time "
+                        "configuration."
+                    )
+            
+            self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
+
+            # Enable fine-grained tool streaming for Claude on OpenRouter.
+            # Without this, Anthropic buffers the entire tool call and goes
+            # silent for minutes while thinking — OpenRouter's upstream proxy
+            # times out during the silence.  The beta header makes Anthropic
+            # stream tool call arguments token-by-token, keeping the
+            # connection alive.
+            _effective_base = str(client_kwargs.get("base_url", "")).lower()
+            if base_url_host_matches(_effective_base, "openrouter.ai") and "claude" in (self.model or "").lower():
+                headers = client_kwargs.get("default_headers") or {}
+                existing_beta = headers.get("x-anthropic-beta", "")
+                _FINE_GRAINED = "fine-grained-tool-streaming-2025-05-14"
+                if _FINE_GRAINED not in existing_beta:
+                    if existing_beta:
+                        headers["x-anthropic-beta"] = f"{existing_beta},{_FINE_GRAINED}"
+                    else:
+                        headers["x-anthropic-beta"] = _FINE_GRAINED
+                    client_kwargs["default_headers"] = headers
+
+            self.api_key = client_kwargs.get("api_key", "")
+            self.base_url = client_kwargs.get("base_url", self.base_url)
+            try:
+                self.client = self._create_openai_client(client_kwargs, reason="agent_init", shared=True)
+                if not self.quiet_mode:
+                    print(f"🤖 AI Agent initialized with model: {self.model}")
+                    if base_url:
+                        print(f"🔗 Using custom base URL: {base_url}")
+                    # Always show API key info (masked) for debugging auth issues
+                    key_used = client_kwargs.get("api_key", "none")
+                    if key_used and key_used != "dummy-key" and len(key_used) > 12:
+                        print(f"🔑 Using API key: {key_used[:8]}...{key_used[-4:]}")
+                    else:
+                        print(f"⚠️  Warning: API key appears invalid or missing (got: '{key_used[:20] if key_used else 'none'}...')")
+            except Exception as e:
+                raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
+        
+
+
+    # ══════════════════════════════════════════════════════════════
+    # CLASS METHODS (between __init__ and run_conversation)
+    # ══════════════════════════════════════════════════════════════
 
     def reset_session_state(self):
         """Reset all session-scoped token counters to 0 for a fresh session.
@@ -8663,6 +8700,7 @@ class AIAgent:
         Returns:
             Dict: Complete conversation result with final response and message history
         """
+        # ─── Turn Preparation ──────────────────────────────────
         # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
         # Installed once, transparent when streams are healthy, prevents crash on write.
         _install_safe_stdio()
@@ -9018,6 +9056,10 @@ class AIAgent:
             except Exception:
                 pass
 
+
+        # ════════════════════════════════════════════════════════
+        # MAIN LOOP: Plugin hooks → System prompt → Messages → API call
+        # ════════════════════════════════════════════════════════
         while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) or self._budget_grace_call:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot
             self._checkpoint_mgr.new_turn()
@@ -9498,6 +9540,8 @@ class AIAgent:
                         _ctv = self._get_transport()
                         if not _ctv.validate_response(response):
                             response_invalid = True
+
+        # ─── API Call & Response Processing ────────────────────
                             if response is None:
                                 error_details.append("response is None")
                             elif not hasattr(response, 'choices'):
@@ -10198,6 +10242,8 @@ class AIAgent:
                         status_code=status_code,
                         has_retried_429=has_retried_429,
                         classified_reason=classified.reason,
+
+        # ─── Tool Execution & Retry Logic ──────────────────────
                         error_context=error_context,
                     )
                     if recovered_with_pool:
@@ -10998,6 +11044,8 @@ class AIAgent:
                     ).strip()
                     # For subagents: relay first line to parent display (existing behaviour).
                     # For all agents with a structured callback: emit reasoning.available event.
+
+        # ─── Error Handling & Streaming ────────────────────────
                     first_line = _think_text.split('\n')[0][:80] if _think_text else ""
                     if first_line and getattr(self, '_delegate_depth', 0) > 0:
                         try:
@@ -11749,6 +11797,10 @@ class AIAgent:
                     messages.append({"role": "assistant", "content": final_response})
                     break
         
+
+        # ════════════════════════════════════════════════════════
+        # POST-LOOP: Finalize turn
+        # ════════════════════════════════════════════════════════
         if final_response is None and (
             api_call_count >= self.max_iterations
             or self.iteration_budget.remaining <= 0
