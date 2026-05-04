@@ -591,9 +591,17 @@ def prompt_dangerous_approval(command: str, description: str,
     if timeout_seconds is None:
         timeout_seconds = _get_approval_timeout()
 
+    # Redact secrets before any user-visible rendering. The original
+    # `command` is still what executes after approval; only the displayed
+    # copy is scrubbed. Reuses the same redaction module used for memory
+    # and log sanitization so tokens mask consistently across surfaces.
+    from agent.redact import redact_sensitive_text
+    display_command = redact_sensitive_text(command)
+    display_description = redact_sensitive_text(description)
+
     if approval_callback is not None:
         try:
-            return approval_callback(command, description,
+            return approval_callback(display_command, display_description,
                                      allow_permanent=allow_permanent)
         except Exception as e:
             logger.error("Approval callback failed: %s", e, exc_info=True)
@@ -630,8 +638,8 @@ def prompt_dangerous_approval(command: str, description: str,
     try:
         while True:
             print()
-            print(f"  ⚠️  DANGEROUS COMMAND: {description}")
-            print(f"      {command}")
+            print(f"  ⚠️  DANGEROUS COMMAND: {display_description}")
+            print(f"      {display_command}")
             print()
             if allow_permanent:
                 print("      [o]nce  |  [s]ession  |  [a]lways  |  [d]eny")
@@ -1055,11 +1063,17 @@ def check_all_command_guards(command: str, env_type: str,
             # --- Blocking gateway approval (queue-based) ---
             # Each call gets its own _ApprovalEntry so parallel subagents
             # and execute_code threads can block concurrently.
+            #
+            # Redact secrets in the notified payload: gateway renders this
+            # dict directly to Discord/Slack/etc. and those messages are
+            # screenshottable. The raw `command` still executes after
+            # approval via the closure below, so redaction is display-only.
+            from agent.redact import redact_sensitive_text
             approval_data = {
-                "command": command,
+                "command": redact_sensitive_text(command),
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
-                "description": combined_desc,
+                "description": redact_sensitive_text(combined_desc),
             }
             entry = _ApprovalEntry(approval_data)
             with _lock:
