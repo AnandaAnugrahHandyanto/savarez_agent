@@ -291,6 +291,14 @@ TOOL_CATEGORIES = {
                 ],
             },
             {
+                "name": "TinyFish",
+                "tag": "Fast search and extract with stealth proxies",
+                "web_backend": "tinyfish",
+                "env_vars": [
+                    {"key": "TINYFISH_API_KEY", "prompt": "TinyFish API key", "url": "https://agent.tinyfish.ai/api-keys"},
+                ],
+            },
+            {
                 "name": "Firecrawl Self-Hosted",
                 "badge": "free · self-hosted",
                 "tag": "Run your own Firecrawl instance (Docker)",
