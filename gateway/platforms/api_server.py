@@ -24,6 +24,7 @@ Requires:
 """
 
 import asyncio
+import functools
 import hashlib
 import hmac
 import json
@@ -36,12 +37,16 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
+_json_dumps_utf8 = functools.partial(json.dumps, ensure_ascii=False)
+
 try:
     from aiohttp import web
     AIOHTTP_AVAILABLE = True
 except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
+
+_json_response = functools.partial(web.json_response, dumps=_json_dumps_utf8) if AIOHTTP_AVAILABLE else None
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -276,7 +281,7 @@ def _multimodal_validation_error(exc: ValueError, *, param: str) -> "web.Respons
     code, _, message = raw.partition(":")
     if not message:
         code, message = "invalid_content_part", raw
-    return web.json_response(
+    return _json_response(
         _openai_error(message, code=code, param=param),
         status=400,
     )
@@ -345,7 +350,7 @@ class ResponseStore:
         """Store a response, evicting the oldest if at capacity."""
         self._conn.execute(
             "INSERT OR REPLACE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
-            (response_id, json.dumps(data, default=str), time.time()),
+            (response_id, json.dumps(data, default=str, ensure_ascii=False), time.time()),
         )
         # Evict oldest entries beyond max_size
         count = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
@@ -448,9 +453,9 @@ if AIOHTTP_AVAILABLE:
             if cl is not None:
                 try:
                     if int(cl) > MAX_REQUEST_BYTES:
-                        return web.json_response(_openai_error("Request body too large.", code="body_too_large"), status=413)
+                        return _json_response(_openai_error("Request body too large.", code="body_too_large"), status=413)
                 except ValueError:
-                    return web.json_response(_openai_error("Invalid Content-Length header.", code="invalid_content_length"), status=400)
+                    return _json_response(_openai_error("Invalid Content-Length header.", code="invalid_content_length"), status=400)
         return await handler(request)
 else:
     body_limit_middleware = None  # type: ignore[assignment]
@@ -693,7 +698,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if hmac.compare_digest(token, self._api_key):
                 return None  # Auth OK
 
-        return web.json_response(
+        return _json_response(
             {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
             status=401,
         )
@@ -780,7 +785,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
-        return web.json_response({"status": "ok", "platform": "hermes-agent"})
+        return _json_response({"status": "ok", "platform": "hermes-agent"})
 
     async def _handle_health_detailed(self, request: "web.Request") -> "web.Response":
         """GET /health/detailed — rich status for cross-container dashboard probing.
@@ -792,7 +797,7 @@ class APIServerAdapter(BasePlatformAdapter):
         from gateway.status import read_runtime_status
 
         runtime = read_runtime_status() or {}
-        return web.json_response({
+        return _json_response({
             "status": "ok",
             "platform": "hermes-agent",
             "gateway_state": runtime.get("gateway_state"),
@@ -809,7 +814,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
-        return web.json_response({
+        return _json_response({
             "object": "list",
             "data": [
                 {
@@ -835,7 +840,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
-        return web.json_response({
+        return _json_response({
             "object": "hermes.api_server.capabilities",
             "platform": "hermes-agent",
             "model": self._model_name,
@@ -879,11 +884,11 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             body = await request.json()
         except (json.JSONDecodeError, Exception):
-            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+            return _json_response(_openai_error("Invalid JSON in request body"), status=400)
 
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
-            return web.json_response(
+            return _json_response(
                 {"error": {"message": "Missing or invalid 'messages' field", "type": "invalid_request_error"}},
                 status=400,
             )
@@ -920,7 +925,7 @@ class APIServerAdapter(BasePlatformAdapter):
             history = conversation_messages[:-1]
 
         if not _content_has_visible_payload(user_message):
-            return web.json_response(
+            return _json_response(
                 {"error": {"message": "No user message found in messages", "type": "invalid_request_error"}},
                 status=400,
             )
@@ -940,7 +945,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "no API key configured.  Set API_SERVER_KEY to enable "
                     "session continuity."
                 )
-                return web.json_response(
+                return _json_response(
                     _openai_error(
                         "Session continuation requires API key authentication. "
                         "Configure API_SERVER_KEY to enable this feature."
@@ -949,7 +954,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
             # Sanitize: reject control characters that could enable header injection.
             if re.search(r'[\r\n\x00]', provided_session_id):
-                return web.json_response(
+                return _json_response(
                     {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
                     status=400,
                 )
@@ -1082,7 +1087,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
                 logger.error("Error running agent for chat completions: %s", e, exc_info=True)
-                return web.json_response(
+                return _json_response(
                     _openai_error(f"Internal server error: {e}", err_type="server_error"),
                     status=500,
                 )
@@ -1091,7 +1096,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 result, usage = await _compute_completion()
             except Exception as e:
                 logger.error("Error running agent for chat completions: %s", e, exc_info=True)
-                return web.json_response(
+                return _json_response(
                     _openai_error(f"Internal server error: {e}", err_type="server_error"),
                     status=500,
                 )
@@ -1122,7 +1127,7 @@ class APIServerAdapter(BasePlatformAdapter):
             },
         }
 
-        return web.json_response(response_data, headers={"X-Hermes-Session-Id": session_id})
+        return _json_response(response_data, headers={"X-Hermes-Session-Id": session_id})
 
     async def _write_sse_chat_completion(
         self, request: "web.Request", completion_id: str, model: str,
@@ -1161,7 +1166,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "created": created, "model": model,
                 "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
             }
-            await response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
+            await response.write(f"data: {_json_dumps_utf8(role_chunk)}\n\n".encode())
             last_activity = time.monotonic()
 
             # Helper — route a queue item to the correct SSE event.
@@ -1176,7 +1181,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 #16588 for the ``toolCallId``/``status`` lifecycle fields.
                 """
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
-                    event_data = json.dumps(item[1])
+                    event_data = _json_dumps_utf8(item[1])
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
                     )
@@ -1186,7 +1191,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "created": created, "model": model,
                         "choices": [{"index": 0, "delta": {"content": item}, "finish_reason": None}],
                     }
-                    await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
+                    await response.write(f"data: {_json_dumps_utf8(content_chunk)}\n\n".encode())
                 return time.monotonic()
 
             # Stream content chunks as they arrive from the agent
@@ -1235,7 +1240,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "total_tokens": usage.get("total_tokens", 0),
                 },
             }
-            await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
+            await response.write(f"data: {_json_dumps_utf8(finish_chunk)}\n\n".encode())
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
             # Client disconnected mid-stream.  Interrupt the agent so it
@@ -1345,7 +1350,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if "sequence_number" not in data:
                 data["sequence_number"] = sequence_number
             sequence_number += 1
-            payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+            payload = f"event: {event_type}\ndata: {_json_dumps_utf8(data)}\n\n"
             await response.write(payload.encode())
 
         def _envelope(status: str) -> Dict[str, Any]:
@@ -1474,7 +1479,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 call_id = payload.get("tool_call_id") or f"call_{response_id[5:]}_{call_counter}"
                 args = payload.get("arguments", {})
                 if isinstance(args, dict):
-                    arguments_str = json.dumps(args)
+                    arguments_str = _json_dumps_utf8(args)
                 else:
                     arguments_str = str(args)
                 item = {
@@ -1540,7 +1545,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 })
 
                 # function_call_output added (result)
-                result_str = result if isinstance(result, str) else json.dumps(result)
+                result_str = result if isinstance(result, str) else _json_dumps_utf8(result)
                 output_parts = [{"type": "input_text", "text": result_str}]
                 output_item = {
                     "id": f"fco_{uuid.uuid4().hex[:24]}",
@@ -1767,14 +1772,14 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             body = await request.json()
         except (json.JSONDecodeError, Exception):
-            return web.json_response(
+            return _json_response(
                 {"error": {"message": "Invalid JSON in request body", "type": "invalid_request_error"}},
                 status=400,
             )
 
         raw_input = body.get("input")
         if raw_input is None:
-            return web.json_response(_openai_error("Missing 'input' field"), status=400)
+            return _json_response(_openai_error("Missing 'input' field"), status=400)
 
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
@@ -1783,7 +1788,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # conversation and previous_response_id are mutually exclusive
         if conversation and previous_response_id:
-            return web.json_response(_openai_error("Cannot use both 'conversation' and 'previous_response_id'"), status=400)
+            return _json_response(_openai_error("Cannot use both 'conversation' and 'previous_response_id'"), status=400)
 
         # Resolve conversation name to latest response_id
         if conversation:
@@ -1806,7 +1811,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         return _multimodal_validation_error(exc, param=f"input[{idx}].content")
                     input_messages.append({"role": role, "content": content})
         else:
-            return web.json_response(_openai_error("'input' must be a string or array"), status=400)
+            return _json_response(_openai_error("'input' must be a string or array"), status=400)
 
         # Accept explicit conversation_history from the request body.
         # This lets stateless clients supply their own history instead of
@@ -1816,13 +1821,13 @@ class APIServerAdapter(BasePlatformAdapter):
         raw_history = body.get("conversation_history")
         if raw_history:
             if not isinstance(raw_history, list):
-                return web.json_response(
+                return _json_response(
                     _openai_error("'conversation_history' must be an array of message objects"),
                     status=400,
                 )
             for i, entry in enumerate(raw_history):
                 if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
-                    return web.json_response(
+                    return _json_response(
                         _openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"),
                         status=400,
                     )
@@ -1838,7 +1843,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
             if stored is None:
-                return web.json_response(_openai_error(f"Previous response not found: {previous_response_id}"), status=404)
+                return _json_response(_openai_error(f"Previous response not found: {previous_response_id}"), status=404)
             conversation_history = list(stored.get("conversation_history", []))
             stored_session_id = stored.get("session_id")
             # If no instructions provided, carry forward from previous
@@ -1852,7 +1857,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # Last input message is the user_message
         user_message: Any = input_messages[-1].get("content", "") if input_messages else ""
         if not _content_has_visible_payload(user_message):
-            return web.json_response(_openai_error("No user message found in input"), status=400)
+            return _json_response(_openai_error("No user message found in input"), status=400)
 
         # Truncation support
         if body.get("truncation") == "auto" and len(conversation_history) > 100:
@@ -1954,7 +1959,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
             except Exception as e:
                 logger.error("Error running agent for responses: %s", e, exc_info=True)
-                return web.json_response(
+                return _json_response(
                     _openai_error(f"Internal server error: {e}", err_type="server_error"),
                     status=500,
                 )
@@ -1963,7 +1968,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 result, usage = await _compute_response()
             except Exception as e:
                 logger.error("Error running agent for responses: %s", e, exc_info=True)
-                return web.json_response(
+                return _json_response(
                     _openai_error(f"Internal server error: {e}", err_type="server_error"),
                     status=500,
                 )
@@ -2016,7 +2021,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
 
-        return web.json_response(response_data)
+        return _json_response(response_data)
 
     # ------------------------------------------------------------------
     # GET / DELETE response endpoints
@@ -2031,9 +2036,9 @@ class APIServerAdapter(BasePlatformAdapter):
         response_id = request.match_info["response_id"]
         stored = self._response_store.get(response_id)
         if stored is None:
-            return web.json_response(_openai_error(f"Response not found: {response_id}"), status=404)
+            return _json_response(_openai_error(f"Response not found: {response_id}"), status=404)
 
-        return web.json_response(stored["response"])
+        return _json_response(stored["response"])
 
     async def _handle_delete_response(self, request: "web.Request") -> "web.Response":
         """DELETE /v1/responses/{response_id} — delete a stored response."""
@@ -2044,9 +2049,9 @@ class APIServerAdapter(BasePlatformAdapter):
         response_id = request.match_info["response_id"]
         deleted = self._response_store.delete(response_id)
         if not deleted:
-            return web.json_response(_openai_error(f"Response not found: {response_id}"), status=404)
+            return _json_response(_openai_error(f"Response not found: {response_id}"), status=404)
 
-        return web.json_response({
+        return _json_response({
             "id": response_id,
             "object": "response",
             "deleted": True,
@@ -2066,7 +2071,7 @@ class APIServerAdapter(BasePlatformAdapter):
     def _check_jobs_available() -> Optional["web.Response"]:
         """Return error response if cron module isn't available."""
         if not _CRON_AVAILABLE:
-            return web.json_response(
+            return _json_response(
                 {"error": "Cron module not available"}, status=501,
             )
         return None
@@ -2075,7 +2080,7 @@ class APIServerAdapter(BasePlatformAdapter):
         """Validate and extract job_id. Returns (job_id, error_response)."""
         job_id = request.match_info["job_id"]
         if not self._JOB_ID_RE.fullmatch(job_id):
-            return job_id, web.json_response(
+            return job_id, _json_response(
                 {"error": "Invalid job ID format"}, status=400,
             )
         return job_id, None
@@ -2091,9 +2096,9 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             include_disabled = request.query.get("include_disabled", "").lower() in ("true", "1")
             jobs = _cron_list(include_disabled=include_disabled)
-            return web.json_response({"jobs": jobs})
+            return _json_response({"jobs": jobs})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _json_response({"error": str(e)}, status=500)
 
     async def _handle_create_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs — create a new cron job."""
@@ -2113,19 +2118,19 @@ class APIServerAdapter(BasePlatformAdapter):
             repeat = body.get("repeat")
 
             if not name:
-                return web.json_response({"error": "Name is required"}, status=400)
+                return _json_response({"error": "Name is required"}, status=400)
             if len(name) > self._MAX_NAME_LENGTH:
-                return web.json_response(
+                return _json_response(
                     {"error": f"Name must be ≤ {self._MAX_NAME_LENGTH} characters"}, status=400,
                 )
             if not schedule:
-                return web.json_response({"error": "Schedule is required"}, status=400)
+                return _json_response({"error": "Schedule is required"}, status=400)
             if len(prompt) > self._MAX_PROMPT_LENGTH:
-                return web.json_response(
+                return _json_response(
                     {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
                 )
             if repeat is not None and (not isinstance(repeat, int) or repeat < 1):
-                return web.json_response({"error": "Repeat must be a positive integer"}, status=400)
+                return _json_response({"error": "Repeat must be a positive integer"}, status=400)
 
             kwargs = {
                 "prompt": prompt,
@@ -2139,9 +2144,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 kwargs["repeat"] = repeat
 
             job = _cron_create(**kwargs)
-            return web.json_response({"job": job})
+            return _json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _json_response({"error": str(e)}, status=500)
 
     async def _handle_get_job(self, request: "web.Request") -> "web.Response":
         """GET /api/jobs/{job_id} — get a single cron job."""
@@ -2157,10 +2162,10 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             job = _cron_get(job_id)
             if not job:
-                return web.json_response({"error": "Job not found"}, status=404)
-            return web.json_response({"job": job})
+                return _json_response({"error": "Job not found"}, status=404)
+            return _json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _json_response({"error": str(e)}, status=500)
 
     async def _handle_update_job(self, request: "web.Request") -> "web.Response":
         """PATCH /api/jobs/{job_id} — update a cron job."""
@@ -2178,22 +2183,22 @@ class APIServerAdapter(BasePlatformAdapter):
             # Whitelist allowed fields to prevent arbitrary key injection
             sanitized = {k: v for k, v in body.items() if k in self._UPDATE_ALLOWED_FIELDS}
             if not sanitized:
-                return web.json_response({"error": "No valid fields to update"}, status=400)
+                return _json_response({"error": "No valid fields to update"}, status=400)
             # Validate lengths if present
             if "name" in sanitized and len(sanitized["name"]) > self._MAX_NAME_LENGTH:
-                return web.json_response(
+                return _json_response(
                     {"error": f"Name must be ≤ {self._MAX_NAME_LENGTH} characters"}, status=400,
                 )
             if "prompt" in sanitized and len(sanitized["prompt"]) > self._MAX_PROMPT_LENGTH:
-                return web.json_response(
+                return _json_response(
                     {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
                 )
             job = _cron_update(job_id, sanitized)
             if not job:
-                return web.json_response({"error": "Job not found"}, status=404)
-            return web.json_response({"job": job})
+                return _json_response({"error": "Job not found"}, status=404)
+            return _json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _json_response({"error": str(e)}, status=500)
 
     async def _handle_delete_job(self, request: "web.Request") -> "web.Response":
         """DELETE /api/jobs/{job_id} — delete a cron job."""
@@ -2209,10 +2214,10 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             success = _cron_remove(job_id)
             if not success:
-                return web.json_response({"error": "Job not found"}, status=404)
-            return web.json_response({"ok": True})
+                return _json_response({"error": "Job not found"}, status=404)
+            return _json_response({"ok": True})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _json_response({"error": str(e)}, status=500)
 
     async def _handle_pause_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/pause — pause a cron job."""
@@ -2228,10 +2233,10 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             job = _cron_pause(job_id)
             if not job:
-                return web.json_response({"error": "Job not found"}, status=404)
-            return web.json_response({"job": job})
+                return _json_response({"error": "Job not found"}, status=404)
+            return _json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _json_response({"error": str(e)}, status=500)
 
     async def _handle_resume_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/resume — resume a paused cron job."""
@@ -2247,10 +2252,10 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             job = _cron_resume(job_id)
             if not job:
-                return web.json_response({"error": "Job not found"}, status=404)
-            return web.json_response({"job": job})
+                return _json_response({"error": "Job not found"}, status=404)
+            return _json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _json_response({"error": str(e)}, status=500)
 
     async def _handle_run_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/run — trigger immediate execution."""
@@ -2266,10 +2271,10 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             job = _cron_trigger(job_id)
             if not job:
-                return web.json_response({"error": "Job not found"}, status=404)
-            return web.json_response({"job": job})
+                return _json_response({"error": "Job not found"}, status=404)
+            return _json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _json_response({"error": str(e)}, status=500)
 
     # ------------------------------------------------------------------
     # Output extraction helper
@@ -2455,7 +2460,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Enforce concurrency limit
         if len(self._run_streams) >= self._MAX_CONCURRENT_RUNS:
-            return web.json_response(
+            return _json_response(
                 _openai_error(f"Too many concurrent runs (max {self._MAX_CONCURRENT_RUNS})", code="rate_limit_exceeded"),
                 status=429,
             )
@@ -2463,15 +2468,15 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             body = await request.json()
         except Exception:
-            return web.json_response(_openai_error("Invalid JSON"), status=400)
+            return _json_response(_openai_error("Invalid JSON"), status=400)
 
         raw_input = body.get("input")
         if not raw_input:
-            return web.json_response(_openai_error("Missing 'input' field"), status=400)
+            return _json_response(_openai_error("Missing 'input' field"), status=400)
 
         user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) else "")
         if not user_message:
-            return web.json_response(_openai_error("No user message found in input"), status=400)
+            return _json_response(_openai_error("No user message found in input"), status=400)
 
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
@@ -2482,13 +2487,13 @@ class APIServerAdapter(BasePlatformAdapter):
         raw_history = body.get("conversation_history")
         if raw_history:
             if not isinstance(raw_history, list):
-                return web.json_response(
+                return _json_response(
                     _openai_error("'conversation_history' must be an array of message objects"),
                     status=400,
                 )
             for i, entry in enumerate(raw_history):
                 if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
-                    return web.json_response(
+                    return _json_response(
                         _openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"),
                         status=400,
                     )
@@ -2661,7 +2666,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
 
-        return web.json_response({"run_id": run_id, "status": "started"}, status=202)
+        return _json_response({"run_id": run_id, "status": "started"}, status=202)
 
     async def _handle_get_run(self, request: "web.Request") -> "web.Response":
         """GET /v1/runs/{run_id} — return pollable run status for external UIs."""
@@ -2672,11 +2677,11 @@ class APIServerAdapter(BasePlatformAdapter):
         run_id = request.match_info["run_id"]
         status = self._run_statuses.get(run_id)
         if status is None:
-            return web.json_response(
+            return _json_response(
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
                 status=404,
             )
-        return web.json_response(status)
+        return _json_response(status)
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
         """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events."""
@@ -2692,7 +2697,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 break
             await asyncio.sleep(0.05)
         else:
-            return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
+            return _json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
 
         q = self._run_streams[run_id]
 
@@ -2717,7 +2722,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     # Run finished — send final SSE comment and close
                     await response.write(b": stream closed\n\n")
                     break
-                payload = f"data: {json.dumps(event)}\n\n"
+                payload = f"data: {_json_dumps_utf8(event)}\n\n"
                 await response.write(payload.encode())
         except Exception as exc:
             logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
@@ -2738,7 +2743,7 @@ class APIServerAdapter(BasePlatformAdapter):
         task = self._active_run_tasks.get(run_id)
 
         if agent is None and task is None:
-            return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
+            return _json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
 
         self._set_run_status(run_id, "stopping", last_event="run.stopping")
 
@@ -2765,7 +2770,7 @@ class APIServerAdapter(BasePlatformAdapter):
             except (asyncio.CancelledError, Exception):
                 pass
 
-        return web.json_response({"run_id": run_id, "status": "stopping"})
+        return _json_response({"run_id": run_id, "status": "stopping"})
 
     async def _sweep_orphaned_runs(self) -> None:
         """Periodically clean up run streams that were never consumed."""
