@@ -16,6 +16,7 @@ from tools.credential_files import (
     iter_skills_files,
     register_credential_file,
     register_credential_files,
+    to_agent_visible_cache_path,
 )
 
 
@@ -476,3 +477,120 @@ class TestIterCacheFiles:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         assert iter_cache_files() == []
+
+
+class TestToAgentVisibleCachePath:
+    """Translate host cache paths to container paths for the Docker backend.
+
+    Inbound documents from messaging platforms are saved to host paths under
+    ``~/.hermes/cache/<subdir>``. Under the Docker terminal backend those
+    directories are bind-mounted at ``{container_base}/cache/<subdir>``
+    via :func:`get_cache_directory_mounts`. This helper produces the
+    container-visible path the agent will see.
+    """
+
+    def test_docker_translates_documents_path(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        docs = hermes_home / "cache" / "documents"
+        docs.mkdir(parents=True)
+        host_file = docs / "report.docx"
+        host_file.write_bytes(b"DOCX")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        result = to_agent_visible_cache_path(str(host_file), backend="docker")
+        assert result == "/root/.hermes/cache/documents/report.docx"
+
+    def test_docker_translates_nested_subpath(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        sub = hermes_home / "cache" / "documents" / "session_abc"
+        sub.mkdir(parents=True)
+        host_file = sub / "memo.pdf"
+        host_file.write_bytes(b"PDF")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        result = to_agent_visible_cache_path(str(host_file), backend="docker")
+        assert result == "/root/.hermes/cache/documents/session_abc/memo.pdf"
+
+    def test_docker_translates_each_cache_subdir(self, tmp_path, monkeypatch):
+        """Translation works for documents, images, audio, screenshots."""
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        for subdir, fname in [
+            ("documents", "a.pdf"),
+            ("images", "b.png"),
+            ("audio", "c.ogg"),
+            ("screenshots", "d.png"),
+        ]:
+            cache_dir = hermes_home / "cache" / subdir
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            f = cache_dir / fname
+            f.write_bytes(b"x")
+            assert to_agent_visible_cache_path(str(f), backend="docker") == (
+                f"/root/.hermes/cache/{subdir}/{fname}"
+            )
+
+    def test_non_docker_backend_passes_through(self, tmp_path, monkeypatch):
+        """Local/SSH/Modal/etc. don't bind-mount cache the same way — no-op."""
+        hermes_home = tmp_path / ".hermes"
+        docs = hermes_home / "cache" / "documents"
+        docs.mkdir(parents=True)
+        host_file = docs / "report.docx"
+        host_file.write_bytes(b"DOCX")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        for backend in ("local", "ssh", "modal", "daytona", "vercel", ""):
+            assert to_agent_visible_cache_path(
+                str(host_file), backend=backend
+            ) == str(host_file)
+
+    def test_path_outside_cache_passes_through(self, tmp_path, monkeypatch):
+        """Paths not under any cache subdir are returned unchanged."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        outside = tmp_path / "elsewhere" / "foo.docx"
+        outside.parent.mkdir()
+        outside.write_bytes(b"x")
+
+        assert to_agent_visible_cache_path(str(outside), backend="docker") == str(outside)
+
+    def test_already_translated_container_path_passes_through(self, tmp_path, monkeypatch):
+        """Calling with an already-container path is a no-op (idempotent)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        already = "/root/.hermes/cache/documents/report.docx"
+        assert to_agent_visible_cache_path(already, backend="docker") == already
+
+    def test_backend_case_insensitive(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        docs = hermes_home / "cache" / "documents"
+        docs.mkdir(parents=True)
+        host_file = docs / "x.pdf"
+        host_file.write_bytes(b"x")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        for variant in ("docker", "DOCKER", "Docker", "  docker  "):
+            assert to_agent_visible_cache_path(
+                str(host_file), backend=variant
+            ) == "/root/.hermes/cache/documents/x.pdf"
+
+    def test_custom_container_base(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        docs = hermes_home / "cache" / "documents"
+        docs.mkdir(parents=True)
+        host_file = docs / "x.pdf"
+        host_file.write_bytes(b"x")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        result = to_agent_visible_cache_path(
+            str(host_file), backend="docker", container_base="/opt/hermes"
+        )
+        assert result == "/opt/hermes/cache/documents/x.pdf"
+
+    def test_invalid_path_returns_unchanged(self):
+        """Empty or non-path-like inputs are returned as-is."""
+        assert to_agent_visible_cache_path("", backend="docker") == ""

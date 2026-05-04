@@ -5579,8 +5579,10 @@ class GatewayRunner:
 
         if event.media_urls and event.message_type == MessageType.DOCUMENT:
             import mimetypes as _mimetypes
+            from tools.credential_files import to_agent_visible_cache_path
 
             _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
+            _terminal_backend = os.getenv("TERMINAL_ENV", "local")
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 if mtype in ("", "application/octet-stream"):
@@ -5599,16 +5601,21 @@ class GatewayRunner:
                 display_name = parts[2] if len(parts) >= 3 else basename
                 display_name = re.sub(r'[^\w.\- ]', '_', display_name)
 
+                # The agent runs in the terminal backend's filesystem view; under
+                # docker the host cache path is bind-mounted at a different
+                # container path, so rewrite before injecting into the prompt.
+                agent_path = to_agent_visible_cache_path(path, backend=_terminal_backend)
+
                 if mtype.startswith("text/"):
                     context_note = (
                         f"[The user sent a text document: '{display_name}'. "
                         f"Its content has been included below. "
-                        f"The file is also saved at: {path}]"
+                        f"The file is also saved at: {agent_path}]"
                     )
                 else:
                     context_note = (
                         f"[The user sent a document: '{display_name}'. "
-                        f"The file is saved at: {path}. "
+                        f"The file is saved at: {agent_path}. "
                         f"Ask the user what they'd like you to do with it.]"
                     )
                 message_text = f"{context_note}\n\n{message_text}"

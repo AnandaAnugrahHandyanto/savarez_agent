@@ -401,6 +401,58 @@ def iter_cache_files(
     return result
 
 
+def to_agent_visible_cache_path(
+    host_path: str,
+    *,
+    backend: str,
+    container_base: str = "/root/.hermes",
+) -> str:
+    """Translate a host cache path to the path the agent will see.
+
+    Inbound documents from messaging platforms are saved under
+    ``~/.hermes/cache/<subdir>`` on the host. Under the Docker terminal
+    backend those subdirectories are bind-mounted at
+    ``{container_base}/cache/<subdir>`` via :func:`get_cache_directory_mounts`,
+    so any host path the gateway injects into the agent's prompt must be
+    rewritten or the agent will fail to open the file.
+
+    Pass-through cases (returns ``host_path`` unchanged):
+      * ``backend`` is anything other than ``docker`` (case/space-insensitive).
+        Other backends use different mount semantics — Modal uploads files
+        individually via :func:`iter_cache_files`, SSH/local share the host
+        filesystem — so this rewrite does not apply.
+      * The path does not lie under any known cache subdirectory.
+      * The path is unparseable.
+
+    The translation is idempotent: an already-container path under
+    ``container_base`` is unchanged because it doesn't match any host cache
+    root.
+    """
+    if backend.strip().lower() != "docker":
+        return host_path
+
+    from hermes_constants import get_hermes_dir
+
+    try:
+        host_resolved = Path(host_path).resolve()
+    except (OSError, ValueError, RuntimeError):
+        return host_path
+
+    for new_subpath, old_name in _CACHE_DIRS:
+        try:
+            host_root = get_hermes_dir(new_subpath, old_name).resolve()
+        except (OSError, ValueError, RuntimeError):
+            continue
+        try:
+            rel = host_resolved.relative_to(host_root)
+        except ValueError:
+            continue
+        container_root = f"{container_base.rstrip('/')}/{new_subpath}"
+        return f"{container_root}/{rel.as_posix()}"
+
+    return host_path
+
+
 def clear_credential_files() -> None:
     """Reset the skill-scoped registry (e.g. on session reset)."""
     _get_registered().clear()

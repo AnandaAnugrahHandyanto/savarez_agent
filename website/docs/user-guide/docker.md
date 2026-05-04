@@ -300,6 +300,8 @@ docker compose up -d
 
 When using Docker as the execution environment (not the methods above, but when the agent runs commands inside a Docker sandbox), Hermes automatically bind-mounts the skills directory (`~/.hermes/skills/`) and any credential files declared by skills into the container as read-only volumes. This means skill scripts, templates, and references are available inside the sandbox without manual configuration.
 
+Inbound media from messaging platforms (documents, images, audio, screenshots) is cached under `~/.hermes/cache/<subdir>/` on the host and bind-mounted into the container at `/root/.hermes/cache/<subdir>/`. When the gateway tells the agent that a user-sent file is "saved at &lt;path&gt;", the path is rewritten to the container view so the agent can open it directly.
+
 The same syncing happens for SSH and Modal backends — skills and credential files are uploaded via rsync or the Modal mount API before each command.
 
 ## Troubleshooting
