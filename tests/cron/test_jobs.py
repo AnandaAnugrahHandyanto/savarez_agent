@@ -647,6 +647,64 @@ class TestGetDueJobs:
         assert get_due_jobs() == []
         assert get_job("oneshot-stale")["next_run_at"] is None
 
+    def test_broken_interval_job_without_next_run_is_recovered_to_future(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        save_jobs(
+            [{
+                "id": "interval-recover",
+                "name": "Recover interval",
+                "prompt": "Word of the day",
+                "schedule": {"kind": "interval", "minutes": 30, "display": "every 30m"},
+                "schedule_display": "every 30m",
+                "repeat": {"times": None, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "created_at": "2026-03-18T04:00:00+00:00",
+                "next_run_at": None,
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "deliver": "local",
+                "origin": None,
+            }]
+        )
+
+        assert get_due_jobs() == []
+        assert get_job("interval-recover")["next_run_at"] == "2026-03-18T05:00:00+00:00"
+
+    def test_broken_cron_job_without_next_run_is_recovered_to_future(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        save_jobs(
+            [{
+                "id": "cron-recover",
+                "name": "Recover cron",
+                "prompt": "Word of the day",
+                "schedule": {"kind": "cron", "expr": "0 5 * * *", "display": "0 5 * * *"},
+                "schedule_display": "0 5 * * *",
+                "repeat": {"times": None, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "created_at": "2026-03-18T04:00:00+00:00",
+                "next_run_at": None,
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "deliver": "local",
+                "origin": None,
+            }]
+        )
+
+        assert get_due_jobs() == []
+        assert get_job("cron-recover")["next_run_at"] == "2026-03-18T05:00:00+00:00"
+
 
 class TestEnabledToolsets:
     def test_enabled_toolsets_stored(self, tmp_cron_dir):

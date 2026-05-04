@@ -256,6 +256,28 @@ def _recoverable_oneshot_run_at(
     return None
 
 
+def _recoverable_recurring_next_run(schedule: Dict[str, Any], now: datetime) -> Optional[str]:
+    """Return the next future run for a broken recurring job.
+
+    If a recurring job loses `next_run_at`, repair it by computing the next
+    future occurrence from now. Do not immediately replay missed work.
+    """
+    kind = schedule.get("kind")
+    if kind == "interval":
+        minutes = schedule.get("minutes")
+        if not minutes:
+            return None
+        return (now + timedelta(minutes=minutes)).isoformat()
+
+    if kind == "cron":
+        expr = schedule.get("expr")
+        if not expr or not HAS_CRONITER:
+            return None
+        return croniter(expr, now).get_next(datetime).isoformat()
+
+    return None
+
+
 def _compute_grace_seconds(schedule: dict) -> int:
     """Compute how late a job can be and still catch up instead of fast-forwarding.
 
@@ -797,19 +819,25 @@ def get_due_jobs() -> List[Dict[str, Any]]:
 
         next_run = job.get("next_run_at")
         if not next_run:
+            schedule = job.get("schedule", {})
             recovered_next = _recoverable_oneshot_run_at(
-                job.get("schedule", {}),
+                schedule,
                 now,
                 last_run_at=job.get("last_run_at"),
             )
+            recovery_kind = "one-shot"
+            if not recovered_next:
+                recovered_next = _recoverable_recurring_next_run(schedule, now)
+                recovery_kind = schedule.get("kind", "job")
             if not recovered_next:
                 continue
 
             job["next_run_at"] = recovered_next
             next_run = recovered_next
             logger.info(
-                "Job '%s' had no next_run_at; recovering one-shot run at %s",
+                "Job '%s' had no next_run_at; recovering %s run at %s",
                 job.get("name", job["id"]),
+                recovery_kind,
                 recovered_next,
             )
             for rj in raw_jobs:
