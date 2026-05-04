@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
-from hermes_cli.config import get_env_value, load_env
+from hermes_cli.config import load_env
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import (
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
@@ -385,6 +385,56 @@ class CredentialPool:
         if not self._current_id:
             return None
         return next((entry for entry in self._entries if entry.id == self._current_id), None)
+
+    def select_target(self, target: str) -> Tuple[Optional[int], Optional[PooledCredential], Optional[str]]:
+        """Make a specific pool entry current and persist it as the first priority.
+
+        ``target`` accepts the 1-based display index, full label, full id, or a
+        unique id prefix.  The returned index is the entry's index before the
+        priority move so UI commands can acknowledge exactly what the user
+        selected.
+        """
+        needle = str(target or "").strip()
+        if not needle:
+            return None, None, "missing account selection"
+        needle_lower = needle.lower()
+        with self._lock:
+            matched_index: Optional[int] = None
+            matched_entry: Optional[PooledCredential] = None
+            if needle.isdigit():
+                idx = int(needle)
+                if 1 <= idx <= len(self._entries):
+                    matched_index = idx
+                    matched_entry = self._entries[idx - 1]
+                else:
+                    return None, None, f"account number {idx} is out of range"
+            else:
+                exact_matches: list[tuple[int, PooledCredential]] = []
+                prefix_matches: list[tuple[int, PooledCredential]] = []
+                for idx, entry in enumerate(self._entries, start=1):
+                    label = str(entry.label or "").strip().lower()
+                    entry_id = str(entry.id or "").strip().lower()
+                    if needle_lower in {label, entry_id}:
+                        exact_matches.append((idx, entry))
+                    elif entry_id.startswith(needle_lower):
+                        prefix_matches.append((idx, entry))
+                matches = exact_matches or prefix_matches
+                if len(matches) == 1:
+                    matched_index, matched_entry = matches[0]
+                elif len(matches) > 1:
+                    return None, None, f"account selection {needle!r} is ambiguous"
+                else:
+                    return None, None, f"account {needle!r} was not found"
+
+            if matched_entry is None or matched_index is None:
+                return None, None, f"account {needle!r} was not found"
+
+            reordered = [matched_entry] + [entry for entry in self._entries if entry.id != matched_entry.id]
+            self._entries = [replace(entry, priority=idx) for idx, entry in enumerate(reordered)]
+            self._current_id = matched_entry.id
+            self._persist()
+            selected = self.current() or self._entries[0]
+            return matched_index, selected, None
 
     def _replace_entry(self, old: PooledCredential, new: PooledCredential) -> None:
         """Swap an entry in-place by id, preserving sort order."""

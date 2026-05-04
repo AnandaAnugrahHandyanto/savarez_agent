@@ -5,9 +5,6 @@ from __future__ import annotations
 import json
 import time
 
-import pytest
-
-
 def _write_auth_store(tmp_path, payload: dict) -> None:
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
@@ -90,6 +87,60 @@ def test_select_clears_expired_exhaustion(tmp_path, monkeypatch):
 
     assert entry is not None
     assert entry.last_status == "ok"
+
+
+def test_select_target_moves_credential_to_front_and_sets_current(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "main",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "tok-main",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "backup",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "tok-backup",
+                    },
+                    {
+                        "id": "cred-3",
+                        "label": "spare",
+                        "auth_type": "oauth",
+                        "priority": 2,
+                        "source": "manual",
+                        "access_token": "tok-spare",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import read_credential_pool
+
+    pool = load_pool("openai-codex")
+    index, entry, error = pool.select_target("backup")
+
+    assert error is None
+    assert index == 2
+    assert entry is not None
+    assert entry.id == "cred-2"
+    assert pool.current().id == "cred-2"
+    assert [item.id for item in pool.entries()] == ["cred-2", "cred-1", "cred-3"]
+    persisted = read_credential_pool("openai-codex")
+    assert [item["id"] for item in persisted] == ["cred-2", "cred-1", "cred-3"]
+    assert [item["priority"] for item in persisted] == [0, 1, 2]
 
 
 def test_round_robin_strategy_rotates_priorities(tmp_path, monkeypatch):
