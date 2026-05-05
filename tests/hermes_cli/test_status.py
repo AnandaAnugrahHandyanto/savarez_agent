@@ -180,6 +180,22 @@ def test_show_status_reports_disabled_when_passwordless_probe_fails(monkeypatch,
     assert "Sudo:         ✗ disabled" in output
 
 
+def test_show_status_reports_disabled_when_passwordless_probe_returns_nonzero(monkeypatch, capsys, tmp_path):
+    status_mod = _minimal_status_test_setup(monkeypatch, tmp_path)
+
+    class _Result:
+        returncode = 1
+
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setattr(status_mod.shutil, "which", lambda name: "/usr/bin/sudo" if name == "sudo" else None)
+    monkeypatch.setattr(status_mod.subprocess, "run", lambda *args, **kwargs: _Result())
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Sudo:         ✗ disabled" in output
+
+
 def test_show_status_reports_disabled_when_sudo_is_missing(monkeypatch, capsys, tmp_path):
     status_mod = _minimal_status_test_setup(monkeypatch, tmp_path)
 
