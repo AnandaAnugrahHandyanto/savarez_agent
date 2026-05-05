@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+import os
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -140,6 +141,149 @@ def test_router_prefers_feishu_open_id_from_raw_event():
         )
 
         assert _resolve_sender_for_routing(event) == "ou_real_sender"
+
+
+def test_bundled_history_key_uses_sender_not_shared_alt(tmp_path):
+    with _bundled_plugin_path():
+        from hermes_multitenancy.router import _history_key
+
+        assert _history_key("coder", "ou_a", "shared_alt") == ("coder", "ou_a")
+        assert _history_key("coder", "ou_a", "shared_alt") != _history_key(
+            "coder",
+            "ou_b",
+            "shared_alt",
+        )
+
+
+def test_bundled_media_directives_stay_inside_profile(tmp_path):
+    with _bundled_plugin_path():
+        from hermes_multitenancy.router import _profile_scoped_media_response
+
+        profile_home = tmp_path / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        inside = profile_home / "cache" / "out.md"
+        outside = tmp_path / "profiles" / "other" / "secret.md"
+        inside.parent.mkdir()
+        outside.parent.mkdir(parents=True)
+
+        scoped = _profile_scoped_media_response(
+            f"ok\nMEDIA:{inside}\nMEDIA:{outside}",
+            profile_home,
+        )
+
+        assert f"MEDIA:{inside}" in scoped
+        assert str(outside) not in scoped
+
+
+def test_bundled_router_uses_legacy_alt_route_when_open_id_missing(tmp_path, monkeypatch):
+    with _bundled_plugin_path():
+        from hermes_multitenancy import router as router_mod
+
+        db_path = tmp_path / "routing.db"
+        router_mod.override_routing_table(db_path)
+        table = router_mod._get_routing_table()
+        table.upsert(
+            user_id="legacy",
+            profile_name="legacy_profile",
+            open_id="on_legacy",
+            union_id="on_legacy",
+        )
+        monkeypatch.setattr(
+            router_mod,
+            "_profile_name_to_home",
+            lambda profile_name: tmp_path / "profiles" / profile_name,
+        )
+
+        captured: dict[str, object] = {}
+
+        class Pool:
+            async def dispatch(self, profile_name, profile_home, event):
+                captured["profile_name"] = profile_name
+                captured["profile_home"] = profile_home
+                return "ok"
+
+        monkeypatch.setattr(router_mod, "_get_pool", lambda: Pool())
+        event = SimpleNamespace(
+            text="hi",
+            source=SimpleNamespace(
+                platform=SimpleNamespace(value="feishu"),
+                chat_id="oc_test",
+                user_id="tenant-local-id",
+                user_id_alt="on_legacy",
+                user_name="legacy-user",
+                chat_type="dm",
+            ),
+        )
+
+        asyncio.run(
+            router_mod.handle_async(
+                event=event,
+                gateway=SimpleNamespace(adapters={}),
+            )
+        )
+
+        assert captured == {
+            "profile_name": "legacy_profile",
+            "profile_home": tmp_path / "profiles" / "legacy_profile",
+        }
+        assert table.lookup_by_open_id("tenant-local-id") is None
+        router_mod.override_routing_table(None)
+
+
+def test_bundled_router_sets_resolved_raw_event_open_id_on_agent_event(tmp_path, monkeypatch):
+    with _bundled_plugin_path():
+        from hermes_multitenancy import router as router_mod
+        from hermes_multitenancy.runtime import add_in_memory_route, clear_in_memory_routes
+
+        clear_in_memory_routes()
+        profile_home = tmp_path / "raw-sender"
+        profile_home.mkdir()
+        add_in_memory_route("ou_raw_sender", profile_home)
+
+        captured: dict[str, object] = {}
+
+        class Pool:
+            async def dispatch(self, profile_name, profile_home, event):
+                captured["profile_name"] = profile_name
+                captured["sender_open_id"] = getattr(event, "sender_open_id", None)
+                return "ok"
+
+        monkeypatch.setattr(router_mod, "_get_pool", lambda: Pool())
+        event = SimpleNamespace(
+            text="hi",
+            raw_event={
+                "event": {
+                    "message": {
+                        "sender": {
+                            "sender_id": {
+                                "open_id": "ou_raw_sender",
+                                "union_id": "on_raw_sender",
+                            }
+                        }
+                    }
+                }
+            },
+            source=SimpleNamespace(
+                platform=SimpleNamespace(value="feishu"),
+                chat_id="oc_test",
+                user_id="tenant-local-id",
+                user_name="raw-user",
+                chat_type="dm",
+            ),
+        )
+
+        asyncio.run(
+            router_mod.handle_async(
+                event=event,
+                gateway=SimpleNamespace(adapters={}),
+            )
+        )
+
+        assert captured == {
+            "profile_name": "raw-sender",
+            "sender_open_id": "ou_raw_sender",
+        }
+        clear_in_memory_routes()
 
 
 def test_auto_profile_config_does_not_invent_a_default_model():
@@ -300,6 +444,7 @@ def test_bundled_router_delegates_known_gateway_command(tmp_path, caplog):
                 platform=SimpleNamespace(value="feishu"),
                 chat_id="oc_test",
                 user_id="ou_model",
+                user_id_alt="shared_alt",
                 user_name="model-user",
                 chat_type="dm",
             ),
@@ -309,6 +454,96 @@ def test_bundled_router_delegates_known_gateway_command(tmp_path, caplog):
 
         assert sends == ["multitenancy:feishu:coder:oc_test:ou_model"]
         assert "Hermes gateway command handled: model" in caplog.text
+        clear_in_memory_routes()
+
+
+def test_bundled_concurrent_gateway_commands_keep_profile_context(tmp_path):
+    with _bundled_plugin_path():
+        from hermes_multitenancy import router as router_mod
+        from hermes_multitenancy.runtime import add_in_memory_route, clear_in_memory_routes
+
+        clear_in_memory_routes()
+        profile_a = tmp_path / "alice"
+        profile_b = tmp_path / "bob"
+        profile_a.mkdir()
+        profile_b.mkdir()
+        add_in_memory_route("ou_cmd_a", profile_a)
+        add_in_memory_route("ou_cmd_b", profile_b)
+
+        sends: list[tuple[str, str]] = []
+        observations: list[tuple[str, str | None, str]] = []
+
+        class Adapter:
+            async def send(self, chat_id, message, *, reply_to=None, metadata=None):
+                sends.append((chat_id, message))
+
+        class Gateway:
+            adapters = {"feishu": Adapter()}
+
+            def _session_key_for_source(self, _source):
+                return "native-session"
+
+            async def _handle_model_command(self, event):
+                source = event.source
+                observations.append(
+                    (
+                        source.user_id,
+                        os.environ.get("HERMES_HOME"),
+                        self._session_key_for_source(source),
+                    )
+                )
+                await asyncio.sleep(0.01)
+                observations.append(
+                    (
+                        source.user_id,
+                        os.environ.get("HERMES_HOME"),
+                        self._session_key_for_source(source),
+                    )
+                )
+                return os.environ.get("HERMES_HOME")
+
+        async def run_both():
+            gateway = Gateway()
+            await asyncio.gather(
+                router_mod.handle_async(
+                    event=SimpleNamespace(
+                        text="/model gpt-5",
+                        source=SimpleNamespace(
+                            platform=SimpleNamespace(value="feishu"),
+                            chat_id="oc_a",
+                            user_id="ou_cmd_a",
+                            user_name="a",
+                            chat_type="dm",
+                        ),
+                    ),
+                    gateway=gateway,
+                ),
+                router_mod.handle_async(
+                    event=SimpleNamespace(
+                        text="/model gpt-5",
+                        source=SimpleNamespace(
+                            platform=SimpleNamespace(value="feishu"),
+                            chat_id="oc_b",
+                            user_id="ou_cmd_b",
+                            user_name="b",
+                            chat_type="dm",
+                        ),
+                    ),
+                    gateway=gateway,
+                ),
+            )
+
+        asyncio.run(run_both())
+
+        expected_home = {"ou_cmd_a": str(profile_a), "ou_cmd_b": str(profile_b)}
+        expected_key = {
+            "ou_cmd_a": "multitenancy:feishu:alice:oc_a:ou_cmd_a",
+            "ou_cmd_b": "multitenancy:feishu:bob:oc_b:ou_cmd_b",
+        }
+        assert sorted(message for _chat, message in sends) == sorted(expected_home.values())
+        for user_id, home, session_key in observations:
+            assert home == expected_home[user_id]
+            assert session_key == expected_key[user_id]
         clear_in_memory_routes()
 
 
@@ -436,6 +671,7 @@ def test_bundled_router_delegates_plugin_slash_command(tmp_path, monkeypatch, ca
 
         async def plugin_handler(args):
             called["args"] = args
+            called["hermes_home"] = os.environ.get("HERMES_HOME")
             return f"plugin handled {args}"
 
         fake_plugins = SimpleNamespace(
@@ -475,7 +711,8 @@ def test_bundled_router_delegates_plugin_slash_command(tmp_path, monkeypatch, ca
             )
         )
 
-        assert called == {"args": "hi there"}
+        assert called["args"] == "hi there"
+        assert called["hermes_home"] == str(tmp_path)
         assert sends == ["plugin handled hi there"]
         assert "Hermes plugin slash handler: demo-plugin" in caplog.text
         clear_in_memory_routes()
@@ -527,14 +764,60 @@ def test_bundled_router_handles_quick_command_alias(tmp_path, monkeypatch, caplo
         clear_in_memory_routes()
 
 
-def test_bundled_router_handles_quick_command_exec(tmp_path, monkeypatch, caplog):
+def test_bundled_router_disables_quick_command_exec_by_default(tmp_path, monkeypatch):
+    with _bundled_plugin_path():
+        from hermes_multitenancy import router as router_mod
+        from hermes_multitenancy.runtime import add_in_memory_route, clear_in_memory_routes
+
+        clear_in_memory_routes()
+        add_in_memory_route("ou_quick_exec_denied", tmp_path)
+
+        class PoolShouldNotRun:
+            async def dispatch(self, *args, **kwargs):
+                raise AssertionError("quick-command exec leaked into AIAgent dispatch")
+
+        monkeypatch.setattr(router_mod, "_get_pool", lambda: PoolShouldNotRun())
+
+        sends: list[str] = []
+
+        class Adapter:
+            async def send(self, _chat_id, message, *, reply_to=None, metadata=None):
+                sends.append(message)
+
+        event = SimpleNamespace(
+            text="/ping",
+            source=SimpleNamespace(
+                platform=SimpleNamespace(value="feishu"),
+                chat_id="oc_test",
+                user_id="ou_quick_exec_denied",
+                user_name="quick-user",
+                chat_type="dm",
+            ),
+        )
+        gateway = SimpleNamespace(
+            adapters={"feishu": Adapter()},
+            config={"quick_commands": {"ping": {"type": "exec", "command": "printf quick-ok"}}},
+        )
+
+        asyncio.run(router_mod.handle_async(event=event, gateway=gateway))
+
+        assert sends == [
+            "Quick command '/ping' exec is disabled for Feishu multitenancy. "
+            "Enable only after profile sandboxing is in place."
+        ]
+        clear_in_memory_routes()
+
+
+def test_bundled_router_handles_enabled_quick_command_exec_in_profile_env(tmp_path, monkeypatch, caplog):
     caplog.set_level("INFO")
     with _bundled_plugin_path():
         from hermes_multitenancy import router as router_mod
         from hermes_multitenancy.runtime import add_in_memory_route, clear_in_memory_routes
 
         clear_in_memory_routes()
-        add_in_memory_route("ou_quick_exec", tmp_path)
+        profile_home = tmp_path / "quick-profile"
+        profile_home.mkdir()
+        add_in_memory_route("ou_quick_exec", profile_home)
 
         class PoolShouldNotRun:
             async def dispatch(self, *args, **kwargs):
@@ -560,12 +843,15 @@ def test_bundled_router_handles_quick_command_exec(tmp_path, monkeypatch, caplog
         )
         gateway = SimpleNamespace(
             adapters={"feishu": Adapter()},
-            config={"quick_commands": {"ping": {"type": "exec", "command": "printf quick-ok"}}},
+            config={
+                "multitenancy": {"allow_quick_exec": True},
+                "quick_commands": {"ping": {"type": "exec", "command": "printf \"$HERMES_HOME\""}},
+            },
         )
 
         asyncio.run(router_mod.handle_async(event=event, gateway=gateway))
 
-        assert sends == ["quick-ok"]
+        assert sends == [str(profile_home)]
         assert "Hermes quick command exec" in caplog.text
         clear_in_memory_routes()
 

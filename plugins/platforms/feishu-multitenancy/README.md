@@ -87,6 +87,31 @@ Disable auto-provisioning with:
 HERMES_MULTITENANCY_AUTO_PROVISION=0
 ```
 
+## Tenant-boundary controls
+
+- Session history and gateway slash session keys are scoped by `(profile,
+  canonical sender)`; alternate IDs are route lookup helpers only.
+- Gateway and plugin slash handlers run under the routed profile's
+  `HERMES_HOME`, serialized so concurrent slash commands cannot observe another
+  profile's environment.
+- Outbound `MEDIA:<path>` file replies are delivered only when the target path
+  resolves inside the routed profile home.
+- `quick_commands` entries with `type: exec` are disabled by default for Feishu
+  multitenancy. Enable them only after profile sandboxing is enforced:
+
+```yaml
+multitenancy:
+  allow_quick_exec: true
+```
+
+or:
+
+```bash
+HERMES_MULTITENANCY_ALLOW_QUICK_EXEC=1
+```
+
+Allowed exec commands inherit the routed profile's `HERMES_HOME`.
+
 ## Toolsets
 
 When a profile sets `platform_toolsets.feishu`, the plugin defaults to merging
