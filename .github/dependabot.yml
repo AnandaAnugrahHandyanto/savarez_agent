@@ -42,3 +42,21 @@ updates:
         update-types:
           - "minor"
           - "patch"
+
+  # gitsubmodule is the other exception: this fork carries the
+  # `tinker-atropos` submodule, which is a vendored pin to a specific
+  # upstream commit. Dependabot opens a PR when that upstream advances
+  # so we can update the pin deliberately, on review — same model as
+  # github-actions above. Monthly cadence is intentional: submodule
+  # bumps are heavier-weight than action SHA bumps and don't need a
+  # weekly rhythm.
+  - package-ecosystem: "gitsubmodule"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    labels:
+      - "dependencies"
+      - "submodule"
+    commit-message:
+      prefix: "chore(submodule)"
+      include: "scope"
