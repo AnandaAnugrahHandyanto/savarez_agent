@@ -259,67 +259,12 @@ _PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
     "kimi-coding-cn",
 })
 
-# OpenRouter app attribution headers (base — always sent)
-_OR_HEADERS_BASE = {
+# OpenRouter app attribution headers
+_OR_HEADERS = {
     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-OpenRouter-Title": "Hermes Agent",
     "X-OpenRouter-Categories": "productivity,cli-agent",
 }
-
-# Truthy values for boolean env-var parsing.
-_TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
-
-
-def build_or_headers(or_config: dict | None = None) -> dict:
-    """Build OpenRouter headers, optionally including response-cache headers.
-
-    Precedence for response cache: env var > config.yaml > default (enabled).
-
-    Environment variables:
-        ``HERMES_OPENROUTER_CACHE`` — truthy (``1``/``true``/``yes``/``on``)
-            enables caching; ``0``/``false``/``no``/``off`` disables.
-            Overrides ``openrouter.response_cache`` in config.yaml.
-        ``HERMES_OPENROUTER_CACHE_TTL`` — integer seconds (1-86400).
-            Overrides ``openrouter.response_cache_ttl`` in config.yaml.
-
-    *or_config* is the ``openrouter`` section from config.yaml.  When *None*,
-    falls back to reading config from disk via ``load_config()``.
-    """
-    headers = dict(_OR_HEADERS_BASE)
-
-    # Resolve config from disk if not provided.
-    if or_config is None:
-        try:
-            from hermes_cli.config import load_config
-            or_config = load_config().get("openrouter", {})
-        except Exception:
-            or_config = {}
-
-    # Determine cache enabled: env var overrides config.
-    env_cache = os.environ.get("HERMES_OPENROUTER_CACHE", "").strip().lower()
-    if env_cache:
-        cache_enabled = env_cache in _TRUTHY_ENV_VALUES
-    else:
-        cache_enabled = or_config.get("response_cache", False)
-
-    if not cache_enabled:
-        return headers
-
-    headers["X-OpenRouter-Cache"] = "true"
-
-    # Determine TTL: env var overrides config.
-    env_ttl = os.environ.get("HERMES_OPENROUTER_CACHE_TTL", "").strip()
-    if env_ttl:
-        if env_ttl.isdigit():
-            ttl = int(env_ttl)
-            if 1 <= ttl <= 86400:
-                headers["X-OpenRouter-Cache-TTL"] = str(ttl)
-    else:
-        ttl = or_config.get("response_cache_ttl", 300)
-        if isinstance(ttl, (int, float)) and 1 <= ttl <= 86400:
-            headers["X-OpenRouter-Cache-TTL"] = str(int(ttl))
-
-    return headers
 
 # Vercel AI Gateway app attribution headers. HTTP-Referer maps to
 # referrerUrl and X-Title maps to appName in the gateway's analytics.
@@ -567,12 +512,7 @@ class _CodexCompletionsAdapter:
                     # API allows it.
                     pass
                 else:
-                    # Truthy-only check mirrors agent/transports/codex.py
-                    # build_kwargs(): falsy values (None, "", 0) fall back
-                    # to the default rather than being forwarded to the
-                    # Codex backend, which rejects e.g. {"effort": null}
-                    # with a 400.
-                    effort = reasoning_cfg.get("effort") or "medium"
+                    effort = reasoning_cfg.get("effort", "medium")
                     # Codex backend rejects "minimal"; clamp to "low" to
                     # match the main-agent Codex transport behavior.
                     if effort == "minimal":
@@ -1209,23 +1149,23 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 
 
-def _try_openrouter(explicit_api_key: str = None) -> Tuple[Optional[OpenAI], Optional[str]]:
+def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
     pool_present, entry = _select_pool_entry("openrouter")
     if pool_present:
-        or_key = explicit_api_key or _pool_runtime_api_key(entry)
+        or_key = _pool_runtime_api_key(entry)
         if not or_key:
             return None, None
         base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
         logger.debug("Auxiliary client: OpenRouter via pool")
         return OpenAI(api_key=or_key, base_url=base_url,
-                       default_headers=build_or_headers()), _OPENROUTER_MODEL
+                       default_headers=_OR_HEADERS), _OPENROUTER_MODEL
 
-    or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
+    or_key = os.getenv("OPENROUTER_API_KEY")
     if not or_key:
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
-                   default_headers=build_or_headers()), _OPENROUTER_MODEL
+                   default_headers=_OR_HEADERS), _OPENROUTER_MODEL
 
 
 def _describe_openrouter_unavailable() -> str:
@@ -1534,7 +1474,7 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     return CodexAuxiliaryClient(real_client, model), model
 
 
-def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optional[str]]:
+def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
     try:
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
     except ImportError:
@@ -1544,10 +1484,10 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
     if pool_present:
         if entry is None:
             return None, None
-        token = explicit_api_key or _pool_runtime_api_key(entry)
+        token = _pool_runtime_api_key(entry)
     else:
         entry = None
-        token = explicit_api_key or resolve_anthropic_token()
+        token = resolve_anthropic_token()
     if not token:
         return None, None
 
@@ -1971,7 +1911,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     }
     sync_base_url = str(sync_client.base_url)
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
-        async_kwargs["default_headers"] = build_or_headers()
+        async_kwargs["default_headers"] = dict(_OR_HEADERS)
     elif base_url_host_matches(sync_base_url, "api.githubcopilot.com"):
         from hermes_cli.copilot_auth import copilot_request_headers
 
@@ -2037,12 +1977,6 @@ def resolve_provider_client(
         (client, resolved_model) or (None, None) if auth is unavailable.
     """
     _validate_proxy_env_urls()
-    # Preserve the original provider name before alias normalization so a
-    # user-declared ``custom_providers`` entry whose name coincidentally
-    # matches a built-in alias (e.g. user names their custom provider "kimi"
-    # which aliases to "kimi-coding") is still reachable via the named-custom
-    # branch below.
-    original_provider = (provider or "").strip().lower()
     # Normalise aliases
     provider = _normalize_aux_provider(provider)
 
@@ -2113,9 +2047,9 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
-    # ── OpenRouter ───────────────────────────────────────────
+    # ── OpenRouter ───────────────────────────────────────────────────
     if provider == "openrouter":
-        client, default = _try_openrouter(explicit_api_key=explicit_api_key)
+        client, default = _try_openrouter()
         if client is None:
             logger.warning(
                 "resolve_provider_client: openrouter requested but %s",
@@ -2229,18 +2163,7 @@ def resolve_provider_client(
     # ── Named custom providers (config.yaml providers dict / custom_providers list) ───
     try:
         from hermes_cli.runtime_provider import _get_named_custom_provider
-        # When the raw requested name is an alias (``kimi`` → ``kimi-coding``)
-        # and the user defined a ``custom_providers`` entry under that alias
-        # name, the custom entry is the intended target — the built-in alias
-        # rewriting would otherwise hijack the request.  Only preferred when
-        # the raw name is an alias (not a canonical provider name) so custom
-        # entries that coincidentally match a canonical provider (e.g. ``nous``)
-        # still defer to the built-in per `_get_named_custom_provider`'s guard.
-        custom_entry = None
-        if original_provider and original_provider != provider:
-            custom_entry = _get_named_custom_provider(original_provider)
-        if custom_entry is None:
-            custom_entry = _get_named_custom_provider(provider)
+        custom_entry = _get_named_custom_provider(provider)
         if custom_entry:
             custom_base = custom_entry.get("base_url", "").strip()
             custom_key = custom_entry.get("api_key", "").strip()
@@ -2341,7 +2264,7 @@ def resolve_provider_client(
 
     if pconfig.auth_type == "api_key":
         if provider == "anthropic":
-            client, default_model = _try_anthropic(explicit_api_key=explicit_api_key)
+            client, default_model = _try_anthropic()
             if client is None:
                 logger.warning("resolve_provider_client: anthropic requested but no Anthropic credentials found")
                 return None, None
@@ -2350,12 +2273,6 @@ def resolve_provider_client(
 
         creds = resolve_api_key_provider_credentials(provider)
         api_key = str(creds.get("api_key", "")).strip()
-        # Honour an explicit api_key override (e.g. from a fallback_model entry
-        # or a custom_providers entry) so callers that pass an explicit
-        # credential can authenticate against endpoints where no built-in
-        # credential is registered for this provider alias.
-        if explicit_api_key:
-            api_key = explicit_api_key.strip() or api_key
         if not api_key:
             tried_sources = list(pconfig.api_key_env_vars)
             if provider == "copilot":
@@ -2367,11 +2284,6 @@ def resolve_provider_client(
 
         raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
         base_url = _to_openai_base_url(raw_base_url)
-        # Honour an explicit base_url override from the caller — used when a
-        # fallback_model entry (or custom_providers lookup) routes through a
-        # built-in provider name but targets a user-specified endpoint.
-        if explicit_base_url:
-            base_url = _to_openai_base_url(explicit_base_url.strip().rstrip("/"))
 
         default_model = _API_KEY_PROVIDER_AUX_MODELS.get(provider, "")
         final_model = _normalize_resolved_model(model or default_model, provider)
@@ -2653,11 +2565,8 @@ def resolve_vision_provider_client(
         return resolved_provider, sync_client, final_model
 
     if resolved_base_url:
-        provider_for_base_override = (
-            requested if requested and requested not in ("", "auto") else "custom"
-        )
         client, final_model = resolve_provider_client(
-            provider_for_base_override,
+            "custom",
             model=resolved_model,
             async_mode=async_mode,
             explicit_base_url=resolved_base_url,
@@ -2665,8 +2574,8 @@ def resolve_vision_provider_client(
             api_mode=resolved_api_mode,
         )
         if client is None:
-            return provider_for_base_override, None, None
-        return provider_for_base_override, client, final_model
+            return "custom", None, None
+        return "custom", client, final_model
 
     if requested == "auto":
         # Vision auto-detection order:
@@ -3134,8 +3043,14 @@ def _resolve_task_provider_model(
         # Config.yaml is the primary source for per-task overrides.
         if cfg_base_url:
             return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
-        if cfg_provider and cfg_provider != "auto":
-            return cfg_provider, resolved_model, None, None, resolved_api_mode
+        if cfg_provider:
+            # "main" means "follow the current main runtime/provider".
+            # Auxiliary client does not have a dedicated "main" backend key,
+            # so route through auto resolution with main_runtime hints.
+            if cfg_provider == "main":
+                return "auto", resolved_model, None, None, resolved_api_mode
+            if cfg_provider != "auto":
+                return cfg_provider, resolved_model, None, None, resolved_api_mode
 
         return "auto", resolved_model, None, None, resolved_api_mode
 
@@ -3300,26 +3215,7 @@ def _build_call_kwargs(
             kwargs["max_tokens"] = max_tokens
 
     if tools:
-        # Defensive dedup: providers like Google Vertex, Azure, and Bedrock
-        # reject requests with duplicate tool names (HTTP 400).  The upstream
-        # injection paths (run_agent.py) already dedup, but this guard
-        # converts a hard API failure into a warning if an upstream regression
-        # reintroduces duplicates.  See: #18478
-        _seen: set = set()
-        _deduped: list = []
-        for _t in tools:
-            _tname = (_t.get("function") or {}).get("name", "")
-            if _tname and _tname in _seen:
-                logger.warning(
-                    "_build_call_kwargs: duplicate tool name '%s' removed "
-                    "(provider=%s model=%s)",
-                    _tname, provider, model,
-                )
-                continue
-            if _tname:
-                _seen.add(_tname)
-            _deduped.append(_t)
-        kwargs["tools"] = _deduped
+        kwargs["tools"] = tools
 
     # Provider-specific extra_body
     merged_extra = dict(extra_body or {})
