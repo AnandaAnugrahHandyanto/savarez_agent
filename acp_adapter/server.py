@@ -449,6 +449,14 @@ class HermesACPAgent(acp.Agent):
 
     # ---- ACP lifecycle ------------------------------------------------------
 
+    async def ext_method(self, name: str, payload: dict[str, Any]) -> Any:
+        """Handle Hermes-specific ACP extension requests."""
+        if name != "model_state":
+            return None
+        cwd = str((payload or {}).get("cwd") or ".")
+        state = self.session_manager.create_model_state_probe(cwd=cwd)
+        return self._build_model_state(state)
+
     async def initialize(
         self,
         protocol_version: int | None = None,
