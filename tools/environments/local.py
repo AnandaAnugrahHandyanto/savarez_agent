@@ -360,7 +360,10 @@ class LocalEnvironment(BaseEnvironment):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            preexec_fn=None if _IS_WINDOWS else os.setsid,
+            # Avoid preexec_fn in the gateway's multithreaded process. Python
+            # exposes start_new_session for this exact setsid use case without
+            # running arbitrary Python in the forked child.
+            start_new_session=False if _IS_WINDOWS else True,
             cwd=self.cwd,
         )
 

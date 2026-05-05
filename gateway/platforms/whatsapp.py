@@ -449,7 +449,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 ],
                 stdout=bridge_log_fh,
                 stderr=bridge_log_fh,
-                preexec_fn=None if _IS_WINDOWS else os.setsid,
+                start_new_session=False if _IS_WINDOWS else True,
                 env=bridge_env,
             )
             
