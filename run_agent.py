@@ -6343,6 +6343,25 @@ class AIAgent:
                 return True, False
             return False, True
 
+        if effective_reason == FailoverReason.upstream_rate_limit:
+            # Upstream provider (e.g. DeepSeek behind OpenRouter) is
+            # rate-limiting the aggregator's traffic — the user's credential
+            # is healthy.  Do NOT rotate or mark exhausted; let the caller's
+            # fallback path switch to a different model entirely.
+            upstream = (error_context or {}).get("upstream_provider") if error_context else None
+            if upstream:
+                logger.info(
+                    "Upstream provider %s rate-limited via aggregator — "
+                    "skipping credential rotation, deferring to fallback chain",
+                    upstream,
+                )
+            else:
+                logger.info(
+                    "Upstream aggregator 429 (provider unknown) — skipping "
+                    "credential rotation, deferring to fallback chain"
+                )
+            return False, has_retried_429
+
         if effective_reason == FailoverReason.auth:
             refreshed = pool.try_refresh_current()
             if refreshed is not None:
@@ -7580,7 +7599,7 @@ class AIAgent:
         auth resolution and client construction — no duplicated provider→key
         mappings.
         """
-        if reason in (FailoverReason.rate_limit, FailoverReason.billing):
+        if reason in (FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit):
             # Only start cooldown when leaving the primary provider.  If we're
             # already on a fallback and chain-switching, the primary wasn't the
             # source of the 429 so the cooldown should not be reset/extended.
@@ -12439,16 +12458,31 @@ class AIAgent:
                     is_rate_limited = classified.reason in (
                         FailoverReason.rate_limit,
                         FailoverReason.billing,
+                        FailoverReason.upstream_rate_limit,
                     )
                     if is_rate_limited and self._fallback_index < len(self._fallback_chain):
                         # Don't eagerly fallback if credential pool rotation may
                         # still recover.  See _pool_may_recover_from_rate_limit
                         # for the single-credential-pool exception.  Fixes #11314.
-                        pool_may_recover = _pool_may_recover_from_rate_limit(
-                            self._credential_pool
+                        # Exception: upstream-aggregator 429 — the pool can't
+                        # help when the *upstream* model is being throttled,
+                        # so always fall back regardless of pool state.
+                        is_upstream = classified.reason == FailoverReason.upstream_rate_limit
+                        pool_may_recover = (
+                            False if is_upstream
+                            else _pool_may_recover_from_rate_limit(self._credential_pool)
                         )
                         if not pool_may_recover:
-                            self._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                            if is_upstream:
+                                upstream_name = (classified.error_context or {}).get(
+                                    "upstream_provider", "aggregator"
+                                )
+                                self._emit_status(
+                                    f"⚠️ Upstream {upstream_name} rate-limited — "
+                                    "switching to fallback model..."
+                                )
+                            else:
+                                self._emit_status("⚠️ Rate limited — switching to fallback provider...")
                             if self._try_activate_fallback(reason=classified.reason):
                                 retry_count = 0
                                 compression_attempts = 0
