@@ -2241,6 +2241,7 @@ def _(rid, params: dict) -> dict:
         session["pending_title"] = title
         return _ok(rid, {"pending": True, "title": title})
     except ValueError as e:
+        session["pending_title"] = None
         return _err(rid, 4022, str(e))
     except Exception as e:
         return _err(rid, 5007, str(e))

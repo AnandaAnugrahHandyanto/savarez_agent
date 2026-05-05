@@ -43,6 +43,7 @@ def _make_agent(monkeypatch):
         _iters_since_skill = 0
         _current_tool = None
         _last_activity = 0
+        _tool_guardrails = MagicMock()
         _print_fn = print
         # Worker-thread tracking state mirrored from AIAgent.__init__ so the
         # real interrupt() method can fan out to concurrent-tool workers.

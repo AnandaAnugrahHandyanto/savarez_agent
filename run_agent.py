@@ -10798,6 +10798,17 @@ class AIAgent:
                     if _preflight_tokens < self.context_compressor.threshold_tokens:
                         break  # Under threshold
 
+            # Delegate to the engine for sub-threshold deferred maintenance.
+            # The built-in ContextCompressor.should_compress_preflight() returns
+            # False so this is a no-op for non-LCM engines.
+            elif hasattr(self.context_compressor, "should_compress_preflight"):
+                if self.context_compressor.should_compress_preflight(messages):
+                    messages, active_system_prompt = self._compress_context(
+                        messages, system_message, approx_tokens=_preflight_tokens,
+                        task_id=effective_task_id,
+                    )
+                    conversation_history = None
+
         # Plugin hook: pre_llm_call
         # Fired once per turn before the tool-calling loop.  Plugins can
         # return a dict with a ``context`` key (or a plain string) whose
