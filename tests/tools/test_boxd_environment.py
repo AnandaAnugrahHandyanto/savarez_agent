@@ -785,6 +785,71 @@ class TestFactoryDispatch:
 # ---------------------------------------------------------------------------
 
 
+class TestHomeDetectionRetry:
+    def test_home_detection_retries_through_warmup_connection_errors(
+        self, boxd_sdk, monkeypatch
+    ):
+        """The in-VM exec endpoint is briefly unreachable right after
+        create() returns. We must retry $HOME detection rather than
+        silently falling back to /root and breaking file sync."""
+        monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
+        # Make the time.sleep call cheap so the test doesn't actually wait
+        monkeypatch.setattr("tools.environments.boxd.time.sleep", lambda _s: None)
+
+        box = _make_box()
+        # First two exec calls (warmup) raise ConnectionError; third succeeds
+        class _ConnErr(Exception):
+            pass
+        box.exec.side_effect = [
+            _ConnErr("cannot connect to VM"),
+            _ConnErr("cannot connect to VM"),
+            _ExecResult(stdout="/home/boxd"),       # $HOME succeeded
+            _ExecResult(stdout="", exit_code=0),    # init_session bootstrap
+        ]
+
+        mock_compute = MagicMock()
+        mock_compute.box.create.return_value = box
+        mock_compute.box.get.side_effect = boxd_sdk.NotFoundError("not found")
+        boxd_sdk.Compute = MagicMock(return_value=mock_compute)
+
+        from tools.environments.boxd import BoxdEnvironment
+        env = BoxdEnvironment(persistent_filesystem=False)
+        # Detection eventually succeeded — _remote_home is the real home,
+        # not the /root fallback
+        assert env._remote_home == "/home/boxd"
+
+    def test_home_detection_falls_back_after_deadline(self, boxd_sdk, monkeypatch):
+        """If $HOME detection never succeeds within the deadline, we log a
+        warning and keep the default — the env is still usable for code
+        that doesn't depend on file sync."""
+        monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
+        monkeypatch.setattr("tools.environments.boxd.time.sleep", lambda _s: None)
+
+        # Force the deadline to expire after 1 attempt by patching time.monotonic
+        import itertools
+        # Sequence: start (0.0), attempt 1 check (0.0), after sleep (20.0 — past deadline),
+        # then any further calls return 100.0 to keep the loop exited.
+        clock = itertools.chain([0.0, 0.0, 20.0], itertools.repeat(100.0))
+        monkeypatch.setattr(
+            "tools.environments.boxd.time.monotonic",
+            lambda: next(clock),
+        )
+
+        box = _make_box()
+        box.exec.side_effect = RuntimeError("VM never came up")
+
+        mock_compute = MagicMock()
+        mock_compute.box.create.return_value = box
+        mock_compute.box.get.side_effect = boxd_sdk.NotFoundError("not found")
+        boxd_sdk.Compute = MagicMock(return_value=mock_compute)
+
+        from tools.environments.boxd import BoxdEnvironment
+        env = BoxdEnvironment(persistent_filesystem=False)
+        # Fell back to constructor default — but the env is still constructed
+        assert env._remote_home == "/root"
+        assert env._box is not None
+
+
 class TestEnvConfig:
     def test_default_boxd_image_is_empty(self, monkeypatch):
         monkeypatch.delenv("TERMINAL_BOXD_IMAGE", raising=False)

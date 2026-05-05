@@ -16,6 +16,7 @@ import os
 import shlex
 import tarfile
 import threading
+import time
 from pathlib import Path
 
 from tools.environments.base import (
@@ -70,6 +71,7 @@ class BoxdEnvironment(BaseEnvironment):
         persistent_filesystem: bool = True,
         task_id: str = "default",
         auto_suspend_timeout: int = 300,
+        compute=None,
     ):
         requested_cwd = cwd
         super().__init__(cwd=cwd, timeout=timeout)
@@ -86,7 +88,13 @@ class BoxdEnvironment(BaseEnvironment):
         self._task_id = task_id
         self._BoxdError = BoxdError
         self._NotFoundError = NotFoundError
-        self._compute = Compute()
+        # If the caller injects a Compute we don't own its lifecycle —
+        # closing it on cleanup would surprise them. Tests that spin up
+        # many BoxdEnvironments in series share one Compute to dodge an
+        # SDK-side auth-state issue that bites after ~6 close cycles
+        # in a single process; production keeps the default (own it).
+        self._owns_compute = compute is None
+        self._compute = compute if compute is not None else Compute()
         self._box = None
         self._lock = threading.Lock()
 
@@ -129,16 +137,35 @@ class BoxdEnvironment(BaseEnvironment):
                         self._box.id, task_id)
 
         # Detect remote $HOME so file sync targets the right path.
+        # The first few exec calls after create() can fail with
+        # ConnectionError while the in-VM exec endpoint comes up — retry
+        # briefly so we don't fall back to the wrong default and corrupt
+        # every subsequent file sync.
         self._remote_home = "/root"
-        try:
-            home_result = self._box.exec("bash", "-c", "echo $HOME")
-            home = (home_result.stdout or "").strip()
-            if home:
-                self._remote_home = home
-                if requested_cwd in ("~", "/root"):
-                    self.cwd = home
-        except Exception:
-            pass
+        deadline = time.monotonic() + 10.0
+        attempt = 0
+        while time.monotonic() < deadline:
+            attempt += 1
+            try:
+                home_result = self._box.exec("bash", "-c", "echo $HOME")
+                home = (home_result.stdout or "").strip()
+                if home:
+                    self._remote_home = home
+                    if requested_cwd in ("~", "/root"):
+                        self.cwd = home
+                    break
+            except Exception as e:
+                logger.debug(
+                    "boxd: $HOME detect attempt %d failed (%s); retrying",
+                    attempt, type(e).__name__,
+                )
+                time.sleep(0.5)
+        else:
+            logger.warning(
+                "boxd: $HOME detection never succeeded — falling back to %s. "
+                "File sync may target the wrong directory.",
+                self._remote_home,
+            )
         logger.info("boxd: resolved home to %s, cwd to %s",
                     self._remote_home, self.cwd)
 
@@ -312,8 +339,10 @@ class BoxdEnvironment(BaseEnvironment):
                 logger.warning("boxd: cleanup failed: %s", e)
             self._box = None
 
-            # Close the SDK transport; sync API holds a background event loop.
-            try:
-                self._compute.close()
-            except Exception:
-                pass
+            # Close the SDK transport only if we created it. When the
+            # caller injected one, they're responsible for its lifecycle.
+            if self._owns_compute:
+                try:
+                    self._compute.close()
+                except Exception:
+                    pass
