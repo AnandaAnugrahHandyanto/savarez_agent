@@ -28,10 +28,16 @@ Requires the codex CLI and a git repository.
 - Codex installed globally: `npm install -g @openai/codex`
 - Or user-local install: `npm install -g @openai/codex --prefix "$HOME/.local"` and ensure `$HOME/.local/bin` is on `PATH`
 - Codex authenticated separately from Hermes:
-  - ChatGPT/Codex subscription: `codex login --device-auth`
+  - ChatGPT/Codex subscription / CLI OAuth: `codex login --device-auth`
   - API-key mode: configure Codex CLI's supported OpenAI API key environment
 - **Must run inside a git repository** — Codex refuses to run outside one
 - Use `pty=true` in terminal calls — Codex is an interactive terminal app
+
+For Hermes itself, `model.provider: openai-codex` uses Hermes-managed Codex
+OAuth from `~/.hermes/auth.json` after `hermes auth add openai-codex`. For the
+standalone Codex CLI, a valid CLI OAuth session may live under
+`~/.codex/auth.json`; do not treat a missing `OPENAI_API_KEY` alone as proof
+that Codex auth is missing.
 
 ## One-Shot Tasks
 
