@@ -32,6 +32,7 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
 | QQ | ✅ | ✅ | ✅ | — | — | ✅ | — |
 | Yuanbao | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
+| TrueConf | ✅ | ✅ | ✅ | — | — | — | ✅ |
 | Microsoft Teams | — | ✅ | — | ✅ | — | ✅ | — |
 
 **Voice** = TTS audio replies and/or voice message transcription. **Images** = send/receive images. **Files** = send/receive file attachments. **Threads** = threaded conversations. **Reactions** = emoji reactions on messages. **Typing** = typing indicator while processing. **Streaming** = progressive message updates via editing.
@@ -53,6 +54,7 @@ flowchart TB
             mm[Mattermost]
             mx[Matrix]
             dt[DingTalk]
+            tc[TrueConf]
     fs[Feishu/Lark]
     wc[WeCom]
     wcb[WeCom Callback]
@@ -89,6 +91,7 @@ flowchart TB
     qq --> store
     yb --> store
     ms --> store
+    tc --> store
     api --> store
     wh --> store
     store --> agent
@@ -192,6 +195,7 @@ DINGTALK_ALLOWED_USERS=user-id-1
 FEISHU_ALLOWED_USERS=ou_xxxxxxxx,ou_yyyyyyyy
 WECOM_ALLOWED_USERS=user-id-1,user-id-2
 WECOM_CALLBACK_ALLOWED_USERS=user-id-1,user-id-2
+TRUECONF_ALLOWED_USERS=user1@company.com,user2@company.com
 TEAMS_ALLOWED_USERS=aad-object-id-1,aad-object-id-2
 
 # Or allow
@@ -398,6 +402,7 @@ Each platform has its own toolset:
 | QQBot | `hermes-qqbot` | Full tools including terminal |
 | Yuanbao | `hermes-yuanbao` | Full tools including terminal |
 | Microsoft Teams | `hermes-teams` | Full tools including terminal |
+| TrueConf | `hermes-trueconf` | Full tools including terminal |
 | API Server | `hermes` (default) | Full tools including terminal |
 | Webhooks | `hermes-webhook` | Full tools including terminal |
 
@@ -421,6 +426,7 @@ Each platform has its own toolset:
 - [BlueBubbles Setup (iMessage)](bluebubbles.md)
 - [QQBot Setup](qqbot.md)
 - [Yuanbao Setup](yuanbao.md)
+- [TrueConf Setup](trueconf.md)
 - [Microsoft Teams Setup](teams.md)
 - [Open WebUI + API Server](open-webui.md)
 - [Webhooks](webhooks.md)
