@@ -2827,76 +2827,27 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_user = getattr(message.reply_to_message, "from_user", None)
         return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
 
-    def _message_mentions_bot(self, message: Message) -> bool:
+    def _resolve_mention_targets(self, message: Message) -> tuple[bool, bool]:
+        """Scan all message entities once and return ``(self_mentioned, other_mentioned)``.
+
+        ``self_mentioned`` is True when this bot is @-mentioned, text_mentioned,
+        or addressed via the ``/cmd@botname`` group-disambiguation form.
+        ``other_mentioned`` is True when any other @-mentioned username, any
+        other text_mentioned bot, or a ``/cmd@other_bot`` form is found.
+
+        Both values may be True simultaneously (e.g. ``@this_bot @other_bot help``).
+
+        Only Telegram-parsed MessageEntity objects are consulted — not raw
+        substring scans — for the same reasons documented in the original
+        mention guard (bug #12545): entities correctly handle @handles inside
+        URLs, code blocks, and quoted text where a regex scan would over-match.
+        """
         if not self._bot:
-            return False
+            return False, False
 
         bot_username = (getattr(self._bot, "username", None) or "").lstrip("@").lower()
         bot_id = getattr(self._bot, "id", None)
         expected = f"@{bot_username}" if bot_username else None
-
-        def _iter_sources():
-            yield getattr(message, "text", None) or "", getattr(message, "entities", None) or []
-            yield getattr(message, "caption", None) or "", getattr(message, "caption_entities", None) or []
-
-        # Telegram parses mentions server-side and emits MessageEntity objects
-        # (type=mention for @username, type=text_mention for @FirstName targeting
-        # a user without a public username). Only those entities are authoritative —
-        # raw substring matches like "foo@hermes_bot.example" are not mentions
-        # (bug #12545). Entities also correctly handle @handles inside URLs, code
-        # blocks, and quoted text, where a regex scan would over-match.
-        for source_text, entities in _iter_sources():
-            for entity in entities:
-                entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
-                if entity_type == "mention" and expected:
-                    offset = int(getattr(entity, "offset", -1))
-                    length = int(getattr(entity, "length", 0))
-                    if offset < 0 or length <= 0:
-                        continue
-                    if source_text[offset:offset + length].strip().lower() == expected:
-                        return True
-                elif entity_type == "text_mention":
-                    user = getattr(entity, "user", None)
-                    if user and getattr(user, "id", None) == bot_id:
-                        return True
-                elif entity_type == "bot_command" and expected:
-                    # Telegram's official group-disambiguation form for slash
-                    # commands (``/cmd@botname``) is emitted as a single
-                    # ``bot_command`` entity covering the whole span — there
-                    # is no accompanying ``mention`` entity. Treat it as a
-                    # direct address to this bot when the ``@botname`` suffix
-                    # matches. This is the form Telegram's own command menu
-                    # autocomplete produces in groups, so dropping it at the
-                    # mention gate would break /new, /reset, /help, ... for
-                    # every group that has ``require_mention`` enabled (#15415).
-                    offset = int(getattr(entity, "offset", -1))
-                    length = int(getattr(entity, "length", 0))
-                    if offset < 0 or length <= 0:
-                        continue
-                    command_text = source_text[offset:offset + length]
-                    at_index = command_text.find("@")
-                    if at_index < 0:
-                        continue
-                    if command_text[at_index:].strip().lower() == expected:
-                        return True
-        return False
-
-    def _message_targets_other_bot(self, message: Message) -> bool:
-        """Return True when the message explicitly @-mentions another account
-        but does NOT mention this bot.
-
-        In multi-agent group chats with ``require_mention`` disabled every bot
-        would normally respond to every message.  When a message carries an
-        explicit ``@mention`` or ``text_mention`` entity that targets a
-        *different* account, the message is clearly addressed to someone else
-        and should be skipped — regardless of the ``require_mention`` setting.
-        This mirrors the cross-talk guard implemented in the Discord adapter.
-        """
-        if not self._bot:
-            return False
-
-        bot_username = (getattr(self._bot, "username", None) or "").lstrip("@").lower()
-        bot_id = getattr(self._bot, "id", None)
 
         self_mentioned = False
         other_mentioned = False
@@ -2925,7 +2876,55 @@ class TelegramAdapter(BasePlatformAdapter):
                             self_mentioned = True
                         elif getattr(user, "is_bot", False):
                             other_mentioned = True
+                elif entity_type == "bot_command" and expected:
+                    # Telegram's official group-disambiguation form for slash
+                    # commands (``/cmd@botname``) is emitted as a single
+                    # ``bot_command`` entity covering the whole span — there
+                    # is no accompanying ``mention`` entity. Treat it as a
+                    # direct address to this bot when the ``@botname`` suffix
+                    # matches. This is the form Telegram's own command menu
+                    # autocomplete produces in groups, so dropping it at the
+                    # mention gate would break /new, /reset, /help, ... for
+                    # every group that has ``require_mention`` enabled (#15415).
+                    offset = int(getattr(entity, "offset", -1))
+                    length = int(getattr(entity, "length", 0))
+                    if offset < 0 or length <= 0:
+                        continue
+                    command_text = source_text[offset:offset + length]
+                    at_index = command_text.find("@")
+                    if at_index < 0:
+                        continue
+                    suffix = command_text[at_index:].strip().lower()
+                    if suffix == expected:
+                        self_mentioned = True
+                    else:
+                        other_mentioned = True
 
+        return self_mentioned, other_mentioned
+
+    def _message_mentions_bot(self, message: Message) -> bool:
+        """Return True if this bot is @-mentioned, text_mentioned, or addressed
+        via the ``/cmd@botname`` group-disambiguation form.
+
+        Delegates entity scanning to :meth:`_resolve_mention_targets`.
+        """
+        self_mentioned, _ = self._resolve_mention_targets(message)
+        return self_mentioned
+
+    def _message_targets_other_bot(self, message: Message) -> bool:
+        """Return True when the message explicitly @-mentions another account
+        but does NOT mention this bot.
+
+        In multi-agent group chats with ``require_mention`` disabled every bot
+        would normally respond to every message.  When a message carries an
+        explicit ``@mention`` or ``text_mention`` entity that targets a
+        *different* account, the message is clearly addressed to someone else
+        and should be skipped — regardless of the ``require_mention`` setting.
+        This mirrors the cross-talk guard implemented in the Discord adapter.
+
+        Delegates entity scanning to :meth:`_resolve_mention_targets`.
+        """
+        self_mentioned, other_mentioned = self._resolve_mention_targets(message)
         return other_mentioned and not self_mentioned
 
     def _message_matches_mention_patterns(self, message: Message) -> bool:
