@@ -340,17 +340,29 @@ def _rule_repeated_spawn_failures(task, events, runs, now, cfg) -> list[Diagnost
         ))
     actions.extend(_generic_recovery_actions(task, running=False))
     severity = "critical" if failures >= threshold * 2 else "error"
+    err_text = (last_err or "").strip() if last_err else ""
+    err_snippet = err_text[:500] + ("…" if len(err_text) > 500 else "") if err_text else ""
+    if err_snippet:
+        title = f"Agent spawn failed {failures}x: {err_snippet.splitlines()[0][:160]}"
+        detail = (
+            f"The dispatcher tried to launch a worker {failures} times "
+            f"and failed every time. Full last error:\n\n{err_snippet}\n\n"
+            f"Common causes: missing config.yaml, bad venv/PATH, or "
+            f"missing credentials for the profile's configured provider."
+        )
+    else:
+        title = f"Agent spawn failed {failures}x (no error recorded)"
+        detail = (
+            f"The dispatcher tried to launch a worker {failures} times "
+            f"and failed every time, but no error text was captured. "
+            f"Usually a profile configuration issue — check profile "
+            f"health with the suggested command."
+        )
     return [Diagnostic(
         kind="repeated_spawn_failures",
         severity=severity,
-        title=f"Worker failed to spawn {failures} times",
-        detail=(
-            f"The dispatcher tried to launch a worker for this task {failures} "
-            f"times and failed every time. Last error: "
-            f"{last_err or 'not recorded'}. This is almost always a profile "
-            f"configuration issue — missing config.yaml, bad venv/PATH, or "
-            f"missing credentials for the profile's configured provider."
-        ),
+        title=title,
+        detail=detail,
         actions=actions,
         first_seen_at=now,
         last_seen_at=now,
@@ -400,17 +412,28 @@ def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
     running = _task_field(task, "status") == "running"
     actions.extend(_generic_recovery_actions(task, running=running))
     severity = "critical" if consecutive >= threshold * 2 else "error"
+    # Put the actual error up-front so operators see WHAT broke without
+    # having to open the logs. Truncate defensively — these can be huge
+    # (full tracebacks).
+    err_text = (last_err or "").strip() if last_err else ""
+    err_snippet = err_text[:500] + ("…" if len(err_text) > 500 else "") if err_text else ""
+    if err_snippet:
+        title = f"Agent crashed {consecutive}x: {err_snippet.splitlines()[0][:160]}"
+        detail = (
+            f"The last {consecutive} runs ended with outcome=crashed. "
+            f"Full last error:\n\n{err_snippet}"
+        )
+    else:
+        title = f"Agent crashed {consecutive}x (no error recorded)"
+        detail = (
+            f"The last {consecutive} runs ended with outcome=crashed but "
+            f"no error text was captured. Check the worker log for more."
+        )
     return [Diagnostic(
         kind="repeated_crashes",
         severity=severity,
-        title=f"Worker crashed {consecutive} runs in a row",
-        detail=(
-            f"The last {consecutive} runs all ended with outcome=crashed "
-            f"without a successful completion in between. Likely causes: "
-            f"OOM during the worker's operation, a tool/MCP server it "
-            f"depends on is down, or a skill/script it loads is failing. "
-            f"Last recorded error: {last_err or 'not recorded'}."
-        ),
+        title=title,
+        detail=detail,
         actions=actions,
         first_seen_at=now,
         last_seen_at=now,

@@ -215,6 +215,63 @@ def test_stuck_in_blocked_silent_when_not_blocked():
     assert kd.compute_task_diagnostics(task, events, [], now=9999999) == []
 
 
+def test_repeated_crashes_surfaces_actual_error_in_title():
+    """The title should lead with the actual error text so operators
+    see WHAT broke (e.g. rate-limit, auth, OOM) without opening logs.
+    """
+    task = _task(status="ready", assignee="x")
+    runs = [
+        _run(outcome="crashed", run_id=1, error="openai: 429 Too Many Requests"),
+        _run(outcome="crashed", run_id=2, error="openai: 429 Too Many Requests"),
+    ]
+    diags = kd.compute_task_diagnostics(task, [], runs)
+    assert len(diags) == 1
+    d = diags[0]
+    assert "429" in d.title
+    assert "Too Many Requests" in d.title
+    # Full error in detail.
+    assert "429 Too Many Requests" in d.detail
+
+
+def test_repeated_crashes_no_error_fallback_title():
+    task = _task(status="ready", assignee="x")
+    runs = [
+        _run(outcome="crashed", run_id=1, error=None),
+        _run(outcome="crashed", run_id=2, error=None),
+    ]
+    diags = kd.compute_task_diagnostics(task, [], runs)
+    assert "no error recorded" in diags[0].title
+
+
+def test_repeated_spawn_failures_surfaces_actual_error_in_title():
+    task = _task(spawn_failures=5,
+                 last_spawn_error="insufficient_quota: billing limit reached")
+    diags = kd.compute_task_diagnostics(task, [], [])
+    assert len(diags) == 1
+    d = diags[0]
+    assert "insufficient_quota" in d.title or "billing limit" in d.title
+    assert "insufficient_quota" in d.detail
+
+
+def test_repeated_crashes_truncates_huge_tracebacks():
+    """Full Python tracebacks can be tens of KB. The title stays one
+    line (≤160 chars); the detail caps at 500 chars + ellipsis so the
+    card doesn't explode visually."""
+    huge = "Traceback (most recent call last):\n" + ("  File\n" * 500)
+    task = _task(status="ready")
+    runs = [
+        _run(outcome="crashed", run_id=1, error=huge),
+        _run(outcome="crashed", run_id=2, error=huge),
+    ]
+    diags = kd.compute_task_diagnostics(task, [], runs)
+    d = diags[0]
+    # Title only the first line, capped.
+    assert "\n" not in d.title
+    assert len(d.title) < 250
+    # Detail contains the snippet with ellipsis.
+    assert d.detail.endswith("…") or len(d.detail) < 700
+
+
 # ---------------------------------------------------------------------------
 # Severity sorting
 # ---------------------------------------------------------------------------
