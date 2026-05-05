@@ -674,6 +674,45 @@ main conversation's message-role alternation stays intact.
 
 ---
 
+## Kanban (multi-agent work queue)
+
+Durable SQLite-backed board that lets multiple profiles / workers
+collaborate on shared tasks. Users drive it via `hermes kanban <verb>`;
+workers spawned by the dispatcher drive it via a dedicated `kanban_*`
+toolset so their schema footprint is zero when they're not inside a
+kanban task.
+
+- **CLI:** `hermes_cli/kanban.py` wires `hermes kanban` with verbs
+  `init`, `create`, `list` (alias `ls`), `show`, `assign`, `link`,
+  `unlink`, `comment`, `complete`, `block`, `unblock`, `archive`,
+  `tail`, plus less-commonly-used `watch`, `stats`, `runs`, `log`,
+  `assignees`, `heartbeat`, `notify-*`, `dispatch`, `daemon`, `gc`.
+- **Worker toolset:** `tools/kanban_tools.py` exposes `kanban_show`,
+  `kanban_complete`, `kanban_block`, `kanban_heartbeat`, `kanban_comment`,
+  `kanban_create`, `kanban_link` — gated by `HERMES_KANBAN_TASK` so
+  the schema only appears for processes actually running as a worker.
+- **Dispatcher:** long-lived loop that (default every 60s) reclaims
+  stale claims, promotes ready tasks, atomically claims, and spawns
+  assigned profiles. Runs **inside the gateway** by default via
+  `kanban.dispatch_in_gateway: true`.
+- **Plugin assets:** `plugins/kanban/dashboard/` (web UI) +
+  `plugins/kanban/systemd/` (`hermes-kanban-dispatcher.service` for
+  standalone dispatcher deployment).
+
+Isolation model:
+- **Board** is the hard boundary — workers are spawned with
+  `HERMES_KANBAN_BOARD` pinned in their env so they can't see other
+  boards.
+- **Tenant** is a soft namespace *within* a board — one specialist
+  fleet can serve multiple businesses with workspace-path + memory-key
+  isolation.
+- After ~5 consecutive spawn failures on the same task the dispatcher
+  auto-blocks it to prevent spin loops.
+
+Full user-facing docs: `website/docs/user-guide/features/kanban.md`.
+
+---
+
 ## Important Policies
 
 ### Prompt Caching Must Not Break
