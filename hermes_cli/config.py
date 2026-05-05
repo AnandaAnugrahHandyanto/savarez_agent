@@ -4035,6 +4035,44 @@ def save_config(config: Dict[str, Any]):
     _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
 
 
+# Matches ${VAR}, ${VAR:-default}, and bare $VAR references for .env
+# interpolation.  Mirrors the subset of POSIX/python-dotenv expansion we
+# need: an unescaped `$` followed by either `{NAME}` (optionally with
+# `:-default` or `-default`) or a bare identifier.
+_ENV_VAR_REF_RE = re.compile(
+    r"(?<!\\)\$(?:\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::?-(?P<default>[^}]*))?\}"
+    r"|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))"
+)
+
+
+def _expand_env_refs(value: str, env_vars: Dict[str, str]) -> str:
+    """Expand ``${VAR}`` / ``$VAR`` references in a .env value.
+
+    Resolution order matches python-dotenv: values defined earlier in the
+    same .env file win over ``os.environ``.  Unresolved references with a
+    ``${VAR:-default}`` form fall back to the default; otherwise the
+    literal text is preserved so corrupted/incorrect references don't
+    silently become empty strings (which would mask copy-paste mistakes).
+    Escaped ``\\$VAR`` is left alone and the leading backslash stripped.
+    """
+    if "$" not in value:
+        return value.replace(r"\$", "$") if "\\$" in value else value
+
+    def _resolve(match: "re.Match[str]") -> str:
+        name = match.group("braced") or match.group("bare")
+        if name in env_vars:
+            return env_vars[name]
+        if name in os.environ:
+            return os.environ[name]
+        default = match.group("default")
+        if default is not None:
+            return default
+        return match.group(0)
+
+    expanded = _ENV_VAR_REF_RE.sub(_resolve, value)
+    return expanded.replace(r"\$", "$")
+
+
 def load_env() -> Dict[str, str]:
     """Load environment variables from ~/.hermes/.env.
 
@@ -4042,10 +4080,16 @@ def load_env() -> Dict[str, str]:
     concatenated KEY=VALUE pairs on a single line) are handled
     gracefully instead of producing mangled values such as duplicated
     bot tokens.  See #8908.
+
+    Expands ``${VAR}`` / ``$VAR`` references using earlier .env entries
+    and ``os.environ`` as the source — matching python-dotenv's
+    interpolation behavior.  Without this, a value like
+    ``ANTHROPIC_API_KEY=${OPENAI_API_KEY}`` would be returned as the
+    literal string and later persisted as an API key (see #20310).
     """
     env_path = get_env_path()
-    env_vars = {}
-    
+    env_vars: Dict[str, str] = {}
+
     if env_path.exists():
         # On Windows, open() defaults to the system locale (cp1252) which can
         # fail on UTF-8 .env files. Use explicit UTF-8 only on Windows.
@@ -4059,8 +4103,9 @@ def load_env() -> Dict[str, str]:
             line = line.strip()
             if line and not line.startswith('#') and '=' in line:
                 key, _, value = line.partition('=')
-                env_vars[key.strip()] = value.strip().strip('"\'')
-    
+                value = value.strip().strip('"\'')
+                env_vars[key.strip()] = _expand_env_refs(value, env_vars)
+
     return env_vars
 
 

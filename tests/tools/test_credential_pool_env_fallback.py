@@ -120,6 +120,31 @@ class TestCredentialPoolSeedsFromDotEnv:
         assert len(seeded) == 1
         assert seeded[0].access_token == "sk-env-fresh-xyz"
 
+    def test_dotenv_var_reference_is_expanded_not_stored_literally(
+        self, isolated_hermes_home, monkeypatch
+    ):
+        """Regression for #20310: ``KEY=${OTHER}`` must seed the resolved value.
+
+        Without expansion the literal ``${OTHER}`` was persisted into
+        ``auth.json`` and sent as the ``x-api-key`` header for auxiliary
+        requests, producing 401s.
+        """
+        _write_env_file(
+            isolated_hermes_home,
+            ANTHROPIC_API_KEY="${OPENAI_API_KEY}",
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-resolved-real-key")
+
+        from agent.credential_pool import _seed_from_env
+        entries = []
+        changed, active_sources = _seed_from_env("anthropic", entries)
+
+        assert changed is True
+        seeded = [e for e in entries if e.source == "env:ANTHROPIC_API_KEY"]
+        assert len(seeded) == 1
+        assert seeded[0].access_token == "sk-resolved-real-key"
+        assert "${" not in seeded[0].access_token
+
 
 class TestAuthResolvesFromDotEnv:
     """_resolve_api_key_provider_secret must also read from ~/.hermes/.env."""
