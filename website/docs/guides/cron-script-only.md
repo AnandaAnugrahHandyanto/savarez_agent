@@ -234,5 +234,4 @@ For critical system-health watchdogs that must fire *even when the gateway is do
 
 - [Automate Anything with Cron](/docs/guides/automate-with-cron) — LLM-driven cron patterns.
 - [Scheduled Tasks (Cron) reference](/docs/user-guide/features/cron) — full schedule syntax, lifecycle, delivery routing.
-- [Pipe Script Output with `hermes send`](/docs/guides/pipe-script-output) — the one-shot counterpart for ad-hoc scripts.
 - [Gateway Internals](/docs/developer-guide/gateway-internals) — delivery-router internals.
