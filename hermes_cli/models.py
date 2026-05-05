@@ -2246,6 +2246,7 @@ def _is_github_models_base_url(base_url: Optional[str]) -> bool:
     normalized = (base_url or "").strip().rstrip("/").lower()
     return (
         normalized.startswith(COPILOT_BASE_URL)
+        or normalized.startswith("https://api.business.githubcopilot.com")
         or normalized.startswith("https://models.github.ai/inference")
     )
 
