@@ -10327,6 +10327,7 @@ class HermesCLI:
         # --- Clarify tool: arrow-key navigation for multiple-choice questions ---
 
         @kb.add('up', filter=Condition(lambda: bool(self._clarify_state) and not self._clarify_freetext))
+        @kb.add('c-p', filter=Condition(lambda: bool(self._clarify_state) and not self._clarify_freetext))
         def clarify_up(event):
             """Move selection up in clarify choices."""
             if self._clarify_state:
@@ -10334,6 +10335,7 @@ class HermesCLI:
                 event.app.invalidate()
 
         @kb.add('down', filter=Condition(lambda: bool(self._clarify_state) and not self._clarify_freetext))
+        @kb.add('c-n', filter=Condition(lambda: bool(self._clarify_state) and not self._clarify_freetext))
         def clarify_down(event):
             """Move selection down in clarify choices."""
             if self._clarify_state:
@@ -10368,12 +10370,14 @@ class HermesCLI:
         # --- Dangerous command approval: arrow-key navigation ---
 
         @kb.add('up', filter=Condition(lambda: bool(self._approval_state)))
+        @kb.add('c-p', filter=Condition(lambda: bool(self._approval_state)))
         def approval_up(event):
             if self._approval_state:
                 self._approval_state["selected"] = max(0, self._approval_state["selected"] - 1)
                 event.app.invalidate()
 
         @kb.add('down', filter=Condition(lambda: bool(self._approval_state)))
+        @kb.add('c-n', filter=Condition(lambda: bool(self._approval_state)))
         def approval_down(event):
             if self._approval_state:
                 max_idx = len(self._approval_state["choices"]) - 1
@@ -10382,12 +10386,14 @@ class HermesCLI:
 
         # --- /model picker: arrow-key navigation ---
         @kb.add('up', filter=Condition(lambda: bool(self._model_picker_state)))
+        @kb.add('c-p', filter=Condition(lambda: bool(self._model_picker_state)))
         def model_picker_up(event):
             if self._model_picker_state:
                 self._model_picker_state["selected"] = max(0, self._model_picker_state.get("selected", 0) - 1)
                 event.app.invalidate()
 
         @kb.add('down', filter=Condition(lambda: bool(self._model_picker_state)))
+        @kb.add('c-n', filter=Condition(lambda: bool(self._model_picker_state)))
         def model_picker_down(event):
             state = self._model_picker_state
             if not state:
