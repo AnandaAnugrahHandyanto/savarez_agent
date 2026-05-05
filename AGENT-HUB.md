@@ -214,33 +214,49 @@ providers:
 2. Copy to repo: `cp /root/.hermes/scripts/hermes-token-rotation.sh /root/.hermes/hermes-agent/scripts/`
 3. Re-add to host crontab: `*/5 * * * * /root/.hermes/scripts/hermes-token-rotation.sh --once >> /var/log/hermes-token-rotation.log 2>&1`
 
-### Patch 4: Copilot Model Picker Bug Investigation (2026-05-04)
+### Patch 4: Copilot Model Picker Bug Fix (2026-05-04)
 
 **Issue:** User reported that selecting `claude-opus-4.6` in the Telegram `/model` picker was selecting `claude-opus-4.7` instead.
 
-**Root Cause Analysis:**
-- The picker calls `list_authenticated_providers()` in `hermes_cli/model_switch.py`
-- For Copilot, it calls `provider_model_ids("copilot")` (line 1306-1307) which fetches the LIVE GitHub API
-- The live API returns models in its own order (may differ from static list)
-- The picker builds buttons with `mm:{index}` callbacks
-- Callback resolution uses the same `state["model_list"]`, so indices should match
+**Root Cause:** 
+- `validate_requested_model()` in `hermes_cli/models.py` was auto-correcting `claude-opus-4.6` → `claude-opus-4.7` using `get_close_matches()` fuzzy matching (cutoff=0.9)
+- This happened in the "custom" provider validation path (line ~3121-3130) when the probed model list contained both Opus models
+- The `switch_model` function at line 941-942 applied the `corrected_model` from validation, silently rewriting the user's selection
 
-**Verification (2026-05-04):**
-- Live API currently returns: `[0] claude-opus-4.6, [1] claude-opus-4.7` — correct order
-- Static list patched to match
-- Picker should work correctly now
+**Fix:**
+- The live API probe now correctly returns `claude-opus-4.6` as an exact match, so fuzzy correction is not triggered
+- Verified that `claude-opus-4.6` exists in the probed model list before fuzzy matching kicks in
+- Gateway was restarted (PID 617667) to clear stale Python bytecode cache
 
-**Key files for future debugging:**
-- `gateway/platforms/telegram.py` — `_build_model_keyboard()` (line 1647), `_handle_model_picker_callback()` (line 1688)
-- `hermes_cli/model_switch.py` — `list_authenticated_providers()` (line 1008)
-- `hermes_cli/models.py` — `provider_model_ids()` (line 1909), `_fetch_github_models()` (line 2475)
+**Key files:**
+- `hermes_cli/models.py` — `validate_requested_model()` (line 3024), `get_close_matches` auto-correction (line 3121)
+- `hermes_cli/model_switch.py` — `switch_model()` applies `corrected_model` (line 941)
+- `gateway/platforms/telegram.py` — picker builds `mm:{index}` callbacks (line 1647)
 
-**If the bug recurs:** The issue is likely that the GitHub Copilot API changed its model ordering. The picker uses live API order for buttons AND state, so it should always be internally consistent. If mismatch occurs, check:
-1. Is the gateway process running with cached Python modules? → Full restart needed (`kill` + restart, not just USR1)
-2. Is there a stale `__pycache__`? → `find /root/.hermes/hermes-agent -name __pycache__ -exec rm -rf {} +`
-3. Is the token rotation changing to a different GitHub account with different model access? → Possible if accounts have different feature flags
+**If the bug recurs:** Check if `claude-opus-4.6` is present in the live API model list. If the API removes it or changes the name format, the fuzzy matcher will "correct" to the closest match (4.7).
 
-### Patch 5: Git Branch Status
+### Patch 5: Copilot Compression Header Fix (2026-05-05)
+
+**Issue:** Context compression summary failed with `HTTP 400: missing Editor-Version header for IDE auth` when falling back to Copilot.
+
+**Root Cause:**
+- `_try_custom_endpoint()` in `agent/auxiliary_client.py` creates an OpenAI client for custom endpoints (including Copilot)
+- Unlike `_resolve_api_key_provider()` (which adds Copilot headers at lines 1165-1168, 1192-1195), `_try_custom_endpoint()` was NOT adding the required `Editor-Version`, `Copilot-Integration-Id`, etc. headers
+- When the main provider (Alibaba) failed and compression fell back to Copilot via the custom endpoint path, the request was missing IDE auth headers
+
+**Fix:**
+Added Copilot header injection to `_try_custom_endpoint()`:
+```python
+if base_url_host_matches(custom_base, "api.githubcopilot.com"):
+    from hermes_cli.models import copilot_default_headers
+    _extra.setdefault("default_headers", {}).update(copilot_default_headers())
+```
+
+**File:** `agent/auxiliary_client.py`, line ~1461 (after `_extra` initialization)
+
+**Re-apply after update:** Patch `_try_custom_endpoint()` in `agent/auxiliary_client.py` to add Copilot headers when `base_url` matches `api.githubcopilot.com`.
+
+### Patch 6: Git Branch Status
 
 **Remote setup:**
 - `origin` → `NousResearch/hermes-agent` (upstream)

@@ -3185,6 +3185,48 @@ def validate_requested_model(
             "message": message,
         }
 
+    # Copilot has its own catalog path via the GitHub Copilot Model Catalog API.
+    # The generic /v1/models probe returns a different (incomplete) model list
+    # and may auto-correct valid model names to wrong versions (e.g. opus-4.6
+    # → opus-4.7). Validate against provider_model_ids instead. See #issue.
+    if normalized == "copilot":
+        try:
+            copilot_models = provider_model_ids("copilot")
+        except Exception:
+            copilot_models = []
+        if copilot_models:
+            if requested_for_lookup in set(copilot_models):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            # Auto-correct if the top match is very similar (e.g. typo)
+            auto = get_close_matches(requested_for_lookup, copilot_models, n=1, cutoff=0.9)
+            if auto:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": auto[0],
+                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                }
+            suggestions = get_close_matches(requested_for_lookup, copilot_models, n=3, cutoff=0.5)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in the Copilot model listing. "
+                    "It may still work if your Copilot account has access to a newer or hidden model ID."
+                    f"{suggestion_text}"
+                ),
+            }
+
     # OpenAI Codex has its own catalog path; /v1/models probing is not the right validation path.
     if normalized == "openai-codex":
         try:
