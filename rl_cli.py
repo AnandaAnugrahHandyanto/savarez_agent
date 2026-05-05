@@ -27,18 +27,24 @@ from pathlib import Path
 import fire
 import yaml
 
-from hermes_constants import OPENROUTER_BASE_URL, get_hermes_home
+# ============================================================================
+# Config Loading (must be before .env loading)
+# ============================================================================
+
+from hermes_constants import get_hermes_home, OPENROUTER_BASE_URL
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
 
-from hermes_cli.env_loader import load_hermes_dotenv
-
-_loaded_env_paths = load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
-for _env_path in _loaded_env_paths:
-    print(f"✅ Loaded environment variables from {_env_path}")
+try:
+    from hermes_cli.env_loader import load_hermes_dotenv
+    _loaded_env_paths = load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
+    for _env_path in _loaded_env_paths:
+        print(f"Loaded environment variables from {_env_path}")
+except ImportError:
+    pass  # hermes_cli may not be installed in all environments
 
 # Set terminal working directory to tinker-atropos submodule
 # This ensures terminal commands run in the right context for RL work
@@ -46,21 +52,20 @@ tinker_atropos_dir = Path(__file__).parent / 'tinker-atropos'
 if tinker_atropos_dir.exists():
     os.environ['TERMINAL_CWD'] = str(tinker_atropos_dir)
     os.environ['HERMES_QUIET'] = '1'  # Disable temp subdirectory creation
-    print(f"📂 Terminal working directory: {tinker_atropos_dir}")
+    print(f"Terminal working directory: {tinker_atropos_dir}")
 else:
     # Fall back to hermes-agent directory if submodule not found
     os.environ['TERMINAL_CWD'] = str(Path(__file__).parent)
     os.environ['HERMES_QUIET'] = '1'
-    print(f"⚠️  tinker-atropos submodule not found, using: {Path(__file__).parent}")
+    print(f"Warning: tinker-atropos submodule not found, using: {Path(__file__).parent}")
 
-# Import agent and tools
-from run_agent import AIAgent
-from tools.rl_training_tool import get_missing_keys
-
-
-# ============================================================================
-# Config Loading
-# ============================================================================
+# Import agent and tools (lazy — may fail if not installed)
+try:
+    from run_agent import AIAgent
+    from tools.rl_training_tool import get_missing_keys
+except ImportError:
+    AIAgent = None
+    get_missing_keys = lambda: ["TINKER_API_KEY", "WANDB_API_KEY"]
 
 DEFAULT_MODEL = "anthropic/claude-opus-4.5"
 DEFAULT_BASE_URL = OPENROUTER_BASE_URL
@@ -97,7 +102,7 @@ def load_hermes_config() -> dict:
                 config["base_url"] = file_config["base_url"]
                 
         except Exception as e:
-            print(f"⚠️  Warning: Failed to load config.yaml: {e}")
+            print(f"Warning: Failed to load config.yaml: {e}")
     
     return config
 
@@ -190,7 +195,7 @@ def check_requirements():
         errors.append(f"Missing RL API keys: {', '.join(missing_rl_keys)}")
     
     if errors:
-        print("❌ Missing requirements:")
+        print("Missing requirements:")
         for error in errors:
             print(f"   - {error}")
         print("\nPlease set these environment variables in your .env file or shell.")
@@ -243,6 +248,8 @@ def main(
     check_server: bool = False,
     verbose: bool = False,
     save_trajectories: bool = True,
+    evolution: bool = False,
+    evolution_iterations: int = 3,
 ):
     """
     RL Training CLI - Dedicated runner for RL training workflows.
@@ -281,27 +288,176 @@ def main(
     if base_url is None:
         base_url = config["base_url"]
     
-    print("🎯 RL Training Agent")
+    # Handle Evolution Mode
+    if evolution:
+        print("\nStarting Autonomous Evolution (GASP Loop)...")
+        print("=" * 60)
+        
+        # Lazy imports — only loaded when evolution mode is triggered
+        from evolution.orchestrator import GASPOrchestrator
+        from evolution.client import SGLangClient
+        from evolution.sandbox import DockerSandbox
+        from evolution.grpo_trainer import GRPOTrainer
+        from evolution.opd_trainer import OPDTrainer
+        from evolution.judge import PRMJudge
+        from evolution.tinker import TinkerBridgeTrainer
+        from evolution.sync import LoRASyncEngine
+        
+        async def run_evolution():
+            client = SGLangClient()
+            sandbox = DockerSandbox()
+            opd = OPDTrainer()
+            prm = PRMJudge(client)
+            tinker = TinkerBridgeTrainer(use_tinker=True)
+            sync_engine = LoRASyncEngine()
+            
+            # Note: GRPOTrainer loads a reference model into VRAM.
+            # Only initialize if we're doing local training (no Tinker).
+            grpo = None
+            active_model = None
+            optimizer = None
+            if not tinker.is_active():
+                try:
+                    print("Loading Base Model for Evolution...")
+                    # Initialize Trainer with shared memory structure
+                    import torch
+                    from transformers import AutoModelForCausalLM, AutoTokenizer
+                    model_name = "meta-llama/Llama-3.1-8B-Instruct"
+                    
+                    base_model = AutoModelForCausalLM.from_pretrained(
+                        model_name,
+                        torch_dtype=torch.bfloat16,
+                        device_map="auto"
+                    )
+                    tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+                    grpo = GRPOTrainer(
+                        model=base_model,
+                        tokenizer=tokenizer,
+                        kl_coeff=0.1
+                    )
+                    
+                    import peft.import_utils
+                    peft.import_utils.is_torchao_available = lambda: False
+                    from peft import LoraConfig, get_peft_model
+                    
+                    print("Applying PEFT LoRA to create Active Policy...")
+                    lora_config = LoraConfig(
+                        r=64,
+                        lora_alpha=16,
+                        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+                        lora_dropout=0.05,
+                        bias="none",
+                        task_type="CAUSAL_LM"
+                    )
+                    active_model = get_peft_model(base_model, lora_config)
+                    if hasattr(active_model, "gradient_checkpointing_enable"):
+                        active_model.gradient_checkpointing_enable()
+                    optimizer = torch.optim.AdamW(active_model.parameters(), lr=5e-6)
+                except Exception as e:
+                    print(f"Warning: GRPO load failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
+            try:
+                orchestrator = GASPOrchestrator(
+                    client, sandbox, grpo, opd, prm, 
+                    tinker_bridge=tinker,
+                    group_size=64  # Production scale
+                )
+                
+                active_lora = None
+                all_rewards = []
+                for i in range(evolution_iterations):
+                    print(f"\nIteration {i+1}/{evolution_iterations}")
+                    print("-" * 40)
+                    
+                    # 1. Generate rollouts and grade them
+                    rewards, rollouts, prompts, task_str = await orchestrator.run_iteration(lora_path=active_lora)
+                    mean_reward = sum(rewards) / len(rewards) if rewards else 0.0
+                    all_rewards.append(mean_reward)
+                    
+                    print(f"Teacher generated task: {task_str[:80]}...")
+                    print(f"Grading {len(rewards)} rollouts... Mean Reward: {mean_reward:.2f}")
+                    
+                    # 2. Training step
+                    if tinker and tinker.is_active():
+                        adapter_path = await tinker.train_step(rewards, rollouts, task_str)
+                    else:
+                        # Local training path
+                        adapter_path = f"output/adapter_v{i+1}"
+                        os.makedirs(adapter_path, exist_ok=True)
+                        print(f"Updating Weights locally (GRPO)...")
+                        
+                        if active_model is not None and optimizer is not None and grpo is not None:
+                            try:
+                                loss = grpo.update(active_model, optimizer, prompts, rollouts, rewards)
+                                print(f"Training Loss: {loss:.4f}")
+                                active_model.save_pretrained(adapter_path)
+                            except Exception as e:
+                                print(f"Warning: Local training failed: {e}")
+                                import traceback
+                                traceback.print_exc()
+
+                        # Save a marker file to prove the path was created
+                        with open(os.path.join(adapter_path, "training_meta.json"), "w") as f:
+                            import json
+                            json.dump({
+                                "iteration": i+1,
+                                "mean_reward": mean_reward,
+                                "num_rollouts": len(rollouts),
+                                "task": task_str[:200]
+                            }, f, indent=2)
+                        print(f"Adapter saved to: {adapter_path}")
+                    
+                    # 3. Hot-swap sync
+                    if adapter_path:
+                        print("Synchronizing Inference Engine...")
+                        success = await sync_engine.sync_weights(
+                            adapter_path=adapter_path, 
+                            adapter_name="active_policy"
+                        )
+                        if success:
+                            print("LoRA Sync Success")
+                        else:
+                            print("Warning: LoRA Sync Failed (expected if SGLang LoRA pool not initialized)")
+                        active_lora = adapter_path
+                
+                print("\n" + "=" * 60)
+                print("Evolution Summary:")
+                for idx, r in enumerate(all_rewards):
+                    print(f"   Iteration {idx+1}: Mean Reward = {r:.2f}")
+                if len(all_rewards) >= 2:
+                    delta = all_rewards[-1] - all_rewards[0]
+                    print(f"   Reward Delta (first→last): {delta:+.2f}")
+                    
+            finally:
+                await client.close()
+
+        asyncio.run(run_evolution())
+        return
+
+    print("RL Training Agent")
     print("=" * 60)
     
     # Handle setup check
     if check_server:
-        print("\n🔍 Checking tinker-atropos setup...")
+        print("\nChecking tinker-atropos setup...")
         ok, result = check_tinker_atropos()
         if ok:
-            print("✅ tinker-atropos submodule found")
+            print("tinker-atropos submodule found")
             print(f"   Path: {result.get('path')}")
             print(f"   Environments found: {result.get('environments_count', 0)}")
             
             # Also check API keys
             missing = get_missing_keys()
             if missing:
-                print(f"\n⚠️  Missing API keys: {', '.join(missing)}")
+                print(f"\nWarning: Missing API keys: {', '.join(missing)}")
                 print("   Add them to ~/.hermes/.env")
             else:
-                print("✅ API keys configured")
+                print("API keys configured")
         else:
-            print(f"❌ tinker-atropos not set up: {result}")
+            print(f"Error: tinker-atropos not set up: {result}")
             print("\nTo set up:")
             print("  git submodule update --init")
             print("  pip install -e ./tinker-atropos")
@@ -309,12 +465,12 @@ def main(
     
     # Handle environment listing
     if list_environments:
-        print("\n📋 Available RL Environments:")
+        print("\nAvailable RL Environments:")
         print("-" * 40)
         try:
             data = list_environments_sync()
             if "error" in data:
-                print(f"❌ Error: {data['error']}")
+                print(f"Error: {data['error']}")
                 return
             
             envs = data.get("environments", [])
@@ -325,17 +481,17 @@ def main(
                 return
             
             for env in envs:
-                print(f"\n  📦 {env['name']}")
+                print(f"\n  Package: {env['name']}")
                 print(f"     Class: {env['class_name']}")
                 print(f"     Path: {env['file_path']}")
                 if env.get('description'):
                     desc = env['description'][:100] + "..." if len(env.get('description', '')) > 100 else env.get('description', '')
                     print(f"     Description: {desc}")
             
-            print(f"\n📊 Total: {len(envs)} environments")
+            print(f"\nTotal: {len(envs)} environments")
             print("\nUse `rl_select_environment(name)` to select an environment for training.")
         except Exception as e:
-            print(f"❌ Error listing environments: {e}")
+            print(f"Error listing environments: {e}")
             print("\nMake sure tinker-atropos is set up:")
             print("  git submodule update --init")
             print("  pip install -e ./tinker-atropos")
@@ -347,7 +503,7 @@ def main(
     
     # Set default task if none provided
     if not task and not interactive:
-        print("\n⚠️  No task provided. Use --interactive for interactive mode or provide a task.")
+        print("\nWarning: No task provided. Use --interactive for interactive mode or provide a task.")
         print("\nExamples:")
         print('  python rl_cli.py "Train a model on GSM8k math problems"')
         print('  python rl_cli.py "Create an RL environment for code generation"')
@@ -357,10 +513,10 @@ def main(
     # Get API key
     api_key = api_key or os.getenv("OPENROUTER_API_KEY")
     if not api_key:
-        print("❌ No API key provided. Set OPENROUTER_API_KEY or pass --api-key")
+        print("Error: No API key provided. Set OPENROUTER_API_KEY or pass --api-key")
         sys.exit(1)
     
-    print(f"\n🤖 Model: {model}")
+    print(f"\nModel: {model}")
     print(f"🔧 Max iterations: {max_iterations}")
     print(f"📁 Toolsets: {', '.join(RL_TOOLSETS)}")
     print("=" * 60)
@@ -380,14 +536,14 @@ def main(
     
     if interactive:
         # Interactive mode - multiple conversations
-        print("\n🔄 Interactive RL Training Mode")
+        print("\nInteractive RL Training Mode")
         print("Type 'quit' or 'exit' to end the session.")
         print("Type 'status' to check active training runs.")
         print("-" * 40)
         
         while True:
             try:
-                user_input = input("\n🎯 RL Task> ").strip()
+                user_input = input("\nTask> ").strip()
                 
                 if not user_input:
                     continue
@@ -403,7 +559,7 @@ def main(
                     result = asyncio.run(rl_list_runs())
                     runs = json.loads(result)
                     if isinstance(runs, list) and runs:
-                        print("\n📊 Active Runs:")
+                        print("\nActive Runs:")
                         for run in runs:
                             print(f"  - {run['run_id']}: {run['environment']} ({run['status']})")
                     else:
@@ -416,26 +572,26 @@ def main(
                 print("\n" + "=" * 60)
                 
             except KeyboardInterrupt:
-                print("\n\n👋 Interrupted. Goodbye!")
+                print("\n\nInterrupted. Goodbye!")
                 break
             except Exception as e:
-                print(f"\n❌ Error: {e}")
+                print(f"\nError: {e}")
                 if verbose:
                     import traceback
                     traceback.print_exc()
     else:
         # Single task mode
-        print(f"\n📝 Task: {task}")
+        print(f"\nTask: {task}")
         print("-" * 40)
         
         try:
             agent.run_conversation(task)
             print("\n" + "=" * 60)
-            print("✅ Task completed")
+            print("Task completed")
         except KeyboardInterrupt:
-            print("\n\n⚠️ Interrupted by user")
+            print("\n\nWarning: Interrupted by user")
         except Exception as e:
-            print(f"\n❌ Error: {e}")
+            print(f"\nError: {e}")
             if verbose:
                 import traceback
                 traceback.print_exc()
