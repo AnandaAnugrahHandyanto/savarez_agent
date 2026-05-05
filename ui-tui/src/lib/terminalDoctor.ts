@@ -1,3 +1,5 @@
+import { isIP } from 'node:net'
+
 import type { TerminalEnvironment } from '../app/terminalEnvironmentStore.js'
 import type { TerminalCapabilities } from './terminalCapabilities.js'
 import type { TerminalSignals } from './terminalSignals.js'
@@ -9,21 +11,7 @@ const formatUnknown = (value: string | undefined | null): string => value?.trim(
 const formatDetected = (value: string | undefined | null): string => value?.trim() ? value.trim() : NOT_DETECTED
 const formatWarning = (line: string): string => (line.startsWith('⚠') ? line : `⚠ ${line}`)
 
-const summarizeTransport = (signals: TerminalSignals): string => {
-  if (signals.ssh.hasSshConnection || signals.ssh.hasSshClient || signals.ssh.hasSshTty) {
-    return 'ssh'
-  }
-
-  if (signals.multiplexer.tmux) {
-    return 'tmux'
-  }
-
-  if (signals.multiplexer.screen) {
-    return 'screen'
-  }
-
-  return 'local'
-}
+const summarizeTransport = (capabilities: TerminalCapabilities): string => formatUnknown(capabilities.transport)
 
 const summarizeLayers = (signals: TerminalSignals): string[] => {
   const layers: string[] = []
@@ -38,6 +26,14 @@ const summarizeLayers = (signals: TerminalSignals): string[] => {
 
   if (signals.multiplexer.screen) {
     layers.push('screen')
+  }
+
+  if (signals.multiplexer.zellij) {
+    layers.push('zellij')
+  }
+
+  if (signals.multiplexer.cy) {
+    layers.push('cy')
   }
 
   return layers
@@ -86,7 +82,7 @@ const summarizeCopyOnSelect = (capabilities: TerminalCapabilities): string => {
 const envRow = (label: string, value: string | undefined | null): string => `${label}: ${formatDetected(value)}`
 
 const redactIp = (value: string | undefined): string | undefined =>
-  value?.replace(/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/g, '<redacted>')
+  value?.split(/(\s+)/).map(part => isIP(part) ? '<redacted>' : part).join('')
 
 const buildEnvironmentRows = (signals: TerminalSignals): string[] => {
   const rows = [
@@ -147,7 +143,7 @@ const buildDiagnostics = (env: TerminalEnvironment): string[] => {
 }
 
 export function formatTerminalDoctor(env: TerminalEnvironment): string {
-  const transport = summarizeTransport(env.signals)
+  const transport = summarizeTransport(env.capabilities)
   const layers = summarizeLayers(env.signals)
   const diagnostics = buildDiagnostics(env)
   const lines: string[] = [

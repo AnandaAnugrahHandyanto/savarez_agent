@@ -68,7 +68,11 @@ function classifyCopyChord(i: ClassifyInput): TerminalAction | undefined {
     return undefined
   }
 
-  if (i.key.meta || i.key.super) {
+  const hasCommandModifier = i.key.meta || i.key.super
+  const isCmdC = isMacLikeTerminal(i.caps) && hasCommandModifier && !i.key.shift
+  const isCmdShiftC = hasCommandModifier && i.key.shift
+
+  if (isCmdC || isCmdShiftC) {
     return i.state.hasSelection ? { type: 'copy' } : { type: 'noop' }
   }
 

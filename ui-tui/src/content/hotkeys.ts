@@ -13,9 +13,13 @@ const copyHotkeys: [string, string][] = isMac
   : isRemoteShell()
     ? [
         ['Cmd+C', 'copy selection when forwarded by the terminal'],
-        ['Ctrl+C', 'copy selection / interrupt / clear draft / exit']
+        ['Ctrl+Shift+C', 'copy selection'],
+        ['Ctrl+C', 'interrupt / clear draft / exit']
       ]
-    : [['Ctrl+C', 'copy selection / interrupt / clear draft / exit']]
+    : [
+        ['Ctrl+Shift+C', 'copy selection'],
+        ['Ctrl+C', 'interrupt / clear draft / exit']
+      ]
 
 export const HOTKEYS: [string, string][] = [
   ...copyHotkeys,
@@ -65,7 +69,7 @@ export function buildHelpHintHotkeys(env: {
     rows.push(['Ctrl+C', 'interrupt / clear draft / exit'])
   } else {
     rows.push(['Ctrl+Shift+C', 'copy selection'])
-    rows.push(['Ctrl+C', 'copy selection / interrupt / clear draft / exit'])
+    rows.push(['Ctrl+C', 'interrupt / clear draft / exit'])
   }
 
   // Shift-drag hint when mouse tracking steals native selection

@@ -1,5 +1,5 @@
 import type { TerminalSignals } from './terminalSignals.js'
-import { findProfile, findMultiplexer, type TerminalProfile, UNKNOWN_PROFILE } from './terminalRegistry.js'
+import { findProfile, findMultiplexer, type TerminalProfile } from './terminalRegistry.js'
 
 // Exported for backward compatibility — registry-driven, not hardcoded
 export type TerminalFamily = string

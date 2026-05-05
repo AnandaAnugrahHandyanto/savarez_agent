@@ -441,15 +441,19 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return actions.die()
     }
 
-    if (shortcut.type === 'noop' && ch.length > 0 && (key.ctrl || key.meta || key.super)) {
-      // Ctrl+X deletes the queued message being edited (Esc cancels edit)
-      if (key.ctrl && !key.meta && !key.super && ch.toLowerCase() === 'x' && cState.queueEditIdx !== null) {
+    // Ctrl+X deletes the queued message being edited (Esc cancels edit)
+    if (key.ctrl && !key.meta && !key.super && ch.toLowerCase() === 'x') {
+      if (cState.queueEditIdx !== null) {
         const idx = cState.queueEditIdx
         cActions.setQueueEdit(null)
         cRefs.queueRef.current = cRefs.queueRef.current.filter((_, i) => i !== idx)
         cActions.setInput('')
-        return
       }
+
+      return
+    }
+
+    if (shortcut.type === 'noop' && ch.length > 0 && (key.ctrl || key.meta || key.super)) {
       return
     }
 
