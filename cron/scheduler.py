@@ -990,7 +990,30 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     if script_path:
         prerun_script = _run_job_script(script_path)
         _ran_ok, _script_output = prerun_script
-        if _ran_ok and not _parse_wake_gate(_script_output):
+        if not _ran_ok:
+            # Pre-run script failed (non-zero exit / timeout / not-found).
+            # Don't waste an LLM call on a polluted prompt and don't greenwash
+            # the failure as ok — surface it as a job error so operators see
+            # last_status=error instead of a misleading ok (#20301).
+            now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
+            alert = (
+                f"⚠ Cron job '{job_name}' pre-run script failed\n\n"
+                f"{_script_output}\n\n"
+                f"Time: {now_iso}"
+            )
+            doc = (
+                f"# Cron Job: {job_name}\n\n"
+                f"**Job ID:** {job_id}\n"
+                f"**Run Time:** {now_iso}\n"
+                f"**Status:** pre-run script failed\n\n"
+                f"{_script_output}\n"
+            )
+            logger.error(
+                "Job '%s' (ID: %s): pre-run script failed — %s",
+                job_name, job_id, _script_output,
+            )
+            return False, doc, alert, _script_output
+        if not _parse_wake_gate(_script_output):
             logger.info(
                 "Job '%s' (ID: %s): wakeAgent=false, skipping agent run",
                 job_name, job_id,
