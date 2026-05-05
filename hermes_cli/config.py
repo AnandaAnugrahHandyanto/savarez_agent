@@ -1724,6 +1724,14 @@ OPTIONAL_ENV_VARS = {
     },
 
     # ── Tool API keys ──
+    "SERPAPI_API_KEY": {
+        "description": "SerpAPI key for Google Search",
+        "prompt": "SerpAPI API key",
+        "url": "https://serpapi.com/",
+        "tools": ["web_search", "web_extract"],
+        "password": True,
+        "category": "tool",
+    },
     "EXA_API_KEY": {
         "description": "Exa API key for AI-native web search and contents",
         "prompt": "Exa API key",

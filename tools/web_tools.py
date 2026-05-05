@@ -126,13 +126,14 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "serpapi"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
     # available backend. Firecrawl also counts as available when the managed
     # tool gateway is configured for Nous subscribers.
     backend_candidates = (
+        ("serpapi", _has_env("SERPAPI_API_KEY")),
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
@@ -147,6 +148,8 @@ def _get_backend() -> str:
 
 def _is_backend_available(backend: str) -> bool:
     """Return True when the selected backend is currently usable."""
+    if backend == "serpapi":
+        return _has_env("SERPAPI_API_KEY")
     if backend == "exa":
         return _has_env("EXA_API_KEY")
     if backend == "parallel":
@@ -222,6 +225,7 @@ def _firecrawl_backend_help_suffix() -> str:
 def _web_requires_env() -> list[str]:
     """Return tool metadata env vars for the currently enabled web backends."""
     requires = [
+        "SERPAPI_API_KEY",
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "TAVILY_API_KEY",
@@ -933,6 +937,52 @@ def _get_exa_client():
     return _exa_client
 
 
+
+_SERPAPI_SEARCH_URL = "https://serpapi.com/search.json"
+
+
+def _serpapi_search(query: str, limit: int = 10) -> dict:
+    from tools.interrupt import is_interrupted
+
+    if is_interrupted():
+        return {"error": "Interrupted", "success": False}
+
+    api_key = os.getenv("SERPAPI_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError(
+            "SERPAPI_API_KEY environment variable not set. "
+            "Get your API key at https://serpapi.com"
+        )
+
+    params = {
+        "engine": "google",
+        "q": query,
+        "api_key": api_key,
+        "num": min(limit, 20),
+    }
+
+    logger.info("SerpAPI search: '%s' (limit=%d)", query, limit)
+
+    with httpx.Client(timeout=30) as client:
+        response = client.get(_SERPAPI_SEARCH_URL, params=params)
+        response.raise_for_status()
+        data = response.json()
+
+    organic_results = data.get("organic_results", [])
+    web_results = []
+    for i, result in enumerate(organic_results[:limit]):
+        web_results.append(
+            {
+                "url": result.get("link", ""),
+                "title": result.get("title", ""),
+                "description": result.get("snippet", ""),
+                "position": i + 1,
+            }
+        )
+
+    return {"success": True, "data": {"web": web_results}}
+
+
 # ─── Exa Search & Extract Helpers ─────────────────────────────────────────────
 
 def _exa_search(query: str, limit: int = 10) -> dict:
@@ -1141,6 +1191,18 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if backend == "exa":
             response_data = _exa_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
+
+        if backend == "serpapi":
+            response_data = _serpapi_search(query, limit)
+            debug_call_data["results_count"] = len(
+                response_data.get("data", {}).get("web", [])
+            )
             result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
             debug_call_data["final_response_size"] = len(result_json)
             _debug.log_call("web_search_tool", debug_call_data)
@@ -1967,9 +2029,9 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
+    if configured in ("exa", "parallel", "firecrawl", "tavily", "serpapi"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily", "serpapi"))
 
 
 def check_auxiliary_model() -> bool:
