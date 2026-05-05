@@ -2881,6 +2881,53 @@ class TelegramAdapter(BasePlatformAdapter):
                         return True
         return False
 
+    def _message_targets_other_bot(self, message: Message) -> bool:
+        """Return True when the message explicitly @-mentions another account
+        but does NOT mention this bot.
+
+        In multi-agent group chats with ``require_mention`` disabled every bot
+        would normally respond to every message.  When a message carries an
+        explicit ``@mention`` or ``text_mention`` entity that targets a
+        *different* account, the message is clearly addressed to someone else
+        and should be skipped — regardless of the ``require_mention`` setting.
+        This mirrors the cross-talk guard implemented in the Discord adapter.
+        """
+        if not self._bot:
+            return False
+
+        bot_username = (getattr(self._bot, "username", None) or "").lstrip("@").lower()
+        bot_id = getattr(self._bot, "id", None)
+
+        self_mentioned = False
+        other_mentioned = False
+
+        def _iter_sources():
+            yield getattr(message, "text", None) or "", getattr(message, "entities", None) or []
+            yield getattr(message, "caption", None) or "", getattr(message, "caption_entities", None) or []
+
+        for source_text, entities in _iter_sources():
+            for entity in entities:
+                entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
+                if entity_type == "mention" and bot_username:
+                    offset = int(getattr(entity, "offset", -1))
+                    length = int(getattr(entity, "length", 0))
+                    if offset < 0 or length <= 0:
+                        continue
+                    mentioned = source_text[offset:offset + length].lstrip("@").lower()
+                    if mentioned == bot_username:
+                        self_mentioned = True
+                    else:
+                        other_mentioned = True
+                elif entity_type == "text_mention":
+                    user = getattr(entity, "user", None)
+                    if user:
+                        if getattr(user, "id", None) == bot_id:
+                            self_mentioned = True
+                        elif getattr(user, "is_bot", False):
+                            other_mentioned = True
+
+        return other_mentioned and not self_mentioned
+
     def _message_matches_mention_patterns(self, message: Message) -> bool:
         if not self._mention_patterns:
             return False
@@ -2909,6 +2956,10 @@ class TelegramAdapter(BasePlatformAdapter):
         - the bot is @mentioned
         - the text/caption matches a configured regex wake-word pattern
 
+        Messages are skipped when another agent is explicitly @mentioned but
+        this bot is not — preventing cross-talk in multi-agent group chats even
+        when ``require_mention`` is disabled.  See :meth:`_message_targets_other_bot`.
+
         When ``require_mention`` is enabled, slash commands are not given
         special treatment — they must pass the same mention/reply checks
         as any other group message.  Users can still trigger commands via
@@ -2927,6 +2978,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
         if str(getattr(getattr(message, "chat", None), "id", "")) in self._telegram_free_response_chats():
             return True
+        if self._message_targets_other_bot(message):
+            return False
         if not self._telegram_require_mention():
             return True
         if self._is_reply_to_bot(message):
