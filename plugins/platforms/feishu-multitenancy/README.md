@@ -21,7 +21,16 @@ sender `open_id`, and run the message against a per-user Hermes profile.
 5. Cron/reminder jobs created inside that subprocess are bound back to the
    shared gateway Hermes home (`~/.hermes/cron/jobs.json`) because the single
    gateway cron ticker does not scan profile-local cron stores.
-6. Slash commands are handled by Hermes gateway/plugin/skill control paths and
+6. Dangerous-command approvals are bridged back to the router with a
+   multitenant gateway session key plus child-local `HERMES_SESSION_KEY` /
+   `HERMES_GATEWAY_SESSION` / `HERMES_EXEC_ASK`, so terminal/process guard
+   worker threads resolve the same approval callback. The AIAgent child emits
+   `approval_required` / `approval_resolved` NDJSON events; the parent stream
+   parser forwards them to the router, and `/approve` / `/deny` resolves the
+   child through a decision file. The core terminal guard runs before
+   sandbox/environment creation so an approval prompt is not blocked by
+   environment startup.
+7. Slash commands are handled by Hermes gateway/plugin/skill control paths and
    unknown slash commands return an unknown-command reply instead of entering the
    LLM prompt.
 
@@ -115,6 +124,11 @@ HERMES_MULTITENANCY_AUTO_PROVISION=0
   profile's environment.
 - Cron/reminder jobs use the shared Hermes cron store watched by the gateway
   ticker; profile-local `cron/jobs.json` files are intentionally avoided.
+- Dangerous-command approval prompts are delivered by the parent router and
+  resolved by `/approve` / `/deny` through a decision file; child-local session
+  env covers tool worker threads that do not inherit contextvars, and the
+  parent stream parser must forward child `approval_required` /
+  `approval_resolved` events instead of dropping them.
 - Outbound `MEDIA:<path>` file replies are delivered only when the target path
   resolves inside the routed profile home.
 - `quick_commands` entries with `type: exec` are disabled by default for Feishu
