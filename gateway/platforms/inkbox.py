@@ -9,9 +9,12 @@ calls — into a single contact-keyed Hermes session per remote party.
 Architecture
 ------------
 On ``connect()`` the adapter:
-  1. Opens an ngrok HTTPS tunnel to its local listen port (for local
-     development; production deployments can disable this and supply
-     ``INKBOX_PUBLIC_URL`` directly).
+  1. Provisions (or reuses) an Inkbox edge-mode tunnel via
+     ``POST /api/v1/tunnels`` and brings the data plane up.  The public
+     URL is ``https://{tunnel_name}.{env}.inkboxwire.com`` and the tunnel
+     id + connect secret are persisted in HERMES_HOME so subsequent runs
+     reuse the same tunnel.  Production deployments can bypass this by
+     setting ``INKBOX_PUBLIC_URL`` directly.
   2. PATCHes every mailbox + phone number on the configured identity
      so their webhook URLs / call WebSocket URL point at the tunnel.
   3. Starts an aiohttp server with two routes:
@@ -87,14 +90,20 @@ except ImportError:
     INKBOX_AVAILABLE = False
 
 try:
-    from pyngrok import conf as _ngrok_conf
-    from pyngrok import ngrok as _ngrok
+    from gateway.platforms.inkbox_tunnel import (
+        H2_AVAILABLE as INKBOX_TUNNEL_H2_AVAILABLE,
+        InkboxTunnel,
+        TunnelControlPlaneError,
+        derive_tunnel_name,
+    )
 
-    PYNGROK_AVAILABLE = True
+    INKBOX_TUNNEL_AVAILABLE = True
 except ImportError:
-    _ngrok = None  # type: ignore[assignment]
-    _ngrok_conf = None  # type: ignore[assignment]
-    PYNGROK_AVAILABLE = False
+    InkboxTunnel = None  # type: ignore[assignment]
+    TunnelControlPlaneError = Exception  # type: ignore[assignment]
+    derive_tunnel_name = None  # type: ignore[assignment]
+    INKBOX_TUNNEL_H2_AVAILABLE = False
+    INKBOX_TUNNEL_AVAILABLE = False
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
@@ -156,9 +165,10 @@ def _is_hermes_admin_notice(content: str) -> bool:
 def check_inkbox_requirements() -> bool:
     """Return True iff the Python ``inkbox`` SDK and aiohttp are importable.
 
-    pyngrok is optional — if unavailable, the adapter requires
-    ``INKBOX_PUBLIC_URL`` to be set so it knows where webhooks will arrive
-    (e.g. behind a reverse proxy or a hosted tunnel).
+    The Inkbox tunnel client (``inkbox_tunnel.py``) needs ``h2`` too — but
+    that's only required when ``INKBOX_PUBLIC_URL`` is unset (i.e. when we
+    actually need to dial inkboxwire.com).  Operators behind their own
+    reverse proxy / hosted tunnel only need the SDK + aiohttp.
     """
     return INKBOX_AVAILABLE and AIOHTTP_AVAILABLE
 
@@ -193,9 +203,9 @@ class InkboxAdapter(BasePlatformAdapter):
         self._public_url_override = (
             extra.get("public_url") or os.getenv("INKBOX_PUBLIC_URL") or ""
         ).strip()
-        self._ngrok_token = (
-            extra.get("ngrok_authtoken") or os.getenv("NGROK_AUTHTOKEN") or ""
-        ).strip()
+        self._tunnel_name_override = (
+            extra.get("tunnel_name") or os.getenv("INKBOX_TUNNEL_NAME") or ""
+        ).strip().lower()
         self._require_signature = str(
             extra.get("require_signature")
             or os.getenv("INKBOX_REQUIRE_SIGNATURE", "true")
@@ -208,7 +218,7 @@ class InkboxAdapter(BasePlatformAdapter):
         self._app: Optional[Any] = None
         self._runner: Optional[Any] = None
         self._site: Optional[Any] = None
-        self._ngrok_tunnel: Any = None
+        self._tunnel: Optional[Any] = None  # InkboxTunnel
         # contact_id → active call WebSocket. Used by send()/edit_message() to
         # push voice replies to the correct ongoing call.
         self._active_call_ws: Dict[str, Any] = {}
@@ -290,28 +300,27 @@ class InkboxAdapter(BasePlatformAdapter):
             self._release_platform_lock()
             return False
 
-        # Resolve the public URL: explicit override wins, else open an ngrok tunnel.
+        # Resolve the public URL: explicit override wins, else provision (or
+        # reuse) an Inkbox edge-mode tunnel.  The data plane is brought up
+        # AFTER the local aiohttp server binds — otherwise the tunnel client
+        # can dispatch inbound traffic to a port that nothing is listening on.
         if self._public_url_override:
             self._public_url = self._public_url_override.rstrip("/")
-        elif PYNGROK_AVAILABLE and self._ngrok_token:
-            try:
-                await asyncio.to_thread(self._open_ngrok_tunnel)
-            except Exception as exc:
-                logger.error("[Inkbox] Failed to open ngrok tunnel: %s", exc)
+            self._public_host = urlparse(self._public_url).netloc
+        elif INKBOX_TUNNEL_AVAILABLE and INKBOX_TUNNEL_H2_AVAILABLE:
+            if not await self._provision_inkbox_tunnel():
                 self._release_platform_lock()
                 return False
         else:
             logger.error(
                 "[Inkbox] No public URL configured. Set INKBOX_PUBLIC_URL or "
-                "install pyngrok and set NGROK_AUTHTOKEN.",
+                "install the inkbox extra: pip install 'hermes-agent[inkbox]'.",
             )
             self._release_platform_lock()
             return False
 
-        self._public_host = urlparse(self._public_url).netloc
-
-        # Start the aiohttp server first so the upstream PATCH calls can verify
-        # the URLs are reachable.
+        # Start the aiohttp server first so inbound tunnel dispatch lands on a
+        # live socket and the upstream PATCH URLs are reachable.
         try:
             self._app = web.Application()
             self._app.router.add_get("/health", self._handle_health)
@@ -326,6 +335,25 @@ class InkboxAdapter(BasePlatformAdapter):
             await self._cleanup()
             self._release_platform_lock()
             return False
+
+        # Now bring up the data plane (intake pool starts dispatching).
+        if self._tunnel is not None:
+            try:
+                ok = await self._tunnel.start()
+            except Exception:
+                logger.exception("[Inkbox] Tunnel data plane failed to start")
+                await self._cleanup()
+                self._release_platform_lock()
+                return False
+            if not ok:
+                logger.error(
+                    "[Inkbox] Tunnel data plane failed to come up; "
+                    "check API key + connectivity to %s.",
+                    self._public_host,
+                )
+                await self._cleanup()
+                self._release_platform_lock()
+                return False
 
         # PATCH the identity's mailboxes + phone numbers to point at this server.
         try:
@@ -367,12 +395,10 @@ class InkboxAdapter(BasePlatformAdapter):
                 await self._runner.cleanup()
             self._runner = None
         self._app = None
-        if self._ngrok_tunnel is not None:
+        if self._tunnel is not None:
             with suppress(Exception):
-                _ngrok.disconnect(self._ngrok_tunnel.public_url)
-            with suppress(Exception):
-                _ngrok.kill()
-            self._ngrok_tunnel = None
+                await self._tunnel.stop()
+            self._tunnel = None
         if self._inkbox is not None:
             with suppress(Exception):
                 self._inkbox.close()
@@ -382,25 +408,55 @@ class InkboxAdapter(BasePlatformAdapter):
     # Bootstrap helpers
     # ------------------------------------------------------------------
 
-    def _open_ngrok_tunnel(self) -> None:
-        """Open an HTTPS ngrok tunnel and populate ``self._public_url``."""
-        runtime_dir = os.environ.get(
-            "INKBOX_NGROK_DIR", "/tmp/hermes-inkbox-ngrok",
+    async def _provision_inkbox_tunnel(self) -> bool:
+        """Construct the tunnel client and resolve its public URL via REST.
+
+        The data-plane connection is NOT opened here — that's deferred to
+        ``self._tunnel.start()`` after the local aiohttp server is bound,
+        so inbound dispatch always lands on a live socket. State (tunnel
+        id + connect secret) is persisted under HERMES_HOME so subsequent
+        runs reuse the same tunnel.
+        """
+        try:
+            from hermes_cli.config import get_hermes_home
+            state_path = str(get_hermes_home() / "inkbox_tunnel_state.json")
+        except Exception:
+            state_path = os.path.expanduser(
+                "~/.hermes-inkbox/inkbox_tunnel_state.json",
+            )
+
+        tunnel_name = derive_tunnel_name(
+            identity_handle=self._identity_handle,
+            override=self._tunnel_name_override,
         )
-        os.makedirs(runtime_dir, exist_ok=True)
-        cfg = _ngrok_conf.PyngrokConfig(
-            auth_token=self._ngrok_token,
-            config_path=os.path.join(runtime_dir, "ngrok.yml"),
-            ngrok_path=os.path.join(runtime_dir, "ngrok"),
+
+        try:
+            self._tunnel = InkboxTunnel(
+                api_key=self._api_key,
+                base_url=self._base_url,
+                listen_host="127.0.0.1",
+                listen_port=self._port,
+                tunnel_name=tunnel_name,
+                identity_handle=self._identity_handle,
+                state_path=state_path,
+            )
+            await self._tunnel.ensure_tunnel()
+        except TunnelControlPlaneError as exc:
+            logger.error("[Inkbox] Tunnel control-plane error: %s", exc)
+            self._tunnel = None
+            return False
+        except Exception:
+            logger.exception("[Inkbox] Failed to provision Inkbox tunnel")
+            self._tunnel = None
+            return False
+
+        self._public_url = self._tunnel.public_url.rstrip("/")
+        self._public_host = self._tunnel.public_host
+        logger.info(
+            "[Inkbox] Tunnel provisioned: %s (id=%s) → 127.0.0.1:%d",
+            self._public_url, self._tunnel.tunnel_id, self._port,
         )
-        tunnel = _ngrok.connect(
-            addr=self._port, proto="http", bind_tls=True, pyngrok_config=cfg,
-        )
-        url = tunnel.public_url
-        if url.startswith("http://"):
-            url = "https://" + url[len("http://"):]
-        self._ngrok_tunnel = tunnel
-        self._public_url = url.rstrip("/")
+        return True
 
     def _patch_identity_objects(self) -> None:
         """Point every mailbox + phone number on the identity at this server."""

@@ -1663,7 +1663,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "host": os.getenv("INKBOX_HOST", "0.0.0.0"),
             "port": int(os.getenv("INKBOX_LISTEN_PORT", "8765")),
             "public_url": os.getenv("INKBOX_PUBLIC_URL", ""),
-            "ngrok_authtoken": os.getenv("NGROK_AUTHTOKEN", ""),
+            "tunnel_name": os.getenv("INKBOX_TUNNEL_NAME", ""),
             "require_signature": os.getenv("INKBOX_REQUIRE_SIGNATURE", "true").lower()
                 not in ("false", "0", "no"),
         })
