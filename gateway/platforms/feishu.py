@@ -595,6 +595,51 @@ def _build_markdown_card_payload(content: str) -> str:
     return json.dumps(card, ensure_ascii=False)
 
 
+def _sanitize_markdown_tables(content: str) -> str:
+    """Convert Markdown table blocks to bullet-list format for Feishu post.
+
+    Feishu's ``post`` / ``md`` tag does not render Markdown tables — the
+    content after the first row can be silently hidden.  This function
+    detects real table blocks (contiguous ``|...|`` lines outside code
+    fences), strips separator rows (e.g. ``|---|---|``), and converts each
+    data row to a bullet item so the information remains visible.
+
+    Lines inside fenced code blocks are never touched.
+    """
+    if "|" not in content:
+        return content
+    lines = content.split("\n")
+    result: list[str] = []
+    i = 0
+    in_code_block = False
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            result.append(lines[i])
+            i += 1
+            continue
+        if in_code_block:
+            result.append(lines[i])
+            i += 1
+            continue
+        if _TABLE_ROW_RE.match(stripped):
+            # Collect the full contiguous table block
+            block: list[str] = []
+            while i < len(lines) and _TABLE_ROW_RE.match(lines[i].strip()):
+                block.append(lines[i])
+                i += 1
+            # Convert: skip separator rows, bullet-list the rest
+            for row in block:
+                if _TABLE_SEP_RE.match(row.strip()):
+                    continue  # drop |---|---|---| separator
+                result.append("- " + row)
+        else:
+            result.append(lines[i])
+            i += 1
+    return "\n".join(result)
+
+
 def _build_markdown_post_payload(content: str) -> str:
     content = _sanitize_markdown_tables(content)
     rows = _build_markdown_post_rows(content)
