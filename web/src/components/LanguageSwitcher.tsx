@@ -1,36 +1,24 @@
-import { Button } from "@nous-research/ui/ui/components/button";
-import { Typography } from "@/components/NouiTypography";
-import { useI18n } from "@/i18n/context";
+import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
+import { useI18n } from "@/i18n";
+import type { Locale } from "@/i18n/types";
 
 /**
- * Compact language toggle — shows a clickable flag that switches between
- * English and Chinese.  Persists choice to localStorage.
+ * Compact language selector. Persists choice to localStorage.
  */
 export function LanguageSwitcher() {
   const { locale, setLocale, t } = useI18n();
 
-  const toggle = () => setLocale(locale === "en" ? "zh" : "en");
-
   return (
-    <Button
-      ghost
-      onClick={toggle}
-      title={t.language.switchTo}
-      aria-label={t.language.switchTo}
-      className="px-2 py-1 normal-case tracking-normal font-normal text-xs text-muted-foreground hover:text-foreground"
-    >
-      <span className="inline-flex items-center gap-1.5">
-        <span className="text-base leading-none">
-          {locale === "en" ? "🇬🇧" : "🇨🇳"}
-        </span>
-
-        <Typography
-          mondwest
-          className="hidden sm:inline tracking-wide uppercase text-[0.65rem]"
-        >
-          {locale === "en" ? "EN" : "中文"}
-        </Typography>
-      </span>
-    </Button>
+    <div title={t.language.switchTo} aria-label={t.language.switchTo}>
+      <Select
+        value={locale}
+        onValueChange={(value) => setLocale(value as Locale)}
+        className="h-8 w-[5.5rem] text-xs"
+      >
+        <SelectOption value="en">🇬🇧 EN</SelectOption>
+        <SelectOption value="zh">🇨🇳 中文</SelectOption>
+        <SelectOption value="ko">🇰🇷 한국어</SelectOption>
+      </Select>
+    </div>
   );
 }
