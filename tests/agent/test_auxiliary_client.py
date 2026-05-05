@@ -27,6 +27,7 @@ from agent.auxiliary_client import (
     _try_payment_fallback,
     _resolve_auto,
     _CodexCompletionsAdapter,
+    _resolve_task_provider_model,
 )
 
 
@@ -1293,6 +1294,54 @@ class TestStaleBaseUrlWarning:
         assert any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
             "Expected a warning about stale OPENAI_BASE_URL"
         assert mod._stale_base_url_warned is True
+
+
+class TestAuxiliaryTaskProviderModel:
+    def test_openai_codex_task_base_url_does_not_force_custom(self):
+        config = {
+            "auxiliary": {
+                "title_generation": {
+                    "provider": "openai-codex",
+                    "model": "gpt-5.4-mini",
+                    "base_url": "https://chatgpt.com/backend-api/codex",
+                    "api_key": "",
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config):
+            provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+                task="title_generation"
+            )
+
+        assert provider == "openai-codex"
+        assert model == "gpt-5.4-mini"
+        assert base_url is None
+        assert api_key is None
+        assert api_mode == "codex_responses"
+
+    def test_non_codex_task_base_url_still_forces_custom(self):
+        config = {
+            "auxiliary": {
+                "session_search": {
+                    "provider": "openrouter",
+                    "model": "google/gemini-2.5-flash-lite",
+                    "base_url": "https://example.test/v1",
+                    "api_key": "test-key",
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config):
+            provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+                task="session_search"
+            )
+
+        assert provider == "custom"
+        assert model == "google/gemini-2.5-flash-lite"
+        assert base_url == "https://example.test/v1"
+        assert api_key == "test-key"
+        assert api_mode is None
 
 
 class TestAuxiliaryTaskExtraBody:

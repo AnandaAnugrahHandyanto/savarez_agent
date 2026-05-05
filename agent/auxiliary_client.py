@@ -3812,23 +3812,41 @@ def _resolve_task_provider_model(
     resolved_model = model or cfg_model
     resolved_api_mode = cfg_api_mode
 
+    def _is_codex_backend_url(value: str) -> bool:
+        """Return True for the ChatGPT Codex backend URL.
+
+        Some config migration paths historically wrote the Codex backend into
+        auxiliary.<task>.base_url alongside provider=openai-codex.  For
+        auxiliary routing, that URL is provider metadata, not a request to use
+        the generic custom/OpenAI-wire path.  Treating it as custom sends the
+        wrong wire format to chatgpt.com and surfaces as HTTP 403 HTML pages.
+        """
+        normalized = str(value or "").strip().rstrip("/").lower()
+        return normalized == _CODEX_AUX_BASE_URL.lower().rstrip("/")
+
     if base_url:
+        if provider and _normalize_aux_provider(provider) == "openai-codex" and _is_codex_backend_url(base_url):
+            return provider, resolved_model, None, None, resolved_api_mode or "codex_responses"
         return "custom", resolved_model, base_url, api_key, resolved_api_mode
     if provider:
         return provider, resolved_model, base_url, api_key, resolved_api_mode
 
     if task:
         # Config.yaml is the primary source for per-task overrides.
-        if cfg_base_url and cfg_api_key:
-            # Both base_url and api_key explicitly set → custom endpoint.
-            return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
-        if cfg_base_url and cfg_provider and cfg_provider != "auto":
-            # base_url set without api_key but with a known provider — use
-            # the provider so it can resolve credentials from env vars
-            # (e.g. OPENROUTER_API_KEY) instead of locking into "custom".
-            return cfg_provider, resolved_model, cfg_base_url, None, resolved_api_mode
         if cfg_provider and cfg_provider != "auto":
+            if _normalize_aux_provider(cfg_provider) == "openai-codex" and _is_codex_backend_url(cfg_base_url):
+                return cfg_provider, resolved_model, None, None, resolved_api_mode or "codex_responses"
+            if cfg_base_url and cfg_api_key:
+                # Both base_url and api_key explicitly set → custom endpoint.
+                return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
+            if cfg_base_url:
+                # base_url set without api_key but with a known provider — use
+                # the provider so it can resolve credentials from env vars
+                # (e.g. OPENROUTER_API_KEY) instead of locking into "custom".
+                return cfg_provider, resolved_model, cfg_base_url, None, resolved_api_mode
             return cfg_provider, resolved_model, None, None, resolved_api_mode
+        if cfg_base_url:
+            return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
 
         return "auto", resolved_model, None, None, resolved_api_mode
 
