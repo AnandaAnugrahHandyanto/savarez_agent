@@ -3186,12 +3186,19 @@ async def events_ws(ws: WebSocket) -> None:
     async with _event_lock:
         _event_channels.setdefault(channel, set()).add(ws)
 
+    # Yield once so synchronous WebSocket testers (Starlette/Httpx TestClient)
+    # can observe the registry update and schedule cross-connection handlers
+    # (e.g. /api/pub → broadcast → send_text on this socket).
+    await asyncio.sleep(0)
+
     try:
         while True:
-            # Subscribers don't speak — the receive() just blocks until
+            # Subscribers don't speak — ``receive()`` just blocks until
             # disconnect so the connection stays open as long as the
             # browser holds it.
-            await ws.receive_text()
+            msg = await ws.receive()
+            if msg["type"] == "websocket.disconnect":
+                break
     except WebSocketDisconnect:
         pass
     finally:

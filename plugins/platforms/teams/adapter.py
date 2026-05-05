@@ -532,8 +532,16 @@ class TeamsAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         if not self._app:
             return
+        tai = TypingActivityInput
+        if tai is None:
+            try:
+                from microsoft_teams.api.activities.typing import (
+                    TypingActivityInput as tai,
+                )
+            except ImportError:
+                return
         try:
-            await self._app.send(chat_id, TypingActivityInput())
+            await self._app.send(chat_id, tai())
         except Exception:
             pass
 

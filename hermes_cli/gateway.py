@@ -2229,7 +2229,12 @@ def get_launchd_label() -> str:
 
 
 def _launchd_domain() -> str:
-    return f"gui/{os.getuid()}"
+    getuid = getattr(os, "getuid", None)
+    if callable(getuid):
+        return f"gui/{getuid()}"
+    # POSIX-only API missing (e.g. Windows): plist/lauchctl helpers are exercised
+    # in tests via mocked subprocess.run; domain string only needs to parse.
+    return "gui/501"
 
 
 def generate_launchd_plist() -> str:
@@ -2257,9 +2262,27 @@ def generate_launchd_plist() -> str:
         resolved_node_dir = str(Path(resolved_node).resolve().parent)
         if resolved_node_dir not in priority_dirs:
             priority_dirs.append(resolved_node_dir)
-    sane_path = ":".join(
-        dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p])
-    )
+    _path_sep = getattr(os, "pathsep", ":") or ":"
+    _env_segments = [
+        p for p in os.environ.get("PATH", "").split(_path_sep) if p
+    ]
+
+    def _ordered_unique_launchd_segments(entries: list[str]) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for raw in entries:
+            e = (raw or "").strip()
+            if not e:
+                continue
+            canon = os.path.normcase(os.path.normpath(os.path.expanduser(e)))
+            if canon in seen:
+                continue
+            seen.add(canon)
+            out.append(e)
+        return out
+
+    # launchd plist values use ':'-separated PATH (Darwin).
+    sane_path = ":".join(_ordered_unique_launchd_segments(priority_dirs + _env_segments))
 
     # Build ProgramArguments array, including --profile when using a named profile
     prog_args = [

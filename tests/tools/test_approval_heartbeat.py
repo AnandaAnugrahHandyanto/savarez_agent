@@ -175,6 +175,7 @@ class TestApprovalHeartbeat:
         """If tools.environments.base can't be imported, the wait still works."""
         from tools.approval import (
             check_all_command_guards,
+            has_blocking_approval,
             register_gateway_notify,
             resolve_gateway_approval,
         )
@@ -200,7 +201,12 @@ class TestApprovalHeartbeat:
         thread = threading.Thread(target=_run_check, daemon=True)
         thread.start()
 
-        time.sleep(0.2)
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if has_blocking_approval(self.SESSION_KEY):
+                break
+            time.sleep(0.01)
+        assert has_blocking_approval(self.SESSION_KEY)
         resolve_gateway_approval(self.SESSION_KEY, "once")
         thread.join(timeout=5)
 

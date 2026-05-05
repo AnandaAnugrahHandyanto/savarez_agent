@@ -12,6 +12,7 @@ import logging
 import os
 import select
 import shlex
+import signal
 import subprocess
 import threading
 import time
@@ -606,7 +607,7 @@ class BaseEnvironment(ABC):
                     _cb_was_none = _cb_now_none
 
                 time.sleep(0.2)
-        except (KeyboardInterrupt, SystemExit):
+        except (KeyboardInterrupt, SystemExit) as _hook_exc:
             # Signal arrived (SIGTERM/SIGHUP/SIGINT) or sys.exit() was called
             # while we were polling.  The local backend spawns subprocesses
             # with os.setsid, which puts them in their own process group — so
@@ -623,10 +624,24 @@ class BaseEnvironment(ABC):
                 )
             try:
                 self._kill_process(proc)
+            except BaseException:
+                # `_kill_process` can itself be interrupted (another
+                # KeyboardInterrupt mid-cleanup) or raise after partial work.
+                # Swallow via BaseException — not plain Exception — and apply a
+                # last-resort group SIGKILL before surfacing `_hook_exc` so we
+                # never leave sleeps/tools running under setsid PGID=#1.
+                if os.name != "nt" and getattr(os, "killpg", None):
+                    pgid = getattr(proc, "_hermes_pgid", None)
+                    if pgid is not None:
+                        try:
+                            os.killpg(pgid, signal.SIGKILL)
+                        except (ProcessLookupError, PermissionError, OSError):
+                            pass
+            try:
                 drain_thread.join(timeout=2)
-            except Exception:
-                pass  # cleanup is best-effort
-            raise
+            except BaseException:
+                pass
+            raise _hook_exc
 
         # Drain thread now exits promptly after bash does (~300ms idle
         # check).  A short join is enough; a long one would be a bug since

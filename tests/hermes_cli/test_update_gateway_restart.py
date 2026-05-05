@@ -6,6 +6,9 @@ rather than leaving zombie processes or telling users to manually restart
 when launchd will auto-respawn.
 """
 
+import os
+import signal
+import sys
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -20,6 +23,34 @@ from hermes_cli.main import cmd_update
 # ---------------------------------------------------------------------------
 # Skip the real-time sleeps inside cmd_update's restart-verification path
 # ---------------------------------------------------------------------------
+
+
+def _norm_path_segments(s: str) -> str:
+    """Normalize slashes for plist PATH asserts (Windows-safe)."""
+    return s.replace("\\", "/")
+
+
+@pytest.fixture(autouse=True)
+def _no_dashboard_kill_scan_during_update(monkeypatch):
+    """Avoid stale-dashboard teardown at end of ``cmd_update`` during these tests.
+
+    ``_kill_stale_dashboard_processes`` SIGTERMs dashboards then polls ``ps``;
+    survivors get SIGKILL.  Assertions in this module count ``os.kill`` calls
+    for *gateway* PIDs — any false-positive PID (esp. small ints like ``12345``)
+    or a flaky ``subprocess.run`` stub that lets a real ``ps`` slip through will
+    inject spurious SIGTERM/SIGKILL.  Short-circuit the whole helper.
+    """
+    import hermes_cli.main as main_mod
+
+    def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(main_mod, "_find_stale_dashboard_pids", lambda: [])
+    monkeypatch.setattr(main_mod, "_kill_stale_dashboard_processes", _noop)
+    # Alias established at import time keeps a reference to the original
+    # function object; patching only _kill_* leaves back-compat callers using
+    # _warn_* on the live implementation unless we overwrite both bindings.
+    monkeypatch.setattr(main_mod, "_warn_stale_dashboard_processes", _noop)
 
 
 @pytest.fixture(autouse=True)
@@ -39,6 +70,49 @@ def _no_restart_verify_sleep(monkeypatch):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _cmd_update_os_kill_side_effect_tracker(
+    *,
+    absorb_all_signals_to_pids: frozenset[int] | None = None,
+    escalate_guard_pids: frozenset[int] | None = None,
+):
+    """Build ``os.kill`` side_effect + call log for fragile cmd_update kill asserts.
+
+    Some production paths SIGTERM then, if the PID still looks alive, escalate to
+    SIGKILL (dashboard sweep, PID-file wait helpers, ``terminate_pid``, …).  In
+    these tests nothing is truly running — we must emulate "process vanished
+    after SIGTERM" by **not recording** follow-up SIGKILL to the same PID after
+    we have seen SIGTERM, so assertions stay coupled to gateway logic only.
+
+    *absorb_all_signals_to_pids*: swallow every ``os.kill`` to those PIDs without
+        recording — for tests expecting **no** ``os.kill`` at all.
+    *escalate_guard_pids*: record SIGTERM; subsequent SIGKILL to the same PID
+        is swallowed (simulated graceful exit completed).
+    """
+    calls: list[tuple[int, int]] = []
+    term_seen: set[int] = set()
+    escalate_guard_pids = escalate_guard_pids or frozenset()
+    absorb = absorb_all_signals_to_pids or frozenset()
+
+    sigterm = signal.SIGTERM
+    sigkill = getattr(signal, "SIGKILL", 9)
+
+    def _kill(pid, sig, *args, **kwargs):
+        spid = int(pid)
+
+        if spid in absorb:
+            return None
+        if spid in escalate_guard_pids and sig == sigterm:
+            term_seen.add(spid)
+            calls.append((spid, sig))
+            return None
+        if spid in escalate_guard_pids and sig == sigkill and spid in term_seen:
+            return None
+        calls.append((spid, sig))
+        return None
+
+    return _kill, calls
+
 
 def _make_run_side_effect(
     branch="main",
@@ -171,7 +245,9 @@ class TestLaunchdPlistPath:
                 path_value = path_value.replace("<string>", "").replace("</string>", "")
                 detected = gateway_cli._detect_venv_dir()
                 venv_bin = str(detected / "bin") if detected else str(gateway_cli.PROJECT_ROOT / "venv" / "bin")
-                assert path_value.startswith(venv_bin + ":")
+                pv = _norm_path_segments(path_value)
+                want = _norm_path_segments(venv_bin).rstrip("/")
+                assert pv.startswith(want), f"{pv!r} does not start with {want!r}"
                 break
         else:
             raise AssertionError("PATH key not found in plist")
@@ -179,12 +255,19 @@ class TestLaunchdPlistPath:
     def test_plist_path_includes_node_modules_bin(self):
         plist = gateway_cli.generate_launchd_plist()
         node_bin = str(gateway_cli.PROJECT_ROOT / "node_modules" / ".bin")
+        want_nb = _norm_path_segments(node_bin).rstrip("/")
         lines = plist.splitlines()
         for i, line in enumerate(lines):
             if "<key>PATH</key>" in line.strip():
                 path_value = lines[i + 1].strip()
                 path_value = path_value.replace("<string>", "").replace("</string>", "")
-                assert node_bin in path_value.split(":")
+                pv = _norm_path_segments(path_value)
+                detected = gateway_cli._detect_venv_dir()
+                vwant = _norm_path_segments(
+                    str(detected / "bin") if detected else str(gateway_cli.PROJECT_ROOT / "venv" / "bin")
+                ).rstrip("/")
+                assert want_nb in pv
+                assert pv.index(vwant) < pv.index(want_nb), "venv bin must precede node_modules/.bin"
                 break
         else:
             raise AssertionError("PATH key not found in plist")
@@ -197,15 +280,19 @@ class TestLaunchdPlistPath:
     def test_plist_path_deduplicates_venv_bin_when_already_in_path(self, monkeypatch):
         detected = gateway_cli._detect_venv_dir()
         venv_bin = str(detected / "bin") if detected else str(gateway_cli.PROJECT_ROOT / "venv" / "bin")
-        monkeypatch.setenv("PATH", f"{venv_bin}:/usr/bin:/bin")
+        monkeypatch.setenv(
+            "PATH",
+            os.pathsep.join([venv_bin, "/usr/bin", "/bin"]),
+        )
         plist = gateway_cli.generate_launchd_plist()
         lines = plist.splitlines()
         for i, line in enumerate(lines):
             if "<key>PATH</key>" in line.strip():
                 path_value = lines[i + 1].strip()
                 path_value = path_value.replace("<string>", "").replace("</string>", "")
-                parts = path_value.split(":")
-                assert parts.count(venv_bin) == 1
+                pv = _norm_path_segments(path_value)
+                want = _norm_path_segments(venv_bin).rstrip("/")
+                assert pv.count(want) == 1
                 break
         else:
             raise AssertionError("PATH key not found in plist")
@@ -415,18 +502,24 @@ class TestCmdUpdateLaunchdRestart:
             pid=12345,
         )
 
-        with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
-             patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
-             patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
-             patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=True) as graceful, \
-             patch("os.kill") as kill:
-            cmd_update(mock_args)
+        # PID file probing in ``launchd_restart`` / ``_wait_for_gateway_exit`` is
+        # real; keep it empty so nothing escalates via gateway.status helpers.
+        _kill_se, kill_calls = _cmd_update_os_kill_side_effect_tracker(
+            absorb_all_signals_to_pids=frozenset({12345}),
+        )
+        with patch("gateway.status.get_running_pid", return_value=None):
+            with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
+                 patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
+                 patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
+                 patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=True) as graceful, \
+                 patch("os.kill", side_effect=_kill_se):
+                cmd_update(mock_args)
 
         captured = capsys.readouterr().out
         restart.assert_called_once_with("coder", 12345)
         graceful.assert_called_once()
         # Graceful drain succeeded — no SIGTERM fallback needed.
-        kill.assert_not_called()
+        assert kill_calls == [], f"unexpected os.kill audit trail: {kill_calls!r}"
         assert "Restarting manual gateway profile(s): coder" in captured
         assert "Restart manually: hermes gateway run" not in captured
 
@@ -453,18 +546,22 @@ class TestCmdUpdateLaunchdRestart:
             pid=12345,
         )
 
-        with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
-             patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
-             patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
-             patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=False) as graceful, \
-             patch("os.kill") as kill:
-            cmd_update(mock_args)
+        _kill_se, kill_calls = _cmd_update_os_kill_side_effect_tracker(
+            escalate_guard_pids=frozenset({12345}),
+        )
+        with patch("gateway.status.get_running_pid", return_value=None):
+            with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
+                 patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
+                 patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
+                 patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=False) as graceful, \
+                 patch("os.kill", side_effect=_kill_se):
+                cmd_update(mock_args)
 
         captured = capsys.readouterr().out
         restart.assert_called_once_with("coder", 12345)
         graceful.assert_called_once()
-        # Graceful drain returned False → SIGTERM fallback.
-        kill.assert_called_once()
+        # Graceful drain returned False → SIGTERM fallback (never record spurious SIGKILL).
+        assert kill_calls == [(12345, signal.SIGTERM)]
         assert "Restarting manual gateway profile(s): coder" in captured
 
     @patch("shutil.which", return_value=None)
@@ -509,6 +606,8 @@ class TestCmdUpdateLaunchdRestart:
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        if not hasattr(signal, "SIGUSR1"):
+            monkeypatch.setattr(signal, "SIGUSR1", 30, raising=False)
 
         # Track state: before kill → "active" (old PID),
         # after kill + exit → briefly inactive, then "active" again (new PID).
@@ -876,20 +975,25 @@ class TestServicePidExclusion:
             _exclude = exclude_pids or set()
             return [p for p in [SERVICE_PID, MANUAL_PID] if p not in _exclude]
 
-        with patch.object(
-            gateway_cli, "_get_service_pids", return_value={SERVICE_PID}
-        ), patch.object(
-            gateway_cli, "find_gateway_pids", side_effect=fake_find,
-        ), patch("os.kill") as mock_kill:
-            cmd_update(mock_args)
+        _kill_se, kill_calls = _cmd_update_os_kill_side_effect_tracker(
+            escalate_guard_pids=frozenset({MANUAL_PID}),
+        )
+        with patch("gateway.status.get_running_pid", return_value=None):
+            with patch.object(
+                gateway_cli, "_get_service_pids", return_value={SERVICE_PID}
+            ), patch.object(
+                gateway_cli, "find_gateway_pids", side_effect=fake_find,
+            ), patch("os.kill", side_effect=_kill_se):
+                cmd_update(mock_args)
 
         captured = capsys.readouterr().out
         assert "Restarted" in captured
         # Manual PID should be killed
-        manual_kills = [c for c in mock_kill.call_args_list if c.args[0] == MANUAL_PID]
+        manual_kills = [c for c in kill_calls if c[0] == MANUAL_PID]
         assert len(manual_kills) == 1
+        assert manual_kills[0][1] == signal.SIGTERM
         # Service PID should NOT be killed
-        service_kills = [c for c in mock_kill.call_args_list if c.args[0] == SERVICE_PID]
+        service_kills = [c for c in kill_calls if c[0] == SERVICE_PID]
         assert len(service_kills) == 0
         # Should show manual stop message since manual PID was killed
         assert "Stopped 1 manual gateway" in captured

@@ -583,6 +583,16 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 info["config_warning"] = cfg_warn
                 logger.warning(cfg_warn)
             _emit("session.info", sid, info)
+
+            pending = current.get("pending_title")
+            if pending:
+                db = _get_db()
+                if db is not None:
+                    try:
+                        if db.set_session_title(key, pending):
+                            current["pending_title"] = None
+                    except Exception:
+                        current["pending_title"] = None
         except Exception as e:
             current["agent_error"] = str(e)
             _emit("error", sid, {"message": f"agent init failed: {e}"})
@@ -3046,7 +3056,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         if _pdb.set_session_title(session.get("session_key") or sid, _pending):
                             session["pending_title"] = None
                     except Exception:
-                        pass  # Best effort — auto-title will handle it below
+                        session["pending_title"] = None
 
             if (
                 status == "complete"
