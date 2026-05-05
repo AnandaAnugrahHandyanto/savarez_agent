@@ -10487,17 +10487,234 @@ Examples:
             logger.debug(
                 "plugin discovery failed at CLI startup", exc_info=True,
             )
+        # Cleanup imports — must succeed for cleanup registration to happen.
+        # If they fail (e.g. MCP SDK not installed), the rest of the path
+        # falls through to the existing "fail-open without MCP" behavior:
+        # the discovery try/except below catches the secondary failure, and
+        # cleanup registration is skipped (there's nothing to clean up since
+        # MCP didn't spawn anything).
         try:
-            # MCP tool discovery — no event loop running in CLI/TUI startup,
-            # so inline is safe.  Moved here from model_tools.py module scope
-            # to avoid freezing the gateway's event loop on its first message
-            # via the same lazy import path (#16856).
-            from tools.mcp_tool import discover_mcp_tools
-            discover_mcp_tools()
+            import atexit as _atexit
+            import signal as _signal
+            import threading as _threading
+            import time as _time_local  # local alias for cleanup-scope self-containment
+            import os as _os_local      # local alias for cleanup-scope self-containment
+            from tools.mcp_tool import (
+                discover_mcp_tools,
+                shutdown_mcp_servers,
+                _kill_orphaned_mcp_children as _kill_mcp_kids,
+            )
+            # Reference the mcp_tool module itself so we can read _servers
+            # dynamically at warning-check time (avoids stale-binding risk
+            # if discover_mcp_tools ever reassigns the registry instead of
+            # mutating it in place).
+            import tools.mcp_tool as _mcp_module
+            _mcp_imports_ok = True
         except Exception:
             logger.debug(
-                "MCP tool discovery failed at CLI startup", exc_info=True,
+                "MCP cleanup imports failed at CLI startup — falling back to no-MCP path",
+                exc_info=True,
             )
+            _mcp_imports_ok = False
+
+        # Build the MCP-server filter from -t/--toolsets BEFORE attempting
+        # discovery. The -t flag accepts both built-in toolset names (e.g.
+        # ``web``, ``memory``) AND MCP server names from config.yaml's
+        # ``mcp_servers`` block. Built-in names that don't match any
+        # configured MCP server simply don't trigger spawning — that's the
+        # intended behavior (built-ins don't need MCPs).
+        #
+        # IMPORTANT: this filter requires that the user's ``mcp_servers:``
+        # entry NAMES match the toolset names they pass to -t. If a user
+        # has ``mcp_servers: { code-mcp: ... }`` and runs ``-t code``, the
+        # filter won't match (server name is ``code-mcp``, token is
+        # ``code``). Hermes' tools-config validation already rejects -t
+        # tokens that don't appear in mcp_servers OR built-in toolsets, so
+        # this filter operates on already-validated names — but the empty
+        # result case is still possible when only built-in tokens are
+        # passed. That's correct behavior, not a bug.
+        allowed_mcp = None
+        ts_arg = getattr(args, "toolsets", None)
+        if ts_arg is not None:  # explicit empty string allowed → no MCPs
+            if isinstance(ts_arg, str):
+                allowed_mcp = [t.strip() for t in ts_arg.split(",") if t.strip()]
+            elif isinstance(ts_arg, (list, tuple, set)):
+                allowed_mcp = [str(t).strip() for t in ts_arg if str(t).strip()]
+            else:
+                allowed_mcp = []  # unknown type — be conservative, spawn nothing
+
+        # ─── Cleanup machinery (set up only if MCP imports succeeded) ────
+        # If MCP imports failed above, _mcp_imports_ok is False — skip the
+        # whole cleanup-machinery block and the discovery block below.
+        # That preserves the historical fail-open behavior where MCP-SDK-
+        # missing environments still get a working CLI.
+        #
+        # Idempotency: a re-entrant signal (second Ctrl+C while atexit is
+        # already running) must NOT run cleanup twice. The threading.Event
+        # guard makes the cleanup function a no-op on every call after the
+        # first, regardless of which path (atexit or signal) triggered it.
+        #
+        # Cleanup ordering:
+        #   1. Graceful shutdown via ``shutdown_mcp_servers()`` — sync
+        #      wrapper that internally schedules an async coroutine on the
+        #      MCP event loop with a 15s timeout. When the loop is no
+        #      longer running, it falls through to ``_stop_mcp_loop()`` —
+        #      no-op, force-kill picks up.
+        #   2. Bounded poll loop — wait up to 2s for stdio PIDs to exit.
+        #   3. Force-kill survivors via ``_kill_orphaned_mcp_children``.
+        if _mcp_imports_ok:
+            _cleanup_done = _threading.Event()
+
+            def _oneshot_mcp_cleanup():
+                """Reap MCP subprocesses on CLI exit. Idempotent across reentry.
+
+                atexit + signal handlers may both fire (e.g., SIGINT → cleanup
+                → raise KeyboardInterrupt → Python shutdown → atexit chain).
+                Both paths call this function; the Event guard makes the
+                second call a no-op. Python's signal module routes signals to
+                the main thread, so a non-locked check-then-set is race-free
+                here for the CLI-oneshot use case.
+                """
+                if _cleanup_done.is_set():
+                    return
+                _cleanup_done.set()
+
+                try:
+                    shutdown_mcp_servers()
+                except Exception:
+                    logger.debug("MCP graceful shutdown failed", exc_info=True)
+
+                # Bounded poll loop (~2s) for stdio PIDs to exit.
+                # Self-contained: uses _time_local / _os_local imported in
+                # the cleanup-setup scope above, so we don't depend on
+                # main.py's module-level `_time` alias being unchanged.
+                try:
+                    from tools.mcp_tool import _stdio_pids as _pid_dict
+                    deadline = _time_local.monotonic() + 2.0
+                    while _time_local.monotonic() < deadline:
+                        # Snapshot dict to avoid mutation-during-iteration
+                        # if a worker thread reaps a PID concurrently.
+                        try:
+                            pids = list(dict(_pid_dict).keys())
+                        except RuntimeError:
+                            # Dict mutated mid-snapshot — retry on next
+                            # tick (continue, not break) to preserve the
+                            # full 2s grace period for graceful exits.
+                            _time_local.sleep(0.05)
+                            continue
+                        alive = []
+                        for pid in pids:
+                            # Treat alive sentinel: signal 0 raises if PID
+                            # gone, succeeds if alive (PermissionError on
+                            # cross-uid PIDs which we ignore as "not ours
+                            # to track").
+                            try:
+                                _os_local.kill(pid, 0)
+                                alive.append(pid)
+                            except (ProcessLookupError, PermissionError, OSError):
+                                pass
+                        if not alive:
+                            break  # everyone exited cleanly — skip force-kill
+                        _time_local.sleep(0.05)  # short backoff between polls
+                except Exception:
+                    logger.debug("MCP poll-loop failed", exc_info=True)
+
+                try:
+                    _kill_mcp_kids(include_active=True)
+                except Exception:
+                    logger.debug("MCP force-kill failed", exc_info=True)
+
+            # Register atexit FIRST — runs on graceful Python exit even if
+            # signal handlers below fail to install.
+            _atexit.register(_oneshot_mcp_cleanup)
+
+            # Signal handlers — preserve Python's normal shutdown chain
+            # AND preserve the conventional signal-derived exit code so
+            # supervisors (launchd, systemd, foreman) can distinguish a
+            # graceful exit from an external kill.
+            #
+            # SIGINT: cleanup then raise KeyboardInterrupt. Python's normal
+            #   handler converts an unhandled KI into exit code 130 (128+2)
+            #   automatically, and runs the rest of the atexit chain.
+            # SIGTERM: cleanup then re-raise via SIG_DFL + os.kill so the
+            #   process exits with the conventional 143 (128+15) status.
+            #   Idempotency guard ensures the kernel-routed second SIGTERM
+            #   doesn't re-run cleanup. (atexit doesn't run on signal exit,
+            #   but our cleanup already did before the re-raise.)
+            # SIGKILL: not catchable; nothing we can do.
+
+            def _oneshot_sigint_handler(signum, _frame):
+                _oneshot_mcp_cleanup()
+                raise KeyboardInterrupt
+
+            def _oneshot_sigterm_handler(signum, _frame):
+                _oneshot_mcp_cleanup()
+                # Restore default disposition and re-raise so the process
+                # reports the canonical 128+15=143 exit code rather than 0.
+                # Cleanup already ran (idempotency guard prevents re-run).
+                # Use _os_local (cleanup-scope alias) for self-containment;
+                # don't depend on main.py's module-level `os` import.
+                _signal.signal(signum, _signal.SIG_DFL)
+                _os_local.kill(_os_local.getpid(), signum)
+
+            try:
+                _signal.signal(_signal.SIGTERM, _oneshot_sigterm_handler)
+                _signal.signal(_signal.SIGINT, _oneshot_sigint_handler)
+            except (ValueError, OSError):
+                # ValueError if not main thread; OSError on platforms that
+                # don't allow installing handlers for these signals. atexit
+                # still covers graceful exits in those cases.
+                pass
+
+        # ─── Discovery (in its own try/except — failure does not skip cleanup) ───
+        # Skip discovery entirely if MCP imports failed above.
+        if _mcp_imports_ok:
+            try:
+                # MCP tool discovery — no event loop running in CLI/TUI
+                # startup, so inline is safe. Moved here from model_tools.py
+                # module scope to avoid freezing the gateway's event loop on
+                # its first message via the same lazy import path (#16856).
+                discover_mcp_tools(allowed_mcp_names=allowed_mcp)
+
+                # User-visible warning logic. Distinguishes three cases:
+                #   (a) -t not passed at all                  → no warning, all MCPs spawn (default)
+                #   (b) -t with only built-in toolset names   → no warning, no MCPs spawn (user intent)
+                #   (c) -t names some MCP servers, but        → WARN — user expected MCP tools
+                #       discover_mcp_tools registered none      but got none. Real misconfig.
+                #
+                # We can't distinguish (b) from (c) with allowed_mcp alone — both
+                # produce a non-empty list. We DO know from mcp_servers config
+                # which tokens are MCP-server names. So: intersect allowed_mcp
+                # with the configured server names; if the intersection is
+                # non-empty but none of those servers actually registered,
+                # that's case (c).
+                if allowed_mcp:
+                    try:
+                        from hermes_cli.config import read_raw_config
+                        # Read _servers DYNAMICALLY from the module rather
+                        # than via `from x import _servers` — this avoids
+                        # binding to a possibly-stale dict object if the
+                        # mcp_tool module reassigns its registry. Module
+                        # attribute access always sees the current value.
+                        cfg_mcp_names = set(
+                            (read_raw_config().get("mcp_servers") or {}).keys()
+                        )
+                        intended_mcp = [t for t in allowed_mcp if t in cfg_mcp_names]
+                        live_servers = getattr(_mcp_module, "_servers", {}) or {}
+                        spawned_mcp = [n for n in intended_mcp if n in live_servers]
+                        unmatched = [n for n in intended_mcp if n not in spawned_mcp]
+                        if intended_mcp and unmatched:
+                            sys.stderr.write(
+                                f"hermes -z: requested MCP server(s) {unmatched} did not register. "
+                                f"Check the MCP server logs (~/.hermes/logs/) and verify the "
+                                f"server's command/url is reachable.\n"
+                            )
+                    except Exception:
+                        logger.debug("MCP filter-warn check failed", exc_info=True)
+            except Exception:
+                logger.debug(
+                    "MCP tool discovery failed at CLI startup", exc_info=True,
+                )
         try:
             from hermes_cli.config import load_config
             from agent.shell_hooks import register_from_config
