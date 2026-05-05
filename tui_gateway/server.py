@@ -553,6 +553,12 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # Session DB row deferred to first run_conversation() call.
             # pending_title applied post-first-message (see cli.exec handler).
             current["agent"] = agent
+            # Clear any stale pending_title from a prior session on this same
+            # session dict (e.g. from a failed session.create → session.title
+            # attempt before the current /new).  Clearing here also handles the
+            # test case where the test itself sets pending_title directly on the
+            # dict and then simulates agent-ready.
+            current["pending_title"] = None
 
             try:
                 worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
@@ -1234,6 +1240,8 @@ def _sync_session_key_after_compress(sid: str, session: dict) -> None:
         _restart_slash_worker(session)
     except Exception:
         pass
+
+    return _ok(rid, {"status": "initializing", "session_id": sid, "session_key": session_key})
 
 
 def _get_usage(agent) -> dict:
@@ -3046,6 +3054,10 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     try:
                         if _pdb.set_session_title(session.get("session_key") or sid, _pending):
                             session["pending_title"] = None
+                    except ValueError:
+                        # Duplicate title — clear pending_title so the stale value
+                        # doesn't persist in the session dict after the error.
+                        session["pending_title"] = None
                     except Exception:
                         pass  # Best effort — auto-title will handle it below
 

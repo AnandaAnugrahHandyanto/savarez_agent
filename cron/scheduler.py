@@ -734,8 +734,13 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                     f"{prompt}"
                 )
             else:
-                # Script produced no output — nothing to report, skip AI call.
-                return None
+                # Script produced no output — note it in the prompt so the
+                # agent can report it to the user instead of silently skipping.
+                prompt = (
+                    "## Script Output\n"
+                    "The data-collection script ran but produced no output.\n\n"
+                    f"{prompt}"
+                )
         else:
             prompt = (
                 "## Script Error\n"
