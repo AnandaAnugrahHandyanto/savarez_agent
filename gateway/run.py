@@ -4474,7 +4474,7 @@ class GatewayRunner:
                 if _is_ctx_fail:
                     response = (
                         "⚠️ Session too large for the model's context window.\n"
-                        "Use /compact to compress the conversation, or "
+                        "Use /compress to compress the conversation, or "
                         "/reset to start fresh."
                     )
                 else:
@@ -4728,7 +4728,7 @@ class GatewayRunner:
                 if _hist_len > 50:
                     return (
                         "⚠️ Session too large for the model's context window.\n"
-                        "Use /compact to compress the conversation, or "
+                        "Use /compress to compress the conversation, or "
                         "/reset to start fresh."
                     )
                 elif status_code == 400:
