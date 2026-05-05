@@ -15,6 +15,7 @@ Usage:
 
 import logging
 import os
+import re
 import shutil
 import sys
 import json
@@ -85,7 +86,7 @@ from hermes_cli.browser_connect import (
     try_launch_chrome_debug,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
-from utils import base_url_host_matches, is_truthy_value
+from utils import base_url_host_matches
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -244,6 +245,74 @@ def _parse_service_tier_config(raw: str) -> str | None:
     logger.warning("Unknown service_tier '%s', ignoring", raw)
     return None
 
+def _load_response_style(raw: str) -> str:
+    """Normalize persisted response-style preference."""
+    from agent.response_style import normalize_response_style
+
+    normalized = normalize_response_style(raw)
+    if raw and str(raw).strip() and normalized == "normal" and str(raw).strip().lower() != "normal":
+        logger.warning("Unknown response_style '%s', using default (normal)", raw)
+    return normalized
+
+
+
+def _get_chrome_debug_candidates(system: str) -> list[str]:
+    """Return likely browser executables for local CDP auto-launch."""
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _add_candidate(path: str | None) -> None:
+        if not path:
+            return
+        normalized = os.path.normcase(os.path.normpath(path))
+        if normalized in seen:
+            return
+        if os.path.isfile(path):
+            candidates.append(path)
+            seen.add(normalized)
+
+    def _add_from_path(*names: str) -> None:
+        for name in names:
+            _add_candidate(shutil.which(name))
+
+    if system == "Darwin":
+        for app in (
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ):
+            _add_candidate(app)
+    elif system == "Windows":
+        _add_from_path(
+            "chrome.exe", "msedge.exe", "brave.exe", "chromium.exe",
+            "chrome", "msedge", "brave", "chromium",
+        )
+
+        for base in (
+            os.environ.get("ProgramFiles"),
+            os.environ.get("ProgramFiles(x86)"),
+            os.environ.get("LOCALAPPDATA"),
+        ):
+            if not base:
+                continue
+            for parts in (
+                ("Google", "Chrome", "Application", "chrome.exe"),
+                ("Chromium", "Application", "chrome.exe"),
+                ("Chromium", "Application", "chromium.exe"),
+                ("BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+                ("Microsoft", "Edge", "Application", "msedge.exe"),
+            ):
+                _add_candidate(os.path.join(base, *parts))
+    else:
+        _add_from_path(
+            "google-chrome", "google-chrome-stable", "chromium-browser",
+            "chromium", "brave-browser", "microsoft-edge",
+        )
+
+    return candidates
+
+
 def load_cli_config() -> Dict[str, Any]:
     """
     Load CLI configuration from config files.
@@ -310,6 +379,7 @@ def load_cli_config() -> Dict[str, Any]:
             "prefill_messages_file": "",
             "reasoning_effort": "",
             "service_tier": "",
+            "response_style": "normal",
             "personalities": {
                 "helpful": "You are a helpful, friendly AI assistant.",
                 "concise": "You are a concise assistant. Keep responses brief and to the point.",
@@ -590,7 +660,6 @@ def load_cli_config() -> Dict[str, Any]:
 
 # Load configuration at module startup
 CLI_CONFIG = load_cli_config()
-
 
 # Initialize centralized logging early — agent.log + errors.log in ~/.hermes/logs/.
 # This ensures CLI sessions produce a log trail even before AIAgent is instantiated.
@@ -926,20 +995,6 @@ def _run_state_db_auto_maintenance(session_db) -> None:
     try:
         from hermes_cli.config import load_config as _load_full_config
         from hermes_constants import get_hermes_home as _get_hermes_home
-        _hermes_home_maint = _get_hermes_home()
-
-        # One-time prune of empty TUI ghost sessions.
-        try:
-            if not session_db.get_meta("ghost_session_prune_v1"):
-                pruned = session_db.prune_empty_ghost_sessions(
-                    sessions_dir=_hermes_home_maint / "sessions"
-                )
-                session_db.set_meta("ghost_session_prune_v1", "1")
-                if pruned:
-                    logger.info("Pruned %d empty TUI ghost sessions", pruned)
-        except Exception as _prune_exc:
-            logger.debug("Ghost session prune skipped: %s", _prune_exc)
-
         cfg = (_load_full_config().get("sessions") or {})
         if not cfg.get("auto_prune", False):
             return
@@ -947,7 +1002,7 @@ def _run_state_db_auto_maintenance(session_db) -> None:
             retention_days=int(cfg.get("retention_days", 90)),
             min_interval_hours=int(cfg.get("min_interval_hours", 24)),
             vacuum=bool(cfg.get("vacuum_after_prune", True)),
-            sessions_dir=_hermes_home_maint / "sessions",
+            sessions_dir=_get_hermes_home() / "sessions",
         )
     except Exception as exc:
         logger.debug("state.db auto-maintenance skipped: %s", exc)
@@ -1269,73 +1324,8 @@ def _cprint(text: str):
     Raw ANSI escapes written via print() are swallowed by patch_stdout's
     StdoutProxy.  Routing through print_formatted_text(ANSI(...)) lets
     prompt_toolkit parse the escapes and render real colors.
-
-    When called from a background thread while a prompt_toolkit
-    ``Application`` is running (the common case for the self-improvement
-    background review's ``💾 …`` summary, curator summaries, and other
-    bg-thread emissions), a direct ``_pt_print`` races with the input
-    area's redraw and the line can end up visually buried behind the
-    prompt.  Route those cases through ``run_in_terminal`` via
-    ``loop.call_soon_threadsafe``, which pauses the input area, prints
-    the line above it, and redraws the prompt cleanly.
     """
-    try:
-        from prompt_toolkit.application import get_app_or_none, run_in_terminal
-    except Exception:
-        _pt_print(_PT_ANSI(text))
-        return
-
-    app = None
-    try:
-        app = get_app_or_none()
-    except Exception:
-        app = None
-
-    # No active app, or we're already on the app's main thread: the
-    # direct prompt_toolkit print is safe and matches existing behavior
-    # (spinner frames, streamed tokens, tool activity prefixes, …).
-    if app is None or not getattr(app, "_is_running", False):
-        _pt_print(_PT_ANSI(text))
-        return
-
-    try:
-        loop = app.loop  # type: ignore[attr-defined]
-    except Exception:
-        loop = None
-    if loop is None:
-        _pt_print(_PT_ANSI(text))
-        return
-
-    import asyncio as _asyncio
-    try:
-        current_loop = _asyncio.get_event_loop_policy().get_event_loop()
-    except Exception:
-        current_loop = None
-    # Same thread as the app's loop → safe to print directly.
-    if current_loop is loop and loop.is_running():
-        _pt_print(_PT_ANSI(text))
-        return
-
-    # Cross-thread emission: ask the app's event loop to schedule a
-    # ``run_in_terminal`` that wraps ``_pt_print``.  This hides the
-    # prompt, prints, and redraws.  Fire-and-forget — if scheduling
-    # fails we fall back to a direct print so the line isn't lost.
-    def _schedule():
-        try:
-            run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
-        except Exception:
-            try:
-                _pt_print(_PT_ANSI(text))
-            except Exception:
-                pass
-
-    try:
-        loop.call_soon_threadsafe(_schedule)
-    except Exception:
-        try:
-            _pt_print(_PT_ANSI(text))
-        except Exception:
-            pass
+    _pt_print(_PT_ANSI(text))
 
 
 # ---------------------------------------------------------------------------
@@ -2151,8 +2141,6 @@ class HermesCLI:
         
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
-        self.disabled_toolsets = CLI_CONFIG["agent"].get("disabled_toolsets") or []
-
         if toolsets and "all" not in toolsets and "*" not in toolsets:
             # Validate each toolset — MCP server names are resolved via
             # live registry aliases (registered during discover_mcp_tools),
@@ -2193,6 +2181,9 @@ class HermesCLI:
         )
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
+        )
+        self.response_style = _load_response_style(
+            CLI_CONFIG["agent"].get("response_style", "normal")
         )
         
         # OpenRouter provider routing preferences
@@ -3646,13 +3637,13 @@ class HermesCLI:
                 credential_pool=runtime.get("credential_pool"),
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
-                disabled_toolsets=self.disabled_toolsets,
                 verbose_logging=self.verbose,
                 quiet_mode=not self.verbose,
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config,
                 service_tier=self.service_tier,
+                response_style=self.response_style,
                 request_overrides=request_overrides,
                 providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore,
@@ -3694,18 +3685,14 @@ class HermesCLI:
                 tuple(runtime.get("args") or ()),
             )
 
-            # Force-create DB row on /title intent, then apply title.
-            if self._pending_title and self._session_db and self.agent:
+            if self._pending_title and self._session_db:
                 try:
-                    self.agent._ensure_db_session()
-                    if self.agent._session_db_created:
-                        self._session_db.set_session_title(self.session_id, self._pending_title)
-                        _cprint(f"  Session title applied: {self._pending_title}")
-                        self._pending_title = None
-                    # else: row creation failed transiently — keep _pending_title for retry
+                    self._session_db.set_session_title(self.session_id, self._pending_title)
+                    _cprint(f"  Session title applied: {self._pending_title}")
+                    self._pending_title = None
                 except (ValueError, Exception) as e:
                     _cprint(f"  Could not apply pending title: {e}")
-                    # Keep _pending_title so it can be retried after row creation succeeds
+                    self._pending_title = None
             return True
         except Exception as e:
             ChatConsole().print(f"[bold red]Failed to initialize agent: {e}[/]")
@@ -4576,8 +4563,8 @@ class HermesCLI:
 
         agent = getattr(self, "agent", None)
         total_tokens = getattr(agent, "session_total_tokens", 0) or 0
-        provider = getattr(self, "provider", None) or "unknown"
-        model = getattr(self, "model", None) or "(unknown)"
+        provider = getattr(agent, "provider", None) or getattr(self, "provider", None) or "unknown"
+        model = getattr(agent, "model", None) or getattr(self, "model", None) or "(unknown)"
         is_running = bool(getattr(self, "_agent_running", False))
 
         lines = [
@@ -4593,8 +4580,60 @@ class HermesCLI:
             f"Created: {created_at.strftime('%Y-%m-%d %H:%M')}",
             f"Last Activity: {updated_at.strftime('%Y-%m-%d %H:%M')}",
             f"Tokens: {total_tokens:,}",
-            f"Agent Running: {'Yes' if is_running else 'No'}",
         ])
+
+        if agent is not None:
+            input_tokens = getattr(agent, "session_input_tokens", 0) or 0
+            output_tokens = getattr(agent, "session_output_tokens", 0) or 0
+            cache_read = getattr(agent, "session_cache_read_tokens", 0) or 0
+            cache_write = getattr(agent, "session_cache_write_tokens", 0) or 0
+            api_calls = getattr(agent, "session_api_calls", 0) or 0
+            if input_tokens:
+                lines.append(f"Input tokens: {input_tokens:,}")
+            if output_tokens:
+                lines.append(f"Output tokens: {output_tokens:,}")
+            if cache_read:
+                lines.append(f"Cache read: {cache_read:,}")
+            if cache_write:
+                lines.append(f"Cache write: {cache_write:,}")
+            if api_calls:
+                lines.append(f"API calls: {api_calls:,}")
+
+            try:
+                comp = getattr(agent, "context_compressor", None)
+                if comp is not None:
+                    ctx_used = getattr(comp, "last_prompt_tokens", 0) or 0
+                    ctx_max = getattr(comp, "context_length", 0) or 0
+                    if ctx_used and ctx_max:
+                        pct = max(0, min(100, round(ctx_used / ctx_max * 100)))
+                        lines.append(f"Context: {ctx_used:,} / {ctx_max:,} ({pct}%)")
+                    compressions = getattr(comp, "compression_count", 0) or 0
+                    if compressions:
+                        lines.append(f"Compressions: {compressions}")
+            except Exception:
+                pass
+
+            try:
+                cost_result = estimate_usage_cost(
+                    model,
+                    CanonicalUsage(
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cache_read_tokens=cache_read,
+                        cache_write_tokens=cache_write,
+                    ),
+                    provider=getattr(agent, "provider", None),
+                    base_url=getattr(agent, "base_url", None),
+                )
+                if cost_result.amount_usd is not None:
+                    prefix = "~" if cost_result.status == "estimated" else ""
+                    lines.append(f"Cost: {prefix}${float(cost_result.amount_usd):.4f}")
+                elif cost_result.status == "included":
+                    lines.append("Cost: included")
+            except Exception:
+                pass
+
+        lines.append(f"Agent Running: {'Yes' if is_running else 'No'}")
         self._console_print("\n".join(lines), highlight=False, markup=False)
     
     def _fast_command_available(self) -> bool:
@@ -5033,7 +5072,6 @@ class HermesCLI:
 
             if self._session_db:
                 try:
-                    self.agent._session_db_created = False
                     self._session_db.create_session(
                         session_id=self.session_id,
                         source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
@@ -5043,7 +5081,6 @@ class HermesCLI:
                             "reasoning_config": self.reasoning_config,
                         },
                     )
-                    self.agent._session_db_created = True
                 except Exception:
                     pass
                 if title and self._session_db:
@@ -5994,7 +6031,45 @@ class HermesCLI:
             print()
             print("  Usage: /personality <name>")
             print()
-    
+
+    def _handle_style_command(self, cmd: str):
+        """Handle /style — manage response brevity style."""
+        from agent.response_style import (
+            VALID_RESPONSE_STYLES,
+            format_style_status,
+            normalize_response_style,
+        )
+
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2:
+            lines = format_style_status(getattr(self, "response_style", "normal"), prefix="  ")
+            for line in lines:
+                self._console_print(line)
+            return
+
+        raw = parts[1].strip().lower()
+        if raw == "status":
+            lines = format_style_status(getattr(self, "response_style", "normal"), prefix="  ")
+            for line in lines:
+                self._console_print(line)
+            return
+
+        style = normalize_response_style(raw)
+        if style != raw:
+            self._console_print(f"  Unknown style: {raw}")
+            self._console_print(f"  Available: {', '.join(VALID_RESPONSE_STYLES)}")
+            return
+
+        self.response_style = style
+        self.agent = None
+        if save_config_value("agent.response_style", style):
+            self._console_print(f"  Response style set to '{style}' (saved to config)")
+        else:
+            self._console_print(f"  Response style set to '{style}' (session only)")
+
+        for line in format_style_status(style, prefix="  "):
+            self._console_print(line)
+
     def _handle_cron_command(self, cmd: str):
         """Handle the /cron command to manage scheduled tasks."""
         import shlex
@@ -6515,6 +6590,8 @@ class HermesCLI:
         elif canonical == "personality":
             # Use original case (handler lowercases the personality name itself)
             self._handle_personality_command(cmd_original)
+        elif canonical == "style":
+            self._handle_style_command(cmd_original)
         elif canonical == "retry":
             retry_msg = self.retry_last()
             if retry_msg and hasattr(self, '_pending_input'):
@@ -6649,8 +6726,6 @@ class HermesCLI:
                 # No active run — treat as a normal next-turn message.
                 self._pending_input.put(payload)
                 _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
-        elif canonical == "goal":
-            self._handle_goal_command(cmd_original)
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
@@ -6696,17 +6771,12 @@ class HermesCLI:
                     self._console_print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')[/]")
             # Check for plugin-registered slash commands
             elif base_cmd.lstrip("/") in _get_plugin_cmd_handler_names():
-                from hermes_cli.plugins import (
-                    get_plugin_command_handler,
-                    resolve_plugin_command_result,
-                )
+                from hermes_cli.plugins import get_plugin_command_handler
                 plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
                 if plugin_handler:
                     user_args = cmd_original[len(base_cmd):].strip()
                     try:
-                        result = resolve_plugin_command_result(
-                            plugin_handler(user_args)
-                        )
+                        result = plugin_handler(user_args)
                         if result:
                             _cprint(str(result))
                     except Exception as e:
@@ -7131,166 +7201,6 @@ class HermesCLI:
             print("   status       Show current browser mode")
             print()
 
-    # ────────────────────────────────────────────────────────────────
-    # /goal — persistent cross-turn goals (Ralph-style loop)
-    # ────────────────────────────────────────────────────────────────
-    def _get_goal_manager(self):
-        """Return the GoalManager bound to the current session_id.
-
-        Cached on ``self._goal_manager`` and rebound lazily when
-        ``session_id`` changes (e.g. after /new or a compression-driven
-        session split).
-        """
-        try:
-            from hermes_cli.goals import GoalManager
-            from hermes_cli.config import load_config
-        except Exception as exc:
-            logging.debug("goal manager unavailable: %s", exc)
-            return None
-
-        sid = getattr(self, "session_id", None) or ""
-        if not sid:
-            return None
-
-        existing = getattr(self, "_goal_manager", None)
-        if existing is not None and getattr(existing, "session_id", None) == sid:
-            return existing
-
-        try:
-            cfg = load_config() or {}
-            goals_cfg = cfg.get("goals") or {}
-            max_turns = int(goals_cfg.get("max_turns", 20) or 20)
-        except Exception:
-            max_turns = 20
-
-        mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
-        self._goal_manager = mgr
-        return mgr
-
-    def _handle_goal_command(self, cmd: str) -> None:
-        """Dispatch /goal subcommands: set / status / pause / resume / clear."""
-        parts = (cmd or "").strip().split(None, 1)
-        arg = parts[1].strip() if len(parts) > 1 else ""
-
-        mgr = self._get_goal_manager()
-        if mgr is None:
-            _cprint(f"  {_DIM}Goals unavailable (no active session).{_RST}")
-            return
-
-        lower = arg.lower()
-
-        # Bare /goal or /goal status → show current state
-        if not arg or lower == "status":
-            _cprint(f"  {mgr.status_line()}")
-            return
-
-        if lower == "pause":
-            state = mgr.pause(reason="user-paused")
-            if state is None:
-                _cprint(f"  {_DIM}No goal set.{_RST}")
-            else:
-                _cprint(f"  ⏸ Goal paused: {state.goal}")
-            return
-
-        if lower == "resume":
-            state = mgr.resume()
-            if state is None:
-                _cprint(f"  {_DIM}No goal to resume.{_RST}")
-            else:
-                _cprint(f"  ▶ Goal resumed: {state.goal}")
-                _cprint(
-                    f"  {_DIM}Send any message (or press Enter on an empty prompt "
-                    f"is a no-op; type 'continue' to kick it off).{_RST}"
-                )
-            return
-
-        if lower in ("clear", "stop", "done"):
-            had = mgr.has_goal()
-            mgr.clear()
-            if had:
-                _cprint("  ✓ Goal cleared.")
-            else:
-                _cprint(f"  {_DIM}No active goal.{_RST}")
-            return
-
-        # Otherwise treat the arg as the goal text.
-        try:
-            state = mgr.set(arg)
-        except ValueError as exc:
-            _cprint(f"  Invalid goal: {exc}")
-            return
-
-        _cprint(f"  ⊙ Goal set ({state.max_turns}-turn budget): {state.goal}")
-        _cprint(
-            f"  {_DIM}After each turn, a judge model will check if the goal is done. "
-            f"Hermes keeps working until it is, you pause/clear it, or the budget is "
-            f"exhausted. Use /goal status, /goal pause, /goal resume, /goal clear.{_RST}"
-        )
-        # Kick the loop off immediately so the user doesn't have to send a
-        # separate message after setting the goal.
-        try:
-            self._pending_input.put(state.goal)
-        except Exception:
-            pass
-
-    def _maybe_continue_goal_after_turn(self) -> None:
-        """Hook run after every CLI turn. Judges + maybe re-queues.
-
-        Safe to call when no goal is set — returns quickly.
-
-        Preemption is automatic: if a real user message is already in
-        ``_pending_input`` we skip judging (the user's new input takes
-        priority and we'll re-judge after that turn). If judge says done,
-        mark it done and tell the user. If judge says continue and we're
-        under budget, push the continuation prompt onto the queue.
-        """
-        mgr = self._get_goal_manager()
-        if mgr is None or not mgr.is_active():
-            return
-
-        # If a real user message is already queued, don't inject a
-        # continuation prompt on top — let the user's turn go first.
-        try:
-            if getattr(self, "_pending_input", None) is not None \
-                    and not self._pending_input.empty():
-                return
-        except Exception:
-            pass
-
-        # Extract the agent's final response for this turn.
-        last_response = ""
-        try:
-            hist = self.conversation_history or []
-            for msg in reversed(hist):
-                if msg.get("role") == "assistant":
-                    content = msg.get("content", "")
-                    if isinstance(content, list):
-                        # Multimodal content — flatten text parts.
-                        parts = [
-                            p.get("text", "")
-                            for p in content
-                            if isinstance(p, dict) and p.get("type") in ("text", "output_text")
-                        ]
-                        last_response = "\n".join(t for t in parts if t)
-                    else:
-                        last_response = str(content or "")
-                    break
-        except Exception:
-            last_response = ""
-
-        decision = mgr.evaluate_after_turn(last_response, user_initiated=True)
-        msg = decision.get("message") or ""
-        if msg:
-            _cprint(f"  {msg}")
-
-        if decision.get("should_continue"):
-            prompt = decision.get("continuation_prompt")
-            if prompt:
-                try:
-                    self._pending_input.put(prompt)
-                except Exception as exc:
-                    logging.debug("goal continuation enqueue failed: %s", exc)
-
     def _handle_skin_command(self, cmd: str):
         """Handle /skin [name] — show or change the display skin."""
         try:
@@ -7417,7 +7327,7 @@ class HermesCLI:
         import os
         from hermes_cli.colors import Colors as _Colors
 
-        current = is_truthy_value(os.environ.get("HERMES_YOLO_MODE"))
+        current = bool(os.environ.get("HERMES_YOLO_MODE"))
         if current:
             os.environ.pop("HERMES_YOLO_MODE", None)
             _cprint(
@@ -7614,20 +7524,10 @@ class HermesCLI:
         original_count = len(self.conversation_history)
         with self._busy_command("Compressing context..."):
             try:
-                from agent.model_metadata import estimate_request_tokens_rough
+                from agent.model_metadata import estimate_messages_tokens_rough
                 from agent.manual_compression_feedback import summarize_manual_compression
                 original_history = list(self.conversation_history)
-                # Include system prompt + tool schemas in the estimate —
-                # a transcript-only number understates real request pressure
-                # and can even appear to grow after compression because a
-                # dense handoff summary replaces many short turns (#6217).
-                _sys_prompt = getattr(self.agent, "_cached_system_prompt", "") or ""
-                _tools = getattr(self.agent, "tools", None) or None
-                approx_tokens = estimate_request_tokens_rough(
-                    original_history,
-                    system_prompt=_sys_prompt,
-                    tools=_tools,
-                )
+                approx_tokens = estimate_messages_tokens_rough(original_history)
                 if focus_topic:
                     print(f"🗜️  Compressing {original_count} messages (~{approx_tokens:,} tokens), "
                           f"focus: \"{focus_topic}\"...")
@@ -7659,11 +7559,7 @@ class HermesCLI:
                 ):
                     self.session_id = self.agent.session_id
                     self._pending_title = None
-                new_tokens = estimate_request_tokens_rough(
-                    self.conversation_history,
-                    system_prompt=_sys_prompt,
-                    tools=_tools,
-                )
+                new_tokens = estimate_messages_tokens_rough(self.conversation_history)
                 summary = summarize_manual_compression(
                     original_history,
                     self.conversation_history,
@@ -11771,17 +11667,6 @@ class HermesCLI:
                         self._last_scrollback_tool = ""
 
                         app.invalidate()  # Refresh status line
-
-                        # Goal continuation: if a standing goal is active, ask
-                        # the judge whether the turn satisfied it. If not, and
-                        # there's no real user message already queued, push the
-                        # continuation prompt back into _pending_input so the
-                        # next loop iteration picks it up naturally (and any
-                        # user input that arrives in between still preempts).
-                        try:
-                            self._maybe_continue_goal_after_turn()
-                        except Exception as _goal_exc:
-                            logging.debug("goal continuation hook failed: %s", _goal_exc)
 
                         # Continuous voice: auto-restart recording after agent responds.
                         # Dispatch to a daemon thread so play_beep (sd.wait) and

@@ -64,13 +64,27 @@ def test_show_session_status_prints_gateway_style_summary():
     cli_obj.agent = SimpleNamespace(
         session_total_tokens=321,
         session_api_calls=4,
+        session_input_tokens=210,
+        session_output_tokens=111,
+        session_cache_read_tokens=12,
+        session_cache_write_tokens=7,
+        provider="openai",
+        base_url=None,
+        context_compressor=SimpleNamespace(
+            last_prompt_tokens=30_000,
+            context_length=200_000,
+            compression_count=2,
+        ),
     )
     cli_obj._session_db.get_session.return_value = {
         "title": "My titled session",
         "started_at": 1775791440,
     }
 
-    with patch("cli.display_hermes_home", return_value="~/.hermes"):
+    with patch("cli.display_hermes_home", return_value="~/.hermes"), patch(
+        "cli.estimate_usage_cost"
+    ) as mock_cost:
+        mock_cost.return_value = SimpleNamespace(amount_usd=0.1234, status="estimated")
         cli_obj._show_session_status()
 
     printed = "\n".join(str(call.args[0]) for call in cli_obj.console.print.call_args_list)
@@ -80,10 +94,65 @@ def test_show_session_status_prints_gateway_style_summary():
     assert "Title: My titled session" in printed
     assert "Model: openai/gpt-5.4 (openai)" in printed
     assert "Tokens: 321" in printed
+    assert "Input tokens: 210" in printed
+    assert "Output tokens: 111" in printed
+    assert "Cache read: 12" in printed
+    assert "Cache write: 7" in printed
+    assert "Context: 30,000 / 200,000 (15%)" in printed
+    assert "Compressions: 2" in printed
+    assert "Cost: ~$0.1234" in printed
     assert "Agent Running: No" in printed
     _, kwargs = cli_obj.console.print.call_args
     assert kwargs.get("highlight") is False
     assert kwargs.get("markup") is False
+
+
+def test_show_session_status_omits_optional_usage_lines_without_agent_details():
+    cli_obj = _make_cli()
+    cli_obj.agent = SimpleNamespace(session_total_tokens=321, session_api_calls=0)
+
+    with patch("cli.display_hermes_home", return_value="~/.hermes"):
+        cli_obj._show_session_status()
+
+    printed = "\n".join(str(call.args[0]) for call in cli_obj.console.print.call_args_list)
+    assert "Tokens: 321" in printed
+    assert "Input tokens:" not in printed
+    assert "Context:" not in printed
+    assert "Compressions:" not in printed
+    assert "Cost:" not in printed
+    assert "Agent Running: No" in printed
+
+
+def test_show_session_status_uses_included_cost_label():
+    cli_obj = _make_cli()
+    cli_obj.agent = SimpleNamespace(
+        session_total_tokens=321,
+        session_api_calls=4,
+        session_input_tokens=210,
+        session_output_tokens=111,
+        session_cache_read_tokens=0,
+        session_cache_write_tokens=0,
+        provider="openai-codex",
+        base_url=None,
+        context_compressor=SimpleNamespace(
+            last_prompt_tokens=0,
+            context_length=200_000,
+            compression_count=0,
+        ),
+    )
+
+    with patch("cli.display_hermes_home", return_value="~/.hermes"), patch(
+        "cli.estimate_usage_cost"
+    ) as mock_cost:
+        mock_cost.return_value = SimpleNamespace(amount_usd=None, status="included")
+        cli_obj._show_session_status()
+
+    printed = "\n".join(str(call.args[0]) for call in cli_obj.console.print.call_args_list)
+    assert "Cost: included" in printed
+    assert "Cache read:" not in printed
+    assert "Cache write:" not in printed
+    assert "Compressions:" not in printed
+    assert "Context:" not in printed
 
 
 def test_profile_command_reports_custom_root_profile(monkeypatch, tmp_path, capsys):
