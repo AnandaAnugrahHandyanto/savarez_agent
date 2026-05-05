@@ -465,7 +465,9 @@ def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
     creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
     token_data = _read_codex_tokens()
     tokens = token_data.get("tokens") or {}
-    account_id = str(tokens.get("account_id", "") or "").strip() or None
+    account_id = str(
+        tokens.get("chatgpt_account_id") or tokens.get("account_id") or ""
+    ).strip() or None
     return _fetch_codex_account_usage_for_token(
         str(creds.get("api_key", "") or ""),
         base_url=creds.get("base_url", ""),
@@ -799,7 +801,10 @@ def account_choice_label(result: ProviderAccountUsage, *, active: bool = False) 
 def _sync_entry_for_usage(provider: str, pool: Any, entry: Any) -> tuple[Any, Optional[str]]:
     """Best-effort OAuth sync before informational usage lookup."""
     try:
-        if provider == "openai-codex" and getattr(entry, "source", None) == "device_code":
+        if provider == "openai-codex" and (
+            getattr(entry, "source", None) == "device_code"
+            or str(getattr(entry, "source", "") or "").endswith(":device_code")
+        ):
             sync = getattr(pool, "_sync_codex_entry_from_auth_store", None)
             if callable(sync):
                 entry = sync(entry)

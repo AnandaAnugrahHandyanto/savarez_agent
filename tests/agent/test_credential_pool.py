@@ -1494,7 +1494,10 @@ def _codex_auth_store(access: str, refresh: str) -> dict:
                     "access_token": access,
                     "refresh_token": refresh,
                     "id_token": "id-" + access,
+                    "account_id": "acct-" + access,
+                    "chatgpt_account_id": "acct-" + access,
                 },
+                "base_url": "https://chatgpt.com/backend-api/codex",
                 "last_refresh": "2026-04-28T00:00:00Z",
             }
         },
@@ -1521,6 +1524,9 @@ def test_sync_codex_entry_from_auth_store_adopts_newer_tokens(tmp_path, monkeypa
     assert synced is not entry
     assert synced.access_token == "access-NEW"
     assert synced.refresh_token == "refresh-NEW"
+    assert synced.id_token == "id-access-NEW"
+    assert synced.account_id == "acct-access-NEW"
+    assert synced.chatgpt_account_id == "acct-access-NEW"
     assert synced.last_status is None
     assert synced.last_error_code is None
     assert synced.last_error_reset_at is None
@@ -1619,6 +1625,113 @@ def test_codex_exhausted_entry_stays_stuck_without_auth_store_update(tmp_path, m
     # still skips it.
     available = pool._available_entries(clear_expired=True, refresh=False)
     assert available == []
+
+
+def test_codex_metadata_only_sync_preserves_exhausted_cooldown(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+    from dataclasses import replace as dc_replace
+
+    payload = _codex_auth_store("access-same", "refresh-same")
+    for key in ("id_token", "account_id", "chatgpt_account_id"):
+        payload["providers"]["openai-codex"]["tokens"].pop(key, None)
+    _write_auth_store(tmp_path, payload)
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    assert entry is not None
+    now = time.time()
+    exhausted = dc_replace(
+        entry,
+        last_status=STATUS_EXHAUSTED,
+        last_status_at=now,
+        last_error_code=429,
+        last_error_reset_at=now + 3600,
+    )
+    pool._replace_entry(entry, exhausted)
+    pool._persist()
+
+    # Add account metadata only; tokens are unchanged, so the cooldown should
+    # remain in force even though metadata is synced into the pool entry.
+    updated_payload = _codex_auth_store("access-same", "refresh-same")
+    updated_payload["credential_pool"] = payload.get("credential_pool", {})
+    _write_auth_store(tmp_path, updated_payload)
+
+    available = pool._available_entries(clear_expired=True, refresh=False)
+    assert available == []
+    synced = next(item for item in pool.entries() if item.id == entry.id)
+    assert synced.account_id == "acct-access-same"
+    assert synced.last_status == STATUS_EXHAUSTED
+    assert synced.last_error_reset_at == exhausted.last_error_reset_at
+
+
+def test_load_pool_migrates_legacy_manual_codex_device_code_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    payload = _codex_auth_store("access-NEW", "refresh-NEW")
+    payload["credential_pool"] = {
+        "openai-codex": [
+            {
+                "id": "legacy-codex",
+                "label": "old-codex",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "manual:device_code",
+                "access_token": "access-OLD",
+                "refresh_token": "refresh-OLD",
+            }
+        ]
+    }
+    _write_auth_store(tmp_path, payload)
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entries = pool.entries()
+    assert [item.source for item in entries] == ["device_code"]
+    assert entries[0].id == "legacy-codex"
+    assert entries[0].label == "old-codex"
+    assert entries[0].priority == 0
+    assert entries[0].access_token == "access-NEW"
+    assert entries[0].refresh_token == "refresh-NEW"
+    assert entries[0].account_id == "acct-access-NEW"
+
+
+
+def test_sync_codex_legacy_manual_device_code_entry_from_auth_store(tmp_path, monkeypatch):
+    """Legacy manual:device_code rows should recover from canonical auth state."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    payload = _codex_auth_store("access-NEW", "refresh-NEW")
+    payload["credential_pool"] = {
+        "openai-codex": [
+            {
+                "id": "legacy-codex",
+                "label": "old-codex",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "manual:device_code",
+                "access_token": "access-OLD",
+                "refresh_token": "refresh-OLD",
+                "last_status": "exhausted",
+                "last_status_at": time.time(),
+                "last_error_code": 401,
+                "last_error_reset_at": time.time() + 86400,
+            }
+        ]
+    }
+    _write_auth_store(tmp_path, payload)
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    legacy = next(item for item in pool.entries() if item.id == "legacy-codex")
+
+    synced = pool._sync_codex_entry_from_auth_store(legacy)
+
+    assert synced.access_token == "access-NEW"
+    assert synced.refresh_token == "refresh-NEW"
+    assert synced.account_id == "acct-access-NEW"
+    assert synced.last_status is None
+    assert synced.last_error_reset_at is None
 
 
 
