@@ -618,9 +618,11 @@ def _resolve_runtime_agent_kwargs() -> dict:
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
-    # Get max_tokens from model config
-    model_cfg = _get_model_config()
-    max_tokens = model_cfg.get("max_tokens") if isinstance(model_cfg, dict) else None
+    # Get max_tokens from runtime provider config first, fallback to model config
+    max_tokens = runtime.get("max_tokens")
+    if not max_tokens:
+        model_cfg = _get_model_config()
+        max_tokens = model_cfg.get("max_tokens") if isinstance(model_cfg, dict) else None
 
     return {
         "api_key": runtime.get("api_key"),
@@ -649,9 +651,6 @@ def _try_resolve_fallback_provider() -> dict | None:
             return None
         # Normalize to list
         fb_list = fb if isinstance(fb, list) else [fb]
-        # Get max_tokens from model config
-        model_cfg = _get_model_config()
-        max_tokens = model_cfg.get("max_tokens") if isinstance(model_cfg, dict) else None
         for entry in fb_list:
             if not isinstance(entry, dict):
                 continue
@@ -662,6 +661,11 @@ def _try_resolve_fallback_provider() -> dict | None:
                     explicit_api_key=entry.get("api_key"),
                 )
                 logger.info("Fallback provider resolved: %s", runtime.get("provider"))
+                # Get max_tokens from runtime provider config first, fallback to model config
+                max_tokens = runtime.get("max_tokens")
+                if not max_tokens:
+                    model_cfg = _get_model_config()
+                    max_tokens = model_cfg.get("max_tokens") if isinstance(model_cfg, dict) else None
                 return {
                     "api_key": runtime.get("api_key"),
                     "base_url": runtime.get("base_url"),
