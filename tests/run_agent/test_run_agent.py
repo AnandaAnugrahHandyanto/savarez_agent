@@ -4192,6 +4192,28 @@ class TestAnthropicBaseUrlPassthrough:
             passed_url = call_args[0][1]
             assert not passed_url or passed_url is None
 
+    def test_kimi_coding_v1_base_url_normalized_for_anthropic_sdk(self):
+        """Kimi's /coding/v1 endpoint is Anthropic-compatible, but the
+        Anthropic SDK appends /v1/messages itself.
+        """
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
+        ):
+            mock_build.return_value = MagicMock()
+            AIAgent(
+                api_key="sk-kimi-test1234567890",
+                base_url="https://api.kimi.com/coding/v1",
+                provider="kimi-coding",
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+            assert mock_build.call_args[0][1] == "https://api.kimi.com/coding"
+
 
 class TestAnthropicCredentialRefresh:
     def test_try_refresh_anthropic_client_credentials_rebuilds_client(self):

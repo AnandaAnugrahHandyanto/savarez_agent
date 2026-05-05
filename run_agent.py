@@ -834,6 +834,21 @@ def _routermint_headers() -> dict:
     }
 
 
+def _anthropic_sdk_base_url(base_url: str | None) -> str | None:
+    """Return the base URL shape expected by the Anthropic SDK."""
+    if not base_url:
+        return base_url
+
+    stripped = base_url.rstrip("/")
+    if (
+        base_url_host_matches(stripped, "api.kimi.com")
+        and "/coding" in stripped.lower()
+        and stripped.endswith("/v1")
+    ):
+        return stripped[:-3]
+    return base_url
+
+
 def _pool_may_recover_from_rate_limit(pool) -> bool:
     """Decide whether to wait for credential-pool rotation instead of falling back.
 
@@ -1363,7 +1378,7 @@ class AIAgent:
                 effective_key = (api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or "")
                 self.api_key = effective_key
                 self._anthropic_api_key = effective_key
-                self._anthropic_base_url = base_url
+                self._anthropic_base_url = _anthropic_sdk_base_url(base_url)
                 # Only mark the session as OAuth-authenticated when the token
                 # genuinely belongs to native Anthropic.  Third-party providers
                 # (MiniMax, Kimi, GLM, LiteLLM proxies) that accept the
@@ -1373,7 +1388,9 @@ class AIAgent:
                 # the third-party identity-injection bug.
                 from agent.anthropic_adapter import _is_oauth_token as _is_oat
                 self._is_anthropic_oauth = _is_oat(effective_key) if _is_native_anthropic else False
-                self._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+                self._anthropic_client = build_anthropic_client(
+                    effective_key, self._anthropic_base_url, timeout=_provider_timeout
+                )
                 # No OpenAI client needed for Anthropic mode
                 self.client = None
                 self._client_kwargs = {}
@@ -2349,7 +2366,7 @@ class AIAgent:
             effective_key = (api_key or self.api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or self.api_key or "")
             self.api_key = effective_key
             self._anthropic_api_key = effective_key
-            self._anthropic_base_url = base_url or getattr(self, "_anthropic_base_url", None)
+            self._anthropic_base_url = _anthropic_sdk_base_url(base_url or getattr(self, "_anthropic_base_url", None))
             self._anthropic_client = build_anthropic_client(
                 effective_key, self._anthropic_base_url,
                 timeout=get_provider_request_timeout(self.provider, self.model),
@@ -6263,9 +6280,9 @@ class AIAgent:
                 pass
 
             self._anthropic_api_key = runtime_key
-            self._anthropic_base_url = runtime_base
+            self._anthropic_base_url = _anthropic_sdk_base_url(runtime_base)
             self._anthropic_client = build_anthropic_client(
-                runtime_key, runtime_base,
+                runtime_key, self._anthropic_base_url,
                 timeout=get_provider_request_timeout(self.provider, self.model),
             )
             self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
@@ -7682,7 +7699,7 @@ class AIAgent:
                 effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
                 self.api_key = effective_key
                 self._anthropic_api_key = effective_key
-                self._anthropic_base_url = fb_base_url
+                self._anthropic_base_url = _anthropic_sdk_base_url(fb_base_url)
                 self._anthropic_client = build_anthropic_client(
                     effective_key, self._anthropic_base_url, timeout=_fb_timeout,
                 )
@@ -7806,9 +7823,9 @@ class AIAgent:
             if self.api_mode == "anthropic_messages":
                 from agent.anthropic_adapter import build_anthropic_client
                 self._anthropic_api_key = rt["anthropic_api_key"]
-                self._anthropic_base_url = rt["anthropic_base_url"]
+                self._anthropic_base_url = _anthropic_sdk_base_url(rt["anthropic_base_url"])
                 self._anthropic_client = build_anthropic_client(
-                    rt["anthropic_api_key"], rt["anthropic_base_url"],
+                    rt["anthropic_api_key"], self._anthropic_base_url,
                     timeout=get_provider_request_timeout(self.provider, self.model),
                 )
                 self._is_anthropic_oauth = rt["is_anthropic_oauth"]
@@ -7905,9 +7922,9 @@ class AIAgent:
             if self.api_mode == "anthropic_messages":
                 from agent.anthropic_adapter import build_anthropic_client
                 self._anthropic_api_key = rt["anthropic_api_key"]
-                self._anthropic_base_url = rt["anthropic_base_url"]
+                self._anthropic_base_url = _anthropic_sdk_base_url(rt["anthropic_base_url"])
                 self._anthropic_client = build_anthropic_client(
-                    rt["anthropic_api_key"], rt["anthropic_base_url"],
+                    rt["anthropic_api_key"], self._anthropic_base_url,
                     timeout=get_provider_request_timeout(self.provider, self.model),
                 )
                 self._is_anthropic_oauth = rt["is_anthropic_oauth"]
