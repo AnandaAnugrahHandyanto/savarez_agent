@@ -1,8 +1,13 @@
 """Tests for gateway service management helpers."""
 
 import os
-import pwd
+import sys
 from pathlib import Path
+
+try:
+    import pwd
+except ImportError:
+    pwd = None  # Windows — tests that need pwd skip locally
 from types import SimpleNamespace
 
 import pytest
@@ -115,18 +120,23 @@ class TestGeneratedSystemdUnits:
         assert "ExecStop=" not in unit
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
-        # TimeoutStopSec must exceed the default drain_timeout (60s) so
-        # systemd doesn't SIGKILL the cgroup before post-interrupt cleanup
-        # (tool subprocess kill, adapter disconnect) runs — issue #8202.
-        assert "TimeoutStopSec=90" in unit
+        # TimeoutStopSec = max(60, restart_drain_timeout) + 30 headroom — must
+        # exceed the gateway drain budget so systemd doesn't SIGKILL the cgroup
+        # before post-interrupt cleanup (#8202). Default drain is 180s → 210s.
+        assert "TimeoutStopSec=210" in unit
 
     def test_user_unit_includes_resolved_node_directory_in_path(self, monkeypatch):
         monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: "/home/test/.nvm/versions/node/v24.14.0/bin/node" if cmd == "node" else None)
 
         unit = gateway_cli.generate_systemd_unit(system=False)
 
-        assert "/home/test/.nvm/versions/node/v24.14.0/bin" in unit
+        # PATH uses OS-native separators; normalize for assertion (Linux CI + Windows dev).
+        assert "/home/test/.nvm/versions/node/v24.14.0/bin" in unit.replace("\\", "/")
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="generate_systemd_unit(system=True) requires Unix grp/pwd",
+    )
     def test_system_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self):
         unit = gateway_cli.generate_systemd_unit(system=True)
 
@@ -134,10 +144,10 @@ class TestGeneratedSystemdUnits:
         assert "ExecStop=" not in unit
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
-        # TimeoutStopSec must exceed the default drain_timeout (60s) so
-        # systemd doesn't SIGKILL the cgroup before post-interrupt cleanup
-        # (tool subprocess kill, adapter disconnect) runs — issue #8202.
-        assert "TimeoutStopSec=90" in unit
+        # TimeoutStopSec = max(60, restart_drain_timeout) + 30 headroom — must
+        # exceed the gateway drain budget so systemd doesn't SIGKILL the cgroup
+        # before post-interrupt cleanup (#8202). Default drain is 180s → 210s.
+        assert "TimeoutStopSec=210" in unit
         assert "WantedBy=multi-user.target" in unit
 
 
@@ -994,6 +1004,7 @@ class TestGeneratedUnitIncludesLocalBin:
         assert "/.local/bin" in unit
 
 
+@pytest.mark.skipif(pwd is None, reason="requires Unix pwd module")
 class TestSystemServiceIdentityRootHandling:
     """Root user handling in _system_service_identity()."""
 
@@ -1314,6 +1325,8 @@ class TestProfileArg:
         assert "<string>mybot</string>" in plist
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
+        if pwd is None:
+            pytest.skip("pwd module unavailable (Windows)")
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
         profile_dir.mkdir(parents=True)
         machine_home = tmp_path / "machine-home"

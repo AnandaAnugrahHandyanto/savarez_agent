@@ -554,6 +554,16 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # pending_title applied post-first-message (see cli.exec handler).
             current["agent"] = agent
 
+            _pending_early = (current.get("pending_title") or "").strip()
+            if _pending_early:
+                _db_early = _get_db()
+                if _db_early:
+                    try:
+                        if _db_early.set_session_title(key, _pending_early):
+                            current["pending_title"] = None
+                    except Exception:
+                        current["pending_title"] = None
+
             try:
                 worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
                 current["slash_worker"] = worker
@@ -3032,7 +3042,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         if _pdb.set_session_title(session.get("session_key") or sid, _pending):
                             session["pending_title"] = None
                     except Exception:
-                        pass  # Best effort — auto-title will handle it below
+                        # Drop invalid / duplicate titles so they are not retried forever.
+                        session["pending_title"] = None
 
             if (
                 status == "complete"

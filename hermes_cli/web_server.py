@@ -3168,10 +3168,12 @@ async def events_ws(ws: WebSocket) -> None:
         await ws.close(code=4400)
         return
 
-    await ws.accept()
-
+    # Register before accept so clients that open /api/pub immediately after
+    # connect cannot race ahead of subscriber registration (CI / xdist).
     async with _event_lock:
         _event_channels.setdefault(channel, set()).add(ws)
+
+    await ws.accept()
 
     try:
         while True:
