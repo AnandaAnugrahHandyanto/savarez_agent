@@ -17,9 +17,9 @@
 | **Binary Entry** | `/root/.local/bin/hermes` → `hermes-agent/venv/bin/hermes` |
 | **Platform**     | Telegram (DM with pkd11) |
 
-**DEPLOYED_COMMIT:** `60e9bde48`
-**DEPLOYED_VERSION:** `v0.12.0`
-**DEPLOYED_DATE:** `2026-05-04`
+**DEPLOYED_COMMIT:** `f54067c53`
+**DEPLOYED_VERSION:** `v0.12.0+f54067c`
+**DEPLOYED_DATE:** `2026-05-05`
 
 ---
 
