@@ -1884,6 +1884,7 @@ def select_provider_and_model(args=None):
         "nvidia",
         "ollama-cloud",
         "tencent-tokenhub",
+        "crofai",
         "lmstudio",
     ):
         _model_flow_api_key_provider(config, selected_provider, current_model)
