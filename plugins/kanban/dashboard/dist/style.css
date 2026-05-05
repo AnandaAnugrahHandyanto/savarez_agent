@@ -437,6 +437,7 @@
 }
 .hermes-kanban-event-payload {
   color: var(--color-muted-foreground);
+  background: transparent;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -785,6 +786,7 @@
 }
 .hermes-kanban-run-meta {
   display: block;
+  background: transparent;
   font-size: 0.72rem;
   line-height: 1.5;
   padding: 0.15rem 0 0;
