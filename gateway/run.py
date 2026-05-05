@@ -14651,6 +14651,20 @@ class GatewayRunner:
             except Exception as _e:
                 logger.debug("status_callback error (%s): %s", event_type, _e)
 
+        def _clarify_callback_sync(question: str, choices=None) -> str:
+            """Bridge the clarify tool to platform-native gateway UI where available."""
+            if not _status_adapter or not _run_still_current():
+                raise RuntimeError("Gateway adapter is not available for clarify.")
+            if source.platform == Platform.TELEGRAM and hasattr(_status_adapter, "ask_decision_card_sync"):
+                return _status_adapter.ask_decision_card_sync(
+                    loop=_loop_for_step,
+                    chat_id=_status_chat_id,
+                    question=question,
+                    choices=choices,
+                    metadata=_status_thread_metadata,
+                )
+            raise RuntimeError("Clarify tool is not available for this gateway platform yet.")
+
         def run_sync():
             # The conditional re-assignment of `message` further below
             # (prepending model-switch notes) makes Python treat it as a
@@ -14876,6 +14890,7 @@ class GatewayRunner:
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
                     session_db=self._session_db,
+                    clarify_callback=_clarify_callback_sync,
                     fallback_model=self._fallback_model,
                 )
                 if _cache_lock and _cache is not None:
@@ -14891,6 +14906,7 @@ class GatewayRunner:
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
+            agent.clarify_callback = _clarify_callback_sync
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}

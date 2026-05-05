@@ -14,6 +14,8 @@ import os
 import tempfile
 import html as _html
 import re
+import threading
+import uuid
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -390,6 +392,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # DecisionCard button state: decision_id → card payload for Mina's
         # recurring decision queue / taste-training loop.
         self._decision_card_state: Dict[str, Dict[str, Any]] = {}
+        # Blocking clarify/ask-user-question waiters backed by DecisionCard callbacks.
+        # Values are {"event": threading.Event, "result": str, "label": str}.
+        self._decision_card_waiters: Dict[str, Dict[str, Any]] = {}
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -2318,6 +2323,77 @@ class TelegramAdapter(BasePlatformAdapter):
         with (out_dir / "decisions.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
+    def ask_decision_card_sync(
+        self,
+        *,
+        loop: asyncio.AbstractEventLoop,
+        chat_id: str,
+        question: str,
+        choices: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout_seconds: float = 300.0,
+    ) -> str:
+        """Blocking platform callback for the clarify tool using a DecisionCard.
+
+        The agent thread calls this synchronously.  We schedule the Telegram send
+        on the gateway event loop, then block this worker thread until the inline
+        button callback resolves the waiter.  Open-ended clarify questions fall
+        back to a simple text prompt because DecisionCard v0 only captures button
+        choices.
+        """
+        if not choices:
+            fut = asyncio.run_coroutine_threadsafe(
+                self.send(
+                    chat_id,
+                    f"❓ {question}\n\nReply in this thread with your answer.",
+                    metadata=metadata,
+                ),
+                loop,
+            )
+            try:
+                fut.result(timeout=10)
+            except Exception:
+                logger.debug("[%s] open-ended clarify prompt send failed", self.name, exc_info=True)
+            raise RuntimeError("Open-ended Telegram clarify is not supported yet; ask with choices or use a text reply.")
+
+        clean_choices = [str(c).strip() for c in choices if str(c).strip()][:4]
+        if not clean_choices:
+            raise RuntimeError("No choices available for Telegram clarify DecisionCard.")
+
+        decision_id = f"clarify-{uuid.uuid4().hex[:12]}"
+        keys = [chr(ord("A") + i) for i in range(len(clean_choices))]
+        card = {
+            "decision_id": decision_id,
+            "title": "Mina needs your decision",
+            "why_now": question,
+            "options": [
+                {"key": key, "label": label}
+                for key, label in zip(keys, clean_choices)
+            ],
+            "taste_signal": "Clarify/ask-user-question response in Telegram.",
+            "kind": "clarify",
+        }
+        event = threading.Event()
+        self._decision_card_waiters[decision_id] = {"event": event}
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                self.send_decision_card(chat_id=chat_id, card=card, metadata=metadata),
+                loop,
+            )
+            send_result = fut.result(timeout=15)
+            if not getattr(send_result, "success", False):
+                self._decision_card_waiters.pop(decision_id, None)
+                raise RuntimeError(getattr(send_result, "error", "failed to send DecisionCard"))
+
+            if not event.wait(timeout_seconds):
+                self._decision_card_waiters.pop(decision_id, None)
+                raise TimeoutError("Timed out waiting for Telegram DecisionCard response.")
+            waiter = self._decision_card_waiters.pop(decision_id, {})
+            return str(waiter.get("label") or waiter.get("result") or "").strip()
+        except Exception:
+            self._decision_card_waiters.pop(decision_id, None)
+            raise
+
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
         session_key: str = "",
@@ -2824,6 +2900,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
 
             user_display = getattr(query.from_user, "first_name", "User")
+            selected_label = ""
+            for opt in (card.get("options") or []):
+                if isinstance(opt, dict) and str(opt.get("key") or "") == str(choice):
+                    selected_label = str(opt.get("label") or "")
+                    break
             await query.answer(text=f"✅ {choice} recorded")
             try:
                 self._record_decision_card_choice(
@@ -2834,6 +2915,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     chat_id=str(query_chat_id or ""),
                     thread_id=str(query_thread_id or ""),
                 )
+                waiter = self._decision_card_waiters.get(decision_id)
+                if waiter:
+                    waiter["result"] = str(choice)
+                    waiter["label"] = selected_label or str(choice)
+                    event = waiter.get("event")
+                    if event is not None:
+                        event.set()
                 self._remove_active_decision_card(decision_id)
             except Exception as exc:
                 logger.error("[%s] Failed to record DecisionCard outcome: %s", self.name, exc, exc_info=True)

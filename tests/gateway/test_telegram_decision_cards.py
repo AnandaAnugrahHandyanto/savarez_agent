@@ -142,6 +142,39 @@ class TestTelegramDecisionCardCallback:
         assert "dq-20260505-001" not in adapter._decision_card_state
 
     @pytest.mark.asyncio
+    async def test_callback_resolves_waiting_clarify_decision_card(self, tmp_path):
+        adapter = _make_adapter()
+        card = _decision_card()
+        card["decision_id"] = "clarify-abc123"
+        adapter._decision_card_state["clarify-abc123"] = card
+
+        import threading
+        event = threading.Event()
+        adapter._decision_card_waiters["clarify-abc123"] = {"event": event}
+
+        query = MagicMock()
+        query.data = "dq:clarify-abc123:B"
+        query.from_user.id = 111
+        query.from_user.first_name = "Joohyun"
+        query.message.chat_id = 12345
+        query.message.message_thread_id = 3220
+        query.message.chat.type = "supergroup"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": ""}):
+                await adapter._handle_callback_query(update, MagicMock())
+
+        assert event.is_set()
+        waiter = adapter._decision_card_waiters["clarify-abc123"]
+        assert waiter["result"] == "B"
+        assert waiter["label"] == "중요한 decision만"
+
+    @pytest.mark.asyncio
     async def test_callback_loads_persisted_card_after_restart(self, tmp_path):
         sending_adapter = _make_adapter()
         card = _decision_card()
