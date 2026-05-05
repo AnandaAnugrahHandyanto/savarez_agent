@@ -1464,6 +1464,12 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     logger.debug("Auxiliary client: custom endpoint (%s, api_mode=%s)", model, custom_mode or "chat_completions")
     _clean_base, _dq = _extract_url_query_params(custom_base)
     _extra = {"default_query": _dq} if _dq else {}
+    # Copilot requires VS Code-style headers for IDE auth — without these,
+    # the API returns 400 "missing Editor-Version header".  Add them here
+    # so auxiliary tasks (compression, etc.) work when routed to Copilot.
+    if base_url_host_matches(custom_base, "api.githubcopilot.com"):
+        from hermes_cli.models import copilot_default_headers
+        _extra.setdefault("default_headers", {}).update(copilot_default_headers())
     if custom_mode == "codex_responses":
         real_client = OpenAI(api_key=custom_key, base_url=_clean_base, **_extra)
         return CodexAuxiliaryClient(real_client, model), model
