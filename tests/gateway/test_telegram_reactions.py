@@ -15,13 +15,14 @@ def _make_adapter(**extra_env):
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
-    adapter.config = PlatformConfig(enabled=True, token="fake-token")
+    adapter.config = PlatformConfig(enabled=True, token="fake-token", extra=extra_env)
     adapter._bot = AsyncMock()
     adapter._bot.set_message_reaction = AsyncMock()
+    adapter._bot.send_chat_action = AsyncMock()
     return adapter
 
 
-def _make_event(chat_id: str = "123", message_id: str = "456") -> MessageEvent:
+def _make_event(chat_id: str = "123", message_id: str = "456", thread_id: str | None = None) -> MessageEvent:
     return MessageEvent(
         text="hello",
         message_type=MessageType.TEXT,
@@ -31,6 +32,7 @@ def _make_event(chat_id: str = "123", message_id: str = "456") -> MessageEvent:
             chat_type="private",
             user_id="42",
             user_name="TestUser",
+            thread_id=thread_id,
         ),
         message_id=message_id,
     )
@@ -79,6 +81,69 @@ def test_reactions_disabled_with_no(monkeypatch):
     monkeypatch.setenv("TELEGRAM_REACTIONS", "no")
     adapter = _make_adapter()
     assert adapter._reactions_enabled() is False
+
+
+def test_reactions_enabled_from_platform_config_when_env_unset(monkeypatch):
+    """telegram.reactions in PlatformConfig.extra should enable reactions without env bridging."""
+    monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
+    adapter = _make_adapter(reactions=True)
+    assert adapter._reactions_enabled() is True
+
+
+def test_reactions_env_overrides_platform_config(monkeypatch):
+    """Explicit env should retain precedence over PlatformConfig.extra."""
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
+    adapter = _make_adapter(reactions=True)
+    assert adapter._reactions_enabled() is False
+
+
+# ── typing indicator ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_processing_start_sends_typing_action_in_thread(monkeypatch):
+    """Processing start should show Telegram-native typing status in the source topic."""
+    monkeypatch.delenv("TELEGRAM_TYPING", raising=False)
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
+    adapter = _make_adapter(typing_refresh=False)
+    event = _make_event(thread_id="3220")
+
+    await adapter.on_processing_start(event)
+
+    adapter._bot.send_chat_action.assert_awaited_once_with(
+        chat_id=123,
+        action="typing",
+        message_thread_id=3220,
+    )
+
+
+@pytest.mark.asyncio
+async def test_processing_start_typing_is_best_effort(monkeypatch):
+    """Typing action failures should not block processing hooks."""
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
+    adapter = _make_adapter(typing_refresh=False)
+    adapter._bot.send_chat_action = AsyncMock(side_effect=RuntimeError("no perms"))
+
+    await adapter.on_processing_start(_make_event())
+
+
+@pytest.mark.asyncio
+async def test_processing_complete_cancels_periodic_typing_refresh(monkeypatch):
+    """Long-running processing should get a periodic typing task that is stopped on completion."""
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
+    adapter = _make_adapter(typing_refresh=True, typing_refresh_interval=30)
+    event = _make_event(thread_id="3220")
+
+    await adapter.on_processing_start(event)
+    tasks = getattr(adapter, "_typing_indicator_tasks")
+    assert len(tasks) == 1
+    task = next(iter(tasks.values()))
+    assert not task.done()
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    assert task.cancelled() or task.done()
+    assert getattr(adapter, "_typing_indicator_tasks") == {}
 
 
 # ── _set_reaction ────────────────────────────────────────────────────

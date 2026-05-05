@@ -399,6 +399,11 @@ class TelegramAdapter(BasePlatformAdapter):
         # Keyed by user/chat/thread so the next text message resolves the card
         # instead of being dispatched to the agent as a new prompt.
         self._decision_card_text_waiters: Dict[str, str] = {}
+        # Telegram-native liveness indicator refresh tasks, keyed by the
+        # inbound message context they belong to.  Telegram typing actions are
+        # ephemeral, so long-running tool calls need periodic refreshes until
+        # processing completes.
+        self._typing_indicator_tasks: Dict[str, asyncio.Task] = {}
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -651,6 +656,41 @@ class TelegramAdapter(BasePlatformAdapter):
                 return False
             return default
         return bool(value)
+
+    def _coerce_bool_env_or_extra(
+        self,
+        env_name: str,
+        extra_key: str,
+        default: bool = False,
+    ) -> bool:
+        """Resolve a boolean feature flag with env precedence over config.extra."""
+        env_value = os.getenv(env_name)
+        if env_value is not None and env_value.strip() != "":
+            lowered = env_value.strip().lower()
+            if lowered in ("true", "1", "yes", "on"):
+                return True
+            if lowered in ("false", "0", "no", "off"):
+                return False
+            return default
+        return self._coerce_bool_extra(extra_key, default)
+
+    def _coerce_float_env_or_extra(
+        self,
+        env_name: str,
+        extra_key: str,
+        default: float,
+    ) -> float:
+        """Resolve a float setting with env precedence over config.extra."""
+        value = os.getenv(env_name)
+        if value is None or str(value).strip() == "":
+            value = self.config.extra.get(extra_key) if getattr(self.config, "extra", None) else None
+        if value is None:
+            return default
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        return max(0.0, parsed)
 
     def _link_preview_kwargs(self) -> Dict[str, Any]:
         if not getattr(self, "_disable_link_previews", False):
@@ -1526,6 +1566,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending album flushes, and disconnect."""
+        await self._cancel_all_typing_refresh_tasks()
         pending_media_group_tasks = list(self._media_group_tasks.values())
         for task in pending_media_group_tasks:
             task.cancel()
@@ -5064,11 +5105,113 @@ class TelegramAdapter(BasePlatformAdapter):
             timestamp=message.date,
         )
 
-    # ── Message reactions (processing lifecycle) ──────────────────────────
+    # ── Message reactions + typing indicator (processing lifecycle) ─────────
 
     def _reactions_enabled(self) -> bool:
         """Check if message reactions are enabled via config/env."""
-        return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in {"false", "0", "no"}
+        return self._coerce_bool_env_or_extra("TELEGRAM_REACTIONS", "reactions", False)
+
+    def _typing_indicator_enabled(self) -> bool:
+        """Return whether Telegram native typing indicators should be sent."""
+        # `typing_indicator` is the explicit config name; `typing` is accepted
+        # as a compact alias for env/config parity.
+        if getattr(self.config, "extra", None) and "typing_indicator" in self.config.extra:
+            return self._coerce_bool_env_or_extra(
+                "TELEGRAM_TYPING",
+                "typing_indicator",
+                True,
+            )
+        return self._coerce_bool_env_or_extra("TELEGRAM_TYPING", "typing", True)
+
+    def _typing_refresh_interval_seconds(self) -> float:
+        """Return periodic typing-refresh interval, or 0 when disabled."""
+        if not self._typing_indicator_enabled():
+            return 0.0
+        if not self._coerce_bool_env_or_extra(
+            "TELEGRAM_TYPING_REFRESH",
+            "typing_refresh",
+            True,
+        ):
+            return 0.0
+        return self._coerce_float_env_or_extra(
+            "TELEGRAM_TYPING_REFRESH_INTERVAL",
+            "typing_refresh_interval",
+            4.5,
+        )
+
+    def _typing_task_key(self, event: MessageEvent) -> str:
+        source = getattr(event, "source", None)
+        return ":".join(
+            str(part or "")
+            for part in (
+                getattr(source, "chat_id", None),
+                getattr(source, "thread_id", None),
+                getattr(event, "message_id", None),
+            )
+        )
+
+    def _typing_tasks(self) -> Dict[str, asyncio.Task]:
+        tasks = getattr(self, "_typing_indicator_tasks", None)
+        if tasks is None:
+            tasks = {}
+            self._typing_indicator_tasks = tasks
+        return tasks
+
+    async def _send_typing_action(self, event: MessageEvent) -> bool:
+        """Best-effort Telegram-native typing indicator for the event's chat/topic."""
+        if not self._typing_indicator_enabled() or not self._bot:
+            return False
+        source = getattr(event, "source", None)
+        chat_id = getattr(source, "chat_id", None)
+        if not chat_id:
+            return False
+        try:
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "action": "typing",
+            }
+            thread_id = self._message_thread_id_for_typing(getattr(source, "thread_id", None))
+            if thread_id is not None:
+                kwargs["message_thread_id"] = thread_id
+            await self._bot.send_chat_action(**kwargs)
+            return True
+        except Exception as e:
+            logger.debug("[%s] send_chat_action typing failed: %s", self.name, e)
+            return False
+
+    async def _typing_refresh_loop(self, event: MessageEvent, interval: float) -> None:
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                await self._send_typing_action(event)
+        except asyncio.CancelledError:
+            return
+
+    def _start_typing_refresh(self, event: MessageEvent) -> None:
+        interval = self._typing_refresh_interval_seconds()
+        if interval <= 0:
+            return
+        tasks = self._typing_tasks()
+        key = self._typing_task_key(event)
+        existing = tasks.pop(key, None)
+        if existing and not existing.done():
+            existing.cancel()
+        tasks[key] = asyncio.create_task(self._typing_refresh_loop(event, interval))
+
+    async def _stop_typing_refresh(self, event: MessageEvent) -> None:
+        task = self._typing_tasks().pop(self._typing_task_key(event), None)
+        if task and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _cancel_all_typing_refresh_tasks(self) -> None:
+        tasks = list(self._typing_tasks().values())
+        self._typing_tasks().clear()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Set a single emoji reaction on a Telegram message."""
@@ -5086,7 +5229,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction when message processing begins."""
+        """Show liveness signals when message processing begins."""
+        await self._send_typing_action(event)
+        self._start_typing_refresh(event)
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)
@@ -5095,11 +5240,12 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._set_reaction(chat_id, message_id, "\U0001f440")
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction.
+        """Stop liveness refresh and swap the in-progress reaction for a final status.
 
         Unlike Discord (additive reactions), Telegram's set_message_reaction
         replaces all existing reactions in one call — no remove step needed.
         """
+        await self._stop_typing_refresh(event)
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)

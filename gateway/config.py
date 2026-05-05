@@ -972,7 +972,16 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(group_allowed_chats, list):
                         group_allowed_chats = ",".join(str(v) for v in group_allowed_chats)
                     os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
-                telegram_extra_keys = ("guest_mode", "disable_link_previews", "question_sessions")
+                telegram_extra_keys = (
+                    "guest_mode",
+                    "disable_link_previews",
+                    "question_sessions",
+                    "reactions",
+                    "typing",
+                    "typing_indicator",
+                    "typing_refresh",
+                    "typing_refresh_interval",
+                )
                 if any(key in telegram_cfg for key in telegram_extra_keys):
                     plat_data = platforms_data.setdefault(Platform.TELEGRAM.value, {})
                     if not isinstance(plat_data, dict):
