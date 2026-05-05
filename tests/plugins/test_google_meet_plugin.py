@@ -14,11 +14,12 @@ Does NOT spawn a real Chromium — we mock ``subprocess.Popen`` where needed.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import signal
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
 import pytest
 
@@ -99,7 +100,7 @@ def test_bot_state_dedupes_captions_and_flushes_status(tmp_path):
     assert status["transcriptPath"].endswith("transcript.txt")
 
 
-def test_bot_state_ignores_blank_text(tmp_path):
+def test_bot_state_ignores_empty_caption_text(tmp_path):
     from plugins.google_meet.meet_bot import _BotState
 
     state = _BotState(out_dir=tmp_path / "s", meeting_id="x-y-z",
@@ -110,8 +111,25 @@ def test_bot_state_ignores_blank_text(tmp_path):
 
     status = json.loads((tmp_path / "s" / "status.json").read_text())
     assert status["transcriptLines"] == 1
-    # blank-speaker falls back to "Unknown"
-    assert "Unknown: text but no speaker" in (tmp_path / "s" / "transcript.txt").read_text()
+    transcript = (tmp_path / "s" / "transcript.txt").read_text()
+    assert "Unknown: text but no speaker" in transcript
+
+
+def test_bot_state_ignores_meet_ui_announcements(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    state = _BotState(out_dir=tmp_path / "s", meeting_id="x-y-z",
+                      url="https://meet.google.com/x-y-z")
+    state.record_caption("", "Your camera is off.")
+    state.record_caption("", "You have joined the call. You are the first one here. Your camera is off.")
+    state.record_caption("", "Gemini is taking notes")
+    state.record_caption("Alice", "actual spoken words")
+
+    status = json.loads((tmp_path / "s" / "status.json").read_text())
+    assert status["transcriptLines"] == 1
+    transcript = (tmp_path / "s" / "transcript.txt").read_text()
+    assert "actual spoken words" in transcript
+    assert "Your camera is off" not in transcript
 
 
 def test_parse_duration():
@@ -565,6 +583,136 @@ def test_meet_join_rejects_bad_mode():
     assert out["success"] is False
     assert "mode must be" in out["error"]
 
+
+
+def test_bot_state_exposes_caption_verification_telemetry(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    state = _BotState(out_dir=tmp_path / "s", meeting_id="x-y-z",
+                      url="https://meet.google.com/x-y-z")
+    status = json.loads((tmp_path / "s" / "status.json").read_text())
+
+    for key in (
+        "captionEnableResult",
+        "captionRegionFound",
+        "captionObserverAttached",
+        "lastCaptionProbeAt",
+        "captionDebugPath",
+    ):
+        assert key in status
+    assert status["captioning"] is False
+    assert status["captionRegionFound"] is False
+    assert status["captionObserverAttached"] is False
+
+    state.set_caption_probe(result="clicked", region_found=True, observer_attached=True)
+    status = json.loads((tmp_path / "s" / "status.json").read_text())
+    assert status["captionEnableResult"] == "clicked"
+    assert status["captioning"] is True
+    assert status["captionRegionFound"] is True
+    assert status["captionObserverAttached"] is True
+    assert status["lastCaptionProbeAt"] is not None
+
+
+def test_start_threads_join_style_env_var_and_active_record():
+    from plugins.google_meet import process_manager as pm
+
+    class _FakeProc:
+        pid = 456
+
+    captured_env = {}
+
+    def fake_popen(*_args, **kwargs):
+        captured_env.update(kwargs["env"])
+        return _FakeProc()
+
+    with patch("subprocess.Popen", side_effect=fake_popen), \
+         patch("builtins.open", mock_open()), \
+         patch.object(pm, "_pid_alive", return_value=False):
+        res = pm.start(
+            "https://meet.google.com/abc-defg-hij",
+            join_style="companion",
+        )
+
+    assert res["ok"] is True
+    assert captured_env["HERMES_MEET_JOIN_STYLE"] == "companion"
+    assert res["join_style"] == "companion"
+
+
+def test_meet_join_routes_join_style_to_remote_node():
+    from plugins.google_meet.tools import handle_meet_join
+    from plugins.google_meet.node.registry import NodeRegistry
+
+    reg = NodeRegistry()
+    reg.add("my-mac", "ws://1.2.3.4:18789", "tok")
+
+    with patch("plugins.google_meet.node.client.NodeClient.start_bot",
+               return_value={"ok": True, "meeting_id": "a-b-c"}) as call_mock:
+        out = json.loads(handle_meet_join({
+            "url": "https://meet.google.com/abc-defg-hij",
+            "node": "my-mac",
+            "join_style": "companion",
+        }))
+    assert out["success"] is True
+    assert call_mock.call_args.kwargs["join_style"] == "companion"
+
+
+def test_node_server_passes_mode_and_join_style_to_process_manager():
+    from plugins.google_meet.node.server import NodeServer
+    from plugins.google_meet.node import protocol as proto
+
+    server = NodeServer(chrome_profile="/tmp/profile")
+    token = server.ensure_token()
+    req = proto.make_request("start_bot", token, {
+        "url": "https://meet.google.com/abc-defg-hij",
+        "mode": "transcribe",
+        "join_style": "companion",
+    })
+
+    async def run():
+        with patch("plugins.google_meet.process_manager.start",
+                   return_value={"ok": True}) as start_mock:
+            resp = await server._handle_request(req)
+        return resp, start_mock
+
+    resp, start_mock = asyncio.run(run())
+    assert resp["payload"]["ok"] is True
+    assert start_mock.call_args.kwargs["mode"] == "transcribe"
+    assert start_mock.call_args.kwargs["join_style"] == "companion"
+    assert start_mock.call_args.kwargs["chrome_profile"] == "/tmp/profile"
+
+
+def test_companion_mode_probe_clicks_companion_option():
+    from plugins.google_meet.meet_bot import _try_companion_mode
+
+    class _FakeLocator:
+        def __init__(self, page, label, visible=True):
+            self.page = page
+            self.label = label
+            self.visible = visible
+            self.first = self
+
+        def count(self):
+            return 1 if self.visible else 0
+
+        def is_visible(self):
+            return self.visible
+
+        def click(self, timeout=None):
+            self.page.clicked.append(self.label)
+
+    class _FakePage:
+        def __init__(self):
+            self.clicked = []
+
+        def get_by_role(self, role, name=None, exact=False):
+            return _FakeLocator(self, str(name))
+
+        def get_by_text(self, text, exact=False):
+            return _FakeLocator(self, str(text), visible=False)
+
+    page = _FakePage()
+    assert _try_companion_mode(page) is True
+    assert any("Companion" in label for label in page.clicked)
 
 # ---------------------------------------------------------------------------
 # v3: NodeClient routing from tool handlers

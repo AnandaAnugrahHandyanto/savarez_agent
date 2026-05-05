@@ -82,6 +82,30 @@ def _meeting_id_from_url(url: str) -> str:
 # Status + transcript file writers
 # ---------------------------------------------------------------------------
 
+def _is_meet_ui_announcement(text: str) -> bool:
+    """Filter Google Meet UI live-region announcements from transcript lines."""
+    t = (text or "").strip().lower()
+    if not t:
+        return True
+    noisy_exact = {
+        "your camera is off.",
+        "your camera is off",
+        "your hand is lowered.",
+        "your hand is lowered",
+        "gemini is taking notes",
+    }
+    if t in noisy_exact:
+        return True
+    noisy_fragments = (
+        "you have joined the call",
+        "you are the first one here",
+        "you’re the only one here",
+        "you're the only one here",
+        "waiting for others to join",
+    )
+    return any(fragment in t for fragment in noisy_fragments)
+
+
 class _BotState:
     """Single-process mutable state, flushed to ``status.json`` on each change."""
 
@@ -92,6 +116,11 @@ class _BotState:
         self.in_call = False
         self.captioning = False
         self.captions_enabled_attempted = False
+        self.caption_enable_result: Optional[str] = None
+        self.caption_region_found = False
+        self.caption_observer_attached = False
+        self.last_caption_probe_at: Optional[float] = None
+        self.caption_debug_path: Optional[str] = None
         self.lobby_waiting = False
         self.join_attempted_at: Optional[float] = None
         self.joined_at: Optional[float] = None
@@ -121,7 +150,7 @@ class _BotState:
         """Append a caption line if we haven't seen this exact (speaker, text)."""
         speaker = (speaker or "").strip() or "Unknown"
         text = (text or "").strip()
-        if not text:
+        if not text or _is_meet_ui_announcement(text):
             return
         key = f"{speaker}|{text}"
         if key in self._seen:
@@ -145,6 +174,11 @@ class _BotState:
             "inCall": self.in_call,
             "captioning": self.captioning,
             "captionsEnabledAttempted": self.captions_enabled_attempted,
+            "captionEnableResult": self.caption_enable_result,
+            "captionRegionFound": self.caption_region_found,
+            "captionObserverAttached": self.caption_observer_attached,
+            "lastCaptionProbeAt": self.last_caption_probe_at,
+            "captionDebugPath": self.caption_debug_path,
             "lobbyWaiting": self.lobby_waiting,
             "joinAttemptedAt": self.join_attempted_at,
             "joinedAt": self.joined_at,
@@ -172,6 +206,25 @@ class _BotState:
             setattr(self, k, v)
         self._flush()
 
+    def set_caption_probe(
+        self,
+        *,
+        result: Optional[str] = None,
+        region_found: bool = False,
+        observer_attached: bool = False,
+        debug_path: Optional[str] = None,
+    ) -> None:
+        self.captions_enabled_attempted = True
+        if result is not None:
+            self.caption_enable_result = result
+        self.caption_region_found = bool(region_found)
+        self.caption_observer_attached = bool(observer_attached)
+        self.captioning = bool(observer_attached)
+        self.last_caption_probe_at = time.time()
+        if debug_path is not None:
+            self.caption_debug_path = debug_path
+        self._flush()
+
 
 # ---------------------------------------------------------------------------
 # Playwright bot entry point
@@ -183,11 +236,11 @@ class _BotState:
 # mirrors the OpenUtter caption scraping approach.
 _CAPTION_OBSERVER_JS = r"""
 (() => {
-  if (window.__hermesMeetInstalled) return;
-  window.__hermesMeetInstalled = true;
-  window.__hermesMeetQueue = [];
+  window.__hermesMeetQueue = window.__hermesMeetQueue || [];
+  window.__hermesMeetAttached = false;
 
   const captionSelector = '[role="region"][aria-label*="aption" i], ' +
+                          '[aria-live="polite"], ' +
                           'div[jsname="YSxPC"], ' +  // legacy
                           'div[jsname="tgaKEf"]';    // current (Apr 2026)
 
@@ -201,9 +254,6 @@ _CAPTION_OBSERVER_JS = r"""
   }
 
   function scan(root) {
-    // Meet captions render as a list of rows; each row contains a speaker
-    // label and a text block. Selectors vary across Meet rewrites; we try
-    // a few shapes and fall back to raw text.
     const rows = root.querySelectorAll('div[jsname="dsyhDe"], div.CNusmb, div.TBMuR');
     if (rows.length) {
       rows.forEach((row) => {
@@ -215,7 +265,6 @@ _CAPTION_OBSERVER_JS = r"""
       });
       return;
     }
-    // Fallback: treat the whole region's innerText as one anonymous line.
     const text = (root.innerText || '').split('\n').filter(Boolean).pop();
     pushEntry('', text);
   }
@@ -223,23 +272,30 @@ _CAPTION_OBSERVER_JS = r"""
   function attach() {
     const el = document.querySelector(captionSelector);
     if (!el) return false;
-    const obs = new MutationObserver(() => scan(el));
-    obs.observe(el, { childList: true, subtree: true, characterData: true });
+    if (!window.__hermesMeetObserver) {
+      window.__hermesMeetObserver = new MutationObserver(() => scan(el));
+      window.__hermesMeetObserver.observe(el, { childList: true, subtree: true, characterData: true });
+    }
+    window.__hermesMeetAttached = true;
     scan(el);
     return true;
   }
 
-  // Try now and retry on interval — the caption region only appears after
-  // captions are enabled and someone speaks.
-  if (!attach()) {
-    const iv = setInterval(() => { if (attach()) clearInterval(iv); }, 1500);
+  if (!window.__hermesMeetDrain) {
+    window.__hermesMeetDrain = () => {
+      const out = window.__hermesMeetQueue.slice();
+      window.__hermesMeetQueue = [];
+      return out;
+    };
   }
 
-  window.__hermesMeetDrain = () => {
-    const out = window.__hermesMeetQueue.slice();
-    window.__hermesMeetQueue = [];
-    return out;
-  };
+  if (!attach() && !window.__hermesMeetAttachInterval) {
+    window.__hermesMeetAttachInterval = setInterval(() => {
+      if (attach()) clearInterval(window.__hermesMeetAttachInterval);
+    }, 1500);
+  }
+
+  return Boolean(window.__hermesMeetAttached);
 })();
 """
 
@@ -281,6 +337,81 @@ def _enable_captions_js() -> str:
     })();
     """
 
+
+
+
+def _caption_probe_js() -> str:
+    """Return JS that reports whether Meet caption DOM is actually present."""
+    return r"""
+    (() => {
+      const el = document.querySelector(
+        '[role="region"][aria-label*="aption" i], ' +
+        '[aria-live="polite"], ' +
+        'div[jsname="YSxPC"], div[jsname="tgaKEf"]'
+      );
+      return {
+        regionFound: Boolean(el),
+        observerAttached: Boolean(window.__hermesMeetAttached),
+        text: el ? (el.innerText || '').slice(0, 500) : '',
+        buttons: Array.from(document.querySelectorAll('button,[role="button"]'))
+          .map((b) => b.getAttribute('aria-label') || b.innerText || '')
+          .filter(Boolean)
+          .slice(0, 80),
+      };
+    })();
+    """
+
+
+def _write_caption_debug_artifacts(page, out_dir: Path, *, reason: str) -> Optional[str]:
+    """Persist lightweight DOM/button evidence when captions do not attach."""
+    try:
+        data = page.evaluate(_caption_probe_js())
+        html_text = page.evaluate("() => document.body ? document.body.innerText.slice(0, 12000) : ''")
+        debug = out_dir / "caption_debug.json"
+        debug.write_text(json.dumps({"reason": reason, "probe": data, "bodyText": html_text}, indent=2, ensure_ascii=False), encoding="utf-8")
+        try:
+            page.screenshot(path=str(out_dir / "caption_debug.png"), full_page=True)
+        except Exception:
+            pass
+        return str(debug)
+    except Exception:
+        return None
+
+
+def _enable_and_probe_captions(page, state: "_BotState", out_dir: Path) -> bool:
+    """Try to turn on captions, install observer, and verify attachment."""
+    result: Optional[str] = None
+    try:
+        result = page.evaluate(_enable_captions_js())
+        if result != "clicked":
+            try:
+                page.keyboard.press("c")
+            except Exception:
+                pass
+    except Exception as e:
+        result = f"failed:{type(e).__name__}"
+    observer_attached = False
+    try:
+        observer_attached = bool(page.evaluate(_CAPTION_OBSERVER_JS))
+    except Exception as e:
+        state.set(error=f"caption observer install failed: {e}")
+    probe = {}
+    try:
+        probe = page.evaluate(_caption_probe_js()) or {}
+    except Exception:
+        probe = {}
+    region_found = bool(probe.get("regionFound"))
+    observer_attached = bool(probe.get("observerAttached") or observer_attached)
+    debug_path = None
+    if not observer_attached:
+        debug_path = _write_caption_debug_artifacts(page, out_dir, reason="caption_observer_not_attached")
+    state.set_caption_probe(
+        result=str(result or "unknown"),
+        region_found=region_found,
+        observer_attached=observer_attached,
+        debug_path=debug_path,
+    )
+    return observer_attached
 
 def _start_realtime_speaker(
     *,
@@ -500,6 +631,7 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
     auth_state = os.environ.get("HERMES_MEET_AUTH_STATE", "").strip()
     chrome_profile = os.environ.get("HERMES_MEET_CHROME_PROFILE", "").strip()
     guest_name = os.environ.get("HERMES_MEET_GUEST_NAME", "Hermes Agent")
+    join_style = os.environ.get("HERMES_MEET_JOIN_STYLE", "normal").strip().lower()
     duration_s = _parse_duration(os.environ.get("HERMES_MEET_DURATION", ""))
     # v2: optional realtime mode. Enabled when HERMES_MEET_MODE=realtime.
     mode = os.environ.get("HERMES_MEET_MODE", "transcribe").strip().lower()
@@ -592,10 +724,6 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             # via the process env before launch so the child Chrome inherits it.
             for k, v in chrome_env.items():
                 os.environ[k] = v
-            browser = pw.chromium.launch(
-                headless=not headed,
-                args=chrome_args,
-            )
             context_args = {
                 "viewport": {"width": 1280, "height": 800},
                 "user_agent": (
@@ -621,6 +749,12 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                 state.set(error=f"navigate failed: {e}", exited=True)
                 return 4
 
+            # Optional companion mode: use Google's low-presence second-screen
+            # join path when available. This keeps mic/audio/video off and is
+            # less visually intrusive than a normal participant tile.
+            if join_style == "companion":
+                _try_companion_mode(page)
+
             # Guest-mode: Meet shows a name field before "Ask to join". When
             # we're authed, we instead see "Join now".
             _try_guest_name(page, guest_name)
@@ -629,29 +763,15 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                 state.set(exited=True, leave_reason="join_button_not_found")
                 return 6
 
-            # Install caption observer and attempt to enable captions.
-            try:
-                caption_result = page.evaluate(_enable_captions_js())
-                # If the DOM click path did not find a visible captions
-                # control, use Playwright's real keyboard event as a stronger
-                # fallback than synthetic JS keydown.
-                if caption_result != "clicked":
-                    try:
-                        page.keyboard.press("c")
-                    except Exception:
-                        pass
-                state.set(captions_enabled_attempted=True)
-            except Exception:
-                pass
-            try:
-                page.evaluate(_CAPTION_OBSERVER_JS)
-            except Exception as e:
-                state.set(error=f"caption observer install failed: {e}")
+            # Install caption observer and attempt to enable captions. We do
+            # not report captioning=true until the Meet caption region exists
+            # and the MutationObserver is actually attached.
+            _enable_and_probe_captions(page, state, out_dir)
 
             # Note: in_call=False until admission is confirmed (we detect
             # either the Leave button or the caption region, signalling we
             # made it past the lobby).
-            state.set(captioning=True, join_attempted_at=time.time())
+            state.set(join_attempted_at=time.time())
 
             # v2 realtime: start the speaker thread reading from the
             # plugin-side say queue. The thread reads JSONL lines written by
@@ -686,6 +806,7 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                 os.environ.get("HERMES_MEET_LOBBY_TIMEOUT", "300")
             )
             last_admission_check = 0.0
+            last_caption_retry = 0.0
             last_alone_check = 0.0
             alone_since: Optional[float] = None
             alone_grace_s = float(os.environ.get("HERMES_MEET_ALONE_GRACE", "120"))
@@ -735,6 +856,12 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                             break
                     else:
                         alone_since = None
+
+                # Retry caption enable/observer attachment while in-call; Meet
+                # sometimes renders controls only after admission or focus.
+                if state.in_call and not state.caption_observer_attached and (now - last_caption_retry) > 5.0:
+                    last_caption_retry = now
+                    _enable_and_probe_captions(page, state, out_dir)
 
                 try:
                     queued = page.evaluate("window.__hermesMeetDrain && window.__hermesMeetDrain()")
@@ -812,6 +939,52 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
     except Exception as e:
         state.set(error=f"unhandled: {e}", exited=True)
         return 1
+
+
+def _try_companion_mode(page) -> bool:
+    """Best-effort: switch Meet prejoin into Companion Mode.
+
+    Google exposes this either as a direct "Use Companion mode" action or
+    behind "Other joining options". We try both without failing normal join.
+    """
+    candidates = (
+        "Use Companion mode",
+        "Companion mode",
+        "동반 모드 사용",
+        "컴패니언 모드",
+    )
+    for label in candidates:
+        try:
+            loc = page.get_by_role("button", name=re.compile(label, re.I)).first
+            if loc.count() and loc.is_visible():
+                loc.click(timeout=2_000)
+                return True
+        except Exception:
+            pass
+        try:
+            loc = page.get_by_text(re.compile(label, re.I)).first
+            if loc.count() and loc.is_visible():
+                loc.click(timeout=2_000)
+                return True
+        except Exception:
+            pass
+    for label in ("Other joining options", "Other ways to join", "다른 참여 방법", "기타 참여 옵션"):
+        try:
+            loc = page.get_by_role("button", name=re.compile(label, re.I)).first
+            if loc.count() and loc.is_visible():
+                loc.click(timeout=2_000)
+                time.sleep(0.5)
+                for companion in candidates:
+                    try:
+                        comp = page.get_by_text(re.compile(companion, re.I)).first
+                        if comp.count() and comp.is_visible():
+                            comp.click(timeout=2_000)
+                            return True
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    return False
 
 
 def _try_guest_name(page, guest_name: str) -> None:

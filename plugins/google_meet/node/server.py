@@ -126,7 +126,7 @@ class NodeServer:
                 # Whitelist kwargs we pass through to pm.start.
                 kwargs = {
                     k: payload[k]
-                    for k in ("url", "guest_name", "duration", "headed",
+                    for k in ("url", "guest_name", "duration", "headed", "mode", "join_style",
                               "auth_state", "chrome_profile", "session_id", "out_dir")
                     if k in payload
                 }

@@ -111,6 +111,11 @@ MEET_JOIN_SCHEMA: Dict[str, Any] = {
                     "'Hermes Agent'."
                 ),
             },
+            "join_style": {
+                "type": "string",
+                "enum": ["normal", "companion"],
+                "description": "normal (default) or companion for Google's lower-presence Companion Mode join flow.",
+            },
             "duration": {
                 "type": "string",
                 "description": (
@@ -241,6 +246,10 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
     if mode not in ("transcribe", "realtime"):
         return _err(f"mode must be 'transcribe' or 'realtime' (got {mode!r})")
 
+    join_style = (args.get("join_style") or "normal").strip().lower()
+    if join_style not in ("normal", "companion"):
+        return _err(f"join_style must be 'normal' or 'companion' (got {join_style!r})")
+
     node = args.get("node")
     try:
         client, node_name = _resolve_node_client(node)
@@ -256,6 +265,7 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
                 duration=str(args.get("duration")) if args.get("duration") else None,
                 headed=bool(args.get("headed", False)),
                 mode=mode,
+                join_style=join_style,
             )
             return _json({"success": bool(res.get("ok")), "node": node_name, **res})
         except Exception as e:
@@ -274,6 +284,7 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
         guest_name=str(args.get("guest_name") or "Hermes Agent"),
         duration=str(args.get("duration")) if args.get("duration") else None,
         mode=mode,
+        join_style=join_style,
     )
     return _json({"success": bool(res.get("ok")), **res})
 

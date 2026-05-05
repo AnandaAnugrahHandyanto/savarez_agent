@@ -77,12 +77,14 @@ class NodeClient:
         duration: Optional[str] = None,
         headed: bool = False,
         mode: str = "transcribe",
+        join_style: str = "normal",
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "url": url,
             "guest_name": guest_name,
             "headed": bool(headed),
             "mode": mode,
+            "join_style": join_style,
         }
         if duration is not None:
             payload["duration"] = duration

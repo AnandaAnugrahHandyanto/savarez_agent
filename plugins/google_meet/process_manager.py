@@ -110,6 +110,7 @@ def start(
     duration: Optional[str] = None,
     session_id: Optional[str] = None,
     mode: str = "transcribe",
+    join_style: str = "normal",
     realtime_model: Optional[str] = None,
     realtime_voice: Optional[str] = None,
     realtime_instructions: Optional[str] = None,
@@ -163,6 +164,8 @@ def start(
         env["HERMES_MEET_CHROME_PROFILE"] = chrome_profile
     if duration:
         env["HERMES_MEET_DURATION"] = duration
+    if join_style:
+        env["HERMES_MEET_JOIN_STYLE"] = join_style
     # v2: realtime mode + passthroughs. The bot defaults to transcribe
     # mode if HERMES_MEET_MODE isn't set, matching v1 behavior.
     if mode:
@@ -203,6 +206,7 @@ def start(
         "session_id": session_id,
         "log_path": str(log_path),
         "mode": mode,
+        "join_style": join_style,
     }
     _write_active(record)
     return {"ok": True, **record}
