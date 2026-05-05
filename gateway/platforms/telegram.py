@@ -76,6 +76,7 @@ from gateway.platforms.base import (
     resolve_proxy_url,
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
+    _prefix_within_utf16_limit,
     utf16_len,
 )
 from gateway.platforms.telegram_network import (

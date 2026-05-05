@@ -1713,6 +1713,19 @@ class GatewayRunner:
             return False
         return True
 
+    def _is_telegram_question_session_lane(self, source: SessionSource) -> bool:
+        """True for a /qopen-created Telegram forum topic in a group chat."""
+        if source.platform != Platform.TELEGRAM or source.chat_type not in ("group", "supergroup"):
+            return False
+        tid = str(source.thread_id or "")
+        if not tid or tid in self._TELEGRAM_GENERAL_TOPIC_IDS:
+            return False
+        return str(source.chat_topic or "").strip().startswith("Q · ")
+
+    def _is_telegram_auto_title_topic_lane(self, source: SessionSource) -> bool:
+        """True for Telegram topic lanes whose visible title may follow auto-title."""
+        return self._is_telegram_topic_lane(source) or self._is_telegram_question_session_lane(source)
+
     _TELEGRAM_LOBBY_REMINDER_COOLDOWN_S = 30.0
 
     def _should_send_telegram_lobby_reminder(self, source: SessionSource) -> bool:
@@ -10888,9 +10901,11 @@ class GatewayRunner:
         session_id: str,
         title: str,
     ) -> None:
-        """Best-effort rename of a Telegram DM topic when Hermes auto-titles a session."""
-        if not self._is_telegram_topic_lane(source) or not source.chat_id or not source.thread_id:
+        """Best-effort rename of a Telegram topic when Hermes auto-titles a session."""
+        if not self._is_telegram_auto_title_topic_lane(source) or not source.chat_id or not source.thread_id:
             return
+
+        is_dm_topic_lane = self._is_telegram_topic_lane(source)
 
         # Skip rename when the topic is operator-declared via
         # extra.dm_topics. Those topics have fixed names chosen by the
@@ -10901,7 +10916,7 @@ class GatewayRunner:
         # auto-creates attributes, so `hasattr(adapter, "_get_dm_topic_info")`
         # would return True for every test double.
         adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
-        if adapter is not None:
+        if adapter is not None and is_dm_topic_lane:
             get_info = getattr(type(adapter), "_get_dm_topic_info", None)
             if callable(get_info):
                 try:
@@ -10914,7 +10929,7 @@ class GatewayRunner:
                     return
 
         session_db = getattr(self, "_session_db", None)
-        if session_db is not None:
+        if session_db is not None and is_dm_topic_lane:
             try:
                 binding = session_db.get_telegram_topic_binding(
                     chat_id=str(source.chat_id),
@@ -10930,7 +10945,7 @@ class GatewayRunner:
             return
         topic_name = self._sanitize_telegram_topic_title(title)
         try:
-            rename_topic = getattr(adapter, "rename_dm_topic", None)
+            rename_topic = getattr(adapter, "rename_dm_topic", None) if is_dm_topic_lane else None
             if rename_topic is not None:
                 await rename_topic(
                     chat_id=str(source.chat_id),
@@ -10967,7 +10982,7 @@ class GatewayRunner:
         title: str,
     ) -> None:
         """Schedule a topic rename from the auto-title background thread."""
-        if not title or not self._is_telegram_topic_lane(source):
+        if not title or not self._is_telegram_auto_title_topic_lane(source):
             return
         try:
             loop = asyncio.get_running_loop()
@@ -15332,7 +15347,7 @@ class GatewayRunner:
                             "api_mode": getattr(agent, "api_mode", None),
                         } if agent else None,
                     }
-                    if self._is_telegram_topic_lane(source):
+                    if self._is_telegram_auto_title_topic_lane(source):
                         maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_telegram_topic_title_rename(
                             source,
                             effective_session_id,

@@ -750,6 +750,34 @@ async def test_topic_root_command_creates_and_pins_system_topic(tmp_path, monkey
 
 
 @pytest.mark.asyncio
+async def test_auto_generated_title_renames_group_question_session_topic(tmp_path):
+    runner = _make_runner(session_db=None)
+    edit_forum_topic = AsyncMock()
+    runner.adapters[Platform.TELEGRAM]._bot = SimpleNamespace(edit_forum_topic=edit_forum_topic)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="777",
+        chat_id="-100123",
+        user_name="Joohyun Kim",
+        chat_type="group",
+        thread_id="9876",
+        chat_topic="Q · Startup memory smoke test",
+    )
+
+    await runner._rename_telegram_topic_for_session_title(
+        source,
+        "sess-question",
+        "Startup Memory Context",
+    )
+
+    edit_forum_topic.assert_awaited_once_with(
+        chat_id=-100123,
+        message_thread_id=9876,
+        name="Startup Memory Context",
+    )
+
+
+@pytest.mark.asyncio
 async def test_auto_generated_title_renames_bound_telegram_topic(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     db.apply_telegram_topic_migration()

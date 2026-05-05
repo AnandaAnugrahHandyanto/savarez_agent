@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig, load_gateway_config
 from gateway.platforms.base import MessageType
 from hermes_cli.commands import resolve_command
 
@@ -85,6 +85,25 @@ def test_qopen_is_registered_as_gateway_command():
     assert command is not None
     assert command.name == "qopen"
     assert command.gateway_only is True
+
+
+def test_top_level_telegram_question_sessions_config_is_bridged_to_extra(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    (hermes_home / "config.yaml").write_text(
+        "telegram:\n"
+        "  enabled: true\n"
+        "  question_sessions:\n"
+        "    enabled: true\n",
+        encoding="utf-8",
+    )
+
+    cfg = load_gateway_config()
+    telegram_cfg = cfg.platforms[Platform.TELEGRAM]
+
+    assert telegram_cfg.extra["question_sessions"] == {"enabled": True}
 
 
 @pytest.mark.asyncio

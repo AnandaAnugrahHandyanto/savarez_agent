@@ -972,17 +972,19 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(group_allowed_chats, list):
                         group_allowed_chats = ",".join(str(v) for v in group_allowed_chats)
                     os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
-                for _telegram_extra_key in ("guest_mode", "disable_link_previews"):
-                    if _telegram_extra_key in telegram_cfg:
-                        plat_data = platforms_data.setdefault(Platform.TELEGRAM.value, {})
-                        if not isinstance(plat_data, dict):
-                            plat_data = {}
-                            platforms_data[Platform.TELEGRAM.value] = plat_data
-                        extra = plat_data.setdefault("extra", {})
-                        if not isinstance(extra, dict):
-                            extra = {}
-                            plat_data["extra"] = extra
-                        extra[_telegram_extra_key] = telegram_cfg[_telegram_extra_key]
+                telegram_extra_keys = ("guest_mode", "disable_link_previews", "question_sessions")
+                if any(key in telegram_cfg for key in telegram_extra_keys):
+                    plat_data = platforms_data.setdefault(Platform.TELEGRAM.value, {})
+                    if not isinstance(plat_data, dict):
+                        plat_data = {}
+                        platforms_data[Platform.TELEGRAM.value] = plat_data
+                    extra = plat_data.setdefault("extra", {})
+                    if not isinstance(extra, dict):
+                        extra = {}
+                        plat_data["extra"] = extra
+                    for key in telegram_extra_keys:
+                        if key in telegram_cfg:
+                            extra[key] = telegram_cfg[key]
 
             whatsapp_cfg = yaml_cfg.get("whatsapp", {})
             if isinstance(whatsapp_cfg, dict):
