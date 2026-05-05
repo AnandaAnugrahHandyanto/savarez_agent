@@ -5544,6 +5544,9 @@ class GatewayRunner:
                     canonical = _cmd_def.name if _cmd_def else command
                     break
 
+        if canonical == "start":
+            return self._gateway_start_message(source)
+
         if canonical == "new":
             if self._is_telegram_topic_root_lobby(source):
                 return self._telegram_topic_root_new_message()
@@ -8540,6 +8543,20 @@ class GatewayRunner:
         
         preview = removed_msg[:40] + "..." if len(removed_msg) > 40 else removed_msg
         return f"↩️ Undid {removed_count} message(s).\nRemoved: \"{preview}\""
+
+    def _gateway_start_message(self, source: SessionSource) -> str:
+        """Return lightweight onboarding for messaging-platform /start."""
+        platform_name = source.platform.value if source.platform else "this platform"
+        return (
+            "Hi — I'm Hermes.\n\n"
+            "Send me a message here and I'll handle it like a normal Hermes "
+            f"session on {platform_name}.\n\n"
+            "Useful commands:\n"
+            "• /sethome — make this chat the delivery target for cron jobs and cross-platform messages\n"
+            "• /commands — browse available gateway commands\n"
+            "• /new — start a fresh session\n"
+            "• /status — show session info"
+        )
 
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""

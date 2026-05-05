@@ -114,6 +114,58 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("parent agent", result["error"])
 
+    @patch("tools.delegate_tool.is_codex_usage_paused", return_value=True)
+    @patch("tools.delegate_tool._load_config", return_value={"provider": "openai-codex", "model": "gpt-5.3-codex"})
+    @patch("tools.delegate_tool._run_single_child")
+    def test_codex_usage_pause_blocks_codex_delegation(self, mock_run, _mock_cfg, _mock_paused):
+        parent = _make_mock_parent()
+        parent.provider = "openai-codex"
+        parent.model = "gpt-5.3-codex"
+        result = json.loads(delegate_task(goal="test", parent_agent=parent))
+        self.assertIn("error", result)
+        self.assertIn("Codex usage guardrail", result["error"])
+        mock_run.assert_not_called()
+
+    @patch("tools.delegate_tool.is_codex_usage_paused", return_value=True)
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config", return_value={"provider": "custom:codex-alias", "model": "claude"})
+    @patch("tools.delegate_tool._run_single_child")
+    def test_codex_usage_pause_blocks_resolved_codex_base_url(self, mock_run, _mock_cfg, mock_creds, _mock_paused):
+        mock_creds.return_value = {
+            "provider": "custom",
+            "model": "claude",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "***",
+            "api_mode": "codex_responses",
+            "command": None,
+            "args": None,
+        }
+        parent = _make_mock_parent()
+        parent.provider = "openrouter"
+        parent.model = "anthropic/claude-sonnet-4"
+        result = json.loads(delegate_task(goal="test", parent_agent=parent))
+        self.assertIn("error", result)
+        self.assertIn("Codex usage guardrail", result["error"])
+        mock_run.assert_not_called()
+
+    @patch("tools.delegate_tool.is_codex_usage_paused", return_value=True)
+    @patch("tools.delegate_tool._run_single_child")
+    def test_codex_usage_pause_does_not_block_non_codex_delegation(self, mock_run, _mock_paused):
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+        parent = _make_mock_parent()
+        parent.provider = "openrouter"
+        parent.model = "anthropic/claude-sonnet-4"
+        with patch("tools.delegate_tool._load_config", return_value={}):
+            result = json.loads(delegate_task(goal="test", parent_agent=parent))
+        self.assertIn("results", result)
+        mock_run.assert_called_once()
+
     def test_depth_limit(self):
         parent = _make_mock_parent(depth=2)
         result = json.loads(delegate_task(goal="test", parent_agent=parent))

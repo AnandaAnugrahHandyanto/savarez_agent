@@ -2309,6 +2309,10 @@ class HermesCLI:
 
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
+        self._codex_usage_status_cache = None
+        self._codex_usage_status_checked_at = 0.0
+        self._codex_usage_status_refreshing = False
+        self._codex_usage_status_lock = threading.Lock()
 
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
@@ -2372,6 +2376,182 @@ class HermesCLI:
         safe_percent = max(0, min(100, percent_used or 0))
         filled = round((safe_percent / 100) * width)
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
+
+    @staticmethod
+    def _codex_usage_percent_windows(payload: Dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
+        """Return max Codex 5h/weekly usage percentages from app-server payload."""
+        buckets: List[Dict[str, Any]] = []
+        primary = payload.get("rateLimits") if isinstance(payload, dict) else None
+        if isinstance(primary, dict):
+            buckets.append(primary)
+        by_id = payload.get("rateLimitsByLimitId") if isinstance(payload, dict) else None
+        if isinstance(by_id, dict):
+            buckets.extend(value for value in by_id.values() if isinstance(value, dict))
+
+        def _max_for(window_key: str) -> Optional[int]:
+            values = []
+            for bucket in buckets:
+                window = bucket.get(window_key)
+                if not isinstance(window, dict):
+                    continue
+                used = window.get("usedPercent")
+                if isinstance(used, (int, float)):
+                    values.append(max(0, min(100, round(float(used)))))
+            return max(values) if values else None
+
+        return _max_for("primary"), _max_for("secondary")
+
+    def _format_codex_usage_status_label(self, payload: Dict[str, Any]) -> Optional[str]:
+        """Format Codex subscription usage for the TUI status bar.
+
+        Uses the worst 5h and weekly bucket across normal Codex and any
+        model-specific buckets (for example GPT-5.3-Codex-Spark), so the
+        footer remains compact but still highlights the limiting quota.
+        """
+        five_hour, weekly = self._codex_usage_percent_windows(payload)
+        if five_hour is None and weekly is None:
+            return None
+        five_hour = five_hour if five_hour is not None else 0
+        weekly = weekly if weekly is not None else 0
+        return (
+            f"Codex 5h {self._build_context_bar(five_hour, width=5)} {five_hour}% "
+            f"W {self._build_context_bar(weekly, width=5)} {weekly}%"
+        )
+
+    @staticmethod
+    def _codex_usage_label_max_percent(label: Optional[str]) -> Optional[int]:
+        if not label:
+            return None
+        matches = re.findall(r"(\d+)%", label)
+        if not matches:
+            return None
+        return max(int(value) for value in matches)
+
+    def _read_codex_usage_rate_limits(self, timeout: float = 8.0) -> Optional[Dict[str, Any]]:
+        """Read Codex account rate limits through the local Codex app-server."""
+        if not shutil.which("codex"):
+            return None
+        import select
+        import subprocess
+
+        try:
+            proc = subprocess.Popen(
+                ["codex", "app-server", "--listen", "stdio://"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                bufsize=0,
+            )
+        except Exception:
+            return None
+
+        def _send(obj: Dict[str, Any]) -> None:
+            assert proc.stdin is not None
+            proc.stdin.write(json.dumps(obj) + "\n")
+            proc.stdin.flush()
+
+        def _read_until_id(target_id: int, deadline: float) -> Optional[Dict[str, Any]]:
+            assert proc.stdout is not None
+            while time.monotonic() < deadline:
+                try:
+                    ready, _, _ = select.select([proc.stdout], [], [], 0.2)
+                except Exception:
+                    return None
+                if not ready:
+                    continue
+                line = proc.stdout.readline()
+                if not line:
+                    if proc.poll() is not None:
+                        return None
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if obj.get("id") == target_id:
+                    return obj
+            return None
+
+        try:
+            deadline = time.monotonic() + timeout
+            _send({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"clientInfo": {"name": "hermes-cli-status-bar", "version": "1.0.0"}},
+            })
+            initialized = _read_until_id(1, deadline)
+            if not initialized or initialized.get("error"):
+                return None
+            _send({"jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read", "params": {}})
+            result = _read_until_id(2, deadline)
+            if not result or result.get("error"):
+                return None
+            payload = result.get("result")
+            return payload if isinstance(payload, dict) else None
+        finally:
+            try:
+                proc.terminate()
+                proc.wait(timeout=1)
+            except Exception:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=1)
+                except Exception:
+                    pass
+
+    def _should_show_codex_usage_status(self) -> bool:
+        agent = getattr(self, "agent", None)
+        provider = (getattr(agent, "provider", None) or getattr(self, "provider", None) or "").lower()
+        if provider == "openai-codex":
+            return True
+        if provider:
+            return False
+        model = (getattr(agent, "model", None) or getattr(self, "model", None) or "").lower()
+        return "codex" in model and shutil.which("codex") is not None
+
+    def _refresh_codex_usage_status_async(self) -> None:
+        lock = getattr(self, "_codex_usage_status_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._codex_usage_status_lock = lock
+        with lock:
+            if getattr(self, "_codex_usage_status_refreshing", False):
+                return
+            self._codex_usage_status_refreshing = True
+
+        def _worker() -> None:
+            try:
+                payload = self._read_codex_usage_rate_limits(timeout=8.0)
+                label = self._format_codex_usage_status_label(payload) if payload else None
+                self._codex_usage_status_cache = label
+                self._codex_usage_status_checked_at = time.time()
+            except Exception:
+                self._codex_usage_status_checked_at = time.time()
+            finally:
+                self._codex_usage_status_refreshing = False
+                try:
+                    self._invalidate(min_interval=0.0)
+                except Exception:
+                    pass
+
+        thread = threading.Thread(target=_worker, name="codex-usage-status", daemon=True)
+        thread.start()
+
+    def _get_codex_usage_status_label(self) -> Optional[str]:
+        """Return cached Codex usage label and refresh it off the render path."""
+        if not self._should_show_codex_usage_status():
+            return None
+        cache = getattr(self, "_codex_usage_status_cache", None)
+        checked_at = float(getattr(self, "_codex_usage_status_checked_at", 0.0) or 0.0)
+        now = time.time()
+        # Use a short TTL: the footer should feel live, but prompt_toolkit can
+        # repaint frequently, so rate-limit the external Codex app-server probe.
+        if (now - checked_at) < 60:
+            return cache
+        self._refresh_codex_usage_status_async()
+        return cache
 
     @staticmethod
     def _format_prompt_elapsed(prompt_start_time: Optional[float], prompt_duration: float, live: bool = False) -> str:
@@ -2446,9 +2626,11 @@ class HermesCLI:
             "session_total_tokens": 0,
             "session_api_calls": 0,
             "compressions": 0,
+            "codex_usage_status": None,
         }
 
         if not agent:
+            snapshot["codex_usage_status"] = self._get_codex_usage_status_label()
             return snapshot
 
         snapshot["session_input_tokens"] = getattr(agent, "session_input_tokens", 0) or 0
@@ -2459,6 +2641,7 @@ class HermesCLI:
         snapshot["session_completion_tokens"] = getattr(agent, "session_completion_tokens", 0) or 0
         snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
         snapshot["session_api_calls"] = getattr(agent, "session_api_calls", 0) or 0
+        snapshot["codex_usage_status"] = self._get_codex_usage_status_label()
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
@@ -2659,6 +2842,9 @@ class HermesCLI:
                 context_label = "ctx --"
 
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            codex_usage = snapshot.get("codex_usage_status")
+            if codex_usage and width >= 110:
+                parts.append(codex_usage)
             parts.append(duration_label)
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
@@ -2719,9 +2905,18 @@ class HermesCLI:
                         (bar_style, self._build_context_bar(percent)),
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
+                    ]
+                    codex_usage = snapshot.get("codex_usage_status")
+                    if codex_usage and width >= 110:
+                        usage_style = self._status_bar_context_style(
+                            self._codex_usage_label_max_percent(codex_usage)
+                        )
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append((usage_style, codex_usage))
+                    frags.extend([
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),
-                    ]
+                    ])
                     # Position 7: per-prompt elapsed timer (live or frozen)
                     prompt_elapsed = snapshot.get("prompt_elapsed")
                     if prompt_elapsed:

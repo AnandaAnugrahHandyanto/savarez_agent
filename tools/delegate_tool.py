@@ -34,6 +34,12 @@ from toolsets import TOOLSETS
 from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
+from hermes_cli.codex_usage_guardrail import (
+    delegation_config_uses_codex,
+    format_codex_usage_pause_message,
+    is_codex_usage_paused,
+    provider_model_uses_codex,
+)
 
 
 # Tools that children must never have access to
@@ -1870,6 +1876,15 @@ def delegate_task(
             "(`p` in /agents) or the `delegation.pause` RPC before retrying."
         )
 
+    # Load config before any spawn/credential work so the Codex subscription
+    # watchdog can fail closed. The watchdog writes codex_usage_pause.json at
+    # 90% usage; delegate_task must not start new Codex-backed workers while
+    # that sentinel is present.
+    cfg = _load_config()
+    codex_usage_paused = is_codex_usage_paused()
+    if codex_usage_paused and delegation_config_uses_codex(cfg, parent_agent):
+        return tool_error(format_codex_usage_pause_message(source="delegate_task"))
+
     # Normalise the top-level role once; per-task overrides re-normalise.
     top_role = _normalize_role(role)
 
@@ -1889,8 +1904,6 @@ def delegate_task(
             }
         )
 
-    # Load config
-    cfg = _load_config()
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     # Model-supplied max_iterations is ignored — the config value is authoritative
     # so users get predictable budgets. The kwarg is retained for internal callers
@@ -1914,6 +1927,13 @@ def delegate_task(
         creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
         return tool_error(str(exc))
+
+    if codex_usage_paused and provider_model_uses_codex(
+        provider=creds.get("provider") or getattr(parent_agent, "provider", None),
+        model=creds.get("model") or getattr(parent_agent, "model", None),
+        base_url=creds.get("base_url") or getattr(parent_agent, "base_url", None),
+    ):
+        return tool_error(format_codex_usage_pause_message(source="delegate_task"))
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()

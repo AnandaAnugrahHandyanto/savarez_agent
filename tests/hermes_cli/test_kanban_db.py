@@ -368,6 +368,26 @@ def test_dispatch_promotes_ready_and_spawns(kanban_home):
         assert kb.get_task(conn, c).status == "running"
 
 
+def test_dispatch_codex_usage_pause_leaves_ready_tasks_unclaimed(kanban_home, monkeypatch):
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append((task.id, task.assignee, workspace))
+
+    monkeypatch.setattr(kb, "is_codex_usage_paused", lambda: True)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="paused", assignee="coder53")
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        task = kb.get_task(conn, t)
+
+    assert not spawns
+    assert not res.spawned
+    assert t in res.paused
+    assert task.status == "ready"
+    assert task.claim_lock is None
+
+
 def test_dispatch_spawn_failure_releases_claim(kanban_home):
     def boom(task, workspace):
         raise RuntimeError("spawn failed")

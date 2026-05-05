@@ -82,6 +82,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from hermes_cli.codex_usage_guardrail import (
+    format_codex_usage_pause_message,
+    is_codex_usage_paused,
+)
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -2124,6 +2129,8 @@ class DispatchResult:
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
+    paused: list[str] = field(default_factory=list)
+    """Ready task ids left unclaimed because a global guardrail is active."""
 
 
 def _pid_alive(pid: Optional[int]) -> bool:
@@ -2499,6 +2506,23 @@ def dispatch_once(
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+    if ready_rows and not dry_run and is_codex_usage_paused():
+        pause_msg = format_codex_usage_pause_message(source="kanban dispatcher")
+        for row in ready_rows:
+            if row["assignee"]:
+                result.paused.append(row["id"])
+        if result.paused:
+            try:
+                for task_id in result.paused:
+                    _append_event(
+                        conn,
+                        task_id,
+                        "dispatch_paused",
+                        {"reason": pause_msg},
+                    )
+            except Exception:
+                pass
+            return result
     spawned = 0
     for row in ready_rows:
         if max_spawn is not None and spawned >= max_spawn:

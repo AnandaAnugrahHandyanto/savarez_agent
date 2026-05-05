@@ -206,6 +206,101 @@ class TestCLIStatusBar:
         assert "⚕" in text
         assert "claude-sonnet-4-20250514" in text
 
+    def test_codex_usage_label_formats_5h_and_weekly_bars(self):
+        cli_obj = _make_cli()
+        payload = {
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "primary": {"usedPercent": 7},
+                    "secondary": {"usedPercent": 89},
+                },
+                "codex_bengalfox": {
+                    "limitName": "GPT-5.3-Codex-Spark",
+                    "primary": {"usedPercent": 23},
+                    "secondary": {"usedPercent": 2},
+                },
+            }
+        }
+
+        label = cli_obj._format_codex_usage_status_label(payload)
+
+        assert label == "Codex 5h [█░░░░] 23% W [████░] 89%"
+
+    def test_status_bar_text_includes_cached_codex_usage_on_wide_terminal(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.5"),
+            prompt_tokens=10000,
+            completion_tokens=2400,
+            total_tokens=12400,
+            api_calls=7,
+            context_tokens=12400,
+            context_length=200_000,
+        )
+        cli_obj._codex_usage_status_cache = "Codex 5h [█░░░░] 23% W [████░] 89%"
+        cli_obj._codex_usage_status_checked_at = 9999999999
+        cli_obj.agent.provider = "openai-codex"
+
+        text = cli_obj._build_status_bar_text(width=160)
+
+        assert "Codex 5h [█░░░░] 23% W [████░] 89%" in text
+
+    def test_status_bar_fragments_include_cached_codex_usage_style(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.5"),
+            prompt_tokens=10000,
+            completion_tokens=2400,
+            total_tokens=12400,
+            api_calls=7,
+            context_tokens=12400,
+            context_length=200_000,
+        )
+        cli_obj._status_bar_visible = True
+        cli_obj._codex_usage_status_cache = "Codex 5h [█░░░░] 23% W [████░] 89%"
+        cli_obj._codex_usage_status_checked_at = 9999999999
+        cli_obj.agent.provider = "openai-codex"
+
+        with patch("prompt_toolkit.application.get_app") as mock_get_app:
+            mock_get_app.return_value.output.get_size.return_value = MagicMock(columns=160)
+            frags = cli_obj._get_status_bar_fragments()
+
+        assert ("class:status-bar-dim", " │ ") in frags
+        assert ("class:status-bar-bad", "Codex 5h [█░░░░] 23% W [████░] 89%") in frags
+
+    def test_non_codex_status_bar_hides_stale_codex_usage_cache(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="anthropic/claude-sonnet-4-20250514"),
+            prompt_tokens=10000,
+            completion_tokens=2400,
+            total_tokens=12400,
+            api_calls=7,
+            context_tokens=12400,
+            context_length=200_000,
+        )
+        cli_obj._codex_usage_status_cache = "Codex 5h [█░░░░] 23% W [████░] 89%"
+        cli_obj._codex_usage_status_checked_at = 9999999999
+
+        text = cli_obj._build_status_bar_text(width=160)
+
+        assert "Codex 5h" not in text
+
+    def test_non_codex_provider_hides_codex_named_model_usage_cache(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.3-codex"),
+            prompt_tokens=10000,
+            completion_tokens=2400,
+            total_tokens=12400,
+            api_calls=7,
+            context_tokens=12400,
+            context_length=200_000,
+        )
+        cli_obj.agent.provider = "openrouter"
+        cli_obj._codex_usage_status_cache = "Codex 5h [█░░░░] 23% W [████░] 89%"
+        cli_obj._codex_usage_status_checked_at = 9999999999
+
+        text = cli_obj._build_status_bar_text(width=160)
+
+        assert "Codex 5h" not in text
+
     def test_minimal_tui_chrome_threshold(self):
         cli_obj = _make_cli()
 
