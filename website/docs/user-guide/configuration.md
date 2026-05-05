@@ -249,7 +249,7 @@ terminal:
 
 **Auto-suspend:** Hermes also configures the VM's `auto_suspend_timeout` to 300s by default — boxd suspends idle VMs server-side and wakes them on the next exec. You only pay for compute while a command is running.
 
-**Image:** Unlike Docker / Modal / Daytona, boxd doesn't accept arbitrary OCI registry references — leave `boxd_image` empty for the server default (`ubuntu:latest`). Custom boxd-built images can be selected by name once they exist on your cluster.
+**Image:** `boxd_image` accepts any OCI registry reference docker can pull — Docker Hub (`ubuntu:22.04`, `nikolaik/python-nodejs:python3.11-nodejs20`), GHCR (`ghcr.io/org/img:tag`), Quay, custom registries. The worker runs `docker pull` and exports the rootfs into a Firecracker base image. Leave empty to use the cluster's default image (currently `ubuntu:latest`). First pull of a given image is slow (rootfs export); subsequent VMs from the same image hit a local cache.
 
 ### Vercel Sandbox Backend
 

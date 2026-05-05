@@ -1060,9 +1060,9 @@ def _get_env_config() -> Dict[str, Any]:
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
         # boxd: empty string means "let the server pick its default image"
-        # (currently ubuntu:latest). Unlike Docker/Modal/Daytona, boxd
-        # doesn't accept arbitrary OCI images out of the box, so the
-        # default is intentionally empty rather than nikolaik/...
+        # (currently ubuntu:latest). Any OCI registry ref docker can pull
+        # works (Docker Hub, GHCR, Quay, custom). Default is empty so
+        # users without a specific image preference get the cluster default.
         "boxd_image": os.getenv("TERMINAL_BOXD_IMAGE", ""),
         "vercel_runtime": os.getenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
         "cwd": cwd,

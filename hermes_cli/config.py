@@ -511,8 +511,9 @@ DEFAULT_CONFIG = {
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        # boxd doesn't accept arbitrary OCI registry refs; empty means
-        # "let the server pick its default image" (currently ubuntu:latest).
+        # boxd accepts any OCI registry ref docker can pull (Docker Hub,
+        # GHCR, Quay, custom). Empty means "use the cluster's default
+        # image" (currently ubuntu:latest).
         "boxd_image": "",
         "vercel_runtime": "node24",
         # Container resource limits (docker, singularity, modal, daytona, boxd, vercel_sandbox — ignored for local/ssh)
