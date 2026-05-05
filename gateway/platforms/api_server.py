@@ -15,6 +15,10 @@ Exposes an HTTP server with endpoints:
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
 
+Custom request headers (chat completions & responses):
+- X-Hermes-Session-Id  — continue an existing Hermes session (requires API key auth)
+- X-Hermes-Workspace   — set the agent's working directory (must exist under home)
+
 Any OpenAI-compatible frontend (Open WebUI, LobeChat, LibreChat,
 AnythingLLM, NextChat, ChatBox, etc.) can connect to hermes-agent
 through this adapter by pointing at http://localhost:8642/v1.
@@ -724,6 +728,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self,
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
+        workspace: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
@@ -736,6 +741,11 @@ class APIServerAdapter(BasePlatformAdapter):
         base_url, etc. from config.yaml / env vars.  Toolsets are resolved
         from config.yaml platform_toolsets.api_server (same as all other
         gateway platforms), falling back to the hermes-api-server default.
+
+        When *workspace* is provided it is injected as ``TERMINAL_CWD`` so
+        the agent's terminal and context-file discovery use that directory.
+        The value is restored after agent creation so concurrent requests are
+        not affected.
         """
         from run_agent import AIAgent
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config, GatewayRunner
@@ -749,6 +759,13 @@ class APIServerAdapter(BasePlatformAdapter):
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+
+        # Inject TERMINAL_CWD when a workspace is specified so the agent's
+        # terminal and context-file discovery use the workspace directory.
+        prev_terminal_cwd = None
+        if workspace:
+            prev_terminal_cwd = os.environ.get("TERMINAL_CWD")
+            os.environ["TERMINAL_CWD"] = workspace
 
         # Load fallback provider chain so the API server platform has the
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
@@ -772,7 +789,35 @@ class APIServerAdapter(BasePlatformAdapter):
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
         )
+        # Restore TERMINAL_CWD so concurrent requests are not affected.
+        if prev_terminal_cwd is None:
+            os.environ.pop("TERMINAL_CWD", None)
+        else:
+            os.environ["TERMINAL_CWD"] = prev_terminal_cwd
         return agent
+
+    # ------------------------------------------------------------------
+    # Workspace validation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _validate_workspace(workspace: str) -> Optional[str]:
+        """Validate and resolve a workspace path.
+
+        Returns the resolved absolute path on success, or an error message
+        string on failure.  The path must exist, be a directory, and resolve
+        to a location under the user's home directory.
+        """
+        try:
+            workspace_path = os.path.realpath(workspace)
+            home = os.path.realpath(os.path.expanduser("~"))
+            if not workspace_path.startswith(home + os.sep) and workspace_path != home:
+                return "Workspace must be under your home directory"
+            if not os.path.isdir(workspace_path):
+                return f"Workspace does not exist: {workspace}"
+            return workspace_path
+        except (OSError, ValueError) as exc:
+            return f"Invalid workspace path: {exc}"
 
     # ------------------------------------------------------------------
     # HTTP Handlers
@@ -932,6 +977,20 @@ class APIServerAdapter(BasePlatformAdapter):
         # only allowed when the API key is configured and the request is
         # authenticated.  Without this gate, any unauthenticated client could
         # read arbitrary session history by guessing/enumerating session IDs.
+        # Allow caller to specify a workspace directory via X-Hermes-Workspace.
+        # The resolved path is injected as TERMINAL_CWD so the agent's terminal
+        # and context-file discovery use the workspace as their working directory.
+        provided_workspace = request.headers.get("X-Hermes-Workspace", "").strip()
+        if provided_workspace:
+            validated = self._validate_workspace(provided_workspace)
+            if os.path.isdir(validated):
+                provided_workspace = validated
+            else:
+                return web.json_response(
+                    {"error": {"message": validated, "type": "invalid_request_error"}},
+                    status=400,
+                )
+
         provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
         if provided_session_id:
             if not self._api_key:
@@ -1055,6 +1114,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                workspace=provided_workspace or None,
                 stream_delta_callback=_on_delta,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
@@ -1073,6 +1133,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                workspace=provided_workspace or None,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1862,6 +1923,18 @@ class APIServerAdapter(BasePlatformAdapter):
         # groups the entire conversation under one session entry.
         session_id = stored_session_id or str(uuid.uuid4())
 
+        # Workspace support (same logic as _handle_chat_completions).
+        provided_workspace = request.headers.get("X-Hermes-Workspace", "").strip()
+        if provided_workspace:
+            validated = self._validate_workspace(provided_workspace)
+            if os.path.isdir(validated):
+                provided_workspace = validated
+            else:
+                return web.json_response(
+                    {"error": {"message": validated, "type": "invalid_request_error"}},
+                    status=400,
+                )
+
         stream = bool(body.get("stream", False))
         if stream:
             # Streaming branch — emit OpenAI Responses SSE events as the
@@ -1909,6 +1982,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
+                workspace=provided_workspace or None,
                 stream_delta_callback=_on_delta,
                 tool_progress_callback=_on_tool_progress,
                 tool_start_callback=_on_tool_start,
@@ -1942,6 +2016,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
+                workspace=provided_workspace or None,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2333,6 +2408,7 @@ class APIServerAdapter(BasePlatformAdapter):
         conversation_history: List[Dict[str, str]],
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
+        workspace: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
@@ -2356,6 +2432,7 @@ class APIServerAdapter(BasePlatformAdapter):
             agent = self._create_agent(
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
+                workspace=workspace,
                 stream_delta_callback=stream_delta_callback,
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
