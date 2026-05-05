@@ -1089,9 +1089,9 @@ def run_doctor(args):
     # If supports_models_endpoint is False, we skip the health check and just show "configured"
     _apikey_providers = [
         ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL", True),
-        ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL", True),
+        ("Moonshot / Kimi",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL", True),
         ("StepFun Step Plan",   ("STEPFUN_API_KEY",),                           "https://api.stepfun.ai/step_plan/v1/models", "STEPFUN_BASE_URL", True),
-        ("Kimi / Moonshot (China)", ("KIMI_CN_API_KEY",),                    "https://api.moonshot.cn/v1/models",   None, True),
+        ("Moonshot / Kimi (China)", ("KIMI_CN_API_KEY",),                    "https://api.moonshot.cn/v1/models",   None, True),
         ("Arcee AI",         ("ARCEEAI_API_KEY",),                            "https://api.arcee.ai/api/v1/models",  "ARCEE_BASE_URL", True),
         ("GMI Cloud",        ("GMI_API_KEY",),                                "https://api.gmi-serving.com/v1/models", "GMI_BASE_URL", True),
         ("DeepSeek",         ("DEEPSEEK_API_KEY",),                           "https://api.deepseek.com/v1/models",  "DEEPSEEK_BASE_URL", True),

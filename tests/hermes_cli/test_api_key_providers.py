@@ -36,7 +36,7 @@ class TestProviderRegistry:
         ("zai", "Z.AI / GLM", "api_key"),
         ("xai", "xAI", "api_key"),
         ("nvidia", "NVIDIA NIM", "api_key"),
-        ("kimi-coding", "Kimi / Moonshot", "api_key"),
+        ("kimi-coding", "Moonshot / Kimi", "api_key"),
         ("stepfun", "StepFun Step Plan", "api_key"),
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
@@ -77,10 +77,21 @@ class TestProviderRegistry:
         pconfig = PROVIDER_REGISTRY["kimi-coding"]
         # KIMI_API_KEY is the primary env var; KIMI_CODING_API_KEY is a
         # secondary fallback for Kimi Code sk-kimi- keys so users don't
-        # have to overload the same variable.
+        # have to overload the same variable. MOONSHOT_API_KEY added in
+        # #13935 so users with platform.moonshot.ai keys don't have to
+        # remember that Hermes names the provider "kimi-coding".
         assert "KIMI_API_KEY" in pconfig.api_key_env_vars
         assert "KIMI_CODING_API_KEY" in pconfig.api_key_env_vars
+        assert "MOONSHOT_API_KEY" in pconfig.api_key_env_vars
         assert pconfig.base_url_env_var == "KIMI_BASE_URL"
+
+    def test_kimi_provider_label_mentions_both_moonshot_and_kimi(self):
+        """Regression for #13935: the user-facing label must make it clear that
+        the provider handles both platform.moonshot.ai keys and Kimi Code keys,
+        not just Kimi Code."""
+        pconfig = PROVIDER_REGISTRY["kimi-coding"]
+        assert "Moonshot" in pconfig.name
+        assert "Kimi" in pconfig.name
 
     def test_minimax_env_vars(self):
         pconfig = PROVIDER_REGISTRY["minimax"]
