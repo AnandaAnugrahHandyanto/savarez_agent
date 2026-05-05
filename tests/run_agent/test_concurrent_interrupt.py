@@ -44,6 +44,11 @@ def _make_agent(monkeypatch):
         _current_tool = None
         _last_activity = 0
         _tool_guardrails = MagicMock()
+        # Simplified version of _append_guardrail_observation — returns function_result
+        # unchanged. The real method wraps with guardrail decisions; interrupt
+        # tests don't need guardrail coverage.
+        def _append_guardrail_observation(self, tool_name, function_args, function_result, *, failed):
+            return function_result
         _print_fn = print
         # Worker-thread tracking state mirrored from AIAgent.__init__ so the
         # real interrupt() method can fan out to concurrent-tool workers.
