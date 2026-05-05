@@ -928,8 +928,11 @@ def skill_view(
                     },
                     ensure_ascii=False,
                 )
-            # Plugin itself not found — fall through to flat-tree scan
-            # which will return a normal "not found" with suggestions.
+            # Plugin itself not found — fall through to flat-tree scan,
+            # using the *bare* name so a user-installed skill with the same
+            # name still resolves (e.g. skill_view("achat-room-ops:achat-room-ops")
+            # falls back to the user skill "achat-room-ops").
+            name = bare
 
         from agent.skill_utils import get_external_skills_dirs
 
