@@ -4229,13 +4229,20 @@ def save_env_value(key: str, value: str):
         # Sanitize on every read: split concatenated keys, drop stale placeholders
         lines = _sanitize_env_lines(lines)
 
-    # Find and update or append
+    # python-dotenv resolves duplicate keys with last-occurrence-wins, so we
+    # must drop any duplicates after the first match — otherwise a stale entry
+    # further down would silently override the value we write here.
+    new_lines: list[str] = []
     found = False
-    for i, line in enumerate(lines):
+    for line in lines:
         if line.strip().startswith(f"{key}="):
-            lines[i] = f"{key}={value}\n"
-            found = True
-            break
+            if not found:
+                new_lines.append(f"{key}={value}\n")
+                found = True
+            # else: drop subsequent duplicates
+            continue
+        new_lines.append(line)
+    lines = new_lines
 
     if not found:
         # Ensure there's a newline at the end of the file before appending

@@ -151,6 +151,32 @@ class TestSaveEnvValueSecure:
             env_mode = (tmp_path / ".env").stat().st_mode & 0o777
             assert env_mode == 0o600
 
+    def test_save_env_value_dedupes_existing_duplicates(self, tmp_path):
+        """A stale duplicate further down in .env must not survive an update.
+
+        python-dotenv resolves duplicate keys with last-occurrence-wins, so a
+        stale OPENROUTER_API_KEY at the bottom of the file would silently
+        override a fresh value written at the top (issue #8270).
+        """
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "OPENROUTER_API_KEY=stale-top\n"
+            "FAL_KEY=other\n"
+            "OPENROUTER_API_KEY=stale-bottom\n"
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("OPENROUTER_API_KEY", "fresh-key")
+
+            content = env_file.read_text()
+            assert content.count("OPENROUTER_API_KEY=") == 1
+            assert "OPENROUTER_API_KEY=fresh-key\n" in content
+            assert "stale-top" not in content
+            assert "stale-bottom" not in content
+            assert "FAL_KEY=other" in content
+
+            env_values = load_env()
+            assert env_values["OPENROUTER_API_KEY"] == "fresh-key"
+
 
 class TestRemoveEnvValue:
     def test_removes_key_from_env_file(self, tmp_path):
