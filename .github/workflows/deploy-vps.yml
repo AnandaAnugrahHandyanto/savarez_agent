@@ -1,0 +1,154 @@
+name: Deploy to VPS (Ubuntu)
+
+# One-click deployment to a fresh or existing Ubuntu VPS.
+#
+# How to use:
+#   1. Configure repository secrets (Settings -> Secrets and variables -> Actions):
+#        VPS_HOST              (required)  Hostname or IP of the target VPS
+#        VPS_SSH_PRIVATE_KEY   (required)  PEM-formatted private SSH key authorized on the VPS
+#        VPS_USER              (optional)  SSH user, defaults to "root"
+#        VPS_SSH_PORT          (optional)  SSH port, defaults to "22"
+#        VPS_HERMES_ENV        (optional)  Full contents of the .env file deployed alongside
+#                                          docker-compose.yml. If unset, the deploy falls back
+#                                          to the existing .env on the VPS or copies .env.example.
+#        VPS_KNOWN_HOSTS       (optional)  Pre-vetted SSH host key (output of `ssh-keyscan`).
+#                                          If unset, the workflow trusts on first use (TOFU)
+#                                          and pins the resolved key for the remainder of the job.
+#
+#   2. Trigger via the "Run workflow" button on the Actions tab. That's the
+#      one click. Inputs let you pick branch, install dir, and whether to
+#      bootstrap Docker on a fresh box.
+
+on:
+  workflow_dispatch:
+    inputs:
+      install_dir:
+        description: "Absolute install path on the VPS"
+        required: false
+        default: "/opt/hermes-agent"
+        type: string
+      ref:
+        description: "Git ref (branch / tag / SHA) to deploy"
+        required: false
+        default: ""
+        type: string
+      bootstrap:
+        description: "Install Docker + prerequisites on the VPS (safe to leave on; idempotent)"
+        required: false
+        default: true
+        type: boolean
+      restart:
+        description: "Force `docker compose up -d --force-recreate` even if nothing changed"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-vps-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to ${{ secrets.VPS_HOST || 'VPS' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER || 'root' }}
+      VPS_SSH_PORT: ${{ secrets.VPS_SSH_PORT || '22' }}
+      INSTALL_DIR: ${{ inputs.install_dir }}
+      DEPLOY_REF: ${{ inputs.ref || github.sha }}
+      RUN_BOOTSTRAP: ${{ inputs.bootstrap }}
+      FORCE_RESTART: ${{ inputs.restart }}
+    steps:
+      - name: Validate required secrets
+        run: |
+          missing=()
+          [ -z "${{ secrets.VPS_HOST }}" ] && missing+=("VPS_HOST")
+          [ -z "${{ secrets.VPS_SSH_PRIVATE_KEY }}" ] && missing+=("VPS_SSH_PRIVATE_KEY")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required secret(s): ${missing[*]}"
+            echo "Configure them under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
+      - name: Checkout code at requested ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          submodules: recursive
+
+      - name: Set up SSH agent and known_hosts
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          # Load the private key into a job-scoped agent.
+          eval "$(ssh-agent -s)"
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+          printf '%s\n' "${{ secrets.VPS_SSH_PRIVATE_KEY }}" | ssh-add -
+
+          # Pin the host key to mitigate MITM on first connect.
+          if [ -n "${{ secrets.VPS_KNOWN_HOSTS }}" ]; then
+            printf '%s\n' "${{ secrets.VPS_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          else
+            echo "::warning::VPS_KNOWN_HOSTS not set; trusting on first use."
+            ssh-keyscan -p "$VPS_SSH_PORT" -H "$VPS_HOST" > ~/.ssh/known_hosts 2>/dev/null
+          fi
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Smoke-test SSH connectivity
+        run: |
+          ssh -p "$VPS_SSH_PORT" -o BatchMode=yes -o ConnectTimeout=15 \
+            "$VPS_USER@$VPS_HOST" "echo connected as \$(id -un) on \$(uname -srm)"
+
+      - name: Sync repository to VPS
+        run: |
+          set -euo pipefail
+          ssh -p "$VPS_SSH_PORT" "$VPS_USER@$VPS_HOST" \
+            "sudo mkdir -p '$INSTALL_DIR' && sudo chown -R \$(id -u):\$(id -g) '$INSTALL_DIR'"
+
+          # rsync excludes that mirror .dockerignore-ish noise. node_modules
+          # and the venv get rebuilt inside the image on the VPS.
+          rsync -az --delete \
+            --exclude '.git/' \
+            --exclude 'node_modules/' \
+            --exclude '.venv/' \
+            --exclude '__pycache__/' \
+            --exclude '*.pyc' \
+            --exclude 'web/dist/' \
+            --exclude 'ui-tui/dist/' \
+            -e "ssh -p $VPS_SSH_PORT" \
+            ./ "$VPS_USER@$VPS_HOST:$INSTALL_DIR/"
+
+      - name: Write .env from secret (if provided)
+        if: ${{ secrets.VPS_HERMES_ENV != '' }}
+        run: |
+          # Pipe via stdin so the secret value never lands in argv or the env table.
+          printf '%s' "${{ secrets.VPS_HERMES_ENV }}" | \
+            ssh -p "$VPS_SSH_PORT" "$VPS_USER@$VPS_HOST" \
+              "umask 077 && cat > '$INSTALL_DIR/.env'"
+
+      - name: Bootstrap VPS (Docker + prereqs)
+        if: ${{ inputs.bootstrap }}
+        run: |
+          ssh -p "$VPS_SSH_PORT" "$VPS_USER@$VPS_HOST" \
+            "bash '$INSTALL_DIR/scripts/vps-bootstrap.sh'"
+
+      - name: Deploy stack
+        run: |
+          ssh -p "$VPS_SSH_PORT" "$VPS_USER@$VPS_HOST" \
+            "FORCE_RESTART='$FORCE_RESTART' DEPLOY_REF='$DEPLOY_REF' \
+              bash '$INSTALL_DIR/scripts/vps-deploy.sh' '$INSTALL_DIR'"
+
+      - name: Show running containers
+        if: always()
+        run: |
+          ssh -p "$VPS_SSH_PORT" "$VPS_USER@$VPS_HOST" \
+            "(docker compose -f '$INSTALL_DIR/docker-compose.yml' ps || true) && \
+             docker ps --filter name=hermes --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
