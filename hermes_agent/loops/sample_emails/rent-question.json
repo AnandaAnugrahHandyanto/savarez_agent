@@ -1,0 +1,10 @@
+{
+  "id": "msg-002",
+  "received_at": "2026-05-05T16:05:00Z",
+  "channel": "email",
+  "from": "office@beautifulmind.example",
+  "to": "manager@1011verrado.example",
+  "subject": "Question about May rent balance",
+  "body": "Hi, our office manager is reconciling our books and wanted to confirm the balance due for May rent. Could you send a current statement showing what we owe and any credits on account? Thanks.",
+  "attachments": []
+}

@@ -1,0 +1,10 @@
+{
+  "id": "msg-003",
+  "received_at": "2026-05-05T08:12:00Z",
+  "channel": "email",
+  "from": "frontdesk@beautifulmind.example",
+  "to": "manager@1011verrado.example",
+  "subject": "URGENT - water flooding from ceiling in suite A-101",
+  "body": "Active water leak — water is pouring through the ceiling tile above our front desk and flooding the lobby. We have patients in the waiting area. Please send someone immediately. We have shut off the main valve we could find but it is still coming down.",
+  "attachments": []
+}

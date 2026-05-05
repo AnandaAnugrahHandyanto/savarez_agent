@@ -1,0 +1,10 @@
+{
+  "id": "msg-001",
+  "received_at": "2026-05-05T15:30:00Z",
+  "channel": "email",
+  "from": "office@beautifulmind.example",
+  "to": "manager@1011verrado.example",
+  "subject": "AC not cooling in suite A-101",
+  "body": "Hi - the AC in our suite has been blowing warm air since this morning. Patients are uncomfortable. Can someone look at this today?",
+  "attachments": []
+}
