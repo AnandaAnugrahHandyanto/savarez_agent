@@ -169,12 +169,22 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
 
-# Resolve Hermes home directory (respects HERMES_HOME override)
+# Resolve Hermes home directory (respects HERMES_HOME override at import time).
+# Keep this legacy module variable for older tests/patches, but runtime paths
+# that must track per-test/profile HERMES_HOME should call get_hermes_home().
 _hermes_home = get_hermes_home()
 
-# File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
+# File-based lock prevents concurrent ticks from gateway + daemon + systemd timer.
+# These legacy constants are intentionally not the source of truth inside tick():
+# pytest imports this module before its per-test HERMES_HOME fixture runs, and
+# xdist workers would otherwise share the real ~/.hermes/cron/.tick.lock.
 _LOCK_DIR = _hermes_home / "cron"
 _LOCK_FILE = _LOCK_DIR / ".tick.lock"
+
+
+def _tick_lock_paths() -> tuple[Path, Path]:
+    lock_dir = get_hermes_home() / "cron"
+    return lock_dir, lock_dir / ".tick.lock"
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -1373,12 +1383,13 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     Returns:
         Number of jobs executed (0 if another tick is already running)
     """
-    _LOCK_DIR.mkdir(parents=True, exist_ok=True)
+    lock_dir, lock_file = _tick_lock_paths()
+    lock_dir.mkdir(parents=True, exist_ok=True)
 
     # Cross-platform file locking: fcntl on Unix, msvcrt on Windows
     lock_fd = None
     try:
-        lock_fd = open(_LOCK_FILE, "w")
+        lock_fd = open(lock_file, "w")
         if fcntl:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         elif msvcrt:

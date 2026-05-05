@@ -1570,6 +1570,38 @@ class TestSilentDelivery:
             tick(verbose=False)
         deliver_mock.assert_not_called()
 
+    def test_tick_lock_uses_current_hermes_home_not_import_time_home(self, tmp_path, monkeypatch):
+        """xdist workers must not share the import-time ~/.hermes cron lock."""
+        import cron.scheduler as scheduler
+
+        if scheduler.fcntl is None:
+            pytest.skip("fcntl lock regression is Unix-specific")
+
+        stale_lock_dir = tmp_path / "stale" / "cron"
+        stale_lock_dir.mkdir(parents=True)
+        stale_lock_file = stale_lock_dir / ".tick.lock"
+        current_home = tmp_path / "current"
+        (current_home / "cron").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(current_home))
+        monkeypatch.setattr(scheduler, "_LOCK_DIR", stale_lock_dir)
+        monkeypatch.setattr(scheduler, "_LOCK_FILE", stale_lock_file)
+
+        with open(stale_lock_file, "w") as stale_fd:
+            scheduler.fcntl.flock(stale_fd, scheduler.fcntl.LOCK_EX | scheduler.fcntl.LOCK_NB)
+            try:
+                with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+                     patch("cron.scheduler.advance_next_run"), \
+                     patch("cron.scheduler.run_job", return_value=(False, "# output", "", "some error")), \
+                     patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+                     patch("cron.scheduler._deliver_result") as deliver_mock, \
+                     patch("cron.scheduler.mark_job_run"):
+                    from cron.scheduler import tick
+                    assert tick(verbose=False) == 1
+            finally:
+                scheduler.fcntl.flock(stale_fd, scheduler.fcntl.LOCK_UN)
+
+        deliver_mock.assert_called_once()
+
     def test_failed_job_always_delivers(self):
         """Failed jobs deliver regardless of [SILENT] in output."""
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
