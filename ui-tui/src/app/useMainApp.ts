@@ -494,6 +494,7 @@ export function useMainApp(gw: GatewayClient) {
     composerActions,
     composerRefs,
     composerState,
+    ensureSession: session.ensureSession,
     gw,
     maybeGoodVibes,
     setLastUserMsg,
@@ -557,7 +558,6 @@ export function useMainApp(gw: GatewayClient) {
         session: {
           STARTUP_RESUME_ID,
           colsRef,
-          newSession: session.newSession,
           resetSession: session.resetSession,
           resumeById: session.resumeById,
           setCatalog

@@ -311,7 +311,7 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
     monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None: object())
     monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80: None)
-    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "test/model"})
+    monkeypatch.setattr(server, "_session_info", lambda _agent, session_key=None: {"model": "test/model"})
 
     resp = server.handle_request(
         {

@@ -4,7 +4,7 @@ import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
-import { patchUiState, resetUiState } from '../app/uiStore.js'
+import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
@@ -57,6 +57,20 @@ describe('createGatewayEventHandler', () => {
     resetTurnState()
     turnController.fullReset()
     patchUiState({ showReasoning: true })
+  })
+
+  it('does not create a persisted session when the gateway becomes ready without a resume id', async () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: {}, type: 'gateway.ready' } as any)
+
+    await Promise.resolve()
+
+    expect(ctx.session.newSession).not.toHaveBeenCalled()
+    expect(ctx.session.resumeById).not.toHaveBeenCalled()
+    expect(getTurnState().activity).toEqual([])
   })
 
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {
@@ -553,7 +567,7 @@ describe('createGatewayEventHandler', () => {
     })
   })
 
-  it('on gateway.ready with no STARTUP_RESUME_ID and auto_resume off, forges a new session', async () => {
+  it('on gateway.ready with no STARTUP_RESUME_ID and auto_resume off, stays idle until first prompt', async () => {
     const appended: Msg[] = []
     const newSession = vi.fn()
     const resumeById = vi.fn()
@@ -572,7 +586,8 @@ describe('createGatewayEventHandler', () => {
 
     createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
 
-    await vi.waitFor(() => expect(newSession).toHaveBeenCalled())
+    await vi.waitFor(() => expect(getUiState().status).toBe('ready'))
+    expect(newSession).not.toHaveBeenCalled()
     expect(resumeById).not.toHaveBeenCalled()
   })
 
@@ -603,7 +618,7 @@ describe('createGatewayEventHandler', () => {
     expect(newSession).not.toHaveBeenCalled()
   })
 
-  it('on gateway.ready with auto_resume on but no eligible session, falls back to new', async () => {
+  it('on gateway.ready with auto_resume on but no eligible session, stays idle until first prompt', async () => {
     const appended: Msg[] = []
     const newSession = vi.fn()
     const resumeById = vi.fn()
@@ -626,11 +641,12 @@ describe('createGatewayEventHandler', () => {
 
     createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
 
-    await vi.waitFor(() => expect(newSession).toHaveBeenCalled())
+    await vi.waitFor(() => expect(getUiState().status).toBe('ready'))
+    expect(newSession).not.toHaveBeenCalled()
     expect(resumeById).not.toHaveBeenCalled()
   })
 
-  it('on gateway.ready when config.get rejects, falls back to new session', async () => {
+  it('on gateway.ready when config.get rejects, stays idle until first prompt', async () => {
     const appended: Msg[] = []
     const newSession = vi.fn()
     const resumeById = vi.fn()
@@ -649,11 +665,12 @@ describe('createGatewayEventHandler', () => {
 
     createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
 
-    await vi.waitFor(() => expect(newSession).toHaveBeenCalled())
+    await vi.waitFor(() => expect(getUiState().status).toBe('ready'))
+    expect(newSession).not.toHaveBeenCalled()
     expect(resumeById).not.toHaveBeenCalled()
   })
 
-  it('on gateway.ready when session.most_recent rejects, falls back to new session', async () => {
+  it('on gateway.ready when session.most_recent rejects, stays idle until first prompt', async () => {
     const appended: Msg[] = []
     const newSession = vi.fn()
     const resumeById = vi.fn()
@@ -676,7 +693,8 @@ describe('createGatewayEventHandler', () => {
 
     createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
 
-    await vi.waitFor(() => expect(newSession).toHaveBeenCalled())
+    await vi.waitFor(() => expect(getUiState().status).toBe('ready'))
+    expect(newSession).not.toHaveBeenCalled()
     expect(resumeById).not.toHaveBeenCalled()
   })
 

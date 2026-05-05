@@ -44,6 +44,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
     composerActions,
     composerRefs,
     composerState,
+    ensureSession,
     gw,
     maybeGoodVibes,
     setLastUserMsg,
@@ -88,13 +89,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
     (text: string, showUserMessage = true) => {
       const expand = expandSnips(composerState.pasteSnips)
 
-      const startSubmit = (displayText: string, submitText: string, showUserMessage = true) => {
-        const sid = getUiState().sid
-
-        if (!sid) {
-          return sys('session not ready yet')
-        }
-
+      const startSubmit = (sid: string, displayText: string, submitText: string, showUserMessage = true) => {
         turnController.clearStatusTimer()
         maybeGoodVibes(submitText)
         setLastUserMsg(text)
@@ -120,32 +115,37 @@ export function useSubmission(opts: UseSubmissionOptions) {
         })
       }
 
-      const sid = getUiState().sid
-
-      if (!sid) {
-        return sys('session not ready yet')
-      }
-
-      // Always ask the backend whether this looks like a file drop.
-      // The backend's _detect_file_drop handles paths with spaces, quotes,
-      // Windows drive letters, and escaped characters correctly.
-      gw.request<InputDetectDropResponse>('input.detect_drop', { session_id: sid, text })
-        .then(r => {
-          if (!r?.matched) {
-            return startSubmit(text, expand(text), showUserMessage)
+      ensureSession()
+        .then(sid => {
+          if (!sid) {
+            return sys('session not ready yet')
           }
 
-          if (r.is_image) {
-            turnController.pushActivity(attachedImageNotice(r))
-          } else {
-            turnController.pushActivity(`detected file: ${r.name}`)
-          }
+          // Always ask the backend whether this looks like a file drop.
+          // The backend's _detect_file_drop handles paths with spaces, quotes,
+          // Windows drive letters, and escaped characters correctly.
+          return gw.request<InputDetectDropResponse>('input.detect_drop', { session_id: sid, text })
+            .then(r => {
+              if (!r?.matched) {
+                return startSubmit(sid, text, expand(text), showUserMessage)
+              }
 
-          startSubmit(r.text || text, expand(r.text || text), showUserMessage)
+              if (r.is_image) {
+                turnController.pushActivity(attachedImageNotice(r))
+              } else {
+                turnController.pushActivity(`detected file: ${r.name}`)
+              }
+
+              startSubmit(sid, r.text || text, expand(r.text || text), showUserMessage)
+            })
+            .catch(() => startSubmit(sid, text, expand(text), showUserMessage))
         })
-        .catch(() => startSubmit(text, expand(text), showUserMessage))
+        .catch((e: Error) => {
+          sys(`error: ${e.message}`)
+          patchUiState({ busy: false, status: 'ready' })
+        })
     },
-    [appendMessage, composerActions, composerState.pasteSnips, gw, maybeGoodVibes, setLastUserMsg, sys]
+    [appendMessage, composerActions, composerState.pasteSnips, ensureSession, gw, maybeGoodVibes, setLastUserMsg, sys]
   )
 
   const shellExec = useCallback(
@@ -304,16 +304,20 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       const live = getUiState()
 
-      if (!live.sid) {
-        composerActions.pushHistory(full)
-        composerActions.enqueue(full)
-        composerActions.clearIn()
-
-        return
-      }
-
       const editIdx = composerRefs.queueEditRef.current
       composerActions.clearIn()
+
+      if (!live.sid) {
+        composerActions.pushHistory(full)
+
+        if (hasInterpolation(full)) {
+          patchUiState({ busy: true })
+
+          return interpolate(full, send)
+        }
+
+        return send(full)
+      }
 
       if (editIdx !== null) {
         composerActions.replaceQueue(editIdx, full)
@@ -420,6 +424,7 @@ export interface UseSubmissionOptions {
   composerActions: ComposerActions
   composerRefs: ComposerRefs
   composerState: ComposerState
+  ensureSession: () => Promise<null | string>
   gw: GatewayClient
   maybeGoodVibes: (text: string) => void
   setLastUserMsg: (value: string) => void

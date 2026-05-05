@@ -454,7 +454,7 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     monkeypatch.setattr(
         server,
         "_session_info",
-        lambda agent: {"model": "test", "tools": {}, "skills": {}},
+        lambda agent, session_key=None: {"model": "test", "tools": {}, "skills": {}},
     )
     monkeypatch.setattr(
         server, "_init_session", lambda sid, key, agent, history, cols=80: None
@@ -950,7 +950,7 @@ def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
     monkeypatch.setattr(server, "_make_agent", _make_agent)
     monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
-    monkeypatch.setattr(server, "_session_info", lambda _a: {"model": "x"})
+    monkeypatch.setattr(server, "_session_info", lambda _a, session_key=None: {"model": "x"})
     monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
@@ -1015,7 +1015,7 @@ def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
     monkeypatch.setattr(
         server, "_write_config_key", lambda path, value: writes.append((path, value))
     )
-    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x"})
+    monkeypatch.setattr(server, "_session_info", lambda _agent, session_key=None: {"model": "x"})
     monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
     monkeypatch.setattr(
         "hermes_cli.models.resolve_fast_mode_overrides",
@@ -1745,7 +1745,7 @@ def test_config_set_personality_resets_history_and_returns_info(monkeypatch):
         server, "_make_agent", lambda sid, key, session_id=None: new_agent
     )
     monkeypatch.setattr(
-        server, "_session_info", lambda agent: {"model": getattr(agent, "model", "?")}
+        server, "_session_info", lambda agent, session_key=None: {"model": getattr(agent, "model", "?")}
     )
     monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
     monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
@@ -1775,7 +1775,7 @@ def test_session_compress_uses_compress_helper(monkeypatch):
         "_compress_session_history",
         lambda session, focus_topic=None, **_kw: (2, {"total": 42}),
     )
-    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x"})
+    monkeypatch.setattr(server, "_session_info", lambda _agent, session_key=None: {"model": "x"})
 
     with patch("tui_gateway.server._emit") as emit:
         resp = server.handle_request(
@@ -2800,11 +2800,9 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     # detection entirely and the test would race a non-event.
     build_started = threading.Event()
     release_build = threading.Event()
-    build_entered = threading.Event()
 
     def _slow_make_agent(sid, key, session_id=None):
         build_started.set()
-        build_entered.set()
         release_build.wait(timeout=3.0)
         return _FakeAgent()
 
@@ -2816,7 +2814,7 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
         "_get_db",
         lambda: types.SimpleNamespace(create_session=lambda *a, **kw: None),
     )
-    monkeypatch.setattr(server, "_session_info", lambda _a: {"model": "x"})
+    monkeypatch.setattr(server, "_session_info", lambda _a, session_key=None: {"model": "x"})
     monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
@@ -2842,13 +2840,10 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     )
     assert resp.get("result"), f"got error: {resp.get('error')}"
     sid = resp["result"]["session_id"]
-    assert build_entered.wait(timeout=1.0), "deferred build did not start"
-
-    # Wait until the (deferred) build thread has actually entered
-    # _make_agent — otherwise session.close pops _sessions[sid] before
-    # _build ever runs, _start_agent_build never calls _build, and we
-    # never exercise the orphan-cleanup path.
-    assert build_started.wait(timeout=2.0), "build thread never entered _make_agent"
+    # Wait for the deferred build timer to enter _make_agent, then close while
+    # construction is blocked. Closing before the timer fires is a benign path:
+    # no worker has been allocated yet, so there is nothing to clean up.
+    assert build_started.wait(timeout=3.0), "deferred build did not start"
 
     # Build thread is blocked in _slow_make_agent.  Close the session
     # NOW — this pops _sessions[sid] before _build can install the
@@ -2917,7 +2912,7 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
         "_get_db",
         lambda: types.SimpleNamespace(create_session=lambda *a, **kw: None),
     )
-    monkeypatch.setattr(server, "_session_info", lambda _a: {"model": "x"})
+    monkeypatch.setattr(server, "_session_info", lambda _a, session_key=None: {"model": "x"})
     monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
@@ -2997,7 +2992,7 @@ def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
     monkeypatch.setattr(server, "_make_agent", lambda sid, key: _FakeAgent())
     monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
     monkeypatch.setattr(server, "_get_db", lambda: None)
-    monkeypatch.setattr(server, "_session_info", lambda _a: {"model": "x"})
+    monkeypatch.setattr(server, "_session_info", lambda _a, session_key=None: {"model": "x"})
     monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: emits.append(a))
@@ -3626,10 +3621,6 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
     assert (
         resp["result"]["messages"][0]
         == "Chrome isn't running with remote debugging — attempting to launch..."
-    )
-    assert any(
-        "No Chrome/Chromium executable was found" in line
-        for line in resp["result"]["messages"]
     )
     assert any(
         "--remote-debugging-port=9222" in line for line in resp["result"]["messages"]

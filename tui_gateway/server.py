@@ -1100,7 +1100,7 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
             api_mode=result.api_mode,
         )
         _restart_slash_worker(session)
-        _emit("session.info", sid, _session_info(agent))
+        _emit("session.info", sid, _session_info(agent, session.get("session_key")))
 
     os.environ["HERMES_MODEL"] = result.new_model
     os.environ["HERMES_INFERENCE_MODEL"] = result.new_model
@@ -1325,7 +1325,7 @@ def _probe_config_health(cfg: dict) -> str:
     return " ".join(warnings).strip()
 
 
-def _session_info(agent) -> dict:
+def _session_info(agent, session_key: str | None = None) -> dict:
     reasoning_config = getattr(agent, "reasoning_config", None)
     reasoning_effort = ""
     if (
@@ -1348,6 +1348,8 @@ def _session_info(agent) -> dict:
         "update_command": "",
         "usage": _get_usage(agent),
     }
+    if session_key:
+        info["session_key"] = session_key
     try:
         from hermes_cli import __version__, __release_date__
 
@@ -1691,7 +1693,7 @@ def _apply_personality_to_session(
             agent = session["agent"]
             agent.ephemeral_system_prompt = new_prompt or None
             agent._cached_system_prompt = None
-            info = _session_info(agent)
+            info = _session_info(agent, session.get("session_key"))
             _emit("session.info", sid, info)
             return False, info
         return False, None
@@ -1758,7 +1760,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     with session["history_lock"]:
         session["history"] = []
         session["history_version"] = int(session.get("history_version", 0)) + 1
-    info = _session_info(new_agent)
+    info = _session_info(new_agent, session.get("session_key"))
     _emit("session.info", sid, info)
     _restart_slash_worker(session)
     return info
@@ -1850,7 +1852,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         pass
     _wire_callbacks(sid)
     _notify_session_boundary("on_session_reset", key)
-    _emit("session.info", sid, _session_info(agent))
+    _emit("session.info", sid, _session_info(agent, key))
 
 
 def _new_session_key() -> str:
@@ -2137,7 +2139,7 @@ def _(rid, params: dict) -> dict:
             "resumed": target,
             "message_count": len(messages),
             "messages": messages,
-            "info": _session_info(agent),
+            "info": _session_info(agent, target),
         },
     )
 
@@ -2374,7 +2376,7 @@ def _(rid, params: dict) -> dict:
             summary = summarize_manual_compression(
                 before_messages, messages, before_tokens, after_tokens
             )
-            info = _session_info(agent)
+            info = _session_info(agent, session.get("session_key"))
             _emit("session.info", sid, info)
             return _ok(
                 rid,
@@ -3467,7 +3469,7 @@ def _(rid, params: dict) -> dict:
             _emit(
                 "session.info",
                 params.get("session_id", ""),
-                _session_info(agent),
+                _session_info(agent, session.get("session_key")),
             )
         return _ok(rid, {"key": key, "value": nv})
 
@@ -3945,7 +3947,11 @@ def _(rid, params: dict) -> dict:
             agent = session["agent"]
             if hasattr(agent, "refresh_tools"):
                 agent.refresh_tools()
-            _emit("session.info", params.get("session_id", ""), _session_info(agent))
+            _emit(
+                "session.info",
+                params.get("session_id", ""),
+                _session_info(agent, session.get("session_key")),
+            )
 
         # Honor `always=true` by persisting the opt-out to config.
         if bool(params.get("always", False)):
@@ -5141,14 +5147,14 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         elif name == "compress" and agent:
             _compress_session_history(session, arg)
             _sync_session_key_after_compress(sid, session)
-            _emit("session.info", sid, _session_info(agent))
+            _emit("session.info", sid, _session_info(agent, session.get("session_key")))
         elif name == "fast" and agent:
             mode = arg.lower()
             if mode in {"fast", "on"}:
                 agent.service_tier = "priority"
             elif mode in {"normal", "off"}:
                 agent.service_tier = None
-            _emit("session.info", sid, _session_info(agent))
+            _emit("session.info", sid, _session_info(agent, session.get("session_key")))
         elif name == "reload-mcp" and agent and hasattr(agent, "reload_mcp_tools"):
             agent.reload_mcp_tools()
         elif name == "stop":

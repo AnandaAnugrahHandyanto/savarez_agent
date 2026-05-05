@@ -55,7 +55,7 @@ const pushTool = pushUnique(8)
 
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
   const { rpc } = ctx.gateway
-  const { STARTUP_RESUME_ID, newSession, resumeById, setCatalog } = ctx.session
+  const { STARTUP_RESUME_ID, resumeById, setCatalog } = ctx.session
   const { bellOnComplete, stdout, sys } = ctx.system
   const { appendMessage, panel, setHistoryItems } = ctx.transcript
   const { setInput } = ctx.composer
@@ -186,19 +186,18 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     }
 
     // Opt-in: when `display.tui_auto_resume_recent` is true, look up
-    // the most recent human-facing session and resume it instead of
-    // forging a brand-new one.  Mirrors classic CLI's `hermes -c` /
-    // `hermes --tui` muscle memory and addresses the audit's "session
-    // unrecoverable after disconnection" gap.  Default off so existing
-    // users aren't surprised.
+    // the most recent human-facing session and resume it. Otherwise stay
+    // idle until the first prompt creates a session, so opening the dashboard
+    // or TUI does not mint an empty chat row.
     rpc<ConfigFullResponse>('config.get', { key: 'full' })
       .then(cfg => {
         if (!cfg?.config?.display?.tui_auto_resume_recent) {
-          patchUiState({ status: 'forging session…' })
-          newSession()
+          patchUiState({ status: 'ready' })
 
           return
         }
+
+        patchUiState({ status: 'checking recent session…' })
 
         return rpc<SessionMostRecentResponse>('session.most_recent', {}).then(r => {
           const target = r?.session_id
@@ -210,14 +209,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             return
           }
 
-          patchUiState({ status: 'forging session…' })
-          newSession()
+          patchUiState({ status: 'ready' })
         })
       })
-      .catch(() => {
-        patchUiState({ status: 'forging session…' })
-        newSession()
-      })
+      .catch(() => patchUiState({ status: 'ready' }))
   }
 
   return (ev: GatewayEvent) => {
