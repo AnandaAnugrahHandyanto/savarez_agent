@@ -1423,6 +1423,21 @@ class HermesACPAgent(acp.Agent):
             options = {}
         options[str(config_id)] = value
         setattr(state, "config_options", options)
+
+        if str(config_id) == "reasoning_effort":
+            try:
+                from hermes_constants import parse_reasoning_effort
+
+                state.agent.reasoning_config = parse_reasoning_effort(str(value or ""))
+            except Exception:
+                logger.warning(
+                    "Session %s: failed to apply reasoning effort %s",
+                    session_id,
+                    value,
+                    exc_info=True,
+                )
+                return None
+
         self.session_manager.save_session(session_id)
         logger.info("Session %s: config option %s updated", session_id, config_id)
         return SetSessionConfigOptionResponse(config_options=[])
