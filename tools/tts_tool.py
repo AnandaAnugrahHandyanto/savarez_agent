@@ -98,11 +98,6 @@ def _import_mistral_client():
     from mistralai.client import Mistral
     return Mistral
 
-def _import_sounddevice():
-    """Lazy import sounddevice. Returns the module or raises ImportError/OSError."""
-    import sounddevice as sd
-    return sd
-
 
 def _import_kittentts():
     """Lazy import KittenTTS. Returns the class or raises ImportError."""
