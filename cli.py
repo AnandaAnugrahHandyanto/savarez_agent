@@ -9935,7 +9935,7 @@ class HermesCLI:
             ] if item is not None
         ]
 
-    def run(self):
+    def run(self, initial_prompt: str = None):
         """Run the interactive CLI loop with persistent input at bottom."""
         # Push the entire TUI to the bottom of the terminal so the banner,
         # responses, and prompt all appear pinned to the bottom — empty
@@ -10032,6 +10032,8 @@ class HermesCLI:
         self._interrupt_queue = queue.Queue()   # For messages typed while agent is running
         self._should_exit = False
         self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
+        if initial_prompt:
+            self._pending_input.put(initial_prompt)
 
         # Give plugin manager a CLI reference so plugins can inject messages
         from hermes_cli.plugins import get_plugin_manager
@@ -11987,6 +11989,7 @@ class HermesCLI:
 def main(
     query: str = None,
     q: str = None,
+    initial: str = None,
     image: str = None,
     toolsets: str = None,
     skills: str | list[str] | tuple[str, ...] = None,
@@ -12015,6 +12018,7 @@ def main(
     Args:
         query: Single query to execute (then exit). Alias: -q
         q: Shorthand for --query
+        initial: Initial prompt to submit before staying in interactive mode
         image: Optional local image path to attach to a single query
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
         skills: Comma-separated or repeated list of skills to preload for the session
@@ -12082,6 +12086,8 @@ def main(
     
     # Handle query shorthand
     query = query or q
+    if initial and (query or image):
+        raise ValueError("--initial cannot be combined with --query or --image")
     
     # Parse toolsets - handle both string and tuple/list inputs
     # Default to hermes-cli toolset which includes cronjob management tools
@@ -12261,7 +12267,7 @@ def main(
         return
     
     # Run interactive mode
-    cli.run()
+    cli.run(initial_prompt=initial)
 
 
 if __name__ == "__main__":
