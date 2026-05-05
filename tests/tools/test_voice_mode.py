@@ -611,33 +611,34 @@ class TestWhisperHallucinationFilter:
 # ============================================================================
 
 class TestPlayAudioFile:
-    def test_play_wav_via_sounddevice(self, monkeypatch, sample_wav):
-        np = pytest.importorskip("numpy")
+    def test_play_wav_via_afplay_on_macos(self, monkeypatch, sample_wav):
+        """WAV files are played via afplay (macOS) subprocess, not sounddevice."""
+        popen_calls = []
 
-        mock_sd_obj = MagicMock()
-        # Simulate stream completing immediately (get_stream().active = False)
-        mock_stream = MagicMock()
-        mock_stream.active = False
-        mock_sd_obj.get_stream.return_value = mock_stream
+        class FakeProc:
+            returncode = 0
+            def wait(self, timeout=None):
+                return 0
+            def poll(self):
+                return 0
 
-        def _fake_import():
-            return mock_sd_obj, np
+        def fake_popen(cmd, **kwargs):
+            popen_calls.append(cmd)
+            return FakeProc()
 
-        monkeypatch.setattr("tools.voice_mode._import_audio", _fake_import)
+        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Darwin")
+        monkeypatch.setattr("tools.voice_mode.shutil.which", lambda cmd: f"/usr/bin/{cmd}" if cmd == "afplay" else None)
+        monkeypatch.setattr("tools.voice_mode.subprocess.Popen", fake_popen)
 
         from tools.voice_mode import play_audio_file
 
         result = play_audio_file(sample_wav)
 
         assert result is True
-        mock_sd_obj.play.assert_called_once()
-        mock_sd_obj.stop.assert_called_once()
+        assert any(cmd[0] == "afplay" for cmd in popen_calls)
 
     def test_returns_false_when_no_player(self, monkeypatch, sample_wav):
-        def _fail_import():
-            raise ImportError("no sounddevice")
-        monkeypatch.setattr("tools.voice_mode._import_audio", _fail_import)
-        monkeypatch.setattr("shutil.which", lambda _: None)
+        monkeypatch.setattr("tools.voice_mode.shutil.which", lambda _: None)
 
         from tools.voice_mode import play_audio_file
 
@@ -707,49 +708,67 @@ class TestCleanupTempRecordings:
 # ============================================================================
 
 class TestPlayBeep:
-    def test_beep_calls_sounddevice_play(self, mock_sd):
+    def test_beep_calls_system_player(self, monkeypatch):
+        """play_beep writes a temp WAV and plays it via system player (no sounddevice)."""
         np = pytest.importorskip("numpy")
+
+        played_files = []
+
+        def fake_play_audio_file(path):
+            played_files.append(path)
+            return True
+
+        monkeypatch.setattr("tools.voice_mode.play_audio_file", fake_play_audio_file)
 
         from tools.voice_mode import play_beep
 
-        # play_beep uses polling (get_stream) + sd.stop() instead of sd.wait()
-        mock_stream = MagicMock()
-        mock_stream.active = False
-        mock_sd.get_stream.return_value = mock_stream
-
         play_beep(frequency=880, duration=0.1, count=1)
 
-        mock_sd.play.assert_called_once()
-        mock_sd.stop.assert_called()
-        # Verify audio data is int16 numpy array
-        audio_arg = mock_sd.play.call_args[0][0]
-        assert audio_arg.dtype == np.int16
-        assert len(audio_arg) > 0
+        assert len(played_files) == 1
+        # Temp file should be cleaned up after play
+        assert not os.path.exists(played_files[0])
 
-    def test_beep_double_produces_longer_audio(self, mock_sd):
-        np = pytest.importorskip("numpy")
+    def test_beep_double_calls_player_once(self, monkeypatch):
+        """A two-count beep writes one concatenated WAV file."""
+        pytest.importorskip("numpy")
+
+        played_files = []
+
+        def fake_play_audio_file(path):
+            played_files.append(path)
+            return True
+
+        monkeypatch.setattr("tools.voice_mode.play_audio_file", fake_play_audio_file)
 
         from tools.voice_mode import play_beep
 
         play_beep(frequency=660, duration=0.1, count=2)
 
-        audio_arg = mock_sd.play.call_args[0][0]
-        single_beep_samples = int(16000 * 0.1)
-        # Double beep should be longer than a single beep
-        assert len(audio_arg) > single_beep_samples
+        assert len(played_files) == 1
 
-    def test_beep_noop_without_audio(self, monkeypatch):
-        def _fail_import():
-            raise ImportError("no sounddevice")
-        monkeypatch.setattr("tools.voice_mode._import_audio", _fail_import)
+    def test_beep_noop_without_numpy(self, monkeypatch):
+        import builtins
+        real_import = builtins.__import__
+
+        def _fail_numpy(name, *args, **kwargs):
+            if name == "numpy":
+                raise ImportError("no numpy")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _fail_numpy)
 
         from tools.voice_mode import play_beep
 
         # Should not raise
         play_beep()
 
-    def test_beep_handles_playback_error(self, mock_sd):
-        mock_sd.play.side_effect = Exception("device error")
+    def test_beep_handles_playback_error(self, monkeypatch):
+        pytest.importorskip("numpy")
+
+        def fake_play_audio_file(path):
+            raise Exception("device error")
+
+        monkeypatch.setattr("tools.voice_mode.play_audio_file", fake_play_audio_file)
 
         from tools.voice_mode import play_beep
 

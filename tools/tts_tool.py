@@ -1929,7 +1929,6 @@ def stream_tts_to_speaker(
     try:
         # --- TTS client setup (optional -- display_callback works without it) ---
         client = None
-        output_stream = None
         voice_id = DEFAULT_ELEVENLABS_VOICE_ID
         model_id = DEFAULT_ELEVENLABS_STREAMING_MODEL_ID
 
@@ -1956,23 +1955,6 @@ def stream_tts_to_speaker(
                 client = ElevenLabs(api_key=api_key)
             except ImportError:
                 logger.warning("elevenlabs package not installed; streaming TTS disabled")
-
-            # Open a single sounddevice output stream for the lifetime of
-            # this function.  ElevenLabs pcm_24000 produces signed 16-bit
-            # little-endian mono PCM at 24 kHz.
-            if client is not None:
-                try:
-                    sd = _import_sounddevice()
-                    output_stream = sd.OutputStream(
-                        samplerate=24000, channels=1, dtype="int16",
-                    )
-                    output_stream.start()
-                except (ImportError, OSError) as exc:
-                    logger.debug("sounddevice not available: %s", exc)
-                    output_stream = None
-                except Exception as exc:
-                    logger.warning("sounddevice OutputStream failed: %s", exc)
-                    output_stream = None
 
         sentence_buf = ""
         min_sentence_len = 20
@@ -2011,16 +1993,7 @@ def stream_tts_to_speaker(
                     model_id=model_id,
                     output_format="pcm_24000",
                 )
-                if output_stream is not None:
-                    for chunk in audio_iter:
-                        if stop_event.is_set():
-                            break
-                        import numpy as _np
-                        audio_array = _np.frombuffer(chunk, dtype=_np.int16)
-                        output_stream.write(audio_array.reshape(-1, 1))
-                else:
-                    # Fallback: write chunks to temp file and play via system player
-                    _play_via_tempfile(audio_iter, stop_event)
+                _play_via_tempfile(audio_iter, stop_event)
             except Exception as exc:
                 logger.warning("Streaming TTS sentence failed: %s", exc)
 
@@ -2106,13 +2079,6 @@ def stream_tts_to_speaker(
     except Exception as exc:
         logger.warning("Streaming TTS pipeline error: %s", exc)
     finally:
-        # Always close the audio output stream to avoid locking the device
-        if output_stream is not None:
-            try:
-                output_stream.stop()
-                output_stream.close()
-            except Exception:
-                pass
         tts_done_event.set()
 
 

@@ -2,7 +2,7 @@
 
 Provides audio capture via sounddevice, WAV encoding via stdlib wave,
 STT dispatch via tools.transcription_tools, and TTS playback via
-sounddevice or system audio players.
+system audio players (afplay / ffplay / aplay).
 
 Dependencies (optional):
     pip install sounddevice numpy
@@ -199,7 +199,7 @@ _TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes_voice")
 # Audio cues (beep tones)
 # ============================================================================
 def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> None:
-    """Play a short beep tone using numpy + sounddevice.
+    """Play a short beep tone using numpy (synthesis) + system audio player.
 
     Args:
         frequency: Tone frequency in Hz (default 880 = A5).
@@ -207,9 +207,10 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
         count: Number of beeps to play (with short gap between).
     """
     try:
-        sd, np = _import_audio()
-    except (ImportError, OSError):
+        import numpy as np
+    except ImportError:
         return
+    tmp_path = None
     try:
         gap = 0.06  # seconds between beeps
         samples_per_beep = int(SAMPLE_RATE * duration)
@@ -228,15 +229,26 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
                 parts.append(np.zeros(samples_per_gap, dtype=np.int16))
 
         audio = np.concatenate(parts)
-        sd.play(audio, samplerate=SAMPLE_RATE)
-        # sd.wait() calls Event.wait() without timeout — hangs forever if the
-        # audio device stalls.  Poll with a 2s ceiling and force-stop.
-        deadline = time.monotonic() + 2.0
-        while sd.get_stream() and sd.get_stream().active and time.monotonic() < deadline:
-            time.sleep(0.01)
-        sd.stop()
+        # Write to a temp WAV and play via subprocess.  sounddevice's sd.play()
+        # on the output path races with CoreAudio on macOS (EXC_BAD_ACCESS in
+        # AdaptingOutputOnlyProcess / libportaudio) when a concurrent
+        # InputStream is open for STT capture.
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp_path = tmp.name
+        with wave.open(tmp_path, "wb") as wf:
+            wf.setnchannels(CHANNELS)
+            wf.setsampwidth(SAMPLE_WIDTH)
+            wf.setframerate(SAMPLE_RATE)
+            wf.writeframes(audio.tobytes())
+        play_audio_file(tmp_path)
     except Exception as e:
         logger.debug("Beep playback failed: %s", e)
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 # ============================================================================
@@ -832,21 +844,13 @@ def stop_playback() -> None:
             logger.info("Audio playback interrupted")
         except Exception:
             pass
-    # Also stop sounddevice playback if active
-    try:
-        sd, _ = _import_audio()
-        sd.stop()
-    except Exception:
-        pass
 
 
 def play_audio_file(file_path: str) -> bool:
     """Play an audio file through the default output device.
 
-    Strategy:
-    1. WAV files via ``sounddevice.play()`` when available.
-    2. System commands: ``afplay`` (macOS), ``ffplay`` (cross-platform),
-       ``aplay`` (Linux ALSA).
+    Uses system commands: ``afplay`` (macOS), ``ffplay`` (cross-platform),
+    ``aplay`` (Linux ALSA).
 
     Playback can be interrupted by calling ``stop_playback()``.
 
@@ -859,30 +863,7 @@ def play_audio_file(file_path: str) -> bool:
         logger.warning("Audio file not found: %s", file_path)
         return False
 
-    # Try sounddevice for WAV files
-    if file_path.endswith(".wav"):
-        try:
-            sd, np = _import_audio()
-            with wave.open(file_path, "rb") as wf:
-                frames = wf.readframes(wf.getnframes())
-                audio_data = np.frombuffer(frames, dtype=np.int16)
-                sample_rate = wf.getframerate()
-
-            sd.play(audio_data, samplerate=sample_rate)
-            # sd.wait() calls Event.wait() without timeout — hangs forever if
-            # the audio device stalls.  Poll with a ceiling and force-stop.
-            duration_secs = len(audio_data) / sample_rate
-            deadline = time.monotonic() + duration_secs + 2.0
-            while sd.get_stream() and sd.get_stream().active and time.monotonic() < deadline:
-                time.sleep(0.01)
-            sd.stop()
-            return True
-        except (ImportError, OSError):
-            pass  # audio libs not available, fall through to system players
-        except Exception as e:
-            logger.debug("sounddevice playback failed: %s", e)
-
-    # Fall back to system audio players (using Popen for interruptability)
+    # Use system audio players (using Popen for interruptability)
     system = platform.system()
     players = []
 
