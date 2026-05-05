@@ -96,6 +96,82 @@ def test_non_codex_assignee_still_routes_to_hermes_profile(
     assert env["HERMES_KANBAN_TASK"] == task.id
 
 
+def test_codex_worker_spawn_env_strips_parent_secrets(
+    kanban_home, captured_popen, monkeypatch
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "parent-openai-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "parent-anthropic-secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "parent-github-secret")
+    monkeypatch.setenv("HERMES_API_KEY", "parent-hermes-secret")
+
+    with kb.connect() as conn:
+        task = _ready_task(conn, assignee="codex-worker")
+        workspace = kb.resolve_workspace(task)
+
+    pid = kb._default_spawn(task, str(workspace), board="default")
+
+    assert pid == 98765
+    env = captured_popen["kwargs"]["env"]
+    assert env["HERMES_PROFILE"] == "codex-worker"
+    assert env["HERMES_KANBAN_TASK"] == task.id
+    assert "OPENAI_API_KEY" not in env
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "GITHUB_TOKEN" not in env
+    assert "HERMES_API_KEY" not in env
+
+
+def test_codex_subprocess_env_strips_parent_secrets(
+    kanban_home, monkeypatch, tmp_path
+):
+    from hermes_cli import codex_worker
+
+    monkeypatch.setenv("OPENAI_API_KEY", "parent-openai-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "parent-anthropic-secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "parent-github-secret")
+    monkeypatch.setenv("HERMES_API_KEY", "parent-hermes-secret")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="implement feature",
+            assignee="codex-worker",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        assert kb.claim_task(conn, task_id, claimer="test") is not None
+
+    seen_env = None
+
+    def fake_run(cmd, **kwargs):
+        nonlocal seen_env
+        if cmd[:2] == ["git", "status"]:
+            return CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[:2] == ["git", "diff"]:
+            return CompletedProcess(cmd, 0, stdout="", stderr="")
+        assert cmd[0] == "codex"
+        seen_env = kwargs["env"]
+        return CompletedProcess(cmd, 0, stdout="codex stdout\n", stderr="")
+
+    monkeypatch.setattr(codex_worker.shutil, "which", lambda name: "/usr/bin/codex")
+    monkeypatch.setattr(codex_worker.subprocess, "run", fake_run)
+
+    rc = codex_worker.main([
+        "--task-id", task_id,
+        "--workspace", str(workspace),
+        "--board", "default",
+    ])
+
+    assert rc == 0
+    assert seen_env is not None
+    assert "PATH" in seen_env
+    assert "OPENAI_API_KEY" not in seen_env
+    assert "ANTHROPIC_API_KEY" not in seen_env
+    assert "GITHUB_TOKEN" not in seen_env
+    assert "HERMES_API_KEY" not in seen_env
+
+
 def test_codex_worker_success_blocks_for_review_with_log_and_metadata(
     kanban_home, monkeypatch, tmp_path
 ):

@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from hermes_cli import kanban_db as kb
 
@@ -17,6 +17,34 @@ SUCCESS_REASON = "Codex completed; Hermes review required"
 FAILURE_REASON = "Codex failed"
 OUTPUT_TAIL_CHARS = 4000
 DIFF_SUMMARY_CHARS = 12000
+_SECRET_ENV_MARKERS = (
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "API_KEY",
+    "ACCESS_KEY",
+    "PRIVATE_KEY",
+    "CREDENTIAL",
+    "OAUTH",
+)
+
+
+def _looks_like_secret_env(name: str) -> bool:
+    upper = name.upper()
+    return any(marker in upper for marker in _SECRET_ENV_MARKERS)
+
+
+def _codex_subprocess_env(source: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Return environment safe to hand to Codex CLI.
+
+    Codex CLI auth is intentionally separate from Hermes/provider tokens.
+    Preserve normal process settings such as PATH/HOME/proxies, but strip
+    secret-looking variables so parent Hermes credentials are not exposed to
+    the external coding tool.
+    """
+    env_source = os.environ if source is None else source
+    return {k: v for k, v in env_source.items() if not _looks_like_secret_env(k)}
 
 
 def _tail(text: str, limit: int = OUTPUT_TAIL_CHARS) -> str:
@@ -111,7 +139,7 @@ def run_task(task_id: str, workspace: Path, *, board: str | None = None) -> int:
         cwd=str(workspace),
         text=True,
         capture_output=True,
-        env=os.environ.copy(),
+        env=_codex_subprocess_env(),
     )
     output = (result.stdout or "") + (result.stderr or "")
     _append_log(task_id, board, output)

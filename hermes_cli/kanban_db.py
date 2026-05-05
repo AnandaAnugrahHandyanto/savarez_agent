@@ -91,6 +91,26 @@ from typing import Any, Iterable, Optional
 VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "archived"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 CODEX_ASSIGNEES = {"codex", "codex-cli", "codex-worker", "openai-codex"}
+_SECRET_ENV_MARKERS = (
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "API_KEY",
+    "ACCESS_KEY",
+    "PRIVATE_KEY",
+    "CREDENTIAL",
+    "OAUTH",
+)
+
+
+def _looks_like_secret_env(name: str) -> bool:
+    upper = name.upper()
+    return any(marker in upper for marker in _SECRET_ENV_MARKERS)
+
+
+def _strip_secret_env(env: dict[str, str]) -> dict[str, str]:
+    return {k: v for k, v in env.items() if not _looks_like_secret_env(k)}
 
 # A running task's claim is valid for 15 minutes; after that the next
 # dispatcher tick reclaims it.  Workers that outlive this window should call
@@ -3012,9 +3032,17 @@ def is_codex_assignee(assignee: Optional[str]) -> bool:
     return (assignee or "").strip().lower() in CODEX_ASSIGNEES
 
 
-def _worker_spawn_env(task: Task, workspace: str, *, board: Optional[str]) -> dict[str, str]:
+def _worker_spawn_env(
+    task: Task,
+    workspace: str,
+    *,
+    board: Optional[str],
+    strip_secrets: bool = False,
+) -> dict[str, str]:
     """Build the shared Kanban worker environment pins."""
     env = dict(os.environ)
+    if strip_secrets:
+        env = _strip_secret_env(env)
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
@@ -3044,7 +3072,7 @@ def _spawn_codex_worker(
     """Fire-and-forget Hermes-owned Codex CLI worker subprocess."""
     import subprocess
 
-    env = _worker_spawn_env(task, workspace, board=board)
+    env = _worker_spawn_env(task, workspace, board=board, strip_secrets=True)
     env["HERMES_PROFILE"] = "codex-worker"
     resolved_board = _normalize_board_slug(board) or get_current_board()
     cmd = [
