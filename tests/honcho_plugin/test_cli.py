@@ -154,3 +154,45 @@ class TestCmdStatus:
         out = capsys.readouterr().out
         assert "FAILED (Invalid API key)" in out
         assert "Connection... OK" not in out
+
+
+class TestShowPeerCards:
+    def test_uses_stub_session_without_remote_get_or_create(self, monkeypatch):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        events = []
+
+        class FakeManager:
+            def __init__(self, honcho=None, config=None):
+                pass
+
+            def prime_session_stub(self, session_key):
+                events.append(("prime", session_key))
+
+            def get_or_create(self, session_key):
+                raise AssertionError("status must not create a remote Honcho session")
+
+            def get_peer_card(self, session_key):
+                events.append(("card", session_key))
+                return []
+
+            def get_ai_representation(self, session_key):
+                events.append(("ai", session_key))
+                return {"representation": "", "card": ""}
+
+        class FakeConfig:
+            def resolve_session_name(self):
+                return "agent:test:discord:thread:1:1:2"
+
+        monkeypatch.setattr(
+            "plugins.memory.honcho.session.HonchoSessionManager",
+            FakeManager,
+        )
+
+        honcho_cli._show_peer_cards(FakeConfig(), object())
+
+        assert events == [
+            ("prime", "agent:test:discord:thread:1:1:2"),
+            ("card", "agent:test:discord:thread:1:1:2"),
+            ("ai", "agent:test:discord:thread:1:1:2"),
+        ]

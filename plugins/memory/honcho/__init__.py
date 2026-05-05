@@ -232,6 +232,11 @@ class HonchoMemoryProvider(MemoryProvider):
         # Port #4053: cron guard — when True, plugin is fully inactive
         self._cron_skipped = False
 
+        # Venue metadata for recall policy.
+        self._platform = "cli"
+        self._chat_type = ""
+        self._thread_id: Optional[str] = None
+
     @property
     def name(self) -> str:
         return "honcho"
@@ -297,7 +302,15 @@ class HonchoMemoryProvider(MemoryProvider):
                 logger.debug("Honcho not configured — plugin inactive")
                 return
 
+            self._platform = platform or "cli"
+            self._chat_type = str(kwargs.get("chat_type") or "").strip().lower()
+            self._thread_id = kwargs.get("thread_id")
             self._config = cfg
+            # Preserve enough state to retry session init later if Honcho is
+            # temporarily down during agent startup. This is used by
+            # _ensure_session() for tools, hybrid, and context modes.
+            self._lazy_init_kwargs = dict(kwargs)
+            self._lazy_init_session_id = session_id
 
             # ----- B1: recall_mode from config -----
             self._recall_mode = cfg.recall_mode  # "context", "tools", or "hybrid"
@@ -406,9 +419,16 @@ class HonchoMemoryProvider(MemoryProvider):
         # consumes the result directly.
         if self._recall_mode in ("context", "hybrid"):
             try:
-                self._manager.prefetch_context(self._session_key)
+                self._manager.prefetch_context(self._session_key, **self._base_context_fetch_kwargs())
             except Exception as e:
                 logger.debug("Honcho context prewarm failed: %s", e)
+
+            if self._summary_only_auto_injection():
+                logger.debug(
+                    "Honcho dialectic prewarm skipped for summary-only venue: %s",
+                    self._session_key,
+                )
+                return
 
             _prewarm_query = (
                 "Summarize what you know about this user. "
@@ -448,7 +468,7 @@ class HonchoMemoryProvider(MemoryProvider):
             return True
         if self._cron_skipped:
             return False
-        if not self._config or not self._lazy_init_kwargs:
+        if not self._config or self._lazy_init_kwargs is None:
             return False
 
         try:
@@ -465,9 +485,33 @@ class HonchoMemoryProvider(MemoryProvider):
             logger.warning("Honcho lazy session init failed: %s", e)
             return False
 
+    def _summary_only_auto_injection(self) -> bool:
+        """Return True when this venue should only auto-inject the session summary."""
+        if self._platform in {"cli", "local", "cron", ""}:
+            return False
+        if not self._chat_type:
+            return False
+        return self._chat_type != "dm"
+
+    def _filter_auto_injection_context(self, ctx: dict[str, str] | None) -> dict[str, str]:
+        """Trim Honcho prefetch payloads according to the active venue policy."""
+        if not ctx:
+            return {}
+        if not self._summary_only_auto_injection():
+            return dict(ctx)
+        summary = ctx.get("summary", "")
+        return {"summary": summary} if summary else {}
+
+    def _base_context_fetch_kwargs(self) -> dict[str, bool]:
+        """Keyword args for Honcho context fetches under the active venue policy."""
+        if self._summary_only_auto_injection():
+            return {"summary_only": True}
+        return {}
+
     def _format_first_turn_context(self, ctx: dict) -> str:
         """Format the prefetch context dict into a readable system prompt block."""
         parts = []
+        ctx = self._filter_auto_injection_context(ctx)
 
         # Session summary — session-scoped context, placed first for relevance
         summary = ctx.get("summary", "")
@@ -503,6 +547,10 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if self._cron_skipped:
             return ""
+        if not self._manager or not self._session_key:
+            # Try to recover after a transient Honcho outage before falling back
+            # to the minimal static header.
+            self._ensure_session()
         if not self._manager or not self._session_key:
             # tools-only mode without session yet still returns a minimal block
             if self._recall_mode == "tools" and self._config:
@@ -571,6 +619,10 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._is_trivial_prompt(query):
             return ""
 
+        if not self._manager or not self._session_key:
+            if not self._ensure_session():
+                return ""
+
         parts = []
 
         # ----- Layer 1: Base context (representation + card) -----
@@ -580,7 +632,10 @@ class HonchoMemoryProvider(MemoryProvider):
             if self._base_context_cache is None:
                 # First call — synchronous fetch
                 try:
-                    ctx = self._manager.get_prefetch_context(self._session_key)
+                    ctx = self._manager.get_prefetch_context(
+                        self._session_key,
+                        **self._base_context_fetch_kwargs(),
+                    )
                     self._base_context_cache = self._format_first_turn_context(ctx) if ctx else ""
                     self._last_context_turn = self._turn_count
                 except Exception as e:
@@ -590,7 +645,9 @@ class HonchoMemoryProvider(MemoryProvider):
 
         # Check if background context prefetch has a fresher result
         if self._manager:
-            fresh_ctx = self._manager.pop_context_result(self._session_key)
+            fresh_ctx = self._filter_auto_injection_context(
+                self._manager.pop_context_result(self._session_key)
+            )
             if fresh_ctx:
                 formatted = self._format_first_turn_context(fresh_ctx)
                 if formatted:
@@ -600,6 +657,11 @@ class HonchoMemoryProvider(MemoryProvider):
 
         if base_context:
             parts.append(base_context)
+
+        if self._summary_only_auto_injection():
+            if not parts:
+                return ""
+            return self._truncate_to_budget("\n\n".join(parts))
 
         # ----- Layer 2: Dialectic supplement -----
         # On the very first turn, no queue_prefetch() has run yet so the
@@ -708,8 +770,11 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if self._cron_skipped:
             return
-        if not self._manager or not self._session_key or not query:
+        if not query:
             return
+        if not self._manager or not self._session_key:
+            if not self._ensure_session():
+                return
 
         # B1: tools-only mode — no prefetch
         if self._recall_mode == "tools":
@@ -723,9 +788,20 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._context_cadence <= 1 or (self._turn_count - self._last_context_turn) >= self._context_cadence:
             self._last_context_turn = self._turn_count
             try:
-                self._manager.prefetch_context(self._session_key, query)
+                self._manager.prefetch_context(
+                    self._session_key,
+                    query,
+                    **self._base_context_fetch_kwargs(),
+                )
             except Exception as e:
                 logger.debug("Honcho context prefetch failed: %s", e)
+
+        if self._summary_only_auto_injection():
+            logger.debug(
+                "Honcho dialectic prefetch skipped for summary-only venue: %s",
+                self._session_key,
+            )
+            return
 
         # ----- Dialectic prefetch (supplement layer) -----
         # Thread-alive guard with stale-thread recovery: a hung Honcho call
