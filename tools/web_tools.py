@@ -13,6 +13,7 @@ Available tools:
 - web_crawl_tool: Crawl websites with specific instructions
 
 Backend compatibility:
+- Brave Search: https://api-dashboard.search.brave.com (search)
 - Exa: https://exa.ai (search, extract)
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
@@ -126,7 +127,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("brave", "parallel", "firecrawl", "tavily", "exa"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -137,6 +138,7 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
+        ("brave", _has_env("BRAVE_API_KEY")),
     )
     for backend, available in backend_candidates:
         if available:
@@ -147,6 +149,8 @@ def _get_backend() -> str:
 
 def _is_backend_available(backend: str) -> bool:
     """Return True when the selected backend is currently usable."""
+    if backend == "brave":
+        return _has_env("BRAVE_API_KEY")
     if backend == "exa":
         return _has_env("EXA_API_KEY")
     if backend == "parallel":
@@ -222,6 +226,7 @@ def _firecrawl_backend_help_suffix() -> str:
 def _web_requires_env() -> list[str]:
     """Return tool metadata env vars for the currently enabled web backends."""
     requires = [
+        "BRAVE_API_KEY",
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "TAVILY_API_KEY",
@@ -399,6 +404,76 @@ def _normalize_tavily_documents(response: dict, fallback_url: str = "") -> List[
             "metadata": {"sourceURL": url_str},
         })
     return documents
+
+
+# ─── Brave Search Helpers ────────────────────────────────────────────────────
+
+_BRAVE_SEARCH_BASE_URL = os.getenv("BRAVE_SEARCH_BASE_URL", "https://api.search.brave.com")
+_BRAVE_QUOTA_HEADERS = (
+    "x-ratelimit-limit",
+    "x-ratelimit-remaining",
+    "x-ratelimit-reset",
+    "x-plan-qps-allotted",
+    "x-plan-qps-current",
+)
+
+
+def _brave_search(query: str, limit: int = 5) -> dict:
+    """Search using Brave Search API and return normalized web results.
+
+    Brave is search-only in Hermes. Use another configured backend or normal
+    ``web_extract`` fallbacks for page extraction/crawling.
+    """
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return {"error": "Interrupted", "success": False}
+
+    api_key = os.getenv("BRAVE_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError(
+            "BRAVE_API_KEY environment variable not set. "
+            "Get your API key at https://api-dashboard.search.brave.com"
+        )
+
+    count = min(max(int(limit), 1), 20)
+    url = f"{_BRAVE_SEARCH_BASE_URL.rstrip('/')}/res/v1/web/search"
+    logger.info("Brave search: '%s' (count=%d)", query, count)
+    response = httpx.get(
+        url,
+        params={"q": query, "count": count},
+        headers={
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip",
+            "X-Subscription-Token": api_key,
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    payload = response.json()
+
+    web_results = []
+    for i, result in enumerate((payload.get("web") or {}).get("results") or []):
+        description_parts = [result.get("description", "")]
+        extra_snippets = result.get("extra_snippets") or []
+        if extra_snippets:
+            description_parts.extend(str(s) for s in extra_snippets if s)
+        description = " ".join(part for part in description_parts if part)
+        web_results.append({
+            "url": result.get("url", ""),
+            "title": result.get("title", ""),
+            "description": description,
+            "position": i + 1,
+        })
+
+    quota = {
+        key: response.headers.get(key)
+        for key in _BRAVE_QUOTA_HEADERS
+        if response.headers.get(key) is not None
+    }
+    response_data: Dict[str, Any] = {"success": True, "data": {"web": web_results}}
+    if quota:
+        response_data["meta"] = {"provider": "brave", "quota": quota}
+    return response_data
 
 
 def _to_plain_object(value: Any) -> Any:
@@ -1129,6 +1204,17 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
         # Dispatch to the configured backend
         backend = _get_backend()
+        if backend == "brave":
+            response_data = _brave_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            if response_data.get("meta", {}).get("quota"):
+                debug_call_data["quota_headers"] = response_data["meta"]["quota"]
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         if backend == "parallel":
             response_data = _parallel_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
@@ -1286,7 +1372,18 @@ async def web_extract_tool(
         else:
             backend = _get_backend()
 
-            if backend == "parallel":
+            if backend == "brave":
+                results = [
+                    {
+                        "url": url,
+                        "title": "",
+                        "content": "",
+                        "raw_content": "",
+                        "error": "Brave Search is search-only in Hermes. Use web_search for discovery, then configure Firecrawl, Tavily, Parallel, or Exa for web_extract.",
+                    }
+                    for url in safe_urls
+                ]
+            elif backend == "parallel":
                 results = await _parallel_extract(safe_urls)
             elif backend == "exa":
                 results = _exa_extract(safe_urls)
@@ -1587,6 +1684,12 @@ async def web_crawl_tool(
         effective_model = model or _get_default_summarizer_model()
         auxiliary_available = check_auxiliary_model()
         backend = _get_backend()
+
+        if backend == "brave":
+            return json.dumps({
+                "error": "web_crawl is not supported by Brave Search. Brave is search-only; use web_search, or configure Firecrawl/Tavily for crawl.",
+                "success": False,
+            }, ensure_ascii=False)
 
         # Tavily supports crawl via its /crawl endpoint
         if backend == "tavily":
@@ -1967,9 +2070,9 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
+    if configured in ("brave", "exa", "parallel", "firecrawl", "tavily"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    return any(_is_backend_available(backend) for backend in ("brave", "exa", "parallel", "firecrawl", "tavily"))
 
 
 def check_auxiliary_model() -> bool:
@@ -1998,7 +2101,9 @@ if __name__ == "__main__":
     if web_available:
         backend = _get_backend()
         print(f"✅ Web backend: {backend}")
-        if backend == "exa":
+        if backend == "brave":
+            print("   Using Brave Search API (search-only)")
+        elif backend == "exa":
             print("   Using Exa API (https://exa.ai)")
         elif backend == "parallel":
             print("   Using Parallel API (https://parallel.ai)")
@@ -2016,7 +2121,7 @@ if __name__ == "__main__":
     else:
         print("❌ No web search backend configured")
         print(
-            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+            "Set BRAVE_API_KEY, EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
             f"{_firecrawl_backend_help_suffix()}"
         )
 

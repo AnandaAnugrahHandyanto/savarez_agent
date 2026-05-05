@@ -26,6 +26,7 @@ class TestFirecrawlClientConfig:
         tools.web_tools._firecrawl_client = None
         tools.web_tools._firecrawl_client_config = None
         for key in (
+            "BRAVE_API_KEY",
             "FIRECRAWL_API_KEY",
             "FIRECRAWL_API_URL",
             "FIRECRAWL_GATEWAY_URL",
@@ -50,6 +51,7 @@ class TestFirecrawlClientConfig:
         tools.web_tools._firecrawl_client = None
         tools.web_tools._firecrawl_client_config = None
         for key in (
+            "BRAVE_API_KEY",
             "FIRECRAWL_API_KEY",
             "FIRECRAWL_API_URL",
             "FIRECRAWL_GATEWAY_URL",
@@ -259,6 +261,7 @@ class TestBackendSelection:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "BRAVE_API_KEY",
     )
 
     def setup_method(self):
@@ -305,6 +308,18 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={"backend": "tavily"}):
             assert _get_backend() == "tavily"
 
+    def test_config_brave(self):
+        """web.backend=brave in config → 'brave'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "brave"}):
+            assert _get_backend() == "brave"
+
+    def test_config_brave_case_insensitive(self):
+        """web.backend=Brave (mixed case) → 'brave'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "Brave"}):
+            assert _get_backend() == "brave"
+
     def test_config_tavily_overrides_env_keys(self):
         """web.backend=tavily in config → 'tavily' even if Firecrawl key set."""
         from tools.web_tools import _get_backend
@@ -332,6 +347,20 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
             assert _get_backend() == "parallel"
+
+    def test_fallback_brave_only_key(self):
+        """Only BRAVE_API_KEY set → 'brave'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"BRAVE_API_KEY": "brave-test"}):
+            assert _get_backend() == "brave"
+
+    def test_fallback_firecrawl_still_takes_priority_over_brave(self):
+        """Adding Brave fallback must not disrupt existing Firecrawl priority."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"BRAVE_API_KEY": "brave-test", "FIRECRAWL_API_KEY": "fc-test"}):
+            assert _get_backend() == "firecrawl"
 
     def test_fallback_exa_only_key(self):
         """Only EXA_API_KEY set → 'exa'."""
@@ -495,6 +524,53 @@ class TestWebSearchSchema:
         assert result == {"success": True, "data": {"web": []}}
         mock_search.assert_called_once_with("docs", 100)
 
+    def test_web_search_dispatches_to_brave_and_captures_quota_headers(self):
+        import tools.web_tools
+
+        response = MagicMock()
+        response.headers = {
+            "x-ratelimit-limit": "1000",
+            "x-ratelimit-remaining": "999",
+        }
+        response.json.return_value = {
+            "web": {
+                "results": [
+                    {
+                        "title": "Hermes Agent",
+                        "url": "https://github.com/NousResearch/hermes-agent",
+                        "description": "Agent framework",
+                        "extra_snippets": ["Open source"],
+                    }
+                ]
+            }
+        }
+
+        with patch("tools.web_tools._get_backend", return_value="brave"), \
+             patch.dict(os.environ, {"BRAVE_API_KEY": "brave-test"}), \
+             patch("tools.web_tools.httpx.get", return_value=response) as mock_get, \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.object(tools.web_tools._debug, "log_call") as mock_log_call, \
+             patch.object(tools.web_tools._debug, "save"):
+            result = json.loads(tools.web_tools.web_search_tool("hermes", limit=50))
+
+        mock_get.assert_called_once()
+        assert mock_get.call_args.kwargs["params"] == {"q": "hermes", "count": 20}
+        assert mock_get.call_args.kwargs["headers"]["X-Subscription-Token"] == "brave-test"
+        assert result["data"]["web"] == [
+            {
+                "title": "Hermes Agent",
+                "url": "https://github.com/NousResearch/hermes-agent",
+                "description": "Agent framework Open source",
+                "position": 1,
+            }
+        ]
+        assert result["meta"]["quota"] == {
+            "x-ratelimit-limit": "1000",
+            "x-ratelimit-remaining": "999",
+        }
+        debug_payload = mock_log_call.call_args.args[1]
+        assert debug_payload["quota_headers"] == result["meta"]["quota"]
+
 
 class TestWebSearchErrorHandling:
     """Test suite for web_search_tool() error responses."""
@@ -537,6 +613,7 @@ class TestCheckWebApiKey:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "BRAVE_API_KEY",
     )
 
     def setup_method(self):
@@ -577,6 +654,11 @@ class TestCheckWebApiKey:
 
     def test_tavily_key_only(self):
         with patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_brave_key_only(self):
+        with patch.dict(os.environ, {"BRAVE_API_KEY": "brave-test"}):
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
@@ -625,3 +707,9 @@ def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+
+
+def test_web_requires_env_includes_brave_key():
+    from tools.web_tools import _web_requires_env
+
+    assert "BRAVE_API_KEY" in _web_requires_env()
