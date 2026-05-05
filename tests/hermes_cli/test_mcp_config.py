@@ -442,6 +442,45 @@ class TestMcpTest:
         assert "Connected" in out
         assert "Tools discovered: 2" in out
 
+    def test_test_redacts_sensitive_url_query(self, tmp_path, capsys, monkeypatch):
+        secret = "secret-value-123"
+        _seed_config(tmp_path, {
+            "search": {"url": f"https://mcp.example.com/mcp/?tavilyApiKey={secret}&safe=ok"},
+        })
+
+        def mock_probe(name, config, **kw):
+            return [("search", "Search")]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        cmd_mcp_test(_make_args(name="search"))
+        out = capsys.readouterr().out
+        assert secret not in out
+        assert "tavilyApiKey=%2A%2A%2A" in out or "tavilyApiKey=***" in out
+        assert "safe=ok" in out
+
+    def test_test_redacts_sensitive_connection_errors(self, tmp_path, capsys, monkeypatch):
+        secret = "secret-value-456"
+        _seed_config(tmp_path, {
+            "search": {"url": f"https://mcp.example.com/mcp/?apiKey={secret}"},
+        })
+
+        def mock_probe(name, config, **kw):
+            raise RuntimeError(f"failed apiKey={secret}")
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        cmd_mcp_test(_make_args(name="search"))
+        out = capsys.readouterr().out
+        assert secret not in out
+        assert "apiKey=***" in out
+
 
 # ---------------------------------------------------------------------------
 # Tests: env var interpolation

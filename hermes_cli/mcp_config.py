@@ -14,6 +14,7 @@ import os
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from hermes_cli.config import (
     cfg_get,
@@ -29,6 +30,46 @@ from hermes_constants import display_hermes_home
 logger = logging.getLogger(__name__)
 
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SENSITIVE_DISPLAY_KEY_RE = re.compile(
+    r"(api[_-]?key|apikey|key|token|secret|password|passwd|pwd|auth|credential)",
+    re.IGNORECASE,
+)
+
+
+def _redact_sensitive_text(text: Any) -> str:
+    """Redact likely credentials before printing CLI diagnostics."""
+    value = str(text)
+    value = re.sub(r"(?i)(Bearer\s+)[^\s&]+", r"\1***", value)
+    value = re.sub(
+        r"(?i)\b(api[_-]?key|apikey|key|token|secret|password|passwd|pwd|auth|credential)=([^&\s]+)",
+        lambda match: f"{match.group(1)}=***",
+        value,
+    )
+    return value
+
+
+def _redact_url_for_display(url: Any) -> str:
+    """Redact sensitive query/fragment values in an MCP URL before display."""
+    raw = str(url)
+    try:
+        parts = urlsplit(raw)
+        if not parts.scheme or not parts.netloc:
+            return _redact_sensitive_text(raw)
+        query_pairs = parse_qsl(parts.query, keep_blank_values=True)
+        if query_pairs:
+            query = urlencode(
+                [
+                    (key, "***" if _SENSITIVE_DISPLAY_KEY_RE.search(key) else value)
+                    for key, value in query_pairs
+                ],
+                doseq=True,
+            )
+        else:
+            query = parts.query
+        fragment = _redact_sensitive_text(parts.fragment) if parts.fragment else parts.fragment
+        return _redact_sensitive_text(urlunsplit((parts.scheme, parts.netloc, parts.path, query, fragment)))
+    except Exception:
+        return _redact_sensitive_text(raw)
 
 
 _MCP_PRESETS: Dict[str, Dict[str, Any]] = {}
@@ -529,7 +570,7 @@ def cmd_mcp_test(args):
 
     # Show transport info
     if "url" in cfg:
-        _info(f"Transport: HTTP → {cfg['url']}")
+        _info(f"Transport: HTTP → {_redact_url_for_display(cfg['url'])}")
     else:
         cmd = cfg.get("command", "?")
         _info(f"Transport: stdio → {cmd}")
@@ -559,7 +600,7 @@ def cmd_mcp_test(args):
         elapsed_ms = (time.monotonic() - start) * 1000
     except Exception as exc:
         elapsed_ms = (time.monotonic() - start) * 1000
-        _error(f"Connection failed ({elapsed_ms:.0f}ms): {exc}")
+        _error(f"Connection failed ({elapsed_ms:.0f}ms): {_redact_sensitive_text(exc)}")
         return
 
     _success(f"Connected ({elapsed_ms:.0f}ms)")
