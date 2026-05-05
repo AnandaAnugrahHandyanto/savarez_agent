@@ -16,6 +16,7 @@ import logging
 import os
 import subprocess
 import sys
+from dataclasses import dataclass, field
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -39,6 +40,56 @@ from hermes_cli.config import load_config
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CronRunResult:
+    """Typed cron execution envelope.
+
+    The first four fields preserve the historical ``run_job`` tuple contract
+    while the remaining fields carry machine-readable status so runner failures
+    cannot be accidentally hidden behind an agent's final-response text.
+    """
+
+    success: bool
+    output: str
+    final_response: str
+    error: Optional[str]
+    state: str
+    stage: str
+    exit_code: int
+    message: str
+    log_path: Optional[str] = None
+    artifact_paths: list[str] = field(default_factory=list)
+
+    def __iter__(self):
+        yield self.success
+        yield self.output
+        yield self.final_response
+        yield self.error
+
+
+def _cron_result(
+    *,
+    success: bool,
+    output: str,
+    final_response: str = "",
+    error: Optional[str] = None,
+    stage: str = "agent",
+    exit_code: int = 0,
+    message: Optional[str] = None,
+) -> CronRunResult:
+    state = "ok" if success else "fail"
+    return CronRunResult(
+        success=success,
+        output=output,
+        final_response=final_response,
+        error=error,
+        state=state,
+        stage=stage,
+        exit_code=exit_code,
+        message=message if message is not None else (error or final_response or state),
+    )
 
 
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
@@ -840,7 +891,39 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 "Script gate returned `wakeAgent=false` — agent skipped.\n"
             )
-            return True, silent_doc, SILENT_MARKER, None
+            return _cron_result(
+                success=True,
+                output=silent_doc,
+                final_response=SILENT_MARKER,
+                error=None,
+                stage="script",
+                exit_code=0,
+                message="wakeAgent=false; agent skipped",
+            )
+        if not _ran_ok:
+            error_msg = f"Script failed: {_script_output}"
+            logger.error("Job '%s' script failed before agent run: %s", job_name, _script_output)
+            output = f"""# Cron Job: {job_name} (FAILED)
+
+**Job ID:** {job_id}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Schedule:** {job.get('schedule_display', 'N/A')}
+
+## Script Error
+
+```
+{_script_output}
+```
+"""
+            return _cron_result(
+                success=False,
+                output=output,
+                final_response="",
+                error=error_msg,
+                stage="script",
+                exit_code=1,
+                message=error_msg,
+            )
 
     prompt = _build_job_prompt(job, prerun_script=prerun_script)
     origin = _resolve_origin(job)
@@ -1193,7 +1276,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 """
         
         logger.info("Job '%s' completed successfully", job_name)
-        return True, output, final_response, None
+        return _cron_result(
+            success=True,
+            output=output,
+            final_response=final_response,
+            error=None,
+            stage="agent",
+            exit_code=0,
+            message="agent completed successfully",
+        )
         
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
@@ -1215,7 +1306,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 {error_msg}
 ```
 """
-        return False, output, "", error_msg
+        return _cron_result(
+            success=False,
+            output=output,
+            final_response="",
+            error=error_msg,
+            stage="agent",
+            exit_code=1,
+            message=error_msg,
+        )
 
     finally:
         # Restore TERMINAL_CWD to whatever it was before this job ran.  We
@@ -1335,9 +1434,14 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         def _process_job(job: dict) -> bool:
             """Run one due job end-to-end: execute, save, deliver, mark."""
             try:
-                success, output, final_response, error = run_job(job)
+                run_result = run_job(job)
+                success, output, final_response, error = run_result
 
                 output_file = save_job_output(job["id"], output)
+                if isinstance(run_result, CronRunResult):
+                    run_result.log_path = str(output_file)
+                    if str(output_file) not in run_result.artifact_paths:
+                        run_result.artifact_paths.append(str(output_file))
                 if verbose:
                     logger.info("Output saved to: %s", output_file)
 
@@ -1364,6 +1468,13 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 if success and not final_response:
                     success = False
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+                    if isinstance(run_result, CronRunResult):
+                        run_result.success = False
+                        run_result.state = "fail"
+                        run_result.stage = "agent"
+                        run_result.exit_code = 1
+                        run_result.error = error
+                        run_result.message = error
 
                 mark_job_run(job["id"], success, error, delivery_error=delivery_error)
                 return True

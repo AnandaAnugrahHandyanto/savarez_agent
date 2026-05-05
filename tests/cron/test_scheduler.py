@@ -1786,23 +1786,33 @@ class TestRunJobWakeGate:
 
         assert call_count == 1, f"script ran {call_count}x, expected exactly 1"
 
-    def test_script_failure_does_not_trigger_gate(self):
-        """If _run_job_script returns success=False, the gate is NOT evaluated
-        and the agent still runs (the failure is reported as context)."""
+    def test_script_failure_returns_typed_failure_without_agent_run(self):
+        """A failed pre-run script is a runner failure, not agent context.
+
+        Regression guard for PR2: a script failure must not be translated into
+        a prompt that the agent can answer with text and thereby mark the cron
+        run as ok. The scheduler must propagate a typed failure envelope.
+        """
         import cron.scheduler as scheduler
 
-        # Malicious or broken script whose stderr happens to contain the
-        # gate JSON — we must NOT honor it because ran_ok is False.
-        agent = MagicMock()
-        agent.run_conversation = MagicMock(return_value={
-            "final_response": "ok", "messages": []
-        })
+        # Broken script whose stderr happens to contain gate-like JSON — we must
+        # not honor the gate, and we must not let an agent response mask failure.
         with patch.object(scheduler, "_run_job_script",
                           return_value=(False, '{"wakeAgent": false}')), \
-             patch("run_agent.AIAgent", return_value=agent) as agent_cls:
-            success, doc, final, err = scheduler.run_job(self._make_job())
+             patch("run_agent.AIAgent") as agent_cls:
+            result = scheduler.run_job(self._make_job())
 
-        agent_cls.assert_called_once()  # Agent DID wake despite the gate-like text
+        success, doc, final, err = result
+        assert success is False
+        assert final == ""
+        assert err is not None and "script" in err.lower()
+        assert "(FAILED)" in doc
+        assert result.state == "fail"
+        assert result.stage == "script"
+        assert result.exit_code == 1
+        assert result.message == err
+        assert result.artifact_paths == []
+        agent_cls.assert_not_called()
 
     def test_no_script_path_runs_agent_normally(self):
         """Regression: jobs without a script still work."""
