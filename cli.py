@@ -6671,8 +6671,9 @@ class HermesCLI:
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
+                            import shlex
                             result = subprocess.run(
-                                exec_cmd, shell=True, capture_output=True,
+                                shlex.split(exec_cmd), shell=False, capture_output=True,
                                 text=True, timeout=30
                             )
                             output = result.stdout.strip() or result.stderr.strip()
