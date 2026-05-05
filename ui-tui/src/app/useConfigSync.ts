@@ -21,6 +21,7 @@ import { patchUiState } from './uiStore.js'
 
 const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
   bottom: 'bottom',
+  collapsed: 'collapsed',
   off: 'off',
   on: 'top',
   top: 'top'
