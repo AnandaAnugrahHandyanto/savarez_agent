@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import stat
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -1961,6 +1962,18 @@ class TestParallelTick:
         with patch("cron.scheduler._LOCK_DIR", lock_dir), \
              patch("cron.scheduler._LOCK_FILE", lock_dir / ".tick.lock"):
             yield
+
+    def test_tick_lock_dir_honors_hermes_home_mode(self, monkeypatch):
+        """The scheduler-created cron lock dir should use the configured home mode."""
+        monkeypatch.setenv("HERMES_HOME_MODE", "0710")
+
+        with patch("cron.scheduler.get_due_jobs", return_value=[]):
+            from cron import scheduler
+            result = scheduler.tick(verbose=False)
+
+        assert result == 0
+        dir_mode = stat.S_IMODE(os.stat(scheduler._LOCK_DIR).st_mode)
+        assert dir_mode == 0o710
 
     def test_parallel_jobs_run_concurrently(self):
         """Two jobs launched in the same tick should overlap in time."""

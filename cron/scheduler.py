@@ -34,7 +34,7 @@ from typing import List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, get_hermes_home_mode
 from hermes_cli.config import load_config
 from hermes_time import now as _hermes_now
 
@@ -1307,6 +1307,10 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         Number of jobs executed (0 if another tick is already running)
     """
     _LOCK_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(_LOCK_DIR, get_hermes_home_mode())
+    except (OSError, NotImplementedError):
+        pass
 
     # Cross-platform file locking: fcntl on Unix, msvcrt on Windows
     lock_fd = None
