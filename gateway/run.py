@@ -6161,6 +6161,8 @@ class GatewayRunner:
             # mid-run is the whole point of the board.
             if _cmd_def_inner and _cmd_def_inner.name == "kanban":
                 return await self._handle_kanban_command(event)
+            if _cmd_def_inner and _cmd_def_inner.name == "project":
+                return await self._handle_project_command(event)
 
             # /goal is safe mid-run for status/pause/clear (inspection and
             # control-plane only — doesn't interrupt the running turn).
@@ -6482,6 +6484,9 @@ class GatewayRunner:
 
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
+
+        if canonical == "project":
+            return await self._handle_project_command(event)
 
         if canonical == "retry":
             return await self._handle_retry_command(event)
@@ -8504,6 +8509,47 @@ class GatewayRunner:
         if len(output) > 3800:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
+
+    async def _handle_project_command(self, event: MessageEvent) -> str:
+        """Handle /project — route channel/project requests into Kanban."""
+        import asyncio
+        from hermes_cli.projects import run_slash
+
+        text = (event.text or "").strip()
+        if text.startswith("/"):
+            text = text.lstrip("/")
+        if text.startswith("project"):
+            text = text[len("project"):].lstrip()
+
+        # Convenience for gateway use: `/project route do X` can omit
+        # --platform/--chat-id because the gateway knows the originating source.
+        parts = text.split(None, 1)
+        if parts[:1] == ["route"]:
+            source = event.source
+            platform = getattr(source, "platform", None)
+            platform_str = (platform.value if hasattr(platform, "value") else str(platform or "")).lower()
+            chat_id = str(getattr(source, "chat_id", "") or "")
+            thread_id = str(getattr(source, "thread_id", "") or "")
+            user_id = str(getattr(source, "user_id", "") or "")
+            inject = []
+            if platform_str and "--platform" not in text:
+                inject += ["--platform", platform_str]
+            if chat_id and "--chat-id" not in text:
+                inject += ["--chat-id", chat_id]
+            if thread_id and "--thread-id" not in text:
+                inject += ["--thread-id", thread_id]
+            if user_id and "--user-id" not in text:
+                inject += ["--user-id", user_id]
+            if inject:
+                import shlex
+                text = "route " + " ".join(shlex.quote(x) for x in inject) + (" " + parts[1] if len(parts) > 1 else "")
+        try:
+            output = await asyncio.to_thread(run_slash, text)
+        except Exception as exc:  # pragma: no cover - defensive
+            return f"⚠ project error: {exc}"
+        if len(output) > 3800:
+            output = output[:3800] + "\n… (truncated; use `hermes project …` in your terminal for full output)"
+        return output or "(no output)"
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
