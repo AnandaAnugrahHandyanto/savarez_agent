@@ -191,6 +191,8 @@ _LEGACY_TOOLSET_MAP = {
         "rl_list_runs", "rl_test_inference"
     ],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
+    "finish_tools": ["finish"],
+    "traceguard_tools": ["traceguard_validate"],
     "tts_tools": ["text_to_speech"],
 }
 
@@ -370,7 +372,7 @@ def get_tool_definitions(
 # because they need agent-level state (TodoStore, MemoryStore, etc.).
 # The registry still holds their schemas; dispatch just returns a stub error
 # so if something slips through, the LLM sees a sensible message.
-_AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
+_AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task", "finish"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 
