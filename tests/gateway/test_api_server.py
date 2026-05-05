@@ -1494,6 +1494,116 @@ class TestResponsesEndpoint:
             )
             assert resp.status == 400
 
+    @pytest.mark.asyncio
+    async def test_responses_completed_includes_hermes_reasoning_when_requested(self, adapter):
+        mock_result = {
+            "final_response": "Final answer.",
+            "last_reasoning": "I considered the request step by step.",
+            "messages": [{"role": "assistant", "content": "Final answer."}],
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Explain briefly",
+                        "hermes": {"reasoning": {"include": True}},
+                    },
+                )
+
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["hermes"]["reasoning"] == {
+                "text": "I considered the request step by step.",
+                "status": "completed",
+            }
+            assert "reasoning_config" in mock_run.call_args.kwargs
+            assert "service_tier" in mock_run.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_get_response_preserves_hermes_reasoning(self, adapter):
+        mock_result = {
+            "final_response": "Stored answer.",
+            "last_reasoning": "Stored reasoning.",
+            "messages": [{"role": "assistant", "content": "Stored answer."}],
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Store this",
+                        "store": True,
+                        "hermes": {"reasoning": {"include": True}},
+                    },
+                )
+
+            assert resp.status == 200
+            created = await resp.json()
+            get_resp = await cli.get(f"/v1/responses/{created['id']}")
+            assert get_resp.status == 200
+            stored = await get_resp.json()
+            assert stored["hermes"]["reasoning"]["text"] == "Stored reasoning."
+
+    @pytest.mark.asyncio
+    async def test_responses_omit_reasoning_without_request(self, adapter):
+        mock_result = {
+            "final_response": "Final answer.",
+            "last_reasoning": "This should not be exposed.",
+            "messages": [{"role": "assistant", "content": "Final answer."}],
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "Explain briefly"},
+                )
+
+            assert resp.status == 200
+            data = await resp.json()
+            assert "hermes" not in data
+
+    @pytest.mark.asyncio
+    async def test_api_server_passes_reasoning_config_to_agent(self, adapter):
+        class FakeAgent:
+            session_prompt_tokens = 1
+            session_completion_tokens = 2
+            session_total_tokens = 3
+
+            def run_conversation(self, **kwargs):
+                return {"final_response": "ok", "messages": [], "api_calls": 1}
+
+        reasoning_callback = MagicMock()
+        with patch.object(adapter, "_create_agent", return_value=FakeAgent()) as create_agent:
+            result, usage = await adapter._run_agent(
+                user_message="hi",
+                conversation_history=[],
+                reasoning_config={"effort": "high"},
+                service_tier="priority",
+                reasoning_callback=reasoning_callback,
+            )
+
+        assert result["final_response"] == "ok"
+        assert usage["total_tokens"] == 3
+        create_agent.assert_called_once()
+        assert create_agent.call_args.kwargs["reasoning_config"] == {"effort": "high"}
+        assert create_agent.call_args.kwargs["service_tier"] == "priority"
+        assert create_agent.call_args.kwargs["reasoning_callback"] is reasoning_callback
+
 
 class TestResponsesStreaming:
     @pytest.mark.asyncio
@@ -1621,6 +1731,165 @@ class TestResponsesStreaming:
                 assert data["id"] == response_id
                 assert data["status"] == "completed"
                 assert data["output"][-1]["content"][0]["text"] == "Stored response"
+
+    @pytest.mark.asyncio
+    async def test_streamed_completed_response_includes_hermes_reasoning_when_requested(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("Answer")
+                return (
+                    {
+                        "final_response": "Answer",
+                        "last_reasoning": "Streamed final reasoning.",
+                        "messages": [{"role": "assistant", "content": "Answer"}],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "hi",
+                        "stream": True,
+                        "hermes": {"reasoning": {"include": True}},
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+        completed = None
+        for line in body.splitlines():
+            if line.startswith("data: "):
+                payload = json.loads(line[len("data: "):])
+                if payload.get("type") == "response.completed":
+                    completed = payload["response"]
+                    break
+        assert completed is not None
+        assert completed["hermes"]["reasoning"]["text"] == "Streamed final reasoning."
+
+    @pytest.mark.asyncio
+    async def test_streamed_response_get_preserves_hermes_reasoning(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("Stored stream")
+                return (
+                    {
+                        "final_response": "Stored stream",
+                        "last_reasoning": "Stored stream reasoning.",
+                        "messages": [{"role": "assistant", "content": "Stored stream"}],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "store streamed",
+                        "stream": True,
+                        "store": True,
+                        "hermes": {"reasoning": {"include": True}},
+                    },
+                )
+                body = await resp.text()
+
+            response_id = None
+            for line in body.splitlines():
+                if line.startswith("data: "):
+                    payload = json.loads(line[len("data: "):])
+                    if payload.get("type") == "response.completed":
+                        response_id = payload["response"]["id"]
+                        break
+            assert response_id
+
+            get_resp = await cli.get(f"/v1/responses/{response_id}")
+            assert get_resp.status == 200
+            data = await get_resp.json()
+            assert data["hermes"]["reasoning"]["text"] == "Stored stream reasoning."
+
+    @pytest.mark.asyncio
+    async def test_stream_emits_hermes_reasoning_delta_when_requested(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                reasoning_cb = kwargs.get("reasoning_callback")
+                text_cb = kwargs.get("stream_delta_callback")
+                if reasoning_cb:
+                    reasoning_cb("thinking ")
+                    reasoning_cb("out loud")
+                if text_cb:
+                    text_cb("Final")
+                return (
+                    {
+                        "final_response": "Final",
+                        "last_reasoning": "thinking out loud",
+                        "messages": [{"role": "assistant", "content": "Final"}],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "hi",
+                        "stream": True,
+                        "hermes": {"reasoning": {"include": True, "stream": True}},
+                    },
+                )
+                body = await resp.text()
+
+        assert "event: hermes.reasoning.delta" in body
+        assert '"type": "hermes.reasoning.delta"' in body
+        assert '"delta": "thinking "' in body
+        assert '"delta": "out loud"' in body
+        assert "event: hermes.reasoning.done" in body
+
+    @pytest.mark.asyncio
+    async def test_stream_omits_hermes_reasoning_delta_when_stream_false(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                reasoning_cb = kwargs.get("reasoning_callback")
+                if reasoning_cb:
+                    reasoning_cb("hidden live reasoning")
+                return (
+                    {
+                        "final_response": "Final",
+                        "last_reasoning": "hidden live reasoning",
+                        "messages": [{"role": "assistant", "content": "Final"}],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "hi",
+                        "stream": True,
+                        "hermes": {"reasoning": {"include": True, "stream": False}},
+                    },
+                )
+                body = await resp.text()
+
+        assert "event: hermes.reasoning.delta" not in body
+        assert "hidden live reasoning" in body
 
     @pytest.mark.asyncio
     async def test_stream_cancelled_persists_incomplete_snapshot(self, adapter):

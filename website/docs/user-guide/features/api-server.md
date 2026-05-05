@@ -138,6 +138,29 @@ OpenAI Responses API format. Supports server-side conversation state via `previo
 }
 ```
 
+#### Hermes reasoning extension
+
+Reasoning is private by default. Clients that need to show or archive the model's reasoning trace can opt in with the Hermes-specific `hermes.reasoning` request options:
+
+```json
+{
+  "model": "hermes-agent",
+  "input": "Explain the trade-offs briefly.",
+  "hermes": {
+    "reasoning": {
+      "include": true,
+      "stream": true
+    }
+  }
+}
+```
+
+- `include: true` adds final reasoning text to the completed response envelope at `hermes.reasoning.text` when the active provider returns reasoning content.
+- `stream: true` additionally emits `hermes.reasoning.delta` SSE events during streaming responses, followed by `hermes.reasoning.done` when reasoning output has completed.
+- If `include` is omitted or false, reasoning is not exposed in either streaming events or final response payloads.
+
+The API server forwards the gateway's configured `reasoning` and `service_tier` settings to the agent, so `/v1/responses` uses the same reasoning/provider behavior as other Hermes gateway platforms.
+
 **Inline image input:** `input[].content` can contain `input_text` and `input_image` parts. Both remote URLs and `data:image/...` URLs are supported:
 
 ```json
