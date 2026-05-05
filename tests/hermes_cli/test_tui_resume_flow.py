@@ -36,7 +36,14 @@ def test_cmd_chat_tui_continue_uses_latest_tui_session(monkeypatch, main_mod):
         calls.append(source)
         return "20260408_235959_a1b2c3" if source == "tui" else None
 
-    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None, toolsets=None, **kwargs):
+    def fake_launch(
+        resume_session_id=None,
+        tui_dev=False,
+        model=None,
+        provider=None,
+        toolsets=None,
+        **kwargs,
+    ):
         captured["resume"] = resume_session_id
         raise SystemExit(0)
 
@@ -63,7 +70,14 @@ def test_cmd_chat_tui_continue_falls_back_to_latest_cli_session(monkeypatch, mai
             return "20260408_235959_d4e5f6"
         return None
 
-    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None, toolsets=None, **kwargs):
+    def fake_launch(
+        resume_session_id=None,
+        tui_dev=False,
+        model=None,
+        provider=None,
+        toolsets=None,
+        **kwargs,
+    ):
         captured["resume"] = resume_session_id
         raise SystemExit(0)
 
@@ -81,7 +95,14 @@ def test_cmd_chat_tui_continue_falls_back_to_latest_cli_session(monkeypatch, mai
 def test_cmd_chat_tui_resume_resolves_title_before_launch(monkeypatch, main_mod):
     captured = {}
 
-    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None, toolsets=None, **kwargs):
+    def fake_launch(
+        resume_session_id=None,
+        tui_dev=False,
+        model=None,
+        provider=None,
+        toolsets=None,
+        **kwargs,
+    ):
         captured["resume"] = resume_session_id
         raise SystemExit(0)
 
@@ -99,7 +120,14 @@ def test_cmd_chat_tui_resume_resolves_title_before_launch(monkeypatch, main_mod)
 def test_cmd_chat_tui_passes_model_and_provider(monkeypatch, main_mod):
     captured = {}
 
-    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None, toolsets=None, **kwargs):
+    def fake_launch(
+        resume_session_id=None,
+        tui_dev=False,
+        model=None,
+        provider=None,
+        toolsets=None,
+        **kwargs,
+    ):
         captured.update(
             {
                 "model": model,
@@ -130,7 +158,14 @@ def test_cmd_chat_tui_passes_model_and_provider(monkeypatch, main_mod):
 def test_cmd_chat_tui_passes_toolsets(monkeypatch, main_mod):
     captured = {}
 
-    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None, toolsets=None, **kwargs):
+    def fake_launch(
+        resume_session_id=None,
+        tui_dev=False,
+        model=None,
+        provider=None,
+        toolsets=None,
+        **kwargs,
+    ):
         captured["toolsets"] = toolsets
         raise SystemExit(0)
 
@@ -186,16 +221,30 @@ def test_main_top_level_tui_accepts_toolsets(monkeypatch, main_mod):
     import hermes_cli.config as config_mod
 
     monkeypatch.setattr(sys, "argv", ["hermes", "--tui", "--toolsets", "web,terminal"])
-    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", types.SimpleNamespace(discover_plugins=lambda: None))
-    monkeypatch.setitem(sys.modules, "tools.mcp_tool", types.SimpleNamespace(discover_mcp_tools=lambda: None))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(discover_mcp_tools=lambda: None),
+    )
     monkeypatch.setattr(config_mod, "load_config", lambda: {})
     monkeypatch.setattr(config_mod, "get_container_exec_info", lambda: None)
     monkeypatch.setitem(
         sys.modules,
         "agent.shell_hooks",
-        types.SimpleNamespace(register_from_config=lambda _cfg, accept_hooks=False: None),
+        types.SimpleNamespace(
+            register_from_config=lambda _cfg, accept_hooks=False: None
+        ),
     )
-    monkeypatch.setattr(main_mod, "cmd_chat", lambda args: captured.update({"toolsets": args.toolsets, "tui": args.tui}))
+    monkeypatch.setattr(
+        main_mod,
+        "cmd_chat",
+        lambda args: captured.update({"toolsets": args.toolsets, "tui": args.tui}),
+    )
 
     main_mod.main()
 
@@ -207,27 +256,49 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
 
     import hermes_cli.config as config_mod
 
-    monkeypatch.setattr(sys, "argv", ["hermes", "-z", "hello", "--toolsets", "web,terminal"])
-    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", types.SimpleNamespace(discover_plugins=lambda: None))
-    monkeypatch.setitem(sys.modules, "tools.mcp_tool", types.SimpleNamespace(discover_mcp_tools=lambda: None))
+    monkeypatch.setattr(
+        sys, "argv", ["hermes", "-z", "hello", "--toolsets", "web,terminal"]
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(discover_mcp_tools=lambda: None),
+    )
     monkeypatch.setattr(config_mod, "load_config", lambda: {})
     monkeypatch.setattr(config_mod, "get_container_exec_info", lambda: None)
     monkeypatch.setitem(
         sys.modules,
         "agent.shell_hooks",
-        types.SimpleNamespace(register_from_config=lambda _cfg, accept_hooks=False: None),
+        types.SimpleNamespace(
+            register_from_config=lambda _cfg, accept_hooks=False: None
+        ),
     )
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.oneshot",
-        types.SimpleNamespace(run_oneshot=lambda prompt, **kwargs: captured.update({"prompt": prompt, **kwargs}) or 0),
+        types.SimpleNamespace(
+            run_oneshot=lambda prompt, **kwargs: captured.update(
+                {"prompt": prompt, **kwargs}
+            )
+            or 0
+        ),
     )
 
     with pytest.raises(SystemExit) as exc:
         main_mod.main()
 
     assert exc.value.code == 0
-    assert captured == {"prompt": "hello", "model": None, "provider": None, "toolsets": "web,terminal"}
+    assert captured == {
+        "prompt": "hello",
+        "model": None,
+        "provider": None,
+        "toolsets": "web,terminal",
+    }
 
 
 def _stub_plugin_discovery(monkeypatch):
@@ -294,7 +365,9 @@ def test_oneshot_accepts_plugin_toolset_after_discovery(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.plugins",
-        types.SimpleNamespace(discover_plugins=lambda: discovered.update({"ready": True})),
+        types.SimpleNamespace(
+            discover_plugins=lambda: discovered.update({"ready": True})
+        ),
     )
 
     valid, error = _validate_explicit_toolsets("plugin_demo")
@@ -366,7 +439,9 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     monkeypatch.setattr(main_mod.subprocess, "call", fake_call)
 
     with pytest.raises(SystemExit):
-        main_mod._launch_tui(model="nous/hermes-test", provider="nous", toolsets="web, terminal")
+        main_mod._launch_tui(
+            model="nous/hermes-test", provider="nous", toolsets="web, terminal"
+        )
 
     env = captured["env"]
     assert env["HERMES_MODEL"] == "nous/hermes-test"

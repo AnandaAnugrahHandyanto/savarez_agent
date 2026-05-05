@@ -258,9 +258,7 @@ describe('createSlashHandler', () => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith('Voice mode enabled')
       expect(ctx.transcript.sys).toHaveBeenCalledWith('  Alt+R to start/stop recording')
     })
-    expect(ctx.voice.setVoiceRecordKey).toHaveBeenCalledWith(
-      expect.objectContaining({ ch: 'r', mod: 'alt' })
-    )
+    expect(ctx.voice.setVoiceRecordKey).toHaveBeenCalledWith(expect.objectContaining({ ch: 'r', mod: 'alt' }))
   })
 
   it('/voice falls back to Ctrl+B when the gateway response omits record_key', async () => {
