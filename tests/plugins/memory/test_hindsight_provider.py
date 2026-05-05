@@ -18,6 +18,7 @@ from plugins.memory.hindsight import (
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
+    _as_bool,
     _load_config,
     _build_embedded_profile_env,
     _normalize_retain_tags,
@@ -40,6 +41,7 @@ def _clean_env(monkeypatch):
         "HINDSIGHT_IDLE_TIMEOUT", "HINDSIGHT_LLM_API_KEY",
         "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_SOURCE",
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
+        "HINDSIGHT_READ_ONLY",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -182,6 +184,11 @@ class TestSchemas:
         p = provider_with_config(memory_mode="context")
         assert p.get_tool_schemas() == []
 
+    def test_read_only_mode_returns_recall_and_reflect_only(self, provider_with_config):
+        p = provider_with_config(read_only=True)
+        names = [s["name"] for s in p.get_tool_schemas()]
+        assert names == ["hindsight_recall", "hindsight_reflect"]
+
 
 # ---------------------------------------------------------------------------
 # Config tests
@@ -190,6 +197,7 @@ class TestSchemas:
 
 class TestConfig:
     def test_default_values(self, provider):
+        assert provider._read_only is False
         assert provider._auto_retain is True
         assert provider._auto_recall is True
         assert provider._retain_every_n_turns == 1
@@ -253,6 +261,37 @@ class TestConfig:
         assert cfg["apiKey"] == "env-key"
         assert cfg["banks"]["hermes"]["bankId"] == "env-bank"
         assert cfg["banks"]["hermes"]["budget"] == "high"
+
+    def test_config_from_env_includes_read_only(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home",
+            lambda: tmp_path / "nonexistent",
+        )
+        monkeypatch.setenv("HINDSIGHT_READ_ONLY", "true")
+
+        cfg = _load_config()
+        assert cfg["read_only"] == "true"
+
+    def test_as_bool_parses_config_strings_safely(self):
+        assert _as_bool("true") is True
+        assert _as_bool("1") is True
+        assert _as_bool("yes") is True
+        assert _as_bool("false", default=True) is False
+        assert _as_bool("0", default=True) is False
+        assert _as_bool("", default=True) is False
+        assert _as_bool("not-a-bool", default=True) is True
+
+    def test_read_only_forces_auto_retain_off(self, provider_with_config):
+        p = provider_with_config(read_only=True, auto_retain=True, auto_recall=True)
+        assert p._read_only is True
+        assert p._auto_retain is False
+        assert p._auto_recall is True
+
+    def test_read_only_config_accepts_string_values(self, provider_with_config):
+        p = provider_with_config(read_only="true", auto_retain="true", auto_recall="false")
+        assert p._read_only is True
+        assert p._auto_retain is False
+        assert p._auto_recall is False
 
     def test_embedded_profile_env_includes_idle_timeout_from_config(self):
         env = _build_embedded_profile_env({
@@ -474,6 +513,14 @@ class TestToolHandlers:
             "hindsight_retain", {}
         ))
         assert "error" in result
+
+    def test_read_only_blocks_direct_retain_tool_call(self, provider_with_config):
+        p = provider_with_config(read_only=True)
+        result = json.loads(p.handle_tool_call(
+            "hindsight_retain", {"content": "must not be stored"}
+        ))
+        assert result["error"] == "Hindsight is configured read-only; memory writes are disabled."
+        p._client.aretain.assert_not_called()
 
     def test_recall_success(self, provider):
         result = json.loads(provider.handle_tool_call(
@@ -703,6 +750,12 @@ class TestSyncTurn:
 
     def test_sync_turn_skipped_when_auto_retain_off(self, provider_with_config):
         p = provider_with_config(auto_retain=False)
+        p.sync_turn("hello", "hi")
+        assert p._sync_thread is None
+        p._client.aretain_batch.assert_not_called()
+
+    def test_sync_turn_skipped_when_read_only(self, provider_with_config):
+        p = provider_with_config(read_only=True, auto_retain=True)
         p.sync_turn("hello", "hi")
         assert p._sync_thread is None
         p._client.aretain_batch.assert_not_called()
@@ -972,6 +1025,26 @@ class TestSessionSwitchBufferFlush:
         assert p._document_id != old_doc
         assert p._document_id.startswith("new-sid-")
 
+    def test_read_only_switch_does_not_flush_buffered_turns(self, provider_with_config):
+        p = provider_with_config(read_only=True, auto_retain=True, retain_every_n_turns=3)
+        old_doc = p._document_id
+
+        p._session_turns = [
+            [
+                {"role": "user", "content": "must not flush"},
+                {"role": "assistant", "content": "still must not flush"},
+            ]
+        ]
+        p._turn_counter = 1
+
+        p.on_session_switch("new-sid", parent_session_id="test-session", reset=True)
+        p._retain_queue.join()
+
+        p._client.aretain_batch.assert_not_called()
+        assert p._session_id == "new-sid"
+        assert p._session_turns == []
+        assert p._document_id != old_doc
+
     def test_no_flush_when_buffer_empty(self, provider):
         """Switch with no buffered turns must not fire a spurious retain."""
         provider.on_session_switch("new-sid")
@@ -1096,6 +1169,22 @@ class TestSystemPrompt:
         assert "tools mode" in block
         assert "hindsight_recall" in block
 
+    def test_read_only_prompt_does_not_advertise_retain(self, provider_with_config):
+        p = provider_with_config(read_only=True)
+        block = p.system_prompt_block()
+        assert "read-only mode" in block
+        assert "hindsight_recall" in block
+        assert "hindsight_reflect" in block
+        assert "hindsight_retain" not in block
+        assert "Memory writes are disabled" in block
+
+    def test_read_only_context_prompt_mentions_disabled_writes_without_tools(self, provider_with_config):
+        p = provider_with_config(read_only=True, memory_mode="context")
+        block = p.system_prompt_block()
+        assert "read-only context mode" in block
+        assert "hindsight_recall" not in block
+        assert "Memory writes are disabled" in block
+
 
 # ---------------------------------------------------------------------------
 # Config schema tests
@@ -1110,7 +1199,7 @@ class TestConfigSchema:
             "mode", "api_url", "api_key", "llm_provider", "llm_api_key",
             "llm_model", "bank_id", "bank_id_template", "bank_mission", "bank_retain_mission",
             "recall_budget", "memory_mode", "recall_prefetch_method",
-            "retain_tags", "retain_source",
+            "read_only", "retain_tags", "retain_source",
             "retain_user_prefix", "retain_assistant_prefix",
             "recall_tags", "recall_tags_match",
             "auto_recall", "auto_retain",

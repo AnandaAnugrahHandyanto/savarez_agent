@@ -231,6 +231,7 @@ def _load_config() -> dict:
         "retain_source": os.environ.get("HINDSIGHT_RETAIN_SOURCE", ""),
         "retain_user_prefix": os.environ.get("HINDSIGHT_RETAIN_USER_PREFIX", "User"),
         "retain_assistant_prefix": os.environ.get("HINDSIGHT_RETAIN_ASSISTANT_PREFIX", "Assistant"),
+        "read_only": os.environ.get("HINDSIGHT_READ_ONLY", ""),
         "banks": {
             "hermes": {
                 "bankId": os.environ.get("HINDSIGHT_BANK_ID", "hermes"),
@@ -380,6 +381,27 @@ def _sanitize_bank_segment(value: str) -> str:
     return "".join(out).strip("-_")
 
 
+def _as_bool(value: Any, default: bool = False) -> bool:
+    """Parse bool-like config/env values without Python truthiness surprises."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "enabled"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disabled", ""}:
+            return False
+        return default
+    if isinstance(value, (int, float)):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+    return default
+
+
 def _resolve_bank_id_template(template: str, fallback: str, **placeholders: str) -> str:
     """Resolve a bank_id template string with the given placeholders.
 
@@ -429,6 +451,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._mode = "cloud"
         self._llm_base_url = ""
         self._memory_mode = "hybrid"  # "context", "tools", or "hybrid"
+        self._read_only = False
         self._prefetch_method = "recall"  # "recall" or "reflect"
         self._retain_tags: List[str] = []
         self._retain_source = ""
@@ -752,6 +775,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_budget", "description": "Recall thoroughness", "default": "mid", "choices": ["low", "mid", "high"]},
             {"key": "memory_mode", "description": "Memory integration mode", "default": "hybrid", "choices": ["hybrid", "context", "tools"]},
             {"key": "recall_prefetch_method", "description": "Auto-recall method", "default": "recall", "choices": ["recall", "reflect"]},
+            {"key": "read_only", "description": "Allow only recall/reflect. Disables automatic and explicit memory writes.", "default": False},
             {"key": "retain_tags", "description": "Default tags applied to retained memories (comma-separated)", "default": ""},
             {"key": "retain_source", "description": "Metadata source value attached to retained memories", "default": ""},
             {"key": "retain_user_prefix", "description": "Label used before user turns in retained transcripts", "default": "User"},
@@ -1014,6 +1038,10 @@ class HindsightMemoryProvider(MemoryProvider):
 
         memory_mode = self._config.get("memory_mode", "hybrid")
         self._memory_mode = memory_mode if memory_mode in ("context", "tools", "hybrid") else "hybrid"
+        self._read_only = _as_bool(
+            self._config.get("read_only", os.environ.get("HINDSIGHT_READ_ONLY")),
+            default=False,
+        )
 
         prefetch_method = self._config.get("recall_prefetch_method") or self._config.get("prefetch_method", "recall")
         self._prefetch_method = prefetch_method if prefetch_method in ("recall", "reflect") else "recall"
@@ -1041,12 +1069,13 @@ class HindsightMemoryProvider(MemoryProvider):
         ).strip() or "Assistant"
 
         # Retain controls
-        self._auto_retain = self._config.get("auto_retain", True)
+        configured_auto_retain = _as_bool(self._config.get("auto_retain"), True)
+        self._auto_retain = False if self._read_only else configured_auto_retain
         self._retain_every_n_turns = max(1, int(self._config.get("retain_every_n_turns", 1)))
         self._retain_context = self._config.get("retain_context", "conversation between Hermes Agent and the User")
 
         # Recall controls
-        self._auto_recall = self._config.get("auto_recall", True)
+        self._auto_recall = _as_bool(self._config.get("auto_recall"), True)
         self._recall_max_tokens = int(self._config.get("recall_max_tokens", 4096))
         self._recall_types = self._config.get("recall_types") or None
         self._recall_prompt_preamble = self._config.get("recall_prompt_preamble", "")
@@ -1059,8 +1088,8 @@ class HindsightMemoryProvider(MemoryProvider):
             _client_version = pkg_version("hindsight-client")
         except Exception:
             pass
-        logger.info("Hindsight initialized: mode=%s, api_url=%s, bank=%s, budget=%s, memory_mode=%s, prefetch_method=%s, client=%s",
-                     self._mode, self._api_url, self._bank_id, self._budget, self._memory_mode, self._prefetch_method, _client_version)
+        logger.info("Hindsight initialized: mode=%s, api_url=%s, bank=%s, budget=%s, memory_mode=%s, read_only=%s, prefetch_method=%s, client=%s",
+                     self._mode, self._api_url, self._bank_id, self._budget, self._memory_mode, self._read_only, self._prefetch_method, _client_version)
         if self._bank_id_template:
             logger.debug("Hindsight bank resolved from template %r: profile=%s workspace=%s platform=%s user=%s -> bank=%s",
                          self._bank_id_template, self._agent_identity, self._agent_workspace,
@@ -1118,6 +1147,18 @@ class HindsightMemoryProvider(MemoryProvider):
             t.start()
 
     def system_prompt_block(self) -> str:
+        if self._read_only:
+            if self._memory_mode == "context":
+                return (
+                    f"# Hindsight Memory\n"
+                    f"Active in read-only context mode. Bank: {self._bank_id}, budget: {self._budget}.\n"
+                    f"Relevant memories are automatically injected into context. Memory writes are disabled."
+                )
+            return (
+                f"# Hindsight Memory\n"
+                f"Active in read-only mode. Bank: {self._bank_id}, budget: {self._budget}.\n"
+                f"Use hindsight_recall to search and hindsight_reflect for synthesis. Memory writes are disabled."
+            )
         if self._memory_mode == "context":
             return (
                 f"# Hindsight Memory\n"
@@ -1352,10 +1393,14 @@ class HindsightMemoryProvider(MemoryProvider):
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         if self._memory_mode == "context":
             return []
+        if self._read_only:
+            return [RECALL_SCHEMA, REFLECT_SCHEMA]
         return [RETAIN_SCHEMA, RECALL_SCHEMA, REFLECT_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if tool_name == "hindsight_retain":
+            if self._read_only:
+                return tool_error("Hindsight is configured read-only; memory writes are disabled.")
             content = args.get("content", "")
             if not content:
                 return tool_error("Missing required parameter: content")
@@ -1467,8 +1512,9 @@ class HindsightMemoryProvider(MemoryProvider):
 
         # 1. Flush any buffered turns under the OLD identifiers. Snapshot
         # everything before mutating self._* so metadata + tags + doc_id
-        # all reference the old session consistently.
-        if self._session_turns:
+        # all reference the old session consistently. In read-only mode,
+        # memory writes are disabled even for defensive lifecycle flushes.
+        if self._session_turns and not self._read_only:
             old_turns = list(self._session_turns)
             old_session_id = self._session_id
             old_document_id = self._document_id
