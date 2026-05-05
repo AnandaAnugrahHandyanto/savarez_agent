@@ -30,6 +30,7 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email.utils import formatdate
 from email import encoders
+from email.utils import formatdate
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -520,6 +521,7 @@ class EmailAdapter(BasePlatformAdapter):
         msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
+        msg["Date"] = formatdate(localtime=True)
 
         msg.attach(MIMEText(body, "plain", "utf-8"))
 
@@ -710,6 +712,7 @@ class EmailAdapter(BasePlatformAdapter):
         msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
+        msg["Date"] = formatdate(localtime=True)
 
         if body:
             msg.attach(MIMEText(body, "plain", "utf-8"))

@@ -607,6 +607,49 @@ class TestThreadContext(unittest.TestCase):
             self.assertEqual(send_call["Subject"], "Re: Hermes Agent")
             self.assertIn("Date", send_call)
 
+    def test_send_email_has_date_header(self):
+        """Outbound emails must include a valid RFC 5322 Date header."""
+        adapter = self._make_adapter()
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            adapter._send_email("user@test.com", "Test body", None)
+
+            send_call = mock_server.send_message.call_args[0][0]
+            self.assertIn("Date", send_call)
+            # Date should look like: "Fri, 24 Apr 2026 10:43:00 +0800"
+            self.assertRegex(
+                send_call["Date"],
+                r"\w{3}, \d{1,2} \w{3} \d{4} \d{2}:\d{2}:\d{2} [-+]\d{4}",
+            )
+
+    def test_send_email_with_attachment_has_date_header(self):
+        """Outbound emails with attachments must include a valid RFC 5322 Date header."""
+        import tempfile
+        adapter = self._make_adapter()
+
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            f.write(b"attachment content")
+            tmp_path = f.name
+
+        try:
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_server = MagicMock()
+                mock_smtp.return_value = mock_server
+
+                adapter._send_email_with_attachment("user@test.com", "See attached", tmp_path, "notes.txt")
+
+                send_call = mock_server.send_message.call_args[0][0]
+                self.assertIn("Date", send_call)
+                self.assertRegex(
+                    send_call["Date"],
+                    r"\w{3}, \d{1,2} \w{3} \d{4} \d{2}:\d{2}:\d{2} [-+]\d{4}",
+                )
+        finally:
+            os.unlink(tmp_path)
+
 
 class TestSendMethods(unittest.TestCase):
     """Test email send methods."""
