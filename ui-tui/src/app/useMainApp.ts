@@ -631,7 +631,8 @@ export function useMainApp(gw: GatewayClient) {
           catalog,
           getHistoryItems: () => historyItemsRef.current,
           getLastUserMsg: () => lastUserMsgRef.current,
-          maybeWarn
+          maybeWarn,
+          setCatalog
         },
         session: {
           closeSession: session.closeSession,

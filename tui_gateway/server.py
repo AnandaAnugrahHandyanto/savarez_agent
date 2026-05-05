@@ -875,6 +875,9 @@ def _load_show_reasoning() -> bool:
 
 
 def _load_tool_progress_mode() -> str:
+    env = os.environ.get("HERMES_TUI_TOOL_PROGRESS", "").strip().lower()
+    if env in {"off", "new", "all", "verbose"}:
+        return env
     raw = (_load_cfg().get("display") or {}).get("tool_progress", "all")
     if raw is False:
         return "off"
@@ -1698,8 +1701,26 @@ def _apply_personality_to_session(
 
 
 def _cfg_max_turns(cfg: dict, default: int) -> int:
+    try:
+        env_max = int(os.environ.get("HERMES_TUI_MAX_TURNS", "") or 0)
+        if env_max > 0:
+            return env_max
+    except (TypeError, ValueError):
+        pass
     agent_cfg = cfg.get("agent") or {}
     return int(agent_cfg.get("max_turns") or cfg.get("max_turns") or default)
+
+
+def _parse_tui_skills_env() -> list[str]:
+    raw = os.environ.get("HERMES_TUI_SKILLS", "")
+    skills: list[str] = []
+    seen: set[str] = set()
+    for part in raw.replace("\n", ",").split(","):
+        item = part.strip()
+        if item and item not in seen:
+            seen.add(item)
+            skills.append(item)
+    return skills
 
 
 def _background_agent_kwargs(agent, task_id: str) -> dict:
@@ -1771,6 +1792,18 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
     cfg = _load_cfg()
     agent_cfg = cfg.get("agent") or {}
     system_prompt = (agent_cfg.get("system_prompt", "") or "").strip()
+    startup_skills = _parse_tui_skills_env()
+    if startup_skills:
+        from agent.skill_commands import build_preloaded_skills_prompt
+
+        skills_prompt, _loaded_skills, missing_skills = build_preloaded_skills_prompt(
+            startup_skills,
+            task_id=session_id or key,
+        )
+        if missing_skills:
+            raise ValueError(f"Unknown skill(s): {', '.join(missing_skills)}")
+        if skills_prompt:
+            system_prompt = "\n\n".join(part for part in (system_prompt, skills_prompt) if part).strip()
     model, requested_provider = _resolve_startup_runtime()
     runtime = resolve_runtime_provider(
         requested=requested_provider,
@@ -1795,6 +1828,10 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         session_id=session_id or key,
         session_db=_get_db(),
         ephemeral_system_prompt=system_prompt or None,
+        checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
+        pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
+        skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
+        skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         **_agent_cbs(sid),
     )
 
@@ -2253,6 +2290,63 @@ def _(rid, params: dict) -> dict:
         return err
     agent = session.get("agent")
     return _ok(rid, _get_usage(agent) if agent is not None else {"calls": 0, "input": 0, "output": 0, "total": 0})
+
+
+@method("session.status")
+def _(rid, params: dict) -> dict:
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+
+    from hermes_constants import display_hermes_home
+
+    key = session.get("session_key") or params.get("session_id") or ""
+    agent = session.get("agent")
+    meta = {}
+    db = _get_db()
+    if db and key:
+        try:
+            meta = db.get_session(key) or {}
+        except Exception:
+            meta = {}
+
+    def _dt(value, fallback: datetime | None = None) -> datetime:
+        if value:
+            try:
+                return datetime.fromtimestamp(float(value))
+            except Exception:
+                pass
+        return fallback or datetime.now()
+
+    created = _dt(meta.get("started_at"))
+    updated = created
+    for field in ("updated_at", "last_updated_at", "last_activity_at"):
+        if meta.get(field):
+            updated = _dt(meta.get(field), created)
+            break
+
+    usage = _get_usage(agent) if agent is not None else {}
+    provider = getattr(agent, "provider", None) or "unknown"
+    model = getattr(agent, "model", None) or "(unknown)"
+    lines = [
+        "Hermes TUI Status",
+        "",
+        f"Session ID: {key}",
+        f"Path: {display_hermes_home()}",
+    ]
+    title = (meta.get("title") or "").strip()
+    if title:
+        lines.append(f"Title: {title}")
+    lines.extend(
+        [
+            f"Model: {model} ({provider})",
+            f"Created: {created.strftime('%Y-%m-%d %H:%M')}",
+            f"Last Activity: {updated.strftime('%Y-%m-%d %H:%M')}",
+            f"Tokens: {int(usage.get('total') or 0):,}",
+            f"Agent Running: {'Yes' if session.get('running') else 'No'}",
+        ]
+    )
+    return _ok(rid, {"output": "\n".join(lines)})
 
 
 @method("session.history")
@@ -6184,6 +6278,31 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4017, f"unknown skills action: {action}")
     except Exception as e:
         return _err(rid, 5024, str(e))
+
+
+@method("skills.reload")
+def _(rid, params: dict) -> dict:
+    try:
+        from agent.skill_commands import reload_skills
+
+        result = reload_skills()
+        added = result.get("added") or []
+        removed = result.get("removed") or []
+        total = int(result.get("total") or 0)
+
+        lines = ["Reloading skills..."]
+        if not added and not removed:
+            lines.append("No new skills detected.")
+        if added:
+            lines.append("Added skills:")
+            lines.extend(f"  - {item.get('name', '')}" for item in added)
+        if removed:
+            lines.append("Removed skills:")
+            lines.extend(f"  - {item.get('name', '')}" for item in removed)
+        lines.append(f"{total} skill(s) available")
+        return _ok(rid, {"output": "\n".join(lines), "result": result})
+    except Exception as e:
+        return _err(rid, 5025, str(e))
 
 
 # ── Methods: shell ───────────────────────────────────────────────────

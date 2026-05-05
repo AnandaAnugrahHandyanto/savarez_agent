@@ -272,6 +272,7 @@ export interface SlashHandlerContext {
     getHistoryItems: () => Msg[]
     getLastUserMsg: () => string
     maybeWarn: (value: unknown) => void
+    setCatalog: StateSetter<null | SlashCatalog>
   }
   session: {
     closeSession: (targetSid?: null | string) => Promise<unknown>

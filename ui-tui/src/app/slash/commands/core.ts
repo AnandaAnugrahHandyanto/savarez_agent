@@ -8,6 +8,7 @@ import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
   SessionSaveResponse,
+  SessionStatusResponse,
   SessionSteerResponse,
   SessionTitleResponse,
   SessionUndoResponse
@@ -150,6 +151,21 @@ export const coreCommands: SlashCommand[] = [
     run: (_arg, ctx) => {
       forceRedraw(process.stdout)
       ctx.transcript.sys('ui redrawn')
+    }
+  },
+
+  {
+    help: 'show live session info',
+    name: 'status',
+    run: (_arg, ctx) => {
+      if (!ctx.sid) {
+        return ctx.transcript.sys('no active session')
+      }
+
+      ctx.gateway
+        .rpc<SessionStatusResponse>('session.status', { session_id: ctx.sid })
+        .then(ctx.guarded<SessionStatusResponse>(r => ctx.transcript.page(r.output || '(no status)', 'Status')))
+        .catch(ctx.guardedErr)
     }
   },
 

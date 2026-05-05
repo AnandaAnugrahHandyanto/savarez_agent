@@ -2058,6 +2058,66 @@ def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible
     assert "/set-home" not in canon
 
 
+def test_session_status_reads_live_gateway_agent(monkeypatch):
+    agent = types.SimpleNamespace(
+        model="live-model",
+        provider="live-provider",
+        session_total_tokens=1234,
+    )
+    server._sessions["sid"] = _session(agent=agent, running=True)
+
+    class _DB:
+        def get_session(self, key):
+            assert key == "session-key"
+            return {
+                "title": "Live TUI",
+                "started_at": 1_700_000_000,
+                "updated_at": 1_700_000_060,
+            }
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.status", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    out = resp["result"]["output"]
+    assert "Hermes TUI Status" in out
+    assert "Session ID: session-key" in out
+    assert "Title: Live TUI" in out
+    assert "Model: live-model (live-provider)" in out
+    assert "Tokens: 1,234" in out
+    assert "Agent Running: Yes" in out
+
+
+def test_skills_reload_runs_in_gateway_process(monkeypatch):
+    import agent.skill_commands as skill_commands
+
+    called = {}
+    monkeypatch.setattr(
+        skill_commands,
+        "reload_skills",
+        lambda: called.setdefault(
+            "result",
+            {
+                "added": [{"name": "new-skill", "description": "demo"}],
+                "removed": [],
+                "total": 42,
+            },
+        ),
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "skills.reload", "params": {}}
+    )
+
+    assert called["result"]["total"] == 42
+    assert "new-skill" in resp["result"]["output"]
+    assert "42 skill(s) available" in resp["result"]["output"]
+
+
 def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
     monkeypatch.setattr(
         server,

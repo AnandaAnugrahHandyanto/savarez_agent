@@ -1156,6 +1156,16 @@ def _launch_tui(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
+    skills: object = None,
+    verbose: bool = False,
+    quiet: bool = False,
+    query: Optional[str] = None,
+    image: Optional[str] = None,
+    worktree: bool = False,
+    checkpoints: bool = False,
+    pass_session_id: bool = False,
+    max_turns: Optional[int] = None,
+    accept_hooks: bool = False,
 ):
     """Replace current process with the TUI."""
     tui_dir = PROJECT_ROOT / "ui-tui"
@@ -1174,6 +1184,24 @@ def _launch_tui(
     env.setdefault("HERMES_PYTHON", sys.executable)
     env.setdefault("HERMES_CWD", os.getcwd())
     env.setdefault("NODE_ENV", "development" if tui_dev else "production")
+
+    wt_info = None
+    if worktree:
+        try:
+            from cli import _cleanup_worktree, _git_repo_root, _prune_stale_worktrees, _setup_worktree
+
+            repo = _git_repo_root()
+            if repo:
+                _prune_stale_worktrees(repo)
+            wt_info = _setup_worktree()
+        except Exception as exc:
+            print(f"✗ Failed to create TUI worktree: {exc}", file=sys.stderr)
+            wt_info = None
+        if not wt_info:
+            sys.exit(1)
+        env["HERMES_CWD"] = wt_info["path"]
+        env["TERMINAL_CWD"] = wt_info["path"]
+
     if model:
         env["HERMES_MODEL"] = model
         env["HERMES_INFERENCE_MODEL"] = model
@@ -1183,6 +1211,33 @@ def _launch_tui(
     tui_toolsets = _normalize_tui_toolsets(toolsets)
     if tui_toolsets:
         env["HERMES_TUI_TOOLSETS"] = ",".join(tui_toolsets)
+    if skills:
+        if isinstance(skills, (list, tuple)):
+            flattened = []
+            for item in skills:
+                flattened.extend(part.strip() for part in str(item).split(",") if part.strip())
+            if flattened:
+                env["HERMES_TUI_SKILLS"] = ",".join(flattened)
+        else:
+            value = str(skills).strip()
+            if value:
+                env["HERMES_TUI_SKILLS"] = value
+    if query:
+        env["HERMES_TUI_QUERY"] = query
+    if image:
+        env["HERMES_TUI_IMAGE"] = image
+    if checkpoints:
+        env["HERMES_TUI_CHECKPOINTS"] = "1"
+    if pass_session_id:
+        env["HERMES_TUI_PASS_SESSION_ID"] = "1"
+    if max_turns is not None:
+        env["HERMES_TUI_MAX_TURNS"] = str(max_turns)
+    if verbose:
+        env["HERMES_TUI_TOOL_PROGRESS"] = "verbose"
+    elif quiet:
+        env["HERMES_TUI_TOOL_PROGRESS"] = "off"
+    if accept_hooks:
+        env["HERMES_ACCEPT_HOOKS"] = "1"
     # Guarantee an 8GB V8 heap + exposed GC for the TUI. Default node cap is
     # ~1.5–4GB depending on version and can fatal-OOM on long sessions with
     # large transcripts / reasoning blobs. Token-level merge: respect any
@@ -1212,6 +1267,11 @@ def _launch_tui(
             os.unlink(active_session_file)
         except OSError:
             pass
+        if wt_info:
+            try:
+                _cleanup_worktree(wt_info)
+            except Exception:
+                pass
 
     sys.exit(code)
 
@@ -1353,6 +1413,16 @@ def cmd_chat(args):
             model=getattr(args, "model", None),
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
+            skills=getattr(args, "skills", None),
+            verbose=getattr(args, "verbose", False),
+            quiet=getattr(args, "quiet", False),
+            query=getattr(args, "query", None),
+            image=getattr(args, "image", None),
+            worktree=getattr(args, "worktree", False),
+            checkpoints=getattr(args, "checkpoints", False),
+            pass_session_id=getattr(args, "pass_session_id", False),
+            max_turns=getattr(args, "max_turns", None),
+            accept_hooks=getattr(args, "accept_hooks", False),
         )
 
     # Import and run the CLI

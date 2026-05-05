@@ -1,5 +1,6 @@
 import type {
   BrowserManageResponse,
+  CommandsCatalogResponse,
   DelegationPauseResponse,
   ProcessStopResponse,
   ReloadEnvResponse,
@@ -54,6 +55,10 @@ interface SkillsBrowseResponse {
   page?: number
   total?: number
   total_pages?: number
+}
+
+interface SkillsReloadResponse {
+  output?: string
 }
 
 export const opsCommands: SlashCommand[] = [
@@ -432,6 +437,40 @@ export const opsCommands: SlashCommand[] = [
 
       setDiffPair({ baseline, candidate })
       patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
+    }
+  },
+
+  {
+    aliases: ['reload_skills'],
+    help: 're-scan installed skills in the live TUI gateway',
+    name: 'reload-skills',
+    run: (_arg, ctx) => {
+      ctx.gateway
+        .rpc<SkillsReloadResponse>('skills.reload', {})
+        .then(
+          ctx.guarded<SkillsReloadResponse>(r => {
+            ctx.transcript.page(r.output || 'skills reloaded', 'Reload Skills')
+            ctx.gateway
+              .rpc<CommandsCatalogResponse>('commands.catalog', {})
+              .then(
+                ctx.guarded<CommandsCatalogResponse>(catalog => {
+                  if (!catalog?.pairs) {
+                    return
+                  }
+
+                  ctx.local.setCatalog({
+                    canon: (catalog.canon ?? {}) as Record<string, string>,
+                    categories: catalog.categories ?? [],
+                    pairs: catalog.pairs as [string, string][],
+                    skillCount: (catalog.skill_count ?? 0) as number,
+                    sub: (catalog.sub ?? {}) as Record<string, string[]>
+                  })
+                })
+              )
+              .catch(() => {})
+          })
+        )
+        .catch(ctx.guardedErr)
     }
   },
 

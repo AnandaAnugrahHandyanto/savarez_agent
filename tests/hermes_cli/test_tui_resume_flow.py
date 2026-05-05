@@ -36,7 +36,7 @@ def test_cmd_chat_tui_continue_uses_latest_tui_session(monkeypatch, main_mod):
         calls.append(source)
         return "20260408_235959_a1b2c3" if source == "tui" else None
 
-    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None, toolsets=None):
+    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None, toolsets=None, **kwargs):
         captured["resume"] = resume_session_id
         raise SystemExit(0)
 
@@ -63,7 +63,7 @@ def test_cmd_chat_tui_continue_falls_back_to_latest_cli_session(monkeypatch, mai
             return "20260408_235959_d4e5f6"
         return None
 
-    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None, toolsets=None):
+    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None, toolsets=None, **kwargs):
         captured["resume"] = resume_session_id
         raise SystemExit(0)
 
@@ -81,7 +81,7 @@ def test_cmd_chat_tui_continue_falls_back_to_latest_cli_session(monkeypatch, mai
 def test_cmd_chat_tui_resume_resolves_title_before_launch(monkeypatch, main_mod):
     captured = {}
 
-    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None, toolsets=None):
+    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None, toolsets=None, **kwargs):
         captured["resume"] = resume_session_id
         raise SystemExit(0)
 
@@ -99,7 +99,7 @@ def test_cmd_chat_tui_resume_resolves_title_before_launch(monkeypatch, main_mod)
 def test_cmd_chat_tui_passes_model_and_provider(monkeypatch, main_mod):
     captured = {}
 
-    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None, toolsets=None):
+    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None, toolsets=None, **kwargs):
         captured.update(
             {
                 "model": model,
@@ -130,7 +130,7 @@ def test_cmd_chat_tui_passes_model_and_provider(monkeypatch, main_mod):
 def test_cmd_chat_tui_passes_toolsets(monkeypatch, main_mod):
     captured = {}
 
-    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None, toolsets=None):
+    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None, toolsets=None, **kwargs):
         captured["toolsets"] = toolsets
         raise SystemExit(0)
 
@@ -140,6 +140,44 @@ def test_cmd_chat_tui_passes_toolsets(monkeypatch, main_mod):
         main_mod.cmd_chat(_args(toolsets="web,terminal"))
 
     assert captured["toolsets"] == "web,terminal"
+
+
+def test_cmd_chat_tui_forwards_chat_flags(monkeypatch, main_mod):
+    captured = {}
+
+    def fake_launch(resume_session_id=None, **kwargs):
+        captured["resume_session_id"] = resume_session_id
+        captured.update(kwargs)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(main_mod, "_launch_tui", fake_launch)
+
+    with pytest.raises(SystemExit):
+        main_mod.cmd_chat(
+            _args(
+                skills=["foo,bar"],
+                verbose=True,
+                quiet=True,
+                query="hello",
+                image="/tmp/cat.png",
+                worktree=True,
+                checkpoints=True,
+                pass_session_id=True,
+                max_turns=7,
+                accept_hooks=True,
+            )
+        )
+
+    assert captured["skills"] == ["foo,bar"]
+    assert captured["verbose"] is True
+    assert captured["quiet"] is True
+    assert captured["query"] == "hello"
+    assert captured["image"] == "/tmp/cat.png"
+    assert captured["worktree"] is True
+    assert captured["checkpoints"] is True
+    assert captured["pass_session_id"] is True
+    assert captured["max_turns"] == 7
+    assert captured["accept_hooks"] is True
 
 
 def test_main_top_level_tui_accepts_toolsets(monkeypatch, main_mod):

@@ -26,6 +26,19 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.sys).toHaveBeenCalledWith('ui redrawn')
   })
 
+  it('routes /status to live session.status instead of slash worker', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const rpc = vi.fn(() => Promise.resolve({ output: 'Hermes TUI Status' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/status')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('session.status', { session_id: 'sid-abc' })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    await vi.waitFor(() => {
+      expect(ctx.transcript.page).toHaveBeenCalledWith('Hermes TUI Status', 'Status')
+    })
+  })
+
   it('treats /provider as a local /model alias', () => {
     const ctx = buildCtx()
 
@@ -192,6 +205,30 @@ describe('createSlashHandler', () => {
 
     expect(ctx.session.newSession).toHaveBeenCalledWith('new session started', 'sprint planning')
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
+  it('reloads skills in the live gateway and refreshes the catalog', async () => {
+    const rpc = vi.fn((method: string) => {
+      if (method === 'skills.reload') {
+        return Promise.resolve({ output: '42 skill(s) available' })
+      }
+      if (method === 'commands.catalog') {
+        return Promise.resolve({ canon: { '/new-skill': '/new-skill' }, pairs: [['/new-skill', 'demo']] })
+      }
+      return Promise.resolve({})
+    })
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    createSlashHandler(ctx)('/reload-skills')
+
+    expect(rpc).toHaveBeenCalledWith('skills.reload', {})
+    await vi.waitFor(() => {
+      expect(ctx.transcript.page).toHaveBeenCalledWith('42 skill(s) available', 'Reload Skills')
+      expect(ctx.local.setCatalog).toHaveBeenCalledWith(
+        expect.objectContaining({ canon: { '/new-skill': '/new-skill' }, pairs: [['/new-skill', 'demo']] })
+      )
+    })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
   // Regressions from Copilot review on #19835: /voice output + frontend
@@ -476,17 +513,17 @@ describe('createSlashHandler', () => {
       local: {
         catalog: {
           canon: {
-            '/status': '/status',
-            '/statusbar': '/statusbar'
+            '/profile': '/profile',
+            '/plugins': '/plugins'
           }
         }
       }
     })
 
-    expect(createSlashHandler(ctx)('/status')).toBe(true)
+    expect(createSlashHandler(ctx)('/profile')).toBe(true)
     await vi.waitFor(() => {
       expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
-        command: 'status',
+        command: 'profile',
         session_id: null
       })
     })
@@ -704,7 +741,8 @@ const buildLocal = () => ({
   catalog: null,
   getHistoryItems: vi.fn(() => []),
   getLastUserMsg: vi.fn(() => ''),
-  maybeWarn: vi.fn()
+  maybeWarn: vi.fn(),
+  setCatalog: vi.fn()
 })
 
 const buildSession = () => ({
