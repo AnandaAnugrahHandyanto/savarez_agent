@@ -178,6 +178,31 @@ class SyncResult:
 def run_sync(args) -> None:
     """Argparse entry point for ``hermes sync``."""
     action = getattr(args, "sync_action", None)
+    _run_profile_transfer_command(
+        action,
+        args,
+        usage="hermes sync {export,import,doctor} ...",
+    )
+
+
+def run_migrate(args) -> None:
+    """Argparse entry point for ``hermes migrate``.
+
+    ``sync`` is the implementation substrate; ``migrate`` is the user-facing
+    workflow for moving portable Hermes profile state between machines.
+    """
+    action = getattr(args, "migrate_action", None)
+    if action == "verify":
+        action = "doctor"
+    _run_profile_transfer_command(
+        action,
+        args,
+        usage="hermes migrate {export,import,verify,doctor} ...",
+    )
+
+
+def _run_profile_transfer_command(action: str | None, args, *, usage: str) -> None:
+    """Dispatch shared portable profile export/import/validation commands."""
     try:
         if action == "export":
             result = export_profile_sync(
@@ -211,7 +236,7 @@ def run_sync(args) -> None:
         sys.exit(1)
 
     print(
-        "usage: hermes sync {export,import,doctor} ...",
+        f"usage: {usage}",
         file=sys.stderr,
     )
     sys.exit(2)

@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import yaml
 
@@ -9,6 +10,7 @@ from hermes_cli.sync import (
     doctor_sync_repo,
     export_profile_sync,
     import_profile_sync,
+    run_migrate,
 )
 
 
@@ -242,3 +244,60 @@ def test_doctor_rejects_malformed_manifest_forbidden_paths_and_plaintext_secrets
     assert not result.ok
     assert any("forbidden path" in error and "state.db" in error for error in result.errors)
     assert any("plaintext secret-like" in error and "skills/leak.txt" in error for error in result.errors)
+
+
+def test_migrate_verify_and_doctor_share_sync_validation(tmp_path, capsys):
+    repo = tmp_path / "migration-bundle"
+    _write_sync_manifest(repo)
+
+    run_migrate(SimpleNamespace(migrate_action="verify", repo=str(repo)))
+    verify_output = capsys.readouterr().out
+
+    run_migrate(SimpleNamespace(migrate_action="doctor", repo=str(repo)))
+    doctor_output = capsys.readouterr().out
+
+    assert "Sync repo OK" in verify_output
+    assert "Sync repo OK" in doctor_output
+
+
+def test_migrate_export_import_round_trip_uses_portable_bundle(tmp_path, monkeypatch):
+    source_home = tmp_path / "source-home"
+    target_home = tmp_path / "target-home"
+    bundle = tmp_path / "migration-bundle"
+    source_home.mkdir()
+    target_home.mkdir()
+
+    (source_home / "config.yaml").write_text(
+        "model: openrouter/test-model\n"
+        "terminal:\n"
+        "  cwd: /source/local/path\n",
+        encoding="utf-8",
+    )
+    (source_home / "SOUL.md").write_text("portable soul\n", encoding="utf-8")
+
+    monkeypatch.setattr("hermes_cli.sync.get_hermes_home", lambda: source_home)
+    run_migrate(
+        SimpleNamespace(
+            migrate_action="export",
+            out=str(bundle),
+            device_id="laptop",
+        )
+    )
+    assert (bundle / "manifest.yaml").exists()
+
+    monkeypatch.setattr("hermes_cli.sync.get_hermes_home", lambda: target_home)
+    run_migrate(
+        SimpleNamespace(
+            migrate_action="import",
+            source_dir=str(bundle),
+            dry_run=False,
+            device_id="laptop",
+        )
+    )
+
+    target_config = yaml.safe_load(
+        (target_home / "config.yaml").read_text(encoding="utf-8")
+    )
+    assert target_config["model"] == "openrouter/test-model"
+    assert target_config["terminal"]["cwd"] == "/source/local/path"
+    assert (target_home / "SOUL.md").read_text(encoding="utf-8") == "portable soul\n"

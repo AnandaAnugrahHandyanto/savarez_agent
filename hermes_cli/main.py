@@ -5016,6 +5016,13 @@ def cmd_sync(args):
     run_sync(args)
 
 
+def cmd_migrate(args):
+    """Portable Hermes migration workflow."""
+    from hermes_cli.sync import run_migrate
+
+    run_migrate(args)
+
+
 def cmd_version(args):
     """Show version."""
     print(f"Hermes Agent v{__version__} ({__release_date__})")
@@ -8949,6 +8956,73 @@ Examples:
         help="Sync repo directory to validate",
     )
     sync_parser.set_defaults(func=cmd_sync)
+
+    # =========================================================================
+    # migrate command
+    # =========================================================================
+    migrate_parser = subparsers.add_parser(
+        "migrate",
+        help="Export/import portable Hermes migration bundles",
+        description="Move portable Hermes profile state between machines. "
+        "This uses the same safe structured bundle format as `hermes sync`, "
+        "excludes plaintext secrets/runtime state, and validates bundles before import.",
+    )
+    migrate_subparsers = migrate_parser.add_subparsers(dest="migrate_action")
+
+    migrate_export = migrate_subparsers.add_parser(
+        "export",
+        help="Export portable profile state to a migration bundle directory",
+    )
+    migrate_export.add_argument(
+        "--out",
+        required=True,
+        help="Output directory for the structured migration bundle",
+    )
+    migrate_export.add_argument(
+        "--device-id",
+        help="Device identifier for device-local config (default: derived from host)",
+    )
+
+    migrate_import = migrate_subparsers.add_parser(
+        "import",
+        help="Import portable profile state from a migration bundle directory",
+    )
+    migrate_import.add_argument(
+        "--from",
+        dest="source_dir",
+        required=True,
+        help="Migration bundle directory to import from",
+    )
+    migrate_import.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the exact local write plan without changing files",
+    )
+    migrate_import.add_argument(
+        "--device-id",
+        help="Device identifier for device-local config (default: derived from host)",
+    )
+
+    migrate_verify = migrate_subparsers.add_parser(
+        "verify",
+        help="Validate a migration bundle before import",
+    )
+    migrate_verify.add_argument(
+        "--repo",
+        required=True,
+        help="Migration bundle directory to validate",
+    )
+
+    migrate_doctor = migrate_subparsers.add_parser(
+        "doctor",
+        help="Alias for `hermes migrate verify`",
+    )
+    migrate_doctor.add_argument(
+        "--repo",
+        required=True,
+        help="Migration bundle directory to validate",
+    )
+    migrate_parser.set_defaults(func=cmd_migrate)
 
     # =========================================================================
     # config command
