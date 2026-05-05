@@ -2016,6 +2016,8 @@ class GatewayRunner:
             return "queue"
         if mode == "steer":
             return "steer"
+        if mode == "background":
+            return "background"
         return "interrupt"
 
     @staticmethod
@@ -2196,15 +2198,33 @@ class GatewayRunner:
                 # Fall back to queue (merge into pending messages, no interrupt)
                 effective_mode = "queue"
 
+        background_task_id = None
+        if effective_mode == "background":
+            background_prompt = (event.text or "").strip()
+            if background_prompt:
+                background_task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
+                _task = asyncio.create_task(
+                    self._run_background_task(background_prompt, event.source, background_task_id)
+                )
+                self._background_tasks.add(_task)
+                _task.add_done_callback(self._background_tasks.discard)
+            else:
+                # Attachments or empty follow-ups cannot be represented as a
+                # standalone background prompt yet; preserve them for the next
+                # foreground turn instead of dropping them.
+                effective_mode = "queue"
+
         # Store the message so it's processed as the next turn after the
         # current run finishes (or is interrupted).  Skip this for a
         # successful steer — the text already landed inside the run and
-        # must NOT also be replayed as a next-turn user message.
-        if not steered:
+        # must NOT also be replayed as a next-turn user message.  Also skip
+        # for background mode: a separate agent owns that prompt now.
+        if not steered and effective_mode != "background":
             merge_pending_message_event(adapter._pending_messages, session_key, event)
 
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
+        is_background_mode = effective_mode == "background"
 
         # If not in queue/steer mode, interrupt the running agent immediately.
         # This aborts in-flight tool calls and causes the agent loop to exit
@@ -2259,6 +2279,12 @@ class GatewayRunner:
                 f"⏩ Steered into current run{status_detail}. "
                 f"Your message arrives after the next tool call."
             )
+        elif is_background_mode:
+            task_detail = f" Task ID: {background_task_id}." if background_task_id else ""
+            message = (
+                f"🔄 Started a separate background agent{status_detail}.{task_detail} "
+                f"I'll keep the current task running and send the background result here when it finishes."
+            )
         elif is_queue_mode:
             message = (
                 f"⏳ Queued for the next turn{status_detail}. "
@@ -2285,6 +2311,8 @@ class GatewayRunner:
             if not is_seen(_user_cfg, BUSY_INPUT_FLAG):
                 if is_steer_mode:
                     _hint_mode = "steer"
+                elif is_background_mode:
+                    _hint_mode = "background"
                 elif is_queue_mode:
                     _hint_mode = "queue"
                 else:

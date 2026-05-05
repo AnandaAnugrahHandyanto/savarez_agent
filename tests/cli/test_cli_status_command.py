@@ -16,6 +16,8 @@ def _make_cli():
     cli_obj.conversation_history = []
     cli_obj.session_id = "session-123"
     cli_obj._pending_input = MagicMock()
+    cli_obj._pending_input.qsize.return_value = 2
+    cli_obj.busy_input_mode = "background"
     cli_obj._status_bar_visible = True
     cli_obj.model = "openai/gpt-5.4"
     cli_obj.provider = "openai"
@@ -70,7 +72,10 @@ def test_show_session_status_prints_gateway_style_summary():
         "started_at": 1775791440,
     }
 
-    with patch("cli.display_hermes_home", return_value="~/.hermes"):
+    with patch("cli.display_hermes_home", return_value="~/.hermes"), patch(
+        "tools.process_registry.process_registry.list_sessions",
+        return_value=[{"status": "running"}, {"status": "finished"}],
+    ):
         cli_obj._show_session_status()
 
     printed = "\n".join(str(call.args[0]) for call in cli_obj.console.print.call_args_list)
@@ -81,6 +86,9 @@ def test_show_session_status_prints_gateway_style_summary():
     assert "Model: openai/gpt-5.4 (openai)" in printed
     assert "Tokens: 321" in printed
     assert "Agent Running: No" in printed
+    assert "Busy Input Mode: background" in printed
+    assert "Queued Inputs: 2" in printed
+    assert "Background Processes: 1 running, 1 recent" in printed
     _, kwargs = cli_obj.console.print.call_args
     assert kwargs.get("highlight") is False
     assert kwargs.get("markup") is False

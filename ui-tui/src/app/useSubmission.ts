@@ -5,6 +5,7 @@ import { attachedImageNotice } from '../domain/messages.js'
 import { looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type {
+  BackgroundStartResponse,
   InputDetectDropResponse,
   PromptSubmitResponse,
   SessionSteerResponse,
@@ -217,6 +218,8 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
   // Honors `display.busy_input_mode` from config.yaml (CLI parity):
   //   - 'queue'     (legacy): append to queueRef; drains on busy → false
+  //   - 'background': launch the prompt in a separate background agent;
+  //                   falls back to queue when the gateway rejects it.
   //   - 'steer'     : inject into the current turn via session.steer; falls
   //                   back to queue when steer is rejected (no agent / no
   //                   tool window).
@@ -244,6 +247,33 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       if (mode === 'queue') {
         return composerActions.enqueue(full)
+      }
+
+      if (mode === 'background' && live.sid) {
+        const launch = (text: string) => {
+          gw.request<BackgroundStartResponse>('prompt.background', { session_id: live.sid, text })
+            .then(raw => {
+              const r = asRpcResult<BackgroundStartResponse>(raw)
+
+              if (!r?.task_id) {
+                return fallback('background launch rejected — message queued for next turn')
+              }
+
+              patchUiState(state => ({ ...state, bgTasks: new Set(state.bgTasks).add(r.task_id!) }))
+              sys(`bg ${r.task_id} started`)
+            })
+            .catch(() => fallback('background launch failed — message queued for next turn'))
+        }
+
+        if (hasInterpolation(full)) {
+          patchUiState({ status: 'interpolating…' })
+
+          return interpolate(full, launch)
+        }
+
+        launch(full)
+
+        return
       }
 
       if (mode === 'steer' && live.sid) {

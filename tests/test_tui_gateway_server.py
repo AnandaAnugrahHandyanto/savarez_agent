@@ -1165,11 +1165,11 @@ def test_config_busy_get_and_set(monkeypatch):
         {
             "id": "2",
             "method": "config.set",
-            "params": {"key": "busy", "value": "interrupt"},
+            "params": {"key": "busy", "value": "background"},
         }
     )
-    assert set_resp["result"]["value"] == "interrupt"
-    assert ("display.busy_input_mode", "interrupt") in writes
+    assert set_resp["result"]["value"] == "background"
+    assert ("display.busy_input_mode", "background") in writes
 
 
 def test_config_set_yolo_process_scope_treats_false_like_env_as_disabled(monkeypatch):

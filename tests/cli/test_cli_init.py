@@ -110,6 +110,10 @@ class TestBusyInputMode:
         cli = _make_cli(config_overrides={"display": {"busy_input_mode": "queue"}})
         assert cli.busy_input_mode == "queue"
 
+    def test_busy_input_mode_background_is_honored(self):
+        cli = _make_cli(config_overrides={"display": {"busy_input_mode": "background"}})
+        assert cli.busy_input_mode == "background"
+
     def test_unknown_busy_input_mode_falls_back_to_interrupt(self):
         cli = _make_cli(config_overrides={"display": {"busy_input_mode": "bogus"}})
         assert cli.busy_input_mode == "interrupt"

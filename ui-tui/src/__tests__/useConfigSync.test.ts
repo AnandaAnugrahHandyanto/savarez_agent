@@ -199,11 +199,13 @@ describe('normalizeBusyInputMode', () => {
   it('passes through the canonical CLI parity values', () => {
     expect(normalizeBusyInputMode('queue')).toBe('queue')
     expect(normalizeBusyInputMode('steer')).toBe('steer')
+    expect(normalizeBusyInputMode('background')).toBe('background')
     expect(normalizeBusyInputMode('interrupt')).toBe('interrupt')
   })
 
   it('trims and lowercases input', () => {
     expect(normalizeBusyInputMode(' Queue ')).toBe('queue')
+    expect(normalizeBusyInputMode('BACKGROUND')).toBe('background')
     expect(normalizeBusyInputMode('STEER')).toBe('steer')
   })
 
@@ -256,6 +258,9 @@ describe('applyDisplay → busy_input_mode', () => {
 
     applyDisplay({ config: { display: { busy_input_mode: 'steer' } } }, setBell)
     expect($uiState.get().busyInputMode).toBe('steer')
+
+    applyDisplay({ config: { display: { busy_input_mode: 'background' } } }, setBell)
+    expect($uiState.get().busyInputMode).toBe('background')
   })
 
   it('falls back to queue when value is missing or invalid (TUI-only default)', () => {

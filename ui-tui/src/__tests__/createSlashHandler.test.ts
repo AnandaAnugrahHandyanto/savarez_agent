@@ -311,6 +311,20 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
+  it('updates busy input mode immediately after /busy background succeeds', async () => {
+    patchUiState({ busyInputMode: 'queue' })
+    const rpc = vi.fn(() => Promise.resolve({ key: 'busy', value: 'background' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/busy background')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('config.set', { key: 'busy', value: 'background' })
+
+    await vi.waitFor(() => {
+      expect(getUiState().busyInputMode).toBe('background')
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('busy input mode: background')
+    })
+  })
+
   it('renders browser connect progress messages from the gateway', async () => {
     const rpc = vi.fn(() =>
       Promise.resolve({
@@ -450,7 +464,45 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.panel).toHaveBeenCalledWith(expect.any(String), expect.any(Array))
   })
 
-  it('lets exact catalog commands win over longer prefix matches', async () => {
+  it('renders /status locally instead of delegating to the slash worker', () => {
+    patchUiState({
+      bgTasks: new Set(['bg-1', 'bg-2']),
+      busy: true,
+      busyInputMode: 'background',
+      detailsMode: 'expanded',
+      info: {
+        cwd: '/repo',
+        mcp_servers: [
+          { connected: true, name: 'fetch', tools: 2, transport: 'stdio' },
+          { connected: false, name: 'example', tools: 0, transport: 'stdio' }
+        ],
+        model: 'anthropic/claude-sonnet-4.6',
+        skills: {},
+        tools: {},
+        version: '0.12.0'
+      },
+      sid: 'sid-status',
+      statusBar: 'bottom',
+      usage: { calls: 3, input: 1000, output: 250, total: 1250 }
+    })
+
+    const ctx = buildCtx({ composer: { ...buildComposer(), queueRef: { current: ['one queued prompt'] } } })
+
+    expect(createSlashHandler(ctx)('/status')).toBe(true)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).not.toHaveBeenCalledWith(expect.stringContaining('ambiguous command'))
+    expect(ctx.transcript.panel).toHaveBeenCalledWith(
+      'Hermes TUI Status',
+      expect.arrayContaining([
+        expect.objectContaining({ rows: expect.arrayContaining([['Session ID', 'sid-status']]), title: 'Session' }),
+        expect.objectContaining({ rows: expect.arrayContaining([['Queued prompts', '1']]), title: 'Work queue' }),
+        expect.objectContaining({ rows: expect.arrayContaining([['Total tokens', '1,250']]), title: 'Usage' }),
+        expect.objectContaining({ rows: expect.arrayContaining([['MCP servers', '1/2 connected']]), title: 'UI' })
+      ])
+    )
+  })
+
+  it('lets exact catalog /statusbar win over shorter prefix matches', () => {
     const ctx = buildCtx({
       local: {
         catalog: {
@@ -462,13 +514,9 @@ describe('createSlashHandler', () => {
       }
     })
 
-    expect(createSlashHandler(ctx)('/status')).toBe(true)
-    await vi.waitFor(() => {
-      expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
-        command: 'status',
-        session_id: null
-      })
-    })
+    expect(createSlashHandler(ctx)('/statusbar')).toBe(true)
+    expect(getUiState().statusBar).toBe('off')
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
     expect(ctx.transcript.sys).not.toHaveBeenCalledWith(expect.stringContaining('ambiguous command'))
   })
 
