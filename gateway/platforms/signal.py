@@ -124,15 +124,17 @@ def _detect_inbound_message_type(media_types: List[str]) -> MessageType:
     """Classify inbound Signal attachments for gateway routing.
 
     Signal attachments already carry MIME types. Anything that's not an
-    image or audio should surface as a document so the gateway injects the
-    saved file path into the agent context instead of silently treating the
-    turn as plain text.
+    image, audio, or video should surface as a document so the gateway
+    injects the saved file path into the agent context instead of silently
+    treating the turn as plain text.
     """
     normalized = [str(mtype or "").lower() for mtype in media_types if str(mtype or "").strip()]
     if not normalized:
         return MessageType.TEXT
-    if any(not mtype.startswith(("image/", "audio/")) for mtype in normalized):
+    if any(not mtype.startswith(("image/", "audio/", "video/")) for mtype in normalized):
         return MessageType.DOCUMENT
+    if any(mtype.startswith("video/") for mtype in normalized):
+        return MessageType.VIDEO
     if any(mtype.startswith("audio/") for mtype in normalized):
         return MessageType.VOICE
     if any(mtype.startswith("image/") for mtype in normalized):

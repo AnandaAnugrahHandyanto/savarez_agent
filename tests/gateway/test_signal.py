@@ -193,6 +193,12 @@ class TestSignalHelpers:
 
         assert _detect_inbound_message_type(["image/png"]) == MessageType.PHOTO
 
+    def test_detect_inbound_message_type_video(self):
+        from gateway.platforms.base import MessageType
+        from gateway.platforms.signal import _detect_inbound_message_type
+
+        assert _detect_inbound_message_type(["video/mp4"]) == MessageType.VIDEO
+
     def test_detect_inbound_message_type_pdf(self):
         from gateway.platforms.base import MessageType
         from gateway.platforms.signal import _detect_inbound_message_type
