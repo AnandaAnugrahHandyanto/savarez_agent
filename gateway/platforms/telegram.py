@@ -1079,31 +1079,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     error_callback=_polling_error_callback,
                 )
             
-            # Register bot commands so Telegram shows a hint menu when users type /
-            # List is derived from the central COMMAND_REGISTRY — adding a new
-            # gateway command there automatically adds it to the Telegram menu.
-            try:
-                from telegram import BotCommand
-                from hermes_cli.commands import telegram_menu_commands
-                # Telegram allows up to 100 commands but has an undocumented
-                # payload size limit.  Skill descriptions are truncated to 40
-                # chars in telegram_menu_commands() to fit 100 commands safely.
-                menu_commands, hidden_count = telegram_menu_commands(max_commands=100)
-                await self._bot.set_my_commands([
-                    BotCommand(name, desc) for name, desc in menu_commands
-                ])
-                if hidden_count:
-                    logger.info(
-                        "[%s] Telegram menu: %d commands registered, %d hidden (over 100 limit). Use /commands for full list.",
-                        self.name, len(menu_commands), hidden_count,
-                    )
-            except Exception as e:
-                logger.warning(
-                    "[%s] Could not register Telegram command menu: %s",
-                    self.name,
-                    e,
-                    exc_info=True,
-                )
+            await self._register_bot_commands()
             
             self._mark_connected()
             mode = "webhook" if self._webhook_mode else "polling"
@@ -1128,6 +1104,65 @@ class TelegramAdapter(BasePlatformAdapter):
             self._set_fatal_error("telegram_connect_error", message, retryable=True)
             logger.error("[%s] Failed to connect to Telegram: %s", self.name, e, exc_info=True)
             return False
+
+    async def _register_bot_commands(self) -> tuple[int, int]:
+        """Register the current Telegram command menu with Telegram.
+
+        The menu is derived from the central command registry plus the live
+        skill registry.  Registering both default and all-private-chat scopes
+        keeps Telegram clients from showing a stale scoped command list after
+        ``/reload-skills`` adds or removes skill commands.
+        """
+        if not self._bot:
+            return (0, 0)
+
+        try:
+            from telegram import (
+                BotCommand,
+                BotCommandScopeAllPrivateChats,
+                BotCommandScopeDefault,
+            )
+            from hermes_cli.commands import telegram_menu_commands
+
+            # Telegram allows up to 100 commands but has an undocumented
+            # payload size limit.  Skill descriptions are truncated to 40
+            # chars in telegram_menu_commands() to fit 100 commands safely.
+            menu_commands, hidden_count = telegram_menu_commands(max_commands=100)
+            bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
+            scopes = [BotCommandScopeDefault(), BotCommandScopeAllPrivateChats()]
+
+            for scope in scopes:
+                await self._bot.set_my_commands(bot_commands, scope=scope)
+
+            if hidden_count:
+                logger.info(
+                    "[%s] Telegram menu: %d commands registered, %d hidden (over 100 limit). Use /commands for full list.",
+                    self.name, len(menu_commands), hidden_count,
+                )
+            else:
+                logger.info(
+                    "[%s] Telegram menu: %d commands registered.",
+                    self.name, len(menu_commands),
+                )
+            return (len(menu_commands), hidden_count)
+        except Exception as e:
+            logger.warning(
+                "[%s] Could not register Telegram command menu: %s",
+                self.name,
+                e,
+                exc_info=True,
+            )
+            return (0, 0)
+
+    async def refresh_skill_group(self) -> tuple[int, int]:
+        """Refresh Telegram BotCommand menu after ``/reload-skills``.
+
+        Skill slash commands are resolved dynamically by the gateway, but the
+        Telegram client-side ``/`` menu is stored by Telegram.  Without this
+        re-registration, newly added skills work if typed manually but remain
+        invisible in the Telegram command picker until the gateway restarts.
+        """
+        return await self._register_bot_commands()
 
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending album flushes, and disconnect."""
