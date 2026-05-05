@@ -2118,6 +2118,32 @@ def test_skills_reload_runs_in_gateway_process(monkeypatch):
     assert "42 skill(s) available" in resp["result"]["output"]
 
 
+def test_snapshot_restore_is_blocked_from_tui_worker():
+    server._sessions["sid"] = _session()
+    try:
+        worker_resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "slash.exec",
+                "params": {"command": "snapshot restore latest", "session_id": "sid"},
+            }
+        )
+        dispatch_resp = server.handle_request(
+            {
+                "id": "2",
+                "method": "command.dispatch",
+                "params": {"arg": "restore latest", "name": "snapshot", "session_id": "sid"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert worker_resp["error"]["code"] == 4018
+    assert "snapshot restore mutates live config/state" in worker_resp["error"]["message"]
+    assert dispatch_resp["result"]["type"] == "exec"
+    assert "/snapshot restore is blocked in the TUI" in dispatch_resp["result"]["output"]
+
+
 def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
     monkeypatch.setattr(
         server,

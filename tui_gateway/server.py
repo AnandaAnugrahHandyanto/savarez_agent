@@ -4106,6 +4106,8 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
     }
 )
 
+_WORKER_BLOCKED_COMMANDS: frozenset[str] = frozenset({"snapshot", "snap"})
+
 
 @method("commands.catalog")
 def _(rid, params: dict) -> dict:
@@ -4485,6 +4487,21 @@ def _(rid, params: dict) -> dict:
             rid,
             {"type": "send", "notice": notice, "message": state.goal},
         )
+
+    if name in ("snapshot", "snap"):
+        subcommand = (arg.split(maxsplit=1)[0].lower() if arg else "")
+        if subcommand in {"restore", "rewind"}:
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": (
+                        "/snapshot restore is blocked in the TUI because it changes "
+                        "config/state on disk while the live agent has cached settings. "
+                        "Run it in the classic CLI, then restart the TUI."
+                    ),
+                },
+            )
 
     return _err(rid, 4018, f"not a quick/plugin/skill command: {name}")
 
@@ -5276,6 +5293,15 @@ def _(rid, params: dict) -> dict:
         return _err(
             rid, 4018, f"pending-input command: use command.dispatch for /{_cmd_base}"
         )
+
+    if _cmd_base in _WORKER_BLOCKED_COMMANDS:
+        subcommand = (_cmd_arg.split(maxsplit=1)[0].lower() if _cmd_arg else "")
+        if subcommand in {"restore", "rewind"}:
+            return _err(
+                rid,
+                4018,
+                "snapshot restore mutates live config/state; use command.dispatch for /snapshot restore",
+            )
 
     try:
         from agent.skill_commands import get_skill_commands
