@@ -18,7 +18,10 @@ sender `open_id`, and run the message against a per-user Hermes profile.
    `feishu_<open_id>` when enabled.
 4. Normal turns run through the AIAgent subprocess with the routed profile's
    `HERMES_HOME` and sender open_id scope.
-5. Slash commands are handled by Hermes gateway/plugin/skill control paths and
+5. Cron/reminder jobs created inside that subprocess are bound back to the
+   shared gateway Hermes home (`~/.hermes/cron/jobs.json`) because the single
+   gateway cron ticker does not scan profile-local cron stores.
+6. Slash commands are handled by Hermes gateway/plugin/skill control paths and
    unknown slash commands return an unknown-command reply instead of entering the
    LLM prompt.
 
@@ -110,6 +113,8 @@ HERMES_MULTITENANCY_AUTO_PROVISION=0
 - Gateway and plugin slash handlers run under the routed profile's
   `HERMES_HOME`, serialized so concurrent slash commands cannot observe another
   profile's environment.
+- Cron/reminder jobs use the shared Hermes cron store watched by the gateway
+  ticker; profile-local `cron/jobs.json` files are intentionally avoided.
 - Outbound `MEDIA:<path>` file replies are delivered only when the target path
   resolves inside the routed profile home.
 - `quick_commands` entries with `type: exec` are disabled by default for Feishu

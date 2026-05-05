@@ -336,6 +336,41 @@ def test_aiagent_toolsets_allow_explicit_mode(monkeypatch):
         ) == ["feishu_drive", "web"]
 
 
+def test_bundled_cron_jobs_bind_to_shared_gateway_home(tmp_path, monkeypatch):
+    with _bundled_plugin_path():
+        from hermes_multitenancy import agent_real
+
+        profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+        shared_home = tmp_path / ".hermes"
+        profile_home.mkdir(parents=True)
+        shared_home.mkdir(exist_ok=True)
+
+        cron_pkg = ModuleType("cron")
+        cron_jobs = ModuleType("cron.jobs")
+        tools_pkg = ModuleType("tools")
+        cronjob_tools = ModuleType("tools.cronjob_tools")
+        path_security = ModuleType("tools.path_security")
+        path_security.validate_within_dir = lambda path, root: None
+        cron_pkg.jobs = cron_jobs
+        tools_pkg.cronjob_tools = cronjob_tools
+        tools_pkg.path_security = path_security
+
+        monkeypatch.setitem(sys.modules, "cron", cron_pkg)
+        monkeypatch.setitem(sys.modules, "cron.jobs", cron_jobs)
+        monkeypatch.setitem(sys.modules, "tools", tools_pkg)
+        monkeypatch.setitem(sys.modules, "tools.cronjob_tools", cronjob_tools)
+        monkeypatch.setitem(sys.modules, "tools.path_security", path_security)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        agent_real._configure_cron_home(shared_home)
+
+        assert cron_jobs.JOBS_FILE == shared_home.resolve() / "cron" / "jobs.json"
+        assert cron_jobs.OUTPUT_DIR == shared_home.resolve() / "cron" / "output"
+        assert os.environ["HERMES_HOME"] == str(profile_home)
+        assert cronjob_tools._validate_cron_script_path("reminder.py") is None
+        assert "relative to shared" in cronjob_tools._validate_cron_script_path("/tmp/reminder.py")
+
+
 def test_aiagent_subprocess_payload_carries_router_messages(tmp_path):
     with _bundled_plugin_path():
         from hermes_multitenancy.agent_real import _event_to_subprocess_payload
