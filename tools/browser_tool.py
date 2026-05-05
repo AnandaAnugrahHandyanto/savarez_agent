@@ -1115,6 +1115,11 @@ BROWSER_TOOL_SCHEMAS = [
                     "type": "boolean",
                     "default": False,
                     "description": "If true, overlay numbered [N] labels on interactive elements. Each [N] maps to ref @eN for subsequent browser commands. Useful for QA and spatial reasoning about page layout."
+                },
+                "full_page": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "If true (default), capture the full scrollable page. Set to false on long or infinite-scroll pages — vision APIs downscale very tall screenshots until text becomes unreadable, so viewport-only is preferable there."
                 }
             },
             "required": ["question"]
@@ -2372,29 +2377,32 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         }, ensure_ascii=False)
 
 
-def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> str:
+def browser_vision(question: str, annotate: bool = False, full_page: bool = True, task_id: Optional[str] = None) -> str:
     """
     Take a screenshot of the current page and analyze it with vision AI.
-    
+
     This tool captures what's visually displayed in the browser and sends it
     to Gemini for analysis. Useful for understanding visual content that the
     text-based snapshot may not capture (CAPTCHAs, verification challenges,
     images, complex layouts, etc.).
-    
+
     The screenshot is saved persistently and its file path is returned alongside
     the analysis, so it can be shared with users via MEDIA:<path> in the response.
-    
+
     Args:
         question: What you want to know about the page visually
         annotate: If True, overlay numbered [N] labels on interactive elements
+        full_page: If True (default), capture the full scrollable page. Set to
+            False on long or infinite-scroll pages — vision APIs downscale very
+            tall screenshots until text becomes unreadable.
         task_id: Task identifier for session isolation
-        
+
     Returns:
         JSON string with vision analysis results and screenshot_path
     """
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_vision
-        return camofox_vision(question, annotate, task_id)
+        return camofox_vision(question, annotate, full_page, task_id)
 
     import base64
     import uuid as uuid_mod
@@ -2415,7 +2423,8 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         screenshot_args = []
         if annotate:
             screenshot_args.append("--annotate")
-        screenshot_args.append("--full")
+        if full_page:
+            screenshot_args.append("--full")
         screenshot_args.append(str(screenshot_path))
         result = _run_browser_command(
             effective_task_id, 
@@ -3033,7 +3042,7 @@ registry.register(
     name="browser_vision",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_vision"],
-    handler=lambda args, **kw: browser_vision(question=args.get("question", ""), annotate=args.get("annotate", False), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_vision(question=args.get("question", ""), annotate=args.get("annotate", False), full_page=args.get("full_page", True), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="👁️",
 )

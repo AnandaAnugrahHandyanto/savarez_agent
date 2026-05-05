@@ -195,6 +195,75 @@ class TestBrowserVisionAnnotate:
                 assert "--annotate" in cmd_args
 
 
+class TestBrowserVisionFullPage:
+    """browser_vision supports full_page parameter to opt into viewport-only capture."""
+
+    def test_schema_has_full_page_param(self):
+        from tools.browser_tool import BROWSER_TOOL_SCHEMAS
+
+        schema = next(s for s in BROWSER_TOOL_SCHEMAS if s["name"] == "browser_vision")
+        props = schema["parameters"]["properties"]
+        assert "full_page" in props
+        assert props["full_page"]["type"] == "boolean"
+        assert props["full_page"]["default"] is True
+
+    def test_full_page_default_adds_full_flag(self):
+        """Default behaviour preserves --full for backward compatibility."""
+        from tools.browser_tool import browser_vision
+
+        with (
+            patch("tools.browser_tool._run_browser_command") as mock_cmd,
+            patch("tools.browser_tool.call_llm"),
+            patch("tools.browser_tool._get_vision_model", return_value="test-model"),
+        ):
+            mock_cmd.return_value = {"success": True, "data": {}}
+            try:
+                browser_vision("test", task_id="test")
+            except Exception:
+                pass
+
+            assert mock_cmd.called
+            cmd_args = mock_cmd.call_args[0][2]
+            assert "--full" in cmd_args
+
+    def test_full_page_false_omits_full_flag(self):
+        """full_page=False captures viewport only — no --full flag."""
+        from tools.browser_tool import browser_vision
+
+        with (
+            patch("tools.browser_tool._run_browser_command") as mock_cmd,
+            patch("tools.browser_tool.call_llm"),
+            patch("tools.browser_tool._get_vision_model", return_value="test-model"),
+        ):
+            mock_cmd.return_value = {"success": True, "data": {}}
+            try:
+                browser_vision("test", full_page=False, task_id="test")
+            except Exception:
+                pass
+
+            assert mock_cmd.called
+            cmd_args = mock_cmd.call_args[0][2]
+            assert "--full" not in cmd_args
+
+    def test_handler_threads_full_page_from_args(self):
+        """The registered tool handler forwards args['full_page'] to browser_vision."""
+        from tools import browser_tool
+        from tools.registry import registry
+
+        captured = {}
+
+        def fake_browser_vision(**kwargs):
+            captured.update(kwargs)
+            return "{}"
+
+        with patch.object(browser_tool, "browser_vision", side_effect=fake_browser_vision):
+            entry = registry.get_entry("browser_vision")
+            entry.handler({"question": "q", "full_page": False}, task_id="t")
+
+        assert captured["full_page"] is False
+        assert captured["question"] == "q"
+
+
 class TestBrowserVisionConfig:
     def _setup_screenshot(self, tmp_path):
         shots_dir = tmp_path / "browser_screenshots"

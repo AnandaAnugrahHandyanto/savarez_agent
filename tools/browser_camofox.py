@@ -491,8 +491,15 @@ def camofox_get_images(task_id: Optional[str] = None) -> str:
 
 
 def camofox_vision(question: str, annotate: bool = False,
+                   full_page: bool = True,
                    task_id: Optional[str] = None) -> str:
-    """Take a screenshot and analyze it with vision AI via Camofox."""
+    """Take a screenshot and analyze it with vision AI via Camofox.
+
+    The Camofox `/tabs/{id}/screenshot` endpoint captures the current viewport
+    only; ``full_page`` is accepted for API parity with the local backend but
+    has no effect here.
+    """
+    del full_page
     try:
         session = _get_session(task_id)
         if not session["tab_id"]:
