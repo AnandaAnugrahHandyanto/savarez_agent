@@ -10877,13 +10877,12 @@ class GatewayRunner:
             total = result.get("total", 0)
 
             # Let each connected adapter refresh any platform-side state
-            # that cached the skill list at startup. Today that's the
-            # Discord /skill autocomplete (registered once per connect);
-            # without this call, new skills stay invisible in the
-            # dropdown and deleted skills error out when clicked. Other
-            # adapters that don't override refresh_skill_group (Telegram's
-            # BotCommand menu, Slack subcommand map, etc.) are silently
-            # skipped — the in-process reload above is enough for them.
+            # that cached the skill list at startup. Examples include
+            # Discord /skill autocomplete and Telegram's BotCommand menu;
+            # without this call, new skills may work when typed manually
+            # but stay invisible in platform command pickers until the
+            # gateway restarts. Adapters that don't override
+            # refresh_skill_group are silently skipped.
             for adapter in list(self.adapters.values()):
                 refresh = getattr(adapter, "refresh_skill_group", None)
                 if not callable(refresh):
