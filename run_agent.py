@@ -6105,6 +6105,7 @@ class AIAgent:
         if not self._replace_primary_openai_client(reason="codex_credential_refresh"):
             return False
 
+        self._sync_context_compressor_runtime()
         return True
 
     def _try_refresh_nous_client_credentials(self, *, force: bool = True) -> bool:
@@ -6140,6 +6141,7 @@ class AIAgent:
         if not self._replace_primary_openai_client(reason="nous_credential_refresh"):
             return False
 
+        self._sync_context_compressor_runtime()
         return True
 
     def _try_refresh_copilot_client_credentials(self) -> bool:
@@ -6226,6 +6228,7 @@ class AIAgent:
         # identity-injection guard).
         from agent.anthropic_adapter import _is_oauth_token
         self._is_anthropic_oauth = _is_oauth_token(new_token) if self.provider == "anthropic" else False
+        self._sync_context_compressor_runtime()
         return True
 
     def _apply_client_headers_for_base_url(self, base_url: str) -> None:
@@ -6253,6 +6256,30 @@ class AIAgent:
         else:
             self._client_kwargs.pop("default_headers", None)
 
+    def _sync_context_compressor_runtime(self) -> None:
+        """Keep compression on the same live credential as the main agent."""
+        compressor = getattr(self, "context_compressor", None)
+        if not compressor or not hasattr(compressor, "update_model"):
+            return
+        try:
+            compressor.update_model(
+                model=self.model,
+                context_length=getattr(compressor, "context_length", 0),
+                base_url=self.base_url,
+                api_key=getattr(self, "api_key", ""),
+                provider=self.provider,
+                api_mode=getattr(self, "api_mode", None),
+            )
+        except TypeError:
+            # Third-party context engines may not accept api_mode yet.
+            compressor.update_model(
+                model=self.model,
+                context_length=getattr(compressor, "context_length", 0),
+                base_url=self.base_url,
+                api_key=getattr(self, "api_key", ""),
+                provider=self.provider,
+            )
+
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
@@ -6274,6 +6301,7 @@ class AIAgent:
             self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
             self.api_key = runtime_key
             self.base_url = runtime_base
+            self._sync_context_compressor_runtime()
             return
 
         self.api_key = runtime_key
@@ -6282,6 +6310,7 @@ class AIAgent:
         self._client_kwargs["base_url"] = self.base_url
         self._apply_client_headers_for_base_url(self.base_url)
         self._replace_primary_openai_client(reason="credential_rotation")
+        self._sync_context_compressor_runtime()
 
     def _recover_with_credential_pool(
         self,
