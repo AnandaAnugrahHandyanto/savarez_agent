@@ -386,6 +386,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # "all"       — every message triggers a push notification (legacy
         #               behavior; opt-in via display.platforms.telegram.notifications).
         self._notifications_mode: str = "important"
+        # DecisionCard button state: decision_id → card payload for Mina's
+        # recurring decision queue / taste-training loop.
+        self._decision_card_state: Dict[str, Dict[str, Any]] = {}
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -2132,6 +2135,188 @@ class TelegramAdapter(BasePlatformAdapter):
                 return await self._bot.send_message(**retry_kwargs)
             raise
 
+    def _decision_cards_path(self):
+        """Return the local JSON path for active DecisionCard payloads."""
+        from hermes_constants import get_hermes_home
+
+        out_dir = get_hermes_home() / "decision_queue"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return out_dir / "active_cards.json"
+
+    def _save_active_decision_card(self, decision_id: str, card: Dict[str, Any]) -> None:
+        """Persist an active DecisionCard so callbacks survive restart/script sends."""
+        path = self._decision_cards_path()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        except Exception:
+            data = {}
+        data[str(decision_id)] = dict(card)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+
+    def _load_active_decision_card(self, decision_id: str) -> Optional[Dict[str, Any]]:
+        """Load an active DecisionCard from memory or the local JSON registry."""
+        card = self._decision_card_state.get(decision_id)
+        if card:
+            return card
+        try:
+            path = self._decision_cards_path()
+            if not path.exists():
+                return None
+            data = json.loads(path.read_text(encoding="utf-8"))
+            card = data.get(decision_id)
+            if isinstance(card, dict):
+                self._decision_card_state[decision_id] = card
+                return card
+        except Exception:
+            logger.debug("[%s] Failed to load active DecisionCard %s", self.name, decision_id, exc_info=True)
+        return None
+
+    def _remove_active_decision_card(self, decision_id: str) -> None:
+        """Remove a resolved DecisionCard from active state to prevent duplicates."""
+        self._decision_card_state.pop(str(decision_id), None)
+        try:
+            path = self._decision_cards_path()
+            if not path.exists():
+                return
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if str(decision_id) in data:
+                data.pop(str(decision_id), None)
+                tmp = path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+                tmp.replace(path)
+        except Exception:
+            logger.debug("[%s] Failed to remove active DecisionCard %s", self.name, decision_id, exc_info=True)
+
+    def _format_decision_card_text(self, card: Dict[str, Any]) -> str:
+        """Render a compact Telegram DecisionCard body."""
+        title = str(card.get("title") or card.get("decision_id") or "Decision")
+        decision_id = str(card.get("decision_id") or "")
+        lines = [f"🧭 *{title}*"]
+        if decision_id:
+            lines.append(f"`{decision_id}`")
+        why_now = str(card.get("why_now") or "").strip()
+        if why_now:
+            lines.extend(["", f"*Why now:* {why_now}"])
+        options = card.get("options") or []
+        if options:
+            lines.append("")
+            lines.append("*Options:*")
+            for opt in options:
+                if not isinstance(opt, dict):
+                    continue
+                key = str(opt.get("key") or "").strip()
+                label = str(opt.get("label") or "").strip()
+                if key or label:
+                    lines.append(f"- *{key}*: {label}" if key else f"- {label}")
+        recommendation = str(card.get("recommendation") or "").strip()
+        if recommendation:
+            lines.extend(["", f"*Mina recommends:* {recommendation}"])
+        default = str(card.get("default") or "").strip()
+        if default:
+            lines.append(f"*Default if no reply:* {default}")
+        taste_signal = str(card.get("taste_signal") or "").strip()
+        if taste_signal:
+            lines.extend(["", f"*Taste signal:* {taste_signal}"])
+        return "\n".join(lines)
+
+    async def send_decision_card(
+        self,
+        chat_id: str,
+        card: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Telegram inline-keyboard DecisionCard.
+
+        v0 intentionally renders one decision per message.  Button callbacks are
+        short (``dq:<decision_id>:<choice>``) and outcomes are written to a
+        local JSONL artifact under ``$HERMES_HOME/decision_queue``.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        decision_id = str(card.get("decision_id") or "").strip()
+        if not decision_id:
+            return SendResult(success=False, error="decision_id is required")
+
+        try:
+            buttons = []
+            for opt in (card.get("options") or [])[:4]:
+                if not isinstance(opt, dict):
+                    continue
+                key = str(opt.get("key") or "").strip()
+                label = str(opt.get("label") or key).strip()
+                if not key:
+                    continue
+                button_label = f"{key}: {label}" if label and label != key else key
+                if len(button_label) > 32:
+                    button_label = button_label[:31] + "…"
+                buttons.append(InlineKeyboardButton(button_label, callback_data=f"dq:{decision_id}:{key}"))
+            if not buttons:
+                return SendResult(success=False, error="at least one option is required")
+            rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+            keyboard = InlineKeyboardMarkup(rows)
+
+            thread_id = self._metadata_thread_id(metadata)
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": self._format_decision_card_text(card),
+                "parse_mode": ParseMode.MARKDOWN,
+                "reply_markup": keyboard,
+                **self._link_preview_kwargs(),
+            }
+            message_thread_id = self._message_thread_id_for_send(thread_id)
+            if message_thread_id is not None:
+                kwargs["message_thread_id"] = message_thread_id
+
+            msg = await self._bot.send_message(**kwargs)
+            self._decision_card_state[decision_id] = dict(card)
+            self._save_active_decision_card(decision_id, card)
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_decision_card failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    def _record_decision_card_choice(
+        self,
+        *,
+        card: Dict[str, Any],
+        choice: str,
+        user_id: str,
+        user_name: str,
+        chat_id: str,
+        thread_id: str,
+    ) -> None:
+        """Append a DecisionCard outcome to the local JSONL decision ledger."""
+        from hermes_constants import get_hermes_home
+        from datetime import datetime, timezone
+
+        options = card.get("options") or []
+        selected_label = ""
+        for opt in options:
+            if isinstance(opt, dict) and str(opt.get("key") or "") == str(choice):
+                selected_label = str(opt.get("label") or "")
+                break
+
+        record = {
+            "decision_id": str(card.get("decision_id") or ""),
+            "choice": str(choice),
+            "selected_label": selected_label,
+            "user_id": str(user_id),
+            "user_name": str(user_name),
+            "chat_id": str(chat_id),
+            "thread_id": str(thread_id),
+            "title": str(card.get("title") or ""),
+            "recommendation": str(card.get("recommendation") or ""),
+            "taste_signal": str(card.get("taste_signal") or ""),
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        out_dir = get_hermes_home() / "decision_queue"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with (out_dir / "decisions.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
         session_key: str = "",
@@ -2611,6 +2796,60 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- DecisionCard callbacks (dq:decision_id:choice) ---
+        if data.startswith("dq:"):
+            parts = data.split(":", 2)
+            if len(parts) != 3:
+                await query.answer(text="Invalid decision data.")
+                return
+            decision_id = parts[1]
+            choice = parts[2]
+
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to answer this decision.")
+                return
+
+            card = self._load_active_decision_card(decision_id)
+            if not card:
+                await query.answer(text="This decision is no longer active.")
+                return
+
+            user_display = getattr(query.from_user, "first_name", "User")
+            await query.answer(text=f"✅ {choice} recorded")
+            try:
+                self._record_decision_card_choice(
+                    card=card,
+                    choice=choice,
+                    user_id=caller_id,
+                    user_name=str(user_display),
+                    chat_id=str(query_chat_id or ""),
+                    thread_id=str(query_thread_id or ""),
+                )
+                self._remove_active_decision_card(decision_id)
+            except Exception as exc:
+                logger.error("[%s] Failed to record DecisionCard outcome: %s", self.name, exc, exc_info=True)
+
+            resolved_text = (
+                f"{self._format_decision_card_text(card)}\n\n"
+                f"✅ Decision recorded: *{choice}* by {user_display}"
+            )
+            try:
+                await query.edit_message_text(
+                    text=resolved_text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+            return
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mm:", "mb", "mx", "mg:")):
