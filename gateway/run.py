@@ -44,6 +44,7 @@ from agent.account_usage import (
     list_account_provider_choices,
     render_account_usage_lines,
     render_provider_account_usage_lines,
+    safe_display_text,
     select_provider_account,
 )
 from agent.i18n import t
@@ -10477,7 +10478,12 @@ class GatewayRunner:
                         account_results = await asyncio.to_thread(fetch_provider_account_usages, provider_slug)
                     except Exception:
                         account_results = []
-                    label = getattr(selected_entry, "label", None) or getattr(selected_entry, "id", None) or account_target
+                    label = safe_display_text(
+                        getattr(selected_entry, "label", None) or getattr(selected_entry, "id", None) or account_target,
+                        fallback="account",
+                        max_len=80,
+                        markdown=True,
+                    )
                     lines = [f"✅ Switched account: {label}", ""]
                     followup = await self._account_model_followup(source, session_key, provider_slug, adapter)
                     if followup:
@@ -10514,8 +10520,8 @@ class GatewayRunner:
                 count = provider_data.get("account_count", 0)
                 plural = "s" if count != 1 else ""
                 marker = " — current" if provider_data.get("is_current") else ""
-                name = provider_data.get("name") or provider_data.get("slug")
-                slug = provider_data.get("slug")
+                name = safe_display_text(provider_data.get("name") or provider_data.get("slug"), fallback="Provider", markdown=True)
+                slug = safe_display_text(provider_data.get("slug"), fallback="provider", markdown=True)
                 lines.append(f"[{idx}] **{name}** · {count} account{plural}{marker}")
                 lines.append(f"    `/account {slug}`")
             lines.append("")
@@ -10548,7 +10554,12 @@ class GatewayRunner:
                     agent._swap_credential(selected_entry)
                 except Exception as exc:
                     return f"Selected account, but could not apply it to this running session: {type(exc).__name__}"
-            label = getattr(selected_entry, "label", None) or getattr(selected_entry, "id", None) or account_target
+            label = safe_display_text(
+                getattr(selected_entry, "label", None) or getattr(selected_entry, "id", None) or account_target,
+                fallback="account",
+                max_len=80,
+                markdown=True,
+            )
             switched_line = f"✅ Switched account: {label}"
             adapter_for_followup = getattr(self, "adapters", {}).get(source.platform)
             model_followup_line = await self._account_model_followup(

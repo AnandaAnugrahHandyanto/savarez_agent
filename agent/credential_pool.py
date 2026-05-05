@@ -422,12 +422,12 @@ class CredentialPool:
                 if len(matches) == 1:
                     matched_index, matched_entry = matches[0]
                 elif len(matches) > 1:
-                    return None, None, f"account selection {needle!r} is ambiguous"
+                    return None, None, "account selection is ambiguous"
                 else:
-                    return None, None, f"account {needle!r} was not found"
+                    return None, None, "account was not found"
 
             if matched_entry is None or matched_index is None:
-                return None, None, f"account {needle!r} was not found"
+                return None, None, "account was not found"
 
             reordered = [matched_entry] + [entry for entry in self._entries if entry.id != matched_entry.id]
             self._entries = [replace(entry, priority=idx) for idx, entry in enumerate(reordered)]

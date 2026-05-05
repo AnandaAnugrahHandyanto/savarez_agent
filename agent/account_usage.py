@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import concurrent.futures
+import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import httpx
@@ -64,6 +66,40 @@ class AccountProviderChoice:
 
 
 _ACCOUNT_USAGE_LOOKUP_PROVIDERS = {"anthropic", "openai-codex", "openrouter"}
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
+_LEGACY_MARKDOWN_RE = re.compile(r"([_*\[\]()`])")
+
+
+def safe_display_text(
+    value: Any,
+    *,
+    fallback: str = "account",
+    max_len: Optional[int] = 80,
+    markdown: bool = False,
+) -> str:
+    """Return compact, user-facing text that cannot break platform renderers.
+
+    This is intentionally conservative: credential labels and plan/provider
+    names may be user-controlled, so strip control characters, collapse
+    whitespace, shorten safely, and optionally escape legacy Markdown-sensitive
+    characters used by Telegram account-picker messages.
+    """
+    text = str(value or "").strip() or fallback
+    text = _CONTROL_CHAR_RE.sub("", text)
+    text = " ".join(text.split())
+    if max_len is not None and max_len > 1 and len(text) > max_len:
+        text = text[: max_len - 1].rstrip() + "…"
+    if markdown:
+        text = _LEGACY_MARKDOWN_RE.sub(r"\\\1", text)
+    return text
+
+
+def safe_identifier(value: Any, *, fallback: str = "credential") -> str:
+    """Display a credential id without exposing a long secret-bearing value."""
+    text = safe_display_text(value, fallback=fallback, max_len=None)
+    if len(text) <= 14:
+        return text
+    return f"{text[:6]}…{text[-4:]}"
 
 
 def _normalize_provider(provider: Optional[str]) -> str:
@@ -117,51 +153,75 @@ def _parse_dt(value: Any) -> Optional[datetime]:
     return None
 
 
-def _format_reset(dt: Optional[datetime]) -> str:
+def format_reset_countdown(
+    dt: Optional[datetime],
+    *,
+    now: Optional[datetime] = None,
+    verb: str = "renews",
+) -> str:
+    """Format reset/renewal time as a compact Hermes-style countdown."""
     if not dt:
-        return "unknown"
-    local_dt = dt.astimezone()
-    delta = dt - _utc_now()
+        return "renewal time unknown"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    now = now or _utc_now()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    dt = dt.astimezone(timezone.utc)
+    now = now.astimezone(timezone.utc)
+    delta = dt - now
     total_seconds = int(delta.total_seconds())
     if total_seconds <= 0:
-        return f"now ({local_dt.strftime('%Y-%m-%d %H:%M %Z')})"
-    hours, rem = divmod(total_seconds, 3600)
-    minutes = rem // 60
-    if hours >= 24:
-        days, hours = divmod(hours, 24)
-        rel = f"in {days}d {hours}h"
-    elif hours > 0:
-        rel = f"in {hours}h {minutes}m"
-    else:
-        rel = f"in {minutes}m"
-    return f"{rel} ({local_dt.strftime('%Y-%m-%d %H:%M %Z')})"
+        return f"{verb} now ✨"
+
+    if dt.date() == (now + timedelta(days=1)).date():
+        return f"{verb} tomorrow at {dt.strftime('%H:%M')} 🌙"
+
+    minutes_total = max(1, (total_seconds + 59) // 60)
+    hours, minutes = divmod(minutes_total, 60)
+    if hours == 0:
+        return f"{verb} in {minutes}m ⏳"
+    if dt.date() == now.date():
+        return f"{verb} in {hours}h {minutes}m ✨"
+    days, hours = divmod(hours, 24)
+    return f"{verb} in {days}d {hours}h 🗓️"
+
+
+def _format_reset(dt: Optional[datetime]) -> str:
+    return format_reset_countdown(dt, verb="resets")
 
 
 def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, markdown: bool = False) -> list[str]:
     if not snapshot:
         return []
-    header = f"📈 {'**' if markdown else ''}{snapshot.title}{'**' if markdown else ''}"
+    title = safe_display_text(snapshot.title, fallback="Account limits", markdown=markdown)
+    provider = safe_display_text(snapshot.provider, fallback="provider", markdown=markdown)
+    header = f"📈 {'**' if markdown else ''}{title}{'**' if markdown else ''}"
     lines = [header]
     if snapshot.plan:
-        lines.append(f"Provider: {snapshot.provider} ({snapshot.plan})")
+        plan = safe_display_text(snapshot.plan, fallback="plan", markdown=markdown)
+        lines.append(f"Provider: {provider} ({plan})")
     else:
-        lines.append(f"Provider: {snapshot.provider}")
+        lines.append(f"Provider: {provider}")
     for window in snapshot.windows:
         if window.used_percent is None:
-            base = f"{window.label}: unavailable"
+            label = safe_display_text(window.label, fallback="Limit", markdown=markdown)
+            base = f"{label}: unavailable"
         else:
             remaining = max(0, round(100 - float(window.used_percent)))
             used = max(0, round(float(window.used_percent)))
-            base = f"{window.label}: {remaining}% remaining ({used}% used)"
+            label = safe_display_text(window.label, fallback="Limit", markdown=markdown)
+            base = f"{label}: {remaining}% left {_usage_bar(remaining)} ({used}% used)"
         if window.reset_at:
-            base += f" • resets {_format_reset(window.reset_at)}"
+            base += f" · {format_reset_countdown(window.reset_at)}"
         elif window.detail:
-            base += f" • {window.detail}"
+            base += f" · {safe_display_text(window.detail, fallback='', markdown=markdown)}"
         lines.append(base)
     for detail in snapshot.details:
-        lines.append(detail)
+        lines.append(safe_display_text(detail, fallback="detail", markdown=markdown))
     if snapshot.unavailable_reason:
-        lines.append(f"Unavailable: {snapshot.unavailable_reason}")
+        reason = safe_display_text(snapshot.unavailable_reason, fallback="usage unavailable", markdown=markdown)
+        lines.append(f"Unavailable: {reason}")
     return lines
 
 
@@ -196,18 +256,61 @@ def _account_health(snapshot: Optional[AccountUsageSnapshot]) -> tuple[str, str,
     return "✅", "Healthy", lowest_remaining
 
 
-def _format_account_window_line(window: AccountUsageWindow) -> str:
+def _format_account_window_line(window: AccountUsageWindow, *, markdown: bool = False) -> str:
+    label = safe_display_text(window.label, fallback="Limit", markdown=markdown)
     remaining = _remaining_percent(window)
     if remaining is None or window.used_percent is None:
-        base = f"   {window.label}: unavailable {_usage_bar(None)}"
+        base = f"   {label}: unavailable {_usage_bar(None)}"
     else:
         used = max(0, min(100, round(float(window.used_percent))))
-        base = f"   {window.label}: {remaining}% remaining ({used}% used) {_usage_bar(remaining)}"
+        base = f"   {label}: {remaining}% left {_usage_bar(remaining)} ({used}% used)"
     if window.reset_at:
-        base += f" • resets {_format_reset(window.reset_at)}"
+        base += f" · {format_reset_countdown(window.reset_at)}"
     elif window.detail:
-        base += f" • {window.detail}"
+        base += f" · {safe_display_text(window.detail, fallback='', markdown=markdown)}"
     return base
+
+
+def compact_account_usage_description(
+    snapshot: Optional[AccountUsageSnapshot],
+    *,
+    max_len: int = 100,
+) -> str:
+    """Discord/Telegram option description based on snapshot.windows."""
+    if not snapshot:
+        return "usage unavailable"
+    if snapshot.unavailable_reason:
+        return safe_display_text(snapshot.unavailable_reason, fallback="usage unavailable", max_len=max_len)
+    parts: list[str] = []
+    for window in snapshot.windows[:2]:
+        remaining = _remaining_percent(window)
+        label = safe_display_text(window.label, fallback="Limit", max_len=22)
+        if remaining is not None:
+            parts.append(f"{label}: {remaining}% left")
+        elif window.detail:
+            parts.append(f"{label}: {safe_display_text(window.detail, max_len=42)}")
+    if not parts and snapshot.details:
+        parts.append(safe_display_text(snapshot.details[0], fallback="usage detail", max_len=max_len))
+    if not parts:
+        parts.append("usage available")
+    return safe_display_text(" · ".join(parts), fallback="usage unavailable", max_len=max_len)
+
+
+def discord_account_option_parts(result: ProviderAccountUsage, *, active: bool = False) -> tuple[str, str]:
+    """Return Discord-safe select option label and description."""
+    _emoji, health, _lowest_remaining = _account_health(result.snapshot)
+    raw_label = result.label or f"account-{result.index}"
+    label = safe_display_text(raw_label, fallback=f"account-{result.index}", max_len=62)
+    active_prefix = "✓ " if active else ""
+    option_label = safe_display_text(
+        f"{active_prefix}{result.index}. {label} · {health}",
+        fallback=f"{result.index}. account · {health}",
+        max_len=100,
+    )
+    desc = compact_account_usage_description(result.snapshot, max_len=100)
+    if result.unavailable_reason and not result.snapshot:
+        desc = safe_display_text(result.unavailable_reason, fallback="usage unavailable", max_len=100)
+    return option_label, desc
 
 
 def render_provider_account_usage_lines(
@@ -223,12 +326,17 @@ def render_provider_account_usage_lines(
         return []
     strong = "**" if markdown else ""
     lines = [f"📊 {strong}Hermes Account Center{strong}"]
-    lines.append(f"Provider: {normalized} • Accounts: {len(results)}")
+    provider_label = safe_display_text(normalized, fallback="provider", markdown=markdown)
+    lines.append(f"Provider: {provider_label} • Accounts: {len(results)}")
     hint = (select_hint or f"/account {normalized} <number>").strip()
     lines.append(f"Select: `{hint}`" if markdown else f"Select: {hint}")
     lines.append("")
     for result in results:
-        label = result.label or f"account-{result.index}"
+        label = safe_display_text(
+            result.label or f"account-{result.index}",
+            fallback=f"account-{result.index}",
+            markdown=markdown,
+        )
         snapshot = result.snapshot
         emoji, health, _lowest_remaining = _account_health(snapshot)
         active = active_index is not None and result.index == active_index
@@ -238,20 +346,26 @@ def render_provider_account_usage_lines(
             title = f"{strong}{title}{strong}"
         lines.append(f"{emoji} {title}{active_suffix} · {health}")
         if result.status:
-            lines.append(f"   Pool: {result.status}")
+            lines.append(f"   Pool: {safe_display_text(result.status, fallback='available', markdown=markdown)}")
         if not snapshot:
-            reason = result.unavailable_reason or "usage unavailable"
+            reason = safe_display_text(
+                result.unavailable_reason or "usage unavailable",
+                fallback="usage unavailable",
+                markdown=markdown,
+            )
             lines.append(f"   Unavailable: {reason}")
             lines.append("")
             continue
         if snapshot.plan:
-            lines.append(f"   Plan: {snapshot.plan}")
+            plan = safe_display_text(snapshot.plan, fallback="plan", markdown=markdown)
+            lines.append(f"   Plan: {plan}")
         for window in snapshot.windows:
-            lines.append(_format_account_window_line(window))
+            lines.append(_format_account_window_line(window, markdown=markdown))
         for detail in snapshot.details:
-            lines.append(f"   {detail}")
+            lines.append(f"   {safe_display_text(detail, fallback='detail', markdown=markdown)}")
         if snapshot.unavailable_reason:
-            lines.append(f"   Unavailable: {snapshot.unavailable_reason}")
+            reason = safe_display_text(snapshot.unavailable_reason, fallback="usage unavailable", markdown=markdown)
+            lines.append(f"   Unavailable: {reason}")
         lines.append("")
     if lines and lines[-1] == "":
         lines.pop()
@@ -543,17 +657,20 @@ def list_account_usage_providers(*, active_provider: Optional[str] = None) -> li
 
 
 def _entry_label(entry: Any, index: int) -> str:
-    for attr in ("label", "source", "id"):
+    for attr in ("label", "source"):
         value = getattr(entry, attr, None)
         if isinstance(value, str) and value.strip():
-            return value.strip()
+            return safe_display_text(value, fallback=f"account-{index}", max_len=64)
+    value = getattr(entry, "id", None)
+    if isinstance(value, str) and value.strip():
+        return safe_identifier(value, fallback=f"account-{index}")
     return f"account-{index}"
 
 
 def _entry_status(entry: Any) -> str:
     status = getattr(entry, "last_status", None)
     if isinstance(status, str) and status.strip():
-        return status.strip()
+        return safe_display_text(status, fallback="available", max_len=40)
     return "available"
 
 
@@ -648,80 +765,146 @@ def select_provider_account(
 def account_choice_label(result: ProviderAccountUsage, *, active: bool = False) -> str:
     """Compact one-line label for terminal account pickers."""
     emoji, health, lowest_remaining = _account_health(result.snapshot)
-    label = result.label or f"account-{result.index}"
+    label = safe_display_text(result.label or f"account-{result.index}", fallback=f"account-{result.index}", max_len=48)
     suffix = "  ← active" if active else ""
     parts: list[str] = [f"{emoji} {result.index}. {label}{suffix}", health]
     if result.status:
-        parts.append(f"status: {result.status}")
+        parts.append(f"status: {safe_display_text(result.status, fallback='available', max_len=32)}")
     if result.snapshot and result.snapshot.plan:
-        parts.append(f"plan: {result.snapshot.plan}")
+        parts.append(f"plan: {safe_display_text(result.snapshot.plan, fallback='plan', max_len=32)}")
     if lowest_remaining is not None:
         parts.append(f"limit: {lowest_remaining}% left {_usage_bar(lowest_remaining, width=8)}")
     if result.snapshot:
         window_bits: list[str] = []
         for window in result.snapshot.windows[:2]:
             remaining = _remaining_percent(window)
+            window_label = safe_display_text(window.label, fallback="Limit", max_len=18)
             if remaining is not None and window.used_percent is not None:
                 used = max(0, min(100, round(float(window.used_percent))))
-                window_bits.append(f"{window.label} {remaining}% left / {used}% used")
+                bit = f"{window_label} {remaining}% left / {used}% used"
+                if window.reset_at:
+                    bit += f" · {format_reset_countdown(window.reset_at)}"
+                window_bits.append(bit)
             elif window.detail:
-                window_bits.append(f"{window.label} {window.detail}")
+                window_bits.append(f"{window_label} {safe_display_text(window.detail, max_len=40)}")
         if window_bits:
             parts.append("; ".join(window_bits))
         elif result.snapshot.details:
-            parts.append(result.snapshot.details[0])
+            parts.append(safe_display_text(result.snapshot.details[0], fallback="detail", max_len=60))
     if result.unavailable_reason and not (result.snapshot and result.snapshot.windows):
-        parts.append(result.unavailable_reason)
+        parts.append(safe_display_text(result.unavailable_reason, fallback="usage unavailable", max_len=60))
     return " · ".join(part for part in parts if part)
 
 
-def fetch_provider_account_usages(provider: Optional[str]) -> list[ProviderAccountUsage]:
-    """Fetch usage for every credential in a provider's credential pool."""
+def _sync_entry_for_usage(provider: str, pool: Any, entry: Any) -> tuple[Any, Optional[str]]:
+    """Best-effort OAuth sync before informational usage lookup."""
+    try:
+        if provider == "openai-codex" and getattr(entry, "source", None) == "device_code":
+            sync = getattr(pool, "_sync_codex_entry_from_auth_store", None)
+            if callable(sync):
+                entry = sync(entry)
+        elif provider == "anthropic" and getattr(entry, "source", None) == "claude_code":
+            sync = getattr(pool, "_sync_anthropic_entry_from_credentials_file", None)
+            if callable(sync):
+                entry = sync(entry)
+    except Exception as exc:
+        return entry, f"credential sync failed: {type(exc).__name__}"
+    return entry, None
+
+
+def _fetch_provider_entry_usage(provider: str, index: int, entry: Any, pool: Any = None) -> ProviderAccountUsage:
+    label = _entry_label(entry, index)
+    status = _entry_status(entry)
+    if provider not in _ACCOUNT_USAGE_LOOKUP_PROVIDERS:
+        snapshot = _account_unavailable_snapshot(provider, "usage lookup not supported for this provider")
+        return ProviderAccountUsage(provider, index, label, status, snapshot, snapshot.unavailable_reason)
+
+    if pool is not None:
+        entry, sync_error = _sync_entry_for_usage(provider, pool, entry)
+        if sync_error:
+            snapshot = _account_unavailable_snapshot(provider, sync_error)
+            return ProviderAccountUsage(provider, index, label, status, snapshot, snapshot.unavailable_reason)
+
+    token = _entry_runtime_api_key(entry)
+    try:
+        if provider == "openai-codex":
+            snapshot = _fetch_codex_account_usage_for_token(
+                token,
+                base_url=_entry_runtime_base_url(entry),
+                account_id=_entry_account_id(entry, token),
+            )
+        elif provider == "anthropic":
+            snapshot = _fetch_anthropic_account_usage_for_token(token)
+        elif provider == "openrouter":
+            snapshot = _fetch_openrouter_account_usage(_entry_runtime_base_url(entry), token)
+        else:
+            snapshot = None
+    except Exception as exc:
+        snapshot = _account_unavailable_snapshot(provider, f"usage lookup failed: {type(exc).__name__}")
+    if snapshot is None:
+        snapshot = _account_unavailable_snapshot(provider, "usage unavailable")
+    return ProviderAccountUsage(provider, index, label, status, snapshot, snapshot.unavailable_reason)
+
+
+def fetch_provider_account_usages(
+    provider: Optional[str],
+    *,
+    timeout: float = 20.0,
+    max_concurrency: int = 4,
+) -> list[ProviderAccountUsage]:
+    """Fetch usage for every credential with bounded partial-failure safety."""
     normalized = _normalize_provider(provider)
     if not normalized:
         return []
     try:
-        entries = load_pool(normalized).entries()
+        pool = load_pool(normalized)
+        entries = list(pool.entries())
     except Exception:
+        pool = None
         entries = []
-    results: list[ProviderAccountUsage] = []
-    for index, entry in enumerate(entries, start=1):
-        token = _entry_runtime_api_key(entry)
-        label = _entry_label(entry, index)
-        status = _entry_status(entry)
-        try:
-            if normalized == "openai-codex":
-                snapshot = _fetch_codex_account_usage_for_token(
-                    token,
-                    base_url=_entry_runtime_base_url(entry),
-                    account_id=_entry_account_id(entry, token),
+    if not entries:
+        return []
+
+    results: list[Optional[ProviderAccountUsage]] = [None] * len(entries)
+    workers = max(1, min(int(max_concurrency or 1), 4, len(entries)))
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+    future_to_pos: dict[concurrent.futures.Future, int] = {}
+    try:
+        for pos, entry in enumerate(entries):
+            future = executor.submit(_fetch_provider_entry_usage, normalized, pos + 1, entry, pool)
+            future_to_pos[future] = pos
+        done, not_done = concurrent.futures.wait(future_to_pos, timeout=max(0.1, float(timeout)))
+        for future in done:
+            pos = future_to_pos[future]
+            try:
+                results[pos] = future.result()
+            except Exception as exc:
+                entry = entries[pos]
+                snapshot = _account_unavailable_snapshot(normalized, f"usage lookup failed: {type(exc).__name__}")
+                results[pos] = ProviderAccountUsage(
+                    normalized,
+                    pos + 1,
+                    _entry_label(entry, pos + 1),
+                    _entry_status(entry),
+                    snapshot,
+                    snapshot.unavailable_reason,
                 )
-            elif normalized == "anthropic":
-                snapshot = _fetch_anthropic_account_usage_for_token(token)
-            elif normalized == "openrouter":
-                snapshot = _fetch_openrouter_account_usage(_entry_runtime_base_url(entry), token)
-            elif normalized not in _ACCOUNT_USAGE_LOOKUP_PROVIDERS:
-                snapshot = _account_unavailable_snapshot(normalized, "usage lookup not supported for this provider")
-            else:
-                snapshot = None
-        except Exception as exc:
-            snapshot = _account_unavailable_snapshot(
+        for future in not_done:
+            pos = future_to_pos[future]
+            future.cancel()
+            entry = entries[pos]
+            snapshot = _account_unavailable_snapshot(normalized, "usage lookup timed out")
+            results[pos] = ProviderAccountUsage(
                 normalized,
-                f"usage lookup failed: {type(exc).__name__}",
+                pos + 1,
+                _entry_label(entry, pos + 1),
+                _entry_status(entry),
+                snapshot,
+                snapshot.unavailable_reason,
             )
-        if snapshot is None:
-            snapshot = _account_unavailable_snapshot(normalized, "usage unavailable")
-        results.append(
-            ProviderAccountUsage(
-                provider=normalized,
-                index=index,
-                label=label,
-                status=status,
-                snapshot=snapshot,
-                unavailable_reason=snapshot.unavailable_reason,
-            )
-        )
-    return results
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    return [result for result in results if result is not None]
 
 
 def fetch_account_usage(

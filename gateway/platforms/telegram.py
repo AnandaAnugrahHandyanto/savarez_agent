@@ -1722,12 +1722,20 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
+            from agent.account_usage import safe_display_text
+
             buttons: list = []
             for p in providers:
                 count = p.get("account_count", 0)
-                label = f"{p.get('name', p.get('slug', 'Provider'))} ({count})"
+                name = safe_display_text(
+                    p.get("name", p.get("slug", "Provider")),
+                    fallback="Provider",
+                    max_len=44,
+                )
+                label = f"{name} ({count})"
                 if p.get("is_current"):
                     label = f"✓ {label}"
+                label = safe_display_text(label, fallback="Provider", max_len=60)
                 buttons.append(
                     InlineKeyboardButton(label, callback_data=f"ap:{p.get('slug', '')}")
                 )
@@ -1735,9 +1743,14 @@ class TelegramAdapter(BasePlatformAdapter):
             rows.append([InlineKeyboardButton("✗ Cancel", callback_data="ax")])
             keyboard = InlineKeyboardMarkup(rows)
 
+            current_label = safe_display_text(
+                current_provider or "unknown",
+                fallback="unknown",
+                markdown=True,
+            )
             text = (
                 "🔐 *Hermes Account Picker*\n\n"
-                f"Current provider: `{current_provider or 'unknown'}`\n\n"
+                f"Current provider: `{current_label}`\n\n"
                 "Select a credential provider:"
             )
 
@@ -1768,9 +1781,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _build_account_keyboard(self, account_results: list, active_index: Optional[int] = None):
         try:
-            from agent.account_usage import account_choice_label
+            from agent.account_usage import account_choice_label, safe_display_text
         except Exception:
             account_choice_label = None
+            safe_display_text = lambda value, **kwargs: str(value or kwargs.get("fallback", ""))[: kwargs.get("max_len", 58)]
 
         buttons: list = []
         for result in account_results[:10]:
@@ -1778,8 +1792,7 @@ class TelegramAdapter(BasePlatformAdapter):
             label = getattr(result, "label", None) or f"account-{idx}"
             if account_choice_label:
                 label = account_choice_label(result, active=(active_index is not None and idx == active_index))
-            if len(label) > 58:
-                label = label[:55] + "..."
+            label = safe_display_text(label, fallback=f"account-{idx}", max_len=58)
             buttons.append(InlineKeyboardButton(label, callback_data=f"am:{idx}"))
         rows = [[button] for button in buttons]
         rows.append([
@@ -1826,10 +1839,15 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception:
                 pass
             try:
+                from agent.account_usage import safe_display_text
+                provider_name = safe_display_text(provider.get("name", provider_slug), fallback=provider_slug, markdown=True)
+            except Exception:
+                provider_name = str(provider.get("name", provider_slug))
+            try:
                 await query.edit_message_text(
                     text=(
                         "🔐 *Hermes Account Picker*\n\n"
-                        f"Provider: *{provider.get('name', provider_slug)}*\n"
+                        f"Provider: *{provider_name}*\n"
                         "✦ Fetching account limits and remaining quota...\n"
                         "`◇◇◆◇◇◇◇◇◇◇◇◇◇◇`"
                     ),
@@ -1856,11 +1874,31 @@ class TelegramAdapter(BasePlatformAdapter):
             state["account_results"] = account_results
             state["active_index"] = active_index
             keyboard, extra = self._build_account_keyboard(account_results, active_index)
+            try:
+                from agent.account_usage import render_provider_account_usage_lines, safe_display_text
+
+                detail_lines = render_provider_account_usage_lines(
+                    provider_slug,
+                    account_results,
+                    active_index=active_index,
+                    select_hint=f"/account {provider_slug} <number>",
+                )
+                detail_text = "\n".join(
+                    safe_display_text(line, fallback="", max_len=320, markdown=True)
+                    for line in detail_lines[:40]
+                )
+                if extra:
+                    detail_text = f"{detail_text}\n{safe_display_text(extra, fallback='', max_len=180, markdown=True)}"
+                body = detail_text or "Select an account/API key:"
+                provider_name = safe_display_text(provider.get("name", provider_slug), fallback=provider_slug, markdown=True)
+            except Exception:
+                provider_name = str(provider.get("name", provider_slug))
+                body = f"Select an account/API key:{extra}"
             await query.edit_message_text(
                 text=(
                     "🔐 *Hermes Account Picker*\n\n"
-                    f"Provider: *{provider.get('name', provider_slug)}*\n"
-                    f"Select an account/API key:{extra}"
+                    f"Provider: *{provider_name}*\n\n"
+                    f"{body}"
                 ),
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=keyboard,
@@ -1918,19 +1956,25 @@ class TelegramAdapter(BasePlatformAdapter):
             self._account_picker_state.pop(chat_id, None)
 
         elif data == "ab":
+            try:
+                from agent.account_usage import safe_display_text
+            except Exception:
+                safe_display_text = lambda value, **kwargs: str(value or kwargs.get("fallback", ""))[: kwargs.get("max_len", 60)]
             buttons = []
             for p in state.get("providers", []):
                 count = p.get("account_count", 0)
-                label = f"{p.get('name', p.get('slug', 'Provider'))} ({count})"
+                name = safe_display_text(p.get("name", p.get("slug", "Provider")), fallback="Provider", max_len=44)
+                label = f"{name} ({count})"
                 if p.get("is_current"):
                     label = f"✓ {label}"
+                label = safe_display_text(label, fallback="Provider", max_len=60)
                 buttons.append(InlineKeyboardButton(label, callback_data=f"ap:{p.get('slug', '')}"))
             rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
             rows.append([InlineKeyboardButton("✗ Cancel", callback_data="ax")])
             await query.edit_message_text(
                 text=(
                     "🔐 *Hermes Account Picker*\n\n"
-                    f"Current provider: `{state.get('current_provider') or 'unknown'}`\n\n"
+                    f"Current provider: `{safe_display_text(state.get('current_provider') or 'unknown', fallback='unknown', markdown=True)}`\n\n"
                     "Select a credential provider:"
                 ),
                 parse_mode=ParseMode.MARKDOWN,
@@ -2186,7 +2230,7 @@ class TelegramAdapter(BasePlatformAdapter):
         query_user_name = getattr(query.from_user, "first_name", None)
 
         # --- Account picker callbacks ---
-        if data.startswith(("ap:", "am:", "ab", "ax")):
+        if data.startswith(("ap:", "am:")) or data in {"ab", "ax"}:
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 caller_id = str(getattr(query.from_user, "id", ""))

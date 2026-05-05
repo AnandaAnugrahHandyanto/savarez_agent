@@ -4818,10 +4818,17 @@ if DISCORD_AVAILABLE:
                 count = p.get("account_count", 0)
                 plural = "s" if count != 1 else ""
                 desc = "current provider" if p.get("is_current") else f"{count} account{plural}"
+                try:
+                    from agent.account_usage import safe_display_text
+                    provider_name = safe_display_text(p.get("name", p.get("slug", "Provider")), fallback="Provider", max_len=84)
+                    provider_value = safe_display_text(p.get("slug", ""), fallback="provider", max_len=100)
+                except Exception:
+                    provider_name = str(p.get("name", p.get("slug", "Provider")))[:84]
+                    provider_value = str(p.get("slug", ""))[:100]
                 options.append(
                     discord.SelectOption(
-                        label=f"{p.get('name', p.get('slug', 'Provider'))} ({count})"[:100],
-                        value=str(p.get("slug", ""))[:100],
+                        label=f"{provider_name} ({count})"[:100],
+                        value=provider_value,
                         description=desc[:100],
                     )
                 )
@@ -4844,37 +4851,15 @@ if DISCORD_AVAILABLE:
 
         @staticmethod
         def _account_option_parts(result: Any, active: bool = False) -> tuple[str, str]:
-            label = getattr(result, "label", None) or f"account-{getattr(result, 'index', '?')}"
-            status = getattr(result, "status", None) or "unknown"
-            prefix = "✓ " if active else ""
             try:
-                from agent.account_usage import account_choice_label
+                from agent.account_usage import discord_account_option_parts
 
-                compact = account_choice_label(result, active=active)
-                if compact:
-                    label = compact
+                return discord_account_option_parts(result, active=active)
             except Exception:
-                label = f"{prefix}{label} · {status}"
-
-            parts = []
-            snapshot = getattr(result, "snapshot", None)
-            limits = getattr(snapshot, "limits", None) or []
-            for item in limits[:2]:
-                name = str(getattr(item, "name", "limit") or "limit")
-                remaining = getattr(item, "remaining", None)
-                limit = getattr(item, "limit", None)
-                used = getattr(item, "used", None)
-                if remaining is not None and limit is not None:
-                    parts.append(f"{name}: {remaining:g}/{limit:g} left")
-                elif used is not None and limit is not None:
-                    parts.append(f"{name}: {used:g}/{limit:g} used")
-            if not parts:
-                unavailable = getattr(result, "unavailable_reason", None)
-                if unavailable:
-                    parts.append(str(unavailable))
-                else:
-                    parts.append(str(status))
-            return label[:100], " · ".join(parts)[:100]
+                label = getattr(result, "label", None) or f"account-{getattr(result, 'index', '?')}"
+                status = getattr(result, "status", None) or "unknown"
+                prefix = "✓ " if active else ""
+                return f"{prefix}{label} · {status}"[:100], str(status)[:100]
 
         def _build_account_select(self):
             self.clear_items()
@@ -4958,9 +4943,26 @@ if DISCORD_AVAILABLE:
             shown = min(total, 25)
             extra = f"\n*{total - shown} more available — type `/account {provider_slug} <number>` directly*" if total > shown else ""
             if total:
-                desc = f"Provider: **{self._selected_provider_name}**\nSelect an account/API key:{extra}"
+                try:
+                    from agent.account_usage import render_provider_account_usage_lines, safe_display_text
+
+                    detail_lines = render_provider_account_usage_lines(
+                        provider_slug,
+                        self._account_results,
+                        active_index=active_index,
+                        select_hint=f"/account {provider_slug} <number>",
+                    )
+                    detail = "\n".join(
+                        safe_display_text(line, fallback="", max_len=260)
+                        for line in detail_lines[:35]
+                    )
+                    desc = f"Provider: **{safe_display_text(self._selected_provider_name, fallback=provider_slug, max_len=80)}**\nSelect an account/API key:{extra}\n\n{detail}"
+                except Exception:
+                    desc = f"Provider: **{self._selected_provider_name}**\nSelect an account/API key:{extra}"
             else:
                 desc = f"Provider: **{self._selected_provider_name}**\nNo accounts were found for this provider."
+            if len(desc) > 4096:
+                desc = desc[:4093] + "..."
 
             await interaction.edit_original_response(
                 embed=discord.Embed(

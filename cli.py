@@ -5539,13 +5539,11 @@ class HermesCLI:
 
     def _fetch_account_results_for_picker(self, provider: str):
         from agent.account_usage import fetch_provider_account_usages
-        import concurrent.futures
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
-            try:
-                return _pool.submit(fetch_provider_account_usages, provider).result(timeout=20.0)
-            except (concurrent.futures.TimeoutError, Exception):
-                return []
+        try:
+            return fetch_provider_account_usages(provider, timeout=20.0)
+        except Exception:
+            return []
 
     def _begin_account_provider_loading(self, provider_data: dict) -> None:
         """Switch /account picker into a non-blocking Hermes loading state."""

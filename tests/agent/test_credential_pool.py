@@ -1619,3 +1619,69 @@ def test_codex_exhausted_entry_stays_stuck_without_auth_store_update(tmp_path, m
     # still skips it.
     available = pool._available_entries(clear_expired=True, refresh=False)
     assert available == []
+
+
+
+def test_select_target_accepts_index_label_id_and_unique_prefix(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    payload = {
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [
+                {"id": "cred-alpha-111", "label": "main", "auth_type": "oauth", "priority": 0, "source": "manual", "access_token": "tok-a"},
+                {"id": "cred-beta-222", "label": "backup", "auth_type": "oauth", "priority": 1, "source": "manual", "access_token": "tok-b"},
+                {"id": "cred-gamma-333", "label": "spare", "auth_type": "oauth", "priority": 2, "source": "manual", "access_token": "tok-c"},
+            ]
+        },
+    }
+    _write_auth_store(tmp_path, payload)
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    index, entry, error = pool.select_target("2")
+    assert (index, entry.id, error) == (2, "cred-beta-222", None)
+    assert [item.id for item in pool.entries()] == ["cred-beta-222", "cred-alpha-111", "cred-gamma-333"]
+
+    pool = load_pool("openai-codex")
+    index, entry, error = pool.select_target("spare")
+    assert (index, entry.id, error) == (3, "cred-gamma-333", None)
+    assert [item.id for item in pool.entries()] == ["cred-gamma-333", "cred-beta-222", "cred-alpha-111"]
+
+    pool = load_pool("openai-codex")
+    index, entry, error = pool.select_target("cred-beta-222")
+    assert (index, entry.id, error) == (2, "cred-beta-222", None)
+
+    pool = load_pool("openai-codex")
+    index, entry, error = pool.select_target("cred-gam")
+    assert (index, entry.id, error) == (2, "cred-gamma-333", None)
+
+
+def test_select_target_rejects_ambiguous_prefix_and_out_of_range_without_leaking_ids(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {"id": "secret-shared-alpha", "label": "main", "auth_type": "oauth", "priority": 0, "source": "manual", "access_token": "tok-a"},
+                    {"id": "secret-shared-beta", "label": "backup", "auth_type": "oauth", "priority": 1, "source": "manual", "access_token": "tok-b"},
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    index, entry, error = pool.select_target("secret-shared")
+    assert index is None
+    assert entry is None
+    assert error == "account selection is ambiguous"
+    assert "secret-shared" not in error
+
+    index, entry, error = pool.select_target("99")
+    assert index is None
+    assert entry is None
+    assert error == "account number 99 is out of range"

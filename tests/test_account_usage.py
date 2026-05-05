@@ -1,17 +1,22 @@
 import base64
 import json
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 
 from agent.account_usage import (
     AccountUsageSnapshot,
     AccountUsageWindow,
     ProviderAccountUsage,
     active_provider_account_index,
+    compact_account_usage_description,
+    discord_account_option_parts,
     fetch_account_usage,
     fetch_provider_account_usages,
+    format_reset_countdown,
     list_account_usage_providers,
     render_account_usage_lines,
     render_provider_account_usage_lines,
+    safe_display_text,
 )
 
 
@@ -172,9 +177,9 @@ def test_fetch_provider_account_usages_codex_fetches_every_pool_entry(monkeypatc
     rendered = "\n".join(render_provider_account_usage_lines("openai-codex", results))
     assert "Provider: openai-codex" in rendered
     assert "1. alpha" in rendered
-    assert "Session: 90% remaining (10% used)" in rendered
+    assert "Session: 90% left" in rendered
     assert "2. beta" in rendered
-    assert "Session: 5% remaining (95% used)" in rendered
+    assert "Session: 5% left" in rendered
 
 
 def test_fetch_provider_account_usages_codex_uses_id_token_account_id_and_chatgpt_backend_url(monkeypatch):
@@ -323,7 +328,7 @@ def test_render_account_usage_lines_includes_reset_and_provider():
 
     assert lines[0] == "📈 Account limits"
     assert "openai-codex (Pro)" in lines[1]
-    assert "Session: 75% remaining (25% used)" in lines[2]
+    assert "Session: 75% left" in lines[2]
     assert "Credits balance: $9.99" in lines[3]
 
 
@@ -410,3 +415,136 @@ def test_fetch_account_usage_openrouter_omits_quota_window_when_key_has_no_limit
     assert snapshot.windows == ()
     assert "Credits balance: $74.50" in snapshot.details
     assert "API key usage: $25.50 total • $1.25 today • $4.50 this week • $18.00 this month" in snapshot.details
+
+
+
+def test_format_reset_countdown_is_friendly_and_deterministic():
+    now = datetime(2026, 5, 5, 8, 0, tzinfo=timezone.utc)
+
+    assert format_reset_countdown(now + timedelta(minutes=32), now=now) == "renews in 32m ⏳"
+    assert format_reset_countdown(now + timedelta(hours=2, minutes=14), now=now) == "renews in 2h 14m ✨"
+    assert format_reset_countdown(datetime(2026, 5, 6, 9, 0, tzinfo=timezone.utc), now=now) == "renews tomorrow at 09:00 🌙"
+    assert format_reset_countdown(now + timedelta(days=3, hours=4), now=now) == "renews in 3d 4h 🗓️"
+    assert format_reset_countdown(now - timedelta(seconds=1), now=now) == "renews now ✨"
+
+
+def test_discord_compact_description_uses_snapshot_windows():
+    snapshot = AccountUsageSnapshot(
+        provider="openai-codex",
+        source="usage_api",
+        fetched_at=datetime.now(timezone.utc),
+        windows=(
+            AccountUsageWindow(label="Session", used_percent=10),
+            AccountUsageWindow(label="Weekly", used_percent=20),
+        ),
+    )
+    result = ProviderAccountUsage("openai-codex", 1, "main", "ok", snapshot)
+
+    label, desc = discord_account_option_parts(result, active=True)
+
+    assert label == "✓ 1. main · Healthy"
+    assert desc == "Session: 90% left · Weekly: 80% left"
+    assert compact_account_usage_description(snapshot) == desc
+
+
+def test_markdown_sensitive_labels_are_sanitized_for_display():
+    result = ProviderAccountUsage(
+        provider="openai-codex",
+        index=1,
+        label="main_key_*[x]`",
+        status="ok_*[x]`",
+        snapshot=AccountUsageSnapshot(
+            provider="openai-codex",
+            source="usage_api",
+            fetched_at=datetime.now(timezone.utc),
+            plan="pro_*[x]`",
+            windows=(AccountUsageWindow(label="Session_*[x]`", used_percent=10),),
+        ),
+    )
+
+    rendered = "\n".join(render_provider_account_usage_lines("openai-codex", [result], markdown=True))
+
+    assert r"main\_key\_\*\[x\]\`" in rendered
+    assert r"pro\_\*\[x\]\`" in rendered
+    assert safe_display_text("main_key_*[x]`", markdown=True) == r"main\_key\_\*\[x\]\`"
+
+
+def test_fetch_provider_account_usages_preserves_order_when_one_entry_fails(monkeypatch):
+    entries = [
+        _Entry(label="alpha", token="alpha"),
+        _Entry(label="beta", token="beta"),
+        _Entry(label="gamma", token="gamma"),
+    ]
+    monkeypatch.setattr("agent.account_usage.load_pool", lambda provider: _Pool(entries))
+
+    def fake_fetch(provider, index, entry, pool=None):
+        if index == 2:
+            raise RuntimeError("boom")
+        return ProviderAccountUsage(
+            provider,
+            index,
+            entry.label,
+            "available",
+            AccountUsageSnapshot(
+                provider=provider,
+                source="test",
+                fetched_at=datetime.now(timezone.utc),
+                windows=(AccountUsageWindow(label="Session", used_percent=index),),
+            ),
+        )
+
+    monkeypatch.setattr("agent.account_usage._fetch_provider_entry_usage", fake_fetch)
+
+    results = fetch_provider_account_usages("openai-codex")
+
+    assert [result.label for result in results] == ["alpha", "beta", "gamma"]
+    assert results[1].snapshot.unavailable_reason == "usage lookup failed: RuntimeError"
+
+
+def test_fetch_provider_account_usages_timeout_returns_unavailable_snapshot(monkeypatch):
+    entries = [_Entry(label="slow", token="slow")]
+    monkeypatch.setattr("agent.account_usage.load_pool", lambda provider: _Pool(entries))
+
+    def slow_fetch(provider, index, entry, pool=None):
+        time.sleep(0.2)
+        return ProviderAccountUsage(provider, index, entry.label, "available")
+
+    monkeypatch.setattr("agent.account_usage._fetch_provider_entry_usage", slow_fetch)
+
+    results = fetch_provider_account_usages("openai-codex", timeout=0.01)
+
+    assert results[0].label == "slow"
+    assert results[0].snapshot.unavailable_reason == "usage lookup timed out"
+
+
+def test_fetch_provider_account_usages_unsupported_provider_is_informational(monkeypatch):
+    entries = [_Entry(label="local", token="token")]
+    monkeypatch.setattr("agent.account_usage.load_pool", lambda provider: _Pool(entries))
+
+    results = fetch_provider_account_usages("custom:local")
+
+    assert results[0].snapshot.unavailable_reason == "usage lookup not supported for this provider"
+
+
+def test_fetch_provider_account_usages_syncs_codex_entry_before_lookup(monkeypatch):
+    stale = _Entry(label="codex", token="stale", source="device_code")
+    fresh = _Entry(label="codex", token=_jwt_with_account("acct_fresh"), source="device_code")
+
+    class SyncPool(_Pool):
+        def _sync_codex_entry_from_auth_store(self, entry):
+            return fresh
+
+    client = _HeaderRoutingClient(
+        {
+            "acct_fresh": {
+                "plan_type": "pro",
+                "rate_limit": {"primary_window": {"used_percent": 1}},
+            },
+        }
+    )
+    monkeypatch.setattr("agent.account_usage.load_pool", lambda provider: SyncPool([stale]))
+    monkeypatch.setattr("agent.account_usage.httpx.Client", lambda timeout=15.0: client)
+
+    results = fetch_provider_account_usages("openai-codex")
+    assert results[0].snapshot.windows[0].used_percent == 1.0
+    assert client.calls[0][1]["ChatGPT-Account-Id"] == "acct_fresh"
