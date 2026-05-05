@@ -121,6 +121,31 @@ def test_turn_route_skips_priority_processing_for_unsupported_models():
     assert route["request_overrides"] == {}
 
 
+def test_turn_route_carries_max_tokens_into_agent_runtime():
+    runner = _make_runner()
+    runner._service_tier = None
+    runtime_kwargs = {
+        "api_key": "***",
+        "base_url": "http://127.0.0.1:2455/v1",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+        "max_tokens": 65536,
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner,
+        "hi",
+        "gpt-5.5",
+        runtime_kwargs,
+    )
+
+    assert route["runtime"]["max_tokens"] == 65536
+    assert route["signature"][-1] == 65536
+
+
 @pytest.mark.asyncio
 async def test_handle_fast_command_persists_config(monkeypatch, tmp_path):
     runner = _make_runner()

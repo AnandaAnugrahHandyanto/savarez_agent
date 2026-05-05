@@ -98,6 +98,17 @@ class TestAgentConfigSignature:
         sig2 = GatewayRunner._agent_config_signature("claude-sonnet-4", runtime, ["hermes-telegram"], "")
         assert sig1 == sig2
 
+    def test_max_tokens_change_different_signature(self):
+        """model.max_tokens is baked into AIAgent and must bust cached agents."""
+        from gateway.run import GatewayRunner
+
+        rt1 = {"api_key": "k", "base_url": "u", "provider": "p", "max_tokens": 4096}
+        rt2 = {"api_key": "k", "base_url": "u", "provider": "p", "max_tokens": 65536}
+        sig1 = GatewayRunner._agent_config_signature("m", rt1, [], "")
+        sig2 = GatewayRunner._agent_config_signature("m", rt2, [], "")
+
+        assert sig1 != sig2
+
     # ---------------------------------------------------------------
     # cache_keys (compression/context config cache-busting)
     # ---------------------------------------------------------------
@@ -191,13 +202,20 @@ class TestExtractCacheBustingConfig:
     """Verify _extract_cache_busting_config pulls the documented subset of
     config values that must invalidate the cached agent on change."""
 
-    def test_reads_model_context_length(self):
+    def test_reads_model_context_length_and_max_tokens(self):
         from gateway.run import GatewayRunner
 
         out = GatewayRunner._extract_cache_busting_config(
-            {"model": {"context_length": 272_000, "provider": "openrouter"}}
+            {
+                "model": {
+                    "context_length": 272_000,
+                    "max_tokens": 65_536,
+                    "provider": "openrouter",
+                }
+            }
         )
         assert out["model.context_length"] == 272_000
+        assert out["model.max_tokens"] == 65_536
 
     def test_reads_compression_subkeys(self):
         from gateway.run import GatewayRunner

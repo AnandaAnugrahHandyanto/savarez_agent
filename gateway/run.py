@@ -563,6 +563,9 @@ def _resolve_runtime_agent_kwargs() -> dict:
     )
     from hermes_cli.auth import AuthError
 
+    cfg = _load_gateway_config()
+    max_tokens = _resolve_gateway_max_tokens(cfg)
+
     try:
         runtime = resolve_runtime_provider(
             requested=os.getenv("HERMES_INFERENCE_PROVIDER"),
@@ -571,7 +574,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         # Primary provider auth failed (expired token, revoked key, etc.).
         # Try the fallback provider chain before raising.
         logger.warning("Primary provider auth failed: %s — trying fallback", auth_exc)
-        fb_config = _try_resolve_fallback_provider()
+        fb_config = _try_resolve_fallback_provider(max_tokens=max_tokens)
         if fb_config is not None:
             return fb_config
         raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
@@ -586,10 +589,11 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "max_tokens": max_tokens,
     }
 
 
-def _try_resolve_fallback_provider() -> dict | None:
+def _try_resolve_fallback_provider(max_tokens: Optional[int] = None) -> dict | None:
     """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
     from hermes_cli.runtime_provider import resolve_runtime_provider
     try:
@@ -622,6 +626,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
+                    "max_tokens": max_tokens,
                 }
             except Exception as fb_exc:
                 logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
@@ -850,6 +855,23 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     elif isinstance(model_cfg, dict):
         return model_cfg.get("default") or model_cfg.get("model") or ""
     return ""
+
+
+def _resolve_gateway_max_tokens(config: dict | None = None) -> Optional[int]:
+    """Read model.max_tokens from config.yaml for gateway-created agents."""
+    cfg = config if config is not None else _load_gateway_config()
+    raw_value = cfg_get(cfg, "model", "max_tokens", default=None)
+    if raw_value in (None, ""):
+        return None
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        logger.warning("Invalid model.max_tokens %r in config.yaml; ignoring", raw_value)
+        return None
+    if value <= 0:
+        logger.warning("Invalid model.max_tokens %r in config.yaml; ignoring", raw_value)
+        return None
+    return value
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:
@@ -1529,12 +1551,14 @@ class GatewayRunner:
         model = _resolve_gateway_model(user_config)
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
         if override:
+            max_tokens = _resolve_gateway_max_tokens(user_config)
             override_model = override.get("model", model)
             override_runtime = {
                 "provider": override.get("provider"),
                 "api_key": override.get("api_key"),
                 "base_url": override.get("base_url"),
                 "api_mode": override.get("api_mode"),
+                "max_tokens": max_tokens,
             }
             if override_runtime.get("api_key"):
                 logger.debug(
@@ -1598,6 +1622,7 @@ class GatewayRunner:
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
+            "max_tokens": runtime_kwargs.get("max_tokens"),
         }
         route = {
             "model": model,
@@ -1609,6 +1634,7 @@ class GatewayRunner:
                 runtime["api_mode"],
                 runtime["command"],
                 tuple(runtime["args"]),
+                runtime["max_tokens"],
             ),
         }
 
@@ -11913,6 +11939,7 @@ class GatewayRunner:
     # Add more here as new baked-at-construction config settings are added.
     _CACHE_BUSTING_CONFIG_KEYS: tuple = (
         ("model", "context_length"),
+        ("model", "max_tokens"),
         ("compression", "enabled"),
         ("compression", "threshold"),
         ("compression", "target_ratio"),
@@ -11989,6 +12016,7 @@ class GatewayRunner:
                 runtime.get("base_url", ""),
                 runtime.get("provider", ""),
                 runtime.get("api_mode", ""),
+                runtime.get("max_tokens"),
                 sorted(enabled_toolsets) if enabled_toolsets else [],
                 # reasoning_config excluded — it's set per-message on the
                 # cached agent and doesn't affect system prompt or tools.

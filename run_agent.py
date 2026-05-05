@@ -3022,10 +3022,15 @@ class AIAgent:
         OpenAI's newer models (gpt-4o, o-series, gpt-5+) require
         'max_completion_tokens'. Azure OpenAI also requires
         'max_completion_tokens' for gpt-5.x models served via the
-        OpenAI-compatible endpoint. OpenRouter, local models, and older
-        OpenAI models use 'max_tokens'.
+        OpenAI-compatible endpoint. Custom OpenAI-compatible proxies that
+        serve GPT-5-family models need the same Chat Completions parameter.
+        OpenRouter, local non-OpenAI models, and older OpenAI models use
+        'max_tokens'.
         """
+        provider = (self.provider or "").strip().lower()
         if self._is_direct_openai_url() or self._is_azure_openai_url():
+            return {"max_completion_tokens": value}
+        if provider == "custom" and self._model_requires_responses_api(self.model or ""):
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
 
