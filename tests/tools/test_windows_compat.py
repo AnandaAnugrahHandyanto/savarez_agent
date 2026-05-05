@@ -30,6 +30,25 @@ def _get_preexec_fn_values(filepath: Path) -> list:
     return values
 
 
+def _get_popen_keyword_names(filepath: Path) -> list[str]:
+    """Find keyword names used on subprocess.Popen calls."""
+    source = filepath.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(filepath))
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "Popen"
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "subprocess"
+        ):
+            names.extend(kw.arg for kw in node.keywords if kw.arg)
+    return names
+
+
 class TestNoUnconditionalSetsid:
     """preexec_fn must never be a bare os.setsid reference."""
 
@@ -44,6 +63,27 @@ class TestNoUnconditionalSetsid:
             assert "attr='setsid'" not in val or "IfExp" in val or "None" in val, (
                 f"{relpath} has unconditional preexec_fn=os.setsid"
             )
+
+    @pytest.mark.parametrize("relpath", GUARDED_FILES)
+    def test_hot_paths_do_not_use_preexec_fn(self, relpath):
+        filepath = PROJECT_ROOT / relpath
+        if not filepath.exists():
+            pytest.skip(f"{relpath} not found")
+        values = _get_preexec_fn_values(filepath)
+        assert values == [], (
+            f"{relpath} uses preexec_fn in a gateway/process hot path. "
+            "Use start_new_session=True for POSIX process groups instead."
+        )
+
+    @pytest.mark.parametrize("relpath", GUARDED_FILES)
+    def test_posix_process_groups_use_start_new_session(self, relpath):
+        filepath = PROJECT_ROOT / relpath
+        if not filepath.exists():
+            pytest.skip(f"{relpath} not found")
+        keywords = _get_popen_keyword_names(filepath)
+        assert "start_new_session" in keywords, (
+            f"{relpath} must use start_new_session for POSIX process groups"
+        )
 
 
 class TestIsWindowsConstant:

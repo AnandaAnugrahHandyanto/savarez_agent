@@ -1098,7 +1098,10 @@ def execute_code(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
-            preexec_fn=None if _IS_WINDOWS else os.setsid,
+            # Keep the sandbox in its own process group without preexec_fn.
+            # preexec_fn is unsafe in long-lived multithreaded gateway
+            # processes and can wedge before our poll loop/heartbeat starts.
+            start_new_session=False if _IS_WINDOWS else True,
         )
 
         # --- Poll loop: watch for exit, timeout, and interrupt ---

@@ -298,6 +298,7 @@ class BaseEnvironment(ABC):
         self._cwd_file = f"{temp_dir}/hermes-cwd-{self._session_id}.txt"
         self._cwd_marker = _cwd_marker(self._session_id)
         self._snapshot_ready = False
+        self._execute_lock = threading.RLock()
 
     # ------------------------------------------------------------------
     # Abstract methods
@@ -725,44 +726,49 @@ class BaseEnvironment(ABC):
         stdin_data: str | None = None,
     ) -> dict:
         """Execute a command, return {"output": str, "returncode": int}."""
-        self._before_execute()
+        # A terminal environment is stateful: each command can update the
+        # shared snapshot file and cwd marker. Run one command at a time per
+        # environment; parallelism belongs above this layer with independent
+        # environments or stateless tools.
+        with self._execute_lock:
+            self._before_execute()
 
-        exec_command, sudo_stdin = self._prepare_command(command)
-        # Guard against the `A && B &` subshell-wait trap: bash forks a
-        # subshell for the compound that then waits for an infinite B (a
-        # server, `yes > /dev/null`, etc.), leaking the subshell forever.
-        # Rewriting to `A && { B & }` runs B as a plain background in the
-        # current shell — no subshell wait.
-        from tools.terminal_tool import _rewrite_compound_background
-        exec_command = _rewrite_compound_background(exec_command)
-        effective_timeout = timeout or self.timeout
-        effective_cwd = cwd or self.cwd
+            exec_command, sudo_stdin = self._prepare_command(command)
+            # Guard against the `A && B &` subshell-wait trap: bash forks a
+            # subshell for the compound that then waits for an infinite B (a
+            # server, `yes > /dev/null`, etc.), leaking the subshell forever.
+            # Rewriting to `A && { B & }` runs B as a plain background in the
+            # current shell — no subshell wait.
+            from tools.terminal_tool import _rewrite_compound_background
+            exec_command = _rewrite_compound_background(exec_command)
+            effective_timeout = timeout or self.timeout
+            effective_cwd = cwd or self.cwd
 
-        # Merge sudo stdin with caller stdin
-        if sudo_stdin is not None and stdin_data is not None:
-            effective_stdin = sudo_stdin + stdin_data
-        elif sudo_stdin is not None:
-            effective_stdin = sudo_stdin
-        else:
-            effective_stdin = stdin_data
+            # Merge sudo stdin with caller stdin
+            if sudo_stdin is not None and stdin_data is not None:
+                effective_stdin = sudo_stdin + stdin_data
+            elif sudo_stdin is not None:
+                effective_stdin = sudo_stdin
+            else:
+                effective_stdin = stdin_data
 
-        # Embed stdin as heredoc for backends that need it
-        if effective_stdin and self._stdin_mode == "heredoc":
-            exec_command = self._embed_stdin_heredoc(exec_command, effective_stdin)
-            effective_stdin = None
+            # Embed stdin as heredoc for backends that need it
+            if effective_stdin and self._stdin_mode == "heredoc":
+                exec_command = self._embed_stdin_heredoc(exec_command, effective_stdin)
+                effective_stdin = None
 
-        wrapped = self._wrap_command(exec_command, effective_cwd)
+            wrapped = self._wrap_command(exec_command, effective_cwd)
 
-        # Use login shell if snapshot failed (so user's profile still loads)
-        login = not self._snapshot_ready
+            # Use login shell if snapshot failed (so user's profile still loads)
+            login = not self._snapshot_ready
 
-        proc = self._run_bash(
-            wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
-        )
-        result = self._wait_for_process(proc, timeout=effective_timeout)
-        self._update_cwd(result)
+            proc = self._run_bash(
+                wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
+            )
+            result = self._wait_for_process(proc, timeout=effective_timeout)
+            self._update_cwd(result)
 
-        return result
+            return result
 
     # ------------------------------------------------------------------
     # Shared helpers
@@ -783,4 +789,3 @@ class BaseEnvironment(ABC):
         from tools.terminal_tool import _transform_sudo_command
 
         return _transform_sudo_command(command)
-
