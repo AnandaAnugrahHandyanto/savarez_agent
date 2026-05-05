@@ -2641,6 +2641,116 @@ async def toggle_skill(body: SkillToggle):
     return {"ok": True, "name": body.name, "enabled": body.enabled}
 
 
+@app.get("/api/analytics/skill-activity")
+async def get_skill_activity(days: int = 30):
+    """Skill activity analytics: usage stats + enabled/disabled status for all skills.
+
+    Returns a list of skill objects with:
+      - name, description, category, enabled
+      - view_count, manage_count, total_count (from session history)
+      - last_used_at (unix timestamp)
+      - status: "active" | "idle" | "never_used"
+    """
+    from hermes_state import SessionDB
+    from agent.insights import InsightsEngine
+    from tools.skills_tool import _find_all_skills
+    from hermes_cli.skills_config import get_disabled_skills
+
+    config = load_config()
+    disabled = get_disabled_skills(config)
+
+    # All known skills (including disabled ones for full picture)
+    all_skills = _find_all_skills(skip_disabled=True)
+    for s in all_skills:
+        s["enabled"] = s["name"] not in disabled
+
+    # Build lookup from insights
+    db = SessionDB()
+    try:
+        cutoff = time.time() - (days * 86400)
+        insights = InsightsEngine(db)
+        skill_usage = insights._get_skill_usage(cutoff)
+    finally:
+        db.close()
+
+    usage_map: Dict[str, dict] = {}
+    for su in skill_usage:
+        usage_map[su["skill"]] = su
+
+    # Merge usage data into skill list
+    for skill in all_skills:
+        usage = usage_map.get(skill["name"], {})
+        skill["view_count"] = usage.get("view_count", 0)
+        skill["manage_count"] = usage.get("manage_count", 0)
+        skill["total_count"] = usage.get("view_count", 0) + usage.get("manage_count", 0)
+        skill["last_used_at"] = usage.get("last_used_at")
+
+        # Derive activity status
+        if skill["total_count"] == 0:
+            skill["status"] = "never_used"
+        elif skill["last_used_at"] and (time.time() - skill["last_used_at"]) > (days * 86400):
+            skill["status"] = "idle"
+        else:
+            skill["status"] = "active"
+
+    # Sort: active first, then idle, then never_used; within each by total_count desc
+    status_order = {"active": 0, "idle": 1, "never_used": 2}
+    all_skills.sort(key=lambda s: (status_order.get(s["status"], 3), -s["total_count"], s["name"]))
+
+    # Add skills from usage that aren't in local scan (e.g. deleted but still in history)
+    known_names = {s["name"] for s in all_skills}
+    for su in skill_usage:
+        if su["skill"] not in known_names:
+            total = su["view_count"] + su["manage_count"]
+            all_skills.append({
+                "name": su["skill"],
+                "description": "(deleted or external)",
+                "category": "",
+                "enabled": su["skill"] not in disabled,
+                "view_count": su["view_count"],
+                "manage_count": su["manage_count"],
+                "total_count": total,
+                "last_used_at": su.get("last_used_at"),
+                "status": "active" if su.get("last_used_at") and (time.time() - su["last_used_at"]) <= (days * 86400) else "idle",
+            })
+
+    return {
+        "period_days": days,
+        "skills": all_skills,
+        "summary": {
+            "total_skills": len(all_skills),
+            "active_count": sum(1 for s in all_skills if s["status"] == "active"),
+            "idle_count": sum(1 for s in all_skills if s["status"] == "idle"),
+            "never_used_count": sum(1 for s in all_skills if s["status"] == "never_used"),
+            "enabled_count": sum(1 for s in all_skills if s["enabled"]),
+            "disabled_count": sum(1 for s in all_skills if not s["enabled"]),
+        },
+    }
+
+
+@app.put("/api/analytics/skill-activity/auto-cleanup")
+async def auto_cleanup_skills(days: int = 90, dry_run: bool = True):
+    """Auto-disable skills that have never been used in the given period.
+
+    Returns the list of skills that would be (or were) disabled.
+    """
+    activity = await get_skill_activity(days=days)
+    candidates = [s for s in activity["skills"] if s["status"] == "never_used" and s["enabled"]]
+
+    if dry_run:
+        return {"action": "dry_run", "would_disable": [s["name"] for s in candidates], "count": len(candidates)}
+
+    from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
+    config = load_config()
+    disabled = get_disabled_skills(config)
+    disabled_names = []
+    for s in candidates:
+        disabled.add(s["name"])
+        disabled_names.append(s["name"])
+    save_disabled_skills(config, disabled)
+    return {"action": "disabled", "disabled": disabled_names, "count": len(disabled_names)}
+
+
 @app.get("/api/tools/toolsets")
 async def get_toolsets():
     from hermes_cli.tools_config import (

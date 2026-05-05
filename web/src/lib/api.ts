@@ -65,6 +65,13 @@ export const api = {
     fetchJSON<AnalyticsResponse>(`/api/analytics/usage?days=${days}`),
   getModelsAnalytics: (days: number) =>
     fetchJSON<ModelsAnalyticsResponse>(`/api/analytics/models?days=${days}`),
+  getSkillActivity: (days: number) =>
+    fetchJSON<SkillActivityResponse>(`/api/analytics/skill-activity?days=${days}`),
+  autoCleanupSkills: (days: number, dryRun: boolean) =>
+    fetchJSON<{ action: string; count: number; disabled?: string[]; would_disable?: string[] }>(
+      `/api/analytics/skill-activity/auto-cleanup?days=${days}&dry_run=${dryRun}`,
+      { method: "PUT" },
+    ),
   getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
@@ -443,6 +450,31 @@ export interface AnalyticsSkillEntry {
   total_count: number;
   percentage: number;
   last_used_at: number | null;
+}
+
+export interface SkillActivityEntry {
+  name: string;
+  description: string;
+  category: string;
+  enabled: boolean;
+  view_count: number;
+  manage_count: number;
+  total_count: number;
+  last_used_at: number | null;
+  status: "active" | "idle" | "never_used";
+}
+
+export interface SkillActivityResponse {
+  period_days: number;
+  skills: SkillActivityEntry[];
+  summary: {
+    total_skills: number;
+    active_count: number;
+    idle_count: number;
+    never_used_count: number;
+    enabled_count: number;
+    disabled_count: number;
+  };
 }
 
 export interface AnalyticsSkillsSummary {
