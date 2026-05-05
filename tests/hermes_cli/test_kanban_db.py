@@ -702,6 +702,12 @@ class TestSharedBoardPaths:
                 self.pid = 4242
 
         monkeypatch.setattr("subprocess.Popen", _FakePopen)
+        profile_dir = default_home / "profiles" / "coder"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "config.yaml").write_text(
+            "model:\n  provider: openrouter\n  model: test-model\n",
+            encoding="utf-8",
+        )
 
         task = kb.Task(
             id="t_dispatch_env",

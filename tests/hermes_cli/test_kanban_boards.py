@@ -317,6 +317,43 @@ class TestWorkerSpawnEnv:
     actually spawning anything.
     """
 
+    def _write_profile_config(self, home: Path, name: str = "teknium") -> None:
+        profile_dir = home / "profiles" / name
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        (profile_dir / "config.yaml").write_text(
+            "model:\n  provider: openrouter\n  model: test-model\n",
+            encoding="utf-8",
+        )
+
+    def test_default_spawn_rejects_half_created_profile(self, fresh_home, monkeypatch):
+        profile_dir = fresh_home / "profiles" / "halfmade"
+        profile_dir.mkdir(parents=True)
+
+        def fail_popen(*args, **kwargs):  # pragma: no cover - should never be reached
+            raise AssertionError("Popen should not be called for an unrunnable profile")
+
+        monkeypatch.setattr(subprocess, "Popen", fail_popen)
+        task = kb.Task(
+            id="t_half",
+            title="half-created profile",
+            body=None,
+            assignee="halfmade",
+            status="ready",
+            priority=0,
+            created_by="user",
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="scratch",
+            workspace_path=None,
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+        )
+
+        with pytest.raises(RuntimeError, match="halfmade.*config.yaml"):
+            kb._default_spawn(task, str(fresh_home / "ws"), board=None)
+
     def test_default_spawn_sets_env_vars(self, fresh_home, monkeypatch):
         captured = {}
 
@@ -329,6 +366,7 @@ class TestWorkerSpawnEnv:
             return FakeProc()
 
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
+        self._write_profile_config(fresh_home)
         kb.create_board("spawntest")
 
         task = kb.Task(
@@ -371,6 +409,7 @@ class TestWorkerSpawnEnv:
             return FakeProc()
 
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
+        self._write_profile_config(fresh_home)
         task = kb.Task(
             id="t_def",
             title="",

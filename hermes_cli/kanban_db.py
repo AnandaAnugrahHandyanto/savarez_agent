@@ -2576,6 +2576,35 @@ def _rotate_worker_log(log_path: Path, max_bytes: int) -> None:
         pass
 
 
+def _validate_worker_profile_ready(profile_arg: str) -> None:
+    """Raise a clear error when a Kanban assignee profile cannot be spawned.
+
+    Kanban workers run as ``hermes -p <assignee> chat ...``. A stale or
+    half-created profile directory can otherwise get all the way to a child
+    process before failing with confusing model/provider/auth errors. Keep the
+    check intentionally cheap and local: name/existence + config.yaml presence.
+    Credential validity is provider-specific and still belongs to worker
+    startup, but missing profile/config is deterministic enough to fail fast.
+    """
+    from hermes_cli.profiles import get_profile_dir, profile_exists
+
+    if profile_arg == "default":
+        return
+    if not profile_exists(profile_arg):
+        raise RuntimeError(
+            f"Profile {profile_arg!r} does not exist. "
+            f"Create it with: hermes profile create {profile_arg} --clone"
+        )
+    profile_dir = get_profile_dir(profile_arg)
+    config_path = profile_dir / "config.yaml"
+    if not config_path.is_file():
+        raise RuntimeError(
+            f"Profile {profile_arg!r} is not runnable: missing {config_path}. "
+            f"Create it with `hermes profile create {profile_arg} --clone` "
+            "or add a profile config.yaml before assigning Kanban work."
+        )
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -2601,6 +2630,7 @@ def _default_spawn(
     from hermes_cli.profiles import normalize_profile_name
 
     profile_arg = normalize_profile_name(task.assignee)
+    _validate_worker_profile_ready(profile_arg)
 
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
