@@ -486,6 +486,17 @@ class VercelSandboxEnvironment(BaseEnvironment):
 
         self._wait_for_running()
 
+    def _update_cwd(self, result: dict):
+        """Vercel sandboxes are always driven from the workspace root.
+
+        We still emit and strip the CWD marker for cleanliness, but we do not
+        want per-command ``cwd=`` arguments to persist as the environment's
+        default working directory (tests rely on this stability).
+        """
+        self._extract_cwd_from_output(result)
+        if getattr(self, "_workspace_root", None):
+            self.cwd = self._workspace_root
+
     def _vercel_upload(self, host_path: str, remote_path: str) -> None:
         self._vercel_bulk_upload([(host_path, remote_path)])
 

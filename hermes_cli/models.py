@@ -3255,6 +3255,23 @@ def validate_requested_model(
             suggestion_text = ""
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            # Soft-accept only for plausible Codex model IDs. For totally unrelated
+            # names, keep the stricter behavior: reject with suggestions.
+            requested_lower = requested_for_lookup.lower()
+            plausible = (
+                "codex" in requested_lower
+                or requested_lower.startswith(("gpt", "o1", "o3", "o4"))
+            )
+            if not plausible:
+                return {
+                    "accepted": False,
+                    "persist": False,
+                    "recognized": False,
+                    "message": (
+                        f"Model `{requested}` not found in the OpenAI Codex model listing."
+                        f"{suggestion_text}"
+                    ),
+                }
             return {
                 "accepted": True,
                 "persist": True,
