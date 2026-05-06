@@ -539,6 +539,79 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Table → text conversion
+# ---------------------------------------------------------------------------
+# Feishu's ``md`` renderer has a known bug: markdown tables render as blank
+# cells.  We detect table blocks and convert them to readable plain-text
+# lists before handing content to the renderer.
+
+_TABLE_ROW_RE = re.compile(r"^\s*\|.+\|\s*$")
+_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
+
+
+def _convert_tables_to_text(content: str) -> str:
+    """Convert markdown table blocks to plain-text lists.
+
+    Feishu's ``md`` renderer renders markdown tables as blank.  This helper
+    detects consecutive table rows (lines starting and ending with ``|``),
+    strips the separator row, and converts each data row to a bullet list
+    item using the header values as labels.
+
+    Pipes inside fenced code blocks are left untouched.
+    """
+    if "|" not in content:
+        return content
+
+    lines = content.split("\n")
+    result: list[str] = []
+    i = 0
+    in_code_block = False
+
+    while i < len(lines):
+        line = lines[i]
+
+        # Track code block state
+        if line.strip().startswith("```"):
+            in_code_block = not in_code_block
+            result.append(line)
+            i += 1
+            continue
+
+        if in_code_block:
+            result.append(line)
+            i += 1
+            continue
+
+        # Detect table block: header row + separator row + data rows
+        if _TABLE_ROW_RE.match(line) and i + 1 < len(lines) and _TABLE_SEPARATOR_RE.match(lines[i + 1]):
+            # Parse header cells
+            header_cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            # Skip separator
+            i += 2
+            # Parse data rows
+            table_lines: list[str] = []
+            while i < len(lines) and _TABLE_ROW_RE.match(lines[i]) and not _TABLE_SEPARATOR_RE.match(lines[i]):
+                cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+                # Build label:value pairs using header names
+                parts: list[str] = []
+                for idx, cell in enumerate(cells):
+                    label = header_cells[idx] if idx < len(header_cells) else ""
+                    if label:
+                        parts.append(f"{label}：{cell}")
+                    else:
+                        parts.append(cell)
+                table_lines.append("- " + " | ".join(parts))
+                i += 1
+            result.extend(table_lines)
+            continue
+
+        result.append(line)
+        i += 1
+
+    return "\n".join(result)
+
+
+# ---------------------------------------------------------------------------
 # Post payload builders and parsers
 # ---------------------------------------------------------------------------
 
@@ -558,13 +631,18 @@ def _build_markdown_post_payload(content: str) -> str:
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     """Build Feishu post rows while isolating fenced code blocks.
 
-    Feishu's `md` renderer can swallow trailing content when a fenced code block
-    appears inside one large markdown element. Split the reply at real fence
-    lines so prose before/after the code block remains visible while code stays
-    in a dedicated row.
+    Feishu's ``md`` renderer can swallow trailing content when a fenced code
+    block appears inside one large markdown element.  Split the reply at real
+    fence lines so prose before/after the code block remains visible while
+    code stays in a dedicated row.
+
+    Markdown tables are also converted to plain-text lists because Feishu's
+    ``md`` renderer renders them as blank cells.
     """
     if not content:
         return [[{"tag": "md", "text": ""}]]
+    # Convert tables to plain text before any further processing.
+    content = _convert_tables_to_text(content)
     if "```" not in content:
         return [[{"tag": "md", "text": content}]]
 
