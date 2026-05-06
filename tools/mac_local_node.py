@@ -12,10 +12,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 import difflib
 import fnmatch
+import glob
 import json
 import os
 import re
 import shlex
+import signal
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -39,6 +47,9 @@ STRUCTURED_ERROR_CODES = [
     "TIMEOUT",
     "PROCESS_NOT_FOUND",
 ]
+MAX_TERMINAL_OUTPUT_CHARS = 50_000
+MAX_TERMINAL_INPUT_CHARS = 16_384
+_MANAGED_PROCESSES: dict[str, "ManagedProcess"] = {}
 
 # Keep these as data so tests can assert the intentionally small surface.
 REMOVED_STANDALONE_TOOL_NAMES = frozenset(
@@ -91,6 +102,24 @@ class TrustedRoot:
     def canonical(self) -> str:
         expanded = os.path.expanduser(os.path.expandvars(self.path))
         return _normalize_path_for_policy(expanded)
+
+
+@dataclass
+class ManagedProcess:
+    """Bounded-output background process handle for Mac terminal actions."""
+
+    process: subprocess.Popen[str]
+    stdout_chunks: list[str]
+    stderr_chunks: list[str]
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+    output_limit_exceeded: bool = False
+    stdout_thread: threading.Thread | None = None
+    stderr_thread: threading.Thread | None = None
+    cwd: str = ""
+    policy: Any = None
+    stdout_poll_offset: int = 0
+    stderr_poll_offset: int = 0
 
 
 class MacLocalPolicy:
@@ -147,6 +176,10 @@ class MacLocalPolicy:
         re.compile(r"\b(pnpm|yarn)\s+publish\b"),
         re.compile(r"\b(curl|wget)\b.*(--data|--data-binary|--post-file|-d|-F|-T|--upload-file|-X\s*POST|-X\s*PUT)", re.I),
         re.compile(r"\b(scp|rsync|nc|netcat|ssh|sftp|ftp)\b"),
+        re.compile(r"\b(socket|requests|urllib|httpx|fetch|http\.client|asyncio\.open_connection|aiohttp|websockets|ftplib|smtplib)\b"),
+        re.compile(r"\brequire\(\s*['\"](?:node:)?(?:net|tls|dgram|http|https)['\"]\s*\)"),
+        re.compile(r"\bimport\(\s*['\"](?:node:)?(?:net|tls|dgram|http|https)['\"]\s*\)"),
+        re.compile(r"\bfrom\s+['\"](?:node:)?(?:net|tls|dgram|http|https)['\"]"),
     )
 
     global_or_privileged_patterns = (
@@ -169,6 +202,35 @@ class MacLocalPolicy:
         re.compile(r"\bfind\s+\.(?:\s|$).*-name\s+['\"]?\.(env|npmrc|pypirc|netrc)\b"),
         re.compile(r"\bfind\s+\.(?:\s|$).*-type\s+f\b"),
         re.compile(r"\btar\b.*\s\.($|\s)"),
+    )
+
+    unmodeled_shell_expansion_patterns = (
+        re.compile(r"(?<!\\)\$[A-Za-z_][A-Za-z0-9_]*"),
+        re.compile(r"\{[^}\n]+\}"),
+        re.compile(r"\$\("),
+        re.compile(r"`"),
+        re.compile(r"[<>]\("),
+        re.compile(r"\b(alias|function)\b"),
+    )
+
+    exec_code_sensitive_patterns = (
+        re.compile(r"\bimport\s+"),
+        re.compile(r"\bfrom\s+\S+\s+import\b"),
+        re.compile(r"\bimportlib\b"),
+        re.compile(r"\b__import__\b"),
+        re.compile(r"\brequire\s*\("),
+        re.compile(r"\bimport\s*\("),
+        re.compile(r"\beval\s*\("),
+        re.compile(r"\bexec\s*\("),
+        re.compile(r"\bopen\s*\("),
+        re.compile(r"\bPath\s*\("),
+        re.compile(r"\b(pathlib|os|subprocess|shutil)\b"),
+    )
+
+    interactive_shell_patterns = (
+        re.compile(r"^(?:.*/)?(bash|sh|zsh|fish)(?:\s+.*)?$"),
+        re.compile(r"^(?:(?:/usr/bin/)?env(?:\s+-\S+|\s+[A-Za-z_][A-Za-z0-9_]*=\S+)*|command)\s+(?:.*/)?(bash|sh|zsh|fish)(?:\s+.*)?$"),
+        re.compile(r"^(python|python3|node)\s*(-i)?\s*$"),
     )
 
     relative_secret_command_patterns = (
@@ -219,8 +281,16 @@ class MacLocalPolicy:
             return PolicyVerdict("deny", "EMPTY_COMMAND", cwd_scope)
         if self._matches_any(compact, self.broad_secret_discovery_patterns):
             return PolicyVerdict("ask", "APPROVAL_REQUIRED", cwd_scope)
+        if self._has_shell_assignment_syntax(compact):
+            return PolicyVerdict("ask", "APPROVAL_REQUIRED", cwd_scope)
+        if self._matches_any(compact, self.unmodeled_shell_expansion_patterns):
+            return PolicyVerdict("ask", "APPROVAL_REQUIRED", cwd_scope)
         if self._command_mentions_secret(compact):
             return PolicyVerdict("deny", "SECRET_DENIED", cwd_scope)
+        if self._matches_any(compact, self.interactive_shell_patterns):
+            return PolicyVerdict("ask", "APPROVAL_REQUIRED", cwd_scope)
+        if self._inline_interpreter_requires_approval(compact):
+            return PolicyVerdict("ask", "APPROVAL_REQUIRED", cwd_scope)
         if self._command_mentions_untrusted_path(compact, cwd or os.getcwd()):
             return PolicyVerdict("ask", "APPROVAL_REQUIRED", cwd_scope)
         if self._matches_any(compact, self.destructive_patterns):
@@ -230,6 +300,31 @@ class MacLocalPolicy:
         if self._matches_any(compact, self.global_or_privileged_patterns):
             return PolicyVerdict("ask", "APPROVAL_REQUIRED", cwd_scope)
         if self._matches_any(compact, self.guarded_mac_surface_patterns):
+            return PolicyVerdict("ask", "APPROVAL_REQUIRED", cwd_scope)
+        return PolicyVerdict("allow", "LOCAL_DEV_ALLOWED", cwd_scope)
+
+    def classify_exec_code(self, code: str, cwd: str | None = None) -> PolicyVerdict:
+        """Classify short code snippets before mac_terminal.exec_code runs them.
+
+        `exec_code` is intentionally for small local snippets.  Code with imports
+        or dynamic loaders can hide network/file-exfiltration behavior from a
+        regex command classifier, so route it through approval instead of trying
+        to statically prove it safe.
+        """
+
+        cwd_scope = self._scope_for_path(_normalize_path_for_policy(cwd or os.getcwd()))
+        if cwd_scope == "unknown":
+            return PolicyVerdict("ask", "APPROVAL_REQUIRED", cwd_scope)
+        compact = " ".join(code.strip().split())
+        if not compact:
+            return PolicyVerdict("allow", "LOCAL_DEV_ALLOWED", cwd_scope)
+        if self._matches_any(compact, self.exec_code_sensitive_patterns):
+            return PolicyVerdict("ask", "APPROVAL_REQUIRED", cwd_scope)
+        if self._matches_any(compact, self.external_patterns):
+            return PolicyVerdict("ask", "APPROVAL_REQUIRED", cwd_scope)
+        if self._command_mentions_secret(compact):
+            return PolicyVerdict("deny", "SECRET_DENIED", cwd_scope)
+        if self._command_mentions_untrusted_path(compact, cwd or os.getcwd()):
             return PolicyVerdict("ask", "APPROVAL_REQUIRED", cwd_scope)
         return PolicyVerdict("allow", "LOCAL_DEV_ALLOWED", cwd_scope)
 
@@ -256,6 +351,45 @@ class MacLocalPolicy:
             parts = command.split()
         return any(self._is_secret_path(_normalize_path_for_policy(part)) for part in parts)
 
+    def _has_shell_assignment_syntax(self, command: str) -> bool:
+        try:
+            lexer = shlex.shlex(command, posix=True, punctuation_chars=";|&")
+            lexer.whitespace_split = True
+            tokens = list(lexer)
+        except ValueError:
+            return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", command.strip()))
+        previous_is_separator = True
+        for token in tokens:
+            if token in {";", "|", "&", "&&", "||"}:
+                previous_is_separator = True
+                continue
+            if previous_is_separator and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token):
+                return True
+            previous_is_separator = False
+        return False
+
+    def _inline_interpreter_requires_approval(self, command: str) -> bool:
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            return True
+        if not parts:
+            return False
+        executable = Path(parts[0]).name
+        if executable == "node" and "-e" in parts:
+            return True
+        if executable in {"python", "python3", Path(sys.executable).name}:
+            for flag in ("-c", "-m"):
+                if flag in parts:
+                    if flag == "-m":
+                        return True
+                    index = parts.index(flag)
+                    code = parts[index + 1] if index + 1 < len(parts) else ""
+                    return self._matches_any(code, self.exec_code_sensitive_patterns) or self._matches_any(
+                        code, self.external_patterns
+                    )
+        return False
+
     def _command_mentions_untrusted_path(self, command: str, cwd: str) -> bool:
         cwd_path = _normalize_path_for_policy(cwd)
         candidates = set(_absolute_path_mentions(command))
@@ -273,6 +407,18 @@ class MacLocalPolicy:
                 candidates.add(expanded)
             elif expanded.startswith("../") or expanded == ".." or "/../" in expanded:
                 candidates.add(str(Path(cwd_path, expanded)))
+            elif any(marker in expanded for marker in "*?[]"):
+                for match in glob.glob(str(Path(cwd_path, expanded)), recursive=False):
+                    candidates.add(str(Path(match).resolve(strict=False)))
+            elif "/" in expanded:
+                candidates.add(str(Path(cwd_path, expanded).resolve(strict=False)))
+            else:
+                try:
+                    exists = Path(cwd_path, expanded).exists()
+                except OSError:
+                    exists = False
+                if exists:
+                    candidates.add(str(Path(cwd_path, expanded).resolve(strict=False)))
         return any(self._scope_for_path(_normalize_path_for_policy(candidate)) == "unknown" for candidate in candidates)
 
     def _scope_for_path(self, normalized: str) -> str:
@@ -516,6 +662,65 @@ def _error_payload(tool: str, action: str | None, error_code: str, message: str,
     return json.dumps(payload)
 
 
+def _terminal_policy_error(action: str, verdict: PolicyVerdict, *, cwd: str | None = None) -> str | None:
+    if verdict.decision == "allow":
+        return None
+    code = "SECRET_DENIED" if verdict.reason == "SECRET_DENIED" else "APPROVAL_REQUIRED"
+    message = "Secret/auth paths are denied by default." if code == "SECRET_DENIED" else "Command requires approval by Mac local-node policy."
+    return _error_payload(
+        "mac_terminal",
+        action,
+        code,
+        message,
+        cwd=cwd,
+        scope=verdict.scope,
+        policy_reason=verdict.reason,
+    )
+
+
+def _truncate_text(text: str, limit: int = MAX_TERMINAL_OUTPUT_CHARS) -> tuple[str, bool]:
+    if len(text) <= limit:
+        return text, False
+    return text[:limit], True
+
+
+def _safe_terminal_env() -> dict[str, str]:
+    allowed = {"PATH", "LANG", "LC_ALL", "TERM", "TMPDIR", "SHELL"}
+    return {key: value for key, value in os.environ.items() if key in allowed}
+
+
+def _terminal_command_payload(
+    action: str,
+    *,
+    cwd: str,
+    verdict: PolicyVerdict,
+    completed: subprocess.CompletedProcess[str],
+) -> str:
+    stdout, stdout_truncated = _truncate_text(completed.stdout or "")
+    stderr, stderr_truncated = _truncate_text(completed.stderr or "")
+    stdout_truncated = stdout_truncated or getattr(completed, "stdout_truncated", False)
+    stderr_truncated = stderr_truncated or getattr(completed, "stderr_truncated", False)
+    return json.dumps(
+        {
+            "ok": completed.returncode == 0 and not getattr(completed, "output_limit_exceeded", False),
+            "action": action,
+            "cwd": cwd,
+            "exit_code": completed.returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+            "stdout_truncated": stdout_truncated,
+            "stderr_truncated": stderr_truncated,
+            "output_limit_exceeded": getattr(completed, "output_limit_exceeded", False),
+            "policy_reason": verdict.reason,
+            "scope": verdict.scope,
+        }
+    )
+
+
+def _terminal_timeout_payload(action: str, cwd: str | None, timeout: int) -> str:
+    return _error_payload("mac_terminal", action, "TIMEOUT", f"Command timed out after {timeout}s.", cwd=cwd)
+
+
 def _extract_action(args: dict[str, Any] | None) -> str | None:
     if not isinstance(args, dict):
         return None
@@ -717,6 +922,370 @@ def handle_mac_fs_local(args: dict[str, Any] | None = None, *, policy: MacLocalP
     return _invalid_action_result("mac_fs", action, FS_ACTIONS)
 
 
+def _terminal_cwd(args: dict[str, Any]) -> str:
+    return _canonical_for_payload(str(args.get("cwd") or os.getcwd()))
+
+
+def _terminate_process_group(process: subprocess.Popen[str], sig: int = signal.SIGTERM) -> None:
+    try:
+        os.killpg(process.pid, sig)
+    except (OSError, ProcessLookupError):
+        if process.poll() is None:
+            process.terminate()
+
+
+def _kill_process_group(process: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        if process.poll() is None:
+            process.kill()
+
+
+def _run_shell_command(command: str, cwd: str, timeout: int) -> subprocess.CompletedProcess[str]:
+    process = subprocess.Popen(
+        ["/bin/bash", "-c", command],
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=_safe_terminal_env(),
+        start_new_session=True,
+    )
+    managed = ManagedProcess(process, [], [], cwd=cwd)
+    _start_output_threads(managed)
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _terminate_process_group(process)
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(process)
+            process.wait(timeout=2)
+        _collect_managed_output(managed)
+        raise
+    stdout, stderr, stdout_truncated, stderr_truncated = _collect_managed_output(managed)
+    completed = subprocess.CompletedProcess(["/bin/bash", "-c", command], process.returncode, stdout, stderr)
+    completed.output_limit_exceeded = managed.output_limit_exceeded
+    completed.stdout_truncated = stdout_truncated
+    completed.stderr_truncated = stderr_truncated
+    return completed
+
+
+def _mac_terminal_run(args: dict[str, Any], policy: MacLocalPolicy) -> str:
+    action = "run"
+    command = str(args.get("command") or "")
+    cwd = _terminal_cwd(args)
+    verdict = policy.classify_command(command, cwd=cwd)
+    policy_error = _terminal_policy_error(action, verdict, cwd=cwd)
+    if policy_error:
+        return policy_error
+    timeout = _bounded_limit(args.get("timeout"), 180, 3_600)
+    try:
+        completed = _run_shell_command(command, cwd, timeout)
+    except subprocess.TimeoutExpired:
+        return _terminal_timeout_payload(action, cwd, timeout)
+    except OSError as exc:
+        return _error_payload("mac_terminal", action, "ACTION_DENIED", f"Command could not be started: {exc}", cwd=cwd)
+    return _terminal_command_payload(action, cwd=cwd, verdict=verdict, completed=completed)
+
+
+def _mac_terminal_exec_code(args: dict[str, Any], policy: MacLocalPolicy) -> str:
+    action = "exec_code"
+    language = str(args.get("language") or "python")
+    code = str(args.get("data") or "")
+    cwd = _terminal_cwd(args)
+    path_verdict = policy.classify_command("true", cwd=cwd)
+    policy_error = _terminal_policy_error(action, path_verdict, cwd=cwd)
+    if policy_error:
+        return policy_error
+    code_verdict = policy.classify_command(code, cwd=cwd) if language == "bash" else policy.classify_exec_code(code, cwd=cwd)
+    policy_error = _terminal_policy_error(action, code_verdict, cwd=cwd)
+    if policy_error:
+        return policy_error
+    timeout = _bounded_limit(args.get("timeout"), 30, 300)
+    suffix_by_language = {"python": ".py", "javascript": ".mjs", "bash": ".sh"}
+    command_by_language = {
+        "python": lambda path: f"{shlex.quote(sys.executable)} {shlex.quote(path)}",
+        "javascript": lambda path: f"node {shlex.quote(path)}",
+        "bash": lambda path: f"/bin/bash {shlex.quote(path)}",
+    }
+    if language not in suffix_by_language:
+        return _error_payload("mac_terminal", action, "ACTION_DENIED", "Unsupported exec_code language.", cwd=cwd)
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=suffix_by_language[language], dir=cwd, delete=False) as handle:
+            handle.write(code)
+            temp_path = handle.name
+        completed = _run_shell_command(command_by_language[language](temp_path), cwd, timeout)
+    except subprocess.TimeoutExpired:
+        return _terminal_timeout_payload(action, cwd, timeout)
+    except OSError as exc:
+        return _error_payload("mac_terminal", action, "ACTION_DENIED", f"Code could not be executed: {exc}", cwd=cwd)
+    finally:
+        if "temp_path" in locals():
+            try:
+                Path(temp_path).unlink()
+            except OSError:
+                pass
+    return _terminal_command_payload(action, cwd=cwd, verdict=code_verdict, completed=completed)
+
+
+def _capture_process_stream(managed: ManagedProcess, stream_name: str) -> None:
+    stream = getattr(managed.process, stream_name)
+    chunks = managed.stdout_chunks if stream_name == "stdout" else managed.stderr_chunks
+    if stream is None:
+        return
+    total = 0
+    try:
+        while True:
+            chunk = stream.readline(MAX_TERMINAL_OUTPUT_CHARS + 1)
+            if not chunk:
+                break
+            remaining = MAX_TERMINAL_OUTPUT_CHARS - total
+            if remaining > 0:
+                chunks.append(chunk[:remaining])
+                total += min(len(chunk), remaining)
+            if len(chunk) > remaining:
+                if stream_name == "stdout":
+                    managed.stdout_truncated = True
+                else:
+                    managed.stderr_truncated = True
+                managed.output_limit_exceeded = True
+                _terminate_process_group(managed.process)
+    except OSError:
+        return
+
+
+def _start_output_threads(managed: ManagedProcess) -> None:
+    managed.stdout_thread = threading.Thread(target=_capture_process_stream, args=(managed, "stdout"), daemon=True)
+    managed.stderr_thread = threading.Thread(target=_capture_process_stream, args=(managed, "stderr"), daemon=True)
+    managed.stdout_thread.start()
+    managed.stderr_thread.start()
+
+
+def _snapshot_managed_output(managed: ManagedProcess) -> tuple[str, str, bool, bool]:
+    return (
+        "".join(managed.stdout_chunks),
+        "".join(managed.stderr_chunks),
+        managed.stdout_truncated,
+        managed.stderr_truncated,
+    )
+
+
+def _consume_managed_poll_output(managed: ManagedProcess) -> tuple[str, str, bool, bool]:
+    stdout_all = "".join(managed.stdout_chunks)
+    stderr_all = "".join(managed.stderr_chunks)
+    stdout = stdout_all[managed.stdout_poll_offset :]
+    stderr = stderr_all[managed.stderr_poll_offset :]
+    managed.stdout_poll_offset = len(stdout_all)
+    managed.stderr_poll_offset = len(stderr_all)
+    return stdout, stderr, managed.stdout_truncated, managed.stderr_truncated
+
+
+def _collect_managed_output(managed: ManagedProcess) -> tuple[str, str, bool, bool]:
+    for thread in (managed.stdout_thread, managed.stderr_thread):
+        if thread is not None:
+            thread.join(timeout=2)
+    return _snapshot_managed_output(managed)
+
+
+def _mac_terminal_start(args: dict[str, Any], policy: MacLocalPolicy) -> str:
+    action = "start"
+    command = str(args.get("command") or "")
+    cwd = _terminal_cwd(args)
+    verdict = policy.classify_command(command, cwd=cwd)
+    policy_error = _terminal_policy_error(action, verdict, cwd=cwd)
+    if policy_error:
+        return policy_error
+    try:
+        process = subprocess.Popen(
+            ["/bin/bash", "-c", command],
+            cwd=cwd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=_safe_terminal_env(),
+            start_new_session=True,
+        )
+    except OSError as exc:
+        return _error_payload("mac_terminal", action, "ACTION_DENIED", f"Process could not be started: {exc}", cwd=cwd)
+    process_id = f"macproc-{uuid.uuid4().hex[:12]}"
+    managed = ManagedProcess(process, [], [], cwd=cwd, policy=policy)
+    _MANAGED_PROCESSES[process_id] = managed
+    _start_output_threads(managed)
+    return json.dumps(
+        {
+            "ok": True,
+            "action": action,
+            "process_id": process_id,
+            "pid": process.pid,
+            "cwd": cwd,
+            "started_at": time.time(),
+            "policy_reason": verdict.reason,
+            "scope": verdict.scope,
+        }
+    )
+
+
+def _process_not_found(action: str, process_id: str | None) -> str:
+    return _error_payload("mac_terminal", action, "PROCESS_NOT_FOUND", "Managed process was not found.", process_id=process_id)
+
+
+def _mac_terminal_poll(args: dict[str, Any]) -> str:
+    action = "poll"
+    process_id = str(args.get("process_id") or "")
+    managed = _MANAGED_PROCESSES.get(process_id)
+    if managed is None:
+        return _process_not_found(action, process_id)
+    exit_code = managed.process.poll()
+    if exit_code is None:
+        stdout, stderr, stdout_truncated, stderr_truncated = _consume_managed_poll_output(managed)
+        return json.dumps(
+            {
+                "ok": True,
+                "action": action,
+                "process_id": process_id,
+                "running": True,
+                "exit_code": None,
+                "stdout": stdout,
+                "stderr": stderr,
+                "stdout_truncated": stdout_truncated,
+                "stderr_truncated": stderr_truncated,
+                "output_limit_exceeded": managed.output_limit_exceeded,
+            }
+        )
+    _MANAGED_PROCESSES.pop(process_id, None)
+    _collect_managed_output(managed)
+    stdout, stderr, stdout_truncated, stderr_truncated = _consume_managed_poll_output(managed)
+    return json.dumps(
+        {
+            "ok": exit_code == 0 and not managed.output_limit_exceeded,
+            "action": action,
+            "process_id": process_id,
+            "running": False,
+            "exit_code": exit_code,
+            "stdout": stdout,
+            "stderr": stderr,
+            "stdout_truncated": stdout_truncated,
+            "stderr_truncated": stderr_truncated,
+            "output_limit_exceeded": managed.output_limit_exceeded,
+        }
+    )
+
+
+def _mac_terminal_wait(args: dict[str, Any]) -> str:
+    action = "wait"
+    process_id = str(args.get("process_id") or "")
+    managed = _MANAGED_PROCESSES.get(process_id)
+    if managed is None:
+        return _process_not_found(action, process_id)
+    timeout = _bounded_limit(args.get("timeout"), 180, 3_600)
+    try:
+        managed.process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        stdout, stderr, stdout_truncated, stderr_truncated = _snapshot_managed_output(managed)
+        return _error_payload(
+            "mac_terminal",
+            action,
+            "TIMEOUT",
+            f"Process did not complete within {timeout}s.",
+            process_id=process_id,
+            running=True,
+            stdout=stdout,
+            stderr=stderr,
+            stdout_truncated=stdout_truncated,
+            stderr_truncated=stderr_truncated,
+            output_limit_exceeded=managed.output_limit_exceeded,
+        )
+    _MANAGED_PROCESSES.pop(process_id, None)
+    stdout, stderr, stdout_truncated, stderr_truncated = _collect_managed_output(managed)
+    return json.dumps(
+        {
+            "ok": managed.process.returncode == 0 and not managed.output_limit_exceeded,
+            "action": action,
+            "process_id": process_id,
+            "running": False,
+            "exit_code": managed.process.returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+            "stdout_truncated": stdout_truncated,
+            "stderr_truncated": stderr_truncated,
+            "output_limit_exceeded": managed.output_limit_exceeded,
+        }
+    )
+
+
+def _mac_terminal_kill(args: dict[str, Any]) -> str:
+    action = "kill"
+    process_id = str(args.get("process_id") or "")
+    managed = _MANAGED_PROCESSES.pop(process_id, None)
+    if managed is None:
+        return _process_not_found(action, process_id)
+    _terminate_process_group(managed.process)
+    try:
+        managed.process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        _kill_process_group(managed.process)
+        managed.process.wait(timeout=5)
+    _collect_managed_output(managed)
+    return json.dumps({"ok": True, "action": action, "process_id": process_id, "exit_code": managed.process.returncode})
+
+
+def _mac_terminal_input(args: dict[str, Any]) -> str:
+    action = "input"
+    process_id = str(args.get("process_id") or "")
+    managed = _MANAGED_PROCESSES.get(process_id)
+    if managed is None or managed.process.stdin is None:
+        return _process_not_found(action, process_id)
+    data = str(args.get("data") or "")
+    if len(data) > MAX_TERMINAL_INPUT_CHARS:
+        return _error_payload(
+            "mac_terminal",
+            action,
+            "ACTION_DENIED",
+            f"Input exceeds {MAX_TERMINAL_INPUT_CHARS} character limit.",
+            process_id=process_id,
+        )
+    policy = managed.policy or MacLocalPolicy.default()
+    input_verdict = policy.classify_exec_code(data, cwd=managed.cwd or os.getcwd())
+    policy_error = _terminal_policy_error(action, input_verdict, cwd=managed.cwd)
+    if policy_error:
+        return policy_error
+    try:
+        managed.process.stdin.write(data)
+        managed.process.stdin.flush()
+    except OSError as exc:
+        return _error_payload("mac_terminal", action, "ACTION_DENIED", f"Could not write process input: {exc}", process_id=process_id)
+    return json.dumps({"ok": True, "action": action, "process_id": process_id})
+
+
+def handle_mac_terminal_local(args: dict[str, Any] | None = None, *, policy: MacLocalPolicy | None = None) -> str:
+    """Run Mac-node side terminal actions with local-dev policy checks."""
+
+    action = _extract_action(args)
+    if action not in TERMINAL_ACTIONS:
+        return _invalid_action_result("mac_terminal", action, TERMINAL_ACTIONS)
+    safe_args = args if isinstance(args, dict) else {}
+    active_policy = policy or MacLocalPolicy.default()
+    if action == "run":
+        return _mac_terminal_run(safe_args, active_policy)
+    if action == "start":
+        return _mac_terminal_start(safe_args, active_policy)
+    if action == "poll":
+        return _mac_terminal_poll(safe_args)
+    if action == "wait":
+        return _mac_terminal_wait(safe_args)
+    if action == "kill":
+        return _mac_terminal_kill(safe_args)
+    if action == "input":
+        return _mac_terminal_input(safe_args)
+    if action == "exec_code":
+        return _mac_terminal_exec_code(safe_args, active_policy)
+    return _invalid_action_result("mac_terminal", action, TERMINAL_ACTIONS)
+
+
 def _handle_placeholder(tool: str, args: dict[str, Any] | None, allowed_actions: list[str]) -> str:
     action = _extract_action(args)
     if action not in allowed_actions:
@@ -737,6 +1306,8 @@ def handle_mac_fs(args: dict[str, Any] | None = None, **_: Any) -> str:
 
 
 def handle_mac_terminal(args: dict[str, Any] | None = None, **_: Any) -> str:
+    if os.getenv("HERMES_MAC_LOCAL_NODE_EXECUTE_LOCAL", "").lower() in {"1", "true", "yes", "on"}:
+        return handle_mac_terminal_local(args)
     return _handle_placeholder("mac_terminal", args, TERMINAL_ACTIONS)
 
 
