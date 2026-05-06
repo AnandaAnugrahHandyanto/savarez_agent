@@ -517,26 +517,66 @@ class ObsidianMemoryProvider(MemoryProvider):
         except OSError as e:
             logger.debug("Agent log failed: %s", e)
 
-    def get_agent_logs(self, agent_name: str = "", date: str = "") -> str:
-        """Read agent logs. If no agent_name, returns all for the date."""
-        if not self._agents_dir:
+    def search_agent_memory(self, query: str, limit: int = 5) -> str:
+        """Semantic search across all agent logs, sessions, and daily notes.
+        
+        Uses simple keyword + recency scoring. Returns top matches.
+        """
+        if not self._memory_dir:
             return ""
-
-        target_date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        agent_dir = self._agents_dir / target_date
-        if not agent_dir.exists():
-            return f"No agent logs for {target_date}"
-
-        logs = []
-        files = [agent_dir / f"{agent_name}.md"] if agent_name else list(agent_dir.iterdir())
-
-        for f in files:
-            if f.exists() and f.suffix == ".md":
-                logs.append(f"### {f.stem}\n")
-                logs.append(f.read_text()[:1000])
-                logs.append("\n")
-
-        return "\n".join(logs) if logs else f"No logs found"
+        
+        import re
+        from datetime import datetime, timezone
+        
+        query_terms = set(query.lower().split())
+        matches = []
+        
+        # Search all .md files in Memory/
+        for root in (self._sessions_dir, self._agents_dir, self._daily_dir):
+            if not root or not root.exists():
+                continue
+            for f in root.rglob("*.md"):
+                if f.name.endswith("-raw.md"):
+                    continue
+                try:
+                    content = f.read_text().lower()
+                    score = sum(1 for term in query_terms if term in content)
+                    if score > 0:
+                        # Recency boost
+                        mtime = f.stat().st_mtime
+                        age_days = (datetime.now(timezone.utc).timestamp() - mtime) / 86400
+                        recency_boost = max(0, 1 - (age_days / 30))  # Decay over 30 days
+                        score += recency_boost
+                        
+                        # Extract relevant snippet
+                        lines = content.splitlines()
+                        snippet_lines = []
+                        for i, line in enumerate(lines):
+                            if any(term in line for term in query_terms):
+                                # Get context: 1 line before, the line, 1 after
+                                start = max(0, i-1)
+                                end = min(len(lines), i+2)
+                                snippet_lines.extend(lines[start:end])
+                                snippet_lines.append("---")
+                        
+                        snippet = "\n".join(snippet_lines[:20])  # Limit snippet length
+                        matches.append((score, f"{f.relative_to(self._memory_dir)}", snippet))
+                except OSError:
+                    continue
+        
+        # Sort by score descending
+        matches.sort(key=lambda x: x[0], reverse=True)
+        
+        if not matches:
+            return f"No matches for '{query}'"
+        
+        results = [f"## Search: '{query}'\n"]
+        for score, path, snippet in matches[:limit]:
+            results.append(f"**{path}** (score: {score:.1f})")
+            results.append(f"```\n{snippet[:400]}\n```")
+            results.append("")
+        
+        return "\n".join(results)
 
     def _archive_old_summaries(self, keep_days: int = 7) -> None:
         """Move summaries older than keep_days to an archive folder."""
