@@ -172,6 +172,9 @@ def build_run_code_schema(
         "• Call print(help()) for the full tool list, "
         "print(help('name')) for full parameter docs.\n"
         "• Prefer existing Hermes tools before environment probing or package installs.\n\n"
+        "For search/research/report/latest/current tasks, prefer high-level "
+        "research recipes over raw web_search. Final research reports must "
+        "include citation metadata or a source table from the evidence bundle.\n\n"
         + workflow_block
         + recipe_block
         + "Available tools:\n"

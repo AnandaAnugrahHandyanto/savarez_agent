@@ -39,6 +39,34 @@ def test_classify_topic_type_current_events():
     )
 
 
+def test_classify_topic_type_medical_pharma_precedes_current_events():
+    assert (
+        classify_topic_type("latest GLP-1 GIP drugs in phase 3 clinical trials")
+        == "medical_pharma"
+    )
+
+
+def test_generate_query_plan_adds_medical_pharma_source_recipe():
+    plan = generate_query_plan(
+        "latest GLP-1 GIP drugs in development",
+        topic_type="auto",
+        depth="thorough",
+    )
+    queries = [item["query"] for item in plan["queries"]]
+    kinds = {item["kind"] for item in plan["queries"]}
+
+    assert plan["topic_type"] == "medical_pharma"
+    assert plan["freshness"] == "latest"
+    assert {"regulatory", "clinical_trials", "pubmed", "company_ir", "news"} <= kinds
+    assert any("FDA" in query for query in queries)
+    assert any("EMA" in query for query in queries)
+    assert any("ClinicalTrials.gov" in query for query in queries)
+    assert "regulatory" in plan["source_requirements"]
+    assert "clinical_trials" in plan["source_requirements"]
+    assert "pubmed" in plan["source_requirements"]
+    assert "company_ir" in plan["source_requirements"]
+
+
 def test_generate_query_plan_adds_technical_source_packs():
     plan = generate_query_plan(
         "Hermes Agent API bug", topic_type="technical", depth="thorough"
@@ -119,6 +147,9 @@ def test_research_gather_returns_evidence_bundle_without_duckdb(monkeypatch):
     assert bundle["usage"]["indexed_embeddings"] == 0
     assert bundle["usage"]["indexed_evidence"] == 0
     assert bundle["usage"]["gap_passes"] == 0
+    assert bundle["source_table"][0]["citation"] == "[S1]"
+    assert bundle["citation_metadata"][0]["url"] == "https://www.nba.com/pistons/roster"
+    assert bundle["report_requirements"]["must_include_source_table"] is True
     assert [name for name, _ in calls] == ["web_search", "web_extract"]
 
 

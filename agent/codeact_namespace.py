@@ -208,10 +208,15 @@ def _build_workflow_guidance_for_tool_names(tool_names: set[str]) -> str:
 
     if "research_gather" in tool_names:
         lines.append(
-            "- Research/current facts: call research_web(question=...) before "
-            "manually sequencing web_search/web_extract. It returns an evidence "
-            "bundle; synthesize the final answer outside run_code. If unsure "
-            "which primitive to use, call research_help() first."
+            "- Search/research/report/latest/current/as-of-date tasks: first call "
+            "research_web(question=..., freshness='latest' for current requests) "
+            "or medical_pharma_research(...) for drug/clinical-trial/pharma work. "
+            "Do not start with raw web_search, browser_navigate, curl, or "
+            "Wikipedia. The bundle includes source_table/citation_metadata; "
+            "final research reports must cite those sources outside run_code. "
+            "If rate-limited, JS-challenged, bot-blocked, or Cloudflare/Wikipedia "
+            "blocked, try browser/Camoufox/Scrapling fallbacks when available "
+            "and record the limitation."
         )
 
     if "web_search" in tool_names or "web_extract" in tool_names:
@@ -220,7 +225,11 @@ def _build_workflow_guidance_for_tool_names(tool_names: set[str]) -> str:
             web_bits.append("web_search(query=...) for discovery")
         if "web_extract" in tool_names:
             web_bits.append("web_extract(urls=[...]) for page contents")
-        lines.append("- Web/current facts: use " + " then ".join(web_bits) + ".")
+        lines.append(
+            "- Raw web tools: use "
+            + " then ".join(web_bits)
+            + " only for targeted discovery/extraction. For reports or current facts, prefer research_web first."
+        )
 
     if "read_file" in tool_names or "search_files" in tool_names:
         file_bits = []
@@ -347,6 +356,17 @@ def build_tool_namespace_source(
         compact, full = help_registry["web_extract"]
         if "StealthyFetcher" not in full:
             help_registry["web_extract"] = (compact, full + _scrapling_hint)
+
+    if "browser_navigate" in help_registry:
+        _camofox_hint = (
+            " If web_search/web_extract hits rate limits, JS challenges, "
+            "or bot protection, use browser_navigate/browser_snapshot as a "
+            "rendered fallback; when Camofox is configured, browser tools route "
+            "through the Camofox anti-detection browser."
+        )
+        compact, full = help_registry["browser_navigate"]
+        if "Camofox" not in full:
+            help_registry["browser_navigate"] = (compact, full + _camofox_hint)
 
     # --- Skill injection (Phase 4) ---
     # Generate skill stubs BEFORE writing __protected__ so we can include

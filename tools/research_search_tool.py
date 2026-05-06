@@ -32,7 +32,9 @@ RESEARCH_GATHER_SCHEMA = {
         "generates typed query fan-out, searches local research memory, uses "
         "web_search/web_extract for fresh evidence, and returns a structured "
         "evidence bundle with sources, gaps, conflicts, and usage. Use this "
-        "for current facts, source-grounded answers, or research tasks."
+        "as the default entrypoint for search, research, report, latest, current, "
+        "or as-of-date tasks. Final reports should cite source_table or "
+        "citation_metadata from the returned bundle."
     ),
     "parameters": {
         "type": "object",
@@ -45,8 +47,8 @@ RESEARCH_GATHER_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Search profile: auto, current_events, technical, academic, "
-                    "legal_regulatory, company_market, product, local, social, "
-                    "obscure_lookup, or general."
+                    "medical_pharma, legal_regulatory, company_market, product, "
+                    "local, social, obscure_lookup, or general."
                 ),
                 "default": "auto",
             },

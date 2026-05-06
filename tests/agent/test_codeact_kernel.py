@@ -190,3 +190,31 @@ class TestHermesKernelToolCalls:
             assert calls[0][1]["query"] == "test query"
         finally:
             k.shutdown(quiet=True)
+
+    def test_web_search_json_error_is_promoted_to_clear_codeact_error(self):
+        def dispatcher(name, args):
+            assert name == "web_search"
+            assert args["query"] == "blocked query"
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "SearXNG returned HTTP 429: rate limited",
+                }
+            )
+
+        namespace_source = textwrap.dedent("""\
+            def web_search(query, limit=5):
+                return _call_tool('web_search', {'query': query, 'limit': limit})
+            def help(t=None): return ''
+            __protected__ = ['web_search', 'help', '__protected__']
+        """)
+        k = HermesKernel("test", dispatcher, namespace_source)
+        k.start()
+        try:
+            result = k.execute("web_search(query='blocked query')")
+            assert "web_search failed" in result
+            assert "HTTP 429" in result
+            assert "research_web" in result
+            assert "Scrapling" in result
+        finally:
+            k.shutdown(quiet=True)

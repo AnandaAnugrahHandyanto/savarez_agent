@@ -126,3 +126,21 @@ def test_research_recipe_is_injected_and_calls_research_gather():
     ]
     assert "research_web" in namespace["help"]()
     assert "research_web" in namespace["__protected__"]
+    assert "medical_pharma_research" in namespace["help"]()
+    assert "medical_pharma_research" in namespace["__protected__"]
+
+    calls.clear()
+    result = namespace["medical_pharma_research"]("latest GLP-1/GIP drugs", max_sources=5)
+    assert result["success"] is True
+    assert calls == [
+        (
+            "research_gather",
+            {
+                "question": "latest GLP-1/GIP drugs",
+                "topic_type": "medical_pharma",
+                "freshness": "latest",
+                "depth": "thorough",
+                "max_pages": 5,
+            },
+        )
+    ]

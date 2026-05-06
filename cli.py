@@ -11126,6 +11126,7 @@ class HermesCLI:
                             "base_url": self.base_url,
                             "api_key": self.api_key,
                             "api_mode": self.api_mode,
+                            "provider_headers": getattr(self, "_provider_headers", None),
                         },
                     )
                 except Exception:

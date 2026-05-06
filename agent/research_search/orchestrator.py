@@ -98,6 +98,34 @@ def dispatch_tool(name: str, args: dict[str, Any]) -> str:
 def classify_topic_type(question: str) -> str:
     """Deterministic topic classifier for selecting search profiles."""
     q = str(question or "").lower()
+    if any(
+        k in q
+        for k in (
+            "glp-1",
+            "gip",
+            "glp1",
+            "incretin",
+            "agonist",
+            "drug",
+            "pharma",
+            "biotech",
+            "clinical trial",
+            "phase 1",
+            "phase 2",
+            "phase 3",
+            "fda",
+            "ema",
+            "nmpa",
+            "pubmed",
+            "diabetes",
+            "obesity",
+            "nash",
+            "mash",
+            "approval",
+            "pipeline",
+        )
+    ):
+        return "medical_pharma"
     if any(k in q for k in ("today", "latest", "current", "breaking", "news")):
         return "current_events"
     if any(k in q for k in ("api", "docs", "github", "package", "library", "bug")):
@@ -133,10 +161,16 @@ def generate_query_plan(
     topic = topic_type if topic_type != "auto" else classify_topic_type(question)
     now_year = datetime.now(timezone.utc).year
     base = str(question or "").strip()
+    base_lower = base.lower()
+    if topic == "medical_pharma" and freshness == "auto" and any(
+        k in base_lower
+        for k in ("today", "latest", "current", "currently", "as of", "development", "testing")
+    ):
+        freshness = "latest"
     queries: list[dict[str, str]] = [_query(base, "base")]
     source_requirements = ["independent"]
 
-    if topic in {"current_events", "company_market", "product"} or freshness in {
+    if topic in {"current_events", "company_market", "product", "medical_pharma"} or freshness in {
         "latest",
         "recent",
     }:
@@ -147,7 +181,22 @@ def generate_query_plan(
         queries.append(_query(f"{base} official", "official"))
         source_requirements.append("official")
 
-    if topic == "technical":
+    if topic == "medical_pharma":
+        queries.extend(
+            [
+                _query(f"{base} FDA approval label advisory committee", "regulatory"),
+                _query(f"{base} EMA EPAR CHMP assessment report", "regulatory"),
+                _query(f"{base} NMPA CDE approval China", "regulatory"),
+                _query(f"{base} ClinicalTrials.gov phase 2 phase 3", "clinical_trials"),
+                _query(f"{base} PubMed NEJM Lancet JAMA clinical trial", "pubmed"),
+                _query(f"{base} company press release investor pipeline", "company_ir"),
+                _query(f"{base} Reuters Fierce Biotech Endpoints News latest {now_year}", "news"),
+            ]
+        )
+        source_requirements.extend(
+            ["regulatory", "clinical_trials", "pubmed", "company_ir", "news"]
+        )
+    elif topic == "technical":
         queries.extend(
             [
                 _query(f"{base} documentation changelog", "technical_docs"),
@@ -213,6 +262,64 @@ def generate_query_plan(
 
 def _source_type(url: str, query_kind: str = "") -> str:
     host = urlparse(str(url or "")).netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if "wikipedia.org" in host:
+        return "orientation"
+    if any(
+        host == h or host.endswith("." + h)
+        for h in (
+            "fda.gov",
+            "ema.europa.eu",
+            "ec.europa.eu",
+            "mhra.gov.uk",
+            "pmda.go.jp",
+            "nmpa.gov.cn",
+            "cde.org.cn",
+        )
+    ):
+        return "regulatory"
+    if any(
+        host == h or host.endswith("." + h)
+        for h in ("clinicaltrials.gov", "clinicaltrialsregister.eu", "chictr.org.cn")
+    ):
+        return "clinical_trials"
+    if any(
+        host == h or host.endswith("." + h)
+        for h in (
+            "pubmed.ncbi.nlm.nih.gov",
+            "ncbi.nlm.nih.gov",
+            "nejm.org",
+            "thelancet.com",
+            "jamanetwork.com",
+            "nature.com",
+            "cell.com",
+            "bmj.com",
+        )
+    ):
+        return "pubmed"
+    if any(
+        k in host
+        for k in (
+            "investor.",
+            "investors.",
+            "lilly.com",
+            "novonordisk.com",
+            "boehringer-ingelheim.com",
+            "pfizer.com",
+            "innoventbio.com",
+            "hanmi.co.kr",
+            "roche.com",
+            "amgen.com",
+            "astrazeneca.com",
+            "zealandpharma.com",
+        )
+    ):
+        return "company_ir"
+    if query_kind in {"regulatory", "clinical_trials", "pubmed", "company_ir"}:
+        return query_kind
+    if query_kind == "orientation":
+        return "orientation"
     if query_kind in {"official", "primary", "technical_docs"}:
         return "official"
     if any(host.endswith(suffix) for suffix in (".gov", ".edu")):
@@ -221,7 +328,20 @@ def _source_type(url: str, query_kind: str = "") -> str:
         return "docs"
     if any(k in host for k in ("reddit", "stackoverflow", "news.ycombinator")):
         return "community"
-    if any(k in host for k in ("nytimes", "reuters", "apnews", "bbc", "espn")):
+    if any(
+        k in host
+        for k in (
+            "nytimes",
+            "reuters",
+            "apnews",
+            "bbc",
+            "espn",
+            "statnews",
+            "fiercebiotech",
+            "endpts",
+            "biopharmadive",
+        )
+    ):
         return "news"
     if query_kind in {"adversarial", "contradiction"}:
         return "adversarial"
@@ -230,12 +350,17 @@ def _source_type(url: str, query_kind: str = "") -> str:
 
 def _quality_score(source_type: str, status: str) -> float:
     base = {
+        "regulatory": 0.97,
         "primary": 0.95,
+        "clinical_trials": 0.94,
+        "pubmed": 0.93,
         "official": 0.9,
+        "company_ir": 0.88,
         "docs": 0.82,
         "news": 0.75,
         "community": 0.55,
         "adversarial": 0.6,
+        "orientation": 0.35,
         "unknown": 0.45,
     }.get(source_type, 0.45)
     if status == "failed":
@@ -290,7 +415,18 @@ def _rank_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
             1 if s.get("status") in {"extracted", "local_cache"} else 0,
             float(s.get("relevance_score") or 0),
             float(s.get("source_quality_score") or 0),
-            1 if s.get("source_type") in {"official", "primary", "docs"} else 0,
+            1
+            if s.get("source_type")
+            in {
+                "regulatory",
+                "clinical_trials",
+                "pubmed",
+                "company_ir",
+                "official",
+                "primary",
+                "docs",
+            }
+            else 0,
             len(str(s.get("content") or s.get("excerpt") or "")),
         ),
         reverse=True,
@@ -333,6 +469,30 @@ def _analyze_gaps(
     if "official" in requirements and not ({"official", "primary", "docs"} & source_types):
         gaps.append("No official or primary source was gathered.")
         next_queries.append(_query(f"{question} official primary source", "official"))
+    if plan.get("topic_type") == "medical_pharma":
+        missing_medical_types = [
+            label
+            for label in ("regulatory", "clinical_trials", "pubmed", "company_ir")
+            if label not in source_types
+        ]
+        if missing_medical_types:
+            gaps.append(
+                "Medical/pharma source profile incomplete; missing "
+                + ", ".join(missing_medical_types)
+                + " sources."
+            )
+        if "regulatory" not in source_types:
+            next_queries.append(_query(f"{question} FDA EMA NMPA approval label", "regulatory"))
+        if "clinical_trials" not in source_types:
+            next_queries.append(_query(f"{question} ClinicalTrials.gov phase 2 phase 3", "clinical_trials"))
+        if "pubmed" not in source_types:
+            next_queries.append(_query(f"{question} PubMed clinical trial", "pubmed"))
+        if "company_ir" not in source_types:
+            next_queries.append(_query(f"{question} company investor press release pipeline", "company_ir"))
+        if usable and source_types <= {"orientation", "unknown"}:
+            gaps.append(
+                "Only orientation/unknown sources were gathered; do not treat Wikipedia or generic pages as primary evidence."
+            )
     if "adversarial" in requirements and "adversarial" not in source_types:
         gaps.append("No adversarial/contradiction source was gathered.")
         next_queries.append(_query(f"{question} problems criticism outdated incorrect", "adversarial"))
@@ -373,6 +533,66 @@ def _apply_gap_pass(bundle: dict[str, Any]) -> list[str]:
         list(bundle.get("sources") or []),
         bundle.get("plan") or {},
     )["gaps"]
+
+
+def _source_quality_recipe(topic_type: str) -> dict[str, Any]:
+    if topic_type == "medical_pharma":
+        return {
+            "profile": "medical_pharma",
+            "priority_order": [
+                "regulatory: FDA/EMA/NMPA or national regulator pages, labels, EPARs, advisory documents",
+                "company_ir: company investor relations, press releases, pipeline pages, SEC filings",
+                "clinical_trials: ClinicalTrials.gov/EU CTR/ChiCTR records for phase/status/endpoints",
+                "pubmed: PubMed-indexed papers and major journals for trial results",
+                "news: Reuters/STAT/Fierce Biotech/Endpoints/BioPharma Dive for recency and context",
+                "orientation: Wikipedia or encyclopedic pages only for orientation, never as primary evidence",
+            ],
+            "wikipedia_policy": "orientation_only",
+        }
+    return {
+        "profile": topic_type or "general",
+        "priority_order": [
+            "official/primary sources",
+            "independent high-quality secondary sources",
+            "news or community sources for recency/adversarial context when appropriate",
+        ],
+    }
+
+
+def _report_requirements(topic_type: str) -> dict[str, Any]:
+    requirements = {
+        "must_include_source_table": True,
+        "must_cite_sources": True,
+        "citation_instruction": (
+            "Use source_table IDs such as [S1] in the final answer. "
+            "Do not present a final research report without citations or a source table."
+        ),
+    }
+    if topic_type == "medical_pharma":
+        requirements["medical_pharma_instruction"] = (
+            "Distinguish regulator status, clinical-trial status, company claims, "
+            "published trial evidence, and news context. Treat Wikipedia as orientation only."
+        )
+    return requirements
+
+
+def _source_table(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    table: list[dict[str, Any]] = []
+    for idx, source in enumerate(sources, start=1):
+        table.append(
+            {
+                "id": f"S{idx}",
+                "title": source.get("title") or "",
+                "url": source.get("url") or "",
+                "source_type": source.get("source_type") or "unknown",
+                "status": source.get("status") or "",
+                "quality": source.get("source_quality_score") or 0.0,
+                "query_kind": source.get("query_kind") or "",
+                "citation": f"[S{idx}]",
+                "error": source.get("error") or None,
+            }
+        )
+    return table
 
 
 def _web_backend_status() -> dict[str, Any]:
@@ -750,10 +970,13 @@ def research_gap_analyze(
 
 def research_help(topic_type: str = "auto") -> dict[str, Any]:
     topic = topic_type if topic_type != "auto" else "general"
-    return {
+    result = {
         "success": True,
         "recommended_default": "research_gather(question=...)",
-        "recipe": "In CodeAct, prefer research_web(question=...) for source-grounded web tasks.",
+        "recipe": (
+            "In CodeAct, prefer research_web(question=...) for search, research, "
+            "report, latest, or current source-grounded web tasks."
+        ),
         "tools": {
             "research_plan": "Inspect query lanes and source requirements without fetching.",
             "research_search_candidates": "Discovery only: local memory plus live web search.",
@@ -763,7 +986,14 @@ def research_help(topic_type: str = "auto") -> dict[str, Any]:
             "research_status": "Inspect backend, DuckDB, FTS, vector, and auto-index status.",
         },
         "topic_type": topic,
+        "final_report_requirement": (
+            "Final research reports must include source references from source_table "
+            "or citation_metadata."
+        ),
     }
+    if topic == "medical_pharma":
+        result["source_quality_recipe"] = _source_quality_recipe("medical_pharma")
+    return result
 
 
 def research_gather(
@@ -1018,6 +1248,7 @@ def research_gather(
                         store_ready = False
 
     sources = _trim_sources(sources, max_pages)
+    source_table = _source_table(sources)
     bundle = {
         "success": True,
         "question": question,
@@ -1026,6 +1257,10 @@ def research_gather(
         "depth": depth,
         "plan": plan,
         "sources": sources,
+        "source_table": source_table,
+        "citation_metadata": source_table,
+        "source_quality_recipe": _source_quality_recipe(plan["topic_type"]),
+        "report_requirements": _report_requirements(plan["topic_type"]),
         "gaps": [],
         "conflicts": [],
         "errors": errors,

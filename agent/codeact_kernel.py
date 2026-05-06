@@ -61,6 +61,30 @@ def _truncate(text: str, limit: int, label: str = "output") -> str:
     )
 
 
+def _tool_result_error_for_kernel(tool_name: str, result: object) -> str:
+    """Promote selected tool-level JSON errors into CodeAct exceptions."""
+    if tool_name != "web_search":
+        return ""
+    try:
+        parsed = result if isinstance(result, dict) else json.loads(str(result))
+    except Exception:
+        return ""
+    if not isinstance(parsed, dict):
+        return ""
+    error = parsed.get("error")
+    success = parsed.get("success")
+    if not error and success is not False:
+        return ""
+    detail = str(error or "web_search returned success=false").strip()
+    return (
+        f"web_search failed: {detail}. For research/report/latest/current tasks, "
+        "use research_web(...) or research_gather instead of retrying raw "
+        "web_search. If the failure is a rate limit, bot block, JS challenge, "
+        "Cloudflare/Wikipedia block, try browser/Camoufox/Scrapling fallbacks "
+        "when available or switch to alternate primary sources."
+    )
+
+
 class HermesKernel:
     """Manages one persistent CodeAct Python subprocess for an agent session.
 
@@ -179,7 +203,15 @@ class HermesKernel:
                     self._send({"type": "tool_result", "result": result,
                                 "error": str(exc)})
                     continue
-                self._send({"type": "tool_result", "result": result})
+                tool_error = _tool_result_error_for_kernel(tool_name, result)
+                if tool_error:
+                    self._send({
+                        "type": "tool_result",
+                        "result": result,
+                        "error": tool_error,
+                    })
+                else:
+                    self._send({"type": "tool_result", "result": result})
 
             elif msg_type == "exec_result":
                 return _format_exec_result(msg)
