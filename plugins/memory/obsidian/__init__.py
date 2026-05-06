@@ -219,30 +219,74 @@ class ObsidianMemoryProvider(MemoryProvider):
             return None
 
     def _condense_raw_to_summary(self, raw: str) -> str:
-        """Convert raw checkpoint text into a clean summary."""
+        """Convert raw checkpoint text into a clean summary.
+        
+        Captures:
+        - User requests (with document detection)
+        - Completed actions (commits, file changes, builds)
+        - Decisions made
+        - File paths created/modified
+        """
         lines = raw.splitlines()
         user_requests: List[str] = []
-        assistant_actions: List[str] = []
+        completed_actions: List[str] = []
         decisions: List[str] = []
+        files_touched: set = set()
         projects: set = set()
-
+        documents_received: List[str] = []
+        
+        in_document = False
+        document_title = ""
+        
         for line in lines:
             line = line.strip()
+            
+            # Detect document sends
+            if "[The user sent a text document:" in line:
+                in_document = True
+                # Extract document name
+                match = re.search(r"'([^']+\.md)'", line)
+                if match:
+                    document_title = match.group(1)
+                    documents_received.append(document_title)
+                continue
+            
+            if in_document:
+                if line.startswith("[user]") or line.startswith("[assistant]"):
+                    in_document = False
+                    document_title = ""
+                elif line and not line.startswith("["):
+                    # Skip document content lines in raw, we'll note the doc name only
+                    continue
+            
             if line.startswith("[user]"):
                 text = line[6:].strip()
                 if len(text) > 10 and text.lower() not in ("ok", "hello", "hi", "thanks", "ty", "yes", "no"):
-                    user_requests.append(text[:150])
+                    # Skip document content markers
+                    if "content has been included below" not in text and "file is also saved at" not in text:
+                        user_requests.append(text[:200])
                     # Detect project names
-                    for proj in ("Empire", "Standby", "OpenClaw", "Claw3D", "SEO", "Legal"):
+                    for proj in ("Empire", "Standby", "OpenClaw", "Claw3D", "SEO", "Legal", "Hermes"):
                         if proj.lower() in text.lower():
                             projects.add(proj)
+                            
             elif line.startswith("[assistant]"):
                 text = line[11:].strip()
-                if len(text) > 20:
-                    assistant_actions.append(text[:150])
+                
+                # Detect completed actions
+                if any(marker in text.lower() for marker in ("committed", "pushed", "deployed", "built", "created", "done", "finished", "saved to", "written to")):
+                    completed_actions.append(text[:200])
+                    # Extract file paths
+                    paths = re.findall(r'`([^`]+\.(?:py|md|yaml|json|sh))`', text)
+                    files_touched.update(paths)
+                    
                 # Detect decisions
-                if any(marker in text.lower() for marker in ("decided", "decision", "will ", "going to", "let's", "plan:", "approve")):
-                    decisions.append(text[:150])
+                if any(marker in text.lower() for marker in ("decided", "decision", "will ", "going to", "let's", "plan:", "approve", "recommend")):
+                    decisions.append(text[:200])
+                    
+                # Detect file paths in code blocks or backticks
+                paths = re.findall(r'`([^`]+\.(?:py|md|yaml|json|sh))`', text)
+                files_touched.update(paths)
 
         # Build summary
         parts = [
@@ -255,11 +299,29 @@ class ObsidianMemoryProvider(MemoryProvider):
         if projects:
             parts.append(f"**Projects:** {', '.join(sorted(projects))}")
             parts.append("")
+            
+        if documents_received:
+            parts.append("**Documents Received:**")
+            for doc in documents_received:
+                parts.append(f"- {doc}")
+            parts.append("")
 
         if user_requests:
             parts.append("**Requests:**")
             for r in user_requests[-8:]:  # Last 8
                 parts.append(f"- {r}")
+            parts.append("")
+
+        if completed_actions:
+            parts.append("**Completed:**")
+            for a in completed_actions[-6:]:  # Last 6
+                parts.append(f"- {a}")
+            parts.append("")
+            
+        if files_touched:
+            parts.append("**Files:**")
+            for f in sorted(files_touched)[:10]:  # Top 10
+                parts.append(f"- `{f}`")
             parts.append("")
 
         if decisions:
@@ -268,11 +330,12 @@ class ObsidianMemoryProvider(MemoryProvider):
                 parts.append(f"- {d}")
             parts.append("")
 
-        if assistant_actions:
-            parts.append("**Actions:**")
-            for a in assistant_actions[-5:]:
-                parts.append(f"- {a}")
-            parts.append("")
+        # Add status note
+        if completed_actions:
+            parts.append("**Status:** Work completed and committed.")
+        else:
+            parts.append("**Status:** In progress.")
+        parts.append("")
 
         return "\n".join(parts)
 
