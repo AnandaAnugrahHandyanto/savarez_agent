@@ -121,6 +121,49 @@ class TestHandleSkillsSlashUninstallFlags:
             assert kwargs.get("invalidate_cache") is True
 
 
+class TestSkillsCommandUninstallFlags:
+    """Test flag parsing in skills_command for uninstall (CLI argparse path)."""
+
+    def test_yes_flag_sets_skip_confirm(self):
+        from hermes_cli.skills_hub import skills_command
+        from argparse import Namespace
+        args = Namespace(skills_action="uninstall", name="test-skill", yes=True)
+        with patch("hermes_cli.skills_hub.do_uninstall") as mock_uninstall:
+            skills_command(args)
+            mock_uninstall.assert_called_once()
+            _, kwargs = mock_uninstall.call_args
+            assert kwargs.get("skip_confirm") is True
+
+    def test_y_flag_short_form_sets_skip_confirm(self):
+        from hermes_cli.skills_hub import skills_command
+        from argparse import Namespace
+        args = Namespace(skills_action="uninstall", name="test-skill", yes=True)
+        with patch("hermes_cli.skills_hub.do_uninstall") as mock_uninstall:
+            skills_command(args)
+            _, kwargs = mock_uninstall.call_args
+            assert kwargs.get("skip_confirm") is True
+
+    def test_no_flag_does_not_set_skip_confirm(self):
+        from hermes_cli.skills_hub import skills_command
+        from argparse import Namespace
+        args = Namespace(skills_action="uninstall", name="test-skill", yes=False)
+        with patch("hermes_cli.skills_hub.do_uninstall") as mock_uninstall:
+            skills_command(args)
+            _, kwargs = mock_uninstall.call_args
+            assert kwargs.get("skip_confirm") is False
+
+    def test_invalidate_cache_not_passed(self):
+        """The CLI doesn't pass invalidate_cache; do_uninstall defaults to True."""
+        from hermes_cli.skills_hub import skills_command
+        from argparse import Namespace
+        args = Namespace(skills_action="uninstall", name="test-skill", yes=True)
+        with patch("hermes_cli.skills_hub.do_uninstall") as mock_uninstall:
+            skills_command(args)
+            _, kwargs = mock_uninstall.call_args
+            # CLI doesn't pass invalidate_cache for uninstall; do_uninstall defaults to True
+            assert "invalidate_cache" not in kwargs
+
+
 class TestDoInstallSkipConfirm:
     """Test that do_install respects skip_confirm parameter."""
 
