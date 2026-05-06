@@ -76,8 +76,10 @@ Ask or deny for real risk:
 
 ## Structured errors
 
-Mac tools should remain discoverable even when the Mac is offline. Return
-structured errors instead of removing tools at runtime:
+Mac tools should remain discoverable even when the Mac is offline. `mac_system.status`
+still returns the stable capability contract, trusted roots, denied roots, policy
+mode, and supported error codes with `online: false`. Other actions return
+structured errors instead of disappearing at runtime:
 
 - `MAC_OFFLINE`
 - `ACTION_DENIED`

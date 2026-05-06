@@ -1,7 +1,5 @@
 import json
 
-import pytest
-
 
 EXPECTED_TOOL_NAMES = {
     "mac_system",
@@ -313,7 +311,7 @@ def test_default_policy_requires_approval_for_external_or_destructive_commands()
         assert verdict.reason == reason
 
 
-def test_unconfigured_handlers_return_structured_offline_error(monkeypatch):
+def test_mac_system_status_returns_capability_contract_even_when_offline(monkeypatch):
     from tools import mac_local_node
 
     monkeypatch.delenv("HERMES_MAC_LOCAL_NODE_URL", raising=False)
@@ -321,13 +319,61 @@ def test_unconfigured_handlers_return_structured_offline_error(monkeypatch):
 
     payload = json.loads(mac_local_node.handle_mac_system({"action": "status"}))
 
+    assert payload["ok"] is False
+    assert payload["online"] is False
+    assert payload["error_code"] == "MAC_OFFLINE"
+    assert payload["tool"] == "mac_system"
+    assert payload["action"] == "status"
+    assert payload["policy"]["mode"] == "claude_code_like_high_autonomy"
+    assert {root["path"]: root["scope"] for root in payload["trusted_roots"]}["/work"] == "work"
+    assert payload["capabilities"] == {
+        "mac_system": ["status"],
+        "mac_fs": ["read", "search", "write", "patch"],
+        "mac_terminal": ["run", "start", "poll", "wait", "kill", "input", "exec_code"],
+        "mac_project_context": ["summarize"],
+        "mac_ui": ["screenshot", "open", "clipboard", "osascript"],
+        "mac_agent": ["spawn", "status", "logs", "kill"],
+    }
+    assert set(payload["structured_error_codes"]) == {
+        "MAC_OFFLINE",
+        "ACTION_DENIED",
+        "APPROVAL_REQUIRED",
+        "PATH_DENIED",
+        "SECRET_DENIED",
+        "TIMEOUT",
+        "PROCESS_NOT_FOUND",
+    }
+
+
+def test_invalid_actions_return_action_denied_before_relay(monkeypatch):
+    from tools import mac_local_node
+
+    monkeypatch.setenv("HERMES_MAC_LOCAL_NODE_ENABLED", "1")
+
+    payload = json.loads(mac_local_node.handle_mac_fs({"action": "delete", "path": "/work/file.txt"}))
+
     assert payload == {
         "ok": False,
-        "error_code": "MAC_OFFLINE",
-        "message": "Mac local node is not configured or is offline.",
-        "tool": "mac_system",
-        "action": "status",
+        "error_code": "ACTION_DENIED",
+        "message": "Unsupported action for Mac local-node tool.",
+        "tool": "mac_fs",
+        "action": "delete",
+        "allowed_actions": ["read", "search", "write", "patch"],
     }
+
+
+def test_configured_but_unwired_relay_uses_mac_offline_error(monkeypatch):
+    from tools import mac_local_node
+
+    monkeypatch.setenv("HERMES_MAC_LOCAL_NODE_URL", "http://127.0.0.1:65535/mcp")
+
+    payload = json.loads(mac_local_node.handle_mac_terminal({"action": "run", "command": "pwd", "cwd": "/work"}))
+
+    assert payload["ok"] is False
+    assert payload["error_code"] == "MAC_OFFLINE"
+    assert payload["message"] == "Mac local node relay is not connected."
+    assert payload["tool"] == "mac_terminal"
+    assert payload["action"] == "run"
 
 
 def test_mac_local_tools_stay_discoverable_when_node_is_offline(monkeypatch):

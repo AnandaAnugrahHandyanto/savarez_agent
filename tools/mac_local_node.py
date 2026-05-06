@@ -27,6 +27,15 @@ TERMINAL_ACTIONS = ["run", "start", "poll", "wait", "kill", "input", "exec_code"
 PROJECT_CONTEXT_ACTIONS = ["summarize"]
 UI_ACTIONS = ["screenshot", "open", "clipboard", "osascript"]
 AGENT_ACTIONS = ["spawn", "status", "logs", "kill"]
+STRUCTURED_ERROR_CODES = [
+    "MAC_OFFLINE",
+    "ACTION_DENIED",
+    "APPROVAL_REQUIRED",
+    "PATH_DENIED",
+    "SECRET_DENIED",
+    "TIMEOUT",
+    "PROCESS_NOT_FOUND",
+]
 
 # Keep these as data so tests can assert the intentionally small surface.
 REMOVED_STANDALONE_TOOL_NAMES = frozenset(
@@ -419,21 +428,77 @@ def check_mac_local_node_requirements() -> bool:
     return True
 
 
-def _mac_node_configured() -> bool:
-    enabled = os.getenv("HERMES_MAC_LOCAL_NODE_ENABLED", "").lower() in {"1", "true", "yes", "on"}
-    return enabled or bool(os.getenv("HERMES_MAC_LOCAL_NODE_URL"))
+def _capability_contract() -> dict[str, list[str]]:
+    return {name: get_action_enum(schema) for name, schema in _SCHEMAS.items()}
 
 
-def _offline_result(tool: str, action: str | None) -> str:
+def _trusted_root_contract() -> list[dict[str, str]]:
+    return [
+        {"path": root.path, "scope": root.scope, "canonical": root.canonical}
+        for root in MacLocalPolicy.default().trusted_roots
+    ]
+
+
+def _offline_payload(tool: str, action: str | None, *, message: str | None = None) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error_code": "MAC_OFFLINE",
+        "message": message or "Mac local node relay is not connected.",
+        "tool": tool,
+        "action": action,
+    }
+
+
+def _offline_result(tool: str, action: str | None, *, message: str | None = None) -> str:
+    return json.dumps(_offline_payload(tool, action, message=message))
+
+
+def _invalid_action_result(tool: str, action: str | None, allowed_actions: list[str]) -> str:
     return json.dumps(
         {
             "ok": False,
-            "error_code": "MAC_OFFLINE",
-            "message": "Mac local node is not configured or is offline.",
+            "error_code": "ACTION_DENIED",
+            "message": "Unsupported action for Mac local-node tool.",
             "tool": tool,
             "action": action,
+            "allowed_actions": allowed_actions,
         }
     )
+
+
+def _mac_system_status_result(action: str | None) -> str:
+    payload = _offline_payload("mac_system", action)
+    payload.update(
+        {
+            "online": False,
+            "heartbeat_age_seconds": None,
+            "hostname": None,
+            "os": "macos",
+            "user": None,
+            "session": None,
+            "executor_version": None,
+            "trusted_roots": _trusted_root_contract(),
+            "denied_roots": [
+                "~/.ssh",
+                "~/Library/Keychains",
+                "~/Library/Application Support/*/Cookies",
+            ],
+            "capabilities": _capability_contract(),
+            "policy": {
+                "mode": "claude_code_like_high_autonomy",
+                "default_inside_trusted_roots": "allow_local_dev",
+                "approval_required_for": [
+                    "destructive",
+                    "external_or_publishing",
+                    "global_or_system",
+                    "secret_sensitive",
+                    "outside_trusted_roots",
+                ],
+            },
+            "structured_error_codes": STRUCTURED_ERROR_CODES,
+        }
+    )
+    return json.dumps(payload)
 
 
 def _extract_action(args: dict[str, Any] | None) -> str | None:
@@ -443,43 +508,37 @@ def _extract_action(args: dict[str, Any] | None) -> str | None:
     return action if isinstance(action, str) else None
 
 
-def _handle_placeholder(tool: str, args: dict[str, Any] | None) -> str:
+def _handle_placeholder(tool: str, args: dict[str, Any] | None, allowed_actions: list[str]) -> str:
     action = _extract_action(args)
-    if not _mac_node_configured():
-        return _offline_result(tool, action)
-    return json.dumps(
-        {
-            "ok": False,
-            "error_code": "NOT_IMPLEMENTED",
-            "message": "Mac local node relay is configured, but this action has not been wired yet.",
-            "tool": tool,
-            "action": action,
-        }
-    )
+    if action not in allowed_actions:
+        return _invalid_action_result(tool, action, allowed_actions)
+    if tool == "mac_system" and action == "status":
+        return _mac_system_status_result(action)
+    return _offline_result(tool, action)
 
 
 def handle_mac_system(args: dict[str, Any] | None = None, **_: Any) -> str:
-    return _handle_placeholder("mac_system", args)
+    return _handle_placeholder("mac_system", args, SYSTEM_ACTIONS)
 
 
 def handle_mac_fs(args: dict[str, Any] | None = None, **_: Any) -> str:
-    return _handle_placeholder("mac_fs", args)
+    return _handle_placeholder("mac_fs", args, FS_ACTIONS)
 
 
 def handle_mac_terminal(args: dict[str, Any] | None = None, **_: Any) -> str:
-    return _handle_placeholder("mac_terminal", args)
+    return _handle_placeholder("mac_terminal", args, TERMINAL_ACTIONS)
 
 
 def handle_mac_project_context(args: dict[str, Any] | None = None, **_: Any) -> str:
-    return _handle_placeholder("mac_project_context", args)
+    return _handle_placeholder("mac_project_context", args, PROJECT_CONTEXT_ACTIONS)
 
 
 def handle_mac_ui(args: dict[str, Any] | None = None, **_: Any) -> str:
-    return _handle_placeholder("mac_ui", args)
+    return _handle_placeholder("mac_ui", args, UI_ACTIONS)
 
 
 def handle_mac_agent(args: dict[str, Any] | None = None, **_: Any) -> str:
-    return _handle_placeholder("mac_agent", args)
+    return _handle_placeholder("mac_agent", args, AGENT_ACTIONS)
 
 
 _SCHEMAS = get_mac_local_tool_schemas()
