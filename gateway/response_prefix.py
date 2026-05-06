@@ -136,16 +136,26 @@ def build_prefix_line(
     Returns the prefix text (empty string when disabled or no template).
     Callers prepend this to the first response themselves, followed by a space
     or newline for separation.
+
+    Provider resolution (priority order):
+    1. ``provider`` argument (from agent_result.get("provider"))
+    2. Model prefix (e.g. "github-copilot/claude-opus-4.6" → "github-copilot")
+    3. Config ``model.provider`` (from user_config)
     """
     cfg = resolve_prefix_config(user_config, platform_key)
     if not cfg.get("enabled") or not cfg.get("template"):
         return ""
 
-    if not provider and model:
-        # Derive provider from full model ID (e.g. "github-copilot/claude-opus-4.6" → "github-copilot")
-        parts = model.split("/", 1)
-        if len(parts) == 2:
-            provider = parts[0]
+    if not provider:
+        # Try deriving from model prefix
+        if model:
+            parts = model.split("/", 1)
+            if len(parts) == 2:
+                provider = parts[0]
+        # Fall back to config model.provider
+        if not provider:
+            _mc = (user_config or {}).get("model") or {}
+            provider = _mc.get("provider") or ""
 
     return interpolate_prefix_template(
         cfg["template"],

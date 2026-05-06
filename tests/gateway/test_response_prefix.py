@@ -269,6 +269,21 @@ def test_build_prefix_per_platform_suppresses():
     assert out == ""
 
 
+def test_build_prefix_provider_from_config():
+    """Provider derived from config model.provider when agent result lacks it."""
+    config = {
+        "messages": {"response_prefix": "[{provider}/{model}]"},
+        "model": {"provider": "alibaba", "default": "qwen3.6-plus"},
+    }
+    out = build_prefix_line(
+        user_config=config,
+        platform_key=None,
+        model="qwen3.6-plus",
+        provider="",
+    )
+    assert out == "[alibaba/qwen3.6-plus]"
+
+
 def test_build_prefix_no_model_provider_returns_template():
     # Template variables remain literal when no data
     out = build_prefix_line(
