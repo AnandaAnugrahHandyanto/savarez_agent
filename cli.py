@@ -4859,16 +4859,20 @@ class HermesCLI:
         except Exception:
             pass
 
-        # Create the new session with parent link
+        # Create the new session with parent link.
+        # Store _branched_from in model_config so list_sessions_rich() can
+        # include branch children even when include_children=False.
+        branch_config = {
+            "max_iterations": self.max_turns,
+            "reasoning_config": self.reasoning_config,
+            "_branched_from": parent_session_id,
+        }
         try:
             self._session_db.create_session(
                 session_id=new_session_id,
                 source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                 model=self.model,
-                model_config={
-                    "max_iterations": self.max_turns,
-                    "reasoning_config": self.reasoning_config,
-                },
+                model_config=branch_config,
                 parent_session_id=parent_session_id,
             )
         except Exception as e:

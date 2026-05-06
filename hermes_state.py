@@ -822,7 +822,15 @@ class SessionDB:
         params = []
 
         if not include_children:
-            where_clauses.append("s.parent_session_id IS NULL")
+            # Exclude child sessions (subagent runs, compression continuations)
+            # but keep branch sessions visible — they have _branched_from in
+            # model_config, set by /branch at creation time.  This marker is
+            # stable even if the parent is later reopened and re-ended with a
+            # different end_reason (e.g. tui_shutdown overwriting branched).
+            where_clauses.append(
+                "(s.parent_session_id IS NULL"
+                " OR json_extract(s.model_config, '$._branched_from') IS NOT NULL)"
+            )
 
         if source:
             where_clauses.append("s.source = ?")

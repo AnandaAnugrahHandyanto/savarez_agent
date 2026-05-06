@@ -196,3 +196,41 @@ class TestBranchCommandDef:
         from hermes_cli.commands import COMMAND_REGISTRY
         branch = next(c for c in COMMAND_REGISTRY if c.name == "branch")
         assert branch.category == "Session"
+
+
+class TestBranchProvenanceMarker:
+    """Test that /branch stores _branched_from in model_config.
+
+    Regression test for https://github.com/NousResearch/hermes-agent/issues/20856
+    """
+
+    def test_branch_stores_branched_from_marker(self, cli_instance, session_db):
+        """The branch session should have _branched_from in model_config."""
+        from cli import HermesCLI
+
+        original_id = cli_instance.session_id
+        HermesCLI._handle_branch_command(cli_instance, "/branch")
+
+        new_session = session_db.get_session(cli_instance.session_id)
+        import json
+        config = json.loads(new_session["model_config"]) if new_session["model_config"] else {}
+        assert "_branched_from" in config
+        assert config["_branched_from"] == original_id
+
+    def test_branch_marker_preserved_after_parent_reopen(self, cli_instance, session_db):
+        """_branched_from marker survives parent reopen + re-end cycle."""
+        from cli import HermesCLI
+
+        original_id = cli_instance.session_id
+        HermesCLI._handle_branch_command(cli_instance, "/branch")
+        branch_id = cli_instance.session_id
+
+        # Simulate TUI resume: reopen parent, re-end with different reason
+        session_db.reopen_session(original_id)
+        session_db.end_session(original_id, "tui_shutdown")
+
+        # Marker should still be there
+        branch = session_db.get_session(branch_id)
+        import json
+        config = json.loads(branch["model_config"]) if branch["model_config"] else {}
+        assert config["_branched_from"] == original_id

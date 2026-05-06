@@ -7339,12 +7339,18 @@ class GatewayRunner:
 
         parent_session_id = current_entry.session_id
 
-        # Create the new session with parent link
+        # Create the new session with parent link.
+        # Store _branched_from in model_config so list_sessions_rich() can
+        # include branch children even when include_children=False.
+        branch_config = {
+            "_branched_from": parent_session_id,
+        }
         try:
             self._session_db.create_session(
                 session_id=new_session_id,
                 source=source.platform.value if source.platform else "gateway",
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
+                model_config=branch_config,
                 parent_session_id=parent_session_id,
             )
         except Exception as e:

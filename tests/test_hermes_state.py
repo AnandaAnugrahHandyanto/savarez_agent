@@ -1912,3 +1912,74 @@ class TestAutoMaintenance:
         # Should parse as a float timestamp close to now.
         assert abs(float(marker) - time.time()) < 60
 
+
+class TestBranchSessionVisibility:
+    """Branch sessions (created via /branch) must remain visible in
+    list_sessions_rich() even when include_children=False.
+
+    Regression test for https://github.com/NousResearch/hermes-agent/issues/20856
+    """
+
+    def test_branch_child_visible_in_default_listing(self, db):
+        """A branch child with _branched_from in model_config shows up."""
+        import time as _time
+
+        db.create_session("parent", "cli")
+        db.end_session("parent", "branched")
+        db.create_session(
+            "branch1",
+            "cli",
+            parent_session_id="parent",
+            model_config={"_branched_from": "parent"},
+        )
+        db.append_message("branch1", "user", "branched work")
+
+        sessions = db.list_sessions_rich()
+        ids = [s["id"] for s in sessions]
+        assert "parent" in ids
+        assert "branch1" in ids
+
+    def test_branch_child_visible_after_parent_reopen(self, db):
+        """After parent is reopened and re-ended, branch child still shows.
+
+        This is the exact bug scenario: parent end_reason changes from
+        'branched' to 'tui_shutdown' after reopen+re-end, but the branch
+        child's _branched_from marker survives.
+        """
+        db.create_session("parent", "cli")
+        db.end_session("parent", "branched")
+        db.create_session(
+            "branch1",
+            "cli",
+            parent_session_id="parent",
+            model_config={"_branched_from": "parent"},
+        )
+        db.append_message("branch1", "user", "branched work")
+
+        # Simulate TUI resume: reopen parent, then re-end with different reason
+        db.reopen_session("parent")
+        db.end_session("parent", "tui_shutdown")
+
+        parent = db.get_session("parent")
+        assert parent["end_reason"] == "tui_shutdown"
+
+        sessions = db.list_sessions_rich()
+        ids = [s["id"] for s in sessions]
+        assert "branch1" in ids, "Branch child must survive parent re-end"
+
+    def test_non_branch_child_still_hidden(self, db):
+        """Subagent/compression children without _branched_from stay hidden."""
+        db.create_session("parent", "cli")
+        db.create_session(
+            "subagent1",
+            "cli",
+            parent_session_id="parent",
+            # No _branched_from — just a regular child
+        )
+        db.append_message("subagent1", "user", "subagent work")
+
+        sessions = db.list_sessions_rich()
+        ids = [s["id"] for s in sessions]
+        assert "parent" in ids
+        assert "subagent1" not in ids
+
