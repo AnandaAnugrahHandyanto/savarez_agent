@@ -13,6 +13,9 @@ import subprocess
 from pathlib import Path
 from typing import Sequence
 
+from tools.url_safety import is_safe_url
+from tools.website_policy import check_website_access
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRAPLING_EXTRACT_SCRIPT = (
     REPO_ROOT
@@ -234,6 +237,30 @@ def difficult_web_extract(
             fallback_reason=fallback_reason,
             error_type="InvalidURL",
             message="Scrapling fallback only accepts http:// or https:// URLs",
+        )
+    if not is_safe_url(url):
+        return _empty_receipt(
+            url=url,
+            selector=selector,
+            selector_type=selector_type,
+            mode=mode,
+            fallback_reason=fallback_reason,
+            error_type="URLSafetyBlocked",
+            message="URL blocked by URL safety policy before Scrapling fallback",
+        )
+    policy_block = check_website_access(url)
+    if policy_block:
+        return _empty_receipt(
+            url=url,
+            selector=selector,
+            selector_type=selector_type,
+            mode=mode,
+            fallback_reason=fallback_reason,
+            error_type="WebsitePolicyBlocked",
+            message=policy_block.get("message", "URL blocked by website policy before Scrapling fallback"),
+            host=policy_block.get("host", ""),
+            rule=policy_block.get("rule", ""),
+            source=policy_block.get("source", ""),
         )
     if selector_type not in VALID_SELECTOR_TYPES:
         return _empty_receipt(

@@ -151,12 +151,14 @@ The adapter calls the isolated runtime and normalizes receipts, but it does not 
 
 Phase 3 adapter evidence captured on 2026-05-06:
 
-- `pytest tests/tools/test_web_acquire.py tests/test_scrapling_optional_runtime.py -q` passes with `14 passed`.
+- `pytest tests/tools/test_web_acquire.py tests/test_scrapling_optional_runtime.py -q` passes with `16 passed` after safety hardening.
 - `tools/web_acquire.py` contains no `registry.register(...)` call.
-- `difficult_web_extract("https://example.com", selector="h1", mode="static")` calls the isolated Scrapling runtime and returns a structured receipt containing `<h1>Example Domain</h1>` with `errors=[]`.
+- `difficult_web_extract("https://example.com", selector="h1", mode="static")` calls the isolated Scrapling runtime and returns a structured receipt containing `<h1>Example Domain</h1>` with `errors=[]` when URL safety allows the locally proxied public target.
+- The adapter checks `tools.url_safety.is_safe_url()` before invoking Scrapling and returns `URLSafetyBlocked` without spawning subprocesses for unsafe targets.
+- The adapter checks `tools.website_policy.check_website_access()` before invoking Scrapling and returns `WebsitePolicyBlocked` without spawning subprocesses for policy-blocked hosts.
 - Hermes main runtime remains clean: `pip show scrapling` in the main Hermes venv reports package not found.
 
-The adapter should reuse existing safety layers where applicable in future hardening work:
+The adapter already reuses the existing safety layers:
 
 ```text
 tools/url_safety.py

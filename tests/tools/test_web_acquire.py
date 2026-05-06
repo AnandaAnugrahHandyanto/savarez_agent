@@ -76,6 +76,8 @@ def test_difficult_web_extract_parses_success_receipt(monkeypatch):
         return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
 
     monkeypatch.setattr(web_acquire.subprocess, "run", fake_run)
+    monkeypatch.setattr(web_acquire, "is_safe_url", lambda url: True)
+    monkeypatch.setattr(web_acquire, "check_website_access", lambda url: None)
 
     receipt = web_acquire.difficult_web_extract(
         "https://example.com",
@@ -94,6 +96,8 @@ def test_difficult_web_extract_returns_structured_error_on_subprocess_failure(mo
         return subprocess.CompletedProcess(command, 2, stdout="", stderr="python not found")
 
     monkeypatch.setattr(web_acquire.subprocess, "run", fake_run)
+    monkeypatch.setattr(web_acquire, "is_safe_url", lambda url: True)
+    monkeypatch.setattr(web_acquire, "check_website_access", lambda url: None)
 
     receipt = web_acquire.difficult_web_extract(
         "https://example.com",
@@ -118,6 +122,8 @@ def test_difficult_web_extract_returns_structured_error_for_invalid_json(monkeyp
         return subprocess.CompletedProcess(command, 0, stdout="not json", stderr="fetch log")
 
     monkeypatch.setattr(web_acquire.subprocess, "run", fake_run)
+    monkeypatch.setattr(web_acquire, "is_safe_url", lambda url: True)
+    monkeypatch.setattr(web_acquire, "check_website_access", lambda url: None)
 
     receipt = web_acquire.difficult_web_extract(
         "https://example.com",
@@ -146,3 +152,48 @@ def test_difficult_web_extract_rejects_non_http_urls_without_subprocess(monkeypa
     assert receipt["url"] == "file:///etc/passwd"
     assert receipt["content"] == ""
     assert receipt["errors"][0]["type"] == "InvalidURL"
+
+
+def test_difficult_web_extract_blocks_unsafe_urls_before_subprocess(monkeypatch):
+    from tools import web_acquire
+
+    def fake_run(*args, **kwargs):
+        raise AssertionError("subprocess should not be called for unsafe URLs")
+
+    monkeypatch.setattr(web_acquire.subprocess, "run", fake_run)
+    monkeypatch.setattr(web_acquire, "is_safe_url", lambda url: False)
+    monkeypatch.setattr(web_acquire, "check_website_access", lambda url: None)
+
+    receipt = web_acquire.difficult_web_extract("https://169.254.169.254/latest", selector="title")
+
+    assert receipt["backend"] == "scrapling"
+    assert receipt["content"] == ""
+    assert receipt["errors"][0]["type"] == "URLSafetyBlocked"
+    assert "blocked by URL safety" in receipt["errors"][0]["message"]
+
+
+def test_difficult_web_extract_blocks_website_policy_before_subprocess(monkeypatch):
+    from tools import web_acquire
+
+    def fake_run(*args, **kwargs):
+        raise AssertionError("subprocess should not be called for policy-blocked URLs")
+
+    policy_block = {
+        "host": "blocked.example",
+        "rule": "blocked.example",
+        "source": "config",
+        "message": "Blocked by website policy: 'blocked.example' matched rule 'blocked.example' from config",
+    }
+
+    monkeypatch.setattr(web_acquire.subprocess, "run", fake_run)
+    monkeypatch.setattr(web_acquire, "is_safe_url", lambda url: True)
+    monkeypatch.setattr(web_acquire, "check_website_access", lambda url: policy_block)
+
+    receipt = web_acquire.difficult_web_extract("https://blocked.example/page", selector="h1")
+
+    assert receipt["backend"] == "scrapling"
+    assert receipt["content"] == ""
+    assert receipt["errors"][0]["type"] == "WebsitePolicyBlocked"
+    assert receipt["errors"][0]["host"] == "blocked.example"
+    assert receipt["errors"][0]["rule"] == "blocked.example"
+    assert "Blocked by website policy" in receipt["errors"][0]["message"]
