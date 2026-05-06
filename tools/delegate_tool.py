@@ -1555,12 +1555,18 @@ def _run_single_child(
             )
             _summary_lower = summary.strip().lower()
             _is_acp_abort = any(m in _summary_lower for m in _acp_abort_markers)
+            def _looks_like_bare_model_identifier(text: str) -> bool:
+                """True if text is just a raw model identifier with no task content."""
+                import re as _re
+                return bool(_re.match(
+                    r"^(claude|gpt|gemini|sonnet|opus|haiku)[\s:_-]?\S*$",
+                    text.strip(), _re.IGNORECASE
+                ))
             _is_model_name_only = (
                 effective_acp_command is not None
-                and len(summary.strip()) < 120
-                and any(m in _summary_lower for m in
-                        ("claude", "gpt", "gemini", "sonnet", "opus", "haiku"))
+                and len(summary.strip()) < 60
                 and api_calls == 0
+                and _looks_like_bare_model_identifier(summary.strip())
             )
             if _is_acp_abort:
                 status = "failed"
