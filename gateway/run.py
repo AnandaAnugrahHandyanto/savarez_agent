@@ -12743,6 +12743,44 @@ class GatewayRunner:
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        if platform_key == "feishu":
+            try:
+                from gateway.background_wakeups import (
+                    build_feishu_capability_gap_hint,
+                    build_feishu_director_hint,
+                )
+                from gateway.route_decision import (
+                    build_feishu_route_decision_shadow_hint,
+                    resolve_route_decision,
+                )
+
+                director_hint = build_feishu_director_hint()
+                if director_hint:
+                    context_prompt = (
+                        f"{context_prompt}\n\n{director_hint}".strip()
+                        if context_prompt else director_hint
+                    )
+
+                capability_hint = build_feishu_capability_gap_hint(
+                    str(message or ""),
+                    active_toolsets=tuple(enabled_toolsets),
+                )
+                route_shadow_hint = ""
+                if capability_hint:
+                    decision = resolve_route_decision(
+                        str(message or ""),
+                        platform="feishu",
+                        active_toolsets=tuple(enabled_toolsets),
+                    )
+                    route_shadow_hint = build_feishu_route_decision_shadow_hint(decision)
+                if capability_hint or route_shadow_hint:
+                    prefix = "\n\n".join(
+                        part for part in (capability_hint, route_shadow_hint) if part
+                    )
+                    message = f"{prefix}\n\n{message}".strip()
+            except Exception as exc:
+                logger.debug("Feishu route hint injection skipped: %s", exc)
+
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 
