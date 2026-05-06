@@ -15,7 +15,9 @@ memory:
   provider: claude_memory_layer
   claude_memory_layer:
     context_tool: mcp_claude_memory_layer_mem_context_pack
-    # Optional; defaults to TERMINAL_CWD in gateway sessions, else cwd.
+    # Optional override. If empty, Hermes uses an explicit per-session cwd/project_path,
+    # then infers an existing local path from gateway thread title/channel topic,
+    # then falls back to TERMINAL_CWD/cwd.
     project_path: ""
     top_k: 5
     recent_limit: 30

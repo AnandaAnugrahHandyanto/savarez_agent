@@ -10,8 +10,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Iterable
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import registry
@@ -23,6 +24,15 @@ _DEFAULT_TOP_K = 5
 _DEFAULT_RECENT_LIMIT = 30
 _DEFAULT_SESSION_LIMIT = 5
 _DEFAULT_MAX_CHARS = 6000
+_PATH_RE = re.compile(r"(?:(?<=^)|(?<=[\s('`\"<\[]))(?:~|/)[^\s)'`\"<>\]]+")
+_INFER_CONTEXT_KEYS = (
+    "session_title",
+    "chat_name",
+    "chat_topic",
+    "thread_name",
+    "thread_title",
+    "source_context",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +98,57 @@ def _str_setting(config: Dict[str, Any], key: str, env_name: str, default: str =
     return str(value).strip() if value is not None else default
 
 
+def _coerce_text_values(value: Any) -> Iterable[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple, set)):
+        items: list[str] = []
+        for item in value:
+            items.extend(_coerce_text_values(item))
+        return items
+    if isinstance(value, dict):
+        items = []
+        for item in value.values():
+            items.extend(_coerce_text_values(item))
+        return items
+    return [str(value)]
+
+
+def _normalize_inferred_path(candidate: str) -> str:
+    text = str(candidate or "").strip()
+    if not text:
+        return ""
+    text = text.rstrip(".,;:!?)>}]")
+    if text.startswith("~"):
+        text = os.path.expanduser(text)
+    path = Path(text)
+    if not path.is_absolute():
+        return ""
+    try:
+        resolved = path.resolve(strict=False)
+    except Exception:
+        resolved = path
+    # Only trust inferred paths that exist locally. This prevents arbitrary text
+    # like "see /docs" in a chat title from being treated as project metadata.
+    if not resolved.exists() or not resolved.is_dir():
+        return ""
+    if str(resolved) == resolved.anchor:
+        return ""
+    return str(resolved)
+
+
+def _infer_project_path_from_context(init_kwargs: Dict[str, Any]) -> str:
+    for key in _INFER_CONTEXT_KEYS:
+        for text in _coerce_text_values(init_kwargs.get(key)):
+            for match in _PATH_RE.finditer(text):
+                inferred = _normalize_inferred_path(match.group(0))
+                if inferred:
+                    return inferred
+    return ""
+
+
 def _resolve_project_path(config: Dict[str, Any], init_kwargs: Dict[str, Any]) -> str:
     configured = _str_setting(
         config,
@@ -98,15 +159,25 @@ def _resolve_project_path(config: Dict[str, Any], init_kwargs: Dict[str, Any]) -
     if configured:
         return configured
 
-    # Gateway sessions set TERMINAL_CWD to the user's actual project cwd; the
-    # gateway process itself often runs from the hermes-agent install dir.
+    # Gateway sessions may include the project path in thread titles or channel
+    # topics (e.g. a Discord thread named after ``/Users/me/workspace/repo``),
+    # while the gateway process cwd often remains the Hermes install dir. Prefer
+    # explicit init/env values, then infer from gateway metadata before falling
+    # back to process cwd.
     for candidate in (
         init_kwargs.get("project_path"),
         init_kwargs.get("cwd"),
-        os.environ.get("TERMINAL_CWD"),
     ):
         if candidate:
             return str(candidate)
+
+    inferred = _infer_project_path_from_context(init_kwargs)
+    if inferred:
+        return inferred
+
+    terminal_cwd = os.environ.get("TERMINAL_CWD")
+    if terminal_cwd:
+        return terminal_cwd
 
     try:
         return str(Path.cwd())
@@ -261,7 +332,7 @@ class ClaudeMemoryLayerProvider(MemoryProvider):
             },
             {
                 "key": "project_path",
-                "description": "Optional fixed project path; defaults to TERMINAL_CWD or current directory",
+                "description": "Optional fixed project path; if empty, uses explicit session cwd/project_path, then inferred existing local paths from gateway metadata, then TERMINAL_CWD/current directory",
                 "default": "",
             },
             {"key": "top_k", "description": "Relevant memory count", "default": str(_DEFAULT_TOP_K)},
