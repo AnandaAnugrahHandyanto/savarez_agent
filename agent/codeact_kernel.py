@@ -63,7 +63,7 @@ def _truncate(text: str, limit: int, label: str = "output") -> str:
 
 def _tool_result_error_for_kernel(tool_name: str, result: object) -> str:
     """Promote selected tool-level JSON errors into CodeAct exceptions."""
-    if tool_name != "web_search":
+    if tool_name not in {"web_search", "web_extract"}:
         return ""
     try:
         parsed = result if isinstance(result, dict) else json.loads(str(result))
@@ -75,13 +75,21 @@ def _tool_result_error_for_kernel(tool_name: str, result: object) -> str:
     success = parsed.get("success")
     if not error and success is not False:
         return ""
-    detail = str(error or "web_search returned success=false").strip()
+    detail = str(error or f"{tool_name} returned success=false").strip()
+    if tool_name == "web_search":
+        return (
+            f"web_search failed: {detail}. For research/report/latest/current tasks, "
+            "use research_web(...) or research_gather instead of retrying raw "
+            "web_search. If the failure is a rate limit, bot block, JS challenge, "
+            "Cloudflare/Wikipedia block, try browser/Camofox/Scrapling fallbacks "
+            "when available or switch to alternate primary sources."
+        )
     return (
-        f"web_search failed: {detail}. For research/report/latest/current tasks, "
-        "use research_web(...) or research_gather instead of retrying raw "
-        "web_search. If the failure is a rate limit, bot block, JS challenge, "
-        "Cloudflare/Wikipedia block, try browser/Camoufox/Scrapling fallbacks "
-        "when available or switch to alternate primary sources."
+        f"web_extract failed: {detail}. For reports/current research, use "
+        "research_web(...) or research_gather so Hermes can search, extract, "
+        "fallback, and report gaps. If extraction is blocked by bot protection, "
+        "JS challenges, Cloudflare/Wikipedia blocks, try browser/Camofox/"
+        "Scrapling fallbacks when available."
     )
 
 

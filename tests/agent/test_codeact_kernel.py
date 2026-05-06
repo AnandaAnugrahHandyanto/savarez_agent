@@ -218,3 +218,31 @@ class TestHermesKernelToolCalls:
             assert "Scrapling" in result
         finally:
             k.shutdown(quiet=True)
+
+    def test_web_extract_json_error_is_promoted_to_clear_codeact_error(self):
+        def dispatcher(name, args):
+            assert name == "web_extract"
+            assert args["urls"] == ["https://example.com"]
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "Extractor backend unavailable",
+                }
+            )
+
+        namespace_source = textwrap.dedent("""\
+            def web_extract(urls):
+                return _call_tool('web_extract', {'urls': urls})
+            def help(t=None): return ''
+            __protected__ = ['web_extract', 'help', '__protected__']
+        """)
+        k = HermesKernel("test", dispatcher, namespace_source)
+        k.start()
+        try:
+            result = k.execute("web_extract(urls=['https://example.com'])")
+            assert "web_extract failed" in result
+            assert "Extractor backend unavailable" in result
+            assert "research_web" in result
+            assert "Camofox" in result
+        finally:
+            k.shutdown(quiet=True)

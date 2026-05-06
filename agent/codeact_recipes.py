@@ -58,7 +58,7 @@ def build_recipe_help_registry(
             "or citation_metadata in the bundle. Final research reports must "
             "include citations or a source table. "
             "If a source hits rate limits, JS challenges, bot protection, or "
-            "Cloudflare/Wikipedia blocks, use browser/Camoufox/Scrapling "
+            "Cloudflare/Wikipedia blocks, use browser/Camofox/Scrapling "
             "fallbacks when available and record the limitation. "
             "Use research_help() if you need the lower-level research_search "
             "tool workflow."

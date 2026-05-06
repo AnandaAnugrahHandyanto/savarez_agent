@@ -215,7 +215,7 @@ def _build_workflow_guidance_for_tool_names(tool_names: set[str]) -> str:
             "Wikipedia. The bundle includes source_table/citation_metadata; "
             "final research reports must cite those sources outside run_code. "
             "If rate-limited, JS-challenged, bot-blocked, or Cloudflare/Wikipedia "
-            "blocked, try browser/Camoufox/Scrapling fallbacks when available "
+            "blocked, try browser/Camofox/Scrapling fallbacks when available "
             "and record the limitation."
         )
 
@@ -357,6 +357,18 @@ def build_tool_namespace_source(
         if "StealthyFetcher" not in full:
             help_registry["web_extract"] = (compact, full + _scrapling_hint)
 
+    if "web_search" in help_registry and "research_gather" in enabled_names:
+        _search_redirect_hint = (
+            " In CodeAct, research-shaped queries containing terms like latest, "
+            "current, report, pipeline, development, clinical trial, GLP-1, GIP, "
+            "FDA, EMA, NMPA, or PubMed are automatically routed through "
+            "research_gather so the result includes citation metadata and gap analysis. "
+            "Call research_web(...) directly for reports."
+        )
+        compact, full = help_registry["web_search"]
+        if "automatically routed through research_gather" not in full:
+            help_registry["web_search"] = (compact, full + _search_redirect_hint)
+
     if "browser_navigate" in help_registry:
         _camofox_hint = (
             " If web_search/web_extract hits rate limits, JS challenges, "
@@ -473,6 +485,49 @@ def build_tool_namespace_source(
 
     for entry in entries:
         lines.extend(_generate_stub_lines(entry.name, entry.schema))
+        lines.append("")
+
+    if "web_search" in enabled_names and "research_gather" in enabled_names:
+        lines.append("# --- Research-shaped web_search redirect ---")
+        lines.append(textwrap.dedent("""\
+        def web_search(query: str, limit: int = 5):
+            \"\"\"Search the web, auto-routing research-shaped queries to research_gather.
+
+            For search/research/report/latest/current/as-of-date and medical/pharma
+            pipeline queries, this CodeAct wrapper returns the research_gather
+            evidence bundle instead of low-level search result snippets.
+            \"\"\"
+            _q = str(query or '')
+            _ql = _q.lower()
+            _research_markers = (
+                'latest', 'current', 'currently', 'as of', 'report', 'research',
+                'development', 'testing', 'pipeline', 'clinical trial', 'phase 1',
+                'phase 2', 'phase 3', 'approval', 'fda', 'ema', 'nmpa', 'pubmed',
+                'glp-1', 'glp1', 'gip', 'incretin', 'agonist', 'pharma', 'drug',
+                'biotech', 'obesity', 'diabetes', 'nash', 'mash',
+            )
+            if any(_marker in _ql for _marker in _research_markers):
+                _medical_markers = (
+                    'glp-1', 'glp1', 'gip', 'incretin', 'agonist', 'pharma',
+                    'drug', 'biotech', 'clinical trial', 'phase 1', 'phase 2',
+                    'phase 3', 'approval', 'fda', 'ema', 'nmpa', 'pubmed',
+                    'obesity', 'diabetes', 'nash', 'mash',
+                )
+                _topic_type = 'medical_pharma' if any(_m in _ql for _m in _medical_markers) else 'auto'
+                _freshness = 'latest' if any(_m in _ql for _m in ('latest', 'current', 'currently', 'as of', 'development', 'testing', 'pipeline')) else 'auto'
+                try:
+                    _max_pages = int(limit or 8)
+                except Exception:
+                    _max_pages = 8
+                return _call_tool('research_gather', {
+                    'question': _q,
+                    'topic_type': _topic_type,
+                    'freshness': _freshness,
+                    'depth': 'thorough',
+                    'max_pages': max(1, min(_max_pages, 12)),
+                })
+            return _call_tool('web_search', {'query': query, 'limit': limit})
+        """))
         lines.append("")
 
     if recipe_source:

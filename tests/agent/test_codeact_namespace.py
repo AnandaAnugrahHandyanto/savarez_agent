@@ -144,3 +144,60 @@ def test_research_recipe_is_injected_and_calls_research_gather():
             },
         )
     ]
+
+
+def test_codeact_web_search_redirects_research_queries_to_research_gather():
+    registry = MagicMock(spec=ToolRegistry)
+    registry._snapshot_entries.return_value = [
+        _entry("research_gather", "research_search"),
+        _entry("web_search", "web"),
+    ]
+
+    source = build_tool_namespace_source(registry)
+    calls = []
+
+    def fake_call_tool(name, args):
+        calls.append((name, args))
+        return '{"success": true, "sources": [], "source_table": []}'
+
+    namespace = {"_call_tool": fake_call_tool}
+    exec(source, namespace)
+
+    result = namespace["web_search"]("latest GLP-1 GIP drugs in development 2026", limit=5)
+
+    assert '"success": true' in result
+    assert calls == [
+        (
+            "research_gather",
+            {
+                "question": "latest GLP-1 GIP drugs in development 2026",
+                "topic_type": "medical_pharma",
+                "freshness": "latest",
+                "depth": "thorough",
+                "max_pages": 5,
+            },
+        )
+    ]
+    assert "automatically routed through research_gather" in namespace["help"]("web_search")
+
+
+def test_codeact_web_search_keeps_targeted_nonresearch_queries_raw():
+    registry = MagicMock(spec=ToolRegistry)
+    registry._snapshot_entries.return_value = [
+        _entry("research_gather", "research_search"),
+        _entry("web_search", "web"),
+    ]
+
+    source = build_tool_namespace_source(registry)
+    calls = []
+
+    def fake_call_tool(name, args):
+        calls.append((name, args))
+        return '{"success": true, "data": {"web": []}}'
+
+    namespace = {"_call_tool": fake_call_tool}
+    exec(source, namespace)
+
+    namespace["web_search"]("site:example.com foobar", limit=2)
+
+    assert calls == [("web_search", {"query": "site:example.com foobar", "limit": 2})]
