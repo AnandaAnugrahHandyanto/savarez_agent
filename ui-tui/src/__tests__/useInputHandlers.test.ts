@@ -24,4 +24,14 @@ describe('applyVoiceRecordResponse', () => {
     expect(setRecording).not.toHaveBeenCalled()
     expect(setProcessing).not.toHaveBeenCalled()
   })
+
+  it('reverts optimistic REC state when the gateway returns null', () => {
+    const setProcessing = vi.fn()
+    const setRecording = vi.fn()
+
+    applyVoiceRecordResponse(null, true, { setProcessing, setRecording }, vi.fn())
+
+    expect(setRecording).toHaveBeenCalledWith(false)
+    expect(setProcessing).toHaveBeenCalledWith(false)
+  })
 })

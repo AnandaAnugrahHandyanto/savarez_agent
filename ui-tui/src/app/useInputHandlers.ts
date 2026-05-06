@@ -30,13 +30,13 @@ export function applyVoiceRecordResponse(
   voice: Pick<InputHandlerContext['voice'], 'setProcessing' | 'setRecording'>,
   sys: (text: string) => void
 ) {
-  if (!starting || !response?.status || response.status === 'recording') {
+  if (!starting || response?.status === 'recording') {
     return
   }
 
   voice.setRecording(false)
 
-  if (response.status === 'busy') {
+  if (response?.status === 'busy') {
     voice.setProcessing(true)
     sys('voice: still transcribing; try again shortly')
   } else {
