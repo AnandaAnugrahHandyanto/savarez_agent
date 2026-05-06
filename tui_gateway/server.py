@@ -5623,9 +5623,9 @@ def _(rid, params: dict) -> dict:
 
     ``start`` begins one VAD-bounded capture and emits ``voice.transcript``
     after silence stops the recorder. ``stop`` forces transcription of the
-    active buffer, matching classic CLI push-to-talk. Three consecutive
-    silent captures stop the loop automatically and emit ``voice.transcript``
-    with ``no_speech_limit=True``.
+    active buffer, matching classic CLI push-to-talk. The voice wrapper retains
+    no-speech counts across single-shot starts, so three consecutive silent
+    captures emit ``voice.transcript`` with ``no_speech_limit=True``.
     """
     action = params.get("action", "start")
 

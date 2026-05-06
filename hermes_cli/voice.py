@@ -282,6 +282,7 @@ _recorder_lock = threading.Lock()
 _continuous_lock = threading.Lock()
 _continuous_active = False
 _continuous_stopping = False
+_continuous_auto_restart: bool = True
 _continuous_recorder: Any = None
 
 # ── TTS-vs-STT feedback guard ────────────────────────────────────────
@@ -377,11 +378,14 @@ def start_continuous(
 
     The loop calls ``on_transcript(text)`` each time speech is detected and
     transcribed successfully. If ``auto_restart`` is True, it auto-restarts
-    for the next turn. If ``auto_restart`` is False, the first silence-triggered
-    transcription ends the loop and reports ``"idle"``. After
-    ``_CONTINUOUS_NO_SPEECH_LIMIT`` consecutive silent cycles (no speech picked
-    up at all) the loop stops itself and calls ``on_silent_limit`` so the UI can
-    reflect "voice off". Idempotent — calling while already active is a no-op.
+    for the next turn and resets the no-speech counter for that loop. If
+    ``auto_restart`` is False, the first silence-triggered transcription ends
+    the loop and reports ``"idle"``; no-speech counts are retained across
+    starts so a push-to-talk caller can still enforce the three-strikes guard.
+    After ``_CONTINUOUS_NO_SPEECH_LIMIT`` consecutive silent cycles (no speech
+    picked up at all) the loop stops itself and calls ``on_silent_limit`` so the
+    UI can reflect "voice off". Idempotent — calling while already active is a
+    no-op.
 
     ``on_status`` is called with ``"listening"`` / ``"transcribing"`` /
     ``"idle"`` so the UI can show a live indicator.
@@ -399,7 +403,8 @@ def start_continuous(
         _continuous_on_transcript = on_transcript
         _continuous_on_status = on_status
         _continuous_on_silent_limit = on_silent_limit
-        _continuous_no_speech_count = 0
+        if auto_restart:
+            _continuous_no_speech_count = 0
 
         if _continuous_recorder is None:
             _continuous_recorder = create_audio_recorder()

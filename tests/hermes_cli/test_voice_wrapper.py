@@ -465,6 +465,32 @@ class TestContinuousLoopSimulation:
         assert statuses == ["listening", "transcribing", "idle"]
         assert voice.is_continuous_active() is False
 
+    def test_auto_restart_false_retains_silent_strikes_across_starts(
+        self, fake_recorder, monkeypatch
+    ):
+        import hermes_cli.voice as voice
+
+        monkeypatch.setattr(
+            voice,
+            "transcribe_recording",
+            lambda _p: {"success": True, "transcript": ""},
+        )
+        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
+
+        silent_limit_fired = []
+
+        for _ in range(3):
+            voice.start_continuous(
+                on_transcript=lambda _t: None,
+                on_silent_limit=lambda: silent_limit_fired.append(True),
+                auto_restart=False,
+            )
+            fake_recorder.last_callback()
+
+        assert silent_limit_fired == [True]
+        assert voice.is_continuous_active() is False
+        assert fake_recorder.start_calls == 3
+
     def test_force_transcribe_stop_delivers_current_buffer(self, fake_recorder, monkeypatch):
         import hermes_cli.voice as voice
 
