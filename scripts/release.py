@@ -984,6 +984,8 @@ AUTHOR_MAP = {
     "openclaw@agent.local": "29206394",  # PR #22194 salvage (sudo -S brute-force guard, #9590)
     "freedemon@gmail.com": "fr33d3m0n",  # PR #21128 salvage (sudo stdin/askpass DANGEROUS, #17873 cat 4)
     "zhaowh3613@outlook.com": "VinceZcrikl",  # PR #23647 salvage (npm UTF-8 decode on GBK Windows)
+    # Anthropic adapter family-hint override (May 2026)
+    "cong@users.noreply.github.com": "JanCong",  # PR #18330
 }
 
 
