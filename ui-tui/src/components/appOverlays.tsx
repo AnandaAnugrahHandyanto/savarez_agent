@@ -13,6 +13,7 @@ import { OverlayHint } from './overlayControls.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
 import { SessionPicker } from './sessionPicker.js'
 import { SkillsHub } from './skillsHub.js'
+import { WidgetGrid, type WidgetGridWidget } from './widgetGrid.js'
 
 const COMPLETION_WINDOW = 16
 
@@ -110,6 +111,11 @@ export function FloatingOverlays({
     return null
   }
 
+  const gridCols = Math.max(24, cols - 2)
+  const gridMaxColumns = cols >= 120 ? 2 : 1
+  const fullSpan = gridMaxColumns
+  const capWidth = (cellWidth: number) => Math.max(24, cellWidth - 4)
+
   // Fixed viewport centered on compIdx — previously the slice end was
   // compIdx + 8 so the dropdown grew from 8 rows to 16 as the user scrolled
   // down, bouncing the height on every keystroke.
@@ -117,66 +123,99 @@ export function FloatingOverlays({
 
   const start = Math.max(0, Math.min(compIdx - Math.floor(COMPLETION_WINDOW / 2), completions.length - viewportSize))
 
-  return (
-    <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
-      {overlay.picker && (
+  const widgets: WidgetGridWidget[] = []
+
+  if (overlay.picker) {
+    widgets.push({
+      id: 'picker',
+      render: width => (
         <FloatBox color={theme.color.border}>
           <SessionPicker
             gw={gw}
+            maxWidth={capWidth(width)}
             onCancel={() => patchOverlayState({ picker: false })}
             onSelect={onPickerSelect}
             t={theme}
           />
         </FloatBox>
-      )}
+      )
+    })
+  }
 
-      {overlay.modelPicker && (
+  if (overlay.modelPicker) {
+    widgets.push({
+      id: 'model-picker',
+      render: width => (
         <FloatBox color={theme.color.border}>
           <ModelPicker
             gw={gw}
+            maxWidth={capWidth(width)}
             onCancel={() => patchOverlayState({ modelPicker: false })}
             onSelect={onModelSelect}
             sessionId={sid}
             t={theme}
           />
         </FloatBox>
-      )}
+      )
+    })
+  }
 
-      {overlay.skillsHub && (
+  if (overlay.skillsHub) {
+    widgets.push({
+      id: 'skills-hub',
+      render: width => (
         <FloatBox color={theme.color.border}>
-          <SkillsHub gw={gw} onClose={() => patchOverlayState({ skillsHub: false })} t={theme} />
+          <SkillsHub
+            gw={gw}
+            maxWidth={capWidth(width)}
+            onClose={() => patchOverlayState({ skillsHub: false })}
+            t={theme}
+          />
         </FloatBox>
-      )}
+      )
+    })
+  }
 
-      {overlay.pager && (
+  if (overlay.pager) {
+    const pager = overlay.pager
+
+    widgets.push({
+      id: 'pager',
+      render: width => (
         <FloatBox color={theme.color.border}>
-          <Box flexDirection="column" paddingX={1} paddingY={1}>
-            {overlay.pager.title && (
+          <Box flexDirection="column" paddingX={1} paddingY={1} width={capWidth(width)}>
+            {pager.title && (
               <Box justifyContent="center" marginBottom={1}>
                 <Text bold color={theme.color.primary}>
-                  {overlay.pager.title}
+                  {pager.title}
                 </Text>
               </Box>
             )}
 
-            {overlay.pager.lines.slice(overlay.pager.offset, overlay.pager.offset + pagerPageSize).map((line, i) => (
+            {pager.lines.slice(pager.offset, pager.offset + pagerPageSize).map((line, i) => (
               <Text key={i}>{line}</Text>
             ))}
 
             <Box marginTop={1}>
               <OverlayHint t={theme}>
-                {overlay.pager.offset + pagerPageSize < overlay.pager.lines.length
-                  ? `↑↓/jk line · Enter/Space/PgDn page · b/PgUp back · g/G top/bottom · Esc/q close (${Math.min(overlay.pager.offset + pagerPageSize, overlay.pager.lines.length)}/${overlay.pager.lines.length})`
-                  : `end · ↑↓/jk · b/PgUp back · g top · Esc/q close (${overlay.pager.lines.length} lines)`}
+                {pager.offset + pagerPageSize < pager.lines.length
+                  ? `↑↓/jk line · Enter/Space/PgDn page · b/PgUp back · g/G top/bottom · Esc/q close (${Math.min(pager.offset + pagerPageSize, pager.lines.length)}/${pager.lines.length})`
+                  : `end · ↑↓/jk · b/PgUp back · g top · Esc/q close (${pager.lines.length} lines)`}
               </OverlayHint>
             </Box>
           </Box>
         </FloatBox>
-      )}
+      ),
+      span: fullSpan
+    })
+  }
 
-      {!!completions.length && (
+  if (completions.length) {
+    widgets.push({
+      id: 'completions',
+      render: width => (
         <FloatBox color={theme.color.primary}>
-          <Box flexDirection="column" width={Math.max(28, cols - 6)}>
+          <Box flexDirection="column" width={capWidth(width)}>
             {completions.slice(start, start + viewportSize).map((item, i) => {
               const active = start + i === compIdx
 
@@ -205,7 +244,14 @@ export function FloatingOverlays({
             })}
           </Box>
         </FloatBox>
-      )}
+      ),
+      span: fullSpan
+    })
+  }
+
+  return (
+    <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
+      <WidgetGrid cols={gridCols} maxColumns={gridMaxColumns} minColumnWidth={46} rowGap={0} widgets={widgets} />
     </Box>
   )
 }
