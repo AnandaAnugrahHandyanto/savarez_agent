@@ -141,6 +141,12 @@ def build_prefix_line(
     if not cfg.get("enabled") or not cfg.get("template"):
         return ""
 
+    if not provider and model:
+        # Derive provider from full model ID (e.g. "github-copilot/claude-opus-4.6" → "github-copilot")
+        parts = model.split("/", 1)
+        if len(parts) == 2:
+            provider = parts[0]
+
     return interpolate_prefix_template(
         cfg["template"],
         model=model,
