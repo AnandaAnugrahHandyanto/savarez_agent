@@ -1546,10 +1546,30 @@ def _run_single_child(
         if interrupted:
             status = "interrupted"
         elif summary:
-            # A summary means the subagent produced usable output.
-            # exit_reason ("completed" vs "max_iterations") already
-            # tells the parent *how* the task ended.
-            status = "completed"
+            # ACP child agents can return summaries unrelated to the task
+            # (e.g. model name strings) or abort markers when
+            # requestPermission() is cancelled (issue #20807).
+            _acp_abort_markers = (
+                "tool use aborted", "tool_use aborted",
+                "requestpermission", "permission cancelled", "signal.aborted",
+            )
+            _summary_lower = summary.strip().lower()
+            _is_acp_abort = any(m in _summary_lower for m in _acp_abort_markers)
+            _is_model_name_only = (
+                effective_acp_command is not None
+                and len(summary.strip()) < 120
+                and any(m in _summary_lower for m in
+                        ("claude", "gpt", "gemini", "sonnet", "opus", "haiku"))
+                and api_calls == 0
+            )
+            if _is_acp_abort:
+                status = "failed"
+                summary = f"[ACP tool execution aborted] {summary}"
+            elif _is_model_name_only:
+                status = "failed"
+                summary = "[ACP returned unrelated summary - no task work detected] " + summary
+            else:
+                status = "completed"
         else:
             status = "failed"
 
