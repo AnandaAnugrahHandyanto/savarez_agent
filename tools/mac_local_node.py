@@ -10,6 +10,8 @@ be layered behind these handlers without changing the public schema.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import difflib
+import fnmatch
 import json
 import os
 import re
@@ -27,6 +29,7 @@ TERMINAL_ACTIONS = ["run", "start", "poll", "wait", "kill", "input", "exec_code"
 PROJECT_CONTEXT_ACTIONS = ["summarize"]
 UI_ACTIONS = ["screenshot", "open", "clipboard", "osascript"]
 AGENT_ACTIONS = ["spawn", "status", "logs", "kill"]
+NOISY_SEARCH_DIRS = frozenset({".git", "node_modules", ".venv", "venv", "dist", "build", "__pycache__", ".cache"})
 STRUCTURED_ERROR_CODES = [
     "MAC_OFFLINE",
     "ACTION_DENIED",
@@ -501,11 +504,217 @@ def _mac_system_status_result(action: str | None) -> str:
     return json.dumps(payload)
 
 
+def _error_payload(tool: str, action: str | None, error_code: str, message: str, **extra: Any) -> str:
+    payload = {
+        "ok": False,
+        "error_code": error_code,
+        "message": message,
+        "tool": tool,
+        "action": action,
+    }
+    payload.update(extra)
+    return json.dumps(payload)
+
+
 def _extract_action(args: dict[str, Any] | None) -> str | None:
     if not isinstance(args, dict):
         return None
     action = args.get("action")
     return action if isinstance(action, str) else None
+
+
+def _policy_error_for_path(action: str, path: str, verdict: PolicyVerdict) -> str | None:
+    if verdict.decision == "allow":
+        return None
+    code = "SECRET_DENIED" if verdict.reason == "SECRET_DENIED" else "PATH_DENIED"
+    message = "Secret/auth paths are denied by default." if code == "SECRET_DENIED" else "Path is outside trusted Mac roots."
+    return _error_payload("mac_fs", action, code, message, path=path, scope=verdict.scope)
+
+
+def _bounded_limit(value: Any, default: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(1, min(parsed, maximum))
+
+
+def _canonical_for_payload(path: str) -> str:
+    return _normalize_path_for_policy(path)
+
+
+def _mac_fs_read(args: dict[str, Any], policy: MacLocalPolicy) -> str:
+    action = "read"
+    canonical = _canonical_for_payload(str(args.get("path") or ""))
+    policy_error = _policy_error_for_path(action, canonical, policy.classify_path(canonical, action))
+    if policy_error:
+        return policy_error
+    offset = _bounded_limit(args.get("offset"), 1, 1_000_000)
+    limit = _bounded_limit(args.get("limit"), 200, 2_000)
+    try:
+        all_lines = Path(canonical).read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return _error_payload("mac_fs", action, "PATH_DENIED", "File does not exist.", path=canonical)
+    except UnicodeDecodeError:
+        return _error_payload("mac_fs", action, "ACTION_DENIED", "File is not valid UTF-8 text.", path=canonical)
+    except OSError as exc:
+        return _error_payload("mac_fs", action, "ACTION_DENIED", f"File could not be read: {exc}", path=canonical)
+    start = offset - 1
+    selected = all_lines[start : start + limit]
+    next_offset = offset + len(selected)
+    truncated = next_offset <= len(all_lines)
+    payload = {
+        "ok": True,
+        "action": action,
+        "path": canonical,
+        "offset": offset,
+        "limit": limit,
+        "lines": [{"number": start + index + 1, "text": text} for index, text in enumerate(selected)],
+        "truncated": truncated,
+    }
+    if truncated:
+        payload["next_offset"] = next_offset
+    return json.dumps(payload)
+
+
+def _mac_fs_search(args: dict[str, Any], policy: MacLocalPolicy) -> str:
+    action = "search"
+    canonical = _canonical_for_payload(str(args.get("path") or ""))
+    policy_error = _policy_error_for_path(action, canonical, policy.classify_path(canonical, action))
+    if policy_error:
+        return policy_error
+    pattern = str(args.get("pattern") or "")
+    if not pattern:
+        return _error_payload("mac_fs", action, "ACTION_DENIED", "Search pattern is required.", path=canonical)
+    limit = _bounded_limit(args.get("limit"), 50, 500)
+    is_glob = any(marker in pattern for marker in "*?[]")
+    try:
+        regex = None if is_glob else re.compile(pattern)
+    except re.error as exc:
+        return _error_payload("mac_fs", action, "ACTION_DENIED", f"Invalid search regex: {exc}", path=canonical)
+    matches: list[dict[str, Any]] = []
+
+    def search_file(file_path: str, filename: str) -> str | None:
+        if policy.classify_path(file_path, action).decision != "allow":
+            return None
+        if is_glob and fnmatch.fnmatch(filename, pattern):
+            matches.append({"path": file_path, "line": None, "text": None, "kind": "filename"})
+            return "stop" if len(matches) >= limit else None
+        try:
+            lines = Path(file_path).read_text(encoding="utf-8").splitlines()
+        except (UnicodeDecodeError, OSError):
+            return None
+        for line_number, text in enumerate(lines, start=1):
+            if regex and regex.search(text):
+                matches.append({"path": file_path, "line": line_number, "text": text})
+                if len(matches) >= limit:
+                    return "stop"
+        return None
+
+    root_path = Path(canonical)
+    if not root_path.exists():
+        return _error_payload("mac_fs", action, "PATH_DENIED", "Search root does not exist.", path=canonical)
+    if root_path.is_file():
+        truncated = search_file(canonical, root_path.name) == "stop"
+        return json.dumps({"ok": True, "action": action, "path": canonical, "matches": matches, "truncated": truncated})
+
+    try:
+        walker = os.walk(canonical)
+        for current_root, dirs, files in walker:
+            dirs[:] = [dirname for dirname in dirs if dirname not in NOISY_SEARCH_DIRS]
+            for filename in files:
+                file_path = _canonical_for_payload(str(Path(current_root, filename)))
+                if search_file(file_path, filename) == "stop":
+                    return json.dumps({"ok": True, "action": action, "path": canonical, "matches": matches, "truncated": True})
+    except OSError as exc:
+        return _error_payload("mac_fs", action, "ACTION_DENIED", f"Search root could not be scanned: {exc}", path=canonical)
+    return json.dumps({"ok": True, "action": action, "path": canonical, "matches": matches, "truncated": False})
+
+
+def _mac_fs_write(args: dict[str, Any], policy: MacLocalPolicy) -> str:
+    action = "write"
+    canonical = _canonical_for_payload(str(args.get("path") or ""))
+    policy_error = _policy_error_for_path(action, canonical, policy.classify_path(canonical, action))
+    if policy_error:
+        return policy_error
+    target = Path(canonical)
+    try:
+        previous_exists = target.exists()
+        previous_size = target.stat().st_size if previous_exists else None
+    except OSError as exc:
+        return _error_payload("mac_fs", action, "ACTION_DENIED", f"Existing file metadata could not be read: {exc}", path=canonical)
+    content = str(args.get("content") or "")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        return _error_payload("mac_fs", action, "ACTION_DENIED", f"File could not be written: {exc}", path=canonical)
+    return json.dumps(
+        {
+            "ok": True,
+            "action": action,
+            "path": canonical,
+            "bytes_written": len(content.encode("utf-8")),
+            "previous_exists": previous_exists,
+            "previous_size": previous_size,
+        }
+    )
+
+
+def _mac_fs_patch(args: dict[str, Any], policy: MacLocalPolicy) -> str:
+    action = "patch"
+    canonical = _canonical_for_payload(str(args.get("path") or ""))
+    policy_error = _policy_error_for_path(action, canonical, policy.classify_path(canonical, action))
+    if policy_error:
+        return policy_error
+    pattern = str(args.get("pattern") or "")
+    replacement = str(args.get("content") or "")
+    if not pattern:
+        return _error_payload("mac_fs", action, "ACTION_DENIED", "Patch pattern is required.", path=canonical)
+    target = Path(canonical)
+    try:
+        original = target.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return _error_payload("mac_fs", action, "PATH_DENIED", "File does not exist.", path=canonical)
+    except UnicodeDecodeError:
+        return _error_payload("mac_fs", action, "ACTION_DENIED", "File is not valid UTF-8 text.", path=canonical)
+    except OSError as exc:
+        return _error_payload("mac_fs", action, "ACTION_DENIED", f"File could not be read: {exc}", path=canonical)
+    if pattern not in original:
+        return _error_payload("mac_fs", action, "ACTION_DENIED", "Patch pattern was not found.", path=canonical)
+    updated = original.replace(pattern, replacement, 1)
+    diff = "".join(
+        difflib.unified_diff(
+            original.splitlines(keepends=True),
+            updated.splitlines(keepends=True),
+            fromfile=f"a/{target.name}",
+            tofile=f"b/{target.name}",
+        )
+    )
+    try:
+        target.write_text(updated, encoding="utf-8")
+    except OSError as exc:
+        return _error_payload("mac_fs", action, "ACTION_DENIED", f"File could not be patched: {exc}", path=canonical)
+    return json.dumps({"ok": True, "action": action, "path": canonical, "diff": diff, "replacements": 1})
+
+
+def handle_mac_fs_local(args: dict[str, Any] | None = None, *, policy: MacLocalPolicy | None = None) -> str:
+    """Run the Mac-node side filesystem action layer with policy checks."""
+
+    action = _extract_action(args)
+    if action not in FS_ACTIONS:
+        return _invalid_action_result("mac_fs", action, FS_ACTIONS)
+    safe_args = args if isinstance(args, dict) else {}
+    active_policy = policy or MacLocalPolicy.default()
+    if action == "read":
+        return _mac_fs_read(safe_args, active_policy)
+    if action == "search":
+        return _mac_fs_search(safe_args, active_policy)
+    if action == "write":
+        return _mac_fs_write(safe_args, active_policy)
+    if action == "patch":
+        return _mac_fs_patch(safe_args, active_policy)
+    return _invalid_action_result("mac_fs", action, FS_ACTIONS)
 
 
 def _handle_placeholder(tool: str, args: dict[str, Any] | None, allowed_actions: list[str]) -> str:
@@ -522,6 +731,8 @@ def handle_mac_system(args: dict[str, Any] | None = None, **_: Any) -> str:
 
 
 def handle_mac_fs(args: dict[str, Any] | None = None, **_: Any) -> str:
+    if os.getenv("HERMES_MAC_LOCAL_NODE_EXECUTE_LOCAL", "").lower() in {"1", "true", "yes", "on"}:
+        return handle_mac_fs_local(args)
     return _handle_placeholder("mac_fs", args, FS_ACTIONS)
 
 

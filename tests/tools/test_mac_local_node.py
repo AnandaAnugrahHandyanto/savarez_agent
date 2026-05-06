@@ -391,3 +391,290 @@ def test_mac_local_tools_stay_discoverable_when_node_is_offline(monkeypatch):
         entry = registry.get_entry(tool_name)
         assert entry is not None
         assert entry.requires_env == []
+
+
+def test_mac_fs_local_read_paginates_with_line_numbers_and_truncation(tmp_path):
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_fs_local
+
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    target = trusted / "notes.txt"
+    target.write_text("one\ntwo\nthree\nfour\n", encoding="utf-8")
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+
+    payload = json.loads(
+        handle_mac_fs_local(
+            {"action": "read", "path": str(target), "offset": 2, "limit": 2},
+            policy=policy,
+        )
+    )
+
+    assert payload["ok"] is True
+    assert payload["action"] == "read"
+    assert payload["path"] == str(target.resolve())
+    assert payload["lines"] == [
+        {"number": 2, "text": "two"},
+        {"number": 3, "text": "three"},
+    ]
+    assert payload["truncated"] is True
+    assert payload["next_offset"] == 4
+
+
+def test_mac_fs_local_search_filters_noisy_dirs_and_limits_results(tmp_path):
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_fs_local
+
+    trusted = tmp_path / "trusted"
+    (trusted / "src").mkdir(parents=True)
+    (trusted / "node_modules").mkdir(parents=True)
+    (trusted / "src" / "app.py").write_text("needle\n", encoding="utf-8")
+    (trusted / "node_modules" / "pkg.js").write_text("needle\n", encoding="utf-8")
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+
+    payload = json.loads(
+        handle_mac_fs_local(
+            {"action": "search", "path": str(trusted), "pattern": "needle", "limit": 5},
+            policy=policy,
+        )
+    )
+
+    assert payload["ok"] is True
+    assert payload["matches"] == [
+        {"path": str((trusted / "src" / "app.py").resolve()), "line": 1, "text": "needle"}
+    ]
+    assert payload["truncated"] is False
+
+
+def test_mac_fs_local_search_handles_single_file_and_missing_root(tmp_path):
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_fs_local
+
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    target = trusted / "app.py"
+    target.write_text("needle\n", encoding="utf-8")
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+
+    single_file = json.loads(
+        handle_mac_fs_local(
+            {"action": "search", "path": str(target), "pattern": "needle", "limit": 5},
+            policy=policy,
+        )
+    )
+    missing_root = json.loads(
+        handle_mac_fs_local(
+            {"action": "search", "path": str(trusted / "missing"), "pattern": "needle"},
+            policy=policy,
+        )
+    )
+
+    assert single_file["ok"] is True
+    assert single_file["matches"] == [{"path": str(target.resolve()), "line": 1, "text": "needle"}]
+    assert missing_root["ok"] is False
+    assert missing_root["error_code"] == "PATH_DENIED"
+
+
+def test_mac_fs_local_search_handles_single_file_truncation(tmp_path):
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_fs_local
+
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    target = trusted / "app.py"
+    target.write_text("needle 1\nneedle 2\n", encoding="utf-8")
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+
+    payload = json.loads(
+        handle_mac_fs_local(
+            {"action": "search", "path": str(target), "pattern": "needle", "limit": 1},
+            policy=policy,
+        )
+    )
+
+    assert payload["ok"] is True
+    assert payload["matches"] == [{"path": str(target.resolve()), "line": 1, "text": "needle 1"}]
+    assert payload["truncated"] is True
+
+
+def test_mac_fs_local_search_supports_filename_globs(tmp_path):
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_fs_local
+
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    (trusted / "app.py").write_text("print('hello')\n", encoding="utf-8")
+    (trusted / "README.md").write_text("app docs\n", encoding="utf-8")
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+
+    payload = json.loads(
+        handle_mac_fs_local(
+            {"action": "search", "path": str(trusted), "pattern": "*.py", "limit": 5},
+            policy=policy,
+        )
+    )
+
+    assert payload["ok"] is True
+    assert payload["matches"] == [
+        {"path": str((trusted / "app.py").resolve()), "line": None, "text": None, "kind": "filename"}
+    ]
+
+
+def test_mac_fs_local_write_allows_trusted_root_and_blocks_outside_root(tmp_path):
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_fs_local
+
+    trusted = tmp_path / "trusted"
+    outside = tmp_path / "outside"
+    trusted.mkdir()
+    outside.mkdir()
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+
+    allowed = json.loads(
+        handle_mac_fs_local(
+            {"action": "write", "path": str(trusted / "new" / "note.txt"), "content": "hello"},
+            policy=policy,
+        )
+    )
+    denied = json.loads(
+        handle_mac_fs_local(
+            {"action": "write", "path": str(outside / "note.txt"), "content": "nope"},
+            policy=policy,
+        )
+    )
+
+    assert allowed["ok"] is True
+    assert (trusted / "new" / "note.txt").read_text(encoding="utf-8") == "hello"
+    assert allowed["previous_exists"] is False
+    assert denied["ok"] is False
+    assert denied["error_code"] == "PATH_DENIED"
+    assert not (outside / "note.txt").exists()
+
+
+def test_mac_fs_local_denies_secret_paths_and_symlink_escape(tmp_path):
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_fs_local
+
+    trusted = tmp_path / "trusted"
+    outside = tmp_path / "outside"
+    trusted.mkdir()
+    outside.mkdir()
+    (trusted / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    (outside / "leak.txt").write_text("leak\n", encoding="utf-8")
+    (trusted / "escape").symlink_to(outside, target_is_directory=True)
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+
+    secret = json.loads(handle_mac_fs_local({"action": "read", "path": str(trusted / ".env")}, policy=policy))
+    escaped = json.loads(
+        handle_mac_fs_local({"action": "read", "path": str(trusted / "escape" / "leak.txt")}, policy=policy)
+    )
+
+    assert secret["ok"] is False
+    assert secret["error_code"] == "SECRET_DENIED"
+    assert "TOKEN" not in json.dumps(secret)
+    assert escaped["ok"] is False
+    assert escaped["error_code"] == "PATH_DENIED"
+
+
+def test_mac_fs_local_returns_structured_errors_for_io_failures(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_fs_local
+
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+
+    directory_read = json.loads(handle_mac_fs_local({"action": "read", "path": str(trusted)}, policy=policy))
+    missing_patch = json.loads(
+        handle_mac_fs_local(
+            {"action": "patch", "path": str(trusted / "missing.py"), "pattern": "old", "content": "new"},
+            policy=policy,
+        )
+    )
+
+    original_write_text = Path.write_text
+
+    def fail_write(self, *args, **kwargs):
+        if self.name == "blocked.txt":
+            raise OSError("disk full")
+        return original_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_write)
+    write_failure = json.loads(
+        handle_mac_fs_local(
+            {"action": "write", "path": str(trusted / "blocked.txt"), "content": "hello"},
+            policy=policy,
+        )
+    )
+
+    assert directory_read["ok"] is False
+    assert directory_read["error_code"] == "ACTION_DENIED"
+    assert "read" not in directory_read
+    assert missing_patch["ok"] is False
+    assert missing_patch["error_code"] == "PATH_DENIED"
+    assert write_failure["ok"] is False
+    assert write_failure["error_code"] == "ACTION_DENIED"
+
+
+def test_mac_fs_local_returns_structured_errors_for_scan_and_stat_failures(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from tools import mac_local_node
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_fs_local
+
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    blocked = trusted / "blocked.txt"
+    blocked.write_text("old", encoding="utf-8")
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+
+    def fail_walk(*args, **kwargs):
+        raise OSError("scan failed")
+
+    monkeypatch.setattr(mac_local_node.os, "walk", fail_walk)
+    search_failure = json.loads(
+        handle_mac_fs_local({"action": "search", "path": str(trusted), "pattern": "old"}, policy=policy)
+    )
+
+    original_exists = Path.exists
+    original_stat = Path.stat
+
+    def fake_exists(self):
+        if self.name == "blocked.txt":
+            return True
+        return original_exists(self)
+
+    def fail_stat(self, *args, **kwargs):
+        if self.name == "blocked.txt":
+            raise OSError("stat failed")
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "exists", fake_exists)
+    monkeypatch.setattr(Path, "stat", fail_stat)
+    write_failure = json.loads(
+        handle_mac_fs_local(
+            {"action": "write", "path": str(blocked), "content": "hello"},
+            policy=policy,
+        )
+    )
+
+    assert search_failure["ok"] is False
+    assert search_failure["error_code"] == "ACTION_DENIED"
+    assert write_failure["ok"] is False
+    assert write_failure["error_code"] == "ACTION_DENIED"
+
+
+def test_mac_fs_local_patch_replaces_text_and_returns_unified_diff(tmp_path):
+    from tools.mac_local_node import MacLocalPolicy, TrustedRoot, handle_mac_fs_local
+
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    target = trusted / "app.py"
+    target.write_text("print('old')\n", encoding="utf-8")
+    policy = MacLocalPolicy([TrustedRoot(str(trusted), "test")])
+
+    payload = json.loads(
+        handle_mac_fs_local(
+            {"action": "patch", "path": str(target), "pattern": "old", "content": "new"},
+            policy=policy,
+        )
+    )
+
+    assert payload["ok"] is True
+    assert target.read_text(encoding="utf-8") == "print('new')\n"
+    assert "-print('old')" in payload["diff"]
+    assert "+print('new')" in payload["diff"]
