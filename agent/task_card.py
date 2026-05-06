@@ -58,6 +58,7 @@ class ExecutionPlan:
     mode: str = "self_execute"
     agents: List[str] = field(default_factory=list)
     delegation_reason: str = ""
+    require_gate: Optional[str] = None  # v2.8: "strategy_spine" for marketing_deck
 
 
 @dataclass
@@ -98,6 +99,14 @@ class TaskCard:
     # ── Forward-compatible fields (Sprint 4, 5) ──
     routing_basis: List[str] = field(default_factory=list)
     fallback_used: Optional[str] = None
+
+    # ── v2.8 最小 Task Card 扩展字段 ──
+    client: Optional[str] = None
+    project_topic: Optional[str] = None
+    local_project_path: Optional[str] = None
+    first_output: Optional[str] = None
+    must_read_local_files: bool = False
+    needs_external_research: bool = False
 
     @classmethod
     def create(
@@ -168,6 +177,13 @@ class TaskCard:
             session_id=d.get("session_id", ""),
             routing_basis=d.get("routing_basis", []),
             fallback_used=d.get("fallback_used"),
+            # ── v2.8 扩展字段 ──
+            client=d.get("client"),
+            project_topic=d.get("project_topic"),
+            local_project_path=d.get("local_project_path"),
+            first_output=d.get("first_output"),
+            must_read_local_files=d.get("must_read_local_files", False),
+            needs_external_research=d.get("needs_external_research", False),
         )
 
     @classmethod

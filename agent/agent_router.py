@@ -67,6 +67,32 @@ DEFAULT_ROUTES: Dict[str, Dict[str, Any]] = {
         "capability": None,
         "reason": "未分类任务默认主 Agent 自行处理",
     },
+    # ── v2.8 新增：五类高频真实任务路由 ──
+    "marketing_deck": {
+        "mode": "pipeline",
+        "capability": "strategy_decision",
+        "reason": "营销方案类需要主 Agent 策略判断 + DeepSeek Worker 背景资料整理",
+    },
+    "file_work": {
+        "mode": "single_agent",
+        "capability": "file_reading_analysis",
+        "reason": "文件处理类任务由阅读分析 agent 处理",
+    },
+    "code_maintenance": {
+        "mode": "single_agent",
+        "capability": "code_review",
+        "reason": "代码/系统维护由 Codex CLI 主执行",
+    },
+    "desktop_operation": {
+        "mode": "single_agent",
+        "capability": "desktop_control",
+        "reason": "桌面/应用操作由 OpenClaw 执行",
+    },
+    "conversation": {
+        "mode": "self_execute",
+        "capability": None,
+        "reason": "闲聊/无明确产物对话由主 Agent 自行处理",
+    },
 }
 
 # ── task_category → required capability mapping ──
@@ -81,7 +107,65 @@ TASK_CATEGORY_REQUIRED_CAPABILITY: Dict[str, Optional[str]] = {
     "document": "file_reading_analysis",
     "prompt_design": "strategy_decision",
     "other": None,
+    # ── v2.8 新增 ──
+    "marketing_deck": "strategy_decision",
+    "file_work": "file_reading_analysis",
+    "code_maintenance": "code_review",
+    "desktop_operation": "desktop_control",
+    "conversation": None,
 }
+
+# ── v2.8 关键词 → task_type 硬规则映射 ──
+# 用于 LLM 分类为 "other" 时的安全网，确保真实工作不落入 other
+
+TASK_TYPE_KEYWORDS: Dict[str, List[str]] = {
+    "marketing_deck": [
+        "方案", "PPT", "提案", "客户", "品牌", "营销",
+        "合作规划", "世界杯", "资源包", "投放", "结案",
+    ],
+    "research": [
+        "搜索", "搜集", "整理资料", "竞品", "人物",
+        "品牌动作", "行业信息", "全网搜索",
+    ],
+    "file_work": [
+        "读 PPT", "改 Excel", "整理 Word", "提取 PDF",
+        "对比文件", "报价表", "排期", "合同",
+    ],
+    "code_maintenance": [
+        "修 bug", "测试", "提交 git", "Hermes 路由",
+        "agent_router", "delegate_tool", "系统可以正常跑通",
+    ],
+    "desktop_operation": [
+        "打开", "看一下界面", "验证", "截图", "操作 App",
+        "在 Hermes 验证", "在浏览器验证",
+    ],
+}
+
+# ── v2.8 客户名 → task_type 映射（命中即 marketing_deck）──
+
+CLIENT_NAME_KEYWORDS: List[str] = [
+    "蒙牛", "百威", "剑南春", "咪咕", "TCL", "京东", "PUMA", "Nike",
+]
+
+# ── v2.8 客户目录映射（从配置文件加载，此处为默认值）──
+
+def _load_client_directory_map() -> Dict[str, str]:
+    """Load client name → local project directory mapping."""
+    import json as _json
+    from pathlib import Path as _Path
+    try:
+        from hermes_constants import get_hermes_home as _get_home
+    except Exception:
+        def _get_home() -> _Path:
+            return _Path.home() / ".hermes"
+    config_path = _get_home() / "config" / "client_directory_map.json"
+    try:
+        with open(config_path, "r", encoding="utf-8") as _f:
+            return _json.load(_f)
+    except (FileNotFoundError, _json.JSONDecodeError, OSError):
+        return {}
+
+CLIENT_DIRECTORY_MAP: Dict[str, str] = _load_client_directory_map()
 
 # ── Fallback agent capability registry (used only when registry file is unavailable) ──
 
@@ -159,6 +243,11 @@ class RoutingDecision:
     overrides: List[str] = field(default_factory=list)
     fallback_plan: Optional[str] = None
     risk_level: str = "low"
+    # ── v2.8 营销任务扩展字段 ──
+    client: Optional[str] = None
+    local_project_path: Optional[str] = None
+    must_read_local_files: bool = False
+    first_output: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -190,6 +279,7 @@ class AgentRouter:
         user_agent_override: Optional[str] = None,
         required_capabilities: Optional[List[str]] = None,
         risk_level: str = "low",
+        raw_request: Optional[str] = None,
     ) -> RoutingDecision:
         """Determine the execution plan for a task.
 
@@ -198,11 +288,61 @@ class AgentRouter:
             user_agent_override: User explicitly said "use X"
             required_capabilities: Capabilities the task requires
             risk_level: "low" | "medium" | "high"
+            raw_request: Original user request for keyword-based classification override
 
         Returns:
             RoutingDecision with mode, agents, reason, routing_basis, overrides
         """
         self._ensure_registry()
+
+        # ── v2.8 关键词硬规则：真实工作不得落入 conversation/other ──
+        overridden_category: Optional[str] = None
+        keyword_match_info: Dict[str, Any] = {}
+
+        if raw_request:
+            raw_lower = raw_request.lower()
+            raw_original = raw_request
+
+            # 1) 客户名命中 → 强制 marketing_deck
+            for client_name in CLIENT_NAME_KEYWORDS:
+                if client_name in raw_original:
+                    overridden_category = "marketing_deck"
+                    keyword_match_info = {
+                        "matched_keyword": client_name,
+                        "match_type": "client_name",
+                        "client": client_name,
+                        "local_project_path": CLIENT_DIRECTORY_MAP.get(client_name, ""),
+                    }
+                    break
+
+            # 2) 关键词匹配（客户名未命中时）
+            if not overridden_category:
+                for task_type, keywords in TASK_TYPE_KEYWORDS.items():
+                    for kw in keywords:
+                        if kw in raw_original or kw.lower() in raw_lower:
+                            overridden_category = task_type
+                            keyword_match_info = {
+                                "matched_keyword": kw,
+                                "match_type": "keyword",
+                            }
+                            break
+                    if overridden_category:
+                        break
+
+            # 3) 如果 LLM 分类为 other 但关键词命中 → 强制升格
+            if overridden_category and task_category == "other":
+                logger.info(
+                    "Keyword override: other → %s (matched: %s)",
+                    overridden_category,
+                    keyword_match_info.get("matched_keyword", ""),
+                )
+                task_category = overridden_category
+            elif overridden_category and task_category != overridden_category:
+                logger.info(
+                    "Keyword suggests %s but LLM classified as %s; keeping LLM classification",
+                    overridden_category,
+                    task_category,
+                )
 
         default = DEFAULT_ROUTES.get(task_category, DEFAULT_ROUTES["other"])
         mode = default["mode"]
@@ -324,11 +464,16 @@ class AgentRouter:
             overrides.append("mode_normalized")
 
         if mode in ("single_agent", "pipeline") and not agents:
-            logger.warning("Routing mode %s had no agents; falling back to self_execute", mode)
-            reason += "; 路由未找到可用 agent，降级为主 Agent 自行处理"
-            mode = "self_execute"
-            routing_basis.append("empty_agent_fallback")
-            overrides.append("empty_agent_fallback")
+            logger.warning("Routing mode %s had no agents; returning explicit error", mode)
+            return RoutingDecision(
+                mode="review_only",
+                agents=[],
+                reason=f"路由失败：任务类型 {task_category} 需要 agent 但未找到可用 agent（capability={default.get('capability')}）。请检查 agent-registry.json 路由配置。",
+                routing_basis=routing_basis + ["empty_agent_error"],
+                overrides=overrides + ["empty_agent_error"],
+                fallback_plan="请确认 agent-registry.json routing_rules 中包含对应 capability 的 agent",
+                risk_level=normalized_risk,
+            )
 
         if mode == "single_agent" and len(agents) > 1:
             mode = "pipeline"
@@ -338,6 +483,12 @@ class AgentRouter:
         # Determine fallback plan
         fallback_plan = self._fallback_for(mode, agents)
 
+        # ── v2.8 注入客户/营销上下文 ──
+        client_name = keyword_match_info.get("client") if keyword_match_info else None
+        project_path = keyword_match_info.get("local_project_path", "") if keyword_match_info else ""
+        must_read = bool(client_name and project_path and Path(project_path).exists())
+        first_out = "strategy_spine" if (task_category == "marketing_deck") else None
+
         return RoutingDecision(
             mode=mode,
             agents=agents,
@@ -346,6 +497,10 @@ class AgentRouter:
             overrides=overrides,
             fallback_plan=fallback_plan,
             risk_level=normalized_risk,
+            client=client_name,
+            local_project_path=project_path or None,
+            must_read_local_files=must_read,
+            first_output=first_out,
         )
 
     # ── Fallback ──
