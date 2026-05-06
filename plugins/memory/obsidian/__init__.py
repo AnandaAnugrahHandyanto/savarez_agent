@@ -114,22 +114,7 @@ class ObsidianMemoryProvider(MemoryProvider):
         return []
 
     def shutdown(self) -> None:
-        """Write session summary to daily note."""
-        if self._daily_dir and self._session_start:
-            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            daily = self._daily_dir / f"{today}.md"
-            end_time = datetime.now(timezone.utc).strftime("%H:%M UTC")
-            entry = (
-                f"\n## Session {self._session_id[:8]}\n"
-                f"- **Start**: {self._session_start.strftime('%H:%M UTC')}\n"
-                f"- **End**: {end_time}\n"
-                f"\n"
-            )
-            try:
-                with open(daily, "a") as f:
-                    f.write(entry)
-            except OSError as e:
-                logger.debug("Failed to write daily note: %s", e)
+        """Provider shutdown — daily note is written by on_session_end."""
         logger.debug("Obsidian memory provider shut down")
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
@@ -153,37 +138,12 @@ class ObsidianMemoryProvider(MemoryProvider):
             self._last_skill_review = self._tool_call_count
 
     def _write_user_review_note(self) -> None:
-        """Append a review prompt to the daily note for the nightly audit."""
-        if not self._daily_dir:
-            return
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        daily = self._daily_dir / f"{today}.md"
-        note = (
-            f"\n> 🔄 **Self-review trigger** (turn {self._turn_count}): "
-            f"Review recent exchanges for new user preferences, corrections, "
-            f"or patterns that should be reflected in Memory/USER.md.\n"
-        )
-        try:
-            with open(daily, "a") as f:
-                f.write(note)
-        except OSError:
-            pass
+        """No-op: self-review triggers removed to reduce daily note noise."""
+        pass
 
     def _write_skill_review_note(self) -> None:
-        """Note that skills may need updating based on recent tool usage."""
-        if not self._daily_dir:
-            return
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        daily = self._daily_dir / f"{today}.md"
-        note = (
-            f"\n> 🛠️ **Skill review trigger** (tool call {self._tool_call_count}): "
-            f"Check if any skills need updating based on recent tool interactions.\n"
-        )
-        try:
-            with open(daily, "a") as f:
-                f.write(note)
-        except OSError:
-            pass
+        """No-op: skill review triggers removed to reduce daily note noise."""
+        pass
 
     # ------------------------------------------------------------------
     # System prompt
@@ -204,25 +164,30 @@ class ObsidianMemoryProvider(MemoryProvider):
     # ------------------------------------------------------------------
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Return recent daily notes and any available context."""
+        """Return recent daily note context — only meaningful entries."""
         if not self._daily_dir:
             return ""
 
-        parts = []
-        # Include today's daily note if it exists
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         daily_today = self._daily_dir / f"{today}.md"
-        if daily_today.exists():
-            try:
-                content = daily_today.read_text()
-                if content.strip():
-                    # Take last ~500 chars to keep it compact
-                    recent = content[-500:] if len(content) > 500 else content
-                    parts.append(f"Today's vault activity ({today}):\n{recent}")
-            except OSError:
-                pass
+        if not daily_today.exists():
+            return ""
 
-        return "\n\n".join(parts)
+        try:
+            content = daily_today.read_text().strip()
+            if not content:
+                return ""
+            # Take last ~300 chars, skip metadata-only lines
+            lines = content.splitlines()
+            meaningful = [l for l in lines if l.strip() and not l.startswith("-") and not l.startswith("#")]
+            if not meaningful:
+                return ""
+            recent = "\n".join(meaningful[-10:])  # Last 10 meaningful lines
+            if len(recent) > 300:
+                recent = recent[-300:]
+            return f"Today's activity ({today}):\n{recent}"
+        except OSError:
+            return ""
 
     # ------------------------------------------------------------------
     # Memory write mirroring — the core feature
@@ -272,43 +237,51 @@ class ObsidianMemoryProvider(MemoryProvider):
     # ------------------------------------------------------------------
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        """Write a session summary to the daily note."""
+        """Write a concise session summary to the daily note."""
         if not self._daily_dir or not self._session_start:
             return
 
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         daily = self._daily_dir / f"{today}.md"
 
-        end_time = datetime.now(timezone.utc)
-        duration = end_time - self._session_start
-        mins = int(duration.total_seconds() / 60)
-
-        # Count turns (user messages) and tool calls
-        user_turns = sum(1 for m in messages if m.get("role") == "user")
-        tool_calls = sum(1 for m in messages if m.get("role") == "tool")
-
-        entry = (
-            f"\n### Session {self._session_id[:12]}\n"
-            f"- **Duration**: {mins} min\n"
-            f"- **Exchanges**: {user_turns} user turns\n"
-            f"- **Tool calls**: {tool_calls}\n"
-            f"- **Ended**: {end_time.strftime('%H:%M UTC')}\n"
-        )
-
-        # Extract key topics from user messages
-        topics = []
+        # Collect meaningful user requests and assistant actions
+        actions = []
+        projects = set()
+        decisions = []
+        
         for m in messages:
             if m.get("role") == "user" and isinstance(m.get("content"), str):
-                content = m["content"]
-                if len(content) < 100 and content.strip():
-                    topics.append(content.strip()[:80])
-        if topics:
-            entry += "- **Topics**:\n"
-            for t in topics[-5:]:  # Last 5 topics
-                entry += f"  - {t}\n"
+                content = m["content"].strip()
+                # Skip trivial messages
+                if len(content) < 10 or content.lower() in ("ok", "hello", "hi", "thanks", "ty"):
+                    continue
+                # Truncate long messages
+                actions.append(content[:120])
+                
+            elif m.get("role") == "assistant" and isinstance(m.get("content"), str):
+                content = m["content"].strip()
+                # Look for decision markers
+                if any(marker in content.lower() for marker in ("decided", "decision", "will", "going to", "let's")):
+                    decisions.append(content[:120])
 
-        try:
-            with open(daily, "a") as f:
-                f.write(entry)
-        except OSError as e:
-            logger.debug("Failed to write session-end daily note: %s", e)
+        # Build useful entry
+        entry_parts = [f"\n## Session {self._session_id[:8]}"]
+        
+        if actions:
+            entry_parts.append("\n**Requests:**")
+            for a in actions[-5:]:  # Last 5 meaningful requests
+                entry_parts.append(f"- {a}")
+        
+        if decisions:
+            entry_parts.append("\n**Decisions:**")
+            for d in decisions[-3:]:
+                entry_parts.append(f"- {d}")
+
+        # Only write if there's actual content
+        if len(entry_parts) > 1:
+            entry = "\n".join(entry_parts) + "\n"
+            try:
+                with open(daily, "a") as f:
+                    f.write(entry)
+            except OSError as e:
+                logger.debug("Failed to write session-end daily note: %s", e)
