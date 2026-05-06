@@ -1999,14 +1999,23 @@ def _verify_created_cards(
 ) -> tuple[list[str], list[str]]:
     """Partition ``claimed_ids`` into (verified, phantom).
 
-    A card is "verified" iff a row exists in ``tasks`` with the given id
-    AND ``created_by`` matches the completing task's ``assignee`` (or
-    the completing task itself — workers that create children of their
-    own task also qualify).
+    A card is "verified" iff a row exists in ``tasks`` AND at least one
+    of the following holds:
 
-    ``phantom`` returns ids that either don't exist at all or exist but
-    were not created by the completing worker. The caller decides what
-    to do with each bucket; this helper never mutates.
+    * ``created_by`` matches the completing task's ``assignee`` profile
+      (the common case: worker A spawns a card via ``kanban_create``,
+      which stamps ``created_by=A``).
+    * ``created_by`` matches the completing task's id (edge case where
+      a worker passed its own task id as the ``created_by`` value).
+    * The card is linked as a ``task_links.child`` of the completing
+      task — i.e. the worker explicitly called ``kanban_create`` with
+      ``parents=[<current_task>]``. This accepts cards created through
+      the dashboard/CLI by a different principal but then attached to
+      the completing task by the worker.
+
+    ``phantom`` returns ids that either don't exist at all, or exist
+    but don't satisfy any of the three trust conditions. The caller
+    decides what to do with each bucket; this helper never mutates.
     """
     claimed = [str(x).strip() for x in (claimed_ids or []) if str(x).strip()]
     if not claimed:
@@ -2035,6 +2044,10 @@ def _verify_created_cards(
     ).fetchall()
     found = {r["id"]: r["created_by"] for r in rows}
 
+    # Pull the set of cards linked as children of the completing task.
+    # Cheap: one query, indexed on parent_id.
+    linked_children: set[str] = set(child_ids(conn, completing_task_id))
+
     verified: list[str] = []
     phantom: list[str] = []
     for cid in ordered:
@@ -2042,12 +2055,12 @@ def _verify_created_cards(
         if created_by is None:
             phantom.append(cid)
             continue
-        # Accept if created_by matches the completing task's assignee
-        # profile, OR the task itself (workers whose created_by happens
-        # to match their task id are unusual but harmless to accept).
+        # Accept if any of the three trust conditions holds.
         if completing_assignee and created_by == completing_assignee:
             verified.append(cid)
         elif created_by == completing_task_id:
+            verified.append(cid)
+        elif cid in linked_children:
             verified.append(cid)
         else:
             phantom.append(cid)
@@ -2119,6 +2132,7 @@ def complete_task(
     summary: Optional[str] = None,
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
+    expected_run_id: Optional[int] = None,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
 
@@ -2178,20 +2192,37 @@ def complete_task(
         verified_cards = []
 
     with write_txn(conn):
-        cur = conn.execute(
-            """
-            UPDATE tasks
-               SET status       = 'done',
-                   result       = ?,
-                   completed_at = ?,
-                   claim_lock   = NULL,
-                   claim_expires= NULL,
-                   worker_pid   = NULL
-             WHERE id = ?
-               AND status IN ('running', 'ready', 'blocked')
-            """,
-            (result, now, task_id),
-        )
+        if expected_run_id is None:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'done',
+                       result       = ?,
+                       completed_at = ?,
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL
+                 WHERE id = ?
+                   AND status IN ('running', 'ready', 'blocked')
+                """,
+                (result, now, task_id),
+            )
+        else:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'done',
+                       result       = ?,
+                       completed_at = ?,
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL
+                 WHERE id = ?
+                   AND status IN ('running', 'ready', 'blocked')
+                   AND current_run_id = ?
+                """,
+                (result, now, task_id, int(expected_run_id)),
+            )
         if cur.rowcount != 1:
             return False
         run_id = _end_run(
@@ -2333,21 +2364,37 @@ def block_task(
     reason: Optional[str] = None,
     error: Optional[str] = None,
     metadata: Optional[dict] = None,
+    expected_run_id: Optional[int] = None,
 ) -> bool:
     """Transition ``running -> blocked``."""
     with write_txn(conn):
-        cur = conn.execute(
-            """
-            UPDATE tasks
-               SET status       = 'blocked',
-                   claim_lock   = NULL,
-                   claim_expires= NULL,
-                   worker_pid   = NULL
-             WHERE id = ?
-               AND status IN ('running', 'ready')
-            """,
-            (task_id,),
-        )
+        if expected_run_id is None:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'blocked',
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL
+                 WHERE id = ?
+                   AND status IN ('running', 'ready')
+                """,
+                (task_id,),
+            )
+        else:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'blocked',
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL
+                 WHERE id = ?
+                   AND status IN ('running', 'ready')
+                   AND current_run_id = ?
+                """,
+                (task_id, int(expected_run_id)),
+            )
         if cur.rowcount != 1:
             return False
         run_id = _end_run(
@@ -2623,6 +2670,7 @@ def heartbeat_worker(
     task_id: str,
     *,
     note: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
 ) -> bool:
     """Record a ``heartbeat`` event + touch ``last_heartbeat_at``.
 
@@ -2636,14 +2684,25 @@ def heartbeat_worker(
     """
     now = int(time.time())
     with write_txn(conn):
-        cur = conn.execute(
-            "UPDATE tasks SET last_heartbeat_at = ? "
-            "WHERE id = ? AND status = 'running'",
-            (now, task_id),
-        )
+        if expected_run_id is None:
+            cur = conn.execute(
+                "UPDATE tasks SET last_heartbeat_at = ? "
+                "WHERE id = ? AND status = 'running'",
+                (now, task_id),
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE tasks SET last_heartbeat_at = ? "
+                "WHERE id = ? AND status = 'running' AND current_run_id = ?",
+                (now, task_id, int(expected_run_id)),
+            )
         if cur.rowcount != 1:
             return False
-        run_id = _current_run_id(conn, task_id)
+        run_id = (
+            int(expected_run_id)
+            if expected_run_id is not None
+            else _current_run_id(conn, task_id)
+        )
         if run_id is not None:
             conn.execute(
                 "UPDATE task_runs SET last_heartbeat_at = ? WHERE id = ?",
@@ -2680,16 +2739,23 @@ def enforce_max_runtime(
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
 
     rows = conn.execute(
-        "SELECT id, worker_pid, started_at, max_runtime_seconds, claim_lock "
-        "FROM tasks "
-        "WHERE status = 'running' AND max_runtime_seconds IS NOT NULL "
-        "  AND started_at IS NOT NULL AND worker_pid IS NOT NULL"
+        "SELECT t.id, t.worker_pid, "
+        "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
+        "       t.max_runtime_seconds, t.claim_lock "
+        "FROM tasks t "
+        "LEFT JOIN task_runs r ON r.id = t.current_run_id "
+        "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
+        "  AND COALESCE(r.started_at, t.started_at) IS NOT NULL "
+        "  AND t.worker_pid IS NOT NULL"
     ).fetchall()
     for row in rows:
         lock = row["claim_lock"] or ""
         if not lock.startswith(host_prefix):
             continue
-        elapsed = now - int(row["started_at"])
+        # Runtime is per attempt, not lifetime-of-task. ``tasks.started_at``
+        # intentionally records the first time a task ever started, so retries
+        # must be measured from the active task_runs row when present.
+        elapsed = now - int(row["active_started_at"])
         if elapsed < int(row["max_runtime_seconds"]):
             continue
 
@@ -3234,6 +3300,10 @@ def _worker_spawn_env(
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    if task.current_run_id is not None:
+        env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
+    if task.claim_lock:
+        env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
     # Pin the shared board + workspaces root the dispatcher resolved, so
     # that even when a worker activates a profile, its kanban paths still
     # match the dispatcher's. Belt-and-braces with the
@@ -4037,3 +4107,61 @@ def latest_run(conn: sqlite3.Connection, task_id: str) -> Optional[Run]:
         (task_id,),
     ).fetchone()
     return Run.from_row(row) if row else None
+
+
+def latest_summary(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Return the latest non-null ``task_runs.summary`` for ``task_id``.
+
+    The kanban-worker skill writes its handoff to ``task_runs.summary``
+    via ``complete_task(summary=...)``; ``tasks.result`` is left empty
+    unless the caller passes ``result=`` explicitly. Dashboards and CLI
+    "show" views need this value to surface what a worker actually did
+    — without it, ``tasks.result`` is NULL and the task looks like a
+    no-op even when the run completed.
+
+    Picks the most recent run by ``ended_at`` (falling back to ``id``
+    for ties or unfinished rows). Returns None if no run has a summary.
+    """
+    row = conn.execute(
+        "SELECT summary FROM task_runs "
+        "WHERE task_id = ? AND summary IS NOT NULL AND summary != '' "
+        "ORDER BY COALESCE(ended_at, started_at) DESC, id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return row["summary"] if row else None
+
+
+def latest_summaries(
+    conn: sqlite3.Connection, task_ids: Iterable[str]
+) -> dict[str, str]:
+    """Batch-fetch latest non-null summaries for a list of task ids.
+
+    Used by the dashboard board endpoint to attach ``latest_summary`` to
+    every card in a single SQL query, avoiding the N+1 pattern of
+    calling :func:`latest_summary` per task. Returns a dict mapping
+    ``task_id`` → summary string, omitting tasks with no summary.
+
+    Approach: a window function picks the newest non-null-summary row
+    per ``task_id``; works against SQLite ≥ 3.25 (default on every
+    supported platform).
+    """
+    ids = list(task_ids)
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""
+        SELECT task_id, summary FROM (
+            SELECT task_id, summary,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY task_id
+                       ORDER BY COALESCE(ended_at, started_at) DESC, id DESC
+                   ) AS rn
+              FROM task_runs
+             WHERE task_id IN ({placeholders})
+               AND summary IS NOT NULL AND summary != ''
+        ) WHERE rn = 1
+        """,
+        ids,
+    ).fetchall()
+    return {r["task_id"]: r["summary"] for r in rows}

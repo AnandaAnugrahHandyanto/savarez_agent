@@ -943,7 +943,12 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 def _cmd_heartbeat(args: argparse.Namespace) -> int:
     with kb.connect() as conn:
-        ok = kb.heartbeat_worker(conn, args.task_id, note=getattr(args, "note", None))
+        ok = kb.heartbeat_worker(
+            conn,
+            args.task_id,
+            note=getattr(args, "note", None),
+            expected_run_id=_worker_run_id_for(args.task_id),
+        )
     if not ok:
         print(f"cannot heartbeat {args.task_id} (not running?)", file=sys.stderr)
         return 1
@@ -1066,10 +1071,16 @@ def _cmd_show(args: argparse.Namespace) -> int:
         parents = kb.parent_ids(conn, args.task_id)
         children = kb.child_ids(conn, args.task_id)
         runs = kb.list_runs(conn, args.task_id)
+        # Workers hand off via ``task_runs.summary`` (kanban-worker skill);
+        # ``tasks.result`` is left NULL unless the caller explicitly passed
+        # ``result=``. Surfacing the latest summary here keeps ``show`` from
+        # looking like a no-op when the worker actually did real work.
+        latest_summary = kb.latest_summary(conn, args.task_id)
 
     if getattr(args, "json", False):
         payload = {
             "task": _task_to_dict(task),
+            "latest_summary": latest_summary,
             "parents": parents,
             "children": children,
             "comments": [
@@ -1156,6 +1167,13 @@ def _cmd_show(args: argparse.Namespace) -> int:
         print()
         print("Result:")
         print(task.result)
+    elif latest_summary:
+        # Worker handoff lives on the latest run, not on tasks.result.
+        # Surface it at top-level so a glance at ``hermes kanban show <id>``
+        # tells you what the worker did even if tasks.result is empty.
+        print()
+        print("Latest summary:")
+        print(latest_summary)
     if comments:
         print()
         print(f"Comments ({len(comments)}):")
@@ -1406,6 +1424,18 @@ def _cmd_comment(args: argparse.Namespace) -> int:
     return 0
 
 
+def _worker_run_id_for(task_id: str) -> Optional[int]:
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return None
+    raw = os.environ.get("HERMES_KANBAN_RUN_ID")
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
 def _cmd_complete(args: argparse.Namespace) -> int:
     """Mark one or more tasks done. Supports a single id or a list."""
     ids = list(args.task_ids or [])
@@ -1442,6 +1472,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 result=args.result,
                 summary=summary,
                 metadata=metadata,
+                expected_run_id=_worker_run_id_for(tid),
             ):
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
@@ -1487,7 +1518,12 @@ def _cmd_block(args: argparse.Namespace) -> int:
         for tid in ids:
             if reason:
                 kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
-            if not kb.block_task(conn, tid, reason=reason):
+            if not kb.block_task(
+                conn,
+                tid,
+                reason=reason,
+                expected_run_id=_worker_run_id_for(tid),
+            ):
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)
             else:
