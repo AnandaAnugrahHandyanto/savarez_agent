@@ -4474,6 +4474,23 @@ def show_config():
     from hermes_cli.auth import get_anthropic_key
     anthropic_value = get_anthropic_key()
     print(f"  {'Anthropic':<14} {redact_key(anthropic_value)}")
+
+    # OAuth / credential_pool tokens (Nous Portal, OpenAI Codex, Copilot).
+    # These providers authenticate via auth.json instead of env vars, so
+    # the env-var-only check above always reports them as "not set".
+    from hermes_cli.auth import read_credential_pool
+    pool = read_credential_pool()
+    for provider_id, display_name in [
+        ("nous", "Nous Portal"),
+        ("openai-codex", "Codex"),
+        ("copilot", "Copilot"),
+    ]:
+        entries = pool.get(provider_id, []) if isinstance(pool, dict) else []
+        has_token = any(
+            isinstance(e, dict) and e.get("access_token")
+            for e in entries
+        ) if isinstance(entries, list) else False
+        print(f"  {display_name:<14} {color('present', Colors.GREEN) if has_token else redact_key(None)}")
     
     # Model settings
     print()
