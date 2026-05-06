@@ -441,3 +441,43 @@ class TestTelegramApprovalCallback:
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
         assert (tmp_path / ".update_response").read_text() == "n"
+
+    @pytest.mark.asyncio
+    async def test_cron_dont_apply_routes_internal_feedback_to_agent(self):
+        adapter = _make_adapter()
+        handled = []
+
+        async def fake_handle(event):
+            handled.append(event)
+
+        adapter.handle_message = fake_handle
+        query = AsyncMock()
+        query.data = "cd:test-job-id"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.chat.type = "private"
+        query.message.text = "**What I found:** Candidate leaf proposal"
+        query.message.caption = None
+        query.message.message_id = 88
+        query.message.message_thread_id = None
+        query.from_user = MagicMock()
+        query.from_user.id = 222
+        query.from_user.first_name = "User"
+        query.answer = AsyncMock()
+        query.edit_message_reply_markup = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        await adapter._handle_callback_query(update, context)
+
+        query.answer.assert_called_once()
+        assert "Not applied" in query.answer.call_args[1]["text"]
+        assert len(handled) == 1
+        event = handled[0]
+        assert event.internal is True
+        assert event.reply_to_text == "**What I found:** Candidate leaf proposal"
+        assert "do not apply" in event.text.lower()
+        assert "reduce the strength" in event.text.lower()
+        assert "test-job-id" in event.text

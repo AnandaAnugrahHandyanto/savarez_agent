@@ -1191,6 +1191,15 @@ class TelegramAdapter(BasePlatformAdapter):
             
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
+            reply_markup = None
+            cron_apply = (metadata or {}).get("cron_apply") if isinstance(metadata, dict) else None
+            if cron_apply:
+                job_id = str(cron_apply.get("job_id", "")).strip()
+                if job_id:
+                    reply_markup = InlineKeyboardMarkup([[
+                        InlineKeyboardButton("✅ Apply", callback_data=f"ca:{job_id[:48]}"),
+                        InlineKeyboardButton("❌ Don’t apply", callback_data=f"cd:{job_id[:48]}"),
+                    ]])
             
             try:
                 from telegram.error import NetworkError as _NetErr
@@ -1223,6 +1232,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
                                 message_thread_id=effective_thread_id,
+                                reply_markup=reply_markup if i == 0 else None,
                                 **self._link_preview_kwargs(),
                             )
                         except Exception as md_error:
@@ -1236,6 +1246,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
                                     message_thread_id=effective_thread_id,
+                                    reply_markup=reply_markup if i == 0 else None,
                                     **self._link_preview_kwargs(),
                                 )
                             else:
@@ -1884,6 +1895,125 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)
+            return
+
+        # --- Cron apply callbacks (ca:job_id) ---
+        if data.startswith("ca:"):
+            job_id = data.split(":", 1)[1].strip()
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to apply this.")
+                return
+
+            await query.answer(text="Applying…")
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
+            if not query.message:
+                return
+
+            from gateway.session import SessionSource
+
+            chat_type = str(query_chat_type or "dm").lower()
+            if chat_type == "private":
+                chat_type = "dm"
+            elif chat_type == "supergroup":
+                chat_type = "group"
+
+            source = SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id=str(query.message.chat_id),
+                chat_name=getattr(query_chat, "title", None) or getattr(query_chat, "full_name", None),
+                chat_type=chat_type,
+                user_id=caller_id,
+                user_name=query_user_name,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                message_id=str(getattr(query.message, "message_id", "")),
+            )
+            message_text = getattr(query.message, "text", None) or getattr(query.message, "caption", None) or ""
+            event = MessageEvent(
+                text=(
+                    f"Apply the actionable proposal from cron job {job_id}. "
+                    "Use the clicked Telegram message as the source of truth. "
+                    "Do not apply anything outside that message without asking."
+                ),
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message=query.message,
+                message_id=str(getattr(query.message, "message_id", "")),
+                reply_to_message_id=str(getattr(query.message, "message_id", "")),
+                reply_to_text=message_text,
+                internal=True,
+            )
+            await self.handle_message(event)
+            return
+
+        # --- Cron don't-apply callbacks (cd:job_id) ---
+        if data.startswith("cd:"):
+            job_id = data.split(":", 1)[1].strip()
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to dismiss this.")
+                return
+            await query.answer(text="Not applied. I’ll down-rank similar Mneme suggestions.")
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
+            if not query.message:
+                return
+
+            from gateway.session import SessionSource
+
+            chat_type = str(query_chat_type or "dm").lower()
+            if chat_type == "private":
+                chat_type = "dm"
+            elif chat_type == "supergroup":
+                chat_type = "group"
+
+            source = SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id=str(query.message.chat_id),
+                chat_name=getattr(query_chat, "title", None) or getattr(query_chat, "full_name", None),
+                chat_type=chat_type,
+                user_id=caller_id,
+                user_name=query_user_name,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                message_id=str(getattr(query.message, "message_id", "")),
+            )
+            message_text = getattr(query.message, "text", None) or getattr(query.message, "caption", None) or ""
+            event = MessageEvent(
+                text=(
+                    f"The user clicked Don’t apply for cron job {job_id}. "
+                    "Do not apply the proposal. Treat the clicked message as negative memory-graph feedback: "
+                    "identify the surfaced Mneme leaf/synapse or closest source candidate from the message, "
+                    "then reduce the strength of that synapse rather than reinforcing or killing it unless the message proves it is false. "
+                    "Use mneme_private.py weaken-synapse when a synapse id is available; otherwise record concise negative feedback for this surfaced item."
+                ),
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message=query.message,
+                message_id=str(getattr(query.message, "message_id", "")),
+                reply_to_message_id=str(getattr(query.message, "message_id", "")),
+                reply_to_text=message_text,
+                internal=True,
+            )
+            await self.handle_message(event)
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---
