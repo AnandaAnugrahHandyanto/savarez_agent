@@ -211,7 +211,11 @@ class WeComAdapter(BasePlatformAdapter):
             return False
 
         try:
-            self._http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
+            # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
+            from gateway.platforms._http_client_limits import platform_httpx_limits
+            self._http_client = httpx.AsyncClient(
+                timeout=30.0, follow_redirects=True, limits=platform_httpx_limits(),
+            )
             await self._open_connection()
             self._mark_connected()
             self._listen_task = asyncio.create_task(self._listen_loop())
@@ -1015,6 +1019,8 @@ class WeComAdapter(BasePlatformAdapter):
         if not aes_key:
             raise ValueError("aes_key is required")
 
+        # WeCom doesn't pad base64 keys; add padding if needed
+        aes_key = aes_key + '=' * ((4 - len(aes_key) % 4) % 4)
         key = base64.b64decode(aes_key)
         if len(key) != 32:
             raise ValueError(f"Invalid WeCom AES key length: expected 32 bytes, got {len(key)}")
