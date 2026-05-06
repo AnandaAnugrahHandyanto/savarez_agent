@@ -755,14 +755,28 @@ def resolve_skin() -> dict:
 
         init_skin_from_config(_load_cfg())
         skin = get_active_skin()
+        colors = skin.colors or {}
+        branding = skin.branding or {}
         return {
             "name": skin.name,
-            "colors": skin.colors,
-            "branding": skin.branding,
+            "colors": colors,
+            "branding": branding,
             "banner_logo": skin.banner_logo,
             "banner_hero": skin.banner_hero,
             "tool_prefix": skin.tool_prefix,
-            "help_header": (skin.branding or {}).get("help_header", ""),
+            "help_header": branding.get("help_header", ""),
+            "spinner": skin.spinner,
+            "tool_emojis": skin.tool_emojis,
+            # Pass status bar colors explicitly so the TUI can use
+            # dedicated status_bar_* keys rather than repurposing ui_ok/ui_warn.
+            "status_bar_bg": colors.get("status_bar_bg", ""),
+            "status_bar_text": colors.get("status_bar_text", ""),
+            "status_bar_strong": colors.get("status_bar_strong", ""),
+            "status_bar_dim": colors.get("status_bar_dim", ""),
+            "status_bar_good": colors.get("status_bar_good", ""),
+            "status_bar_warn": colors.get("status_bar_warn", ""),
+            "status_bar_bad": colors.get("status_bar_bad", ""),
+            "status_bar_critical": colors.get("status_bar_critical", ""),
         }
     except Exception:
         return {}

@@ -7,6 +7,16 @@ export interface GatewaySkin {
   colors?: Record<string, string>
   help_header?: string
   tool_prefix?: string
+  spinner?: Record<string, unknown>
+  tool_emojis?: Record<string, string>
+  status_bar_bg?: string
+  status_bar_text?: string
+  status_bar_strong?: string
+  status_bar_dim?: string
+  status_bar_good?: string
+  status_bar_warn?: string
+  status_bar_bad?: string
+  status_bar_critical?: string
 }
 
 export interface GatewayCompletionItem {
