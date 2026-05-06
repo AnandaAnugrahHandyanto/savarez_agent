@@ -41,6 +41,26 @@ def test_deny_permission_hides_compress_tool():
     assert engine.get_tool_schemas() == []
 
 
+def test_disabled_engine_exposes_no_tool_and_returns_original_api_messages():
+    engine = DCPContextEngine(config={"enabled": False}, context_length=200000)
+    api_messages = [{"role": "user", "content": "hello"}]
+
+    transformed = engine.transform_api_messages(
+        api_messages,
+        canonical_messages=[{"role": "user", "content": "hello"}],
+        system_prompt="",
+        tools=[],
+        api_call_count=1,
+        model="test-model",
+        provider="openai",
+        session_id="s1",
+    )
+
+    assert engine.get_tool_schemas() == []
+    assert transformed is api_messages
+    assert api_messages == [{"role": "user", "content": "hello"}]
+
+
 def test_transform_does_not_mutate_canonical_messages_and_adds_refs():
     engine = DCPContextEngine(config={}, context_length=200000)
     canonical = [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "world"}]
@@ -99,6 +119,70 @@ def test_range_compress_creates_block_and_transform_applies_placeholder():
     assert '<dcp-compressed-block id="b1" topic="old work">' in transformed[0]["content"]
     assert "content moved into compressed block b1" in transformed[1]["content"]
     assert "new task" in transformed[2]["content"]
+
+
+def test_range_compress_consumes_overlapping_active_blocks():
+    engine = DCPContextEngine(config={}, context_length=200000)
+    canonical = [
+        {"role": "user", "content": "phase one"},
+        {"role": "assistant", "content": "phase one result"},
+        {"role": "user", "content": "phase two"},
+        {"role": "assistant", "content": "phase two result"},
+    ]
+    engine._ensure_refs(canonical)
+
+    first = json.loads(
+        engine.handle_tool_call(
+            "compress",
+            {"topic": "phase one", "content": [{"startId": "m0001", "endId": "m0002", "summary": "Phase one summary."}]},
+            messages=canonical,
+        )
+    )
+    second = json.loads(
+        engine.handle_tool_call(
+            "compress",
+            {"topic": "both phases", "content": [{"startId": "b1", "endId": "m0004", "summary": "Both phases summary."}]},
+            messages=canonical,
+        )
+    )
+
+    assert first["created_blocks"] == [1]
+    assert second["created_blocks"] == [2]
+    assert second["deactivated_blocks"] == [1]
+    assert engine.state.blocks_by_id[1].active is False
+    assert engine.state.blocks_by_id[1].deactivated_by_block_id == 2
+    assert engine.state.active_block_ids == {2}
+
+
+def test_multimodal_messages_get_text_ref_without_mutating_canonical_content():
+    engine = DCPContextEngine(config={}, context_length=200000)
+    canonical = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "look at this"},
+                {"type": "image_url", "image_url": {"url": "https://example.invalid/image.png"}},
+            ],
+        }
+    ]
+    api_messages = [{"role": "system", "content": "sys"}] + [msg.copy() for msg in canonical]
+
+    transformed = engine.transform_api_messages(
+        api_messages,
+        canonical_messages=canonical,
+        system_prompt="sys",
+        tools=[],
+        api_call_count=1,
+        model="test-model",
+        provider="openai",
+        session_id="s1",
+    )
+
+    assert canonical[0]["content"] == [
+        {"type": "text", "text": "look at this"},
+        {"type": "image_url", "image_url": {"url": "https://example.invalid/image.png"}},
+    ]
+    assert transformed[1]["content"][-1] == {"type": "text", "text": '<dcp-ref id="m0001" />'}
 
 
 def test_message_compress_creates_message_block():
@@ -179,3 +263,69 @@ def test_turn_protection_prevents_dedup_pruning_recent_messages():
 
     assert messages[1]["content"] == ""
     assert messages[2]["content"] == "old output"
+
+
+def test_manual_mode_can_disable_automatic_strategies_in_transform():
+    engine = DCPContextEngine(
+        config={"manualMode": {"enabled": True, "automaticStrategies": False}},
+        context_length=200000,
+    )
+    canonical = [
+        {"role": "assistant", "content": "", "tool_calls": [_tool_call("a", "read_file", {"path": "x"})]},
+        {"role": "tool", "tool_call_id": "a", "content": "old output"},
+        {"role": "assistant", "content": "", "tool_calls": [_tool_call("b", "read_file", {"path": "x"})]},
+        {"role": "tool", "tool_call_id": "b", "content": "new output"},
+    ]
+
+    transformed = engine.transform_api_messages(
+        [msg.copy() for msg in canonical],
+        canonical_messages=canonical,
+        system_prompt="",
+        tools=[],
+        api_call_count=1,
+        model="test-model",
+        provider="openai",
+        session_id="s1",
+    )
+
+    assert transformed[1]["content"].startswith("old output")
+    assert transformed[3]["content"].startswith("new output")
+
+
+def test_manual_compress_request_injects_one_shot_nudge_without_mutating_history():
+    engine = DCPContextEngine(config={}, context_length=200000)
+    canonical = [
+        {"role": "user", "content": "please compact old work"},
+        {"role": "assistant", "content": "working"},
+    ]
+
+    returned = engine.compress(canonical, current_tokens=1234, focus_topic="old investigation")
+    first = engine.transform_api_messages(
+        [msg.copy() for msg in canonical],
+        canonical_messages=canonical,
+        system_prompt="",
+        tools=[],
+        api_call_count=1,
+        model="test-model",
+        provider="openai",
+        session_id="s1",
+    )
+    second = engine.transform_api_messages(
+        [msg.copy() for msg in canonical],
+        canonical_messages=canonical,
+        system_prompt="",
+        tools=[],
+        api_call_count=2,
+        model="test-model",
+        provider="openai",
+        session_id="s1",
+    )
+
+    assert returned is canonical
+    assert "DCP manual compression requested" in first[0]["content"]
+    assert "old investigation" in first[0]["content"]
+    assert "DCP manual compression requested" not in second[0]["content"]
+    assert canonical == [
+        {"role": "user", "content": "please compact old work"},
+        {"role": "assistant", "content": "working"},
+    ]
