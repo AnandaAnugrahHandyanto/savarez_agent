@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory, NoldoMem"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory, noldomem
 ```
 
 ## How It Works
@@ -522,6 +522,57 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 
 ---
 
+### NoldoMem
+
+Self-hosted long-term memory service with semantic recall, explicit memory
+types, decay, and optional reranking. Hermes connects to a running NoldoMem
+HTTP API through the native MemoryProvider interface.
+
+| | |
+|---|---|
+| **Best for** | Developers who already run NoldoMem or want a self-hosted memory API |
+| **Requires** | Running NoldoMem service + API key |
+| **Data storage** | Self-hosted NoldoMem database |
+| **Cost** | Free/self-hosted, plus any configured embedding or reranker costs |
+
+**Tools:** `noldomem_recall` (semantic memory search), `noldomem_store`
+(explicit memory write), `noldomem_pin` (pin critical memory IDs)
+
+**Setup:**
+```bash
+hermes memory setup    # select "noldomem"
+# Or manually:
+hermes config set memory.provider noldomem
+echo "NOLDOMEM_API_URL=http://127.0.0.1:8787" >> ~/.hermes/.env
+echo "NOLDOMEM_API_KEY=your-key" >> ~/.hermes/.env
+```
+
+**Config:** `$HERMES_HOME/noldomem.json`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `api_url` | `http://127.0.0.1:8787` | NoldoMem API URL |
+| `agent` | `hermes` | NoldoMem agent scope |
+| `namespace` | `default` | NoldoMem namespace |
+| `api_timeout` | `2.0` | Request timeout in seconds |
+| `max_recall_results` | `5` | Max recalled items formatted into context |
+| `max_context_chars` | `4000` | Character budget for auto-recall context |
+
+**Environment variables:** `NOLDOMEM_API_KEY` (required),
+`NOLDOMEM_API_URL`, `NOLDOMEM_AGENT`, `NOLDOMEM_NAMESPACE`,
+`NOLDOMEM_API_TIMEOUT`, `NOLDOMEM_MAX_RECALL_RESULTS`,
+`NOLDOMEM_MAX_CONTEXT_CHARS`.
+
+**Key features:**
+- Uses NoldoMem for storage, embeddings, search, and reranking instead of
+  duplicating that logic in Hermes
+- Auto-recall is bounded by result count and character budget
+- Completed-turn storage runs in the background
+- Cron, subagent, and flush contexts skip automatic writes by default
+- Request failures degrade to empty recall context instead of blocking replies
+
+---
+
 ## Provider Comparison
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
@@ -534,6 +585,7 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 | **RetainDB** | Cloud | $20/mo | 5 | `requests` | Delta compression |
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud | Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
+| **NoldoMem** | Self-hosted | Free/self-hosted | 3 | Running NoldoMem API | Semantic recall + explicit memory types + optional reranking |
 
 ## Profile Isolation
 
