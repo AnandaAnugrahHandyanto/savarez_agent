@@ -1385,10 +1385,21 @@ def list_authenticated_providers(
             )
             if _pair_key[0] and _pair_key[1] and _pair_key in _section3_emitted_pairs:
                 continue
+            # Match by slug OR by endpoint URL.  This handles the case
+            # where ``current_provider`` is the bare ``"custom"`` string
+            # but the slug has been resolved to ``"custom:<name>"``
+            # (e.g. ``"custom:llama-swap"``).  The URL-based fallback
+            # guarantees the active endpoint is always highlighted as
+            # current in the picker.
+            _cur_base_norm = (current_base_url or "").strip().rstrip("/").lower()
+            _grp_url_norm = _pair_key[1]  # already lowercased
+            is_current = slug == current_provider or bool(
+                _cur_base_norm and _grp_url_norm == _cur_base_norm
+            )
             results.append({
                 "slug": slug,
                 "name": grp["name"],
-                "is_current": slug == current_provider,
+                "is_current": is_current,
                 "is_user_defined": True,
                 "models": grp["models"],
                 "total_models": len(grp["models"]),

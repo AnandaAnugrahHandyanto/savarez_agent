@@ -398,3 +398,90 @@ def test_list_authenticated_providers_total_models_reflects_grouped_count(monkey
     assert group["total_models"] == 6
     # All six models are preserved in the grouped row.
     assert sorted(group["models"]) == sorted(f"model-{i}" for i in range(6))
+
+
+def test_is_current_matches_bare_custom_via_base_url(monkeypatch):
+    """When ``current_provider`` is the bare ``"custom"`` string and the
+    custom endpoint's slug resolves to ``"custom:<name>"``, the picker
+    must still highlight the active endpoint as current via a URL-based
+    fallback.
+
+    Regression for https://github.com/NousResearch/hermes-agent/issues/20811
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="http://localhost:11434/v1",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Ollama",
+                "base_url": "http://localhost:11434/v1",
+                "model": "llama3",
+            }
+        ],
+        max_models=50,
+    )
+
+    ollama_rows = [p for p in providers if p["name"] == "Ollama"]
+    assert len(ollama_rows) == 1
+    assert ollama_rows[0]["is_current"] is True
+
+
+def test_is_current_bare_custom_without_base_url_not_false_positive(monkeypatch):
+    """When ``current_provider`` is ``"custom"`` but ``current_base_url``
+    is empty (CLI/TUI didn't pass it), the URL fallback must NOT fire —
+    only exact slug matches should count.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Ollama",
+                "base_url": "http://localhost:11434/v1",
+                "model": "llama3",
+            },
+            {
+                "name": "Other",
+                "base_url": "http://other:8080/v1",
+                "model": "mistral",
+            },
+        ],
+        max_models=50,
+    )
+
+    custom_rows = [p for p in providers if p.get("is_user_defined")]
+    # Neither should be current when there's no URL to match against
+    for row in custom_rows:
+        assert row["is_current"] is False
+
+
+def test_is_current_url_match_is_case_insensitive(monkeypatch):
+    """URL-based is_current fallback must be case-insensitive."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="HTTP://LocalHost:11434/v1",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Ollama",
+                "base_url": "http://localhost:11434/v1",
+                "model": "llama3",
+            }
+        ],
+        max_models=50,
+    )
+
+    ollama_rows = [p for p in providers if p["name"] == "Ollama"]
+    assert len(ollama_rows) == 1
+    assert ollama_rows[0]["is_current"] is True

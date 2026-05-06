@@ -3626,6 +3626,7 @@ def _(rid, params: dict) -> dict:
         # TTS, embeddings, rerankers, image/video generators).
         providers = list_authenticated_providers(
             current_provider=current_provider,
+            current_base_url=getattr(agent, "base_url", "") or "",
             user_providers=(
                 cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
             ),
