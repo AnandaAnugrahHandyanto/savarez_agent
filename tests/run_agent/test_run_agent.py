@@ -2599,6 +2599,12 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["final_response"] == "(empty)"
         assert result["api_calls"] == 4  # 1 original + 3 retries
+        nudge_messages = [
+            m for m in result["messages"]
+            if m.get("role") == "user"
+            and "Reply now with a brief, direct answer" in m.get("content", "")
+        ]
+        assert len(nudge_messages) == 3
 
     def test_truly_empty_response_succeeds_on_nudge(self, agent):
         """Model produces content after being nudged for empty response."""
@@ -2620,6 +2626,11 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["final_response"] == "Here is the actual answer."
         assert result["api_calls"] == 2  # 1 original + 1 nudge retry
+        assert any(
+            m.get("role") == "user"
+            and "Reply now with a brief, direct answer" in m.get("content", "")
+            for m in result["messages"]
+        )
 
     def test_empty_response_triggers_fallback_provider(self, agent):
         """After 3 empty retries, fallback provider is activated and produces content."""

@@ -13772,13 +13772,34 @@ class AIAgent:
                             self._empty_content_retries += 1
                             logger.warning(
                                 "Empty response (no content or reasoning) — "
-                                "retry %d/3 (model=%s)",
+                                "nudging retry %d/3 (model=%s)",
                                 self._empty_content_retries, self.model,
                             )
                             self._emit_status(
-                                f"⚠️ Empty response from model — retrying "
+                                f"⚠️ Empty response from model — nudging retry "
                                 f"({self._empty_content_retries}/3)"
                             )
+                            # Keep the transcript alternation valid and give the
+                            # next request an explicit recovery instruction. A
+                            # bare retry often reproduces provider-side empty
+                            # responses; the nudge asks for a short visible
+                            # answer without changing the user's task.
+                            _nudge_msg = self._build_assistant_message(
+                                assistant_message, finish_reason
+                            )
+                            _nudge_msg["content"] = "(empty)"
+                            messages.append(_nudge_msg)
+                            messages.append({
+                                "role": "user",
+                                "content": (
+                                    "Your previous response had no visible "
+                                    "content. Reply now with a brief, direct "
+                                    "answer to the user's last message. If the "
+                                    "message is casual or low-context, still "
+                                    "provide a short acknowledgement rather than "
+                                    "returning empty."
+                                ),
+                            })
                             continue
 
                         # ── Exhausted retries — try fallback provider ──
