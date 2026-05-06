@@ -38,51 +38,67 @@ class TestBrowserConsole:
             },
         }
 
+        network_response = {
+            "success": True,
+            "data": {
+                "requests": [
+                    {"url": "https://example.com/api", "method": "GET", "status": 500, "resourceType": "Fetch"},
+                    {"url": "https://example.com/ok", "method": "GET", "status": 200, "resourceType": "Document"},
+                ]
+            },
+        }
+
         with patch("tools.browser_tool._run_browser_command") as mock_cmd:
-            mock_cmd.side_effect = [console_response, errors_response]
+            mock_cmd.side_effect = [console_response, errors_response, network_response]
             result = json.loads(browser_console(task_id="test"))
 
         assert result["success"] is True
         assert result["total_messages"] == 2
         assert result["total_errors"] == 1
+        assert result["total_failed_requests"] == 1
         assert result["console_messages"][0]["text"] == "hello"
         assert result["console_messages"][1]["text"] == "oops"
         assert result["js_errors"][0]["message"] == "Uncaught TypeError"
+        assert result["failed_requests"][0]["url"] == "https://example.com/api"
 
     def test_passes_clear_flag(self):
         from tools.browser_tool import browser_console
 
-        empty = {"success": True, "data": {"messages": [], "errors": []}}
+        empty = {"success": True, "data": {"messages": [], "errors": [], "requests": []}}
         with patch("tools.browser_tool._run_browser_command", return_value=empty) as mock_cmd:
             browser_console(clear=True, task_id="test")
 
         calls = mock_cmd.call_args_list
-        # Both console and errors should get --clear
+        # Console, errors, and network requests should get --clear
         assert calls[0][0] == ("test", "console", ["--clear"])
         assert calls[1][0] == ("test", "errors", ["--clear"])
+        assert calls[2][0] == ("test", "network", ["requests", "--clear"])
 
     def test_no_clear_by_default(self):
         from tools.browser_tool import browser_console
 
-        empty = {"success": True, "data": {"messages": [], "errors": []}}
+        empty = {"success": True, "data": {"messages": [], "errors": [], "requests": []}}
         with patch("tools.browser_tool._run_browser_command", return_value=empty) as mock_cmd:
             browser_console(task_id="test")
 
         calls = mock_cmd.call_args_list
         assert calls[0][0] == ("test", "console", [])
         assert calls[1][0] == ("test", "errors", [])
+        assert calls[2][0] == ("test", "network", ["requests"])
 
     def test_empty_console_and_errors(self):
         from tools.browser_tool import browser_console
 
-        empty = {"success": True, "data": {"messages": [], "errors": []}}
+        empty = {"success": True, "data": {"messages": [], "errors": [], "requests": []}}
         with patch("tools.browser_tool._run_browser_command", return_value=empty):
             result = json.loads(browser_console(task_id="test"))
 
         assert result["total_messages"] == 0
         assert result["total_errors"] == 0
+        assert result["total_failed_requests"] == 0
         assert result["console_messages"] == []
         assert result["js_errors"] == []
+        assert result["failed_requests"] == []
 
     def test_handles_failed_commands(self):
         from tools.browser_tool import browser_console
@@ -91,10 +107,13 @@ class TestBrowserConsole:
         with patch("tools.browser_tool._run_browser_command", return_value=failed):
             result = json.loads(browser_console(task_id="test"))
 
-        # Should still return success with empty data
+        # Should still return success with empty data, but expose diagnostics so
+        # QA runs do not falsely interpret a backend failure as a clean console.
         assert result["success"] is True
         assert result["total_messages"] == 0
         assert result["total_errors"] == 0
+        assert result["total_failed_requests"] == 0
+        assert result["diagnostics"]
 
 
 # ── browser_console schema ───────────────────────────────────────────

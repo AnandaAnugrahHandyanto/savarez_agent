@@ -37,6 +37,7 @@ hermes [global-options] <command> [subcommand/options]
 | Command | Purpose |
 |---------|---------|
 | `hermes chat` | Interactive or one-shot chat with the agent. |
+| `hermes browser-qa` / `web-qa` | Run a repeatable browser QA mission against a web app. |
 | `hermes model` | Interactively choose the default provider and model. |
 | `hermes fallback` | Manage fallback providers tried when the primary model errors. |
 | `hermes gateway` | Run or manage the messaging gateway service. |
@@ -142,6 +143,42 @@ HERMES_INFERENCE_MODEL=anthropic/claude-sonnet-4.6 hermes -z "…"
 ```
 
 Same agent, same tools, same skills — just strips every interactive / cosmetic layer. If you need tool output in the transcript too, use `hermes chat -q` instead; `-z` is explicitly for "I only want the final answer".
+
+## `hermes browser-qa` / `hermes web-qa`
+
+Run a repeatable browser QA mission against a web app:
+
+```bash
+hermes browser-qa <url> [options]
+hermes web-qa <url> [options]
+```
+
+This command is a focused wrapper around `hermes chat`: it preloads the bundled `dogfood` QA skill, enables browser-oriented toolsets, and builds a structured prompt that asks the agent to test visible journeys, inspect diagnostics, capture evidence, and save a Markdown report.
+
+Options:
+
+| Option | Description |
+|--------|-------------|
+| `--scope "..."` | Features or journeys to focus on. Defaults to smoke-testing core user journeys. |
+| `--output <dir>` | Directory for screenshots and the final report. Defaults to `./dogfood-output/<site>`. |
+| `--max-pages <N>` | Maximum pages or journeys to inspect. Default: `5`. |
+| `--notes "..."` | Additional tester notes to include in the QA mission. |
+| `-Q`, `--quiet` | Suppress banner/spinner/tool previews like `chat --quiet`. |
+| `--max-turns <N>` | Maximum tool-calling iterations for the QA run. |
+
+Examples:
+
+```bash
+# Smoke-test a local app
+hermes browser-qa http://localhost:3000 \
+  --scope "login, navigation, form validation, and empty states" \
+  --output ./dogfood-output/my-app
+
+# Public site QA with a larger page budget
+hermes web-qa https://example.com --max-pages 8
+```
+
+The generated QA mission instructs the agent to call `browser_console` after navigation and significant interactions. Reports should include console errors, JavaScript exceptions, failed network requests, screenshot paths, and any diagnostic backend failures; a clean verdict should only be reported when diagnostics were successfully captured.
 
 ## `hermes model`
 

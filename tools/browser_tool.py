@@ -339,6 +339,8 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
          and config-set overrides.
       2. ``_active_sessions[task_id]["cdp_url"]`` — covers Browserbase + any
          other cloud provider whose ``create_session`` returns a raw CDP URL.
+      3. ``_active_sessions[task_id]["supervisor_cdp_url"]`` — covers local
+         agent-browser sessions after ``agent-browser get cdp-url`` discovery.
 
     Swallows all errors — failing to attach the supervisor must not break
     the browser session itself.  The agent simply won't see
@@ -347,10 +349,17 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     cdp_url = _get_cdp_override()
     if not cdp_url:
         # Fallback: active session may carry a per-session CDP URL from a
-        # cloud provider (Browserbase sets this).
+        # cloud provider (Browserbase sets this) or a local supervisor-only
+        # URL discovered via ``agent-browser get cdp-url``.  Keep those keys
+        # separate: ``cdp_url`` controls the main agent-browser backend args,
+        # while ``supervisor_cdp_url`` only attaches the Python supervisor.
         with _cleanup_lock:
             session_info = _active_sessions.get(task_id, {})
-        maybe = str(session_info.get("cdp_url") or "")
+        maybe = str(
+            session_info.get("cdp_url")
+            or session_info.get("supervisor_cdp_url")
+            or ""
+        )
         if maybe:
             cdp_url = _resolve_cdp_override(maybe)
     if not cdp_url:
@@ -371,6 +380,52 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
             task_id,
             exc,
         )
+
+
+def _discover_local_supervisor_cdp_url(task_id: str) -> Optional[str]:
+    """Discover and cache the supervisor-only CDP URL for a local session.
+
+    agent-browser 0.26+ exposes ``get cdp-url`` for its managed local Chrome.
+    Hermes uses that URL only for the persistent Python CDP supervisor so the
+    normal browser commands continue to use ``--session`` and keep the
+    agent-browser daemon's lifecycle / idle timeout accounting intact.
+    """
+    with _cleanup_lock:
+        session_info = _active_sessions.get(task_id, {})
+        existing = str(session_info.get("supervisor_cdp_url") or "")
+        if existing:
+            return existing
+        if session_info.get("cdp_url"):
+            return str(session_info.get("cdp_url") or "")
+        features = session_info.get("features") or {}
+        is_local_session = bool(isinstance(features, dict) and features.get("local"))
+    if not is_local_session:
+        return None
+
+    try:
+        result = _run_browser_command(task_id, "get", ["cdp-url"], timeout=10)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.debug("local CDP URL discovery for task=%s failed: %s", task_id, exc)
+        return None
+    if not result.get("success"):
+        logger.debug(
+            "local CDP URL discovery for task=%s unavailable: %s",
+            task_id,
+            result.get("error"),
+        )
+        return None
+
+    data = result.get("data") or {}
+    cdp_url = str(data.get("cdpUrl") or data.get("cdp_url") or data.get("url") or "")
+    if not cdp_url.startswith(("ws://", "wss://")):
+        logger.debug("local CDP URL discovery for task=%s returned unusable URL: %r", task_id, cdp_url)
+        return None
+
+    with _cleanup_lock:
+        session_info = _active_sessions.get(task_id)
+        if isinstance(session_info, dict):
+            session_info["supervisor_cdp_url"] = cdp_url
+    return cdp_url
 
 
 def _stop_cdp_supervisor(task_id: str) -> None:
@@ -1806,6 +1861,20 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         title = data.get("title", "")
         final_url = data.get("url", url)
 
+        # In local agent-browser mode, the CDP endpoint only exists after the
+        # browser process has launched.  Discover it now and attach the
+        # persistent Python supervisor so subsequent snapshots can surface
+        # frame_tree / dialog state without changing normal --session routing.
+        try:
+            if _discover_local_supervisor_cdp_url(nav_session_key):
+                _ensure_cdp_supervisor(nav_session_key)
+        except Exception as exc:
+            logger.debug(
+                "local CDP supervisor discovery for task=%s failed (non-fatal): %s",
+                nav_session_key,
+                exc,
+            )
+
         # Post-redirect SSRF check — if the browser followed a redirect to a
         # private/internal address, block the result so the model can't read
         # internal content via subsequent browser_snapshot calls.
@@ -2133,12 +2202,61 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
 
 
 
+def _collect_browser_network_failures(task_id: str, clear: bool = False) -> tuple[list[dict[str, Any]], Optional[str]]:
+    """Return failed browser network requests for QA diagnostics.
+
+    ``agent-browser network requests`` is available on local sessions and gives
+    Hermes a cheap way to surface failed document/API/asset requests alongside
+    console output.  That matters for Web QA because broken API calls often do
+    not emit JavaScript exceptions.
+    """
+    args = ["--clear"] if clear else []
+    result = _run_browser_command(task_id, "network", ["requests", *args])
+    if not result.get("success"):
+        return [], result.get("error") or "network request inspection failed"
+
+    failures: list[dict[str, Any]] = []
+    for req in result.get("data", {}).get("requests", []) or []:
+        if not isinstance(req, dict):
+            continue
+        url = str(req.get("url") or "")
+        if url.startswith("data:"):
+            continue
+
+        status_raw = req.get("status")
+        status: Optional[int]
+        try:
+            status = int(status_raw) if status_raw is not None else None
+        except (TypeError, ValueError):
+            status = None
+
+        # agent-browser records failed navigations without a response status;
+        # HTTP 4xx/5xx are also QA-relevant failures.
+        if status is not None and status < 400:
+            continue
+        if status is None and req.get("mimeType"):
+            # A successful request may be missing status in older backends but
+            # still carry a mimeType; avoid false positives.
+            continue
+
+        failures.append({
+            "url": url,
+            "method": req.get("method", "GET"),
+            "status": status,
+            "resource_type": req.get("resourceType"),
+            "mime_type": req.get("mimeType"),
+        })
+
+    return failures, None
+
+
 def browser_console(clear: bool = False, expression: Optional[str] = None, task_id: Optional[str] = None) -> str:
     """Get browser console messages and JavaScript errors, or evaluate JS in the page.
     
     When ``expression`` is provided, evaluates JavaScript in the page context
     (like the DevTools console) and returns the result.  Otherwise returns
-    console output (log/warn/error/info) and uncaught exceptions.
+    console output (log/warn/error/info), uncaught exceptions, and failed
+    network requests useful for Web QA diagnostics.
     
     Args:
         clear: If True, clear the message/error buffers after reading
@@ -2146,7 +2264,7 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
         task_id: Task identifier for session isolation
         
     Returns:
-        JSON string with console messages/errors, or eval result
+        JSON string with console messages/errors/network failures, or eval result
     """
     # --- JS evaluation mode ---
     if expression is not None:
@@ -2166,6 +2284,7 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
     errors_result = _run_browser_command(effective_task_id, "errors", error_args)
     
     messages = []
+    diagnostics: list[str] = []
     if console_result.get("success"):
         for msg in console_result.get("data", {}).get("messages", []):
             messages.append({
@@ -2173,6 +2292,8 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
                 "text": msg.get("text", ""),
                 "source": "console",
             })
+    else:
+        diagnostics.append(f"console command unavailable: {console_result.get('error', 'unknown error')}")
     
     errors = []
     if errors_result.get("success"):
@@ -2181,14 +2302,25 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
                 "message": err.get("message", ""),
                 "source": "exception",
             })
+    else:
+        diagnostics.append(f"errors command unavailable: {errors_result.get('error', 'unknown error')}")
+
+    failed_requests, network_error = _collect_browser_network_failures(effective_task_id, clear=clear)
+    if network_error:
+        diagnostics.append(f"network request inspection unavailable: {network_error}")
     
-    return json.dumps({
+    response = {
         "success": True,
         "console_messages": messages,
         "js_errors": errors,
+        "failed_requests": failed_requests,
         "total_messages": len(messages),
         "total_errors": len(errors),
-    }, ensure_ascii=False)
+        "total_failed_requests": len(failed_requests),
+    }
+    if diagnostics:
+        response["diagnostics"] = diagnostics
+    return json.dumps(response, ensure_ascii=False)
 
 
 def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
