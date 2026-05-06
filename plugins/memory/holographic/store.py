@@ -73,6 +73,11 @@ CREATE TABLE IF NOT EXISTS memory_banks (
     fact_count INTEGER DEFAULT 0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS plugin_state (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
 """
 
 # Trust adjustment constants
@@ -103,6 +108,8 @@ class MemoryStore:
         db_path: "str | Path | None" = None,
         default_trust: float = 0.5,
         hrr_dim: int = 1024,
+        canonicalizer=None,
+        known_entities: "list[str] | None" = None,
     ) -> None:
         if db_path is None:
             from hermes_constants import get_hermes_home
@@ -111,6 +118,19 @@ class MemoryStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.default_trust = _clamp_trust(default_trust)
         self.hrr_dim = hrr_dim
+        self._canonicalizer = canonicalizer
+        self._known_entities: list[str] = list(known_entities) if known_entities else []
+        # Pre-compile lookup pattern for known entities. Word boundaries on each side.
+        if self._known_entities:
+            sorted_names = sorted(set(self._known_entities), key=len, reverse=True)
+            self._known_entities_re = re.compile(
+                r"(?<!\w)(" + "|".join(re.escape(n) for n in sorted_names) + r")(?!\w)",
+                re.IGNORECASE,
+            )
+            self._known_canonical_map = {n.lower(): n for n in self._known_entities}
+        else:
+            self._known_entities_re = None
+            self._known_canonical_map = {}
         self._hrr_available = hrr._HAS_NUMPY
         self._conn: sqlite3.Connection = sqlite3.connect(
             str(self.db_path),
@@ -155,6 +175,8 @@ class MemoryStore:
             content = content.strip()
             if not content:
                 raise ValueError("content must not be empty")
+            if self._canonicalizer:
+                content = self._canonicalizer(content)
 
             try:
                 cur = self._conn.execute(
@@ -424,6 +446,14 @@ class MemoryStore:
             _add(m.group(1))
             _add(m.group(2))
 
+        # Known-entity match (catches names the capitalized regex misses, e.g. "L-Charge",
+        # "ATI", and ensures aliases get resolved to the canonical form).
+        if self._known_entities_re is not None:
+            for m in self._known_entities_re.finditer(text):
+                hit = m.group(1)
+                canonical = self._known_canonical_map.get(hit.lower(), hit)
+                _add(canonical)
+
         return candidates
 
     def _resolve_entity(self, name: str) -> int:
@@ -562,6 +592,176 @@ class MemoryStore:
     def _row_to_dict(self, row: sqlite3.Row) -> dict:
         """Convert a sqlite3.Row to a plain dict."""
         return dict(row)
+
+    def resolve_alias_to_canonical(self, name: str) -> str:
+        """If *name* matches a canonical entity name or any of its aliases
+        (case-insensitive, hyphen/space tolerant), return the canonical name.
+        Otherwise return *name* unchanged.
+        """
+        if not name:
+            return name
+        normalized = re.sub(r"[-\s_]+", "", name.lower())
+
+        with self._lock:
+            # Try exact name match (case-insensitive)
+            row = self._conn.execute(
+                "SELECT name FROM entities WHERE LOWER(name) = LOWER(?) LIMIT 1",
+                (name,),
+            ).fetchone()
+            if row is not None:
+                return row["name"]
+
+            # Try alias match — entity rows have aliases as comma-separated string.
+            # Pull all rows that have aliases at all and scan in Python (fewer than
+            # ~1k entities; comparison cost is trivial).
+            rows = self._conn.execute(
+                "SELECT name, aliases FROM entities WHERE aliases IS NOT NULL AND aliases <> ''"
+            ).fetchall()
+            for r in rows:
+                aliases = (r["aliases"] or "").split(",")
+                for a in aliases:
+                    if re.sub(r"[-\s_]+", "", a.strip().lower()) == normalized:
+                        return r["name"]
+        return name
+
+    def seed_canonical_entities(self, allowlist: list) -> int:
+        """Pre-populate the entities table with canonical names + aliases so
+        probes by any alias resolve to the canonical entity. Returns count
+        of entities upserted.
+
+        *allowlist* is a list of {"canonical": str, "aliases": [str,...]} dicts.
+        """
+        if not allowlist:
+            return 0
+        upserted = 0
+        with self._lock:
+            for entry in allowlist:
+                canonical = (entry.get("canonical") or "").strip()
+                if not canonical:
+                    continue
+                aliases = entry.get("aliases") or []
+                aliases_str = ",".join(a.strip() for a in aliases if a.strip())
+                row = self._conn.execute(
+                    "SELECT entity_id, aliases FROM entities WHERE LOWER(name) = LOWER(?)",
+                    (canonical,),
+                ).fetchone()
+                if row is None:
+                    self._conn.execute(
+                        "INSERT INTO entities (name, aliases) VALUES (?, ?)",
+                        (canonical, aliases_str),
+                    )
+                else:
+                    # Merge new aliases into existing
+                    existing_aliases = {a.strip().lower() for a in (row["aliases"] or "").split(",") if a.strip()}
+                    new_aliases = {a.strip().lower() for a in aliases if a.strip()}
+                    merged = existing_aliases | new_aliases
+                    if merged != existing_aliases:
+                        # Preserve original casing where possible
+                        casing_map = {a.strip().lower(): a.strip() for a in (row["aliases"] or "").split(",") if a.strip()}
+                        for a in aliases:
+                            casing_map[a.strip().lower()] = a.strip()
+                        merged_str = ",".join(casing_map[k] for k in merged if k)
+                        self._conn.execute(
+                            "UPDATE entities SET aliases = ? WHERE entity_id = ?",
+                            (merged_str, row["entity_id"]),
+                        )
+                upserted += 1
+            self._conn.commit()
+        return upserted
+
+    def get_state(self, key: str) -> "str | None":
+        """Read a value from the plugin_state key/value table."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM plugin_state WHERE key = ?", (key,)
+            ).fetchone()
+            return row["value"] if row else None
+
+    def set_state(self, key: str, value: str) -> None:
+        """Upsert a value into the plugin_state key/value table."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO plugin_state (key, value) VALUES (?, ?)",
+                (key, value),
+            )
+            self._conn.commit()
+
+    def canonicalize_existing_facts(self, canonicalizer, since_days: "int | None" = None) -> dict:
+        """Apply *canonicalizer* to every existing fact's content.
+
+        If *since_days* is a positive int, only facts whose updated_at is within
+        that window are walked. Older facts are left as-is — trade-off accepted:
+        once the corpus stabilizes, new aliases won't retroactively rewrite
+        long-settled facts. Run a full pass (since_days=None) when that matters.
+
+        For facts whose canonicalized content collides with another existing
+        fact, the loser is removed (its entity links are reattached to the
+        survivor). Returns a summary dict with counts.
+        """
+        if canonicalizer is None:
+            return {"changed": 0, "merged": 0, "skipped": 0}
+
+        with self._lock:
+            if since_days and since_days > 0:
+                rows = self._conn.execute(
+                    "SELECT fact_id, content FROM facts "
+                    "WHERE updated_at >= datetime('now', ?) "
+                    "ORDER BY fact_id",
+                    (f"-{int(since_days)} days",),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT fact_id, content FROM facts ORDER BY fact_id"
+                ).fetchall()
+
+        changed = 0
+        merged = 0
+        skipped = 0
+        for row in rows:
+            fid = int(row["fact_id"])
+            old_content = row["content"]
+            new_content = canonicalizer(old_content)
+            if new_content == old_content:
+                skipped += 1
+                continue
+
+            with self._lock:
+                existing = self._conn.execute(
+                    "SELECT fact_id FROM facts WHERE content = ? AND fact_id != ?",
+                    (new_content, fid),
+                ).fetchone()
+
+            if existing is not None:
+                # Merge: rewire entity links from this fact to the survivor, then drop.
+                survivor = int(existing["fact_id"])
+                with self._lock:
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO fact_entities (fact_id, entity_id) "
+                        "SELECT ?, entity_id FROM fact_entities WHERE fact_id = ?",
+                        (survivor, fid),
+                    )
+                    self._conn.execute(
+                        "DELETE FROM fact_entities WHERE fact_id = ?", (fid,)
+                    )
+                    self._conn.execute(
+                        "DELETE FROM facts WHERE fact_id = ?", (fid,)
+                    )
+                    self._conn.commit()
+                merged += 1
+            else:
+                # Update in place. update_fact handles entity re-extraction + HRR rebuild.
+                self.update_fact(fid, content=new_content)
+                changed += 1
+
+        # Rebuild banks for all categories, since vectors moved.
+        with self._lock:
+            cats = [r["category"] for r in self._conn.execute(
+                "SELECT DISTINCT category FROM facts"
+            ).fetchall()]
+        for cat in cats:
+            self._rebuild_bank(cat)
+
+        return {"changed": changed, "merged": merged, "skipped": skipped}
 
     def close(self) -> None:
         """Close the database connection."""

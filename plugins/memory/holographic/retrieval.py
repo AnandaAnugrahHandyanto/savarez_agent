@@ -125,15 +125,19 @@ class FactRetriever:
 
         Falls back to FTS5 search if numpy unavailable.
         """
+        # Resolve aliases (e.g. "Charge" → "L-Charge") before any encoding
+        # so probes by alias hash to the same vector as the canonical.
+        canonical = self.store.resolve_alias_to_canonical(entity)
+
         if not hrr._HAS_NUMPY:
-            # Fallback to keyword search on entity name
-            return self.search(entity, category=category, limit=limit)
+            # Fallback to keyword search on canonical name
+            return self.search(canonical, category=category, limit=limit)
 
         conn = self.store._conn
 
         # Encode entity as role-bound vector
         role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
-        entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
+        entity_vec = hrr.encode_atom(canonical.lower(), self.hrr_dim)
         probe_key = hrr.bind(entity_vec, role_entity)
 
         # Try category-specific bank first, then all facts
@@ -203,13 +207,16 @@ class FactRetriever:
 
         Falls back to FTS5 search if numpy unavailable.
         """
+        # Resolve aliases before encoding so related-by-alias matches the canonical.
+        canonical = self.store.resolve_alias_to_canonical(entity)
+
         if not hrr._HAS_NUMPY:
-            return self.search(entity, category=category, limit=limit)
+            return self.search(canonical, category=category, limit=limit)
 
         conn = self.store._conn
 
         # Encode entity as a bare atom (not role-bound — we want ANY structural match)
-        entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
+        entity_vec = hrr.encode_atom(canonical.lower(), self.hrr_dim)
 
         # Get all facts with vectors
         where = "WHERE hrr_vector IS NOT NULL"
@@ -274,14 +281,19 @@ class FactRetriever:
 
         Falls back to FTS5 search if numpy unavailable.
         """
-        if not hrr._HAS_NUMPY or not entities:
-            # Fallback: search with all entities as keywords
-            query = " ".join(entities)
+        # Resolve each entity through the alias map first.
+        canonicals = [self.store.resolve_alias_to_canonical(e) for e in entities]
+
+        if not hrr._HAS_NUMPY or not canonicals:
+            # Fallback: search with all canonical names as keywords
+            query = " ".join(canonicals)
             return self.search(query, category=category, limit=limit)
 
         conn = self.store._conn
         role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
 
+        # Use the canonical names below so reason() respects aliases.
+        entities = canonicals
         # For each entity, compute what the bank "remembers" about it
         # by unbinding entity+role from each fact vector
         entity_residuals = []
