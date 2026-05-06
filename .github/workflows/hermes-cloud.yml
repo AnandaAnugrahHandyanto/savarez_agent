@@ -1,0 +1,56 @@
+name: Hermes Cloud Integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      query:
+        description: 'Command or query for Hermes'
+        required: true
+  issue_comment:
+    types: [created]
+  issues:
+    types: [opened, edited]
+  pull_request:
+    types: [opened, edited]
+
+jobs:
+  hermes-agent:
+    runs-on: ubuntu-latest
+    # Prevent infinite loops if Hermes creates comments that trigger itself
+    if: github.actor != 'github-actions[bot]'
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Cache Hermes State
+        uses: actions/cache@v4
+        with:
+          path: .hermes
+          key: ${{ runner.os }}-hermes-${{ hashFiles('**/requirements.txt', 'constraints*.txt') }}-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-hermes-
+
+      - name: Install Hermes Agent
+        run: |
+          # Use the repository's install script in non-interactive mode
+          # We export HERMES_NON_INTERACTIVE to skip prompts if supported
+          export HERMES_NON_INTERACTIVE=1
+          bash scripts/install.sh
+          # Ensure hermes is in PATH for the next steps
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Run Hermes Bridge
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HERMES_YOLO_MODE: "1"
+        run: |
+          python3 scripts/gha_bridge.py

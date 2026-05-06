@@ -56,7 +56,7 @@ BRANCH="main"
 # Detect non-interactive mode (e.g. curl | bash)
 # When stdin is not a terminal, read -p will fail with EOF,
 # causing set -e to silently abort the entire script.
-if [ -t 0 ]; then
+if [ -t 0 ] && [ "${CI:-}" != "true" ] && [ "${HERMES_NON_INTERACTIVE:-}" != "1" ]; then
     IS_INTERACTIVE=true
 else
     IS_INTERACTIVE=false
