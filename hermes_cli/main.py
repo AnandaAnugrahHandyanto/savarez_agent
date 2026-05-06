@@ -839,21 +839,18 @@ def _print_tui_exit_summary(
         if db is not None:
             db.close()
 
-    print()
-    print("Resume this session with:")
-    print(f"  hermes --tui --resume {target}")
-    if title:
-        print(f'  hermes --tui -c "{title}"')
-    print()
-    print(f"Session:        {target}")
-    if title:
-        print(f"Title:          {title}")
-    print(f"Messages:       {message_count}")
-    print(
-        "Tokens:         "
-        f"{total_tokens} (in {input_tokens}, out {output_tokens}, "
-        f"cache {cache_read_tokens + cache_write_tokens}, reasoning {reasoning_tokens})"
-    )
+    cache_total = cache_read_tokens + cache_write_tokens
+    headline = title if title else target
+    resume = f'hermes --tui -c "{title}"' if title else f"hermes --tui --resume {target}"
+    detail = f"{message_count} msgs · in {input_tokens} · out {output_tokens}"
+    if cache_total:
+        detail += f" · cache {cache_total}"
+    if reasoning_tokens:
+        detail += f" · reasoning {reasoning_tokens}"
+    detail += f" · {total_tokens} total"
+
+    sys.stdout.write(f"\r{headline} ({target})\n{detail}\n→ {resume}\n")
+    sys.stdout.flush()
 
 
 _NPM_LOCK_RUNTIME_KEYS = frozenset({"ideallyInert", "peer"})

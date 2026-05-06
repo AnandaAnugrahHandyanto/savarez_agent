@@ -485,10 +485,15 @@ def test_print_tui_exit_summary_includes_resume_and_token_totals(monkeypatch, ca
     main_mod._print_tui_exit_summary("20260409_000001_abc123")
     out = capsys.readouterr().out
 
-    assert "Resume this session with:" in out
-    assert "hermes --tui --resume 20260409_000001_abc123" in out
+    assert "demo title" in out
+    assert "20260409_000001_abc123" in out
     assert 'hermes --tui -c "demo title"' in out
-    assert "Tokens:         21 (in 10, out 6, cache 4, reasoning 1)" in out
+    assert "2 msgs" in out
+    assert "in 10" in out
+    assert "out 6" in out
+    assert "cache 4" in out
+    assert "reasoning 1" in out
+    assert "21 total" in out
 
 
 def test_print_tui_exit_summary_prefers_actual_active_session_file(
@@ -526,5 +531,5 @@ def test_print_tui_exit_summary_prefers_actual_active_session_file(
     out = capsys.readouterr().out
 
     assert seen == ["actual_session"]
-    assert "hermes --tui --resume actual_session" in out
+    assert "actual_session" in out
     assert "startup_resume" not in out
