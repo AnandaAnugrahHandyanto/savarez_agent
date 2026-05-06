@@ -1903,6 +1903,7 @@ class SlackAdapter(BasePlatformAdapter):
                         thread_ts=event_thread_ts,
                         current_ts=ts,
                         team_id=team_id,
+                        current_user_id=user_id,
                     )
                 ):
                     return  # Strict mode: ignore until explicitly called or directly followed up
@@ -2985,12 +2986,14 @@ class SlackAdapter(BasePlatformAdapter):
         thread_ts: str,
         current_ts: str,
         team_id: str = "",
+        current_user_id: str = "",
     ) -> bool:
-        """Return whether the immediately previous thread message is this bot.
+        """Return whether the current user is directly following this bot.
 
         This keeps strict-mode follow-up narrow: a user can answer directly
         after the bot, but older bot participation does not keep the thread
-        auto-engaged.
+        auto-engaged. In multi-user threads, a different user must explicitly
+        call the bot instead of being routed by someone else's bot exchange.
         """
         if not channel_id or not thread_ts or not current_ts:
             return False
@@ -3015,16 +3018,37 @@ class SlackAdapter(BasePlatformAdapter):
                 return False
 
             previous_ts = previous.get("ts", "")
-            if previous_ts and previous_ts in self._bot_message_ts:
-                return True
-
             msg_team = previous.get("team") or team_id
             self_bot_uid = (
                 self._team_bot_user_ids.get(msg_team)
                 if msg_team
                 else None
             ) or self._bot_user_id
-            return bool(self_bot_uid and previous.get("user") == self_bot_uid)
+            previous_is_self_bot = bool(
+                (previous_ts and previous_ts in self._bot_message_ts)
+                or (self_bot_uid and previous.get("user") == self_bot_uid)
+            )
+            if not previous_is_self_bot:
+                return False
+
+            if current_user_id:
+                prior_user = None
+                for msg in messages:
+                    msg_ts = msg.get("ts", "")
+                    msg_user = msg.get("user")
+                    if (
+                        msg_ts
+                        and previous_ts
+                        and msg_ts < previous_ts
+                        and msg_user
+                        and msg_user != self_bot_uid
+                    ):
+                        if prior_user is None or msg_ts > prior_user.get("ts", ""):
+                            prior_user = msg
+                if not prior_user or prior_user.get("user") != current_user_id:
+                    return False
+
+            return True
         except Exception as exc:
             logger.debug("[Slack] Failed to inspect previous thread message: %s", exc)
             return False
