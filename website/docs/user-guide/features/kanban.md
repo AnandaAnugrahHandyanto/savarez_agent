@@ -250,9 +250,13 @@ The MCP facade is intentionally stricter than the CLI:
 - The server never writes raw SQLite. It calls `hermes_cli.kanban_db` APIs, so comments/events/audit rows are preserved.
 - The existing `HERMES_KANBAN_TASK` worker-tool gate is unchanged; this MCP server is a separate facade, not global exposure of `kanban_*` tools.
 
-Write-mode control:
+Scope and write-mode control:
 
 ```bash
+# Optional hard allowlist. If set, every MCP call outside these boards is denied.
+HERMES_KANBAN_MCP_ALLOWED_BOARDS=the-forge,ingestion-pipeline,atlas-command \
+  hermes kanban mcp serve
+
 # default: safe writes enabled, dangerous writes denied
 HERMES_KANBAN_MCP_WRITE_MODE=safe hermes kanban mcp serve
 
@@ -274,6 +278,7 @@ Client config examples:
       "command": "hermes",
       "args": ["kanban", "mcp", "serve"],
       "env": {
+        "HERMES_KANBAN_MCP_ALLOWED_BOARDS": "the-forge,ingestion-pipeline,atlas-command",
         "HERMES_KANBAN_MCP_WRITE_MODE": "safe"
       }
     }
@@ -288,7 +293,11 @@ Client config examples:
   "mcpServers": {
     "hermes-kanban": {
       "command": "hermes",
-      "args": ["kanban", "mcp", "serve"]
+      "args": ["kanban", "mcp", "serve"],
+      "env": {
+        "HERMES_KANBAN_MCP_ALLOWED_BOARDS": "the-forge,ingestion-pipeline,atlas-command",
+        "HERMES_KANBAN_MCP_WRITE_MODE": "safe"
+      }
     }
   }
 }
@@ -300,7 +309,7 @@ Client config examples:
 [mcp_servers.hermes-kanban]
 command = "hermes"
 args = ["kanban", "mcp", "serve"]
-env = { HERMES_KANBAN_MCP_WRITE_MODE = "safe" }
+env = { HERMES_KANBAN_MCP_ALLOWED_BOARDS = "the-forge,ingestion-pipeline,atlas-command", HERMES_KANBAN_MCP_WRITE_MODE = "safe" }
 ```
 
 **Hermes native MCP** (`~/.hermes/config.yaml`):
@@ -311,6 +320,7 @@ mcp_servers:
     command: "hermes"
     args: ["kanban", "mcp", "serve"]
     env:
+      HERMES_KANBAN_MCP_ALLOWED_BOARDS: "the-forge,ingestion-pipeline,atlas-command"
       HERMES_KANBAN_MCP_WRITE_MODE: "safe"
 ```
 

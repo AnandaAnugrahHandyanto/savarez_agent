@@ -21,6 +21,8 @@ def kanban_home(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_WORKSPACES_ROOT", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_MCP_WRITE_MODE", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_MCP_ALLOWED_BOARDS", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_ALLOWED_BOARDS", raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
@@ -81,6 +83,25 @@ def test_board_isolation_requires_explicit_board_and_does_not_cross_read(kanban_
 
     with pytest.raises(ValueError, match="board is required"):
         facade.tasks_list(board="")
+
+
+def test_board_allowlist_filters_and_denies_unlisted_boards(kanban_home, monkeypatch):
+    kb.create_board("alpha")
+    kb.create_board("beta")
+    with kb.connect(board="alpha") as conn:
+        alpha_tid = kb.create_task(conn, title="alpha task")
+    with kb.connect(board="beta") as conn:
+        kb.create_task(conn, title="beta task")
+
+    monkeypatch.setenv("HERMES_KANBAN_MCP_ALLOWED_BOARDS", "alpha")
+    facade = KanbanMCPFacade()
+
+    listed = facade.boards_list()
+    assert [b["slug"] for b in listed["boards"]] == ["alpha"]
+    assert [t["id"] for t in facade.tasks_list(board="alpha")["tasks"]] == [alpha_tid]
+    denied = facade.tasks_list(board="beta")
+    assert denied["error"] == "board_not_allowed"
+    assert denied["allowed_boards"] == ["alpha"]
 
 
 def test_invalid_board_returns_structured_error(kanban_home):

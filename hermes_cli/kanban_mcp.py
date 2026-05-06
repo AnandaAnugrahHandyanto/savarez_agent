@@ -43,6 +43,31 @@ def _write_mode() -> str:
     return mode
 
 
+def _allowed_boards() -> Optional[set[str]]:
+    """Return the optional MCP board allowlist from the environment.
+
+    ``HERMES_KANBAN_MCP_ALLOWED_BOARDS`` is the specific knob for this facade;
+    ``HERMES_KANBAN_ALLOWED_BOARDS`` is accepted for compatibility with early
+    design notes and external config snippets.
+    """
+
+    raw = os.environ.get("HERMES_KANBAN_MCP_ALLOWED_BOARDS")
+    if raw is None:
+        raw = os.environ.get("HERMES_KANBAN_ALLOWED_BOARDS")
+    if raw is None or not str(raw).strip():
+        return None
+    allowed: set[str] = set()
+    for part in str(raw).split(","):
+        name = part.strip()
+        if not name:
+            continue
+        try:
+            allowed.add(kb._normalize_board_slug(name))
+        except ValueError:
+            logger.warning("Ignoring invalid Kanban MCP allowed board slug %r", name)
+    return allowed
+
+
 def _task_to_dict(t: kb.Task) -> dict[str, Any]:
     return {
         "id": t.id,
@@ -174,6 +199,13 @@ class KanbanMCPFacade:
             return None, {"error": "invalid_board", "board": board, "message": str(exc)}
         if not slug:
             raise ValueError("board is required")
+        allowed = _allowed_boards()
+        if allowed is not None and slug not in allowed:
+            return None, {
+                "error": "board_not_allowed",
+                "board": slug,
+                "allowed_boards": sorted(allowed),
+            }
         with _board_env(slug):
             if not kb.board_exists(slug):
                 return None, {"error": "board_not_found", "board": slug}
@@ -200,7 +232,12 @@ class KanbanMCPFacade:
         return None
 
     def boards_list(self, include_archived: bool = False) -> dict[str, Any]:
-        boards = kb.list_boards(include_archived=include_archived)
+        allowed = _allowed_boards()
+        boards = [
+            board
+            for board in kb.list_boards(include_archived=include_archived)
+            if allowed is None or board.get("slug") in allowed
+        ]
         for board in boards:
             slug = board.get("slug")
             if not slug:
@@ -685,3 +722,7 @@ def run_mcp_server(verbose: bool = False) -> None:
 def main() -> None:
     verbose = "--verbose" in sys.argv or "-v" in sys.argv
     run_mcp_server(verbose=verbose)
+
+
+if __name__ == "__main__":
+    main()
