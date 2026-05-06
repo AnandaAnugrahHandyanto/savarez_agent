@@ -83,6 +83,7 @@ import threading
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
 
@@ -1944,6 +1945,30 @@ def _interpolate_env_vars(value):
     return value
 
 
+def _resolve_managed_mcp_config(name: str, cfg: dict) -> Optional[dict]:
+    managed_vendor = cfg.get("managed_gateway")
+    if not isinstance(managed_vendor, str) or not managed_vendor.strip():
+        return cfg
+
+    if cfg.get("url") or cfg.get("command"):
+        return cfg
+
+    from tools.managed_tool_gateway import resolve_managed_tool_gateway
+
+    gateway = resolve_managed_tool_gateway(managed_vendor.strip())
+    if gateway is None:
+        logger.warning("Skipping managed MCP server '%s': Tool Gateway auth is unavailable", name)
+        return None
+
+    runtime_cfg = dict(cfg)
+    gateway_path = str(runtime_cfg.get("managed_gateway_path") or "mcp/").lstrip("/")
+    runtime_cfg["url"] = urljoin(f"{gateway.gateway_origin.rstrip('/')}/", gateway_path)
+    headers = dict(cfg.get("headers") or {})
+    headers["Authorization"] = f"Bearer {gateway.nous_user_token}"
+    runtime_cfg["headers"] = headers
+    return runtime_cfg
+
+
 def _load_mcp_config() -> Dict[str, dict]:
     """Read ``mcp_servers`` from the Hermes config file.
 
@@ -1967,7 +1992,14 @@ def _load_mcp_config() -> Dict[str, dict]:
             load_hermes_dotenv()
         except Exception:
             pass
-        return {name: _interpolate_env_vars(cfg) for name, cfg in servers.items()}
+        loaded: Dict[str, dict] = {}
+        for name, cfg in servers.items():
+            if not isinstance(cfg, dict):
+                continue
+            resolved_cfg = _resolve_managed_mcp_config(name, _interpolate_env_vars(cfg))
+            if resolved_cfg is not None:
+                loaded[name] = resolved_cfg
+        return loaded
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)
         return {}

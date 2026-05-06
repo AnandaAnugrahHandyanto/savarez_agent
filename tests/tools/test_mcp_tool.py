@@ -82,6 +82,45 @@ class TestLoadMCPConfig:
             result = _load_mcp_config()
             assert result == {}
 
+    def test_managed_skyvern_config_resolves_runtime_gateway_url_and_auth_header(self):
+        """Managed Skyvern MCP intent is resolved at runtime using Nous auth."""
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"mcp_servers": {"skyvern": {"managed_gateway": "skyvern"}}},
+        ), patch.dict(
+            os.environ,
+            {
+                "TOOL_GATEWAY_DOMAIN": "nousresearch.com",
+                "TOOL_GATEWAY_USER_TOKEN": "nous-token",
+            },
+            clear=False,
+        ), patch(
+            "tools.managed_tool_gateway.managed_nous_tools_enabled",
+            return_value=True,
+        ):
+            from tools.mcp_tool import _load_mcp_config
+            result = _load_mcp_config()
+
+        assert result["skyvern"]["managed_gateway"] == "skyvern"
+        assert result["skyvern"]["url"] == "https://skyvern-gateway.nousresearch.com/mcp/"
+        assert result["skyvern"]["headers"] == {"Authorization": "Bearer nous-token"}
+        assert "SKYVERN_API_KEY" not in json.dumps(result)
+
+    def test_direct_skyvern_config_is_preserved(self):
+        """Existing direct Skyvern MCP configs keep their explicit URL/header."""
+        direct_cfg = {
+            "url": "https://api.skyvern.com/mcp/",
+            "headers": {"x-api-key": "${SKYVERN_API_KEY}"},
+        }
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"mcp_servers": {"skyvern": direct_cfg}},
+        ):
+            from tools.mcp_tool import _load_mcp_config
+            result = _load_mcp_config()
+
+        assert result["skyvern"] == direct_cfg
+
 
 # ---------------------------------------------------------------------------
 # Schema conversion
