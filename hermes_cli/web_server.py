@@ -2918,7 +2918,9 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
 # the chat tab generates on mount; entries auto-evict when the last subscriber
 # drops AND the publisher has disconnected.
-_event_channels: dict[str, set] = {}
+# Store (websocket, event_loop) pairs so publisher sockets running on a
+# different event loop/thread can still fan out safely.
+_event_channels: dict[str, set[tuple[WebSocket, asyncio.AbstractEventLoop]]] = {}
 _event_lock = threading.Lock()
 
 
@@ -2975,16 +2977,27 @@ async def _broadcast_event(channel: str, payload: str) -> None:
     with _event_lock:
         subs = list(_event_channels.get(channel, ()))
 
-    for sub in subs:
+    current_loop = asyncio.get_running_loop()
+    for sub, sub_loop in subs:
         try:
-            await sub.send_text(payload)
+            if sub_loop is current_loop:
+                await sub.send_text(payload)
+            else:
+                fut = asyncio.run_coroutine_threadsafe(sub.send_text(payload), sub_loop)
+                # Keep a tight timeout — this is best-effort fanout and should
+                # never block the publisher loop indefinitely.
+                fut.result(timeout=0.5)
         except Exception:
             # Rare race on CI: subscriber connection can be accepted but not
             # fully ready for the first write. Yield once and retry before
             # dropping the frame.
             try:
                 await asyncio.sleep(0.01)
-                await sub.send_text(payload)
+                if sub_loop is current_loop:
+                    await sub.send_text(payload)
+                else:
+                    fut = asyncio.run_coroutine_threadsafe(sub.send_text(payload), sub_loop)
+                    fut.result(timeout=0.5)
             except Exception:
                 # Subscriber went away mid-send; the /api/events finally clause
                 # will remove it from the registry on its next iteration.
@@ -3190,8 +3203,9 @@ async def events_ws(ws: WebSocket) -> None:
 
     # Register before accept so clients that open /api/pub immediately after
     # connect cannot race ahead of subscriber registration (CI / xdist).
+    loop = asyncio.get_running_loop()
     with _event_lock:
-        _event_channels.setdefault(channel, set()).add(ws)
+        _event_channels.setdefault(channel, set()).add((ws, loop))
 
     await ws.accept()
 
@@ -3208,7 +3222,8 @@ async def events_ws(ws: WebSocket) -> None:
             subs = _event_channels.get(channel)
 
             if subs is not None:
-                subs.discard(ws)
+                subs = {(sub, sub_loop) for (sub, sub_loop) in subs if sub is not ws}
+                _event_channels[channel] = subs
 
                 if not subs:
                     _event_channels.pop(channel, None)
