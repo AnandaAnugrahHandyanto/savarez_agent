@@ -1897,6 +1897,7 @@ class SlackAdapter(BasePlatformAdapter):
             elif self._slack_strict_mention() and not explicit_call:
                 if not (
                     is_thread_reply
+                    and not self._mentions_other_slack_user(routing_text, bot_uid)
                     and await self._previous_thread_message_is_self_bot(
                         channel_id=channel_id,
                         thread_ts=event_thread_ts,
@@ -2968,6 +2969,15 @@ class SlackAdapter(BasePlatformAdapter):
         for pattern in self._mention_patterns:
             cleaned = pattern.sub("", cleaned, count=1).strip()
         return cleaned
+
+    def _mentions_other_slack_user(self, text: str, bot_uid: Optional[str]) -> bool:
+        """Return whether text explicitly mentions a different Slack user."""
+        if not text:
+            return False
+        for mentioned_uid in re.findall(r"<@([A-Z0-9]+)>", text):
+            if not bot_uid or mentioned_uid != bot_uid:
+                return True
+        return False
 
     async def _previous_thread_message_is_self_bot(
         self,
