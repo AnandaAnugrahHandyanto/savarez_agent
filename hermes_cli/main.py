@@ -967,6 +967,68 @@ def _tui_need_npm_install(root: Path) -> bool:
     return False
 
 
+def _find_bundled_tui(tui_dir: Path) -> Optional[Path]:
+    """Directory whose dist/entry.js we should run: HERMES_TUI_DIR first, else repo ui-tui."""
+    env = os.environ.get("HERMES_TUI_DIR")
+    if env:
+        p = Path(env)
+        if (p / "dist" / "entry.js").exists() and not _tui_need_npm_install(p):
+            return p
+    if (tui_dir / "dist" / "entry.js").exists() and not _tui_need_npm_install(tui_dir):
+        return tui_dir
+    return None
+
+
+def _tui_build_needed(tui_dir: Path) -> bool:
+    if _hermes_ink_bundle_stale(tui_dir):
+        return True
+    entry = tui_dir / "dist" / "entry.js"
+    if not entry.exists():
+        return True
+    dist_m = entry.stat().st_mtime
+    skip = frozenset({"node_modules", "dist"})
+    for dirpath, dirnames, filenames in os.walk(tui_dir, topdown=True):
+        dirnames[:] = [d for d in dirnames if d not in skip]
+        for fn in filenames:
+            if fn.endswith((".ts", ".tsx")):
+                if os.path.getmtime(os.path.join(dirpath, fn)) > dist_m:
+                    return True
+    for meta in (
+        "package.json",
+        "package-lock.json",
+        "tsconfig.json",
+        "tsconfig.build.json",
+    ):
+        mp = tui_dir / meta
+        if mp.exists() and mp.stat().st_mtime > dist_m:
+            return True
+    return False
+
+
+def _hermes_ink_bundle_stale(tui_dir: Path) -> bool:
+    ink_root = tui_dir / "packages" / "hermes-ink"
+    # packages/hermes-ink's build script bundles src/entry-exports.ts to
+    # dist/entry-exports.js.  This must match package.json/index.js; otherwise
+    # the dashboard thinks the TUI is stale forever and runs npm build inside
+    # the /api/pty WebSocket handshake.
+    bundle = ink_root / "dist" / "entry-exports.js"
+    if not bundle.exists():
+        return True
+    bm = bundle.stat().st_mtime
+    skip = frozenset({"node_modules", "dist"})
+    for dirpath, dirnames, filenames in os.walk(ink_root, topdown=True):
+        dirnames[:] = [d for d in dirnames if d not in skip]
+        for fn in filenames:
+            if fn.endswith((".ts", ".tsx")):
+                if os.path.getmtime(os.path.join(dirpath, fn)) > bm:
+                    return True
+    mp = ink_root / "package.json"
+    if mp.exists() and mp.stat().st_mtime > bm:
+        return True
+    return False
+
+
+
 def _ensure_tui_node() -> None:
     """Make sure `node` + `npm` are on PATH for the TUI.
 

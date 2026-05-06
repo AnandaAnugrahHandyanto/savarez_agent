@@ -25,6 +25,13 @@ def _touch_tui_entry(root: Path) -> None:
     entry.write_text("console.log('tui')")
 
 
+def _touch_ink_bundle(root: Path) -> None:
+    bundle = root / "packages" / "hermes-ink" / "dist" / "entry-exports.js"
+    bundle.parent.mkdir(parents=True, exist_ok=True)
+    bundle.write_text("export {}")
+
+
+
 def test_need_install_when_ink_missing(tmp_path: Path, main_mod) -> None:
     (tmp_path / "package-lock.json").write_text("{}")
     assert main_mod._tui_need_npm_install(tmp_path) is True
