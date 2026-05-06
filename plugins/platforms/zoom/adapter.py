@@ -449,7 +449,7 @@ class ZoomTeamChatAdapter(BasePlatformAdapter):
 
 def interactive_setup() -> None:
     from hermes_cli.config import get_env_value, save_env_value
-    from hermes_cli.ui import print_info, print_success, print_warning, prompt
+    from hermes_cli.cli_output import print_info, print_success, print_warning, prompt
 
     print_info("Zoom Team Chat setup")
     account_id = prompt("Account ID", default=get_env_value("ZOOM_ACCOUNT_ID") or "")
