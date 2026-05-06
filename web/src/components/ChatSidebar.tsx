@@ -30,6 +30,7 @@ import { Card } from "@/components/ui/card";
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ToolCall, type ToolEntry } from "@/components/ToolCall";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
+import { api } from "@/lib/api";
 
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
@@ -70,10 +71,132 @@ const STATE_TONE: Record<
 
 interface ChatSidebarProps {
   channel: string;
+  resumeSessionId?: string | null;
   className?: string;
 }
 
-export function ChatSidebar({ channel, className }: ChatSidebarProps) {
+interface HistoricalToolFunction {
+  name?: string;
+  arguments?: string;
+}
+
+interface HistoricalToolCall {
+  id?: string;
+  call_id?: string;
+  function?: HistoricalToolFunction;
+  name?: string;
+  arguments?: string;
+}
+
+interface HistoricalSessionMessage {
+  role?: string;
+  content?: string | null;
+  tool_call_id?: string | null;
+  tool_calls?: HistoricalToolCall[] | null;
+  timestamp?: number | string | null;
+}
+
+interface HistoricalToolResult {
+  summary?: string;
+  error?: string;
+  completedAt?: number;
+}
+
+function timestampMs(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value > 1_000_000_000_000 ? value : value * 1000;
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed > 1_000_000_000_000 ? parsed : parsed * 1000;
+    }
+
+    const date = Date.parse(value);
+    if (Number.isFinite(date)) {
+      return date;
+    }
+  }
+
+  return undefined;
+}
+
+function formatToolContext(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.trim()) {
+    return undefined;
+  }
+
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch {
+    return value;
+  }
+}
+
+function parseToolResult(content: unknown): HistoricalToolResult {
+  if (typeof content !== "string" || !content.trim()) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    const error = typeof parsed.error === "string" ? parsed.error : undefined;
+    const summaryValue = parsed.summary ?? parsed.output ?? parsed.result ?? parsed.content ?? parsed.message;
+    const summary = typeof summaryValue === "string" ? summaryValue : JSON.stringify(parsed, null, 2);
+    return { summary, error };
+  } catch {
+    return { summary: content };
+  }
+}
+
+function hydrateToolsFromMessages(messages: HistoricalSessionMessage[]): ToolEntry[] {
+  const toolResults = new Map<string, HistoricalToolResult>();
+
+  for (const message of messages) {
+    if (message.role !== "tool" || !message.tool_call_id) continue;
+    const result = parseToolResult(message.content);
+    const completedAt = timestampMs(message.timestamp);
+    if (completedAt) result.completedAt = completedAt;
+    toolResults.set(message.tool_call_id, result);
+  }
+
+  const entries: ToolEntry[] = [];
+
+  for (const message of messages) {
+    const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+
+    for (const call of calls) {
+      const fn = call.function;
+      const toolId = call.call_id ?? call.id ?? `historical-${entries.length}`;
+      const result = toolResults.get(toolId);
+      const context = formatToolContext(fn?.arguments ?? call.arguments);
+
+      const entry: ToolEntry = {
+        kind: "tool",
+        id: `history-tool-${toolId}-${entries.length}`,
+        tool_id: toolId,
+        name: fn?.name ?? call.name ?? "tool",
+        context,
+        summary: result?.summary,
+        error: result?.error,
+        status: result?.error ? "error" : "done",
+        startedAt: 0,
+        completedAt: result?.completedAt,
+      };
+
+      entries.push(entry);
+    }
+  }
+
+  return entries.slice(-TOOL_LIMIT);
+}
+
+export function ChatSidebar({
+  channel,
+  resumeSessionId,
+  className,
+}: ChatSidebarProps) {
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
   // counter is the dependency on purpose — it's not read in the memo body,
@@ -141,6 +264,41 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
       gw.close();
     };
   }, [gw]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!resumeSessionId) {
+      setTools([]);
+      return;
+    }
+
+    api
+      .getSessionMessages(resumeSessionId)
+      .then((result) => {
+        if (cancelled) return;
+
+        const messages = Array.isArray(result?.messages) ? result.messages : [];
+        const historicalTools = hydrateToolsFromMessages(messages as HistoricalSessionMessage[]);
+
+        setTools((prev) =>
+          [
+            ...historicalTools,
+            ...prev.filter((tool) => tool.startedAt > 0),
+          ].slice(-TOOL_LIMIT),
+        );
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) {
+          const message = e instanceof Error ? e.message : String(e);
+          setError(`failed to load historical tool calls: ${message}`);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [resumeSessionId, version]);
 
   // Event subscriber WebSocket — receives the rebroadcast of every
   // dispatcher emit from the PTY child's gateway.  See /api/pub +
