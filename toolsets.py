@@ -52,6 +52,8 @@ _HERMES_CORE_TOOLS = [
     "session_search",
     # Clarifying questions
     "clarify",
+    # Structured reasoning (Anthropic research - 54% improvement on complex tasks)
+    "think",
     # Code execution + delegation
     "execute_code", "delegate_task",
     # Cronjob management
@@ -72,6 +74,19 @@ _HERMES_CORE_TOOLS = [
 # These can include individual tools or reference other toolsets
 TOOLSETS = {
     # Basic toolsets - individual tool categories
+    "core": {
+        "description": "Core reasoning and interaction tools",
+        "tools": ["clarify", "think"],
+        "includes": []
+    },
+    
+    # Extended thinking (pre-response reasoning for coding/math tasks)
+    "think": {
+        "description": "Structured reasoning tool for complex analysis and planning",
+        "tools": ["think"],
+        "includes": []
+    },
+    
     "web": {
         "description": "Web research and content extraction tools",
         "tools": ["web_search", "web_extract"],
@@ -197,7 +212,7 @@ TOOLSETS = {
         "tools": ["execute_code"],
         "includes": []
     },
-    
+
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
         "tools": ["delegate_task"],

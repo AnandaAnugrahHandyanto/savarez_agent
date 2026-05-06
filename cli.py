@@ -7658,6 +7658,36 @@ class HermesCLI:
                 " — all commands auto-approved. Use with caution."
             )
 
+    def _cycle_approval_mode(self):
+        """Cycle through approval modes: auto -> smart -> ask -> auto.
+        
+        Similar to Claude Code's Shift+Tab permission mode cycling.
+        """
+        from hermes_cli.colors import Colors as _Colors
+        
+        current_mode = self.config.get("approvals", {}).get("mode", "smart")
+        
+        # Cycle: auto -> smart -> ask -> auto
+        mode_cycle = ["auto", "smart", "ask"]
+        try:
+            current_idx = mode_cycle.index(current_mode)
+        except ValueError:
+            current_idx = 1  # Default to smart if unknown mode
+        
+        next_idx = (current_idx + 1) % len(mode_cycle)
+        next_mode = mode_cycle[next_idx]
+        
+        # Update config
+        if save_config_value("approvals.mode", next_mode):
+            mode_labels = {
+                "auto": f"{_Colors.BOLD}{_Colors.GREEN}AUTO{_Colors.RESET} — all commands auto-approved",
+                "smart": f"{_Colors.BOLD}{_Colors.YELLOW}SMART{_Colors.RESET} — low-risk auto-approved, destructive asks",
+                "ask": f"{_Colors.BOLD}{_Colors.RED}ASK{_Colors.RESET} — all commands require approval",
+            }
+            _cprint(f"  ⚡ Approval mode: {mode_labels.get(next_mode, next_mode)}")
+        else:
+            _cprint(f"  ⚠ Failed to save approval mode")
+
     def _handle_reasoning_command(self, cmd: str):
         """Handle /reasoning — manage effort level and display toggle.
 
@@ -11098,6 +11128,15 @@ class HermesCLI:
             else:
                 # No image found — show a hint
                 pass  # silent when no image (avoid noise on accidental press)
+
+        @kb.add('s-tab')  # Shift+Tab — cycle approval modes
+        def handle_shift_tab(event):
+            """Cycle through approval modes: auto -> smart -> ask -> auto.
+            
+            Similar to Claude Code's Shift+Tab permission mode cycling.
+            """
+            self._cycle_approval_mode()
+            event.app.invalidate()
 
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.
