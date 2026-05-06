@@ -656,6 +656,34 @@ class TestPrompt:
         assert state.history == expected_history
 
     @pytest.mark.asyncio
+    async def test_prompt_clears_history_for_empty_messages(self, agent):
+        """An explicit empty messages list should replace and persist prior history."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+        ]
+        state.agent.run_conversation = MagicMock(return_value={
+            "final_response": "history cleared",
+            "messages": [],
+        })
+        agent.session_manager.save_session = MagicMock(
+            wraps=agent.session_manager.save_session
+        )
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="reset this history")]
+        await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert state.history == []
+        agent.session_manager.save_session.assert_called_once_with(new_resp.session_id)
+
+
+    @pytest.mark.asyncio
     async def test_prompt_sends_final_message_update(self, agent):
         """The final response should be sent as an AgentMessageChunk."""
         new_resp = await agent.new_session(cwd=".")
