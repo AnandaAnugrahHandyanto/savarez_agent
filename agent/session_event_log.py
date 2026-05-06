@@ -55,6 +55,9 @@ EVENT_SUBAGENT_COMPLETED = "subagent.completed"
 EVENT_SUBAGENT_FAILED = "subagent.failed"
 EVENT_SUBAGENT_INTERRUPTED = "subagent.interrupted"
 
+# ── Event types (Tool Input Repair) ──
+EVENT_TOOL_INPUT_REPAIRED = "tool_input_repaired"
+
 # ── Reserved event types (future phases) ──
 EVENT_SUBAGENT_BACKGROUNDED = "subagent.backgrounded"  # Phase B
 EVENT_SUBAGENT_SEND_MESSAGE = "subagent.send_message"  # reserved
@@ -653,6 +656,21 @@ class EventLog:
             "agent_id": agent_id,
             "role": role,
             "reason": reason[:500],
+        })
+
+    # ── Tool Input Repair factory ──
+
+    def log_tool_input_repaired(
+        self,
+        task_id: str,
+        session_id: str,
+        tool_name: str,
+        repair_log: List[Dict[str, Any]],
+    ) -> SessionEvent:
+        """Log that tool input was repaired during this turn."""
+        return self._log_event(task_id, session_id, EVENT_TOOL_INPUT_REPAIRED, {
+            "tool_name": tool_name,
+            "repairs": repair_log,
         })
 
     def _log_event(

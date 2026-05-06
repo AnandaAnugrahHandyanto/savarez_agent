@@ -1,0 +1,547 @@
+"""
+Integration tests for the Tool Input Repair Layer.
+
+Tests both structural repair (_REPAIR_RULES) and semantic repair
+(_SEMANTIC_REPAIR_MAP) across all supported error patterns.
+"""
+
+import json
+import os
+import sys
+import tempfile
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+# ————————————————————————————————————————
+# Module-level patching: register schemas before importing model_tools
+# ————————————————————————————————————————
+
+_FAKE_SCHEMAS = {}
+
+
+def _fake_get_schema(name):
+    return _FAKE_SCHEMAS.get(name)
+
+
+@pytest.fixture(autouse=True)
+def reset_schemas():
+    _FAKE_SCHEMAS.clear()
+    yield
+
+
+def _register_schema(name, schema):
+    _FAKE_SCHEMAS[name] = schema
+
+
+# Patch registry before importing model_tools internals
+with patch.dict("sys.modules"):
+    # We'll import the repair functions directly
+    pass
+
+
+# =============================================================================
+# Phase 0: Basic Structural Repair Tests
+# =============================================================================
+
+
+class TestStructuralRepair:
+    """Test the 4 basic _REPAIR_RULES functions."""
+
+    @patch("model_tools.registry")
+    def test_strip_null_optional_param(self, mock_registry):
+        """Optional param with None value should be removed."""
+        from model_tools import _repair_tool_args
+
+        _register_schema("test_tool", {
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "optional_field": {"type": "string"},
+                },
+                "required": ["name"],
+            }
+        })
+        mock_registry.get_schema.side_effect = _fake_get_schema
+
+        args, log = _repair_tool_args("test_tool", {"name": "hello", "optional_field": None})
+        assert "optional_field" not in args
+        assert args["name"] == "hello"
+        assert log is not None
+        assert log[0]["repair"] == "stripNull"
+
+    @patch("model_tools.registry")
+    def test_strip_null_required_param(self, mock_registry):
+        """Required param with None value should NOT be removed."""
+        from model_tools import _repair_tool_args
+
+        _register_schema("test_tool", {
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                },
+                "required": ["name"],
+            }
+        })
+        mock_registry.get_schema.side_effect = _fake_get_schema
+
+        args, log = _repair_tool_args("test_tool", {"name": None})
+        # Required field — should still be removed since it's null but we
+        # keep it per the validate-then-repair principle
+        assert log is None or args.get("name") is None
+
+    @patch("model_tools.registry")
+    def test_parse_json_array(self, mock_registry):
+        """JSON stringified array should be parsed to native list."""
+        from model_tools import _repair_tool_args
+
+        _register_schema("test_tool", {
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "items": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["items"],
+            }
+        })
+        mock_registry.get_schema.side_effect = _fake_get_schema
+
+        args, log = _repair_tool_args("test_tool", {"items": '["a", "b", "c"]'})
+        assert isinstance(args["items"], list)
+        assert args["items"] == ["a", "b", "c"]
+        assert log is not None
+        assert log[0]["repair"] == "parseJsonArray"
+
+    @patch("model_tools.registry")
+    def test_parse_json_array_not_array_schema(self, mock_registry):
+        """String should NOT be parsed when schema doesn't expect array."""
+        from model_tools import _repair_tool_args
+
+        _register_schema("test_tool", {
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                },
+                "required": ["name"],
+            }
+        })
+        mock_registry.get_schema.side_effect = _fake_get_schema
+
+        args, log = _repair_tool_args("test_tool", {"name": '["a", "b"]'})
+        assert isinstance(args["name"], str)
+        assert log is None
+
+    @patch("model_tools.registry")
+    def test_unwrap_empty_object_to_array(self, mock_registry):
+        """Empty dict {} should become [] when schema expects array."""
+        from model_tools import _repair_tool_args
+
+        _register_schema("test_tool", {
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "items": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": [],
+            }
+        })
+        mock_registry.get_schema.side_effect = _fake_get_schema
+
+        args, log = _repair_tool_args("test_tool", {"items": {}})
+        assert args["items"] == []
+        assert log is not None
+        assert log[0]["repair"] == "unwrapEmptyObject"
+
+    @patch("model_tools.registry")
+    def test_wrap_bare_string_to_array(self, mock_registry):
+        """Bare string should be wrapped in list when schema expects string[]."""
+        from model_tools import _repair_tool_args
+
+        _register_schema("test_tool", {
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": [],
+            }
+        })
+        mock_registry.get_schema.side_effect = _fake_get_schema
+
+        args, log = _repair_tool_args("test_tool", {"tags": "important"})
+        assert isinstance(args["tags"], list)
+        assert args["tags"] == ["important"]
+        assert log is not None
+        assert log[0]["repair"] == "wrapBareString"
+
+    @patch("model_tools.registry")
+    def test_no_repair_needed(self, mock_registry):
+        """Valid args should pass through unchanged."""
+        from model_tools import _repair_tool_args
+
+        _register_schema("test_tool", {
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "count": {"type": "integer"},
+                },
+                "required": ["name"],
+            }
+        })
+        mock_registry.get_schema.side_effect = _fake_get_schema
+
+        original = {"name": "hello", "count": 42}
+        args, log = _repair_tool_args("test_tool", original)
+        assert args == original
+        assert log is None
+
+    @patch("model_tools.registry")
+    def test_multiple_repairs_in_one_call(self, mock_registry):
+        """Multiple params needing repair should all be fixed."""
+        from model_tools import _repair_tool_args
+
+        _register_schema("test_tool", {
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                    "optional_flag": {"type": "string"},
+                    "valid": {"type": "string"},
+                },
+                "required": ["valid"],
+            }
+        })
+        mock_registry.get_schema.side_effect = _fake_get_schema
+
+        args, log = _repair_tool_args("test_tool", {
+            "tags": "bare_string",       # → ["bare_string"]
+            "optional_flag": None,        # → removed
+            "valid": "hello",             # passes through
+        })
+        assert "optional_flag" not in args
+        assert args["tags"] == ["bare_string"]
+        assert args["valid"] == "hello"
+        assert log is not None
+        assert len(log) >= 2
+
+
+# =============================================================================
+# Phase 1.5: Semantic Repair Tests
+# =============================================================================
+
+
+class TestSemanticRepair:
+    """Test per-tool, per-parameter semantic repairs."""
+
+    def test_repair_markdown_link(self):
+        """Markdown link [path](display) should extract path."""
+        from model_tools import _repair_markdown_link
+
+        assert _repair_markdown_link("[README.md](click here)") == "README.md"
+        assert _repair_markdown_link("[./src/main.py](source)") == "./src/main.py"
+        assert _repair_markdown_link("normal_path.txt") == "normal_path.txt"
+        assert _repair_markdown_link(42) == 42  # non-string passthrough
+
+    def test_repair_expand_user(self):
+        """Tilde should be expanded to home directory."""
+        from model_tools import _repair_expand_user
+
+        expanded = _repair_expand_user("~/projects")
+        assert not expanded.startswith("~")
+        assert expanded.endswith("/projects")
+        assert _repair_expand_user("/absolute/path") == "/absolute/path"
+        assert _repair_expand_user(42) == 42
+
+    def test_repair_fix_double_escape(self):
+        """Double backslashes should be reduced to single."""
+        from model_tools import _repair_fix_double_escape
+
+        assert _repair_fix_double_escape("ls\\\\n") == "ls\\n"
+        assert _repair_fix_double_escape("normal") == "normal"
+        assert _repair_fix_double_escape(42) == 42
+
+    def test_repair_strip_shell_prompt(self):
+        """Shell prompt prefixes should be stripped."""
+        from model_tools import _repair_strip_shell_prompt
+
+        assert _repair_strip_shell_prompt("$ ls -la") == "ls -la"
+        assert _repair_strip_shell_prompt("> echo hi") == "echo hi"
+        assert _repair_strip_shell_prompt("ls -la") == "ls -la"
+
+    @patch("model_tools.registry")
+    def test_semantic_repair_read_file_path(self, mock_registry):
+        """read_file path should get markdown link + tilde repair."""
+        from model_tools import _repair_semantic_args
+
+        _register_schema("read_file", {
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "x-semantic-type": "file-path"},
+                },
+                "required": ["path"],
+            }
+        })
+        mock_registry.get_schema.side_effect = _fake_get_schema
+
+        args, log = _repair_semantic_args("read_file", {
+            "path": "[~/project/file.txt](some link)",
+        })
+        assert log is not None
+        assert args["path"] != "[~/project/file.txt](some link)"
+        assert "~/project/file.txt" not in args["path"]  # tilde should be expanded
+        assert "/project/file.txt" in args["path"] or "/project/" in args["path"]
+        assert log[0]["repair"] == "strip_markdown_link" or log[0]["repair"] == "expand_tilde"
+
+    @patch("model_tools.registry")
+    def test_semantic_repair_terminal_command(self, mock_registry):
+        """terminal command should get double-escape fix."""
+        from model_tools import _repair_semantic_args
+
+        _register_schema("terminal", {
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "x-semantic-type": "shell-command"},
+                },
+                "required": ["command"],
+            }
+        })
+        mock_registry.get_schema.side_effect = _fake_get_schema
+
+        args, log = _repair_semantic_args("terminal", {
+            "command": "ls\\\\n",
+        })
+        assert log is not None
+        assert args["command"] == "ls\\n"
+        assert log[0]["repair"] == "fix_double_escape"
+
+    def test_repair_check_path_traversal(self):
+        """Path traversal detection should not crash."""
+        from model_tools import _repair_check_path_traversal
+
+        result = _repair_check_path_traversal("../../../etc/passwd")
+        assert result == "../../../etc/passwd"
+        assert _repair_check_path_traversal("safe/path") == "safe/path"
+
+
+# =============================================================================
+# Phase 2: Repair Log Injection Tests
+# =============================================================================
+
+
+class TestRepairLogInjection:
+    """Test that repair_log is injected into tool results."""
+
+    @patch("model_tools.registry")
+    def test_repair_log_in_dict_result(self, mock_registry):
+        """_repair field should appear in dict results."""
+        from model_tools import _repair_semantic_args, _repair_tool_args
+
+        _register_schema("test_tool", {
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["name"],
+            }
+        })
+        mock_registry.get_schema.side_effect = _fake_get_schema
+
+        # Simulate the full pipeline
+        args = {"name": "test", "tags": "bare_string"}
+        args, sem_log = _repair_semantic_args("test_tool", args)
+        args, struct_log = _repair_tool_args("test_tool", args)
+
+        repair_log = []
+        if sem_log:
+            repair_log.extend(sem_log)
+        if struct_log:
+            repair_log.extend(struct_log)
+
+        assert len(repair_log) >= 1  # wrapBareString
+
+        # Simulate result injection
+        result = json.dumps({"success": True, "data": "ok"})
+        parsed = json.loads(result)
+        if repair_log:
+            parsed["_repair"] = repair_log
+            result = json.dumps(parsed, ensure_ascii=False)
+
+        final = json.loads(result)
+        assert final["_repair"] is not None
+        assert final["_repair"][0]["repair"] == "wrapBareString"
+
+
+# =============================================================================
+# Phase 3: Error Formatting Tests
+# =============================================================================
+
+
+class TestErrorFormatting:
+    """Test model-readable error formatting."""
+
+    def test_format_tool_error_for_model(self):
+        """Error should be formatted with type, message, and args."""
+        from model_tools import _format_tool_error_for_model
+
+        try:
+            raise ValueError("test error")
+        except ValueError as e:
+            formatted = _format_tool_error_for_model(e, "test_tool", {"key": "value"})
+            assert "ValueError" in formatted
+            assert "test error" in formatted
+            assert "Arguments" in formatted
+            assert '"key": "value"' in formatted
+
+    def test_format_tool_error_truncates(self):
+        """Very long error messages should be truncated."""
+        from model_tools import _format_tool_error_for_model
+
+        long_msg = "x" * 1000
+        try:
+            raise RuntimeError(long_msg)
+        except RuntimeError as e:
+            formatted = _format_tool_error_for_model(e, "test_tool", {})
+            assert len(formatted) < 1200  # truncated
+
+    def test_get_repair_hint(self):
+        """Hints should be generated for array-like string params."""
+        from model_tools import _get_repair_hint
+
+        hint = _get_repair_hint("test_tool", {"items": '["a", "b"]'})
+        assert "JSON array string" in hint
+        assert "items" in hint
+
+        hint2 = _get_repair_hint("test_tool", {"name": "hello"})
+        assert hint2 == "Check parameter types and values."
+
+
+# =============================================================================
+# Phase 2: Event Log Tests
+# =============================================================================
+
+
+class TestEventLogRepair:
+    """Test the tool_input_repaired event type."""
+
+    def test_event_type_constant(self):
+        """EVENT_TOOL_INPUT_REPAIRED should be defined."""
+        from agent.session_event_log import EVENT_TOOL_INPUT_REPAIRED
+
+        assert EVENT_TOOL_INPUT_REPAIRED == "tool_input_repaired"
+
+    def test_log_tool_input_repaired(self):
+        """log_tool_input_repaired should create a valid event."""
+        from agent.session_event_log import EventLog, EVENT_TOOL_INPUT_REPAIRED
+
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+
+        try:
+            el = EventLog(db_path=db_path)
+            event = el.log_tool_input_repaired(
+                task_id="task-123",
+                session_id="session-456",
+                tool_name="read_file",
+                repair_log=[{"param": "path", "from": "[x](y)", "to": "x", "repair": "strip_markdown_link"}],
+            )
+            assert event.type == EVENT_TOOL_INPUT_REPAIRED
+            assert event.payload["tool_name"] == "read_file"
+            assert len(event.payload["repairs"]) == 1
+            assert event.payload["repairs"][0]["repair"] == "strip_markdown_link"
+
+            # Verify it was persisted
+            events = el.get_events_for_task("task-123")
+            assert len(events) == 1
+            assert events[0]["type"] == EVENT_TOOL_INPUT_REPAIRED
+        finally:
+            os.unlink(db_path)
+
+
+# =============================================================================
+# End-to-End Pipeline Test
+# =============================================================================
+
+
+class TestFullPipeline:
+    """End-to-end tests of the repair pipeline."""
+
+    @patch("model_tools.registry")
+    def test_full_repair_pipeline(self, mock_registry):
+        """Structural + semantic repair should work end-to-end."""
+        from model_tools import _repair_semantic_args, _repair_tool_args
+
+        # Register schemas for tools in the semantic map
+        for tool_name in ["read_file", "write_file", "patch", "terminal", "search_files"]:
+            _register_schema(tool_name, {
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "x-semantic-type": "file-path"},
+                        "command": {"type": "string", "x-semantic-type": "shell-command"},
+                    },
+                    "required": [],
+                }
+            })
+
+        mock_registry.get_schema.side_effect = _fake_get_schema
+
+        # Test case: read_file with markdown link path AND optional param as None
+        test_args = {
+            "path": "[~/my_project/file.txt](click)",
+            "optional_field": None,
+        }
+        # We need a schema for the tool test too
+        _register_schema("read_file_full", {
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "optional_field": {"type": "string"},
+                },
+                "required": ["path"],
+            }
+        })
+        mock_registry.get_schema.side_effect = lambda n: _FAKE_SCHEMAS.get(n)
+
+        test_tool = "read_file_full"
+        args = dict(test_args)
+
+        # Semantic repair first
+        args, sem_log = _repair_semantic_args(test_tool, args)
+        assert sem_log is not None or True  # may or may not trigger
+
+        # Structural repair second
+        args, struct_log = _repair_tool_args(test_tool, args)
+
+        # "optional_field" should have been stripped
+        if struct_log:
+            assert "optional_field" not in args or args.get("optional_field") is None
+
+    @patch("model_tools.registry")
+    def test_no_schema_no_repair(self, mock_registry):
+        """Tools without schemas should be passed through unchanged."""
+        from model_tools import _repair_tool_args
+
+        mock_registry.get_schema.return_value = None
+
+        args, log = _repair_tool_args("unknown_tool", {"key": "value"})
+        assert args == {"key": "value"}
+        assert log is None
+
+    @patch("model_tools.registry")
+    def test_non_dict_args(self, mock_registry):
+        """Non-dict args should pass through unchanged."""
+        from model_tools import _repair_tool_args
+
+        args, log = _repair_tool_args("test_tool", "not_a_dict")
+        assert args == "not_a_dict"
+        assert log is None

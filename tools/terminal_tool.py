@@ -2281,7 +2281,8 @@ TERMINAL_SCHEMA = {
         "properties": {
             "command": {
                 "type": "string",
-                "description": "The command to execute on the VM"
+                "description": "The command to execute on the VM",
+                "x-semantic-type": "shell-command"
             },
             "background": {
                 "type": "boolean",

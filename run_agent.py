@@ -9723,6 +9723,26 @@ class AIAgent:
             parent_agent=self,
         )
 
+    @staticmethod
+    def _inject_repair_log(result: str, repair_log: list) -> str:
+        """Inject repair_log into a tool result string (JSON)."""
+        try:
+            parsed = json.loads(result) if isinstance(result, str) else result
+            if isinstance(parsed, dict):
+                parsed["_repair"] = repair_log
+                return json.dumps(parsed, ensure_ascii=False)
+            elif isinstance(parsed, list):
+                return json.dumps({
+                    "result": parsed,
+                    "_repair": repair_log,
+                }, ensure_ascii=False)
+        except (ValueError, TypeError):
+            pass
+        return json.dumps({
+            "result": result,
+            "_repair": repair_log,
+        }, ensure_ascii=False)
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None,
                      pre_tool_block_checked: bool = False) -> str:
@@ -9732,6 +9752,20 @@ class AIAgent:
         tools. Used by the concurrent execution path; the sequential path retains
         its own inline invocation for backward-compatible display handling.
         """
+        # ── Tool Input Repair (Phase 0-1.5) ──
+        # Apply repair to all tools so agent-loop tools also benefit.
+        # Skip MCP tools (dynamic schema incompatible) and tools with no schema.
+        repair_log = None
+        if not function_name.startswith("mcp_"):
+            try:
+                from model_tools import _repair_semantic_args, _repair_tool_args
+                function_args, sem_log = _repair_semantic_args(function_name, function_args)
+                function_args, struct_log = _repair_tool_args(function_name, function_args)
+                if sem_log or struct_log:
+                    repair_log = (sem_log or []) + (struct_log or [])
+            except Exception:
+                pass  # Repair best-effort; don't block tool execution
+
         # Check plugin hooks for a block directive before executing anything.
         block_message: Optional[str] = None
         if not pre_tool_block_checked:
@@ -9747,22 +9781,28 @@ class AIAgent:
 
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
-            return _todo_tool(
+            result = _todo_tool(
                 todos=function_args.get("todos"),
                 merge=function_args.get("merge", False),
                 store=self._todo_store,
             )
+            if repair_log:
+                result = self._inject_repair_log(result, repair_log)
+            return result
         elif function_name == "session_search":
             if not self._session_db:
                 return json.dumps({"success": False, "error": "Session database not available."})
             from tools.session_search_tool import session_search as _session_search
-            return _session_search(
+            result = _session_search(
                 query=function_args.get("query", ""),
                 role_filter=function_args.get("role_filter"),
                 limit=function_args.get("limit", 3),
                 db=self._session_db,
                 current_session_id=self.session_id,
             )
+            if repair_log:
+                result = self._inject_repair_log(result, repair_log)
+            return result
         elif function_name == "memory":
             target = function_args.get("target", "memory")
             from tools.memory_tool import memory_tool as _memory_tool
@@ -9787,18 +9827,29 @@ class AIAgent:
                     )
                 except Exception:
                     pass
+            if repair_log:
+                result = self._inject_repair_log(result, repair_log)
             return result
         elif self._memory_manager and self._memory_manager.has_tool(function_name):
-            return self._memory_manager.handle_tool_call(function_name, function_args)
+            result = self._memory_manager.handle_tool_call(function_name, function_args)
+            if repair_log:
+                result = self._inject_repair_log(result, repair_log)
+            return result
         elif function_name == "clarify":
             from tools.clarify_tool import clarify_tool as _clarify_tool
-            return _clarify_tool(
+            result = _clarify_tool(
                 question=function_args.get("question", ""),
                 choices=function_args.get("choices"),
                 callback=self.clarify_callback,
             )
+            if repair_log:
+                result = self._inject_repair_log(result, repair_log)
+            return result
         elif function_name == "delegate_task":
-            return self._dispatch_delegate_task(function_args)
+            result = self._dispatch_delegate_task(function_args)
+            if repair_log:
+                result = self._inject_repair_log(result, repair_log)
+            return result
         else:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
