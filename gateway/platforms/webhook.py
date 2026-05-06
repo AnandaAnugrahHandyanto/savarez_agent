@@ -356,6 +356,8 @@ class WebhookAdapter(BasePlatformAdapter):
         # Check event type filter
         event_type = (
             request.headers.get("X-GitHub-Event", "")
+            or request.headers.get("X-Gitea-Event", "")
+            or request.headers.get("X-Forgejo-Event", "")
             or request.headers.get("X-GitLab-Event", "")
             or payload.get("event_type", "")
             or "unknown"
@@ -371,6 +373,47 @@ class WebhookAdapter(BasePlatformAdapter):
             return web.json_response(
                 {"status": "ignored", "event": event_type}
             )
+
+        # Denylist filters: skip noisy event types and senders without dispatch.
+        ignored_event_types = {
+            e.lower() for e in route_config.get("ignored_event_types", [])
+        }
+        if ignored_event_types and event_type.lower() in ignored_event_types:
+            logger.debug(
+                "[webhook] filtered route=%s event=%s reason=event_type_denied",
+                route_name,
+                event_type,
+            )
+            return web.json_response(
+                {
+                    "filtered": True,
+                    "reason": "event_type_denied",
+                    "event_type": event_type,
+                }
+            )
+
+        ignored_senders = {
+            s.lower() for s in route_config.get("ignored_senders", [])
+        }
+        if ignored_senders:
+            sender_login = ""
+            sender = payload.get("sender") if isinstance(payload, dict) else None
+            if isinstance(sender, dict):
+                sender_login = (sender.get("login") or "").lower()
+            if sender_login and sender_login in ignored_senders:
+                logger.debug(
+                    "[webhook] filtered route=%s event=%s sender=%s reason=sender_denied",
+                    route_name,
+                    event_type,
+                    sender_login,
+                )
+                return web.json_response(
+                    {
+                        "filtered": True,
+                        "reason": "sender_denied",
+                        "sender": sender_login,
+                    }
+                )
 
         # Format prompt from template
         prompt_template = route_config.get("prompt", "")

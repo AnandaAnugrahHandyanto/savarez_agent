@@ -758,3 +758,229 @@ class TestDeliverCrossPlatformThreadId:
         mock_target.send.assert_awaited_once_with(
             "12345", "hello", metadata=None
         )
+
+
+# ===================================================================
+# Sender / event-type denylist filters (Forgejo/Gitea/GitHub firehose)
+# ===================================================================
+
+
+class TestDenylistFilters:
+    """Tests for `ignored_senders` and `ignored_event_types` per-route config."""
+
+    @pytest.mark.asyncio
+    async def test_ignored_sender_returns_200_filtered(self):
+        """sender.login matching ignored_senders returns 200 filtered, no dispatch."""
+        routes = {
+            "fj": {
+                "secret": _INSECURE_NO_AUTH,
+                "ignored_senders": ["dependabot"],
+                "prompt": "x",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/fj",
+                json={"action": "opened", "sender": {"login": "dependabot"}},
+                headers={"X-Forgejo-Event": "pull_request"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["filtered"] is True
+            assert data["reason"] == "sender_denied"
+            assert data["sender"] == "dependabot"
+            adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_ignored_event_type_returns_200_filtered(self):
+        """event type matching ignored_event_types returns 200 filtered, no dispatch."""
+        routes = {
+            "fj": {
+                "secret": _INSECURE_NO_AUTH,
+                "ignored_event_types": ["status"],
+                "prompt": "x",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/fj",
+                json={"sender": {"login": "alice"}},
+                headers={"X-Forgejo-Event": "status"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["filtered"] is True
+            assert data["reason"] == "event_type_denied"
+            assert data["event_type"] == "status"
+            adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sender_match_is_case_insensitive(self):
+        """ignored_senders comparison is case-insensitive in both directions."""
+        routes = {
+            "fj": {
+                "secret": _INSECURE_NO_AUTH,
+                "ignored_senders": ["Dependabot"],
+                "prompt": "x",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/fj",
+                json={"sender": {"login": "DEPENDABOT"}},
+                headers={"X-Forgejo-Event": "push"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["filtered"] is True
+            assert data["reason"] == "sender_denied"
+
+    @pytest.mark.asyncio
+    async def test_event_type_match_is_case_insensitive(self):
+        """ignored_event_types comparison is case-insensitive."""
+        routes = {
+            "fj": {
+                "secret": _INSECURE_NO_AUTH,
+                "ignored_event_types": ["STATUS"],
+                "prompt": "x",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/fj",
+                json={"sender": {"login": "alice"}},
+                headers={"X-Forgejo-Event": "status"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["filtered"] is True
+            assert data["reason"] == "event_type_denied"
+
+    @pytest.mark.asyncio
+    async def test_missing_sender_does_not_filter(self):
+        """A payload with no sender field is dispatched (defensive default)."""
+        routes = {
+            "fj": {
+                "secret": _INSECURE_NO_AUTH,
+                "ignored_senders": ["dependabot"],
+                "prompt": "x",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/fj",
+                json={"action": "opened"},  # no sender at all
+                headers={"X-Forgejo-Event": "pull_request"},
+            )
+            assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_allowlist_takes_precedence_over_denylist(self):
+        """If event is excluded by `events` allowlist, response uses the existing
+        'ignored' shape, not the new 'filtered' shape."""
+        routes = {
+            "fj": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["pull_request"],          # only PR events allowed
+                "ignored_event_types": ["push"],     # also denylisted, but allowlist hits first
+                "prompt": "x",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/fj",
+                json={"sender": {"login": "alice"}},
+                headers={"X-Forgejo-Event": "push"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data.get("status") == "ignored"
+            assert "filtered" not in data
+
+    @pytest.mark.asyncio
+    async def test_forgejo_event_header_detected(self):
+        """X-Forgejo-Event header is recognised for event-type filtering."""
+        routes = {
+            "fj": {
+                "secret": _INSECURE_NO_AUTH,
+                "ignored_event_types": ["status"],
+                "prompt": "x",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/fj",
+                json={"sender": {"login": "alice"}},
+                headers={"X-Forgejo-Event": "status"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["filtered"] is True
+
+    @pytest.mark.asyncio
+    async def test_gitea_event_header_detected(self):
+        """X-Gitea-Event header is recognised for event-type filtering."""
+        routes = {
+            "gt": {
+                "secret": _INSECURE_NO_AUTH,
+                "ignored_event_types": ["status"],
+                "prompt": "x",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gt",
+                json={"sender": {"login": "alice"}},
+                headers={"X-Gitea-Event": "status"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["filtered"] is True
+
+    @pytest.mark.asyncio
+    async def test_no_filter_config_is_backward_compatible(self):
+        """Routes with neither denylist key behave exactly as before."""
+        routes = {"plain": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/plain",
+                json={"sender": {"login": "dependabot"}},
+                headers={"X-GitHub-Event": "push"},
+            )
+            assert resp.status == 202
