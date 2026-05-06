@@ -2054,12 +2054,46 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     )
                 }, ensure_ascii=False)
 
-            # Collect text from content blocks
+            # Collect text + image content from MCP result blocks. MCP servers
+            # can return ImageContent (per the MCP spec); we cache them to the
+            # shared Hermes image cache and surface their paths in the text so
+            # the agent can follow up with vision_analyze. Without this,
+            # ImageContent was silently dropped — MCP tools that return
+            # rendered diagrams, screenshots, OCR previews, etc. were unusable.
             parts: List[str] = []
+            cached_image_paths: List[str] = []
             for block in (result.content or []):
-                if hasattr(block, "text"):
+                if hasattr(block, "text") and block.text is not None:
                     parts.append(block.text)
+                elif hasattr(block, "data") and hasattr(block, "mimeType") and block.data:
+                    try:
+                        import base64 as _b64
+                        import mimetypes as _mt
+                        from gateway.platforms.base import cache_image_from_bytes
+                        raw = _b64.b64decode(block.data)
+                        ext = _mt.guess_extension(block.mimeType) or ".png"
+                        path = cache_image_from_bytes(raw, ext=ext)
+                        cached_image_paths.append(path)
+                        logger.info(
+                            "[mcp] cached image from %s.%s -> %s (%d bytes, %s)",
+                            server_name, tool_name, path, len(raw), block.mimeType,
+                        )
+                    except Exception as _e:
+                        logger.warning(
+                            "[mcp] failed to cache image content from %s.%s: %s",
+                            server_name, tool_name, _e,
+                        )
             text_result = "\n".join(parts) if parts else ""
+            if cached_image_paths:
+                _img_note = "\n".join(
+                    f"- {p}" for p in cached_image_paths
+                )
+                _img_section = (
+                    f"\n\n[The tool returned {len(cached_image_paths)} image(s). "
+                    f"To inspect them, call vision_analyze with image_path set to "
+                    f"one of these local paths:\n{_img_note}\n]"
+                )
+                text_result = (text_result + _img_section) if text_result else _img_section.lstrip()
 
             # Combine content + structuredContent when both are present.
             # MCP spec: content is model-oriented (text), structuredContent
