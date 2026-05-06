@@ -24,7 +24,7 @@ def build_recipe_catalogue(enabled_tool_names: set[str] | None) -> str:
     if "research_web" in get_recipe_names(enabled_tool_names):
         lines.append(
             "  research_web(question, topic_type='auto', freshness='auto', "
-            "depth='thorough', max_sources=8) — DEFAULT for search/research/report/latest/current tasks; returns citation-ready evidence"
+            "depth='thorough', max_sources=8) — FIRST CALL for search/research/report/latest/current tasks; returns citation-ready evidence"
         )
     if "medical_pharma_research" in get_recipe_names(enabled_tool_names):
         lines.append(
@@ -41,7 +41,7 @@ def build_recipe_help_registry(
     if "research_web" in get_recipe_names(enabled_tool_names):
         compact = (
             "  research_web(question, topic_type='auto', freshness='auto', "
-            "depth='thorough', max_sources=8) — DEFAULT for search/research/report/latest/current tasks"
+            "depth='thorough', max_sources=8) — FIRST CALL for search/research/report/latest/current tasks"
         )
         full = (
             "Core CodeAct recipe for source-grounded web research.\n\n"

@@ -156,7 +156,7 @@ def test_research_recipe_is_injected_and_calls_research_gather():
     ]
 
 
-def test_codeact_web_search_redirects_research_queries_to_research_gather():
+def test_codeact_web_search_redirects_research_queries_to_research_web():
     registry = MagicMock(spec=ToolRegistry)
     registry._snapshot_entries.return_value = [
         _entry("research_gather", "research_search"),
@@ -175,7 +175,10 @@ def test_codeact_web_search_redirects_research_queries_to_research_gather():
 
     result = namespace["web_search"]("latest GLP-1 GIP drugs in development 2026", limit=5)
 
-    assert '"success": true' in result
+    assert result["success"] is True
+    assert result["redirected_from"] == "web_search"
+    assert result["redirected_to"] == "research_web"
+    assert "do not debug web_search" in result["agent_instruction"]
     assert calls == [
         (
             "research_gather",
@@ -188,7 +191,9 @@ def test_codeact_web_search_redirects_research_queries_to_research_gather():
             },
         )
     ]
-    assert "automatically routed through research_gather" in namespace["help"]("web_search")
+    assert "automatically routed through research_web/research_gather" in namespace[
+        "help"
+    ]("web_search")
 
 
 def test_codeact_web_search_keeps_targeted_nonresearch_queries_raw():
@@ -242,6 +247,6 @@ def test_codeact_web_search_redirect_can_be_disabled():
             {"query": "latest GLP-1 GIP drugs in development 2026", "limit": 5},
         )
     ]
-    assert "automatically routed through research_gather" not in namespace["help"](
+    assert "automatically routed through research_web/research_gather" not in namespace["help"](
         "web_search"
     )

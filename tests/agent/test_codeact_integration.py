@@ -142,6 +142,16 @@ class TestRunCodeSchemaEnvelope:
         assert "Core recipes:" in desc
         assert "research_web" in desc
 
+    def test_research_first_call_guidance_is_explicit(self):
+        from agent.codeact_tool import build_run_code_schema
+
+        schema = build_run_code_schema("## web\n  web_search(query) — search")
+        desc = schema["description"]
+
+        assert "result = research_web(question=USER_REQUEST" in desc
+        assert "result = medical_pharma_research(question=USER_REQUEST)" in desc
+        assert "Do not start by debugging web_search" in desc
+
     def test_required_fields_unchanged(self):
         from agent.codeact_tool import build_run_code_schema
         schema = build_run_code_schema("", envelope_mode=True)

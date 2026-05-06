@@ -127,8 +127,8 @@ two string fields:
   "code"     — the Python code to execute (required)
 
 Example:
-  {"thoughts": "I need to search for X, then store the result.",
-   "code": "result = web_search(query='X')\\nstore_memory(note=result)"}
+  {"thoughts": "I need source-grounded current evidence.",
+   "code": "result = research_web(question='X', freshness='latest')"}
 
 Do NOT output markdown fences, prose, or any text outside this JSON object.\
 """
@@ -172,8 +172,14 @@ def build_run_code_schema(
         "• Call print(help()) for the full tool list, "
         "print(help('name')) for full parameter docs.\n"
         "• Prefer existing Hermes tools before environment probing or package installs.\n\n"
-        "For search/research/report/latest/current tasks, prefer high-level "
-        "research recipes over raw web_search. Final research reports must "
+        "For search/research/report/latest/current/as-of-date tasks, the first "
+        "code call should usually be:\n"
+        "  result = research_web(question=USER_REQUEST, freshness='latest', "
+        "depth='thorough', max_sources=8)\n"
+        "For drug/clinical-trial/pharma tasks, use:\n"
+        "  result = medical_pharma_research(question=USER_REQUEST)\n"
+        "Do not start by debugging web_search, importing tools, inspecting "
+        "sys.modules, or curling search engines. Final research reports must "
         "include citation metadata or a source table from the evidence bundle.\n\n"
         + workflow_block
         + recipe_block

@@ -223,11 +223,13 @@ def _build_workflow_guidance_for_tool_names(tool_names: set[str]) -> str:
 
     if "research_gather" in tool_names:
         lines.append(
-            "- Search/research/report/latest/current/as-of-date tasks: first call "
-            "research_web(question=..., freshness='latest' for current requests) "
-            "or medical_pharma_research(...) for drug/clinical-trial/pharma work. "
-            "Do not start with raw web_search, browser_navigate, curl, or "
-            "Wikipedia. The bundle includes source_table/citation_metadata; "
+            "- Search/research/report/latest/current/as-of-date tasks: FIRST call "
+            "result = research_web(question=USER_REQUEST, freshness='latest', "
+            "depth='thorough'). For drug/clinical-trial/pharma work, FIRST call "
+            "medical_pharma_research(question=USER_REQUEST). Do not start with "
+            "raw web_search, help('web_search'), sys.modules/namespace probing, "
+            "browser_navigate, curl, or Wikipedia. The bundle includes "
+            "source_table/citation_metadata; "
             "final research reports must cite those sources outside run_code. "
             "If rate-limited, JS-challenged, bot-blocked, or Cloudflare/Wikipedia "
             "blocked, try browser/Camofox/Scrapling fallbacks when available "
@@ -381,13 +383,13 @@ def build_tool_namespace_source(
         _search_redirect_hint = (
             " In CodeAct, research-shaped queries are classified by "
             "agent.research_search.intent.classify_research_intent and "
-            "automatically routed through research_gather so the result "
+            "automatically routed through research_web/research_gather so the result "
             "includes citation metadata and gap analysis. This is configurable "
             "with codeact.research.redirect_web_search. Call research_web(...) "
             "directly for reports."
         )
         compact, full = help_registry["web_search"]
-        if "automatically routed through research_gather" not in full:
+        if "automatically routed through research_web/research_gather" not in full:
             help_registry["web_search"] = (compact, full + _search_redirect_hint)
 
     if "browser_navigate" in help_registry:
@@ -516,12 +518,12 @@ def build_tool_namespace_source(
         lines.append("# --- Research-shaped web_search redirect ---")
         lines.append(textwrap.dedent("""\
         def web_search(query: str, limit: int = 5):
-            \"\"\"Search the web, auto-routing research-shaped queries to research_gather.
+            \"\"\"Search the web, auto-routing research-shaped queries to research_web.
 
             For search/research/report/latest/current/as-of-date and medical/pharma
             pipeline queries, this CodeAct wrapper delegates the decision to
-            agent.research_search.intent.classify_research_intent and returns
-            the research_gather evidence bundle instead of low-level snippets.
+            agent.research_search.intent.classify_research_intent and returns a
+            parsed research_web evidence bundle instead of low-level snippets.
             \"\"\"
             _q = str(query or '')
             try:
@@ -539,13 +541,40 @@ def build_tool_namespace_source(
                     _max_pages = int(limit or 8)
                 except Exception:
                     _max_pages = 8
-                return _call_tool('research_gather', {
+                _max_pages = max(1, min(_max_pages, 12))
+                if 'research_web' in globals():
+                    _result = research_web(
+                        _q,
+                        topic_type=_topic_type,
+                        freshness=_freshness,
+                        depth='thorough',
+                        max_sources=_max_pages,
+                    )
+                    if isinstance(_result, dict):
+                        _result.setdefault('redirected_from', 'web_search')
+                        _result.setdefault('redirected_to', 'research_web')
+                        _result.setdefault(
+                            'agent_instruction',
+                            'Use this evidence bundle for the final answer; do not debug web_search or curl search engines unless the bundle explicitly reports source gaps.',
+                        )
+                    return _result
+                import json as _json
+                _raw = _call_tool('research_gather', {
                     'question': _q,
                     'topic_type': _topic_type,
                     'freshness': _freshness,
                     'depth': 'thorough',
-                    'max_pages': max(1, min(_max_pages, 12)),
+                    'max_pages': _max_pages,
                 })
+                try:
+                    _parsed = _json.loads(_raw)
+                    if isinstance(_parsed, dict):
+                        _parsed.setdefault('redirected_from', 'web_search')
+                        _parsed.setdefault('redirected_to', 'research_gather')
+                        return _parsed
+                except Exception:
+                    pass
+                return _raw
             return _call_tool('web_search', {'query': query, 'limit': limit})
         """))
         lines.append("")
