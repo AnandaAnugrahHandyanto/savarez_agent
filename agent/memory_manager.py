@@ -454,6 +454,24 @@ class MemoryManager:
                 )
         return "\n\n".join(parts)
 
+    def on_tool_call_complete(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        result: str,
+        **kwargs,
+    ) -> None:
+        """Notify all providers after a tool result is finalized."""
+        for provider in self._providers:
+            try:
+                provider.on_tool_call_complete(tool_name, args, result, **kwargs)
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' on_tool_call_complete failed: %s",
+                    provider.name,
+                    e,
+                )
+
     @staticmethod
     def _provider_memory_write_metadata_mode(provider: MemoryProvider) -> str:
         """Return how to pass metadata to a provider's memory-write hook."""

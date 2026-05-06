@@ -28,6 +28,7 @@ Optional hooks (override to opt in):
   on_pre_compress(messages) -> str       — extract before context compression
   on_memory_write(action, target, content, metadata=None) — mirror built-in memory writes
   on_delegation(task, result, **kwargs)  — parent-side observation of subagent work
+  on_tool_call_complete(tool_name, args, result, **kwargs) — observe finalized tool results
 """
 
 from __future__ import annotations
@@ -222,6 +223,20 @@ class MemoryProvider(ABC):
         task: the delegation prompt
         result: the subagent's final response
         child_session_id: the subagent's session_id
+        """
+
+    def on_tool_call_complete(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        result: str,
+        **kwargs,
+    ) -> None:
+        """Called after a tool result is finalized for model consumption.
+
+        Use for checkpoint counters, lightweight audit breadcrumbs, and
+        provider-side observations. ``result`` is the final string after any
+        result persistence/truncation step.
         """
 
     def get_config_schema(self) -> List[Dict[str, Any]]:

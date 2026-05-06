@@ -715,6 +715,16 @@ Full user-facing docs: `website/docs/user-guide/features/kanban.md`.
 
 ## Important Policies
 
+### Obsidian Layer 3 Memory Discipline for Eva/Hermes
+
+Eva uses a four-layer memory model:
+1. Built-in memory (`MEMORY.md` / `USER.md`) — tiny always-injected facts and pointers.
+2. `AGENTS.md` + `SOUL.md` — operating rules and behavior.
+3. Obsidian vault — large on-demand memory, read at session start / after compaction / when details are needed, and written for task starts, checkpoints every 3-5 substantial tool calls, completions, corrections, and session-end flushes.
+4. Session search — automatic archive for last-resort recall.
+
+Current vault path is `/Volumes/MAC MINI DRIVE/obsidian-vault` (prefer `OBSIDIAN_VAULT_PATH`). Use `Agent-Shared/` for cross-agent durable truth and `Agent-Eva/` for Eva-private working state. Never write inside `Agent-Aria/`, `Agent-Hermes/`, or `Agent-Cowork/` unless explicitly operating as that agent/profile. If an Obsidian provider is active, it should implement the same discipline automatically; file-tool manual breadcrumbs are still acceptable when provider support is unavailable.
+
 ### Prompt Caching Must Not Break
 
 Hermes-Agent ensures caching remains valid throughout a conversation. **Do NOT implement changes that would:**

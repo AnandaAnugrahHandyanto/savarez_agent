@@ -1774,6 +1774,7 @@ class AIAgent:
                             "platform": platform or "cli",
                             "hermes_home": str(get_hermes_home()),
                             "agent_context": "primary",
+                            "config": _agent_cfg,
                         }
                         # Thread session title for memory provider scoping
                         # (e.g. honcho uses this to derive chat-scoped session keys)
@@ -9931,6 +9932,20 @@ class AIAgent:
                 env=get_active_env(effective_task_id),
             )
 
+            if self._memory_manager and not blocked:
+                try:
+                    self._memory_manager.on_tool_call_complete(
+                        name,
+                        args,
+                        function_result,
+                        tool_call_id=tc.id,
+                        duration=tool_duration,
+                        is_error=bool(r[4]) if r is not None else False,
+                        session_id=self.session_id or "",
+                    )
+                except Exception:
+                    pass
+
             subdir_hints = self._subdirectory_hints.check_tool_call(name, args)
             if subdir_hints:
                 function_result += subdir_hints
@@ -10318,6 +10333,20 @@ class AIAgent:
                 tool_use_id=tool_call.id,
                 env=get_active_env(effective_task_id),
             )
+
+            if self._memory_manager and not _execution_blocked:
+                try:
+                    self._memory_manager.on_tool_call_complete(
+                        function_name,
+                        function_args,
+                        function_result,
+                        tool_call_id=tool_call.id,
+                        duration=tool_duration,
+                        is_error=_is_error_result,
+                        session_id=self.session_id or "",
+                    )
+                except Exception:
+                    pass
 
             # Discover subdirectory context files from tool arguments
             subdir_hints = self._subdirectory_hints.check_tool_call(function_name, function_args)
