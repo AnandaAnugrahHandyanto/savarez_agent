@@ -1723,8 +1723,31 @@ def list_picker_providers(
         current_model=current_model,
     )
 
+    # Optional explicit allowlist: display.model_picker_providers in config.yaml.
+    # When set, the picker shows ONLY these provider slugs (plus the current
+    # provider, always). Empty/missing -> no filtering (legacy behavior).
+    allowlist: set[str] = set()
+    try:
+        from hermes_cli.config import load_config
+
+        _cfg = load_config() or {}
+        _disp = _cfg.get("display", {}) if isinstance(_cfg, dict) else {}
+        _raw = _disp.get("model_picker_providers") if isinstance(_disp, dict) else None
+        if isinstance(_raw, str):
+            allowlist = {s.strip().lower() for s in _raw.split(",") if s.strip()}
+        elif isinstance(_raw, (list, tuple)):
+            allowlist = {str(s).strip().lower() for s in _raw if str(s).strip()}
+    except Exception:
+        allowlist = set()
+    if allowlist and current_provider:
+        allowlist.add(str(current_provider).strip().lower())
+
     filtered: List[dict] = []
     for p in providers:
+        if allowlist:
+            slug_check = str(p.get("slug", "")).lower()
+            if slug_check not in allowlist:
+                continue
         slug = str(p.get("slug", "")).lower()
         if slug == "openrouter":
             try:

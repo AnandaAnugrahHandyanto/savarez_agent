@@ -1657,3 +1657,25 @@ Override the working directory:
 MESSAGING_CWD=/home/myuser/projects    # Gateway sessions
 TERMINAL_CWD=/workspace                # All terminal sessions
 ```
+
+## Model Picker Allowlist
+
+Limit which providers appear in the interactive `/model` picker (the inline keyboard surfaced by Telegram, Discord, and other gateway adapters) by setting `display.model_picker_providers` in `~/.hermes/config.yaml`.
+
+```yaml
+display:
+  # Only show these providers in the /model picker.
+  # Slugs are case-insensitive. The currently active provider is always
+  # included even if it is not in the list.
+  model_picker_providers:
+    - openai
+    - anthropic
+    - openrouter
+```
+
+Notes:
+
+- A comma-separated string is also accepted: `model_picker_providers: "openai, anthropic, openrouter"`.
+- Empty or missing → no filtering (legacy behavior — all authenticated providers are listed).
+- Only the picker is filtered. The typed `/model <name>` switch is unaffected.
+- Useful when many providers are authenticated but only a few are worth surfacing in a quick chat picker.

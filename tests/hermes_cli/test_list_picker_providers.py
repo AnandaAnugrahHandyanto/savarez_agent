@@ -259,3 +259,94 @@ def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
     assert row["slug"] == "custom:ollama"
     assert row["is_current"] is True
     assert row["models"] == ["glm-5.1", "qwen3"]
+
+
+# ---------------------------------------------------------------------------
+# display.model_picker_providers allowlist
+# ---------------------------------------------------------------------------
+
+
+def _patch_authed(monkeypatch, providers):
+    monkeypatch.setattr(
+        model_switch, "list_authenticated_providers", lambda **kw: list(providers)
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_openrouter_models", lambda *a, **kw: []
+    )
+
+
+def _patch_config(monkeypatch, value):
+    """Patch hermes_cli.config.load_config to return display.model_picker_providers=value."""
+    cfg = {"display": {"model_picker_providers": value}} if value is not None else {}
+    import hermes_cli.config as _config_mod
+
+    monkeypatch.setattr(_config_mod, "load_config", lambda: cfg)
+
+
+def test_allowlist_filters_to_listed_providers(monkeypatch):
+    """When display.model_picker_providers is set, only listed slugs survive."""
+    base = [
+        _make_provider("openai", models=["gpt-4o"]),
+        _make_provider("anthropic", models=["claude-3.5"]),
+        _make_provider("groq", models=["llama-3"]),
+    ]
+    _patch_authed(monkeypatch, base)
+    _patch_config(monkeypatch, ["openai", "anthropic"])
+
+    result = model_switch.list_picker_providers(max_models=50)
+    slugs = {p["slug"] for p in result}
+    assert slugs == {"openai", "anthropic"}
+
+
+def test_allowlist_always_includes_current_provider(monkeypatch):
+    """Current provider is implicitly added to the allowlist."""
+    base = [
+        _make_provider("openai", models=["gpt-4o"]),
+        _make_provider("groq", models=["llama-3"], is_current=True),
+    ]
+    _patch_authed(monkeypatch, base)
+    # Allowlist excludes groq, but groq is the current provider.
+    _patch_config(monkeypatch, ["openai"])
+
+    result = model_switch.list_picker_providers(
+        current_provider="groq", max_models=50
+    )
+    slugs = {p["slug"] for p in result}
+    assert "groq" in slugs
+    assert "openai" in slugs
+
+
+def test_empty_or_missing_allowlist_is_no_op(monkeypatch):
+    """No allowlist => legacy unfiltered behavior."""
+    base = [
+        _make_provider("openai", models=["gpt-4o"]),
+        _make_provider("anthropic", models=["claude-3.5"]),
+        _make_provider("groq", models=["llama-3"]),
+    ]
+    _patch_authed(monkeypatch, base)
+    _patch_config(monkeypatch, None)  # no display.model_picker_providers key
+
+    result = model_switch.list_picker_providers(max_models=50)
+    slugs = {p["slug"] for p in result}
+    assert slugs == {"openai", "anthropic", "groq"}
+
+    # Empty list also means "no filter"
+    _patch_config(monkeypatch, [])
+    result = model_switch.list_picker_providers(max_models=50)
+    slugs = {p["slug"] for p in result}
+    assert slugs == {"openai", "anthropic", "groq"}
+
+
+def test_allowlist_accepts_comma_string(monkeypatch):
+    """display.model_picker_providers may be a comma-separated string."""
+    base = [
+        _make_provider("openai", models=["gpt-4o"]),
+        _make_provider("anthropic", models=["claude-3.5"]),
+        _make_provider("groq", models=["llama-3"]),
+    ]
+    _patch_authed(monkeypatch, base)
+    _patch_config(monkeypatch, "openai, anthropic")
+
+    result = model_switch.list_picker_providers(max_models=50)
+    slugs = {p["slug"] for p in result}
+    assert slugs == {"openai", "anthropic"}
