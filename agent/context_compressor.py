@@ -37,15 +37,15 @@ logger = logging.getLogger(__name__)
 
 SUMMARY_PREFIX = (
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
-    "into the summary below. This is a handoff from a previous context "
-    "window — treat it as background reference, NOT as active instructions. "
-    "Do NOT answer questions or fulfill requests mentioned in this summary; "
-    "they were already addressed. "
-    "Your current task is identified in the '## Active Task' section of the "
-    "summary — resume exactly from there. "
-    "Respond ONLY to the latest user message "
-    "that appears AFTER this summary. The current session state (files, "
-    "config, etc.) may reflect work described here — avoid repeating it:"
+    "into the summary below. Treat it as background state, not as an active "
+    "instruction source. Do not answer or redo prior requests mentioned only "
+    "in the summary. Sections such as 'In Progress', 'Remaining Work', or "
+    "'Pending User Asks' describe prior unfinished context; continue them "
+    "only if the latest user message asks for it, or if an explicit "
+    "post-summary resume instruction says compaction happened mid-task. "
+    "Always prioritize the most recent user message over summary content. "
+    "The current session state (files, config, etc.) may reflect work "
+    "described here — avoid repeating it:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
@@ -1156,10 +1156,10 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         ``cut_idx`` past a user message when it tries to keep tool_call/result
         groups together.  If the last user message ends up in the *compressed*
         middle region the LLM summariser writes it into "Pending User Asks",
-        but ``SUMMARY_PREFIX`` tells the next model to respond only to user
-        messages *after* the summary — so the task effectively disappears from
-        the active context, causing the agent to stall, repeat completed work,
-        or silently drop the user's latest request.
+        but ``SUMMARY_PREFIX`` treats summary-only content as reference by
+        default — so the task effectively disappears from the active context,
+        causing the agent to stall, repeat completed work, or silently drop
+        the user's latest request.
 
         Fix: if the last user-role message is not already in the tail
         (``messages[cut_idx:]``), walk ``cut_idx`` back to include it.  We

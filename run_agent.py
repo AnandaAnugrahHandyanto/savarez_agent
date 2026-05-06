@@ -9233,6 +9233,9 @@ class AIAgent:
             focus_topic,
         )
 
+        # Detect mid-task state before compression rewrites the message list.
+        _was_mid_task = bool(messages and messages[-1].get("role") == "tool")
+
         # Notify external memory provider before compression discards context
         if self._memory_manager:
             try:
@@ -9276,6 +9279,26 @@ class AIAgent:
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:
             compressed.append({"role": "user", "content": todo_snapshot})
+
+        # When compression fires mid-task, inject a resume signal so the
+        # model continues tool execution instead of stopping to summarize.
+        # Merges into existing user message (e.g. todo_snapshot) to avoid
+        # consecutive same-role messages that some providers reject.
+        if _was_mid_task:
+            _resume = (
+                "[SYSTEM: Context was auto-compacted while you were "
+                "actively executing a multi-step task. This is an "
+                "explicit post-summary resume instruction: review the "
+                "summary and any remaining context above, then CONTINUE "
+                "the task. Do NOT summarize progress or ask the user "
+                "what to do — just continue where you left off.]"
+            )
+            if compressed and compressed[-1].get("role") == "user":
+                compressed[-1]["content"] = (
+                    compressed[-1].get("content", "") + "\n\n" + _resume
+                )
+            else:
+                compressed.append({"role": "user", "content": _resume})
 
         self._invalidate_system_prompt()
         new_system_prompt = self._build_system_prompt(system_message)
