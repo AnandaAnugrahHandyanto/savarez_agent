@@ -107,6 +107,21 @@ TOOLSETS = {
         "tools": ["terminal", "process"],
         "includes": []
     },
+
+    "mac_local": {
+        "description": (
+            "Mac local-node workstation surface: system status/capabilities, "
+            "file operations, terminal/process execution, project context, "
+            "Mac UI primitives, and local coding-agent workers. Opt-in by "
+            "toolset selection and returns structured offline errors until "
+            "a Mac local node is configured."
+        ),
+        "tools": [
+            "mac_system", "mac_fs", "mac_terminal", "mac_project_context",
+            "mac_ui", "mac_agent",
+        ],
+        "includes": [],
+    },
     
     "moa": {
         "description": "Advanced reasoning and problem-solving tools",

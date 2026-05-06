@@ -65,6 +65,7 @@ Or in-session:
 | `file` | `patch`, `read_file`, `search_files`, `write_file` | File reading, writing, searching, and editing. |
 | `homeassistant` | `ha_call_service`, `ha_get_state`, `ha_list_entities`, `ha_list_services` | Smart home control via Home Assistant. Only available when `HASS_TOKEN` is set. |
 | `image_gen` | `image_generate` | Text-to-image generation via FAL.ai (with opt-in OpenAI / xAI backends). |
+| `mac_local` | `mac_agent`, `mac_fs`, `mac_project_context`, `mac_system`, `mac_terminal`, `mac_ui` | Opt-in Mac local-node workstation surface for status/capabilities, token-efficient file operations, terminal/process execution, project context, UI primitives, and local coding-agent workers. |
 | `memory` | `memory` | Persistent cross-session memory management. |
 | `messaging` | `send_message` | Send messages to other platforms (Telegram, Discord, etc.) from within a session. |
 | `moa` | `mixture_of_agents` | Multi-model consensus via Mixture of Agents. |
