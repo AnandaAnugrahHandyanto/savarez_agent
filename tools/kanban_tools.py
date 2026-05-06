@@ -1,8 +1,10 @@
 """Kanban tools — structured tool-call surface for worker + orchestrator agents.
 
-These tools are only registered into the model's schema when the agent is
-running under the dispatcher (env var ``HERMES_KANBAN_TASK`` set). A
-normal ``hermes chat`` session sees **zero** kanban tools in its schema.
+Task lifecycle tools are registered into the model's schema when the
+agent is running under the dispatcher (env var ``HERMES_KANBAN_TASK``
+set). Board-routing tools are registered only for non-worker profiles
+that explicitly enable the ``kanban`` toolset. A normal ``hermes chat``
+session sees **zero** kanban tools in its schema.
 
 Why tools instead of just shelling out to ``hermes kanban``?
 
@@ -20,8 +22,8 @@ Why tools instead of just shelling out to ``hermes kanban``?
 
 Humans continue to use the CLI (``hermes kanban …``), the dashboard
 (``hermes dashboard``), and the slash command (``/kanban …``) — all
-three bypass the agent entirely. The tools are ONLY for the worker
-agent's handoff back to the kernel.
+three bypass the agent entirely. The tools are only for agent handoffs
+back to the kernel.
 """
 from __future__ import annotations
 
@@ -39,8 +41,25 @@ logger = logging.getLogger(__name__)
 # Gating
 # ---------------------------------------------------------------------------
 
+KANBAN_LIST_DEFAULT_LIMIT = 50
+KANBAN_LIST_MAX_LIMIT = 200
+
+
+def _profile_has_kanban_toolset() -> bool:
+    # Uses load_config() which has mtime-based caching, so this adds
+    # negligible overhead. The check_fn results are further TTL-cached
+    # (~30s) by the tool registry.
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        toolsets = cfg.get("toolsets", [])
+        return "kanban" in toolsets
+    except Exception:
+        return False
+
+
 def _check_kanban_mode() -> bool:
-    """Tools are available when:
+    """Task-lifecycle tools are available when:
 
     1. ``HERMES_KANBAN_TASK`` is set (dispatcher-spawned worker), OR
     2. The current profile has ``kanban`` in its toolsets config
@@ -53,18 +72,20 @@ def _check_kanban_mode() -> bool:
     """
     if os.environ.get("HERMES_KANBAN_TASK"):
         return True
+    return _profile_has_kanban_toolset()
 
-    # Check if the current profile has the kanban toolset enabled.
-    # Uses load_config() which has mtime-based caching, so this adds
-    # negligible overhead. The check_fn results are further TTL-cached
-    # (~30s) by the tool registry.
-    try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        toolsets = cfg.get("toolsets", [])
-        return "kanban" in toolsets
-    except Exception:
+
+def _check_kanban_orchestrator_mode() -> bool:
+    """Board-routing tools are intentionally hidden from task workers.
+
+    Dispatcher-spawned workers should close their own task via the
+    lifecycle tools (complete/block/heartbeat), not route or archive board
+    state. Profiles that explicitly opt into the kanban toolset and are
+    not scoped to a single task are the orchestrator surface.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK"):
         return False
+    return _profile_has_kanban_toolset()
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +178,16 @@ def _parse_bool_arg(args: dict, name: str, *, default: bool = False):
     if text in ("false", "0", "no"):
         return False, None
     return default, f"{name} must be a boolean or 'true'/'false'"
+
+
+def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return tool_error(
+            f"{tool_name} is orchestrator-only; dispatcher-spawned workers "
+            "must use kanban_complete, kanban_block, kanban_heartbeat, or "
+            "kanban_comment for their assigned task."
+        )
+    return None
 
 
 def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
@@ -261,6 +292,9 @@ def _handle_show(args: dict, **kw) -> str:
 
 def _handle_list(args: dict, **kw) -> str:
     """List task summaries with the same core filters as the CLI."""
+    guard = _require_orchestrator_tool("kanban_list")
+    if guard:
+        return guard
     assignee = args.get("assignee")
     status = args.get("status")
     tenant = args.get("tenant")
@@ -268,6 +302,8 @@ def _handle_list(args: dict, **kw) -> str:
     if bool_error:
         return tool_error(bool_error)
     limit = args.get("limit")
+    if limit is None:
+        limit = KANBAN_LIST_DEFAULT_LIMIT
     if limit is not None:
         try:
             limit = int(limit)
@@ -275,23 +311,35 @@ def _handle_list(args: dict, **kw) -> str:
             return tool_error("limit must be an integer")
         if limit < 1:
             return tool_error("limit must be >= 1")
+        if limit > KANBAN_LIST_MAX_LIMIT:
+            return tool_error(f"limit must be <= {KANBAN_LIST_MAX_LIMIT}")
     try:
         kb, conn = _connect()
         try:
             # Match CLI list: dependencies that cleared since the last
             # dispatcher tick should be visible to orchestrators immediately.
             promoted = kb.recompute_ready(conn)
-            tasks = kb.list_tasks(
+            rows = kb.list_tasks(
                 conn,
                 assignee=assignee,
                 status=status,
                 tenant=tenant,
                 include_archived=include_archived,
-                limit=limit,
+                # Fetch one extra row so model-facing output can report that
+                # a bounded listing was truncated without dumping the board.
+                limit=limit + 1,
             )
+            truncated = len(rows) > limit
+            tasks = rows[:limit]
             return json.dumps({
                 "tasks": [_task_summary_dict(kb, conn, t) for t in tasks],
                 "count": len(tasks),
+                "limit": limit,
+                "truncated": truncated,
+                "next_limit": (
+                    min(limit * 2, KANBAN_LIST_MAX_LIMIT)
+                    if truncated and limit < KANBAN_LIST_MAX_LIMIT else None
+                ),
                 "promoted": promoted,
             })
         finally:
@@ -539,6 +587,9 @@ def _handle_create(args: dict, **kw) -> str:
 
 def _handle_assign(args: dict, **kw) -> str:
     """Assign or reassign a task. ``assignee`` may be 'none' to unassign."""
+    guard = _require_orchestrator_tool("kanban_assign")
+    if guard:
+        return guard
     tid = args.get("task_id")
     if not tid:
         return tool_error("task_id is required")
@@ -567,6 +618,9 @@ def _handle_assign(args: dict, **kw) -> str:
 
 def _handle_unblock(args: dict, **kw) -> str:
     """Transition a blocked task back to ready."""
+    guard = _require_orchestrator_tool("kanban_unblock")
+    if guard:
+        return guard
     tid = args.get("task_id")
     if not tid:
         return tool_error("task_id is required")
@@ -589,6 +643,9 @@ def _handle_unblock(args: dict, **kw) -> str:
 
 def _handle_archive(args: dict, **kw) -> str:
     """Archive a task so it leaves active board views."""
+    guard = _require_orchestrator_tool("kanban_archive")
+    if guard:
+        return guard
     tid = args.get("task_id")
     if not tid:
         return tool_error("task_id is required")
@@ -668,7 +725,8 @@ KANBAN_LIST_SCHEMA = {
         "work to route. Supports the same core filters as the CLI: assignee, "
         "status, tenant, include_archived, and limit. Returns compact rows "
         "with ids, title, status, assignee, priority, parent/child ids, and "
-        "counts. Also recomputes ready tasks before listing, matching the CLI."
+        "counts. Bounded to 50 rows by default, 200 max, with truncation "
+        "metadata. Also recomputes ready tasks before listing, matching the CLI."
     ),
     "parameters": {
         "type": "object",
@@ -695,7 +753,7 @@ KANBAN_LIST_SCHEMA = {
             },
             "limit": {
                 "type": "integer",
-                "description": "Optional maximum number of tasks to return.",
+                "description": "Optional maximum rows to return (default 50, max 200).",
             },
         },
         "required": [],
@@ -983,8 +1041,8 @@ KANBAN_ASSIGN_SCHEMA = {
         "Assign or reassign a Kanban task to a profile/lane. Pass "
         "assignee='none' to unassign. Refuses running tasks that still "
         "have an active claim, matching the CLI/kernel safety guard. "
-        "Dispatcher-spawned workers may only assign their own task; "
-        "orchestrator profiles with the kanban toolset can route board work."
+        "Only orchestrator profiles with the kanban toolset can route board "
+        "work; dispatcher-spawned task workers never see this tool."
     ),
     "parameters": {
         "type": "object",
@@ -1008,9 +1066,9 @@ KANBAN_ASSIGN_SCHEMA = {
 KANBAN_UNBLOCK_SCHEMA = {
     "name": "kanban_unblock",
     "description": (
-        "Move a blocked Kanban task back to ready. Dispatcher-spawned "
-        "workers may only unblock their own task; orchestrator profiles "
-        "with the kanban toolset can unblock routed work."
+        "Move a blocked Kanban task back to ready. Only orchestrator profiles "
+        "with the kanban toolset can unblock routed work; dispatcher-spawned "
+        "task workers never see this tool."
     ),
     "parameters": {
         "type": "object",
@@ -1029,8 +1087,8 @@ KANBAN_ARCHIVE_SCHEMA = {
     "description": (
         "Archive a Kanban task so it leaves active board views. If a run is "
         "still open, the kernel closes it as reclaimed. Dispatcher-spawned "
-        "workers may only archive their own task; orchestrator profiles with "
-        "the kanban toolset can archive routed work."
+        "task workers never see this tool; orchestrator profiles with the "
+        "kanban toolset can archive routed work."
     ),
     "parameters": {
         "type": "object",
@@ -1080,7 +1138,7 @@ registry.register(
     toolset="kanban",
     schema=KANBAN_LIST_SCHEMA,
     handler=_handle_list,
-    check_fn=_check_kanban_mode,
+    check_fn=_check_kanban_orchestrator_mode,
     emoji="📋",
 )
 
@@ -1134,7 +1192,7 @@ registry.register(
     toolset="kanban",
     schema=KANBAN_ASSIGN_SCHEMA,
     handler=_handle_assign,
-    check_fn=_check_kanban_mode,
+    check_fn=_check_kanban_orchestrator_mode,
     emoji="👤",
 )
 
@@ -1143,7 +1201,7 @@ registry.register(
     toolset="kanban",
     schema=KANBAN_UNBLOCK_SCHEMA,
     handler=_handle_unblock,
-    check_fn=_check_kanban_mode,
+    check_fn=_check_kanban_orchestrator_mode,
     emoji="▶",
 )
 
@@ -1152,7 +1210,7 @@ registry.register(
     toolset="kanban",
     schema=KANBAN_ARCHIVE_SCHEMA,
     handler=_handle_archive,
-    check_fn=_check_kanban_mode,
+    check_fn=_check_kanban_orchestrator_mode,
     emoji="🗄",
 )
 
