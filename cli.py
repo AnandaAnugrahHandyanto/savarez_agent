@@ -1283,9 +1283,7 @@ def _cprint(text: str):
     except Exception:
         app = None
 
-    # No active app, or we're already on the app's main thread: the
-    # direct prompt_toolkit print is safe and matches existing behavior
-    # (spinner frames, streamed tokens, tool activity prefixes, …).
+    # No active app → direct prompt_toolkit print is fine.
     if app is None or not getattr(app, "_is_running", False):
         _pt_print(_PT_ANSI(text))
         return
@@ -1303,10 +1301,18 @@ def _cprint(text: str):
         current_loop = _asyncio.get_event_loop_policy().get_event_loop()
     except Exception:
         current_loop = None
-    # Same thread as the app's loop → safe to print directly.
+
+    # Even on the app's own loop, out-of-band prints should still go through
+    # run_in_terminal so prompt_toolkit hides/re-renders the bottom chrome
+    # atomically. Direct _pt_print here can leave behind a duplicate prompt/status
+    # bar after helpers like /redraw clear the screen.
     if current_loop is loop and loop.is_running():
-        _pt_print(_PT_ANSI(text))
-        return
+        try:
+            run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            return
+        except Exception:
+            _pt_print(_PT_ANSI(text))
+            return
 
     # Cross-thread emission: ask the app's event loop to schedule a
     # ``run_in_terminal`` that wraps ``_pt_print``.  This hides the
@@ -2345,9 +2351,15 @@ class HermesCLI:
         except Exception:
             pass
         try:
-            app.invalidate()
+            if getattr(app, "_is_running", False) and hasattr(app, "_redraw"):
+                app._redraw()
+            else:
+                app.invalidate()
         except Exception:
-            pass
+            try:
+                app.invalidate()
+            except Exception:
+                pass
 
     def _set_terminal_focus_reporting(self, enabled: bool) -> None:
         """Best-effort toggle for xterm focus-reporting mode (CSI ?1004 h/l).
@@ -2380,22 +2392,41 @@ class HermesCLI:
     def _handle_terminal_focus_in(self) -> None:
         """Auto-heal duplicated UI after an external terminal repaint.
 
-        We only redraw when a focus-out happened first, which avoids a noisy
-        full-screen clear on the initial startup focus event. A small startup
-        grace window prevents terminals that emit an immediate focus handshake
-        on launch from triggering an unnecessary repaint.
+        Most terminals send a focus-out before the matching focus-in, but some
+        workspace/tab managers appear to deliver only the focus-in when Hermes
+        becomes visible again. Support both patterns:
+
+        - focus-out → focus-in: redraw immediately after the return event
+        - focus-in only: redraw after a longer post-start grace window
+
+        The startup grace window avoids noisy clears from the terminal's initial
+        focus handshake on launch, and the redraw throttle prevents repeated
+        focus-in bursts from causing flicker.
         """
-        if not getattr(self, "_focus_redraw_pending", False):
-            return
         now = time.monotonic()
-        if (now - getattr(self, "_focus_reporting_started_at", 0.0)) < 0.25:
+        started_at = getattr(self, "_focus_reporting_started_at", 0.0)
+        pending = getattr(self, "_focus_redraw_pending", False)
+
+        # Initial terminal handshakes can emit focus-in almost immediately on
+        # launch; ignore those unless we previously saw a matching focus-out.
+        if (now - started_at) < (0.25 if pending else 1.0):
             return
-        if (now - getattr(self, "_last_focus_redraw", 0.0)) < 0.1:
+        if not pending and not getattr(self, "_focus_reporting_enabled", False):
+            return
+        cooldown = 0.1 if pending else 1.0
+        if (now - getattr(self, "_last_focus_redraw", 0.0)) < cooldown:
             self._focus_redraw_pending = False
             return
         self._focus_redraw_pending = False
         self._last_focus_redraw = now
-        self._force_full_redraw()
+        if pending:
+            self._force_full_redraw()
+        else:
+            # Some multiplexers send focus-in without a matching focus-out while
+            # the app is already visible. Treat those as a light prompt refresh,
+            # not a destructive full-screen clear, so spurious focus bursts don't
+            # keep pushing duplicate bottom bars into scrollback.
+            self._invalidate(min_interval=0.0)
 
     def _status_bar_context_style(self, percent_used: Optional[int]) -> str:
         if percent_used is None:
@@ -2991,6 +3022,16 @@ class HermesCLI:
 
         return paste_ref_re.sub(_expand_ref, text)
 
+    def _print_scrollback_spacer(self) -> None:
+        """Emit a blank scrollback line via prompt_toolkit-safe output.
+
+        Direct ``print()`` from the process/background threads races with the
+        prompt area redraw and can leave behind duplicated prompt/status rows.
+        Route even blank spacer lines through ``_cprint`` so prompt_toolkit can
+        suspend, print above the input area, and redraw cleanly.
+        """
+        _cprint("")
+
     def _print_user_message_preview(self, user_input: str) -> None:
         """Render a user message using the normal chat scrollback style."""
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
@@ -3318,7 +3359,7 @@ class HermesCLI:
         self._command_status = status
         self._invalidate(min_interval=0.0)
         try:
-            print(f"⏳ {status}")
+            _cprint(f"⏳ {status}")
             yield
         finally:
             self._command_running = False
@@ -6828,7 +6869,7 @@ class HermesCLI:
                 if self._app:
                     self._app.invalidate()
                     time.sleep(0.05)  # brief pause for refresh
-                print()
+                self._print_scrollback_spacer()
                 ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
                 _cprint(f"  ✅ Background task #{task_num} complete")
                 _cprint(f"  Prompt: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"")
@@ -6868,7 +6909,7 @@ class HermesCLI:
                 if self._app:
                     self._app.invalidate()
                     time.sleep(0.05)
-                print()
+                self._print_scrollback_spacer()
                 _cprint(f"  ❌ Background task #{task_num} failed: {e}")
             finally:
                 try:
@@ -11588,7 +11629,7 @@ class HermesCLI:
                     paste_refs = list(_paste_ref_re.finditer(user_input)) if isinstance(user_input, str) else []
                     if paste_refs:
                         user_input = self._expand_paste_references(user_input)
-                    print()
+                    self._print_scrollback_spacer()
                     self._print_user_message_preview(user_input)
                     
                     # Show image attachment count

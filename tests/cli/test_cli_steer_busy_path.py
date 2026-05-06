@@ -52,6 +52,8 @@ def _make_cli():
         "prompt_toolkit.layout.menus": MagicMock(),
         "prompt_toolkit.widgets": MagicMock(),
         "prompt_toolkit.key_binding": MagicMock(),
+        "prompt_toolkit.input": MagicMock(),
+        "prompt_toolkit.input.ansi_escape_sequences": MagicMock(ANSI_SEQUENCES={}),
         "prompt_toolkit.completion": MagicMock(),
         "prompt_toolkit.formatted_text": MagicMock(),
         "prompt_toolkit.auto_suggest": MagicMock(),

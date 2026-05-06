@@ -111,8 +111,8 @@ def test_cprint_bg_thread_schedules_on_app_loop(monkeypatch):
     assert direct_prints == ["💾 Self-improvement review: Skill updated"]
 
 
-def test_cprint_same_thread_as_app_loop_direct_print(monkeypatch):
-    """App running on same thread → direct print (no scheduling)."""
+def test_cprint_same_thread_as_app_loop_uses_run_in_terminal(monkeypatch):
+    """App running on same thread → still route through run_in_terminal."""
     direct_prints = []
     monkeypatch.setattr(cli, "_pt_print", lambda x: direct_prints.append(x))
     monkeypatch.setattr(cli, "_PT_ANSI", lambda t: t)
@@ -139,11 +139,19 @@ def test_cprint_same_thread_as_app_loop_direct_print(monkeypatch):
     fake_app = SimpleNamespace(_is_running=True, loop=fake_loop)
     fake_pt_app = types.ModuleType("prompt_toolkit.application")
     fake_pt_app.get_app_or_none = lambda: fake_app
-    fake_pt_app.run_in_terminal = lambda *a, **kw: None
+    run_in_terminal_calls = []
+
+    def _fake_run_in_terminal(func, **kw):
+        run_in_terminal_calls.append(func)
+        func()
+        return None
+
+    fake_pt_app.run_in_terminal = _fake_run_in_terminal
     monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
 
     cli._cprint("x")
 
+    assert len(run_in_terminal_calls) == 1
     assert direct_prints == ["x"]
 
 

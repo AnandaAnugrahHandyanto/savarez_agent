@@ -39,6 +39,8 @@ def _make_cli(user_message_preview=None):
         "prompt_toolkit.layout.menus": MagicMock(),
         "prompt_toolkit.widgets": MagicMock(),
         "prompt_toolkit.key_binding": MagicMock(),
+        "prompt_toolkit.input": MagicMock(),
+        "prompt_toolkit.input.ansi_escape_sequences": MagicMock(ANSI_SEQUENCES={}),
         "prompt_toolkit.completion": MagicMock(),
         "prompt_toolkit.formatted_text": MagicMock(),
         "prompt_toolkit.auto_suggest": MagicMock(),
@@ -90,3 +92,23 @@ class TestSubmittedUserMessagePreview:
         assert "line3" in rendered
         assert "line4" in rendered
         assert "(+1 more line)" in rendered
+
+    def test_scrollback_spacer_uses_cprint(self):
+        cli = _make_cli()
+
+        with patch.object(_cli_mod, "_cprint") as mock_cprint:
+            cli._print_scrollback_spacer()
+
+        mock_cprint.assert_called_once_with("")
+
+    def test_busy_command_uses_cprint_for_status_line(self):
+        cli = _make_cli()
+
+        with patch.object(_cli_mod, "_cprint") as mock_cprint:
+            with cli._busy_command("Running doctor"):
+                assert cli._command_running is True
+                assert cli._command_status == "Running doctor"
+
+        mock_cprint.assert_called_once_with("⏳ Running doctor")
+        assert cli._command_running is False
+        assert cli._command_status == ""

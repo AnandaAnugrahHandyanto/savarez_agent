@@ -2,6 +2,7 @@
 
 from unittest.mock import patch
 
+import cli as _cli_mod
 from cli import HermesCLI
 
 
@@ -25,11 +26,12 @@ class TestCLILoadingIndicator:
             print("skills done")
 
         with patch.object(cli_obj, "_handle_skills_command", side_effect=fake_handle), \
-             patch.object(cli_obj, "_invalidate") as invalidate_mock:
+             patch.object(cli_obj, "_invalidate") as invalidate_mock, \
+             patch.object(_cli_mod, "_cprint") as mock_cprint:
             assert cli_obj.process_command("/skills search kubernetes")
 
         output = capsys.readouterr().out
-        assert "⏳ Searching skills..." in output
+        mock_cprint.assert_called_once_with("⏳ Searching skills...")
         assert "skills done" in output
         assert seen == {
             "cmd": "/skills search kubernetes",
@@ -57,11 +59,12 @@ class TestCLILoadingIndicator:
 
         with patch.object(cli_obj, "_reload_mcp", side_effect=fake_reload), \
              patch.object(cli_obj, "_invalidate") as invalidate_mock, \
-             patch("cli.load_cli_config", return_value=fake_cfg):
+             patch("cli.load_cli_config", return_value=fake_cfg), \
+             patch.object(_cli_mod, "_cprint") as mock_cprint:
             assert cli_obj.process_command("/reload-mcp")
 
         output = capsys.readouterr().out
-        assert "⏳ Reloading MCP servers..." in output
+        mock_cprint.assert_called_once_with("⏳ Reloading MCP servers...")
         assert "reload done" in output
         assert seen == {
             "running": True,

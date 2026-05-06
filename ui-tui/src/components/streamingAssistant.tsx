@@ -1,17 +1,65 @@
+import { Box, NoSelect, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { memo } from 'react'
 
 import type { AppLayoutProgressProps } from '../app/interfaces.js'
+import { ROLE } from '../domain/roles.js'
 import { toggleTodoCollapsed, useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { appendToolShelfMessage } from '../lib/liveProgress.js'
 import type { DetailsMode, Msg, SectionVisibility } from '../types.js'
 
 import { MessageLine } from './messageLine.js'
+import { Spinner } from './thinking.js'
 import { TodoPanel } from './todoPanel.js'
 
 const groupedSegments = (segments: Msg[]): Msg[] =>
   segments.reduce<Msg[]>((acc, msg) => appendToolShelfMessage(acc, msg), [])
+
+export function submissionPlaceholderLabel({
+  busy,
+  hasLiveContent,
+  status
+}: {
+  busy: boolean
+  hasLiveContent: boolean
+  status: string
+}) {
+  if (!busy || hasLiveContent) {
+    return null
+  }
+
+  if (status === 'running…') {
+    return 'working…'
+  }
+
+  return status || 'working…'
+}
+
+const PendingAssistantLine = memo(function PendingAssistantLine({
+  cols,
+  label
+}: {
+  cols: number
+  label: string
+}) {
+  const ui = useStore($uiState)
+  const { glyph, prefix } = ROLE.assistant(ui.theme)
+
+  return (
+    <Box marginBottom={1}>
+      <NoSelect flexShrink={0} fromLeftEdge width={3}>
+        <Text color={prefix}>{glyph} </Text>
+      </NoSelect>
+
+      <Box width={Math.max(20, cols - 5)}>
+        <Text color={ui.theme.color.muted}>
+          <Spinner color={ui.theme.color.accent} variant="think" /> {label}
+        </Text>
+      </Box>
+    </Box>
+  )
+})
 
 export const StreamingAssistant = memo(function StreamingAssistant({
   cols,
@@ -27,6 +75,9 @@ export const StreamingAssistant = memo(function StreamingAssistant({
   const streaming = useTurnSelector(state => state.streaming)
   const activeTools = useTurnSelector(state => state.tools)
   const showStreamingArea = Boolean(streaming)
+  const hasLiveContent =
+    Boolean(streamSegments.length) || Boolean(streamPendingTools.length) || Boolean(activeTools.length) || showStreamingArea
+  const pendingLabel = submissionPlaceholderLabel({ busy: ui.busy, hasLiveContent, status: ui.status })
 
   if (!progress.showProgressArea && !showStreamingArea && !activeTools.length) {
     return null
@@ -34,6 +85,8 @@ export const StreamingAssistant = memo(function StreamingAssistant({
 
   return (
     <>
+      {pendingLabel ? <PendingAssistantLine cols={cols} label={pendingLabel} /> : null}
+
       {groupedSegments(streamSegments).map((msg, i) => (
         <MessageLine
           cols={cols}
