@@ -586,6 +586,14 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_app_mention(event, say):
                 await self._handle_slack_message(event)
 
+            # Slack can emit app_home_opened whenever a user opens the bot's
+            # App Home. Hermes does not currently render a home tab, but the
+            # event still needs to be acknowledged so slack-bolt does not log
+            # noisy "Unhandled request" warnings.
+            @self._app.event("app_home_opened")
+            async def handle_app_home_opened(event, say):
+                pass
+
             # File lifecycle events can arrive around snippet uploads even when
             # the actual user message is what we care about. Ack them so Slack
             # doesn't log noisy 404 "unhandled request" warnings.

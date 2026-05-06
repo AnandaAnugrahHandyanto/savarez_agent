@@ -306,6 +306,12 @@ class TestExtractMedia:
         assert media == [("/path/to/audio.ogg", False)]
         assert cleaned == ""
 
+    def test_media_tag_placeholder_is_documentation_not_attachment(self):
+        content = "To send a file, include MEDIA:<local_path> in your response."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert cleaned == content
+
     def test_media_tag_strips_wrapping_quotes_and_backticks(self):
         content = "MEDIA: `/path/to/file.png`\nMEDIA:\"/path/to/file2.png\"\nMEDIA:'/path/to/file3.png'"
         media, cleaned = BasePlatformAdapter.extract_media(content)

@@ -2072,6 +2072,12 @@ class BasePlatformAdapter(ABC):
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
             if path:
+                # Treat placeholder examples like MEDIA:<path> / MEDIA:<local_path>
+                # as documentation, not as delivery directives. Otherwise help
+                # text and error messages can trigger noisy "file not found"
+                # warnings while stripping useful instructions from the reply.
+                if re.fullmatch(r"<[^>\n]+>", path):
+                    continue
                 media.append((os.path.expanduser(path), has_voice_tag))
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
@@ -2987,7 +2993,10 @@ class BasePlatformAdapter(ABC):
                 # Strip any remaining internal directives from message body (fixes #1561)
                 text_content = text_content.replace("[[audio_as_voice]]", "").strip()
                 text_content = text_content.replace("[[as_document]]", "").strip()
-                text_content = re.sub(r"MEDIA:\s*\S+", "", text_content).strip()
+                # Strip any remaining internal MEDIA directives conservatively.
+                # Preserve documentation placeholders like MEDIA:<local_path> so
+                # help text does not trigger accidental media cleanup.
+                text_content = re.sub(r"MEDIA:\s*(?!<[^>\n]+>)(?:~/|/)\S+", "", text_content).strip()
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
 
