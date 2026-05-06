@@ -341,6 +341,12 @@ class CopilotACPClient:
         self._acp_args = list(acp_args or args or _resolve_args())
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
         self._acp_backend = os.getenv("HERMES_ACP_BACKEND", "claude").strip().lower()
+        _VALID_ACP_BACKENDS = {"claude", "opencode"}
+        if self._acp_backend not in _VALID_ACP_BACKENDS:
+            raise ValueError(
+                f"Invalid HERMES_ACP_BACKEND='{self._acp_backend}'. "
+                f"Expected one of: {', '.join(sorted(_VALID_ACP_BACKENDS))}."
+            )
         self.chat = _ACPChatNamespace(self)
         self.is_closed = False
         self._active_process: subprocess.Popen[str] | None = None
@@ -373,12 +379,15 @@ class CopilotACPClient:
         tool_choice: Any = None,
         **_: Any,
     ) -> Any:
-        prompt_text = _format_messages_as_prompt(
-            messages or [],
-            model=model,
-            tools=tools,
-            tool_choice=tool_choice,
-        )
+        if self._acp_backend == "opencode":
+            prompt_text = ""  # not used in opencode mode — messages sent via ACP parts
+        else:
+            prompt_text = _format_messages_as_prompt(
+                messages or [],
+                model=model,
+                tools=tools,
+                tool_choice=tool_choice,
+            )
         # Normalise timeout: run_agent.py may pass an httpx.Timeout object
         # (used natively by the OpenAI SDK) rather than a plain float.
         if timeout is None:
@@ -460,9 +469,18 @@ class CopilotACPClient:
                 env=_build_subprocess_env(),
             )
         except FileNotFoundError as exc:
+            if self._acp_backend == "opencode":
+                install_hint = (
+                    "Install OpenCode (https://opencode.ai) "
+                    "or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH."
+                )
+            else:
+                install_hint = (
+                    "Install GitHub Copilot CLI "
+                    "or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH."
+                )
             raise RuntimeError(
-                f"Could not start Copilot ACP command '{self._acp_command}'. "
-                "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH."
+                f"Could not start ACP command '{self._acp_command}'. {install_hint}"
             ) from exc
 
         if proc.stdin is None or proc.stdout is None:
