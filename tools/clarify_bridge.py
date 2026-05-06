@@ -227,7 +227,36 @@ def gateway_clarify_callback(
             raise RuntimeError(f"Failed to send clarify question to user: {exc}") from exc
 
         # Block until a user message resolves the entry or the timeout fires.
-        got_signal = entry.event.wait(timeout=_timeout_secs)
+        # Poll in short slices so we can fire activity heartbeats every ~10s
+        # to the agent's inactivity tracker.  Without this, the blocking
+        # event.wait() never touches activity, and the gateway's inactivity
+        # watchdog (agent.gateway_timeout, default 1800s) kills the agent
+        # while the user is still deciding.  Mirrors the pattern in
+        # tools/approval.py's blocking approval wait loop.
+        try:
+            from tools.environments.base import touch_activity_if_due
+        except Exception:  # pragma: no cover
+            touch_activity_if_due = None
+
+        import time as _time
+        _now = _time.monotonic()
+        _deadline = _now + max(_timeout_secs, 0)
+        _activity_state = {"last_touch": _now, "start": _now}
+        got_signal = False
+        while True:
+            _remaining = _deadline - _time.monotonic()
+            if _remaining <= 0:
+                break
+            # 1s poll slice — event is set immediately when the user answers,
+            # so slice length only controls heartbeat cadence, not user-visible
+            # responsiveness.
+            if entry.event.wait(timeout=min(1.0, _remaining)):
+                got_signal = True
+                break
+            if touch_activity_if_due is not None:
+                touch_activity_if_due(
+                    _activity_state, "waiting for user clarify answer"
+                )
 
         if not got_signal:
             # Timeout — remove ourselves from the queue so a late user message
