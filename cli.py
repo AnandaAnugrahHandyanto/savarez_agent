@@ -2418,6 +2418,10 @@ class HermesCLI:
         self._image_counter = 0
         self.preloaded_skills: list[str] = []
         self._startup_skills_line_shown = False
+        self._status_bar_account_quota_label = ""
+        self._status_bar_account_usage_signature = None
+        self._status_bar_account_usage_fetched_at = 0.0
+        self._status_bar_account_usage_fetching = False
 
         # Voice mode state (also reinitialized inside run() for interactive TUI).
         self._voice_lock = threading.Lock()
@@ -2635,6 +2639,7 @@ class HermesCLI:
             "session_total_tokens": 0,
             "session_api_calls": 0,
             "compressions": 0,
+            "account_quota_label": "",
         }
 
         if not agent:
@@ -2659,7 +2664,62 @@ class HermesCLI:
             if context_length:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
 
+        snapshot["account_quota_label"] = self._get_status_bar_account_quota_label(agent)
         return snapshot
+
+    def _get_status_bar_account_quota_label(self, agent: Any) -> str:
+        """Return cached compact account-quota text for the status bar.
+
+        Refreshes asynchronously so the hot render path never blocks on a
+        provider API call.
+        """
+        provider = str(getattr(agent, "provider", "") or "").strip().lower()
+        if provider != "openai-codex":
+            return ""
+
+        base_url = str(getattr(agent, "base_url", "") or "")
+        signature = (provider, base_url)
+        now = time.time()
+        ttl_seconds = 60.0
+
+        cached_label = getattr(self, "_status_bar_account_quota_label", "") or ""
+        cached_sig = getattr(self, "_status_bar_account_usage_signature", None)
+        fetched_at = float(getattr(self, "_status_bar_account_usage_fetched_at", 0.0) or 0.0)
+        fetching = bool(getattr(self, "_status_bar_account_usage_fetching", False))
+
+        stale = (cached_sig != signature) or ((now - fetched_at) > ttl_seconds)
+        if stale and not fetching:
+            self._status_bar_account_usage_fetching = True
+
+            def _refresh_quota() -> None:
+                label = ""
+                try:
+                    from agent.account_usage import fetch_account_usage, render_account_usage_compact
+
+                    snapshot = fetch_account_usage(
+                        provider,
+                        base_url=getattr(agent, "base_url", None),
+                        api_key=getattr(agent, "api_key", None),
+                    )
+                    label = render_account_usage_compact(snapshot)
+                except Exception:
+                    label = ""
+                finally:
+                    self._status_bar_account_quota_label = label
+                    self._status_bar_account_usage_signature = signature
+                    self._status_bar_account_usage_fetched_at = time.time()
+                    self._status_bar_account_usage_fetching = False
+                    try:
+                        if getattr(self, "_app", None) is not None:
+                            self._app.invalidate()
+                    except Exception:
+                        pass
+
+            threading.Thread(target=_refresh_quota, daemon=True, name="status-bar-account-usage").start()
+
+        if cached_sig == signature:
+            return cached_label
+        return ""
 
     @staticmethod
     def _status_bar_display_width(text: str) -> int:
@@ -2852,6 +2912,9 @@ class HermesCLI:
 
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
             parts.append(duration_label)
+            quota_label = snapshot.get("account_quota_label")
+            if quota_label:
+                parts.append(quota_label)
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
                 parts.append(prompt_elapsed)
@@ -2914,6 +2977,10 @@ class HermesCLI:
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),
                     ]
+                    quota_label = snapshot.get("account_quota_label")
+                    if quota_label:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-dim", quota_label))
                     # Position 7: per-prompt elapsed timer (live or frozen)
                     prompt_elapsed = snapshot.get("prompt_elapsed")
                     if prompt_elapsed:

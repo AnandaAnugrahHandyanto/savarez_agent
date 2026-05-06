@@ -113,6 +113,29 @@ def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, mark
     return lines
 
 
+def render_account_usage_compact(snapshot: Optional[AccountUsageSnapshot]) -> str:
+    """Return a terse one-line quota summary suitable for a status bar."""
+    if not snapshot or snapshot.unavailable_reason:
+        return ""
+
+    preferred_labels = {"session", "current session", "primary", "five hour"}
+    window = None
+    for candidate in snapshot.windows:
+        if (candidate.label or "").strip().lower() in preferred_labels:
+            window = candidate
+            break
+    if window is None and snapshot.windows:
+        window = snapshot.windows[0]
+    if window is None or window.used_percent is None:
+        return ""
+
+    remaining = max(0, round(100 - float(window.used_percent)))
+    provider = (snapshot.provider or "").strip().lower()
+    if provider == "openai-codex":
+        return f"quota {remaining}%"
+    return f"acct {remaining}%"
+
+
 def _resolve_codex_usage_url(base_url: str) -> str:
     normalized = (base_url or "").strip().rstrip("/")
     if not normalized:
