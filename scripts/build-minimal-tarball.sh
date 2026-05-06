@@ -63,6 +63,11 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# ── Ensure OUTPUT_DIR is absolute (before any cd) ──
+if [[ "$OUTPUT_DIR" != /* ]]; then
+    OUTPUT_DIR="${REPO_ROOT}/${OUTPUT_DIR}"
+fi
+
 # ── Resolve version ──
 if [ -z "$VERSION" ]; then
     VERSION=$(grep -E '^version\s*=' "$REPO_ROOT/pyproject.toml" | head -1 | sed 's/.*"\(.*\)".*/\1/')
