@@ -7,16 +7,61 @@ Jaccard similarity reranking and trust-weighted scoring.
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .store import MemoryStore
 
+
+# FTS5's default unicode61 tokenizer treats consecutive CJK characters as a
+# single token (no Unicode word boundaries between Han / Hiragana / Katakana
+# code points), so a query like ``浅瀬記憶`` will only MATCH if the stored text
+# contains the exact substring as a whitespace-delimited token. That breaks
+# real-world Japanese / Chinese / Korean retrieval — see hermes-web-ui#395.
+# We detect CJK in the query and fall back to a LIKE scan; we also extend the
+# Jaccard tokenizer with character bigrams so the rerank stage actually scores
+# CJK overlap.
+_CJK_RE = re.compile(
+    "["
+    "぀-ゟ"  # Hiragana
+    "゠-ヿ"  # Katakana
+    "ｦ-ﾟ"  # Halfwidth Katakana
+    "㐀-䶿"  # CJK Unified Ideographs Extension A
+    "一-鿿"  # CJK Unified Ideographs
+    "豈-﫿"  # CJK Compatibility Ideographs
+    "가-힯"  # Hangul Syllables
+    "]"
+)
+
 try:
     from . import holographic as hrr
 except ImportError:
     import holographic as hrr  # type: ignore[no-redef]
+
+
+# Whitespace + common ASCII punctuation that we want to treat as term
+# separators in LIKE-fallback queries. Mirrors the strip set in _tokenize.
+_TERM_SPLIT_RE = re.compile(r"[\s.,;:!?\"'()\[\]{}#@<>/\\|]+")
+
+
+def _split_query_terms(query: str) -> list[str]:
+    """Lowercased non-empty terms from a free-form query."""
+    return [t for t in _TERM_SPLIT_RE.split(query.lower()) if t]
+
+
+def _escape_like(term: str) -> str:
+    r"""Escape a term for use inside a SQL ``LIKE`` pattern.
+
+    SQLite ``LIKE`` treats ``%`` and ``_`` as wildcards; we escape them
+    plus the backslash escape character. Callers must pair the resulting
+    pattern with ``ESCAPE '\\'`` if they ever embed user input in mid-pattern.
+    Here we always wrap with leading/trailing ``%`` ourselves and the
+    *content* of ``term`` is the only user-controlled segment, so escaping
+    these three characters is sufficient.
+    """
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 class FactRetriever:
@@ -489,7 +534,15 @@ class FactRetriever:
 
         Uses the store's database connection directly for FTS5 MATCH
         with rank scoring. Normalizes FTS5 rank to [0, 1] range.
+
+        For queries containing CJK characters, falls back to a LIKE scan
+        because the default ``unicode61`` tokenizer treats consecutive
+        CJK characters as a single token (see ``_CJK_RE`` above).
         """
+        # CJK queries bypass FTS5 entirely — see hermes-web-ui#395.
+        if _CJK_RE.search(query):
+            return self._like_candidates(query, category, min_trust, limit)
+
         conn = self.store._conn
 
         # Build query - FTS5 rank is negative (lower = better match)
@@ -541,20 +594,109 @@ class FactRetriever:
 
         return results
 
+    def _like_candidates(
+        self,
+        query: str,
+        category: str | None,
+        min_trust: float,
+        limit: int,
+    ) -> list[dict]:
+        """Substring fallback for queries that FTS5 can't tokenize.
+
+        Splits the query on whitespace and ASCII punctuation and emits one
+        ``content LIKE ?`` clause per resulting term. Stored content
+        matches if it contains *every* term as a substring (AND semantics,
+        same as FTS5's default). For CJK terms this finds occurrences
+        regardless of the surrounding-text token boundary that defeats
+        the unicode61 tokenizer.
+        """
+        terms = _split_query_terms(query)
+        if not terms:
+            return []
+
+        conn = self.store._conn
+
+        params: list = []
+        where_clauses = []
+        for term in terms:
+            where_clauses.append(
+                "(content LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')"
+            )
+            like_param = f"%{_escape_like(term)}%"
+            params.extend([like_param, like_param])
+
+        if category:
+            where_clauses.append("category = ?")
+            params.append(category)
+
+        where_clauses.append("trust_score >= ?")
+        params.append(min_trust)
+
+        where_sql = " AND ".join(where_clauses)
+        sql = f"""
+            SELECT *
+            FROM facts
+            WHERE {where_sql}
+            ORDER BY trust_score DESC, fact_id DESC
+            LIMIT ?
+        """
+        params.append(limit)
+
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        except Exception:
+            return []
+
+        if not rows:
+            return []
+
+        # No FTS rank available — assign a constant fts_rank so downstream
+        # weighting still works. The Jaccard rerank stage (which now emits
+        # CJK bigrams) and trust scoring carry the relevance signal.
+        results = []
+        for row in rows:
+            fact = dict(row)
+            fact["fts_rank"] = 0.5
+            results.append(fact)
+
+        return results
+
     @staticmethod
     def _tokenize(text: str) -> set[str]:
-        """Simple whitespace tokenization with lowercasing.
+        """Whitespace tokenization plus CJK character bigrams.
 
-        Strips common punctuation. No stemming/lemmatization (Phase 1).
+        For ASCII / Latin text this is the original behaviour: split on
+        whitespace, lowercase, strip common punctuation. For runs of CJK
+        characters (Hiragana / Katakana / Han / Hangul) we additionally
+        emit each character bigram, so the Jaccard rerank stage can score
+        overlap between e.g. ``承認フロー`` and ``承認フローについて``
+        (which share the bigrams ``承認``, ``認フ``, ``フロ``, ``ロー``).
+        Without this, CJK queries reach Jaccard with a single multi-char
+        token that almost never matches any stored token. See hermes-web-ui#395.
         """
         if not text:
             return set()
-        # Split on whitespace, lowercase, strip punctuation
-        tokens = set()
+        tokens: set[str] = set()
         for word in text.lower().split():
             cleaned = word.strip(".,;:!?\"'()[]{}#@<>")
-            if cleaned:
-                tokens.add(cleaned)
+            if not cleaned:
+                continue
+            tokens.add(cleaned)
+            # Emit CJK character bigrams from any contiguous CJK run inside
+            # the cleaned word. Mixed words (e.g. ``foo承認bar``) are handled
+            # by walking only the CJK spans.
+            run = []
+            for ch in cleaned:
+                if _CJK_RE.match(ch):
+                    run.append(ch)
+                    continue
+                if len(run) >= 2:
+                    for i in range(len(run) - 1):
+                        tokens.add(run[i] + run[i + 1])
+                run = []
+            if len(run) >= 2:
+                for i in range(len(run) - 1):
+                    tokens.add(run[i] + run[i + 1])
         return tokens
 
     @staticmethod
