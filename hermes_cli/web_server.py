@@ -147,7 +147,7 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
+def _is_accepted_host(host_header: str, bound_host: str, extra_hosts: list[str] | None = None) -> bool:
     """True if the Host header targets the interface we bound to.
 
     Accepts:
@@ -155,6 +155,7 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     - Loopback aliases when bound to loopback
     - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
       no protection possible at this layer)
+    - Any hostname listed in *extra_hosts* (e.g. Tailscale tailnet FQDN)
     """
     if not host_header:
         return False
@@ -175,6 +176,10 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     else:
         host_only = h.rsplit(":", 1)[0] if ":" in h else h
     host_only = host_only.lower()
+
+    # Check extra allowed hosts first (e.g. Tailscale tailnet FQDN).
+    if extra_hosts and host_only in extra_hosts:
+        return True
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
@@ -208,7 +213,8 @@ async def host_header_middleware(request: Request, call_next):
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host:
         host_header = request.headers.get("host", "")
-        if not _is_accepted_host(host_header, bound_host):
+        extra_hosts = getattr(app.state, "allowed_hosts", [])
+        if not _is_accepted_host(host_header, bound_host, extra_hosts):
             return JSONResponse(
                 status_code=400,
                 content={
@@ -4023,6 +4029,7 @@ def start_server(
     allow_public: bool = False,
     *,
     embedded_chat: bool = False,
+    allowed_hosts: list[str] | None = None,
 ):
     """Start the web UI server."""
     import uvicorn
@@ -4049,6 +4056,7 @@ def start_server(
     # PTY child uses to publish events to the dashboard sidebar.
     app.state.bound_host = host
     app.state.bound_port = port
+    app.state.allowed_hosts = [h.lower() for h in (allowed_hosts or [])]
 
     if open_browser:
         import webbrowser

@@ -8422,6 +8422,7 @@ def cmd_dashboard(args):
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
         embedded_chat=embedded_chat,
+        allowed_hosts=getattr(args, "allowed_hosts", []),
     )
 
 
@@ -10609,6 +10610,17 @@ Examples:
         "--insecure",
         action="store_true",
         help="Allow binding to non-localhost (DANGEROUS: exposes API keys on the network)",
+    )
+    dashboard_parser.add_argument(
+        "--allowed-host",
+        dest="allowed_hosts",
+        action="append",
+        default=[],
+        help=(
+            "Extra Host header value to accept (repeatable). "
+            "Useful when proxying via Tailscale Serve or a reverse proxy "
+            "that rewrites the Host header."
+        ),
     )
     dashboard_parser.add_argument(
         "--tui",
