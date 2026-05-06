@@ -508,7 +508,7 @@ class ObsidimemProvider(MemoryProvider):
             "observations": [{
                 "observer_name": self._config["observer_name"],
                 "observed_name": self._config["observed_name"],
-                "content": f"[memory:{target}:{action}] {content}",
+                "content": content,
                 "level": "explicit",
             }]
         }
@@ -519,6 +519,8 @@ class ObsidimemProvider(MemoryProvider):
             except Exception as e:
                 logger.debug("obsidimem: on_memory_write failed: %s", e)
 
+        if self._write_thread and self._write_thread.is_alive():
+            self._write_thread.join(timeout=5.0)
         self._write_thread = threading.Thread(target=_write, daemon=True, name="obsidimem-write")
         self._write_thread.start()
 
