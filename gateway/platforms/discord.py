@@ -776,8 +776,18 @@ class DiscordAdapter(BasePlatformAdapter):
             if self._slash_commands:
                 self._register_slash_commands()
 
+            # Register lifecycle event handlers for reconnection awareness
+            @self._client.event
+            async def on_disconnect():
+                logger.warning("[%s] WebSocket disconnected — discord.py will attempt to reconnect", adapter_self.name)
+
+            @self._client.event
+            async def on_resumed():
+                logger.info("[%s] WebSocket session resumed successfully", adapter_self.name)
+
             # Start the bot in background
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
+            self._bot_task.add_done_callback(self._on_bot_task_done)
 
             # Wait for ready
             await asyncio.wait_for(self._ready_event.wait(), timeout=30)
@@ -796,6 +806,9 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
+        # Suppress the done callback — this is an intentional shutdown
+        if self._bot_task and not self._bot_task.done():
+            self._bot_task.remove_done_callback(self._on_bot_task_done)
         # Clean up all active voice connections before closing the client
         for guild_id in list(self._voice_clients.keys()):
             try:
@@ -824,6 +837,25 @@ class DiscordAdapter(BasePlatformAdapter):
         self._release_platform_lock()
 
         logger.info("[%s] Disconnected", self.name)
+
+    def _on_bot_task_done(self, task: asyncio.Task) -> None:
+        """Handle unexpected bot task exit (e.g. after sleep/wake network loss).
+
+        discord.py's Client.start() normally runs forever with built-in reconnect.
+        If it exits, the WebSocket loop has given up — trigger the fatal error
+        handler so the gateway reconnect watcher can spin up a fresh adapter.
+        """
+        if not self._running:
+            return  # intentional shutdown, nothing to do
+
+        exc = task.exception() if not task.cancelled() else None
+        reason = str(exc) if exc else "task exited cleanly (unexpected)"
+        logger.error(
+            "[%s] Bot task died unexpectedly: %s — triggering reconnection",
+            self.name, reason,
+        )
+        self._set_fatal_error("bot_task_died", reason, retryable=True)
+        asyncio.ensure_future(self._notify_fatal_error())
 
     async def _run_post_connect_initialization(self) -> None:
         """Finish non-critical startup work after Discord is connected."""
