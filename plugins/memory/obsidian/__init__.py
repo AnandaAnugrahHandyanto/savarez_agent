@@ -288,7 +288,11 @@ class ObsidianMemoryProvider(MemoryProvider):
     # ------------------------------------------------------------------
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Return latest session summary + today's daily context."""
+        """Return latest session summary + today's daily context.
+        
+        Uses clean headings and source paths so the model understands
+        this is recalled memory context, not new user input.
+        """
         if not self._sessions_dir:
             return ""
 
@@ -305,27 +309,34 @@ class ObsidianMemoryProvider(MemoryProvider):
                 latest = summaries[0]
                 content = latest.read_text().strip()
                 if content:
-                    # Take first ~500 chars of summary
-                    result_parts.append(f"## Previous session ({latest.stem}):\n")
-                    result_parts.append(content[:500] + "\n")
+                    result_parts.append(f"## Recalled Memory: Latest Clean Session Summary")
+                    result_parts.append(f"Source: {latest}")
+                    result_parts.append("")
+                    result_parts.append(content[:500])
+                    result_parts.append("")
         except OSError:
             pass
 
-        # 2. Load today's daily note (last part)
+        # 2. Load today's daily note — ONLY if it has a clean # Daily Summary section
         if self._daily_dir:
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             daily = self._daily_dir / f"{today}.md"
             if daily.exists():
                 try:
-                    content = daily.read_text().strip()
-                    if content:
-                        lines = content.splitlines()
-                        meaningful = [l for l in lines if l.strip() and not l.startswith("-") and not l.startswith("#")]
-                        if meaningful:
-                            recent = "\n".join(meaningful[-8:])
-                            if len(recent) > 300:
-                                recent = recent[-300:]
-                            result_parts.append(f"## Today's activity ({today}):\n{recent}\n")
+                    content = daily.read_text()
+                    # Find the last # Daily Summary section
+                    summary_marker = "# Daily Summary"
+                    last_idx = content.rfind(summary_marker)
+                    if last_idx != -1:
+                        # Extract from the marker to end
+                        summary_section = content[last_idx:].strip()
+                        if summary_section:
+                            result_parts.append(f"## Recalled Memory: Latest Daily Summary")
+                            result_parts.append(f"Source: {daily}")
+                            result_parts.append("")
+                            # Take first ~300 chars of the summary section
+                            result_parts.append(summary_section[:300])
+                            result_parts.append("")
                 except OSError:
                     pass
 
