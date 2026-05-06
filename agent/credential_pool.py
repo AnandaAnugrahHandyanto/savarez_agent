@@ -348,13 +348,20 @@ def get_pool_strategy(provider: str) -> str:
     if config is None:
         return STRATEGY_FILL_FIRST
 
+    # 1. Try top-level mapping: credential_pool_strategies: { gemini: round_robin }
     strategies = config.get("credential_pool_strategies")
-    if not isinstance(strategies, dict):
-        return STRATEGY_FILL_FIRST
+    if isinstance(strategies, dict):
+        strategy = str(strategies.get(provider, "") or "").strip().lower()
+        if strategy in SUPPORTED_POOL_STRATEGIES:
+            return strategy
 
-    strategy = str(strategies.get(provider, "") or "").strip().lower()
-    if strategy in SUPPORTED_POOL_STRATEGIES:
-        return strategy
+    # 2. Try provider-specific config: providers: { gemini: { credential_pool_strategy: round_robin } }
+    provider_cfg = config.get("providers", {}).get(provider)
+    if isinstance(provider_cfg, dict):
+        strategy = str(provider_cfg.get("credential_pool_strategy", "") or "").strip().lower()
+        if strategy in SUPPORTED_POOL_STRATEGIES:
+            return strategy
+
     return STRATEGY_FILL_FIRST
 
 
@@ -370,6 +377,25 @@ class CredentialPool:
         self._lock = threading.Lock()
         self._active_leases: Dict[str, int] = {}
         self._max_concurrent = DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL
+        self._seed_from_config_pools(provider)
+    
+    def _seed_from_config_pools(self, provider: str):
+        """Seed the pool with keys defined in config.yaml's credential_pools section."""
+        config = _load_config_safe()
+        if not config:
+            return
+        
+        pools = config.get("credential_pools", {})
+        if isinstance(pools, dict) and provider in pools:
+            provider_keys = pools[provider]
+            if isinstance(provider_keys, list):
+                for key in provider_keys:
+                    # 检查该 key 是否已经存在于 _entries 中（避免重复）
+                    if key and not any(e.key == key for e in self._entries):
+                        # 关键点：必须创建 PooledCredential 对象
+                        # 假设 PooledCredential 接受 key 和 priority 参数
+                        from .types import PooledCredential # 确保导入了该类型
+                        self._entries.append(PooledCredential(key=key, priority=100)) 
 
     def has_credentials(self) -> bool:
         return bool(self._entries)
