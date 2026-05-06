@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
+from .intent import classify_research_intent
+from .intent import classify_topic_type as _classify_topic_type
 from .store import (
     ResearchSearchStore,
     ResearchSearchUnavailableError,
@@ -97,54 +99,7 @@ def dispatch_tool(name: str, args: dict[str, Any]) -> str:
 
 def classify_topic_type(question: str) -> str:
     """Deterministic topic classifier for selecting search profiles."""
-    q = str(question or "").lower()
-    if any(
-        k in q
-        for k in (
-            "glp-1",
-            "gip",
-            "glp1",
-            "incretin",
-            "agonist",
-            "drug",
-            "pharma",
-            "biotech",
-            "clinical trial",
-            "phase 1",
-            "phase 2",
-            "phase 3",
-            "fda",
-            "ema",
-            "nmpa",
-            "pubmed",
-            "diabetes",
-            "obesity",
-            "nash",
-            "mash",
-            "approval",
-            "pipeline",
-        )
-    ):
-        return "medical_pharma"
-    if any(k in q for k in ("today", "latest", "current", "breaking", "news")):
-        return "current_events"
-    if any(k in q for k in ("api", "docs", "github", "package", "library", "bug")):
-        return "technical"
-    if any(k in q for k in ("paper", "arxiv", "study", "journal", "citation")):
-        return "academic"
-    if any(k in q for k in ("law", "regulation", "statute", "court", "legal")):
-        return "legal_regulatory"
-    if any(k in q for k in ("price", "pricing", "company", "market", "filing")):
-        return "company_market"
-    if any(k in q for k in ("best", "review", "buy", "recommend", "compare")):
-        return "product"
-    if any(k in q for k in ("near me", "local", "restaurant", "weather")):
-        return "local"
-    if any(k in q for k in ("twitter", "x.com", "reddit", "social sentiment")):
-        return "social"
-    if any(k in q for k in ("obscure", "hard to find", "exact phrase")):
-        return "obscure_lookup"
-    return "general"
+    return _classify_topic_type(question)
 
 
 def _query(query: str, kind: str, vertical: str = "web") -> dict[str, str]:
@@ -158,15 +113,16 @@ def generate_query_plan(
     depth: str = "thorough",
 ) -> dict[str, Any]:
     """Generate typed fan-out queries and source requirements."""
-    topic = topic_type if topic_type != "auto" else classify_topic_type(question)
+    intent = classify_research_intent(question)
+    topic = (
+        topic_type
+        if topic_type != "auto"
+        else str(intent.get("topic_type") or "general")
+    )
     now_year = datetime.now(timezone.utc).year
     base = str(question or "").strip()
-    base_lower = base.lower()
-    if topic == "medical_pharma" and freshness == "auto" and any(
-        k in base_lower
-        for k in ("today", "latest", "current", "currently", "as of", "development", "testing")
-    ):
-        freshness = "latest"
+    if freshness == "auto" and intent.get("freshness") in {"latest", "recent"}:
+        freshness = str(intent["freshness"])
     queries: list[dict[str, str]] = [_query(base, "base")]
     source_requirements = ["independent"]
 

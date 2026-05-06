@@ -70,6 +70,16 @@ def _entry(name, toolset="vision"):
     )
 
 
+def _web_search_entry():
+    entry = _entry("web_search", "web")
+    entry.schema["parameters"]["properties"] = {
+        "query": {"type": "string", "description": "Search query."},
+        "limit": {"type": "integer", "default": 5, "description": "Result limit."},
+    }
+    entry.schema["parameters"]["required"] = ["query"]
+    return entry
+
+
 def test_codeact_workflow_guidance_includes_vision_recipe():
     registry = MagicMock(spec=ToolRegistry)
     registry._snapshot_entries.return_value = [_entry("vision_analyze")]
@@ -117,7 +127,7 @@ def test_research_recipe_is_injected_and_calls_research_gather():
             "research_gather",
             {
                 "question": "current Detroit Pistons starting five",
-                "topic_type": "auto",
+                "topic_type": "current_events",
                 "freshness": "latest",
                 "depth": "thorough",
                 "max_pages": 3,
@@ -150,7 +160,7 @@ def test_codeact_web_search_redirects_research_queries_to_research_gather():
     registry = MagicMock(spec=ToolRegistry)
     registry._snapshot_entries.return_value = [
         _entry("research_gather", "research_search"),
-        _entry("web_search", "web"),
+        _web_search_entry(),
     ]
 
     source = build_tool_namespace_source(registry)
@@ -185,7 +195,7 @@ def test_codeact_web_search_keeps_targeted_nonresearch_queries_raw():
     registry = MagicMock(spec=ToolRegistry)
     registry._snapshot_entries.return_value = [
         _entry("research_gather", "research_search"),
-        _entry("web_search", "web"),
+        _web_search_entry(),
     ]
 
     source = build_tool_namespace_source(registry)
@@ -201,3 +211,37 @@ def test_codeact_web_search_keeps_targeted_nonresearch_queries_raw():
     namespace["web_search"]("site:example.com foobar", limit=2)
 
     assert calls == [("web_search", {"query": "site:example.com foobar", "limit": 2})]
+
+
+def test_codeact_web_search_redirect_can_be_disabled():
+    registry = MagicMock(spec=ToolRegistry)
+    registry._snapshot_entries.return_value = [
+        _entry("research_gather", "research_search"),
+        _web_search_entry(),
+    ]
+
+    with patch(
+        "agent.codeact_namespace._codeact_research_web_search_redirect_enabled",
+        return_value=False,
+    ):
+        source = build_tool_namespace_source(registry)
+    calls = []
+
+    def fake_call_tool(name, args):
+        calls.append((name, args))
+        return '{"success": true, "data": {"web": []}}'
+
+    namespace = {"_call_tool": fake_call_tool}
+    exec(source, namespace)
+
+    namespace["web_search"]("latest GLP-1 GIP drugs in development 2026", limit=5)
+
+    assert calls == [
+        (
+            "web_search",
+            {"query": "latest GLP-1 GIP drugs in development 2026", "limit": 5},
+        )
+    ]
+    assert "automatically routed through research_gather" not in namespace["help"](
+        "web_search"
+    )

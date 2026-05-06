@@ -1,5 +1,6 @@
 """Local-first research search primitives for Hermes."""
 
+from .intent import classify_research_intent
 from .orchestrator import (
     classify_topic_type,
     generate_query_plan,
@@ -16,6 +17,7 @@ from .orchestrator import (
 )
 
 __all__ = [
+    "classify_research_intent",
     "classify_topic_type",
     "generate_query_plan",
     "research_extract_evidence",

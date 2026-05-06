@@ -1059,6 +1059,13 @@ DEFAULT_CONFIG = {
             "enabled": "auto",  # auto = use provider/model capability
             "enforcement": "auto",  # auto / grammar / prompt
         },
+        # Research ergonomics for CodeAct recipes and namespace wrappers.
+        "research": {
+            # When research_gather is available, route research-shaped
+            # web_search(...) calls through the shared research-intent
+            # classifier so the model gets citation-ready evidence bundles.
+            "redirect_web_search": True,
+        },
         # Kernel subprocess settings.
         "kernel": {
             "timeout_seconds": 300,

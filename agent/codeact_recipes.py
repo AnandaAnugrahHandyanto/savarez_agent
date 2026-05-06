@@ -98,6 +98,18 @@ def build_recipe_source(enabled_tool_names: set[str] | None) -> str:
             reports must cite source_table/citation_metadata from the result.
             \"\"\"
             import json as _json
+            try:
+                from agent.research_search.intent import classify_research_intent as _classify_research_intent
+
+                _intent = _classify_research_intent(question)
+                _intent_topic = _intent.get('topic_type')
+                _intent_freshness = _intent.get('freshness')
+                if topic_type == 'auto' and _intent_topic and _intent_topic != 'general':
+                    topic_type = _intent_topic
+                if freshness == 'auto' and _intent_freshness in ('latest', 'recent'):
+                    freshness = _intent_freshness
+            except Exception:
+                pass
             raw = _call_tool('research_gather', {
                 'question': question,
                 'topic_type': topic_type,

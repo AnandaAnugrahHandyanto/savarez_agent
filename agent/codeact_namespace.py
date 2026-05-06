@@ -83,6 +83,21 @@ def _scrapling_is_available() -> bool:
     ).exists()
 
 
+def _codeact_research_web_search_redirect_enabled() -> bool:
+    """Return whether CodeAct should auto-route research-shaped web_search calls."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        codeact = cfg.get("codeact") if isinstance(cfg, dict) else {}
+        research = codeact.get("research") if isinstance(codeact, dict) else {}
+        if not isinstance(research, dict):
+            return True
+        return bool(research.get("redirect_web_search", True))
+    except Exception:
+        return True
+
+
 def _json_type_to_python(json_type: str | list | None) -> str:
     """Return a Python type annotation string for a JSON Schema type field."""
     if json_type is None:
@@ -323,6 +338,7 @@ def build_tool_namespace_source(
         {entry.name for entry in entries}
     )
     enabled_names = {entry.name for entry in entries}
+    web_search_redirect_enabled = _codeact_research_web_search_redirect_enabled()
 
     # Build full help registry: {name: (signature_line, full_docstring)}
     help_registry: dict[str, tuple[str, str]] = {}
@@ -357,13 +373,18 @@ def build_tool_namespace_source(
         if "StealthyFetcher" not in full:
             help_registry["web_extract"] = (compact, full + _scrapling_hint)
 
-    if "web_search" in help_registry and "research_gather" in enabled_names:
+    if (
+        web_search_redirect_enabled
+        and "web_search" in help_registry
+        and "research_gather" in enabled_names
+    ):
         _search_redirect_hint = (
-            " In CodeAct, research-shaped queries containing terms like latest, "
-            "current, report, pipeline, development, clinical trial, GLP-1, GIP, "
-            "FDA, EMA, NMPA, or PubMed are automatically routed through "
-            "research_gather so the result includes citation metadata and gap analysis. "
-            "Call research_web(...) directly for reports."
+            " In CodeAct, research-shaped queries are classified by "
+            "agent.research_search.intent.classify_research_intent and "
+            "automatically routed through research_gather so the result "
+            "includes citation metadata and gap analysis. This is configurable "
+            "with codeact.research.redirect_web_search. Call research_web(...) "
+            "directly for reports."
         )
         compact, full = help_registry["web_search"]
         if "automatically routed through research_gather" not in full:
@@ -487,34 +508,33 @@ def build_tool_namespace_source(
         lines.extend(_generate_stub_lines(entry.name, entry.schema))
         lines.append("")
 
-    if "web_search" in enabled_names and "research_gather" in enabled_names:
+    if (
+        web_search_redirect_enabled
+        and "web_search" in enabled_names
+        and "research_gather" in enabled_names
+    ):
         lines.append("# --- Research-shaped web_search redirect ---")
         lines.append(textwrap.dedent("""\
         def web_search(query: str, limit: int = 5):
             \"\"\"Search the web, auto-routing research-shaped queries to research_gather.
 
             For search/research/report/latest/current/as-of-date and medical/pharma
-            pipeline queries, this CodeAct wrapper returns the research_gather
-            evidence bundle instead of low-level search result snippets.
+            pipeline queries, this CodeAct wrapper delegates the decision to
+            agent.research_search.intent.classify_research_intent and returns
+            the research_gather evidence bundle instead of low-level snippets.
             \"\"\"
             _q = str(query or '')
-            _ql = _q.lower()
-            _research_markers = (
-                'latest', 'current', 'currently', 'as of', 'report', 'research',
-                'development', 'testing', 'pipeline', 'clinical trial', 'phase 1',
-                'phase 2', 'phase 3', 'approval', 'fda', 'ema', 'nmpa', 'pubmed',
-                'glp-1', 'glp1', 'gip', 'incretin', 'agonist', 'pharma', 'drug',
-                'biotech', 'obesity', 'diabetes', 'nash', 'mash',
-            )
-            if any(_marker in _ql for _marker in _research_markers):
-                _medical_markers = (
-                    'glp-1', 'glp1', 'gip', 'incretin', 'agonist', 'pharma',
-                    'drug', 'biotech', 'clinical trial', 'phase 1', 'phase 2',
-                    'phase 3', 'approval', 'fda', 'ema', 'nmpa', 'pubmed',
-                    'obesity', 'diabetes', 'nash', 'mash',
-                )
-                _topic_type = 'medical_pharma' if any(_m in _ql for _m in _medical_markers) else 'auto'
-                _freshness = 'latest' if any(_m in _ql for _m in ('latest', 'current', 'currently', 'as of', 'development', 'testing', 'pipeline')) else 'auto'
+            try:
+                from agent.research_search.intent import classify_research_intent as _classify_research_intent
+
+                _intent = _classify_research_intent(_q)
+            except Exception:
+                _intent = {}
+            if _intent.get('redirect_web_search'):
+                _topic_type = _intent.get('topic_type') or 'auto'
+                if _topic_type == 'general':
+                    _topic_type = 'auto'
+                _freshness = _intent.get('freshness') or 'auto'
                 try:
                     _max_pages = int(limit or 8)
                 except Exception:
