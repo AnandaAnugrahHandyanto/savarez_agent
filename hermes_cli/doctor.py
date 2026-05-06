@@ -27,7 +27,7 @@ from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
-from utils import base_url_host_matches
+from utils import base_url_host_matches, base_url_hostname
 
 
 _PROVIDER_ENV_HINTS = (
@@ -1195,9 +1195,21 @@ def run_doctor(args):
             _label = _pname.ljust(20)
             # Some providers (like MiniMax) don't support /models endpoint
             if not _supports_health_check:
-                print(f"  {color('✓', Colors.GREEN)} {_label} {color('(key configured)', Colors.DIM)}")
+                sys.stdout.write(f"  {color('✓', Colors.GREEN)} {_label} {color('(key configured)', Colors.DIM)}\n")
                 continue
-            print(f"  Checking {_pname} API...", end="", flush=True)
+            # Alibaba dedicated-tier endpoints don't expose /models:
+            #   - token-plan.<region>.maas.aliyuncs.com (Token Plan)
+            #   - coding-intl.dashscope.aliyuncs.com (Coding Plan)
+            # Treat them like MiniMax CN: configured-but-unverified instead of HTTP 404.
+            _skip_url = (os.getenv(_base_env, "") if _base_env else "") or (_default_url or "")
+            if _skip_url and (
+                base_url_host_matches(_skip_url, "maas.aliyuncs.com")
+                or base_url_hostname(_skip_url).startswith(("coding-intl.", "coding."))
+            ):
+                sys.stdout.write(f"  {color('✓', Colors.GREEN)} {_label} {color('(key configured — dedicated plan, /models n/a)', Colors.DIM)}\n")
+                continue
+            sys.stdout.write(f"  Checking {_pname} API...")
+            sys.stdout.flush()
             try:
                 import httpx
                 _base = os.getenv(_base_env, "") if _base_env else ""
