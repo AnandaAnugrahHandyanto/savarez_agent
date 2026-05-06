@@ -207,6 +207,26 @@ class TestCLIStatusBar:
         assert "⚕" in text
         assert "claude-sonnet-4-20250514" in text
 
+    def test_build_status_bar_text_includes_cached_quota_label_for_codex(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.4-codex"),
+            prompt_tokens=10000,
+            completion_tokens=2400,
+            total_tokens=12400,
+            api_calls=7,
+            context_tokens=12400,
+            context_length=200_000,
+        )
+        cli_obj.agent.provider = "openai-codex"
+        cli_obj.agent.base_url = "https://chatgpt.com/backend-api/codex"
+        cli_obj._status_bar_account_quota_label = "quota 9%"
+        cli_obj._status_bar_account_usage_signature = ("openai-codex", "https://chatgpt.com/backend-api/codex")
+        cli_obj._status_bar_account_usage_fetched_at = 10**12
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "quota 9%" in text
+
     def test_minimal_tui_chrome_threshold(self):
         cli_obj = _make_cli()
 

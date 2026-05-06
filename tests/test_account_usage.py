@@ -4,6 +4,7 @@ from agent.account_usage import (
     AccountUsageSnapshot,
     AccountUsageWindow,
     fetch_account_usage,
+    render_account_usage_compact,
     render_account_usage_lines,
 )
 
@@ -116,6 +117,20 @@ def test_render_account_usage_lines_includes_reset_and_provider():
     assert "openai-codex (Pro)" in lines[1]
     assert "Session: 75% remaining (25% used)" in lines[2]
     assert "Credits balance: $9.99" in lines[3]
+
+
+def test_render_account_usage_compact_prefers_session_window():
+    snapshot = AccountUsageSnapshot(
+        provider="openai-codex",
+        source="usage_api",
+        fetched_at=datetime.now(timezone.utc),
+        windows=(
+            AccountUsageWindow(label="Weekly", used_percent=18),
+            AccountUsageWindow(label="Session", used_percent=91),
+        ),
+    )
+
+    assert render_account_usage_compact(snapshot) == "quota 9%"
 
 
 def test_fetch_account_usage_openrouter_uses_limit_remaining_and_ignores_deprecated_rate_limit(monkeypatch):
