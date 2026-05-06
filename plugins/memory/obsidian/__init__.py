@@ -522,50 +522,73 @@ class ObsidianMemoryProvider(MemoryProvider):
         daily = self._daily_dir / f"{today}.md"
 
         # First, summarize any remaining raw checkpoint
-        self.summarize_session()
+        summary_path = self.summarize_session()
+        
+        # If summarize_session produced a clean summary, use that
+        if summary_path and summary_path.exists():
+            try:
+                clean_summary = summary_path.read_text().strip()
+                if clean_summary:
+                    # Extract just the key sections from the clean summary
+                    entry_parts = [f"\n## Session {self._session_id[:8]} @ {datetime.now(timezone.utc).strftime('%H:%M')}"]
+                    
+                    # Parse the clean summary for requests, completed, decisions
+                    in_requests = False
+                    in_completed = False
+                    in_decisions = False
+                    
+                    for line in clean_summary.splitlines():
+                        stripped = line.strip()
+                        
+                        if stripped.startswith("**Requests:**"):
+                            in_requests = True
+                            in_completed = False
+                            in_decisions = False
+                            entry_parts.append("\n**Requests:**")
+                            continue
+                        elif stripped.startswith("**Completed:**"):
+                            in_requests = False
+                            in_completed = True
+                            in_decisions = False
+                            entry_parts.append("\n**Completed:**")
+                            continue
+                        elif stripped.startswith("**Decisions:**"):
+                            in_requests = False
+                            in_completed = False
+                            in_decisions = True
+                            entry_parts.append("\n**Decisions:**")
+                            continue
+                        elif stripped.startswith("**"):
+                            # End of relevant sections
+                            in_requests = False
+                            in_completed = False
+                            in_decisions = False
+                            continue
+                        
+                        if stripped.startswith("- ") and (in_requests or in_completed or in_decisions):
+                            entry_parts.append(stripped)
+                    
+                    if len(entry_parts) > 1:  # More than just the header
+                        entry = "\n".join(entry_parts) + "\n"
+                        with open(daily, "a") as f:
+                            f.write(entry)
+                        return  # Done — clean summary written
+            except OSError:
+                pass
 
-        # Collect from messages (fallback if summarize didn't catch everything)
-        actions = []
-        decisions = []
-        projects = set()
-
-        for m in messages:
+        # Fallback: only use the LAST user message (not full history) to avoid bloat
+        last_user_msg = ""
+        for m in reversed(messages):
             if m.get("role") == "user" and isinstance(m.get("content"), str):
                 content = m["content"].strip()
-                if len(content) < 10 or content.lower() in ("ok", "hello", "hi", "thanks", "ty"):
-                    continue
-                actions.append(content[:120])
-                for proj in ("Empire", "Standby", "OpenClaw", "Claw3D", "SEO", "Legal"):
-                    if proj.lower() in content.lower():
-                        projects.add(proj)
+                if len(content) > 10 and content.lower() not in ("ok", "hello", "hi", "thanks", "ty", "yes", "no"):
+                    last_user_msg = content[:120]
+                    break
 
-            elif m.get("role") == "assistant" and isinstance(m.get("content"), str):
-                content = m["content"].strip()
-                if any(marker in content.lower() for marker in ("decided", "decision", "will", "going to", "let's")):
-                    decisions.append(content[:120])
-
-        # Build entry — only if there's actual content
-        entry_parts = []
-        now = datetime.now(timezone.utc)
-        time_str = now.strftime("%H:%M")
-        
-        if actions or decisions or projects:
-            entry_parts.append(f"\n## Session {self._session_id[:8]} @ {time_str}")
-
-            if projects:
-                entry_parts.append(f"\n**Projects:** {', '.join(sorted(projects))}")
-
-            if actions:
-                entry_parts.append("\n**Requests:**")
-                for a in actions[-5:]:
-                    entry_parts.append(f"- [{time_str}] {a}")
-
-            if decisions:
-                entry_parts.append("\n**Decisions:**")
-                for d in decisions[-3:]:
-                    entry_parts.append(f"- [{time_str}] {d}")
-
-            entry = "\n".join(entry_parts) + "\n"
+        if last_user_msg:
+            now = datetime.now(timezone.utc)
+            time_str = now.strftime("%H:%M")
+            entry = f"\n## Session {self._session_id[:8]} @ {time_str}\n\n**Requests:**\n- [{time_str}] {last_user_msg}\n"
             try:
                 with open(daily, "a") as f:
                     f.write(entry)
