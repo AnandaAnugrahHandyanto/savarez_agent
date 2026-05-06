@@ -149,6 +149,14 @@ class ObsidianMemoryProvider(MemoryProvider):
             self._write_raw_checkpoint()
             self._last_checkpoint_turn = turn_number
 
+    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+        """Summarize raw checkpoint before context compression."""
+        # Summarize the current session
+        summary_path = self.summarize_session()
+        if summary_path:
+            return f"Session summarized: {summary_path}"
+        return ""
+
     # ------------------------------------------------------------------
     # Raw checkpoint writer
     # ------------------------------------------------------------------
