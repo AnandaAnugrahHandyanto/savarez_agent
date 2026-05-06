@@ -384,7 +384,7 @@ class ObsidimemProvider(MemoryProvider):
         if not new_session_id or self._cron_skipped or not self._config or not self._client:
             return
 
-        for t in (self._sync_thread, self._prefetch_thread):
+        for t in (self._sync_thread, self._prefetch_thread, self._write_thread):
             if t and t.is_alive():
                 t.join(timeout=10.0)
 
