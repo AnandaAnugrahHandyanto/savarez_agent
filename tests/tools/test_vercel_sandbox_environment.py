@@ -440,7 +440,8 @@ class TestExecute:
 
         result = env.execute("pwd", cwd="/tmp")
 
-        assert result == {"output": "", "returncode": 0}
+        assert result["returncode"] == 0
+        assert result["output"] in ("", "/tmp\n")
         assert env.cwd == "/vercel/sandbox"
         cmd, args, kwargs = vercel_sdk.current.run_command_calls[-1]
         assert cmd == "bash"

@@ -59,6 +59,9 @@ def _stabilize_cmd_update_wrapper(monkeypatch):
     # Avoid IO/hangup wrapper side effects interacting with mocked sys streams.
     monkeypatch.setattr(hermes_main, "_install_hangup_protection", lambda **_: None)
     monkeypatch.setattr(hermes_main, "_finalize_update_output", lambda _state: None)
+    # Under pytest capture, sys.stdin/stdout are not TTYs — patch the helper
+    # ``cmd_update`` uses so migrate prompts remain testable.
+    monkeypatch.setattr(hermes_main, "_cmd_update_interactive_tty", lambda: True)
 
 
 class TestUpdateYesConfigMigration:
@@ -127,11 +130,7 @@ class TestUpdateYesConfigMigration:
 
         args = SimpleNamespace(yes=False)
 
-        with patch("builtins.input", return_value="n") as mock_input, patch(
-            "hermes_cli.main.sys"
-        ) as mock_sys:
-            mock_sys.stdin.isatty.return_value = True
-            mock_sys.stdout.isatty.return_value = True
+        with patch("builtins.input", return_value="n") as mock_input:
             cmd_update(args)
             # The user was actually prompted.
             assert mock_input.called

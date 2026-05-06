@@ -418,8 +418,11 @@ class TestCmdUpdateLaunchdRestart:
             pid=12345,
         )
 
-        with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
-             patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
+        with patch.object(
+            gateway_cli,
+            "find_gateway_pids",
+            side_effect=[[12345], []],
+        ), patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
              patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
              patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=True) as graceful, \
              patch("os.kill") as kill:
@@ -456,8 +459,11 @@ class TestCmdUpdateLaunchdRestart:
             pid=12345,
         )
 
-        with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
-             patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
+        with patch.object(
+            gateway_cli,
+            "find_gateway_pids",
+            side_effect=[[12345], []],
+        ), patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
              patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
              patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=False) as graceful, \
              patch("os.kill") as kill:
@@ -879,7 +885,12 @@ class TestServicePidExclusion:
             launchctl_loaded=True,
         )
 
+        _find_calls = {"n": 0}
+
         def fake_find(exclude_pids=None, all_profiles=False):
+            _find_calls["n"] += 1
+            if _find_calls["n"] >= 2:
+                return []
             _exclude = exclude_pids or set()
             return [p for p in [SERVICE_PID, MANUAL_PID] if p not in _exclude]
 
