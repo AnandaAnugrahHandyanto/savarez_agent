@@ -327,6 +327,7 @@ class SlackAdapter(BasePlatformAdapter):
         # (channel_id, user_id) to avoid cross-user collisions.
         # Each value: {"response_url": str, "ts": float}
         self._slash_command_contexts: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self._mention_patterns = self._compile_mention_patterns()
 
     def _describe_slack_api_error(self, response: Any, *, file_obj: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """Convert Slack API auth/permission failures into actionable user-facing text."""
@@ -1883,6 +1884,8 @@ class SlackAdapter(BasePlatformAdapter):
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         routing_text = original_text or ""
         is_mentioned = bot_uid and f"<@{bot_uid}>" in routing_text
+        matches_name_call = self._message_matches_mention_patterns(routing_text)
+        explicit_call = bool(is_mentioned or matches_name_call)
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
 
@@ -1891,9 +1894,9 @@ class SlackAdapter(BasePlatformAdapter):
                 pass  # Free-response channel — always process
             elif not self._slack_require_mention():
                 pass  # Mention requirement disabled globally for Slack
-            elif self._slack_strict_mention() and not is_mentioned:
-                return  # Strict mode: ignore until @-mentioned again
-            elif not is_mentioned:
+            elif self._slack_strict_mention() and not explicit_call:
+                return  # Strict mode: ignore until explicitly called again
+            elif not explicit_call:
                 reply_to_bot_thread = (
                     is_thread_reply and event_thread_ts in self._bot_message_ts
                 )
@@ -1912,9 +1915,12 @@ class SlackAdapter(BasePlatformAdapter):
                 if not reply_to_bot_thread and not in_mentioned_thread and not has_session:
                     return
 
-        if is_mentioned:
-            # Strip the bot mention from the text
-            text = text.replace(f"<@{bot_uid}>", "").strip()
+        if explicit_call:
+            # Strip explicit Slack mentions and configured plain-text name calls.
+            if is_mentioned:
+                text = text.replace(f"<@{bot_uid}>", "").strip()
+            if matches_name_call:
+                text = self._clean_mention_pattern_text(text)
             # Register this thread so all future messages auto-trigger the bot.
             # Skipped in strict mode: strict_mention=true bots must be
             # re-mentioned every turn, so remembering the thread would
@@ -2149,7 +2155,7 @@ class SlackAdapter(BasePlatformAdapter):
         # Only react when bot is directly addressed (DM or @mention).
         # In listen-all channels (require_mention=false), reacting to every
         # casual message would be noisy.
-        _should_react = (is_dm or is_mentioned) and self._reactions_enabled()
+        _should_react = (is_dm or explicit_call) and self._reactions_enabled()
         if _should_react:
             self._reacting_message_ids.add(ts)
 
@@ -2913,6 +2919,46 @@ class SlackAdapter(BasePlatformAdapter):
                 return configured.lower() in ("true", "1", "yes", "on")
             return bool(configured)
         return os.getenv("SLACK_STRICT_MENTION", "false").lower() in ("true", "1", "yes", "on")
+
+    def _compile_mention_patterns(self) -> List[re.Pattern]:
+        """Compile configured plain-text mention patterns for Slack routing."""
+        raw = self.config.extra.get("mention_patterns")
+        if raw is None:
+            env_raw = os.getenv("SLACK_MENTION_PATTERNS", "").strip()
+            if env_raw:
+                try:
+                    parsed = json.loads(env_raw)
+                    raw = parsed if isinstance(parsed, list) else [str(parsed)]
+                except json.JSONDecodeError:
+                    raw = [part.strip() for part in env_raw.split(",") if part.strip()]
+
+        if isinstance(raw, str):
+            raw_patterns = [raw]
+        elif isinstance(raw, list):
+            raw_patterns = [str(pattern) for pattern in raw if str(pattern).strip()]
+        else:
+            raw_patterns = []
+
+        compiled: List[re.Pattern] = []
+        for pattern in raw_patterns:
+            try:
+                compiled.append(re.compile(pattern))
+            except re.error as exc:
+                logger.warning("Invalid Slack mention pattern %r: %s", pattern, exc)
+        return compiled
+
+    def _message_matches_mention_patterns(self, text: str) -> bool:
+        """Return whether text contains a configured plain-text name call."""
+        if not text or not self._mention_patterns:
+            return False
+        return any(pattern.search(text) for pattern in self._mention_patterns)
+
+    def _clean_mention_pattern_text(self, text: str) -> str:
+        """Remove configured plain-text name calls from text before dispatch."""
+        cleaned = text
+        for pattern in self._mention_patterns:
+            cleaned = pattern.sub("", cleaned, count=1).strip()
+        return cleaned
 
     def _slack_free_response_channels(self) -> set:
         """Return channel IDs where no @mention is required."""
