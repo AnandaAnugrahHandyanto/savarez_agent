@@ -135,20 +135,19 @@ class ObsidianMemoryProvider(MemoryProvider):
     # ------------------------------------------------------------------
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
-        """Count turns and write raw checkpoints periodically."""
+        """Count turns, buffer messages, and write raw checkpoints periodically."""
         self._turn_count = turn_number
+
+        # Buffer the user message for checkpointing
+        if message and len(message) > 0:
+            self._message_buffer.append({"role": "user", "content": message[:500]})
+            if len(self._message_buffer) > 20:
+                self._message_buffer = self._message_buffer[-20:]
 
         # Every N turns, write a raw checkpoint
         if turn_number - self._last_checkpoint_turn >= RAW_CHECKPOINT_EVERY_TURNS:
             self._write_raw_checkpoint()
             self._last_checkpoint_turn = turn_number
-
-    def on_turn_end(self, turn_number: int, messages: List[Dict[str, Any]], **kwargs) -> None:
-        """Buffer messages for checkpointing."""
-        self._message_buffer.extend(messages)
-        # Keep buffer from growing unbounded — only last 20 messages
-        if len(self._message_buffer) > 20:
-            self._message_buffer = self._message_buffer[-20:]
 
     # ------------------------------------------------------------------
     # Raw checkpoint writer
