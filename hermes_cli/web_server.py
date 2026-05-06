@@ -2979,9 +2979,16 @@ async def _broadcast_event(channel: str, payload: str) -> None:
         try:
             await sub.send_text(payload)
         except Exception:
-            # Subscriber went away mid-send; the /api/events finally clause
-            # will remove it from the registry on its next iteration.
-            pass
+            # Rare race on CI: subscriber connection can be accepted but not
+            # fully ready for the first write. Yield once and retry before
+            # dropping the frame.
+            try:
+                await asyncio.sleep(0.01)
+                await sub.send_text(payload)
+            except Exception:
+                # Subscriber went away mid-send; the /api/events finally clause
+                # will remove it from the registry on its next iteration.
+                pass
 
 
 def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
