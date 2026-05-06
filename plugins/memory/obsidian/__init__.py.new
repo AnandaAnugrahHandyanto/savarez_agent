@@ -445,13 +445,16 @@ class ObsidianMemoryProvider(MemoryProvider):
         daily = self._daily_dir / f"{today}.md"
 
         try:
-            # Find today's session summaries
+            # Find all session summaries (both ID-based and date-based names)
             summaries = []
             for f in self._sessions_dir.iterdir():
                 if f.suffix == ".md" and not f.name.endswith("-raw.md"):
-                    # Check if created today
+                    # Check if created today OR filename matches today's date
                     mtime = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc)
-                    if mtime.strftime("%Y-%m-%d") == today:
+                    mtime_date = mtime.strftime("%Y-%m-%d")
+                    fname_date = self._extract_date_from_filename(f.stem)
+                    
+                    if mtime_date == today or fname_date == today:
                         summaries.append(f)
 
             if not summaries:
@@ -480,6 +483,14 @@ class ObsidianMemoryProvider(MemoryProvider):
 
         except OSError as e:
             logger.debug("Dream cycle failed: %s", e)
+
+    def _extract_date_from_filename(self, stem: str) -> str:
+        """Extract YYYY-MM-DD from filename if present."""
+        # Match patterns like 2026-05-06 or 20260506
+        match = re.search(r'(\d{4})[-]?(\d{2})[-]?(\d{2})', stem)
+        if match:
+            return f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+        return ""
 
     def _archive_old_summaries(self, keep_days: int = 7) -> None:
         """Move summaries older than keep_days to an archive folder."""
