@@ -9,6 +9,7 @@ Also verifies that internal control interrupt reasons like "Stop requested"
 do not get recycled into the pending-user-message follow-up path.
 """
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from gateway.run import _is_control_interrupt_message
@@ -70,3 +71,23 @@ class TestControlInterruptMessages:
     def test_real_user_interrupt_message_still_requeues(self):
         result = _extract_pending_text(True, None, "actually use postgres instead")
         assert result == "actually use postgres instead"
+
+
+def test_queued_followup_first_response_send_does_not_clobber_agent_result():
+    """The queued-follow-up resend must not overwrite the agent result dict.
+
+    A recurring Telegram crash happened because this path assigned
+    ``result = await adapter.send(...)``.  ``adapter.send`` returns
+    SendResult, so the next line tried ``result.get("messages")`` and
+    crashed with AttributeError.  Pin the local invariant cheaply because
+    the full gateway run path is expensive to instantiate.
+    """
+    run_py = Path(__file__).resolve().parents[2] / "gateway" / "run.py"
+    source = run_py.read_text()
+    anchor = "first_response_to_send = maybe_append_usage_footer(adapter, first_response)"
+    start = source.index(anchor)
+    window = source[start : source.index("except Exception as e:", start)]
+
+    lines = [line.strip() for line in window.splitlines()]
+    assert "send_result = await adapter.send(" in lines
+    assert "result = await adapter.send(" not in lines
