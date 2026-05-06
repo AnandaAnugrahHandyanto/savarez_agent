@@ -904,6 +904,134 @@ class TestUserNameResolution:
 
 
 # ---------------------------------------------------------------------------
+# TestArtemisSidecarPersistence — B-0504-01 followup #3 (D1)
+# ---------------------------------------------------------------------------
+
+
+class TestArtemisSidecarPersistence:
+    """Sidecar (slack_channel.txt + slack_tz.txt) is the per-user file the
+    cron-firing path relies on for reverse-resolve when origin lacks user_id.
+    Its absence breaks downstream cron silently — so writes must be:
+
+    1. First-class: idempotent, called on every DM (not gated on
+       ``users_info`` success or first-DM-from-user).
+    2. DM-only: channels/groups don't get a sidecar.
+    3. Validated: malformed user_id refuses to materialize a path.
+    4. Loud on failure: errors log at ERROR level (not WARNING) since
+       sidecar absence breaks downstream cron silently.
+    """
+
+    @pytest.mark.asyncio
+    async def test_first_dm_writes_sidecar_even_when_users_info_fails(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        """The 2026-05-04 dev james/crystal incident: ``users_info`` failed
+        for transient reasons, sidecar didn't write, cache hit prevented
+        retry. Fix: sidecar write moves out of the ``users_info`` try-block."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter._app.client.users_info = AsyncMock(side_effect=Exception("rate limited"))
+
+        await adapter._resolve_user_name("U0AAA00001", chat_id="D0BBB00001")
+
+        sidecar = tmp_path / "artemis" / "U0AAA00001" / "slack_channel.txt"
+        assert sidecar.exists(), "sidecar must be written even when users_info fails"
+        assert sidecar.read_text() == "D0BBB00001"
+
+    @pytest.mark.asyncio
+    async def test_repeat_dm_keeps_sidecar_idempotent(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        """Cache-hit on user_name shouldn't skip sidecar — sidecar gets
+        written on every DM (idempotent). This is the regression guard for
+        a sidecar that gets deleted out-of-band: next DM restores it."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}, "tz": "America/Los_Angeles"}
+        })
+
+        await adapter._resolve_user_name("U0AAA00002", chat_id="D0BBB00002")
+        sidecar = tmp_path / "artemis" / "U0AAA00002" / "slack_channel.txt"
+        assert sidecar.exists()
+
+        # Simulate out-of-band sidecar deletion (operator cleanup, fs reset, etc).
+        sidecar.unlink()
+        assert not sidecar.exists()
+
+        # Second DM: cache hits on user_name, BUT sidecar must be re-written.
+        await adapter._resolve_user_name("U0AAA00002", chat_id="D0BBB00002")
+        assert sidecar.exists(), "sidecar must be re-written on every DM (idempotent)"
+        assert sidecar.read_text() == "D0BBB00002"
+
+    @pytest.mark.asyncio
+    async def test_channel_message_does_not_write_sidecar(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        """Channels/groups (chat_id starts with C/G) don't get a sidecar —
+        only DMs (D-prefix) do. Cron's per-user reverse-resolve only makes
+        sense for the user's DM channel."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+
+        await adapter._resolve_user_name("U0AAA00003", chat_id="C0CHAN001")
+
+        artemis_dir = tmp_path / "artemis" / "U0AAA00003"
+        if artemis_dir.exists():
+            assert not (artemis_dir / "slack_channel.txt").exists(), \
+                "sidecar must not exist for channel messages"
+
+    @pytest.mark.asyncio
+    async def test_malformed_user_id_refuses_path_materialization(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        """G3 audit M-8 carryover: malformed user_id (e.g. traversal payload)
+        must not materialize a per-user filesystem path."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+
+        # Bad format: contains ../ traversal
+        await adapter._resolve_user_name("U../OTHER", chat_id="D0BBB00004")
+
+        # No user dir should appear under artemis/
+        artemis = tmp_path / "artemis"
+        if artemis.exists():
+            child_dirs = [p for p in artemis.iterdir() if p.is_dir()]
+            assert child_dirs == [], \
+                f"malformed user_id must not produce a user dir, got: {child_dirs}"
+
+    @pytest.mark.asyncio
+    async def test_persist_failure_logs_error_not_warning(
+        self, adapter, tmp_path, monkeypatch, caplog
+    ):
+        """Sidecar absence breaks downstream cron silently. Write failures
+        must log at ERROR level (greppable in incident response), not just
+        WARNING (the prior behavior)."""
+        import logging
+
+        # Force an unwritable HERMES_HOME by pointing at a readonly path.
+        # Easiest: point at a path where mkdir fails — use a file as the
+        # parent so mkdir(parents=True) trips on it.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a dir")
+        monkeypatch.setenv("HERMES_HOME", str(blocker))
+
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+
+        with caplog.at_level(logging.ERROR, logger="gateway.platforms.slack"):
+            await adapter._resolve_user_name("U0AAA00005", chat_id="D0BBB00005")
+
+        assert any(
+            "U0AAA00005" in r.message and r.levelno >= logging.ERROR
+            for r in caplog.records
+        ), f"expected ERROR-level log mentioning user_id, got: {[(r.levelname, r.message) for r in caplog.records]}"
+
+
+# ---------------------------------------------------------------------------
 # TestSlashCommands — expanded command set
 # ---------------------------------------------------------------------------
 

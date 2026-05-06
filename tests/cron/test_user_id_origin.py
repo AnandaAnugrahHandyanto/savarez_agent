@@ -92,3 +92,55 @@ class TestEmptyOriginUnchanged:
 
         assert _resolve_origin({}) is None
         assert _resolve_origin({"origin": None}) is None
+
+
+class TestUnresolvableLegacyOriginLogsError:
+    """B-0504-01 followup #1: legacy origin without user_id and no matching
+    sidecar means MCP layer will fail-closed downstream. Make the failure
+    visible at the orchestration boundary instead of silent."""
+
+    @pytest.fixture
+    def hermes_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Empty artemis tree — no user has a sidecar file.
+        (tmp_path / "artemis").mkdir(parents=True)
+        return tmp_path
+
+    def test_unresolvable_legacy_origin_logs_error(self, hermes_home, caplog):
+        import logging
+
+        from cron.scheduler import _resolve_origin
+
+        job = {
+            "id": "abc123def456",
+            "origin": {"platform": "slack", "chat_id": "D1NOSIDECAR"},
+        }
+        with caplog.at_level(logging.ERROR, logger="cron.scheduler"):
+            origin = _resolve_origin(job)
+
+        assert origin is not None
+        assert origin.get("user_id") is None
+        # Caller (scheduler.py) checks origin.get("user_id") and skips env
+        # injection if missing — so this log is the only signal that the
+        # cron will fail-closed at MCP layer.
+        assert any(
+            "abc123def456" in r.message and "D1NOSIDECAR" in r.message
+            for r in caplog.records
+        ), f"expected ERROR mentioning job id and chat_id, got: {[r.message for r in caplog.records]}"
+
+    def test_resolvable_legacy_origin_does_not_log(self, tmp_path, monkeypatch, caplog):
+        """Sanity: when reverse-lookup succeeds, no error log fires."""
+        import logging
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "artemis" / "U0CAROL").mkdir(parents=True)
+        (tmp_path / "artemis" / "U0CAROL" / "slack_channel.txt").write_text(
+            "D1CAROL"
+        )
+        from cron.scheduler import _resolve_origin
+
+        job = {"id": "ok123", "origin": {"platform": "slack", "chat_id": "D1CAROL"}}
+        with caplog.at_level(logging.ERROR, logger="cron.scheduler"):
+            origin = _resolve_origin(job)
+        assert origin.get("user_id") == "U0CAROL"
+        assert caplog.records == [], "no error expected on successful resolve"

@@ -534,10 +534,68 @@ class SlackAdapter(BasePlatformAdapter):
 
     # ----- User identity resolution -----
 
+    def _persist_artemis_sidecar(self, user_id: str, chat_id: str, tz: str = "") -> None:
+        """Persist DM channel + (optional) timezone sidecar files for an artemis user.
+
+        Idempotent: re-writes only if the file is missing or has different
+        content. Cheap to call on every DM message — the underlying writes
+        are local fs and gated on actual change.
+
+        B-0504-01 followup #3 (D1): elevated from a side-effect inside
+        ``_resolve_user_name``'s ``users_info`` try-block to a first-class
+        idempotent operation. The previous design wrote sidecar only when
+        ``users_info`` succeeded AND it was the first DM from this user;
+        ``users_info`` failures (network/rate-limit) silently skipped the
+        write, and the cache hit on subsequent messages prevented retry —
+        producing a permanently-sidecar-less user. This was the most likely
+        root cause of dev james/crystal sidecar absence observed 2026-05-04.
+        """
+        if not user_id or not chat_id:
+            return
+        # Only DMs get a sidecar — channels/groups don't.
+        if not chat_id.startswith("D"):
+            return
+        if not _SLACK_USER_ID_PATTERN.match(user_id):
+            logger.warning(
+                "[Slack] rejecting user_id with bad format in _persist_artemis_sidecar: %r",
+                user_id,
+            )
+            return
+        try:
+            _artemis_dir = _Path(
+                os.environ.get("HERMES_HOME", str(_Path.home() / ".hermes"))
+            ) / "artemis" / user_id
+            _artemis_dir.mkdir(parents=True, exist_ok=True)
+            ch_file = _artemis_dir / "slack_channel.txt"
+            if not ch_file.exists() or ch_file.read_text().strip() != chat_id:
+                ch_file.write_text(chat_id)
+            if tz:
+                tz_file = _artemis_dir / "slack_tz.txt"
+                if not tz_file.exists() or tz_file.read_text().strip() != tz:
+                    tz_file.write_text(tz)
+        except Exception as e:
+            # Sidecar absence breaks downstream cron-firing path silently
+            # (cron/scheduler.py:_resolve_origin reverse-resolve — fails to
+            # find user_id, scheduler skips env injection, MCP fail-closed).
+            # Log loudly so the failure is greppable, even if we can't
+            # block the message handling on it.
+            logger.error(
+                "[Slack] artemis sidecar persist failed for %s (chat=%s): %s — "
+                "downstream cron firing for this user will fail-closed at MCP "
+                "layer until sidecar is restored",
+                user_id,
+                chat_id,
+                e,
+            )
+
     async def _resolve_user_name(self, user_id: str, chat_id: str = "") -> str:
         """Resolve a Slack user ID to a display name, with caching."""
         if not user_id:
             return ""
+        # Persist sidecar BEFORE the name-cache short-circuit so every DM
+        # ensures sidecar exists, not just the first DM from a user. Idempotent.
+        if chat_id:
+            self._persist_artemis_sidecar(user_id, chat_id)
         if user_id in self._user_name_cache:
             return self._user_name_cache[user_id]
 
@@ -559,34 +617,13 @@ class SlackAdapter(BasePlatformAdapter):
             )
             self._user_name_cache[user_id] = name
 
-            # Persist Slack-reported IANA timezone so session context can inject
-            # it without a second API round-trip. Used by cron creation rules.
-            # Also persist the DM channel id so user-facing reminders scheduled
-            # by other profiles (e.g. Executor) can target this DM at fire time
-            # without re-resolving via Slack API.
+            # Persist Slack-reported IANA timezone alongside the (already-written-
+            # above) sidecar. tz comes from users.info so it's only available on
+            # this success path; sidecar chat_id is persisted in
+            # ``_resolve_user_name``'s prelude (idempotent on every DM).
             tz = user.get("tz", "")
-            # G3 (audit M-8): refuse to materialize per-user filesystem
-            # paths if the upstream user_id is malformed. Slack Socket Mode
-            # currently emits well-formed ``U…`` IDs, but a future platform
-            # adapter or Enterprise Grid bot id could otherwise carry a
-            # traversal payload (``../OTHER``) that escapes the artemis tree.
-            if not _SLACK_USER_ID_PATTERN.match(user_id):
-                logger.warning(
-                    "[Slack] rejecting user_id with bad format in _resolve_user_name: %r",
-                    user_id,
-                )
-                return name
-            try:
-                _artemis_dir = _Path(
-                    os.environ.get("HERMES_HOME", str(_Path.home() / ".hermes"))
-                ) / "artemis" / user_id
-                _artemis_dir.mkdir(parents=True, exist_ok=True)
-                if tz:
-                    (_artemis_dir / "slack_tz.txt").write_text(tz)
-                if chat_id and chat_id.startswith("D"):
-                    (_artemis_dir / "slack_channel.txt").write_text(chat_id)
-            except Exception as e:
-                logger.warning("[Slack] artemis/<user>/ persist failed for %s: %s", user_id, e)
+            if chat_id and tz:
+                self._persist_artemis_sidecar(user_id, chat_id, tz=tz)
 
             return name
         except Exception as e:

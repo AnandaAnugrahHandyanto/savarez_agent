@@ -139,6 +139,26 @@ def _resolve_origin(job: dict) -> Optional[dict]:
                         break
                 except OSError:
                     continue
+
+        # B-0504-01 followup #1: if reverse-resolve still didn't find a user_id,
+        # log loudly. Without user_id, scheduler skips env+ContextVar injection
+        # (~line 640) and the cron's MCP calls fail-closed with the generic
+        # "no user_id available" error. Silent failure here was the symptom
+        # mode of the 2026-05-05 james/crystal incident (sidecar files missing).
+        # Post-A1+A2 (mcp-server `91d8f69`+`be62c81` + 2026-05-05 cron-data
+        # backfill), all known cron entries carry user_id natively and this
+        # path is essentially defensive — but if a regression ever lands a
+        # cron without user_id and without a matching sidecar, this log makes
+        # the failure mode visible instead of silent.
+        if not origin.get("user_id"):
+            logger.error(
+                "cron job %r: origin lacks user_id and no slack_channel.txt "
+                "matches chat_id=%s — cron will fail-closed at MCP layer "
+                "(B-0504-01 family). Inspect ~/.hermes/cron/jobs.json + "
+                "~/.hermes/artemis/<user>/slack_channel.txt.",
+                job.get("id", "?"),
+                chat_id,
+            )
     return origin
 
 
