@@ -160,7 +160,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
   }
 
-  // CLI parity: Ctrl+B toggles the VAD-driven continuous recording loop
+  // CLI parity: Ctrl+B toggles a VAD-bounded push-to-talk capture
   // (NOT the voice-mode umbrella bit). The mode is enabled via /voice on;
   // Ctrl+B while the mode is off sys-nudges the user. While the mode is
   // on, the first press starts a single VAD-bounded capture

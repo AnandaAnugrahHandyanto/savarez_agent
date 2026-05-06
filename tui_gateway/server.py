@@ -5619,7 +5619,7 @@ def _(rid, params: dict) -> dict:
 
 @method("voice.record")
 def _(rid, params: dict) -> dict:
-    """VAD-driven continuous record loop, CLI-parity.
+    """VAD-bounded push-to-talk capture, CLI-parity.
 
     ``start`` begins one VAD-bounded capture and emits ``voice.transcript``
     after silence stops the recorder. ``stop`` forces transcription of the

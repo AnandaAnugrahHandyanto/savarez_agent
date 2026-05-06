@@ -473,6 +473,10 @@ def stop_continuous(force_transcribe: bool = False) -> None:
                 wav_path = rec.stop()
             except Exception as e:
                 logger.warning("failed to stop recorder: %s", e)
+                try:
+                    rec.cancel()
+                except Exception as cancel_error:
+                    logger.warning("failed to cancel recorder: %s", cancel_error)
                 wav_path = None
 
             def _transcribe_and_cleanup():

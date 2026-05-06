@@ -384,6 +384,7 @@ class TestContinuousLoopSimulation:
                 self.cancelled = 0
                 # Preset WAV path returned by stop()
                 self.next_stop_wav = "/tmp/fake.wav"
+                self.fail_stop = False
                 self.fail_next_start = False
 
             def start(self, on_silence_stop=None):
@@ -395,6 +396,8 @@ class TestContinuousLoopSimulation:
                 self.is_recording = True
 
             def stop(self):
+                if self.fail_stop:
+                    raise RuntimeError("stop failed")
                 self.stopped += 1
                 self.is_recording = False
                 return self.next_stop_wav
@@ -522,6 +525,33 @@ class TestContinuousLoopSimulation:
         assert transcripts == ["manual stop"]
         assert statuses == ["listening", "transcribing", "idle"]
         assert voice.is_continuous_active() is False
+
+    def test_force_transcribe_stop_failure_cancels_and_clears_stopping(
+        self, fake_recorder, monkeypatch
+    ):
+        import hermes_cli.voice as voice
+
+        class ImmediateThread:
+            def __init__(self, target, daemon=False):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        monkeypatch.setattr(voice.threading, "Thread", ImmediateThread)
+        fake_recorder.fail_stop = True
+
+        statuses = []
+        voice.start_continuous(
+            on_transcript=lambda _t: None,
+            on_status=lambda s: statuses.append(s),
+        )
+        voice.stop_continuous(force_transcribe=True)
+
+        assert fake_recorder.cancelled == 1
+        assert statuses == ["listening", "transcribing", "idle"]
+        assert voice.is_continuous_active() is False
+        assert voice._continuous_stopping is False
 
     def test_restart_failure_reports_idle(self, fake_recorder, monkeypatch):
         import hermes_cli.voice as voice
