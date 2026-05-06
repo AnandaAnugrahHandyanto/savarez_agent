@@ -81,7 +81,7 @@ TEAMS_CLIENT_SECRET=<your-client-secret>
 TEAMS_TENANT_ID=<your-tenant-id>
 
 # Restrict access to specific users (recommended)
-# Use AAD object IDs from `teams status --verbose`
+# Use your raw AAD Object ID from `teams status --verbose` (emails are NOT supported)
 TEAMS_ALLOWED_USERS=<your-aad-object-id>
 ```
 
@@ -126,14 +126,14 @@ The `teamsAppId` was printed by `teams app create` in Step 3. After installing, 
 | `TEAMS_CLIENT_ID` | Azure AD App (client) ID |
 | `TEAMS_CLIENT_SECRET` | Azure AD client secret |
 | `TEAMS_TENANT_ID` | Azure AD tenant ID |
-| `TEAMS_ALLOWED_USERS` | Comma-separated AAD object IDs allowed to use the bot |
+| `TEAMS_ALLOWED_USERS` | Comma-separated list of allowed users (AAD Object IDs only) |
 | `TEAMS_HOME_CHANNEL` | Conversation ID for cron/proactive message delivery |
 | `TEAMS_HOME_CHANNEL_NAME` | Display name for the home channel |
 | `TEAMS_PORT` | Webhook port (default: `3978`) |
 
 ### config.yaml
 
-Alternatively, configure via `~/.hermes/config.yaml`:
+Alternatively, configure via `~/.hermes/config.yaml`. This is the recommended approach as it supports advanced lists for user and channel filtering:
 
 ```yaml
 platforms:
@@ -144,7 +144,28 @@ platforms:
       client_secret: "your-secret"
       tenant_id: "your-tenant-id"
       port: 3978
+      
+      # Optional filtering lists
+      allowed_users:
+        - "00000000-0000-0000-0000-000000000000" # AAD Object ID (Emails are NOT supported)
+      allowed_channels:
+        - "19:abcdef1234567890@thread.v2"        # Channel Thread ID
+      free_response_channels:
+        - "19:abcdef1234567890@thread.v2"        # Channels where the bot replies without @mentions
 ```
+
+### Channel Configuration (Thread IDs)
+
+Microsoft Teams often obfuscates channel names when communicating with bots, sending only the raw internal thread ID (e.g. `19:xxx@thread.v2`). For this reason, you **must use the raw thread ID** in `allowed_channels` and `free_response_channels`. You can discover this ID by monitoring the gateway logs when sending a message from the desired channel. We recommend using YAML comments (e.g. `# Channel Name`) next to the ID in your `config.yaml` to keep track of them.
+
+### Channel Policy & Free Response
+
+- `allowed_channels`: Restricts the bot to only operate in specific group chats or channels. DM (personal) chats are always allowed.
+- `free_response_channels`: Channels where the bot will respond to *every* message, even if it is not explicitly @mentioned. 
+  
+:::info RSC Requirement for Free Response
+To use `free_response_channels`, the Teams bot must actually receive unmentioned messages. By default, Teams only sends messages containing an `@mention` to the bot. A Microsoft 365 Tenant Admin must grant **Resource-Specific Consent (RSC)** with the `ChannelMessage.Read.Group` permission to your bot to allow it to read all messages in the channel.
+:::
 
 ---
 

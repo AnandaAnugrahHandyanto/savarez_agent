@@ -172,6 +172,13 @@ class TeamsAdapter(BasePlatformAdapter):
         # Maps chat_id → ConversationReference captured from incoming messages.
         # Used to send cards with the correct conversation type (personal/group/channel).
         self._conv_refs: Dict[str, Any] = {}
+        
+        self._allowed_channels = []
+        self._free_response_channels = []
+        if isinstance(extra.get("allowed_channels"), list):
+            self._allowed_channels = [str(c).strip() for c in extra.get("allowed_channels") if str(c).strip()]
+        if isinstance(extra.get("free_response_channels"), list):
+            self._free_response_channels = [str(c).strip() for c in extra.get("free_response_channels") if str(c).strip()]
 
     async def connect(self) -> bool:
         if not TEAMS_SDK_AVAILABLE:
@@ -257,10 +264,11 @@ class TeamsAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         logger.info("[teams] Disconnected")
 
-    async def _on_message(self, ctx: ActivityContext[MessageActivity]) -> None:
-        """Process an incoming Teams message and dispatch to the gateway."""
+    async def _on_message(self, ctx: "ActivityContext[MessageActivity]") -> None:
         activity = ctx.activity
-
+        if getattr(activity, "type", "") != "message":
+            return
+        
         # Self-message filter
         bot_id = self._app.id if self._app else None
         if bot_id and getattr(activity.from_, "id", None) == bot_id:
@@ -278,10 +286,20 @@ class TeamsAdapter(BasePlatformAdapter):
 
         # Extract text — strip bot @mentions
         text = ""
+        was_mentioned = False
+        entities = getattr(activity, "entities", []) or []
+        for entity in entities:
+            # Depending on SDK version, entities might be dicts or objects
+            if isinstance(entity, dict) and entity.get("type") == "mention":
+                was_mentioned = True
+            elif getattr(entity, "type", "") == "mention":
+                was_mentioned = True
+
         if hasattr(activity, "text") and activity.text:
             text = activity.text
         # Strip <at>BotName</at> HTML tags that Teams prepends for @mentions
         if "<at>" in text:
+            was_mentioned = True
             import re
             text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
 
@@ -297,6 +315,23 @@ class TeamsAdapter(BasePlatformAdapter):
         else:
             chat_type = "dm"
 
+        # Channel policy enforcement
+        conv_id = getattr(conv, "id", None) or ""
+        conv_name = getattr(conv, "name", None) or ""
+        if chat_type != "dm":
+            if self._allowed_channels:
+                if not any(c in conv_id or c in conv_name for c in self._allowed_channels):
+                    logger.warning(f"TeamsAdapter dropping disallowed channel: id='{conv_id}', name='{conv_name}'")
+                    return
+                    
+            if not was_mentioned:
+                is_free_response = False
+                if self._free_response_channels:
+                    if any(c in conv_id or c in conv_name for c in self._free_response_channels):
+                        is_free_response = True
+                if not is_free_response:
+                    return  # Drop unmentioned messages in non-free-response channels
+
         # Build source
         from_account = activity.from_
         user_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
@@ -308,6 +343,7 @@ class TeamsAdapter(BasePlatformAdapter):
             chat_type=chat_type,
             user_id=str(user_id),
             user_name=user_name,
+            user_id_alt=None,
             guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
         )
 
@@ -319,7 +355,10 @@ class TeamsAdapter(BasePlatformAdapter):
             content_type = getattr(att, "content_type", None) or ""
             if content_url and content_type.startswith("image/"):
                 try:
-                    cached = await cache_image_from_url(content_url)
+                    # MS Teams image attachments require authentication to download
+                    token = await self._app._get_bot_token()
+                    headers = {"Authorization": f"Bearer {token}"} if token else None
+                    cached = await cache_image_from_url(content_url, headers=headers)
                     if cached:
                         media_urls.append(cached)
                         media_types.append(content_type)
@@ -589,6 +628,8 @@ def interactive_setup() -> None:
     from hermes_cli.config import (
         get_env_value,
         save_env_value,
+    )
+    from hermes_cli.setup import (
         prompt,
         prompt_yes_no,
         print_info,

@@ -62,6 +62,7 @@ _NOISY_LOGGERS = (
     "websockets",
     "charset_normalizer",
     "markdown_it",
+    "opentelemetry.context",
 )
 
 

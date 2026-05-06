@@ -551,7 +551,7 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
     return str(filepath)
 
 
-async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) -> str:
+async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2, headers: Optional[Dict[str, str]] = None) -> str:
     """
     Download an image from a URL and save it to the local cache.
 
@@ -562,6 +562,7 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
         url: The HTTP/HTTPS URL to download from.
         ext: File extension including the dot (e.g. ".jpg", ".png").
         retries: Number of retry attempts on transient failures.
+        headers: Optional dictionary of HTTP headers to include in the request.
 
     Returns:
         Absolute path to the cached image file as a string.
@@ -581,14 +582,18 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
         follow_redirects=True,
         event_hooks={"response": [_ssrf_redirect_guard]},
     ) as client:
+        req_headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
+            "Accept": "image/*,*/*;q=0.8",
+        }
+        if headers:
+            req_headers.update(headers)
+
         for attempt in range(retries + 1):
             try:
                 response = await client.get(
                     url,
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
-                        "Accept": "image/*,*/*;q=0.8",
-                    },
+                    headers=req_headers,
                 )
                 response.raise_for_status()
                 return cache_image_from_bytes(response.content, ext)

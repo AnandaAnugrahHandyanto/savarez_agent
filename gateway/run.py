@@ -3590,7 +3590,20 @@ class GatewayRunner:
             return True
 
         # Check platform-specific and global allowlists
-        platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
+        platform_env_var = platform_env_map.get(source.platform, "")
+        platform_allowlist = os.getenv(platform_env_var, "").strip() if platform_env_var else ""
+        
+        if not platform_allowlist and getattr(self, "config", None) and hasattr(self.config, "platforms"):
+            if source.platform and source.platform in self.config.platforms:
+                platform_cfg = self.config.platforms[source.platform]
+                if isinstance(getattr(platform_cfg, "extra", None), dict):
+                    extra_users = platform_cfg.extra.get("allowed_users")
+                    if extra_users:
+                        if isinstance(extra_users, list):
+                            platform_allowlist = ",".join(str(u).strip() for u in extra_users if str(u).strip())
+                        else:
+                            platform_allowlist = str(extra_users).strip()
+
         group_user_allowlist = ""
         group_chat_allowlist = ""
         if source.chat_type in {"group", "forum"}:
@@ -3660,8 +3673,15 @@ class GatewayRunner:
             return True
 
         check_ids = {user_id}
-        if "@" in user_id:
-            check_ids.add(user_id.split("@")[0])
+        if source.user_id_alt:
+            check_ids.add(source.user_id_alt)
+        
+        # Expand any email-like IDs (whether primary or alt) to include their username portion
+        expanded_emails = set()
+        for cid in check_ids:
+            if "@" in cid:
+                expanded_emails.add(cid.split("@")[0])
+        check_ids.update(expanded_emails)
 
         # WhatsApp: resolve phone↔LID aliases from bridge session mapping files
         if source.platform == Platform.WHATSAPP:
@@ -3676,7 +3696,10 @@ class GatewayRunner:
             if normalized_user_id:
                 check_ids.add(normalized_user_id)
 
-        return bool(check_ids & allowed_ids)
+        result = bool(check_ids & allowed_ids)
+        if not result:
+            logger.warning(f"Auth DEBUG: check_ids={check_ids}, allowed_ids={allowed_ids}, platform_allowlist={repr(platform_allowlist)}")
+        return result
 
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
         """Return how unauthorized DMs should be handled for a platform.

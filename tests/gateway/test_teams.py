@@ -429,7 +429,7 @@ class TestTeamsMessageHandling:
         activity_id="activity-001",
         attachments=None,
     ):
-        activity = MagicMock()
+        activity = MagicMock(); activity.type = "message"; activity.type = "message"
         activity.text = text
         activity.id = activity_id
         activity.from_ = MagicMock()
@@ -469,6 +469,7 @@ class TestTeamsMessageHandling:
     async def test_group_message_creates_group_event(self):
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id", client_secret="secret", tenant_id="tenant",
+            free_response_channels=["19:abc@thread.v2"]
         ))
         adapter._app = MagicMock()
         adapter._app.id = "bot-id"
@@ -484,6 +485,7 @@ class TestTeamsMessageHandling:
     async def test_channel_message_creates_channel_event(self):
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id", client_secret="secret", tenant_id="tenant",
+            free_response_channels=["19:abc@thread.v2"]
         ))
         adapter._app = MagicMock()
         adapter._app.id = "bot-id"
