@@ -4784,3 +4784,62 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         # Body: leading @Hermes stripped, Alice preserved, trailing text intact.
         self.assertIn("@Alice review the spec with Alice", event.text)
         self.assertNotIn("@Hermes @Alice", event.text)
+
+
+class TestConvertMdTables(unittest.TestCase):
+    """Tests for _convert_md_tables — markdown table to box-drawing code block."""
+
+    def _convert(self, text: str) -> str:
+        from gateway.platforms.feishu import _convert_md_tables
+        return _convert_md_tables(text)
+
+    def test_simple_table(self):
+        md = "| A | B |\n|---|---|\n| 1 | 2 |"
+        result = self._convert(md)
+        self.assertIn("```", result)
+        self.assertIn("┌───┬───┐", result)
+        self.assertIn("│ A │ B │", result)
+        self.assertIn("│ 1 │ 2 │", result)
+        self.assertIn("└───┴───┘", result)
+
+    def test_cjk_alignment(self):
+        md = "| 名称 | 描述 |\n|---|---|\n| 测试 | 这是一个描述 |"
+        result = self._convert(md)
+        self.assertIn("```", result)
+        # CJK chars should be padded to match widest column
+        self.assertIn("│ 名称 │ 描述         │", result)
+        self.assertIn("│ 测试 │ 这是一个描述 │", result)
+
+    def test_table_with_surrounding_text(self):
+        md = "Before\n\n| A |\n|---|\n| 1 |\n\nAfter"
+        result = self._convert(md)
+        self.assertTrue(result.startswith("Before"))
+        self.assertTrue(result.endswith("After"))
+        self.assertIn("```", result)
+        self.assertIn("│ A │", result)
+
+    def test_no_table_unchanged(self):
+        md = "Just plain text\nno tables here"
+        result = self._convert(md)
+        self.assertEqual(result, md)
+
+    def test_multiple_tables(self):
+        md = "| A |\n|---|\n| 1 |\n\nMiddle\n\n| X | Y |\n|---|---|\n| a | b |"
+        result = self._convert(md)
+        # Both tables converted
+        self.assertEqual(result.count("```"), 4)  # 2 opening + 2 closing fences
+        self.assertIn("│ A │", result)
+        self.assertIn("│ X │ Y │", result)
+
+    def test_table_with_alignment_markers(self):
+        md = "| L | C | R |\n|:--|:-:|--:|\n| a | b | c |"
+        result = self._convert(md)
+        self.assertIn("```", result)
+        self.assertIn("│ L │ C │ R │", result)
+        self.assertIn("│ a │ b │ c │", result)
+
+    def test_empty_cells(self):
+        md = "| A | B |\n|---|---|\n|   | 2 |"
+        result = self._convert(md)
+        self.assertIn("```", result)
+        self.assertIn("│   │ 2 │", result)

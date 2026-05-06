@@ -57,6 +57,7 @@ import mimetypes
 import os
 import re
 import threading
+import unicodedata
 import time
 import uuid
 from collections import OrderedDict
@@ -153,15 +154,77 @@ _MARKDOWN_HINT_RE = re.compile(
     r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
     re.MULTILINE,
 )
-# Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
-_MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+# Detect markdown tables: header + separator + optional body rows.
+# Converted to box-drawing code blocks for monospace alignment in Feishu.
+_MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|(?:\n\|.+\|)*", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+
+
+def _convert_md_tables(text: str) -> str:
+    """Convert markdown tables to box-drawing characters inside code fences.
+
+    Feishu's ``md`` tag does not render markdown tables.  Sending table
+    content as a plain ``text`` message loses all formatting.  Instead we
+    parse the table, lay out columns with box-drawing characters, and wrap
+    the result in a fenced code block so Feishu renders it in monospace.
+    """
+
+    def _table_to_box(table_text: str) -> str:
+        lines = table_text.strip().splitlines()
+        if len(lines) < 2:
+            return table_text
+
+        def _parse_row(line: str) -> list[str]:
+            return [c.strip() for c in line.strip().strip("|").split("|")]
+
+        header = _parse_row(lines[0])
+        sep = _parse_row(lines[1])
+        col_count = max(len(header), len(sep))
+        header.extend([""] * (col_count - len(header)))
+        body = []
+        for line in lines[2:]:
+            cols = _parse_row(line)
+            cols.extend([""] * (col_count - len(cols)))
+            body.append(cols)
+
+        # Measure widths (CJK chars count as 2)
+        def _display_width(s: str) -> int:
+            w = 0
+            for ch in s:
+                w += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+            return w
+
+        widths = [_display_width(header[c]) for c in range(col_count)]
+        for row in body:
+            for c in range(col_count):
+                widths[c] = max(widths[c], _display_width(row[c]))
+
+        def _pad(cell: str, width: int) -> str:
+            return cell + " " * (width - _display_width(cell))
+
+        def _line(left: str, mid: str, right: str, fill: str) -> str:
+            return left + mid.join(fill * (w + 2) for w in widths) + right
+
+        out: list[str] = []
+        out.append(_line("┌", "┬", "┐", "─"))
+        out.append("│ " + " │ ".join(_pad(header[c], widths[c]) for c in range(col_count)) + " │")
+        out.append(_line("├", "┼", "┤", "─"))
+        for row in body:
+            out.append("│ " + " │ ".join(_pad(row[c], widths[c]) for c in range(col_count)) + " │")
+        out.append(_line("└", "┴", "┘", "─"))
+        return "\n".join(out)
+
+    def _replace(match: re.Match) -> str:
+        return "```\n" + _table_to_box(match.group(0)) + "\n```"
+
+    return _MARKDOWN_TABLE_RE.sub(_replace, text)
+
+
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -4005,12 +4068,10 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+        # Feishu post-type 'md' elements do not render markdown tables.
+        # Convert them to box-drawing characters inside code fences so the
+        # md renderer displays them in monospace with proper alignment.
+        content = _convert_md_tables(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
