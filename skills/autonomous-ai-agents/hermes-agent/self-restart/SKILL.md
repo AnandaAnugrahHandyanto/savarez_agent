@@ -42,8 +42,8 @@ import os, subprocess, urllib.request, json
 
 RAILWAY_API_TOKEN = os.environ.get("RAILWAY_API_TOKEN")
 PROJECT_ID = "c49b3e8b-a36d-4d24-a972-eab5e05b881d"
-ENVIRONMENT_ID = "766e95dc-fac1-4185-a3b7-1b2d285214d4"
-SERVICE_ID = "f3d97619-1493-4fb6-b3e7-59bcac051db3"
+ENVIRONMENT_ID = "38eea0f3-0bd3-48f4-abaf-ec3de09174de"
+SERVICE_ID = "c32be0a9-9d43-49a8-bf43-764915360dfb"
 
 mutation = """
 mutation serviceInstanceRedeploy($serviceId: String!, $environmentId: String!) {
