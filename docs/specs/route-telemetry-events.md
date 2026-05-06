@@ -4,7 +4,7 @@ Hermes Feishu routing is deliberately thin-cockpit: foreground turns may compute
 
 ```yaml
 routing:
-  feishu_auto_dispatch_enabled: true
+  feishu_auto_dispatch_enabled: false
   feishu_route_shadow_hints_enabled: true
 ```
 

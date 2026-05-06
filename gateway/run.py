@@ -8939,9 +8939,9 @@ class GatewayRunner:
 
         config = getattr(self, "config", None)
         if isinstance(config, dict):
-            auto_dispatch_enabled = bool(config.get("feishu_auto_dispatch_enabled", True))
+            auto_dispatch_enabled = bool(config.get("feishu_auto_dispatch_enabled", False))
         else:
-            auto_dispatch_enabled = bool(getattr(config, "feishu_auto_dispatch_enabled", True))
+            auto_dispatch_enabled = bool(getattr(config, "feishu_auto_dispatch_enabled", False))
 
         from gateway.route_decision import resolve_route_decision, should_auto_dispatch_feishu
 
@@ -12925,7 +12925,7 @@ class GatewayRunner:
                 route_shadow_hint = ""
                 route_shadow_hints_enabled = bool(getattr(getattr(self, "config", None), "feishu_route_shadow_hints_enabled", True))
                 if capability_hint and route_shadow_hints_enabled:
-                    auto_dispatch_enabled = bool(getattr(getattr(self, "config", None), "feishu_auto_dispatch_enabled", True))
+                    auto_dispatch_enabled = bool(getattr(getattr(self, "config", None), "feishu_auto_dispatch_enabled", False))
                     decision = resolve_route_decision(
                         str(message or ""),
                         platform="feishu",

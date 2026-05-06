@@ -577,7 +577,7 @@ Feishu can remain a thin cockpit while routing high-ROI work to background wrapp
 
 ```yaml
 routing:
-  feishu_auto_dispatch_enabled: true        # Safe read-only/internal work may start /background automatically
+  feishu_auto_dispatch_enabled: false       # Opt-in: set true to allow safe read-only/internal work to start /background automatically
   feishu_route_shadow_hints_enabled: true   # Inject RouteDecision shadow hints into Feishu foreground turns
 ```
 

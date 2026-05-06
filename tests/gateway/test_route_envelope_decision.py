@@ -14,13 +14,13 @@ for _module in (route_decision, route_envelope):
         f"{_module.__name__} resolved outside clean worktree: {_module_path}"
     )
 
-from gateway.background_wakeups import clear_background_wake_manifest_cache, resolve_background_wakeup
-from gateway.route_decision import (
+from gateway.background_wakeups import clear_background_wake_manifest_cache, resolve_background_wakeup  # noqa: E402
+from gateway.route_decision import (  # noqa: E402
     build_feishu_route_decision_shadow_hint,
     resolve_route_decision,
     should_auto_dispatch_feishu,
 )
-from gateway.route_envelope import infer_task_envelope
+from gateway.route_envelope import infer_task_envelope  # noqa: E402
 
 
 ROUTE_AUDIT_PROMPT = "请体系化审查和制定route机制提升计划，阅读开源社区先进案例、Hermes本身机制"

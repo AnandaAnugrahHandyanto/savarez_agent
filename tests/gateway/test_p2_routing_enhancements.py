@@ -53,20 +53,20 @@ def _source(platform=Platform.FEISHU):
 
 def test_gateway_config_defaults_and_kill_switch_overrides():
     defaults = GatewayConfig()
-    assert defaults.feishu_auto_dispatch_enabled is True
+    assert defaults.feishu_auto_dispatch_enabled is False
     assert defaults.feishu_route_shadow_hints_enabled is True
 
-    disabled = GatewayConfig.from_dict(
+    enabled = GatewayConfig.from_dict(
         {
-            "feishu_auto_dispatch_enabled": False,
+            "feishu_auto_dispatch_enabled": True,
             "feishu_route_shadow_hints_enabled": False,
         }
     )
-    assert disabled.feishu_auto_dispatch_enabled is False
-    assert disabled.feishu_route_shadow_hints_enabled is False
+    assert enabled.feishu_auto_dispatch_enabled is True
+    assert enabled.feishu_route_shadow_hints_enabled is False
 
-    serialized = disabled.to_dict()
-    assert serialized["feishu_auto_dispatch_enabled"] is False
+    serialized = enabled.to_dict()
+    assert serialized["feishu_auto_dispatch_enabled"] is True
     assert serialized["feishu_route_shadow_hints_enabled"] is False
 
 
@@ -121,6 +121,26 @@ async def test_auto_dispatch_gateway_respects_config_kill_switch():
 
     runner = _make_runner()
     runner.config = GatewayConfig.from_dict({"feishu_auto_dispatch_enabled": False})
+    runner._handle_background_command = AsyncMock(return_value="should not run")
+    event = MessageEvent(text=ROUTE_AUDIT_PROMPT, source=_source())
+
+    result = await GatewayRunner._maybe_auto_dispatch_feishu_route(
+        runner,
+        event,
+        event.source,
+        active_toolsets=("terminal", "file", "skills"),
+    )
+
+    assert result is None
+    runner._handle_background_command.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_auto_dispatch_gateway_default_config_is_opt_in_disabled():
+    from gateway.run import GatewayRunner
+
+    runner = _make_runner()
+    runner.config = GatewayConfig()
     runner._handle_background_command = AsyncMock(return_value="should not run")
     event = MessageEvent(text=ROUTE_AUDIT_PROMPT, source=_source())
 

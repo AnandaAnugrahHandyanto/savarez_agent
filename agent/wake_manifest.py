@@ -10,7 +10,6 @@ runtime/audit consumers. The manifest stays intentionally small:
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any, Iterable
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator

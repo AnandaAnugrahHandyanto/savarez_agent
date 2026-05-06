@@ -368,6 +368,32 @@ def _first_match_index(
     return best
 
 
+def _word_token_index(text: str, token: str) -> int | None:
+    normalized_token = _normalize_match_term(token)
+    if not normalized_token:
+        return None
+    cursor = 0
+    for part in text.split():
+        index = text.find(part, cursor)
+        if part == normalized_token:
+            return index
+        cursor = index + len(part)
+    return None
+
+
+def _first_repo_match_index(text: str) -> int | None:
+    keyword_index = _first_match_index(text, _REPO_KEYWORDS)
+    pr_index = _word_token_index(text, "pr")
+    candidates = [value for value in (keyword_index, pr_index) if value is not None]
+    if not candidates:
+        return None
+    return min(candidates)
+
+
+def _contains_repo_keywords(text: str) -> bool:
+    return _first_repo_match_index(text) is not None
+
+
 def _detect_owner_matches(text: str) -> tuple[tuple[int, str], ...]:
     matches: list[tuple[int, str]] = []
     for owner, aliases in _OWNER_ALIASES.items():
@@ -405,7 +431,7 @@ def _detect_work_class_matches(text: str) -> tuple[tuple[int, str], ...]:
         ),
         "html": _first_match_index(text, _HTML_KEYWORDS),
         "ppt": _first_match_index(text, _PPT_KEYWORDS, blocked_spans=html_spans),
-        "repo": _first_match_index(text, _REPO_KEYWORDS),
+        "repo": _first_repo_match_index(text),
     }
 
     for order, work_class in enumerate(_WORK_CLASS_ORDER):
@@ -627,7 +653,7 @@ _SYNTHESIS_KEYWORDS = (
     "recommendation", "recommendations", "brief", "report",
 )
 _REPO_KEYWORDS = (
-    "github", "repository", "repo", "codebase", "pull request", "pr", "issue triage", "repo stats",
+    "github", "repository", "repo", "codebase", "pull request", "issue triage", "repo stats",
     "仓库", "代码库", "pr review", "github pr",
 )
 _SELF_GOVERNANCE_REPO_SUBJECT_KEYWORDS = (
@@ -1441,7 +1467,7 @@ def resolve_background_wakeup(
             )
             applied_routes.add("multi_agent")
 
-        matched_repo = _contains_any(normalized, _REPO_KEYWORDS)
+        matched_repo = _contains_repo_keywords(normalized)
         if (matched_repo or matched_self_governance_repo) and "repo" not in applied_routes:
             _apply_route(
                 "repo",

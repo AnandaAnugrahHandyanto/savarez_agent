@@ -13,7 +13,7 @@ assert _MODULE_PATH.is_relative_to(_REPO_ROOT), (
     f"gateway.background_wakeups resolved outside clean worktree: {_MODULE_PATH}"
 )
 
-from gateway.background_wakeups import (
+from gateway.background_wakeups import (  # noqa: E402
     build_background_ephemeral_prompt,
     build_feishu_capability_gap_hint,
     build_feishu_director_hint,
@@ -27,7 +27,7 @@ from gateway.background_wakeups import (
     resolve_specialist_receipt_binding,
     suggested_commands_for_routes,
 )
-from hermes_cli.config import save_config
+from hermes_cli.config import save_config  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -171,6 +171,24 @@ def test_difficult_web_extract_does_not_replace_ordinary_web_extract_or_browser(
 
     assert "difficult_web_extract" not in ordinary.route_names
     assert "difficult_web_extract" not in browser_task.route_names
+
+
+def test_repo_route_does_not_match_pr_substrings_in_presentation_or_price():
+    presentation = resolve_background_wakeup(
+        "make a presentation deck",
+        platform="feishu",
+        default_toolsets=["hermes-feishu-work"],
+    )
+    price_extract = resolve_background_wakeup(
+        "extract product price with selector from pages",
+        platform="feishu",
+        default_toolsets=["hermes-feishu-work"],
+    )
+
+    assert "repo" not in presentation.route_names
+    assert "repo" not in price_extract.route_names
+    assert "multi_agent" not in presentation.route_names
+    assert "multi_agent" not in price_extract.route_names
 
 
 def test_feishu_research_multi_agent_upgrades_lane():

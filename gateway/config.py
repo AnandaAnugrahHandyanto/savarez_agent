@@ -424,7 +424,7 @@ class GatewayConfig:
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
     # Feishu thin-cockpit routing controls
-    feishu_auto_dispatch_enabled: bool = True
+    feishu_auto_dispatch_enabled: bool = False
     feishu_route_shadow_hints_enabled: bool = True
 
     # Streaming configuration
@@ -608,7 +608,7 @@ class GatewayConfig:
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
-            feishu_auto_dispatch_enabled=_coerce_bool(feishu_auto_dispatch_enabled, True),
+            feishu_auto_dispatch_enabled=_coerce_bool(feishu_auto_dispatch_enabled, False),
             feishu_route_shadow_hints_enabled=_coerce_bool(feishu_route_shadow_hints_enabled, True),
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,

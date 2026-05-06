@@ -664,7 +664,7 @@ platform_toolsets:
 # Route telemetry events are best-effort: route_decision_resolved,
 # route_selected_for_background, route_worker_outcome, and worker_evaluation details.
 routing:
-  feishu_auto_dispatch_enabled: true
+  feishu_auto_dispatch_enabled: false
   feishu_route_shadow_hints_enabled: true
 
 # ─────────────────────────────────────────────────────────────────────────────
