@@ -386,7 +386,7 @@ class ObsidimemProvider(MemoryProvider):
 
         for t in (self._sync_thread, self._prefetch_thread):
             if t and t.is_alive():
-                t.join(timeout=5.0)
+                t.join(timeout=10.0)
 
         if self._session_id:
             try:
