@@ -170,6 +170,50 @@ class TestProfileBootstrap:
         profile_dir = create_profile("testbot", no_alias=True)
         assert (profile_dir / "home").is_dir()
 
+    def test_create_profile_links_shared_gh_config_when_enabled(self, tmp_path, monkeypatch):
+        """New profiles can opt into sharing the default gh CLI auth config."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        default_gh = tmp_path / ".config" / "gh"
+        default_gh.mkdir(parents=True)
+        (default_gh / "hosts.yml").write_text("github.com: {}\n")
+        (home / "config.yaml").write_text("profiles:\n  share_gh_config: true\n")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        from hermes_cli.profiles import create_profile
+        profile_dir = create_profile("testbot", no_alias=True)
+
+        assert (profile_dir / "home" / ".config" / "gh").resolve() == default_gh.resolve()
+        assert (profile_dir / ".config" / "gh").resolve() == default_gh.resolve()
+
+    def test_create_profile_does_not_overwrite_profile_local_gh_config(
+        self, tmp_path, monkeypatch
+    ):
+        """Existing profile-local gh config wins over shared config."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        default_gh = tmp_path / ".config" / "gh"
+        default_gh.mkdir(parents=True)
+        (home / "config.yaml").write_text("profiles:\n  share_gh_config: true\n")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        from hermes_cli.profiles import create_profile
+
+        profile_dir = create_profile("source", no_alias=True)
+        local_gh = profile_dir / "home" / ".config" / "gh"
+        local_gh.unlink()
+        local_gh.mkdir()
+        (local_gh / "hosts.yml").write_text("github.com:\n  user: profile-local\n")
+
+        from hermes_cli.profiles import _link_shared_gh_config
+        _link_shared_gh_config(profile_dir)
+
+        assert local_gh.is_dir()
+        assert not local_gh.is_symlink()
+        assert "profile-local" in (local_gh / "hosts.yml").read_text()
+
 
 # ---------------------------------------------------------------------------
 # Python process HOME unchanged
