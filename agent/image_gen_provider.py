@@ -132,14 +132,19 @@ class ImageGenProvider(abc.ABC):
         self,
         prompt: str,
         aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+        image: Optional[str] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Generate an image.
+        """Generate or edit an image.
 
         Implementations should return the dict from :func:`success_response`
         or :func:`error_response`. ``kwargs`` may contain forward-compat
         parameters future versions of the schema will expose — implementations
         should ignore unknown keys.
+
+        ``image`` is an optional file path, URL, or base64 data URL of an
+        image to use as the starting point (image-to-image editing). When
+        omitted, the provider generates from scratch (text-to-image).
         """
 
 

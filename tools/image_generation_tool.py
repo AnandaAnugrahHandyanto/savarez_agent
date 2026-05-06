@@ -618,6 +618,7 @@ def _upscale_image(image_url: str, original_prompt: str) -> Optional[Dict[str, A
 def image_generate_tool(
     prompt: str,
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+    image: Optional[str] = None,
     num_inference_steps: Optional[int] = None,
     guidance_scale: Optional[float] = None,
     num_images: Optional[int] = None,
@@ -873,6 +874,10 @@ IMAGE_GENERATE_SCHEMA = {
                 "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
             },
+            "image": {
+                "type": "string",
+                "description": "Optional: a file path, URL, or base64 data URL of an image to use as the starting point. When provided, the tool edits the image based on the prompt (image-to-image). When omitted, generates from scratch (text-to-image).",
+            },
         },
         "required": ["prompt"],
     },
@@ -900,7 +905,7 @@ def _read_configured_image_provider():
     return None
 
 
-def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str, image: Optional[str] = None):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
@@ -950,7 +955,7 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
         })
 
     try:
-        result = provider.generate(prompt=prompt, aspect_ratio=aspect_ratio)
+        result = provider.generate(prompt=prompt, aspect_ratio=aspect_ratio, image=image)
     except Exception as exc:
         logger.warning(
             "Image gen provider '%s' raised: %s",
@@ -977,16 +982,18 @@ def _handle_image_generate(args, **kw):
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+    image = args.get("image")  # optional image input for editing
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
-    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
+    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio, image)
     if dispatched is not None:
         return dispatched
 
     return image_generate_tool(
         prompt=prompt,
         aspect_ratio=aspect_ratio,
+        image=image,
     )
 
 

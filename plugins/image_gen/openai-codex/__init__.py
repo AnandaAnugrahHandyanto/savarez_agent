@@ -19,7 +19,9 @@ Output is saved as PNG under ``$HERMES_HOME/cache/images/``.
 
 from __future__ import annotations
 
+import base64
 import logging
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_gen_provider import (
@@ -161,9 +163,70 @@ def _build_codex_client():
         return None
 
 
-def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> Optional[str]:
-    """Stream a Codex Responses image_generation call and return the b64 image."""
+def _to_data_url(image: str) -> str:
+    """Convert a file path, URL, or data URL to a base64 data URL.
+
+    - Already a ``data:`` URL → return as-is.
+    - ``http(s)://`` URL → return as-is (Codex can fetch it).
+    - Local file path → encode to ``data:<mime>;base64,...``.
+    """
+    if not image:
+        return ""
+    image = image.strip()
+    if image.startswith("data:"):
+        return image
+    if image.startswith("http://") or image.startswith("https://"):
+        return image
+    if not os.path.exists(image):
+        raise FileNotFoundError(f"Image not found: {image}")
+    ext = os.path.splitext(image)[1].lower().lstrip(".")
+    mime_map = {
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "webp": "image/webp",
+    }
+    mime = mime_map.get(ext, "image/png")
+    with open(image, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("ascii")
+    return f"data:{mime};base64,{b64}"
+
+
+def _collect_image_b64(
+    client: Any,
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    image_url: Optional[str] = None,
+) -> Optional[str]:
+    """Stream a Codex Responses image_generation call and return the b64 image.
+
+    When ``image_url`` is provided, it is included as an ``input_image`` in
+    the message content and the tool is configured with ``action: \"edit\"``,
+    enabling image-to-image editing.
+    """
     image_b64: Optional[str] = None
+
+    # Build message content — include input image if provided.
+    content: List[Dict[str, Any]] = [
+        {"type": "input_text", "text": prompt},
+    ]
+    if image_url:
+        content.append({"type": "input_image", "image_url": image_url})
+
+    # Build tool config — add edit action when an input image is provided.
+    tool_config: Dict[str, Any] = {
+        "type": "image_generation",
+        "model": API_MODEL,
+        "size": size,
+        "quality": quality,
+        "output_format": "png",
+        "background": "opaque",
+        "partial_images": 1,
+    }
+    if image_url:
+        tool_config["action"] = "edit"
 
     with client.responses.stream(
         model=_CODEX_CHAT_MODEL,
@@ -172,17 +235,9 @@ def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> 
         input=[{
             "type": "message",
             "role": "user",
-            "content": [{"type": "input_text", "text": prompt}],
+            "content": content,
         }],
-        tools=[{
-            "type": "image_generation",
-            "model": API_MODEL,
-            "size": size,
-            "quality": quality,
-            "output_format": "png",
-            "background": "opaque",
-            "partial_images": 1,
-        }],
+        tools=[tool_config],
         tool_choice={
             "type": "allowed_tools",
             "mode": "required",
@@ -270,6 +325,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
         self,
         prompt: str,
         aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+        image: Optional[str] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         prompt = (prompt or "").strip()
@@ -307,6 +363,19 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
         tier_id, meta = _resolve_model()
         size = _SIZES.get(aspect, _SIZES["square"])
 
+        # Encode input image if provided (image-to-image editing).
+        input_image_url: Optional[str] = None
+        if image:
+            try:
+                input_image_url = _to_data_url(image)
+            except Exception as exc:
+                return error_response(
+                    error=f"Cannot read input image: {exc}",
+                    error_type="invalid_argument",
+                    provider="openai-codex",
+                    aspect_ratio=aspect,
+                )
+
         client = _build_codex_client()
         if client is None:
             return error_response(
@@ -324,6 +393,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 prompt=prompt,
                 size=size,
                 quality=meta["quality"],
+                image_url=input_image_url,
             )
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
