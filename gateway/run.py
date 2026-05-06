@@ -13680,6 +13680,10 @@ class GatewayRunner:
                 Must return quickly — the clarify bridge blocks on the
                 threading.Event separately, so latency here just delays the
                 user seeing the question.
+
+                Prefers button-based UI when the adapter implements
+                ``send_clarify`` (currently Telegram for multi-choice
+                clarifies); falls back to plain text otherwise.
                 """
                 # Pause typing for the same reason as approvals: users need to
                 # be able to type their answer, which some platforms (Slack
@@ -13691,7 +13695,43 @@ class GatewayRunner:
                     # don't implement it (or fail) shouldn't block the send.
                     pass
 
-                # Format: "🤔 <question>\n\n 1. choice A\n 2. choice B\n…\n\n(Reply with your answer.)"
+                # Prefer button-based clarify when the adapter supports it
+                # AND we have multi-choice options. Open-ended clarifies
+                # always fall back to plain text (no buttons make sense).
+                # Check the *class* for the method, not the instance — avoids
+                # false positives from MagicMock auto-attribute creation in tests.
+                if (
+                    choices
+                    and getattr(type(_status_adapter), "send_clarify", None) is not None
+                ):
+                    try:
+                        _clarify_result = asyncio.run_coroutine_threadsafe(
+                            _status_adapter.send_clarify(
+                                chat_id=_status_chat_id,
+                                question=question,
+                                choices=list(choices),
+                                session_key=_approval_session_key,
+                                metadata=_status_thread_metadata,
+                            ),
+                            _loop_for_step,
+                        ).result(timeout=15)
+                        if _clarify_result.success:
+                            return
+                        # "no_choices" is an expected fallback signal for
+                        # adapters that require choices for buttons; anything
+                        # else is a real failure worth logging at warning.
+                        if _clarify_result.error != "no_choices":
+                            logger.warning(
+                                "Button-based clarify failed (send returned error), "
+                                "falling back to text: %s",
+                                _clarify_result.error,
+                            )
+                    except Exception as _e:
+                        logger.warning(
+                            "Button-based clarify failed, falling back to text: %s", _e
+                        )
+
+                # Fallback: plain text clarify prompt with numbered choices.
                 parts = [f"🤔 **{question}**"]
                 if choices:
                     parts.append("")
