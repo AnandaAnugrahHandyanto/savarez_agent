@@ -932,7 +932,7 @@ def _tui_need_npm_install(root: Path) -> bool:
 
 
 def _tui_ink_bundle_exists(root: Path) -> bool:
-    return (root / "node_modules" / "@hermes" / "ink" / "dist" / "ink-bundle.js").is_file()
+    return (root / "node_modules" / "@hermes" / "ink" / "dist" / "entry-exports.js").is_file()
 
 
 def _tui_runtime_ready(root: Path) -> bool:
@@ -964,7 +964,7 @@ def _tui_build_needed(tui_dir: Path) -> bool:
     if _hermes_ink_bundle_stale(tui_dir):
         return True
     dist_m = entry.stat().st_mtime
-    skip = frozenset({"node_modules", "dist"})
+    skip = frozenset({"node_modules", "dist", "packages"})
     for dirpath, dirnames, filenames in os.walk(tui_dir, topdown=True):
         dirnames[:] = [d for d in dirnames if d not in skip]
         for fn in filenames:
@@ -985,7 +985,7 @@ def _tui_build_needed(tui_dir: Path) -> bool:
 
 def _hermes_ink_bundle_stale(tui_dir: Path) -> bool:
     ink_root = tui_dir / "packages" / "hermes-ink"
-    bundle = ink_root / "dist" / "ink-bundle.js"
+    bundle = ink_root / "dist" / "entry-exports.js"
     if not bundle.exists():
         return True
     bm = bundle.stat().st_mtime
