@@ -1895,7 +1895,16 @@ class SlackAdapter(BasePlatformAdapter):
             elif not self._slack_require_mention():
                 pass  # Mention requirement disabled globally for Slack
             elif self._slack_strict_mention() and not explicit_call:
-                return  # Strict mode: ignore until explicitly called again
+                if not (
+                    is_thread_reply
+                    and await self._previous_thread_message_is_self_bot(
+                        channel_id=channel_id,
+                        thread_ts=event_thread_ts,
+                        current_ts=ts,
+                        team_id=team_id,
+                    )
+                ):
+                    return  # Strict mode: ignore until explicitly called or directly followed up
             elif not explicit_call:
                 reply_to_bot_thread = (
                     is_thread_reply and event_thread_ts in self._bot_message_ts
@@ -2959,6 +2968,56 @@ class SlackAdapter(BasePlatformAdapter):
         for pattern in self._mention_patterns:
             cleaned = pattern.sub("", cleaned, count=1).strip()
         return cleaned
+
+    async def _previous_thread_message_is_self_bot(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        current_ts: str,
+        team_id: str = "",
+    ) -> bool:
+        """Return whether the immediately previous thread message is this bot.
+
+        This keeps strict-mode follow-up narrow: a user can answer directly
+        after the bot, but older bot participation does not keep the thread
+        auto-engaged.
+        """
+        if not channel_id or not thread_ts or not current_ts:
+            return False
+
+        try:
+            client = self._get_client(channel_id)
+            result = await client.conversations_replies(
+                channel=channel_id,
+                ts=thread_ts,
+                latest=current_ts,
+                inclusive=False,
+                limit=100,
+            )
+            messages = result.get("messages", []) if result else []
+            previous = None
+            for msg in messages:
+                msg_ts = msg.get("ts", "")
+                if msg_ts and msg_ts < current_ts:
+                    if previous is None or msg_ts > previous.get("ts", ""):
+                        previous = msg
+            if not previous:
+                return False
+
+            previous_ts = previous.get("ts", "")
+            if previous_ts and previous_ts in self._bot_message_ts:
+                return True
+
+            msg_team = previous.get("team") or team_id
+            self_bot_uid = (
+                self._team_bot_user_ids.get(msg_team)
+                if msg_team
+                else None
+            ) or self._bot_user_id
+            return bool(self_bot_uid and previous.get("user") == self_bot_uid)
+        except Exception as exc:
+            logger.debug("[Slack] Failed to inspect previous thread message: %s", exc)
+            return False
 
     def _slack_free_response_channels(self) -> set:
         """Return channel IDs where no @mention is required."""
