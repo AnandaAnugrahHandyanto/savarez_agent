@@ -3,8 +3,7 @@
 Local LLM fact extraction (qwen2.5:7b), semantic search with reranking
 (nomic-embed-text), and ChromaDB vector store. Zero cloud, zero API tokens.
 
-Local-first memory provider using Ollama + ChromaDB.
-Follows the MemoryProvider ABC from the Mem0 reference implementation.
+Built by Iris for local-first memory, adapted to MemoryProvider ABC.
 
 Config via environment variables:
   LOCALMEM_API_KEY    — Not required for local memory
@@ -109,6 +108,24 @@ CONCLUDE_SCHEMA = {
             "conclusion": {"type": "string", "description": "The fact to store."},
         },
         "required": ["conclusion"],
+    },
+}
+
+FORGET_SCHEMA = {
+    "name": "localmem_forget",
+    "description": (
+        "Delete one or more stored memories. Provide the exact memory text "
+        "to remove a specific fact, a memory_id for precise deletion, or "
+        "delete_all=true to wipe all memories for the current user. "
+        "Use with caution — deletion is permanent."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "memory": {"type": "string", "description": "Exact memory text to delete."},
+            "memory_id": {"type": "string", "description": "Specific memory ID to delete."},
+            "delete_all": {"type": "boolean", "description": "Delete ALL memories for the current user. Irreversible.", "default": False},
+        },
     },
 }
 
@@ -236,7 +253,7 @@ class LocalMemMemoryProvider(MemoryProvider):
             "# LocalMem Memory\n"
             f"Active. User: {self._user_id}.\n"
             f"Use localmem_search to find memories, localmem_conclude to store facts, "
-            f"localmem_profile for a full overview."
+            f"localmem_forget to delete them, localmem_profile for a full overview."
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
@@ -300,7 +317,7 @@ class LocalMemMemoryProvider(MemoryProvider):
         self._sync_thread.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [PROFILE_SCHEMA, SEARCH_SCHEMA, CONCLUDE_SCHEMA]
+        return [PROFILE_SCHEMA, SEARCH_SCHEMA, CONCLUDE_SCHEMA, FORGET_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if self._is_breaker_open():
@@ -362,6 +379,30 @@ class LocalMemMemoryProvider(MemoryProvider):
             except Exception as e:
                 self._record_failure()
                 return tool_error(f"Failed to store: {e}")
+
+        elif tool_name == "localmem_forget":
+            memory = args.get("memory", "")
+            memory_id = args.get("memory_id", "")
+            delete_all = args.get("delete_all", False)
+            if not memory and not memory_id and not delete_all:
+                return tool_error(
+                    "Provide 'memory' (exact text), 'memory_id', or 'delete_all'=true."
+                )
+            try:
+                result = client.delete(
+                    **self._read_filters(),
+                    memory=memory,
+                    memory_id=memory_id,
+                    delete_all=delete_all,
+                )
+                self._record_success()
+                deleted = result.get("deleted", 0)
+                if delete_all:
+                    return json.dumps({"result": f"All memories deleted ({deleted} removed)."})
+                return json.dumps({"result": f"Deleted {deleted} memory(s)."})
+            except Exception as e:
+                self._record_failure()
+                return tool_error(f"Failed to delete: {e}")
 
         return tool_error(f"Unknown tool: {tool_name}")
 

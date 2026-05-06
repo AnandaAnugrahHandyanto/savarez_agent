@@ -222,6 +222,40 @@ Ranking:"""
                 })
         return {"results": results}
 
+    def delete(self, user_id: str = "default", memory: str = "",
+               memory_id: str = "", delete_all: bool = False) -> dict:
+        """Delete memories by text match, ID, or all for a user.
+
+        Returns the count of deleted items.
+        """
+        deleted = 0
+
+        if delete_all:
+            # Get all IDs for this user and delete them
+            raw = self.collection.get(where={"user_id": user_id})
+            if raw["ids"]:
+                self.collection.delete(ids=raw["ids"])
+                deleted = len(raw["ids"])
+            return {"deleted": deleted}
+
+        if memory_id:
+            self.collection.delete(ids=[memory_id])
+            return {"deleted": 1}
+
+        if memory:
+            # Find by exact memory text match in metadata
+            raw = self.collection.get(where={"user_id": user_id})
+            if raw["ids"] and raw["metadatas"]:
+                ids_to_delete = []
+                for i, meta in enumerate(raw["metadatas"]):
+                    if meta and meta.get("memory", "") == memory:
+                        ids_to_delete.append(raw["ids"][i])
+                if ids_to_delete:
+                    self.collection.delete(ids=ids_to_delete)
+                    deleted = len(ids_to_delete)
+
+        return {"deleted": deleted}
+
     def stats(self) -> dict:
         """Return performance statistics."""
         avg_time = (
