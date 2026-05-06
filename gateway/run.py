@@ -8814,6 +8814,10 @@ class GatewayRunner:
         )
 
         if not has_blocking_approval(session_key):
+            # If no agent is blocked, check if this is a ChatOps nonce
+            args = event.get_command_args().strip().lower().split()
+            if len(args) == 1 and len(args[0]) == 6 and args[0].isalnum():
+                return await self._handle_chatops_approval(event, args[0], "approve")
             if session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
                 return "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
@@ -8863,6 +8867,9 @@ class GatewayRunner:
         )
 
         if not has_blocking_approval(session_key):
+            args = event.get_command_args().strip().lower().split()
+            if len(args) == 1 and len(args[0]) == 6 and args[0].isalnum():
+                return await self._handle_chatops_approval(event, args[0], "reject")
             if session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
                 return "❌ Command denied (approval was stale)."
@@ -8883,6 +8890,52 @@ class GatewayRunner:
         count_msg = f" ({count} commands)" if count > 1 else ""
         logger.info("User denied %d dangerous command(s) via /deny", count)
         return f"❌ Command{'s' if count > 1 else ''} denied{count_msg}."
+
+    async def _handle_chatops_approval(self, event: MessageEvent, nonce: str, action: str) -> str:
+        import httpx
+        from gateway.config import load_config
+        
+        cfg = load_config()
+        # Find Paperclip API endpoint
+        paperclip_url = os.getenv("PAPERCLIP_API_URL", "http://127.0.0.1:3101")
+        api_key = os.getenv("PAPERCLIP_API_KEY", "")
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # 1. Resolve nonce to get approval ID
+                resolve_url = f"{paperclip_url}/api/approvals/chatops/{nonce}"
+                headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+                
+                resp = await client.get(resolve_url, headers=headers)
+                if resp.status_code == 404:
+                    return f"❌ Approval session not found or nonce '{nonce}' is invalid/expired."
+                resp.raise_for_status()
+                approval = resp.json()
+                
+                if approval.get("status") not in ("pending", "revision_requested"):
+                    return f"⚠️ Approval '{nonce}' is already {approval.get('status')}."
+
+                # 2. Call the approve/reject endpoint with ChatOps Identity
+                approval_id = approval["id"]
+                target_url = f"{paperclip_url}/api/approvals/{approval_id}/{action}"
+                
+                # Bind the user's platform identity
+                matrix_id = getattr(event.source, "user_id", str(event.source.chat_id))
+                headers["X-Paperclip-Chatops-Identity"] = f"{event.source.platform.value}:{matrix_id}"
+                
+                action_resp = await client.post(target_url, json={}, headers=headers)
+                action_resp.raise_for_status()
+                
+                emoji = "✅" if action == "approve" else "❌"
+                verb = "approved" if action == "approve" else "rejected"
+                return f"{emoji} Secure approval {nonce} has been {verb}."
+                
+        except httpx.HTTPStatusError as e:
+            logger.error("ChatOps approval HTTP error: %s", e.response.text)
+            return f"❌ Failed to {action} approval {nonce}: {e.response.text}"
+        except Exception as e:
+            logger.error("ChatOps approval error: %s", e)
+            return f"❌ Failed to communicate with Paperclip: {e}"
 
     # Platforms where /update is allowed.  ACP, API server, and webhooks are
     # programmatic interfaces that should not trigger system updates.
