@@ -380,6 +380,34 @@ class TestPluginHooks:
         assert len(results) == 1
         assert results[0] == {"context": "memory from plugin"}
 
+    def test_pre_llm_call_hook_receives_agent_kwarg(self, tmp_path, monkeypatch):
+        """pre_llm_call hooks can inspect the active agent when provided."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "agent_hook",
+            register_body=(
+                'ctx.register_hook("pre_llm_call", '
+                'lambda **kw: {"context": "agent-present" if kw.get("agent") is not None else "missing"})'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook(
+            "pre_llm_call",
+            session_id="s1",
+            user_message="hi",
+            conversation_history=[],
+            is_first_turn=True,
+            model="test",
+            agent=object(),
+        )
+
+        assert results == [{"context": "agent-present"}]
+
     def test_hook_none_returns_excluded(self, tmp_path, monkeypatch):
         """invoke_hook() excludes None returns from the result list."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"

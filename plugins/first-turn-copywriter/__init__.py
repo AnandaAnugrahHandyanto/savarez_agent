@@ -39,16 +39,30 @@ def _is_top_level_cli_session(ctx: Any, session_id: str) -> bool:
     return session_id == active_session_id
 
 
+def _should_run_for_agent(ctx: Any, session_id: str, agent: Any) -> bool:
+    if agent is not None and getattr(agent, "_delegate_depth", 0) > 0:
+        return False
+    return _is_top_level_cli_session(ctx, session_id)
+
+
 def register(ctx):
     def inject_first_turn_copy(
         session_id: str,
         user_message: str,
         is_first_turn: bool,
+        agent: Any = None,
         **kwargs: Any,
     ) -> dict[str, str] | None:
-        if not _is_top_level_cli_session(ctx, session_id):
+        if not _should_run_for_agent(ctx, session_id, agent):
             logger.debug(
                 "first-turn-copywriter skipped delegated child session %s",
+                session_id,
+            )
+            return None
+
+        if agent is None:
+            logger.debug(
+                "first-turn-copywriter skipped session %s: no parent agent in hook context",
                 session_id,
             )
             return None
@@ -61,6 +75,7 @@ def register(ctx):
                     "context": f"当前用户消息：{user_message}",
                     "max_iterations": 2,
                 },
+                parent_agent=agent,
             )
             tool_result = json.loads(raw_result)
         except Exception as exc:
