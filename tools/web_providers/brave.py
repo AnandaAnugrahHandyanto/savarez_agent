@@ -110,22 +110,37 @@ class BraveSearchProvider(WebSearchProvider):
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             if status == 401:
-                return {"success": False, "error": "BRAVE_API_KEY is invalid or expired"}
+                return {
+                    "success": False,
+                    "error": "BRAVE_API_KEY is invalid or expired",
+                }
             if status == 422:
-                return {"success": False, "error": "Brave Search rejected the query (422)"}
+                return {
+                    "success": False,
+                    "error": "Brave Search rejected the query (422)",
+                }
             if status == 429:
-                return {"success": False, "error": "Brave Search rate limit exceeded — try again later"}
+                return {
+                    "success": False,
+                    "error": "Brave Search rate limit exceeded — try again later",
+                }
             logger.warning("Brave Search HTTP error: %s", exc)
             return {"success": False, "error": f"Brave Search returned HTTP {status}"}
         except httpx.RequestError as exc:
             logger.warning("Brave Search request error: %s", exc)
-            return {"success": False, "error": f"Could not reach Brave Search API: {exc}"}
+            return {
+                "success": False,
+                "error": f"Could not reach Brave Search API: {exc}",
+            }
 
         try:
             data = resp.json()
         except Exception as exc:  # noqa: BLE001
             logger.warning("Brave Search response parse error: %s", exc)
-            return {"success": False, "error": "Could not parse Brave Search response as JSON"}
+            return {
+                "success": False,
+                "error": "Could not parse Brave Search response as JSON",
+            }
 
         raw_results = data.get("web", {}).get("results", [])
 
