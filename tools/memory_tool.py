@@ -467,6 +467,7 @@ def memory_tool(
     target: str = "memory",
     content: str = None,
     old_text: str = None,
+    old_string: Optional[str] = None,
     store: Optional[MemoryStore] = None,
 ) -> str:
     """
@@ -480,22 +481,24 @@ def memory_tool(
     if target not in ("memory", "user"):
         return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
 
+    match_text = old_text if old_text is not None else old_string
+
     if action == "add":
         if not content:
             return tool_error("Content is required for 'add' action.", success=False)
         result = store.add(target, content)
 
     elif action == "replace":
-        if not old_text:
+        if not match_text:
             return tool_error("old_text is required for 'replace' action.", success=False)
         if not content:
             return tool_error("content is required for 'replace' action.", success=False)
-        result = store.replace(target, old_text, content)
+        result = store.replace(target, match_text, content)
 
     elif action == "remove":
-        if not old_text:
+        if not match_text:
             return tool_error("old_text is required for 'remove' action.", success=False)
-        result = store.remove(target, old_text)
+        result = store.remove(target, match_text)
 
     else:
         return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
@@ -534,7 +537,8 @@ MEMORY_SCHEMA = {
         "- 'user': who the user is -- name, role, preferences, communication style, pet peeves\n"
         "- 'memory': your notes -- environment facts, project conventions, tool quirks, lessons learned\n\n"
         "ACTIONS: add (new entry), replace (update existing -- old_text identifies it), "
-        "remove (delete -- old_text identifies it).\n\n"
+        "remove (delete -- old_text identifies it). `old_string` is also accepted as "
+        "a backward-compatible alias for old_text, matching patch/skill_manage.\n\n"
         "SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state."
     ),
     "parameters": {
@@ -558,6 +562,10 @@ MEMORY_SCHEMA = {
                 "type": "string",
                 "description": "Short unique substring identifying the entry to replace or remove."
             },
+            "old_string": {
+                "type": "string",
+                "description": "Alias for old_text. Accepted for consistency with patch and skill_manage."
+            },
         },
         "required": ["action", "target"],
     },
@@ -576,6 +584,7 @@ registry.register(
         target=args.get("target", "memory"),
         content=args.get("content"),
         old_text=args.get("old_text"),
+        old_string=args.get("old_string"),
         store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",
