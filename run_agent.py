@@ -5418,7 +5418,10 @@ class AIAgent:
         return False
 
     @staticmethod
-    def _build_keepalive_http_client(base_url: str = "") -> Any:
+    def _build_keepalive_http_client(
+        base_url: str = "",
+        timeout: Any = None,
+    ) -> Any:
         try:
             import httpx as _httpx
             import socket as _socket
@@ -5435,9 +5438,29 @@ class AIAgent:
             # Explicitly read proxy settings while still honoring NO_PROXY for
             # loopback / local endpoints such as a locally hosted sub2api.
             _proxy = _get_proxy_for_base_url(base_url)
+            if isinstance(timeout, _httpx.Timeout):
+                _timeout = timeout
+            else:
+                try:
+                    _base_timeout = float(
+                        timeout
+                        if timeout is not None
+                        else os.getenv("HERMES_API_TIMEOUT", 1800.0)
+                    )
+                except (TypeError, ValueError):
+                    _base_timeout = 1800.0
+                if _base_timeout <= 0:
+                    _base_timeout = 1800.0
+                _timeout = _httpx.Timeout(
+                    connect=min(30.0, _base_timeout),
+                    read=_base_timeout,
+                    write=_base_timeout,
+                    pool=30.0,
+                )
             return _httpx.Client(
                 transport=_httpx.HTTPTransport(socket_options=_sock_opts),
                 proxy=_proxy,
+                timeout=_timeout,
             )
         except Exception:
             return None
@@ -5492,7 +5515,10 @@ class AIAgent:
                     if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
                 }
                 if "http_client" not in safe_kwargs:
-                    keepalive_http = self._build_keepalive_http_client(base_url)
+                    keepalive_http = self._build_keepalive_http_client(
+                        base_url,
+                        timeout=safe_kwargs.get("timeout"),
+                    )
                     if keepalive_http is not None:
                         safe_kwargs["http_client"] = keepalive_http
                 client = GeminiNativeClient(**safe_kwargs)
@@ -5521,7 +5547,10 @@ class AIAgent:
         # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
         # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
         if "http_client" not in client_kwargs:
-            keepalive_http = self._build_keepalive_http_client(client_kwargs.get("base_url", ""))
+            keepalive_http = self._build_keepalive_http_client(
+                client_kwargs.get("base_url", ""),
+                timeout=client_kwargs.get("timeout"),
+            )
             if keepalive_http is not None:
                 client_kwargs["http_client"] = keepalive_http
         # Uses the module-level `OpenAI` name, resolved lazily on first

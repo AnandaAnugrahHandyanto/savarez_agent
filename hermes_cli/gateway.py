@@ -124,8 +124,13 @@ def _get_service_pids() -> set:
                                 pids.add(pid)
                         except ValueError:
                             pass
-        except (FileNotFoundError, subprocess.TimeoutExpired):
+        except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired):
             pass
+        snapshot = _launchd_print_snapshot()
+        if snapshot is not None:
+            running, pid = snapshot
+            if running and pid is not None:
+                pids.add(pid)
 
     return pids
 
@@ -141,7 +146,7 @@ def _get_parent_pid(pid: int) -> int | None:
             text=True,
             timeout=5,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired):
         return None
     if result.returncode != 0:
         return None
@@ -153,6 +158,46 @@ def _get_parent_pid(pid: int) -> int | None:
     except ValueError:
         return None
     return parent_pid if parent_pid > 0 else None
+
+
+def _launchd_print_target() -> str:
+    """Return the launchd print target for the current profile's gateway job."""
+    return f"{_launchd_domain()}/{get_launchd_label()}"
+
+
+def _parse_launchd_print(output: str) -> tuple[bool, int | None]:
+    """Parse ``launchctl print`` output into (running, pid)."""
+    running = False
+    pid: int | None = None
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped == "state = running":
+            running = True
+        elif stripped.startswith("pid = "):
+            raw_pid = stripped.split("=", 1)[1].strip()
+            try:
+                parsed = int(raw_pid)
+            except ValueError:
+                continue
+            if parsed > 0:
+                pid = parsed
+    return running, pid
+
+
+def _launchd_print_snapshot() -> tuple[bool, int | None] | None:
+    """Best-effort launchd status fallback for environments where ``list`` is restricted."""
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", _launchd_print_target()],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return _parse_launchd_print(result.stdout or "")
 
 
 def _is_pid_ancestor_of_current_process(target_pid: int) -> bool:
@@ -625,9 +670,12 @@ def _probe_launchd_service_running() -> bool:
             text=True,
             timeout=10,
         )
-    except subprocess.TimeoutExpired:
-        return False
-    return result.returncode == 0
+    except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired):
+        result = None
+    if result is not None and result.returncode == 0:
+        return True
+    snapshot = _launchd_print_snapshot()
+    return bool(snapshot and snapshot[0])
 
 
 def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot:
@@ -2407,6 +2455,13 @@ def launchd_status(deep: bool = False):
     else:
         print("⚠ Service definition is stale relative to the current Hermes install")
         print("  Run: hermes gateway start")
+
+    snapshot = _launchd_print_snapshot() if not loaded else None
+    if not loaded and snapshot is not None:
+        running, pid = snapshot
+        if running:
+            loaded = True
+            loaded_output = f"state = running\npid = {pid}" if pid is not None else "state = running"
 
     if loaded:
         print("✓ Gateway service is loaded")

@@ -135,6 +135,62 @@ def test_second_create_does_not_wrap_closed_transport_from_first():
             )
 
 
+def test_keepalive_http_client_uses_configured_timeout():
+    """The injected httpx client must not fall back to httpx's 5s default.
+
+    Codex/Responses requests can legitimately take longer than five seconds
+    before the first chunk. If the custom keepalive client keeps httpx's
+    default timeout, Hermes reports those slow-but-healthy calls as generic
+    ``APIConnectionError('Connection error.')`` after a few retries.
+    """
+    agent = _make_agent()
+    constructed: list = []
+    fake_openai = _make_fake_openai_factory(constructed)
+
+    with patch("run_agent.OpenAI", fake_openai):
+        agent._create_openai_client(
+            {
+                "api_key": "test-key-value",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "timeout": 180.0,
+            },
+            reason="timeout-test",
+            shared=True,
+        )
+
+    http_client = constructed[0]._http_client
+    assert http_client is not None
+    assert http_client.timeout.read == 180.0
+    assert http_client.timeout.write == 180.0
+    assert http_client.timeout.connect == 30.0
+    assert http_client.timeout.pool == 30.0
+
+
+def test_keepalive_http_client_without_explicit_timeout_uses_env_default(monkeypatch):
+    """The common Codex path has no provider timeout in config.yaml."""
+    monkeypatch.setenv("HERMES_API_TIMEOUT", "240")
+    agent = _make_agent()
+    constructed: list = []
+    fake_openai = _make_fake_openai_factory(constructed)
+
+    with patch("run_agent.OpenAI", fake_openai):
+        agent._create_openai_client(
+            {
+                "api_key": "test-key-value",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+            },
+            reason="timeout-default-test",
+            shared=True,
+        )
+
+    http_client = constructed[0]._http_client
+    assert http_client is not None
+    assert http_client.timeout.read == 240.0
+    assert http_client.timeout.write == 240.0
+    assert http_client.timeout.connect == 30.0
+    assert http_client.timeout.pool == 30.0
+
+
 def test_replace_primary_openai_client_survives_repeated_rebuilds():
     """Full rebuild path: exercise _replace_primary_openai_client three times
     back-to-back and confirm every resulting ``self.client`` is a fresh,

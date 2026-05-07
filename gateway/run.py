@@ -67,6 +67,8 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 # is still classified fresh.  Override via
 # ``config.yaml`` ``agent.gateway_auto_continue_freshness``.
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
+_GATEWAY_HISTORY_TOOL_OUTPUT_MAX_CHARS_DEFAULT = 4000
+_GATEWAY_HISTORY_REASONING_STRIP_DEFAULT = False
 
 
 # --- Stale-code self-check ------------------------------------------------
@@ -229,6 +231,111 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
         # Returning None lets the caller fall through to the legacy-fresh path.
         return None
     return None
+
+
+def _truncate_gateway_history_text(
+    value: Any,
+    *,
+    max_chars: int,
+    label: str,
+) -> tuple[Any, int]:
+    """Return a shortened historical text value and the removed char count."""
+    if not isinstance(value, str) or max_chars <= 0 or len(value) <= max_chars:
+        return value, 0
+
+    if max_chars < 200:
+        kept = value[:max_chars]
+        omitted = len(value) - len(kept)
+        return (
+            kept
+            + f"\n\n[Gateway note: truncated {omitted:,} characters from "
+            f"historical {label}.]",
+            omitted,
+        )
+
+    head_chars = max(100, int(max_chars * 0.75))
+    tail_chars = max(50, max_chars - head_chars)
+    if head_chars + tail_chars >= len(value):
+        return value, 0
+
+    omitted = len(value) - head_chars - tail_chars
+    note = (
+        f"\n\n[Gateway note: truncated {omitted:,} characters from historical "
+        f"{label} to keep the messaging session within model limits. Re-run "
+        "the tool or inspect saved artifacts if the exact output is needed.]\n\n"
+    )
+    return value[:head_chars] + note + value[-tail_chars:], omitted
+
+
+def _slim_gateway_history_for_model(
+    history: List[Dict[str, Any]],
+    *,
+    max_tool_output_chars: int = _GATEWAY_HISTORY_TOOL_OUTPUT_MAX_CHARS_DEFAULT,
+    strip_assistant_reasoning: bool = _GATEWAY_HISTORY_REASONING_STRIP_DEFAULT,
+) -> tuple[List[Dict[str, Any]], Dict[str, int]]:
+    """Slim transcript history before it is replayed into a gateway LLM turn.
+
+    The raw transcript stays untouched; this only trims the in-memory copy sent
+    back to the model.  Tool outputs from web/terminal calls can include huge
+    HTML pages or logs, and replaying those verbatim on every Feishu/Slack turn
+    makes Codex requests slow and prone to backend content filters.
+    """
+    stats = {
+        "messages": 0,
+        "tool_messages": 0,
+        "tool_chars_removed": 0,
+        "assistant_reasoning_fields_removed": 0,
+    }
+    if not history:
+        return history, stats
+
+    slimmed: List[Dict[str, Any]] = []
+    changed = False
+    reasoning_keys = (
+        "reasoning",
+        "reasoning_content",
+        "reasoning_details",
+        "codex_reasoning_items",
+        "codex_message_items",
+    )
+
+    for msg in history:
+        if not isinstance(msg, dict):
+            slimmed.append(msg)
+            continue
+
+        role = msg.get("role")
+        new_msg = msg
+
+        if role in ("tool", "function"):
+            content, removed = _truncate_gateway_history_text(
+                msg.get("content"),
+                max_chars=max_tool_output_chars,
+                label="tool output",
+            )
+            if removed:
+                if new_msg is msg:
+                    new_msg = dict(msg)
+                new_msg["content"] = content
+                stats["messages"] += 1
+                stats["tool_messages"] += 1
+                stats["tool_chars_removed"] += removed
+                changed = True
+
+        if role == "assistant" and strip_assistant_reasoning:
+            present_reasoning_keys = [key for key in reasoning_keys if key in new_msg]
+            if present_reasoning_keys:
+                if new_msg is msg:
+                    new_msg = dict(msg)
+                for key in present_reasoning_keys:
+                    new_msg.pop(key, None)
+                stats["messages"] += 1
+                stats["assistant_reasoning_fields_removed"] += len(present_reasoning_keys)
+                changed = True
+
+        slimmed.append(new_msg)
+
+    return (slimmed if changed else history), stats
 
 
 # ---------------------------------------------------------------------------
@@ -12378,6 +12485,59 @@ class GatewayRunner:
             agent_holder[0] = agent
             # Capture the full tool definitions for transcript logging
             tools_holder[0] = agent.tools if hasattr(agent, 'tools') else None
+
+            _history_for_agent = history
+            try:
+                _max_tool_output_chars = int(
+                    agent_cfg_local.get(
+                        "gateway_history_tool_output_max_chars",
+                        os.getenv(
+                            "HERMES_GATEWAY_HISTORY_TOOL_OUTPUT_MAX_CHARS",
+                            _GATEWAY_HISTORY_TOOL_OUTPUT_MAX_CHARS_DEFAULT,
+                        ),
+                    )
+                )
+            except (TypeError, ValueError):
+                _max_tool_output_chars = _GATEWAY_HISTORY_TOOL_OUTPUT_MAX_CHARS_DEFAULT
+
+            _slim_runtime = turn_route.get("runtime") or {}
+            _slim_provider = str(_slim_runtime.get("provider") or "").lower()
+            _slim_base_url = str(_slim_runtime.get("base_url") or "").lower()
+            _default_strip_history_reasoning = (
+                _GATEWAY_HISTORY_REASONING_STRIP_DEFAULT
+                or _slim_provider == "openai-codex"
+                or "backend-api/codex" in _slim_base_url
+            )
+            _strip_history_reasoning_raw = agent_cfg_local.get(
+                "gateway_strip_history_reasoning",
+                _default_strip_history_reasoning,
+            )
+            if isinstance(_strip_history_reasoning_raw, str):
+                _strip_history_reasoning = _strip_history_reasoning_raw.strip().lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                )
+            else:
+                _strip_history_reasoning = bool(_strip_history_reasoning_raw)
+
+            _history_for_agent, _history_slim_stats = _slim_gateway_history_for_model(
+                history,
+                max_tool_output_chars=max(0, _max_tool_output_chars),
+                strip_assistant_reasoning=_strip_history_reasoning,
+            )
+            if (
+                _history_slim_stats.get("tool_messages")
+                or _history_slim_stats.get("assistant_reasoning_fields_removed")
+            ):
+                logger.info(
+                    "Gateway history slimmed for model: %s tool message(s), "
+                    "%s tool char(s) removed, %s assistant reasoning field(s) removed",
+                    _history_slim_stats.get("tool_messages", 0),
+                    _history_slim_stats.get("tool_chars_removed", 0),
+                    _history_slim_stats.get("assistant_reasoning_fields_removed", 0),
+                )
             
             # Convert history to agent format.
             # Two cases:
@@ -12388,7 +12548,7 @@ class GatewayRunner:
             #      - These must be passed through intact so the API sees valid
             #        assistant→tool sequences (dropping tool_calls causes 500 errors)
             agent_history = []
-            for msg in history:
+            for msg in _history_for_agent:
                 role = msg.get("role")
                 if not role:
                     continue
