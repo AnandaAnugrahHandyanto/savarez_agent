@@ -21,6 +21,7 @@ on:
 
 permissions:
   contents: read
+  issues: write # needed because PR comments use the Issues comments API
   pull-requests: write # needed to post/update PR comments
 
 concurrency:
