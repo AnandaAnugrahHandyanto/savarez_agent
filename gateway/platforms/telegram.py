@@ -305,6 +305,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
+        # Clarify button state: clarify_id → {event, choice, choices, question}.
+        # The agent thread parks on the threading.Event; the inline-button
+        # callback writes the chosen string and sets the event.
+        self._clarify_state: Dict[str, Dict[str, Any]] = {}
 
     def _is_callback_user_authorized(
         self,
@@ -1508,6 +1512,55 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_update_prompt failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_clarify_prompt(
+        self, chat_id: str, question: str, choices: List[str],
+        clarify_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a clarify question with inline-keyboard choice buttons.
+
+        Used by the gateway clarify_callback bridge to deliver an interactive
+        question from the ``clarify`` tool to the user. Each choice becomes
+        an inline button with callback data ``clarify:<id>:<idx>``. A trailing
+        Skip button (``clarify:<id>:skip``) lets the user dismiss the prompt
+        without picking an option — the agent thread is unblocked with an
+        empty response.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            buttons: List[List[InlineKeyboardButton]] = []
+            for idx, choice in enumerate(choices or []):
+                label = str(choice)
+                if len(label) > 60:
+                    label = label[:57] + "..."
+                buttons.append([
+                    InlineKeyboardButton(
+                        label,
+                        callback_data=f"clarify:{clarify_id}:{idx}",
+                    )
+                ])
+            buttons.append([
+                InlineKeyboardButton(
+                    "✗ Skip",
+                    callback_data=f"clarify:{clarify_id}:skip",
+                )
+            ])
+            keyboard = InlineKeyboardMarkup(buttons)
+            thread_id = self._metadata_thread_id(metadata)
+            message_thread_id = self._message_thread_id_for_send(thread_id)
+            msg = await self._bot.send_message(
+                chat_id=int(chat_id),
+                text=question,
+                reply_markup=keyboard,
+                message_thread_id=message_thread_id,
+                **self._link_preview_kwargs(),
+            )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_clarify_prompt failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -2060,6 +2113,68 @@ class TelegramAdapter(BasePlatformAdapter):
                         await self._bot.send_message(**send_kwargs)
                 except Exception as exc:
                     logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
+            return
+
+        # --- Clarify callbacks (clarify:id:idx | clarify:id:skip) ---
+        if data.startswith("clarify:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3:
+                caller_id = str(getattr(query.from_user, "id", ""))
+                if not self._is_callback_user_authorized(
+                    caller_id,
+                    chat_id=query_chat_id,
+                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                    user_name=query_user_name,
+                ):
+                    await query.answer(text="⛔ You are not authorized to answer this prompt.")
+                    return
+
+                clarify_id = parts[1]
+                choice_key = parts[2]
+                state = self._clarify_state.get(clarify_id)
+                if not state:
+                    await query.answer(text="This question is no longer active.")
+                    return
+                if choice_key == "skip":
+                    user_choice = ""
+                else:
+                    try:
+                        idx = int(choice_key)
+                    except ValueError:
+                        await query.answer(text="Invalid choice.")
+                        return
+                    state_choices = state.get("choices", []) or []
+                    if 0 <= idx < len(state_choices):
+                        user_choice = str(state_choices[idx])
+                    else:
+                        await query.answer(text="Invalid choice.")
+                        return
+
+                # Resolve the agent thread waiting on the Event.
+                state["choice"] = user_choice
+                event = state.get("event")
+                if event is not None:
+                    try:
+                        event.set()
+                    except Exception:
+                        pass
+
+                user_display = getattr(query.from_user, "first_name", "User")
+                label = f"Selected: {user_choice}" if user_choice else "Skipped"
+                await query.answer(text=label)
+                try:
+                    await query.edit_message_text(
+                        text=f"{state.get('question', '')}\n\n*{label}* by {user_display}",
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass  # non-fatal if edit fails
+                logger.info(
+                    "[%s] clarify resolved: %s key=%s choice=%r",
+                    self.name, clarify_id, choice_key, user_choice,
+                )
             return
 
         # --- Update prompt callbacks ---

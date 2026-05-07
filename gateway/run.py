@@ -13548,6 +13548,50 @@ class GatewayRunner:
             except Exception as _e:
                 logger.debug("status_callback error (%s): %s", event_type, _e)
 
+        # Bridge sync clarify_callback → async adapter.send_clarify_prompt.
+        # The agent thread parks on a threading.Event; the platform's inline-
+        # button callback resolves it (see TelegramAdapter._handle_callback_query
+        # "clarify:" branch). Adapters without send_clarify_prompt return "" so
+        # the agent falls back to its own judgement.
+        def _clarify_callback_sync(question: str, choices=None) -> str:
+            if not _status_adapter or not _run_still_current():
+                return ""
+            send_prompt = getattr(_status_adapter, "send_clarify_prompt", None)
+            clarify_state = getattr(_status_adapter, "_clarify_state", None)
+            if not callable(send_prompt) or clarify_state is None:
+                return ""
+            import uuid as _uuid
+            clarify_id = _uuid.uuid4().hex
+            event = threading.Event()
+            clarify_state[clarify_id] = {
+                "event": event,
+                "choice": None,
+                "choices": list(choices or []),
+                "question": question,
+            }
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    send_prompt(
+                        chat_id=_status_chat_id,
+                        question=question,
+                        choices=list(choices or []),
+                        clarify_id=clarify_id,
+                        metadata=_status_thread_metadata,
+                    ),
+                    _loop_for_step,
+                ).result(timeout=10)
+            except Exception as _e:
+                logger.error("clarify_callback send error: %s", _e)
+                clarify_state.pop(clarify_id, None)
+                return ""
+            logger.info(
+                "clarify pending stored: %s choices=%s", clarify_id, choices,
+            )
+            # Wait for the user — bounded so the agent never hangs forever.
+            event.wait(timeout=120)
+            state = clarify_state.pop(clarify_id, {"choice": ""})
+            return state.get("choice") or ""
+
         def run_sync():
             # The conditional re-assignment of `message` further below
             # (prepending model-switch notes) makes Python treat it as a
@@ -13785,6 +13829,7 @@ class GatewayRunner:
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
+            agent.clarify_callback = _clarify_callback_sync
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
