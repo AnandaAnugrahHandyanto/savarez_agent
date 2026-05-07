@@ -1131,10 +1131,20 @@ def _cmd_show(args: argparse.Namespace) -> int:
     if task.skills:
         print(f"  skills:    {', '.join(task.skills)}")
     # Show effective retry limit and source
+    # Three-tier resolution: task.max_retries → config → DEFAULT_FAILURE_LIMIT
     if task.max_retries is not None:
         print(f"  max-retries: {task.max_retries} (task)")
     else:
-        print(f"  max-retries: {kb.DEFAULT_FAILURE_LIMIT} (default)")
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            cfg_val = (cfg.get("kanban", {}) or {}).get("budgets", {}).get("default_max_retries")
+        except Exception:
+            cfg_val = None
+        if cfg_val is not None:
+            print(f"  max-retries: {int(cfg_val)} (config)")
+        else:
+            print(f"  max-retries: {kb.DEFAULT_FAILURE_LIMIT} (default)")
     print(f"  created:   {_fmt_ts(task.created_at)} by {task.created_by or '-'}")
 
     # Diagnostics section — surface active distress signals at the top
