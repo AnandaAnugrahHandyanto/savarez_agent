@@ -33,6 +33,31 @@ import { useSearchParams } from "react-router-dom";
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
+import {
+  DEFAULT_HANDS_FREE_MIC_STATS,
+  HANDS_FREE_INITIAL_NOISE_FLOOR,
+  HANDS_FREE_MAX_SPOKEN_CHARS,
+  HANDS_FREE_MAX_UTTERANCE_MS,
+  HANDS_FREE_METER_UPDATE_MS,
+  HANDS_FREE_MIN_RECORDING_MS,
+  HANDS_FREE_NOISE_ALPHA,
+  HANDS_FREE_SILENCE_MS,
+  HANDS_FREE_SILENT_WAV,
+  HANDS_FREE_TRUNCATION_NOTICE,
+  handsFreeMeterPercent,
+  handsFreeSilenceThreshold,
+  handsFreeSpeechThreshold,
+  handsFreeStateLabel,
+  handsFreeStatusText,
+  isHandsFreeDisableCommand,
+  isHandsFreeStopCommand,
+  rmsFromTimeDomain,
+  sanitizeHandsFreeSpeechText,
+  splitHandsFreeSpeech,
+  takeReadyHandsFreeSpeechChunks,
+  type HandsFreeMicStats,
+  type HandsFreeState,
+} from "@/lib/handsFreeVoice";
 import { PluginSlot } from "@/plugins";
 
 function buildWsUrl(
@@ -217,13 +242,15 @@ async function synthesizeBrowserSpeech(text: string, token: string): Promise<Blo
   return resp.blob();
 }
 
-type HandsFreeState =
-  | "off"
-  | "listening"
-  | "recording"
-  | "transcribing"
-  | "thinking"
-  | "speaking";
+interface WakeLockSentinelLike {
+  release(): Promise<void>;
+}
+
+type WakeLockNavigator = Navigator & {
+  wakeLock?: {
+    request(type: "screen"): Promise<WakeLockSentinelLike>;
+  };
+};
 
 interface RpcEventFrame {
   method?: string;
@@ -234,81 +261,6 @@ interface RpcEventFrame {
       rendered?: string;
     };
   };
-}
-
-const HANDS_FREE_SPEECH_RMS = 0.035;
-const HANDS_FREE_SILENCE_RMS = 0.018;
-const HANDS_FREE_MIN_SPEECH_MS = 350;
-const HANDS_FREE_SILENCE_MS = 900;
-const HANDS_FREE_MAX_UTTERANCE_MS = 20_000;
-const HANDS_FREE_MAX_SPOKEN_CHARS = 900;
-const HANDS_FREE_SILENT_WAV =
-  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=";
-
-function rmsFromTimeDomain(data: Uint8Array<ArrayBuffer>): number {
-  let sum = 0;
-  for (const sample of data) {
-    const centered = (sample - 128) / 128;
-    sum += centered * centered;
-  }
-  return Math.sqrt(sum / Math.max(1, data.length));
-}
-
-function normalizeTranscriptCommand(text: string): string {
-  return text
-    .trim()
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9\s]/g, "")
-    .replace(/\s+/g, " ");
-}
-
-function isHandsFreeStopCommand(text: string): boolean {
-  const normalized = normalizeTranscriptCommand(text);
-  return normalized === "stop" || normalized === "pause" || normalized === "arrete";
-}
-
-function prepareHandsFreeSpeech(text: string): string {
-  let clean = text
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/^MEDIA:.*$/gim, " ")
-    .replace(/^\s*\[\[audio_as_voice\]\]\s*$/gim, " ")
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-    .replace(/[`*_>#-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (clean.length <= HANDS_FREE_MAX_SPOKEN_CHARS) {
-    return clean;
-  }
-
-  const slice = clean.slice(0, HANDS_FREE_MAX_SPOKEN_CHARS);
-  const boundary = Math.max(
-    slice.lastIndexOf("."),
-    slice.lastIndexOf("!"),
-    slice.lastIndexOf("?"),
-    slice.lastIndexOf("\n"),
-  );
-  clean = slice.slice(0, boundary > 420 ? boundary + 1 : HANDS_FREE_MAX_SPOKEN_CHARS).trim();
-  return `${clean} Le detail est dans le chat.`;
-}
-
-function handsFreeStateLabel(state: HandsFreeState): string {
-  switch (state) {
-    case "listening":
-      return "listening";
-    case "recording":
-      return "hearing";
-    case "transcribing":
-      return "stt";
-    case "thinking":
-      return "thinking";
-    case "speaking":
-      return "speaking";
-    default:
-      return "hands-free";
-  }
 }
 
 function setAudioSource(audio: HTMLAudioElement, src: string, volume: number): void {
@@ -334,6 +286,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const ptyBusyRef = useRef(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recorderStreamRef = useRef<MediaStream | null>(null);
   const recorderChunksRef = useRef<BlobPart[]>([]);
@@ -349,13 +302,28 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const handsFreeChunksRef = useRef<BlobPart[]>([]);
   const handsFreeSpeechStartedAtRef = useRef<number>(0);
   const handsFreeLastVoiceAtRef = useRef<number>(0);
+  const handsFreeNoiseFloorRef = useRef<number>(HANDS_FREE_INITIAL_NOISE_FLOOR);
+  const handsFreeVoiceActiveSinceRef = useRef<number>(0);
+  const handsFreeMeterUpdatedAtRef = useRef<number>(0);
   const handsFreeAudioRef = useRef<HTMLAudioElement | null>(null);
   const handsFreeAudioUrlRef = useRef<string | null>(null);
   const handsFreePlaybackResolveRef = useRef<(() => void) | null>(null);
+  const handsFreePlaybackInterruptedRef = useRef(false);
+  const handsFreeWakeLockRef = useRef<WakeLockSentinelLike | null>(null);
+  const handsFreeDeltaBufferRef = useRef("");
+  const handsFreeSpeechQueueRef = useRef<string[]>([]);
+  const handsFreeSpeechWorkerRunningRef = useRef(false);
+  const handsFreeTurnCompleteRef = useRef(false);
+  const handsFreeStreamedAnyRef = useRef(false);
+  const handsFreeSpokenCharsRef = useRef(0);
+  const handsFreeSpeechTruncatedRef = useRef(false);
   const [handsFreeEnabled, setHandsFreeEnabled] = useState(false);
   const handsFreeEnabledRef = useRef(false);
   const [handsFreeState, setHandsFreeState] = useState<HandsFreeState>("off");
   const handsFreeStateRef = useRef<HandsFreeState>("off");
+  const [handsFreeMicStats, setHandsFreeMicStats] = useState<HandsFreeMicStats>(
+    DEFAULT_HANDS_FREE_MIC_STATS,
+  );
   // Exposed to the main metrics-sync effect so it can refit the terminal
   // the moment `isActive` flips back to true (display:none → display:flex
   // collapses the host's box, so ResizeObserver never fires on return).
@@ -605,7 +573,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     if (!transcribingVoice) void startBrowserRecording();
   }, [recording, startBrowserRecording, stopBrowserRecording, transcribingVoice]);
 
-  const stopHandsFreePlayback = useCallback(() => {
+  const stopHandsFreePlayback = useCallback((interrupted = false) => {
+    if (interrupted) handsFreePlaybackInterruptedRef.current = true;
     const resolve = handsFreePlaybackResolveRef.current;
     handsFreePlaybackResolveRef.current = null;
     if (resolve) resolve();
@@ -618,6 +587,38 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     if (handsFreeAudioUrlRef.current) {
       URL.revokeObjectURL(handsFreeAudioUrlRef.current);
       handsFreeAudioUrlRef.current = null;
+    }
+  }, []);
+
+  const resetHandsFreeSpeechPipeline = useCallback(() => {
+    handsFreeDeltaBufferRef.current = "";
+    handsFreeSpeechQueueRef.current = [];
+    handsFreeTurnCompleteRef.current = false;
+    handsFreeStreamedAnyRef.current = false;
+    handsFreePlaybackInterruptedRef.current = false;
+    handsFreeSpokenCharsRef.current = 0;
+    handsFreeSpeechTruncatedRef.current = false;
+    stopHandsFreePlayback();
+  }, [stopHandsFreePlayback]);
+
+  const releaseHandsFreeWakeLock = useCallback(() => {
+    const sentinel = handsFreeWakeLockRef.current;
+    handsFreeWakeLockRef.current = null;
+    if (sentinel) void sentinel.release().catch(() => {});
+  }, []);
+
+  const requestHandsFreeWakeLock = useCallback(async () => {
+    if (typeof document === "undefined" || document.visibilityState !== "visible") {
+      return;
+    }
+    const wakeLock = (navigator as WakeLockNavigator).wakeLock;
+    if (!wakeLock || handsFreeWakeLockRef.current) {
+      return;
+    }
+    try {
+      handsFreeWakeLockRef.current = await wakeLock.request("screen");
+    } catch {
+      // Wake lock is unavailable on some browsers or power modes. Voice still works.
     }
   }, []);
 
@@ -642,8 +643,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     }
     handsFreeRecorderRef.current = null;
     handsFreeChunksRef.current = [];
+    handsFreeDeltaBufferRef.current = "";
+    handsFreeSpeechQueueRef.current = [];
+    handsFreeTurnCompleteRef.current = false;
+    handsFreeStreamedAnyRef.current = false;
+    handsFreeSpokenCharsRef.current = 0;
+    handsFreeSpeechTruncatedRef.current = false;
 
-    handsFreeStreamRef.current?.getTracks().forEach((track) => track.stop());
+    handsFreeStreamRef.current?.getTracks().forEach((track) => {
+      track.onended = null;
+      track.stop();
+    });
     handsFreeStreamRef.current = null;
     handsFreeAnalyserRef.current = null;
     handsFreeSamplesRef.current = null;
@@ -655,7 +665,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     }
 
     stopHandsFreePlayback();
-  }, [stopHandsFreePlayback]);
+    releaseHandsFreeWakeLock();
+  }, [releaseHandsFreeWakeLock, stopHandsFreePlayback]);
 
   const disableHandsFree = useCallback((message?: string) => {
     setHandsFreeEnabledValue(false);
@@ -703,10 +714,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         setHandsFreeStateValue("listening");
         return;
       }
-      if (isHandsFreeStopCommand(transcript)) {
+      if (isHandsFreeDisableCommand(transcript)) {
         disableHandsFree("Hands-free voice mode stopped.");
         return;
       }
+      if (isHandsFreeStopCommand(transcript)) {
+        resetHandsFreeSpeechPipeline();
+        setHandsFreeStateValue("listening");
+        restoreTerminalInput();
+        return;
+      }
+      resetHandsFreeSpeechPipeline();
       if (injectTranscript(transcript)) {
         setHandsFreeStateValue("thinking");
       } else {
@@ -724,6 +742,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, [
     disableHandsFree,
     injectTranscript,
+    resetHandsFreeSpeechPipeline,
     restoreTerminalInput,
     setHandsFreeStateValue,
   ]);
@@ -748,6 +767,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     handsFreeRecorderRef.current = recorder;
     handsFreeSpeechStartedAtRef.current = now;
     handsFreeLastVoiceAtRef.current = now;
+    handsFreeVoiceActiveSinceRef.current = 0;
 
     recorder.ondataavailable = (event) => {
       if (event.data.size > 0) handsFreeChunksRef.current.push(event.data);
@@ -786,18 +806,47 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       return;
     }
 
+    const audioContext = handsFreeAudioContextRef.current;
+    if (audioContext?.state === "suspended") {
+      void audioContext.resume().catch(() => {});
+    }
+
     const analyser = handsFreeAnalyserRef.current;
     const samples = handsFreeSamplesRef.current;
     const state = handsFreeStateRef.current;
-    if (analyser && samples && (state === "listening" || state === "recording")) {
+    // Half-duplex MVP: only open a recording while the user turn is expected.
+    // During thinking/speaking, ambient speech must not interrupt Hermes.
+    if (
+      analyser &&
+      samples &&
+      (state === "listening" ||
+        state === "recording")
+    ) {
       analyser.getByteTimeDomainData(samples);
       const rms = rmsFromTimeDomain(samples);
       const now = performance.now();
+      const speechThreshold = handsFreeSpeechThreshold(handsFreeNoiseFloorRef.current);
+      const silenceThreshold = handsFreeSilenceThreshold(handsFreeNoiseFloorRef.current);
+      if (now - handsFreeMeterUpdatedAtRef.current >= HANDS_FREE_METER_UPDATE_MS) {
+        handsFreeMeterUpdatedAtRef.current = now;
+        setHandsFreeMicStats({
+          level: rms,
+          noise: handsFreeNoiseFloorRef.current,
+          speaking: rms >= speechThreshold,
+          threshold: speechThreshold,
+        });
+      }
 
-      if (state === "listening" && rms >= HANDS_FREE_SPEECH_RMS) {
-        startHandsFreeRecording();
+      if (state === "listening") {
+        if (rms < speechThreshold) {
+          handsFreeVoiceActiveSinceRef.current = 0;
+          handsFreeNoiseFloorRef.current =
+            handsFreeNoiseFloorRef.current * (1 - HANDS_FREE_NOISE_ALPHA) + rms * HANDS_FREE_NOISE_ALPHA;
+        } else {
+          startHandsFreeRecording();
+        }
       } else if (state === "recording") {
-        if (rms >= HANDS_FREE_SILENCE_RMS) {
+        if (rms >= silenceThreshold) {
           handsFreeLastVoiceAtRef.current = now;
         }
 
@@ -805,7 +854,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         const silentFor = now - handsFreeLastVoiceAtRef.current;
         if (
           elapsed >= HANDS_FREE_MAX_UTTERANCE_MS ||
-          (elapsed >= HANDS_FREE_MIN_SPEECH_MS && silentFor >= HANDS_FREE_SILENCE_MS)
+          (elapsed >= HANDS_FREE_MIN_RECORDING_MS && silentFor >= HANDS_FREE_SILENCE_MS)
         ) {
           stopHandsFreeRecording();
         }
@@ -839,7 +888,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     try {
       await primeHandsFreeAudio();
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          autoGainControl: true,
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
+      });
       const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
       if (!AudioContextCtor) {
         stream.getTracks().forEach((track) => track.stop());
@@ -851,15 +906,30 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       const analyser = audioContext.createAnalyser();
       analyser.fftSize = 2048;
       audioContext.createMediaStreamSource(stream).connect(analyser);
+      stream.getAudioTracks().forEach((track) => {
+        track.onended = () => {
+          if (handsFreeEnabledRef.current) {
+            disableHandsFree("Microphone stream ended. Restart hands-free voice mode.");
+          }
+        };
+      });
 
       cleanupHandsFreeResources();
       handsFreeStreamRef.current = stream;
       handsFreeAudioContextRef.current = audioContext;
       handsFreeAnalyserRef.current = analyser;
       handsFreeSamplesRef.current = new Uint8Array(analyser.fftSize);
+      handsFreeNoiseFloorRef.current = HANDS_FREE_INITIAL_NOISE_FLOOR;
+      handsFreeVoiceActiveSinceRef.current = 0;
+      handsFreeMeterUpdatedAtRef.current = 0;
+      setHandsFreeMicStats({
+        ...DEFAULT_HANDS_FREE_MIC_STATS,
+        threshold: handsFreeSpeechThreshold(HANDS_FREE_INITIAL_NOISE_FLOOR),
+      });
       setBanner(null);
       setHandsFreeEnabledValue(true);
       setHandsFreeStateValue("listening");
+      void requestHandsFreeWakeLock();
       handsFreeVadRafRef.current = requestAnimationFrame(() => runHandsFreeVadRef.current());
       termRef.current?.focus();
     } catch (err) {
@@ -869,7 +939,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     }
   }, [
     cleanupHandsFreeResources,
+    disableHandsFree,
     primeHandsFreeAudio,
+    requestHandsFreeWakeLock,
     recording,
     setHandsFreeEnabledValue,
     setHandsFreeStateValue,
@@ -877,65 +949,195 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     transcribingVoice,
   ]);
 
-  const speakHandsFreeResponse = useCallback(async (rawText: string) => {
-    const token = window.__HERMES_SESSION_TOKEN__;
-    const text = prepareHandsFreeSpeech(rawText);
-    if (!token || !handsFreeEnabledRef.current || !text) {
-      if (handsFreeEnabledRef.current) setHandsFreeStateValue("listening");
+  const playHandsFreeSpeechChunk = useCallback(async (text: string, token: string) => {
+    const blob = await synthesizeBrowserSpeech(text, token);
+    if (!handsFreeEnabledRef.current || handsFreePlaybackInterruptedRef.current) {
       return;
     }
 
-    setHandsFreeStateValue("speaking");
-    stopHandsFreePlayback();
+    const audio = handsFreeAudioRef.current ?? new Audio();
+    handsFreeAudioRef.current = audio;
+    const url = URL.createObjectURL(blob);
+    handsFreeAudioUrlRef.current = url;
+    setAudioSource(audio, url, 1);
 
-    try {
-      const blob = await synthesizeBrowserSpeech(text, token);
-      if (!handsFreeEnabledRef.current) {
-        return;
+    await new Promise<void>((resolve, reject) => {
+      handsFreePlaybackResolveRef.current = resolve;
+      audio.onended = () => resolve();
+      audio.onerror = () => reject(new Error("Browser audio playback failed."));
+      const playPromise = audio.play();
+      if (playPromise) {
+        playPromise.catch(reject);
       }
+    });
+  }, []);
 
-      const audio = handsFreeAudioRef.current ?? new Audio();
-      handsFreeAudioRef.current = audio;
-      const url = URL.createObjectURL(blob);
-      handsFreeAudioUrlRef.current = url;
-      setAudioSource(audio, url, 1);
+  const drainHandsFreeSpeechQueue = useCallback(async () => {
+    const token = window.__HERMES_SESSION_TOKEN__;
+    if (!token || handsFreeSpeechWorkerRunningRef.current) {
+      return;
+    }
 
-      await new Promise<void>((resolve, reject) => {
-        handsFreePlaybackResolveRef.current = resolve;
-        audio.onended = () => resolve();
-        audio.onerror = () => reject(new Error("Browser audio playback failed."));
-        const playPromise = audio.play();
-        if (playPromise) {
-          playPromise.catch(reject);
-        }
-      });
+    handsFreeSpeechWorkerRunningRef.current = true;
+    try {
+      while (
+        handsFreeEnabledRef.current &&
+        !handsFreePlaybackInterruptedRef.current &&
+        handsFreeSpeechQueueRef.current.length > 0
+      ) {
+        const chunk = handsFreeSpeechQueueRef.current.shift();
+        if (!chunk) break;
+        setHandsFreeStateValue("speaking");
+        await playHandsFreeSpeechChunk(chunk, token);
+        stopHandsFreePlayback();
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Voice playback failed.";
-      if (handsFreeEnabledRef.current) {
+      if (handsFreeEnabledRef.current && !handsFreePlaybackInterruptedRef.current) {
         setBanner(message);
       }
     } finally {
+      handsFreeSpeechWorkerRunningRef.current = false;
       stopHandsFreePlayback();
-      if (handsFreeEnabledRef.current) {
+
+      if (
+        handsFreeEnabledRef.current &&
+        !handsFreePlaybackInterruptedRef.current &&
+        handsFreeSpeechQueueRef.current.length > 0
+      ) {
+        void drainHandsFreeSpeechQueue();
+      } else if (
+        handsFreeEnabledRef.current &&
+        !handsFreePlaybackInterruptedRef.current &&
+        handsFreeTurnCompleteRef.current &&
+        !handsFreeDeltaBufferRef.current.trim()
+      ) {
         setHandsFreeStateValue("listening");
         restoreTerminalInput();
+      } else if (
+        handsFreeEnabledRef.current &&
+        !handsFreePlaybackInterruptedRef.current &&
+        handsFreeStateRef.current === "speaking"
+      ) {
+        setHandsFreeStateValue("thinking");
       }
     }
   }, [
+    playHandsFreeSpeechChunk,
     restoreTerminalInput,
     setHandsFreeStateValue,
     stopHandsFreePlayback,
   ]);
 
+  const queueHandsFreeSpeechChunks = useCallback((chunks: string[]) => {
+    const cleanChunks: string[] = [];
+    for (const chunk of chunks) {
+      if (handsFreeSpeechTruncatedRef.current) break;
+      const clean = sanitizeHandsFreeSpeechText(chunk);
+      if (!clean) continue;
+
+      if (clean.includes(HANDS_FREE_TRUNCATION_NOTICE)) {
+        cleanChunks.push(clean);
+        handsFreeSpokenCharsRef.current = HANDS_FREE_MAX_SPOKEN_CHARS;
+        handsFreeSpeechTruncatedRef.current = true;
+        break;
+      }
+
+      const remaining = HANDS_FREE_MAX_SPOKEN_CHARS - handsFreeSpokenCharsRef.current;
+      if (clean.length <= remaining) {
+        cleanChunks.push(clean);
+        handsFreeSpokenCharsRef.current += clean.length;
+        continue;
+      }
+
+      if (remaining > 80) {
+        const slice = clean.slice(0, remaining);
+        const boundary = Math.max(
+          slice.lastIndexOf("."),
+          slice.lastIndexOf("!"),
+          slice.lastIndexOf("?"),
+          slice.lastIndexOf(","),
+          slice.lastIndexOf(";"),
+          slice.lastIndexOf(":"),
+          slice.lastIndexOf(" "),
+        );
+        const trimmed = slice.slice(0, boundary > remaining * 0.6 ? boundary + 1 : remaining).trim();
+        cleanChunks.push(`${trimmed} ${HANDS_FREE_TRUNCATION_NOTICE}`);
+      } else {
+        cleanChunks.push(HANDS_FREE_TRUNCATION_NOTICE);
+      }
+      handsFreeSpokenCharsRef.current = HANDS_FREE_MAX_SPOKEN_CHARS;
+      handsFreeSpeechTruncatedRef.current = true;
+      break;
+    }
+    if (cleanChunks.length === 0) return;
+    handsFreeSpeechQueueRef.current.push(...cleanChunks);
+    void drainHandsFreeSpeechQueue();
+  }, [drainHandsFreeSpeechQueue]);
+
+  const flushHandsFreeDeltaBuffer = useCallback((force: boolean) => {
+    const { chunks, rest } = takeReadyHandsFreeSpeechChunks(
+      handsFreeDeltaBufferRef.current,
+      force,
+    );
+    handsFreeDeltaBufferRef.current = rest;
+    queueHandsFreeSpeechChunks(chunks);
+  }, [queueHandsFreeSpeechChunks]);
+
+  const handleHandsFreeAssistantStart = useCallback(() => {
+    if (!handsFreeEnabledRef.current) return;
+    handsFreeDeltaBufferRef.current = "";
+    handsFreeSpeechQueueRef.current = [];
+    handsFreeTurnCompleteRef.current = false;
+    handsFreeStreamedAnyRef.current = false;
+    handsFreePlaybackInterruptedRef.current = false;
+    handsFreeSpokenCharsRef.current = 0;
+    handsFreeSpeechTruncatedRef.current = false;
+  }, []);
+
+  const handleHandsFreeAssistantDelta = useCallback((text: string) => {
+    if (!handsFreeEnabledRef.current) {
+      return;
+    }
+    if (handsFreeStateRef.current !== "thinking" && handsFreeStateRef.current !== "speaking") {
+      return;
+    }
+    if (!text) {
+      return;
+    }
+
+    handsFreeStreamedAnyRef.current = true;
+    handsFreeDeltaBufferRef.current += text;
+    flushHandsFreeDeltaBuffer(false);
+  }, [flushHandsFreeDeltaBuffer]);
+
   const handleHandsFreeAssistantComplete = useCallback((text: string) => {
     if (!handsFreeEnabledRef.current) {
       return;
     }
-    if (handsFreeStateRef.current !== "thinking") {
+    if (handsFreeStateRef.current !== "thinking" && handsFreeStateRef.current !== "speaking") {
       return;
     }
-    void speakHandsFreeResponse(text);
-  }, [speakHandsFreeResponse]);
+    handsFreeTurnCompleteRef.current = true;
+    if (handsFreeStreamedAnyRef.current) {
+      flushHandsFreeDeltaBuffer(true);
+      void drainHandsFreeSpeechQueue();
+      return;
+    }
+    const fallbackChunks = splitHandsFreeSpeech(text);
+    if (fallbackChunks.length > 0) {
+      queueHandsFreeSpeechChunks(fallbackChunks);
+    } else {
+      setHandsFreeStateValue("listening");
+      restoreTerminalInput();
+    }
+  }, [
+    drainHandsFreeSpeechQueue,
+    flushHandsFreeDeltaBuffer,
+    queueHandsFreeSpeechChunks,
+    restoreTerminalInput,
+    setHandsFreeStateValue,
+  ]);
 
   const handleHandsFreeButton = useCallback(() => {
     if (handsFreeEnabledRef.current) {
@@ -977,30 +1179,52 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (frame.method !== "event" || !frame.params?.type) {
         return;
       }
+      const eventType = frame.params.type;
+      if (eventType === "message.start") {
+        ptyBusyRef.current = true;
+      } else if (
+        eventType === "message.complete" ||
+        eventType === "approval.request" ||
+        eventType === "clarify.request" ||
+        eventType === "error"
+      ) {
+        ptyBusyRef.current = false;
+      }
       if (
         handsFreeEnabledRef.current &&
         handsFreeStateRef.current === "thinking" &&
-        (frame.params.type === "approval.request" ||
-          frame.params.type === "clarify.request" ||
-          frame.params.type === "error")
+        (eventType === "approval.request" ||
+          eventType === "clarify.request" ||
+          eventType === "error")
       ) {
         setHandsFreeStateValue("listening");
       }
-      if (frame.params.type !== "message.complete") {
+      if (eventType === "message.start") {
+        handleHandsFreeAssistantStart();
+        return;
+      }
+      if (eventType === "message.delta") {
+        handleHandsFreeAssistantDelta(frame.params.payload?.text || "");
+        return;
+      }
+      if (eventType !== "message.complete") {
         return;
       }
       const payload = frame.params.payload;
-      const text = payload?.rendered || payload?.text || "";
+      const text = payload?.text || payload?.rendered || "";
       if (text) handleHandsFreeAssistantComplete(text);
     });
 
     return () => {
       unmounting = true;
+      ptyBusyRef.current = false;
       ws.close();
     };
   }, [
     channel,
+    handleHandsFreeAssistantDelta,
     handleHandsFreeAssistantComplete,
+    handleHandsFreeAssistantStart,
     setHandsFreeStateValue,
   ]);
 
@@ -1010,6 +1234,36 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       cleanupHandsFreeResources();
     };
   }, [cleanupHandsFreeResources]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (!handsFreeEnabledRef.current) return;
+      if (document.visibilityState === "visible") {
+        void requestHandsFreeWakeLock();
+        const audioContext = handsFreeAudioContextRef.current;
+        if (audioContext?.state === "suspended") {
+          void audioContext.resume().catch(() => {});
+        }
+        return;
+      }
+
+      releaseHandsFreeWakeLock();
+      setBanner("Keep the dashboard visible for reliable hands-free voice mode.");
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, [releaseHandsFreeWakeLock, requestHandsFreeWakeLock]);
+
+  useEffect(() => {
+    const handlePageHide = () => {
+      if (!handsFreeEnabledRef.current) return;
+      disableHandsFree("Hands-free voice mode paused by the browser. Restart it when the page is active.");
+    };
+
+    window.addEventListener("pagehide", handlePageHide);
+    return () => window.removeEventListener("pagehide", handlePageHide);
+  }, [disableHandsFree]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -1085,16 +1339,21 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (ev.type !== "keydown") return true;
 
       // Copy: Cmd+C on macOS, Ctrl+Shift+C on other platforms. Bare Ctrl+C
-      // is reserved for SIGINT to the TUI child — matches xterm / gnome-terminal /
-      // konsole / Windows Terminal. Ctrl+Shift+C only copies if a selection exists;
-      // without a selection it passes through to the TUI so agents can still
-      // react to the keypress.
+      // is never forwarded as a raw terminal signal in the dashboard: when
+      // Hermes is busy we route it through /stop, otherwise we swallow it so
+      // an idle chat tab cannot accidentally close its embedded PTY.
       // Paste: Cmd+V on macOS, Ctrl+Shift+V on others.  On non-secure
       // dashboard origins (for example http://100.x.y.z over Tailscale),
       // browsers block navigator.clipboard.readText(); in that case we let
       // xterm's native paste event handle the key instead of swallowing it.
       const copyModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
       const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
+      const bareCtrlC =
+        ev.ctrlKey &&
+        !ev.shiftKey &&
+        !ev.altKey &&
+        !ev.metaKey &&
+        ev.key.toLowerCase() === "c";
 
       if (copyModifier && ev.key.toLowerCase() === "c") {
         const sel = term.getSelection();
@@ -1108,8 +1367,25 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           ev.preventDefault();
           return false;
         }
-        // No selection → fall through so the TUI receives Ctrl+Shift+C
-        // (or the bare ev if the user used a different modifier).
+      }
+
+      if (bareCtrlC) {
+        const sel = term.getSelection();
+        if (sel) {
+          copyText(sel);
+          term.clearSelection();
+        } else if (ptyBusyRef.current) {
+          const s = wsRef.current;
+          if (s && s.readyState === WebSocket.OPEN) {
+            s.send("/stop");
+            setTimeout(() => {
+              const live = wsRef.current;
+              if (live && live.readyState === WebSocket.OPEN) live.send("\r");
+            }, 100);
+          }
+        }
+        ev.preventDefault();
+        return false;
       }
 
       if (pasteModifier && ev.key.toLowerCase() === "v") {
@@ -1449,9 +1725,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   //   outer flex column — sits inside the dashboard's content area
   //   row split — terminal pane (flex-1) + sidebar (fixed width, lg+)
   //   terminal wrapper — rounded, dark, padded — the "terminal window"
-  //   floating copy button — bottom-right corner, transparent with a
-  //     subtle border; stays out of the way until hovered.  Sends
-  //     `/copy\n` to Ink, which emits OSC 52 → our clipboard handler.
+  //   controls row — normal-flow browser controls below xterm, so they
+  //     never cover the TUI composer/cursor. Copy sends `/copy\n` to Ink,
+  //     which emits OSC 52 → our clipboard handler.
   //   sidebar — ChatSidebar opens its own JSON-RPC sidecar; renders
   //     model badge, tool-call list, model picker. Best-effort: if the
   //     sidecar fails to connect the terminal pane keeps working.
@@ -1563,97 +1839,122 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
 
-          <div className="absolute bottom-2 left-2 z-10 flex max-w-[calc(100%-5rem)] flex-wrap gap-1.5 sm:bottom-3 sm:left-3 lg:bottom-4 lg:left-4">
-            <Button
-              ghost
-              onClick={handleVoiceButton}
-              disabled={transcribingVoice || handsFreeEnabled}
-              title={
-                recording
-                  ? "Stop browser microphone recording and transcribe"
-                  : "Record browser microphone and send transcript"
-              }
-              aria-label={
-                recording
-                  ? "Stop browser microphone recording"
-                  : "Record browser microphone"
-              }
-              className={cn(
-                "rounded border border-current/30",
-                "bg-black/20 backdrop-blur-sm",
-                "opacity-70 hover:opacity-100 hover:border-current/60",
-                "transition-opacity duration-150 normal-case font-normal tracking-normal",
-                "px-2 py-1 text-[0.65rem] sm:px-2.5 sm:py-1.5 sm:text-xs",
-                recording && "border-red-300/70 text-red-200 opacity-100",
-              )}
-              style={{ color: recording ? undefined : TERMINAL_THEME.foreground }}
-            >
-              <span className="inline-flex items-center gap-1.5">
-                <Mic className="h-3 w-3 shrink-0" />
-                <span className="hidden min-[400px]:inline tracking-wide">
-                  {recording ? "stop voice" : transcribingVoice ? "transcribing" : "voice"}
+          <div className="mt-2 flex shrink-0 flex-wrap items-center justify-between gap-2 sm:mt-3">
+            <div className="flex min-w-0 flex-1 flex-wrap gap-1.5">
+              <Button
+                ghost
+                onClick={handleVoiceButton}
+                disabled={transcribingVoice || handsFreeEnabled}
+                title={
+                  recording
+                    ? "Stop browser microphone recording and transcribe"
+                    : "Record browser microphone and send transcript"
+                }
+                aria-label={
+                  recording
+                    ? "Stop browser microphone recording"
+                    : "Record browser microphone"
+                }
+                className={cn(
+                  "rounded border border-current/30",
+                  "bg-black/20 backdrop-blur-sm",
+                  "opacity-70 hover:opacity-100 hover:border-current/60",
+                  "transition-opacity duration-150 normal-case font-normal tracking-normal",
+                  "px-2 py-1 text-[0.65rem] sm:px-2.5 sm:py-1.5 sm:text-xs",
+                  recording && "border-red-300/70 text-red-200 opacity-100",
+                )}
+                style={{ color: recording ? undefined : TERMINAL_THEME.foreground }}
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  <Mic className="h-3 w-3 shrink-0" />
+                  <span className="hidden min-[400px]:inline tracking-wide">
+                    {recording ? "stop voice" : transcribingVoice ? "transcribing" : "voice"}
+                  </span>
                 </span>
-              </span>
-            </Button>
+              </Button>
+
+              <Button
+                ghost
+                onClick={handleHandsFreeButton}
+                disabled={recording || transcribingVoice}
+                title={
+                  handsFreeEnabled
+                    ? "Stop hands-free browser voice mode"
+                    : "Start hands-free browser voice mode"
+                }
+                aria-label={
+                  handsFreeEnabled
+                    ? "Stop hands-free browser voice mode"
+                    : "Start hands-free browser voice mode"
+                }
+                className={cn(
+                  "rounded border border-current/30",
+                  "bg-black/20 backdrop-blur-sm",
+                  "opacity-70 hover:opacity-100 hover:border-current/60",
+                  "transition-opacity duration-150 normal-case font-normal tracking-normal",
+                  "px-2 py-1 text-[0.65rem] sm:px-2.5 sm:py-1.5 sm:text-xs",
+                  handsFreeEnabled && "border-emerald-300/70 text-emerald-100 opacity-100",
+                  handsFreeState === "recording" && "border-red-300/70 text-red-200",
+                  handsFreeState === "speaking" && "border-sky-300/70 text-sky-100",
+                )}
+                style={{ color: handsFreeEnabled ? undefined : TERMINAL_THEME.foreground }}
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  <Headphones className="h-3 w-3 shrink-0" />
+                  <span className="hidden min-[460px]:inline tracking-wide">
+                    {handsFreeStateLabel(handsFreeState)}
+                  </span>
+                </span>
+              </Button>
+
+              {handsFreeEnabled && (
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded border border-current/25",
+                    "bg-black/20 px-2 py-1 text-[0.65rem] font-normal tracking-normal backdrop-blur-sm",
+                    "text-emerald-100 sm:px-2.5 sm:py-1.5 sm:text-xs",
+                    handsFreeState === "recording" && "text-red-200",
+                    handsFreeState === "speaking" && "text-sky-100",
+                  )}
+                  title={`mic ${handsFreeMicStats.level.toFixed(3)} / threshold ${handsFreeMicStats.threshold.toFixed(3)} / noise ${handsFreeMicStats.noise.toFixed(3)}`}
+                >
+                  <span>{handsFreeStatusText(handsFreeState)}</span>
+                  <span className="relative h-1.5 w-12 overflow-hidden rounded bg-white/15">
+                    <span
+                      className={cn(
+                        "absolute inset-y-0 left-0 rounded transition-[width] duration-100",
+                        handsFreeMicStats.speaking ? "bg-red-300/90" : "bg-emerald-300/80",
+                      )}
+                      style={{ width: `${handsFreeMeterPercent(handsFreeMicStats)}%` }}
+                    />
+                    <span className="absolute inset-y-0 left-[62.5%] w-px bg-white/55" />
+                  </span>
+                </span>
+              )}
+            </div>
 
             <Button
               ghost
-              onClick={handleHandsFreeButton}
-              disabled={recording || transcribingVoice}
-              title={
-                handsFreeEnabled
-                  ? "Stop hands-free browser voice mode"
-                  : "Start hands-free browser voice mode"
-              }
-              aria-label={
-                handsFreeEnabled
-                  ? "Stop hands-free browser voice mode"
-                  : "Start hands-free browser voice mode"
-              }
+              onClick={handleCopyLast}
+              title="Copy last assistant response as raw markdown"
+              aria-label="Copy last assistant response"
               className={cn(
-                "rounded border border-current/30",
+                "shrink-0 rounded border border-current/30",
                 "bg-black/20 backdrop-blur-sm",
-                "opacity-70 hover:opacity-100 hover:border-current/60",
+                "opacity-60 hover:opacity-100 hover:border-current/60",
                 "transition-opacity duration-150 normal-case font-normal tracking-normal",
                 "px-2 py-1 text-[0.65rem] sm:px-2.5 sm:py-1.5 sm:text-xs",
-                handsFreeEnabled && "border-emerald-300/70 text-emerald-100 opacity-100",
-                handsFreeState === "recording" && "border-red-300/70 text-red-200",
-                handsFreeState === "speaking" && "border-sky-300/70 text-sky-100",
               )}
-              style={{ color: handsFreeEnabled ? undefined : TERMINAL_THEME.foreground }}
+              style={{ color: TERMINAL_THEME.foreground }}
             >
               <span className="inline-flex items-center gap-1.5">
-                <Headphones className="h-3 w-3 shrink-0" />
-                <span className="hidden min-[460px]:inline tracking-wide">
-                  {handsFreeStateLabel(handsFreeState)}
+                <Copy className="h-3 w-3 shrink-0" />
+                <span className="hidden min-[400px]:inline tracking-wide">
+                  {copyState === "copied" ? "copied" : "copy last response"}
                 </span>
               </span>
             </Button>
           </div>
-
-          <Button
-            ghost
-            onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
-            className={cn(
-              "absolute z-10",
-              "rounded border border-current/30",
-              "bg-black/20 backdrop-blur-sm",
-              "opacity-60 hover:opacity-100 hover:border-current/60",
-              "transition-opacity duration-150 normal-case font-normal tracking-normal",
-              "bottom-2 right-2 px-2 py-1 text-[0.65rem] sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5 sm:text-xs",
-              "lg:bottom-4 lg:right-4",
-            )}
-            style={{ color: TERMINAL_THEME.foreground }}
-          >
-            <span className="inline-flex items-center gap-1.5">
-              <Copy className="h-3 w-3 shrink-0" />
-              <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
-              </span>
-            </span>
-          </Button>
         </div>
 
         {!narrow && (
