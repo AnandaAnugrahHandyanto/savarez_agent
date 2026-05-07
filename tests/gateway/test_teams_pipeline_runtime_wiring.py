@@ -86,7 +86,7 @@ def test_build_pipeline_runtime_only_wires_sender_when_delivery_configured(monke
     assert runtime.teams_sender is None
 
 
-def test_build_pipeline_runtime_wires_sender_for_graph_target(monkeypatch):
+def test_build_pipeline_runtime_skips_sender_when_adapter_layer_is_unavailable(monkeypatch):
     gateway = SimpleNamespace(
         config=SimpleNamespace(
             platforms={
@@ -117,4 +117,4 @@ def test_build_pipeline_runtime_wires_sender_for_graph_target(monkeypatch):
 
     runtime = build_pipeline_runtime(gateway)
 
-    assert runtime.teams_sender is not None
+    assert runtime.teams_sender is None
