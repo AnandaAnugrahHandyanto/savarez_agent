@@ -135,7 +135,8 @@ async def test_gateway_restart_does_not_drain_requesting_active_session():
 
 
 @pytest.mark.asyncio
-async def test_restart_command_excludes_requesting_session_from_drain():
+async def test_restart_command_excludes_requesting_session_from_drain(monkeypatch):
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
     runner, _adapter = make_restart_runner()
     event = MessageEvent(text="/restart", source=make_restart_source(), message_id="restart-1")
     session_key = build_session_key(event.source)
