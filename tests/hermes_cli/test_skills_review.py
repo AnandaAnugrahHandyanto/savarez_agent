@@ -55,15 +55,56 @@ def test_cli_skills_review_parser_routes_flags(monkeypatch):
     assert captured[2].approve_id == ""
     assert captured[2].reject_id == "change-2"
 
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "skills", "review", "--apply-all"],
+    )
+    main()
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "skills", "review", "--discard-all"],
+    )
+    main()
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "skills", "review", "--diff", "change-3"],
+    )
+    main()
+
+    assert captured[3].apply_all is True
+    assert captured[3].discard_all is False
+    assert captured[3].diff_id == ""
+    assert captured[4].apply_all is False
+    assert captured[4].discard_all is True
+    assert captured[4].diff_id == ""
+    assert captured[5].apply_all is False
+    assert captured[5].discard_all is False
+    assert captured[5].diff_id == "change-3"
+
 
 def test_skills_command_review_calls_do_review(monkeypatch):
     from hermes_cli.skills_hub import skills_command
 
     captured = {}
 
-    def fake_do_review(approve_id="", reject_id="", console=None):
+    def fake_do_review(
+        approve_id="",
+        reject_id="",
+        apply_all=False,
+        discard_all=False,
+        diff_id="",
+        console=None,
+    ):
         captured["approve_id"] = approve_id
         captured["reject_id"] = reject_id
+        captured["apply_all"] = apply_all
+        captured["discard_all"] = discard_all
+        captured["diff_id"] = diff_id
 
     monkeypatch.setattr("hermes_cli.skills_hub.do_review", fake_do_review)
 
@@ -72,10 +113,19 @@ def test_skills_command_review_calls_do_review(monkeypatch):
             skills_action="review",
             approve_id="change-1",
             reject_id="",
+            apply_all=False,
+            discard_all=False,
+            diff_id="",
         )
     )
 
-    assert captured == {"approve_id": "change-1", "reject_id": ""}
+    assert captured == {
+        "approve_id": "change-1",
+        "reject_id": "",
+        "apply_all": False,
+        "discard_all": False,
+        "diff_id": "",
+    }
 
 
 def test_slash_skills_review_routes_flags(monkeypatch):
@@ -83,8 +133,15 @@ def test_slash_skills_review_routes_flags(monkeypatch):
 
     calls = []
 
-    def fake_do_review(approve_id="", reject_id="", console=None):
-        calls.append((approve_id, reject_id, console))
+    def fake_do_review(
+        approve_id="",
+        reject_id="",
+        apply_all=False,
+        discard_all=False,
+        diff_id="",
+        console=None,
+    ):
+        calls.append((approve_id, reject_id, apply_all, discard_all, diff_id, console))
 
     console = _capture_console()
     monkeypatch.setattr("hermes_cli.skills_hub.do_review", fake_do_review)
@@ -92,11 +149,17 @@ def test_slash_skills_review_routes_flags(monkeypatch):
     handle_skills_slash("/skills review", console=console)
     handle_skills_slash("/skills review --approve change-1", console=console)
     handle_skills_slash("/skills review --reject change-2", console=console)
+    handle_skills_slash("/skills review --apply-all", console=console)
+    handle_skills_slash("/skills review --discard-all", console=console)
+    handle_skills_slash("/skills review --diff change-3", console=console)
 
     assert calls == [
-        ("", "", console),
-        ("change-1", "", console),
-        ("", "change-2", console),
+        ("", "", False, False, "", console),
+        ("change-1", "", False, False, "", console),
+        ("", "change-2", False, False, "", console),
+        ("", "", True, False, "", console),
+        ("", "", False, True, "", console),
+        ("", "", False, False, "change-3", console),
     ]
 
 
@@ -138,6 +201,31 @@ def test_do_review_prints_pending_changes(monkeypatch):
     assert "writer" in output
 
 
+def test_do_review_prints_diff_for_pending_change(monkeypatch):
+    from hermes_cli.skills_hub import do_review
+
+    _install_fake_skill_evolution(
+        monkeypatch,
+        list_pending_changes=lambda: [
+            {
+                "id": "change-1",
+                "action": "edit",
+                "name": "writer",
+                "payload": {"content": "new content"},
+            }
+        ],
+    )
+
+    console = _capture_console()
+    do_review(diff_id="change-1", console=console)
+    output = console.export_text()
+
+    assert "Pending Skill Evolution Change change-1" in output
+    assert "Action: edit" in output
+    assert "Skill: writer" in output
+    assert "content: new content" in output
+
+
 def test_do_review_rejects_pending_change(monkeypatch):
     from hermes_cli.skills_hub import do_review
 
@@ -157,6 +245,66 @@ def test_do_review_rejects_pending_change(monkeypatch):
 
     assert calls == ["change-1"]
     assert "Rejected pending skill evolution change change-1." in console.export_text()
+
+
+def test_do_review_discards_all_pending_changes(monkeypatch):
+    from hermes_cli.skills_hub import do_review
+
+    rejected = []
+
+    _install_fake_skill_evolution(
+        monkeypatch,
+        list_pending_changes=lambda: [
+            {"id": "change-1", "action": "patch", "name": "writer"},
+            {"id": "change-2", "action": "edit", "name": "coder"},
+        ],
+        reject_pending_change=lambda change_id: rejected.append(change_id) or {"success": True},
+    )
+
+    console = _capture_console()
+    do_review(discard_all=True, console=console)
+
+    assert rejected == ["change-1", "change-2"]
+    assert "Discarded 2 pending skill evolution changes." in console.export_text()
+
+
+def test_do_review_applies_all_pending_changes(monkeypatch):
+    from hermes_cli.skills_hub import do_review
+
+    applied = []
+
+    def fake_approve(change_id, apply_func):
+        change = {
+            "id": change_id,
+            "action": "create",
+            "name": f"skill-{change_id}",
+            "payload": {"content": "skill content", "category": ""},
+        }
+        applied.append(change_id)
+        return {"success": True, "apply_result": apply_func(change)}
+
+    _install_fake_skill_evolution(
+        monkeypatch,
+        list_pending_changes=lambda: [
+            {"id": "change-1", "action": "create", "name": "writer"},
+            {"id": "change-2", "action": "create", "name": "coder"},
+        ],
+        approve_pending_change=fake_approve,
+    )
+    monkeypatch.setattr(
+        "tools.skill_manager_tool._create_skill",
+        lambda *args, **kwargs: {"success": True},
+    )
+    monkeypatch.setattr(
+        "tools.skill_manager_tool._record_skill_manage_success",
+        lambda *args, **kwargs: None,
+    )
+
+    console = _capture_console()
+    do_review(apply_all=True, console=console)
+
+    assert applied == ["change-1", "change-2"]
+    assert "Applied 2 pending skill evolution changes." in console.export_text()
 
 
 @pytest.mark.parametrize(

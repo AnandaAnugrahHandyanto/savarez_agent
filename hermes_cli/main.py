@@ -9658,6 +9658,25 @@ Examples:
         metavar="ID",
         help="Reject a pending skill evolution change",
     )
+    skills_review_group.add_argument(
+        "--apply-all",
+        dest="apply_all",
+        action="store_true",
+        help="Approve and apply every pending skill evolution change",
+    )
+    skills_review_group.add_argument(
+        "--discard-all",
+        dest="discard_all",
+        action="store_true",
+        help="Reject every pending skill evolution change",
+    )
+    skills_review_group.add_argument(
+        "--diff",
+        dest="diff_id",
+        default="",
+        metavar="ID",
+        help="Show the queued payload for a pending skill evolution change",
+    )
 
     skills_uninstall = skills_subparsers.add_parser(
         "uninstall", help="Remove a hub-installed skill"

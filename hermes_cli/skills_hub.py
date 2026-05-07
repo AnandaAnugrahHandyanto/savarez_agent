@@ -216,16 +216,70 @@ def _format_pending_change_detail(change: Dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
+def _pending_change_summary(change: Dict[str, Any]) -> str:
+    return (
+        f"{change.get('id', '')} "
+        f"{change.get('action', '')} "
+        f"{change.get('name', '')}"
+    ).strip()
+
+
+def _format_pending_change_diff(change: Dict[str, Any]) -> str:
+    payload = _skill_evolution_payload(change)
+    lines = [
+        f"ID: {change.get('id', '')}",
+        f"Action: {change.get('action', '')}",
+        f"Skill: {change.get('name', '')}",
+    ]
+    if change.get("created_at"):
+        lines.append(f"Created: {change['created_at']}")
+    if change.get("origin"):
+        lines.append(f"Origin: {change['origin']}")
+
+    lines.append("")
+    lines.append("Payload:")
+    if not payload:
+        lines.append("(empty)")
+        return "\n".join(lines)
+
+    for key in sorted(payload):
+        value = payload[key]
+        if value in (None, "", False):
+            continue
+        if isinstance(value, str):
+            if "\n" in value:
+                lines.append(f"{key}:")
+                lines.extend(f"  {line}" for line in value.splitlines())
+            else:
+                lines.append(f"{key}: {value}")
+        else:
+            lines.append(f"{key}: {json.dumps(value, ensure_ascii=False, sort_keys=True)}")
+    return "\n".join(lines)
+
+
 def do_review(
     approve_id: str = "",
     reject_id: str = "",
+    apply_all: bool = False,
+    discard_all: bool = False,
+    diff_id: str = "",
     console: Optional[Console] = None,
 ) -> None:
     """List, approve, or reject pending skill evolution changes."""
     c = console or _console
 
-    if approve_id and reject_id:
-        c.print("[bold red]Error:[/] Use either --approve or --reject, not both.\n")
+    selected = [
+        bool(approve_id),
+        bool(reject_id),
+        bool(apply_all),
+        bool(discard_all),
+        bool(diff_id),
+    ]
+    if sum(selected) > 1:
+        c.print(
+            "[bold red]Error:[/] Use only one of --approve, --reject, "
+            "--apply-all, --discard-all, or --diff.\n"
+        )
         return
 
     if approve_id:
@@ -255,6 +309,75 @@ def do_review(
 
     from agent.skill_evolution import list_pending_changes
     pending = list_pending_changes()
+
+    if diff_id:
+        for change in pending:
+            if change.get("id") == diff_id:
+                c.print(Panel(
+                    _format_pending_change_diff(change),
+                    title=f"Pending Skill Evolution Change {diff_id}",
+                ))
+                return
+        c.print(f"[bold red]Pending skill evolution change not found:[/] {diff_id}")
+        return
+
+    if apply_all:
+        if not pending:
+            c.print("No pending skill evolution changes.")
+            return
+        from agent.skill_evolution import approve_pending_change
+
+        applied = 0
+        failed: list[str] = []
+        for change in list(pending):
+            change_id = str(change.get("id", ""))
+            if not change_id:
+                failed.append(_pending_change_summary(change) or "(missing id)")
+                continue
+            result = approve_pending_change(change_id, _apply_pending_skill_change)
+            if isinstance(result, dict) and result.get("success"):
+                applied += 1
+            else:
+                failed.append(
+                    f"{change_id}: "
+                    f"{result.get('error') or result.get('apply_result') if isinstance(result, dict) else result}"
+                )
+
+        c.print(f"[green]Applied {applied} pending skill evolution changes.[/]")
+        if failed:
+            c.print("[yellow]Some pending skill evolution changes were not applied:[/]")
+            for item in failed:
+                c.print(f"  - {item}")
+        return
+
+    if discard_all:
+        if not pending:
+            c.print("No pending skill evolution changes.")
+            return
+        from agent.skill_evolution import reject_pending_change
+
+        discarded = 0
+        failed: list[str] = []
+        for change in list(pending):
+            change_id = str(change.get("id", ""))
+            if not change_id:
+                failed.append(_pending_change_summary(change) or "(missing id)")
+                continue
+            result = reject_pending_change(change_id)
+            if isinstance(result, dict) and result.get("success"):
+                discarded += 1
+            else:
+                failed.append(
+                    f"{change_id}: {result.get('error', result) if isinstance(result, dict) else result}"
+                )
+
+        c.print(f"[green]Discarded {discarded} pending skill evolution changes.[/]")
+        if failed:
+            c.print("[yellow]Some pending skill evolution changes were not discarded:[/]")
+            for item in failed:
+                c.print(f"  - {item}")
+        return
+
     if not pending:
         c.print("No pending skill evolution changes.")
         return
@@ -275,8 +398,8 @@ def do_review(
 
     c.print(table)
     c.print(
-        "[dim]Use `hermes skills review --approve <id>` or "
-        "`hermes skills review --reject <id>`.[/]"
+        "[dim]Use `hermes skills review --diff <id>`, "
+        "`--approve <id>`, `--reject <id>`, `--apply-all`, or `--discard-all`.[/]"
     )
 
 
@@ -1482,6 +1605,9 @@ def skills_command(args) -> None:
         do_review(
             approve_id=getattr(args, "approve_id", "") or "",
             reject_id=getattr(args, "reject_id", "") or "",
+            apply_all=bool(getattr(args, "apply_all", False)),
+            discard_all=bool(getattr(args, "discard_all", False)),
+            diff_id=getattr(args, "diff_id", "") or "",
         )
     elif action == "reset":
         do_reset(args.name, restore=getattr(args, "restore", False),
@@ -1535,6 +1661,9 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         /skills review
         /skills review --approve change-id
         /skills review --reject change-id
+        /skills review --diff change-id
+        /skills review --apply-all
+        /skills review --discard-all
         /skills uninstall my-skill
         /skills tap list
         /skills tap add owner/repo
@@ -1655,6 +1784,9 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
     elif action == "review":
         approve_id = ""
         reject_id = ""
+        diff_id = ""
+        apply_all = False
+        discard_all = False
         i = 0
         while i < len(args):
             if args[i] == "--approve" and i + 1 < len(args):
@@ -1663,15 +1795,48 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
             elif args[i] == "--reject" and i + 1 < len(args):
                 reject_id = args[i + 1]
                 i += 2
+            elif args[i] == "--diff" and i + 1 < len(args):
+                diff_id = args[i + 1]
+                i += 2
+            elif args[i] == "--apply-all":
+                apply_all = True
+                i += 1
+            elif args[i] == "--discard-all":
+                discard_all = True
+                i += 1
             else:
                 i += 1
-        if approve_id and reject_id:
-            c.print("[bold red]Usage:[/] /skills review [--approve <id> | --reject <id>]\n")
+        selected = [
+            bool(approve_id),
+            bool(reject_id),
+            bool(diff_id),
+            apply_all,
+            discard_all,
+        ]
+        if sum(selected) > 1:
+            c.print(
+                "[bold red]Usage:[/] /skills review "
+                "[--diff <id> | --approve <id> | --reject <id> | --apply-all | --discard-all]\n"
+            )
             return
-        if ("--approve" in args and not approve_id) or ("--reject" in args and not reject_id):
-            c.print("[bold red]Usage:[/] /skills review [--approve <id> | --reject <id>]\n")
+        if (
+            ("--approve" in args and not approve_id)
+            or ("--reject" in args and not reject_id)
+            or ("--diff" in args and not diff_id)
+        ):
+            c.print(
+                "[bold red]Usage:[/] /skills review "
+                "[--diff <id> | --approve <id> | --reject <id> | --apply-all | --discard-all]\n"
+            )
             return
-        do_review(approve_id=approve_id, reject_id=reject_id, console=c)
+        do_review(
+            approve_id=approve_id,
+            reject_id=reject_id,
+            apply_all=apply_all,
+            discard_all=discard_all,
+            diff_id=diff_id,
+            console=c,
+        )
 
     elif action == "uninstall":
         if not args:
@@ -1752,7 +1917,7 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]check[/] [name]                Check hub skills for upstream updates\n"
         "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
         "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"
-        "  [cyan]review[/] [--approve|--reject <id>] Review pending skill evolution changes\n"
+        "  [cyan]review[/] [--diff|--approve|--reject <id>] Review pending skill evolution changes\n"
         "  [cyan]uninstall[/] <name>            Remove a hub-installed skill\n"
         "  [cyan]reset[/] <name> [--restore]    Reset bundled-skill tracking (fix 'user-modified' flag)\n"
         "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"
