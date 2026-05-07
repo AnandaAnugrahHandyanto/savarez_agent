@@ -4567,21 +4567,43 @@ class HermesCLI:
             _cprint(f"  {_DIM}(._.) No image found in clipboard{_RST}")
 
     def _write_osc52_clipboard(self, text: str) -> None:
-        """Copy *text* to terminal clipboard via OSC 52."""
+        """Copy *text* to terminal clipboard via OSC 52.
+
+        Writes directly to /dev/tty so the escape sequence reaches the
+        terminal even when stdout/stderr are redirected (e.g. inside the
+        prompt_toolkit TUI).  When running inside tmux ($TMUX is set) the
+        sequence is wrapped in a DCS passthrough so tmux forwards it to the
+        outer terminal instead of consuming it.
+        """
+        import os as _os
         payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
-        seq = f"\x1b]52;c;{payload}\x07"
-        out = getattr(self, "_app", None)
-        output = getattr(out, "output", None) if out else None
-        if output and hasattr(output, "write_raw"):
-            output.write_raw(seq)
-            output.flush()
-            return
-        if output and hasattr(output, "write"):
-            output.write(seq)
-            output.flush()
-            return
-        sys.stdout.write(seq)
-        sys.stdout.flush()
+        # OSC 52 with BEL (\x07) terminator — standard, works in all terminals.
+        # Must use BEL, not ESC \ , because inside tmux DCS passthrough the
+        # ESC in ESC \ would get doubled, breaking the DCS framing.
+        osc52 = f"\x1b]52;c;{payload}\x07"
+        if _os.environ.get("TMUX"):
+            # Wrap in tmux DCS passthrough: ESC P tmux; <doubled-esc seq> ESC \
+            # Every ESC in the inner OSC sequence must be doubled so tmux
+            # passes it through instead of interpreting it itself.
+            inner = osc52.replace("\x1b", "\x1b\x1b")
+            seq = f"\x1bPtmux;{inner}\x1b\\"
+        else:
+            seq = osc52
+        # Always write to /dev/tty — the real terminal device — so the
+        # sequence is not lost to stdout/stderr redirection in TUI mode.
+        try:
+            with open("/dev/tty", "wb") as tty:
+                tty.write(seq.encode("ascii"))
+        except OSError:
+            # Fallback: try prompt_toolkit output, then raw stdout
+            out = getattr(self, "_app", None)
+            output = getattr(out, "output", None) if out else None
+            if output and hasattr(output, "write_raw"):
+                output.write_raw(seq)
+                output.flush()
+                return
+            sys.stdout.write(seq)
+            sys.stdout.flush()
 
     def _recover_terminal_input_modes(self, *, reason: str) -> None:
         """Best-effort reset when leaked mouse reports indicate mode drift."""

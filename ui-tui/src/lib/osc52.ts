@@ -1,3 +1,5 @@
+import { openSync, writeSync, closeSync } from 'node:fs'
+
 const ESC = '\x1b'
 const BEL = '\x07'
 const ST = `${ESC}\\`
@@ -69,5 +71,16 @@ export async function readOsc52Clipboard(querier: null | OscQuerier, timeoutMs =
   return response ? parseOsc52ClipboardData(response.data) : null
 }
 
-export const writeOsc52Clipboard = (s: string) =>
-  process.stdout.write(`\x1b]52;c;${Buffer.from(s, 'utf8').toString('base64')}\x07`)
+export const writeOsc52Clipboard = (s: string) => {
+  const seq = `\x1b]52;c;${Buffer.from(s, 'utf8').toString('base64')}\x07`
+  const wrapped = wrapForMultiplexer(seq)
+  // Write to /dev/tty when available so the sequence reaches the real
+  // terminal device even when stdout is redirected (e.g. inside a pty).
+  try {
+    const fd = openSync('/dev/tty', 'w')
+    writeSync(fd, wrapped)
+    closeSync(fd)
+  } catch {
+    process.stdout.write(wrapped)
+  }
+}
