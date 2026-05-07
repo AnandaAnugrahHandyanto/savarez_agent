@@ -11,6 +11,7 @@ Optional secret: OM_HERMES_API_KEY in the active profile's .env
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import json
 import logging
@@ -141,6 +142,10 @@ def _package_available() -> bool:
     return importlib.util.find_spec("observational_memory") is not None
 
 
+def _om_module(name: str) -> Any:
+    return importlib.import_module(f"observational_memory.{name}")
+
+
 def _sanitize_note(text: str) -> str:
     compact = " ".join(text.strip().split())
     if len(compact) <= _MAX_NOTE_LEN:
@@ -152,18 +157,18 @@ class ObservationalMemoryProvider(MemoryProvider):
     """Shared local markdown memory via Observational Memory."""
 
     def __init__(self):
-        self._settings = _default_settings()
-        self._config = None
+        self._settings: Dict[str, Any] = _default_settings()
+        self._config: Any | None = None
         self._session_id = ""
         self._writeback_mode = "incremental"
         self._writer_enabled = False
-        self._pending_messages = []
+        self._pending_messages: List[Any] = []
         self._pending_lock = threading.Lock()
         self._prefetch_lock = threading.Lock()
         self._prefetch_query = ""
         self._prefetch_result = ""
         self._prefetch_thread: Optional[threading.Thread] = None
-        self._sync_thread: Optional[threading.Thread] = None
+        self._sync_thread: Any | None = None
 
     @property
     def name(self) -> str:
@@ -347,7 +352,13 @@ class ObservationalMemoryProvider(MemoryProvider):
                 return
         self._flush_pending(force=True)
 
-    def on_memory_write(self, action: str, target: str, content: str) -> None:
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         if not content or not content.strip():
             return
         note = f"Built-in {target} memory {action}: {_sanitize_note(content)}"
@@ -431,7 +442,7 @@ class ObservationalMemoryProvider(MemoryProvider):
             os.environ["OPENAI_API_KEY"] = api_key
 
     def _build_config(self):
-        from observational_memory.config import Config as OMConfig
+        OMConfig = _om_module("config").Config
 
         memory_dir = Path(
             str(self._settings.get("memory_dir") or _DEFAULT_MEMORY_DIR)
@@ -479,7 +490,7 @@ class ObservationalMemoryProvider(MemoryProvider):
         if not self._config:
             return
         try:
-            from observational_memory.startup_memory import ensure_startup_memory
+            ensure_startup_memory = _om_module("startup_memory").ensure_startup_memory
 
             ensure_startup_memory(self._config)
         except Exception as e:
@@ -489,7 +500,7 @@ class ObservationalMemoryProvider(MemoryProvider):
         if not self._config:
             return
         try:
-            from observational_memory.startup_memory import refresh_startup_memory
+            refresh_startup_memory = _om_module("startup_memory").refresh_startup_memory
 
             refresh_startup_memory(self._config)
         except Exception as e:
@@ -499,7 +510,9 @@ class ObservationalMemoryProvider(MemoryProvider):
         if not self._config or self._config.search_backend == "none":
             return
         try:
-            from observational_memory.search import get_backend, reindex
+            search_mod = _om_module("search")
+            get_backend = search_mod.get_backend
+            reindex = search_mod.reindex
 
             backend = get_backend(self._config.search_backend, self._config)
             if not backend.is_ready():
@@ -511,7 +524,7 @@ class ObservationalMemoryProvider(MemoryProvider):
         if not self._config or self._config.search_backend == "none":
             return
         try:
-            from observational_memory.search import reindex
+            reindex = _om_module("search").reindex
 
             reindex(self._config)
         except Exception as e:
@@ -521,7 +534,9 @@ class ObservationalMemoryProvider(MemoryProvider):
         if not self._config:
             return []
         try:
-            from observational_memory.search import get_backend, reindex
+            search_mod = _om_module("search")
+            get_backend = search_mod.get_backend
+            reindex = search_mod.reindex
 
             backend = get_backend(self._config.search_backend, self._config)
             if not backend.is_ready() and self._config.search_backend != "none":
@@ -679,8 +694,10 @@ class ObservationalMemoryProvider(MemoryProvider):
             self._pending_messages[:0] = pending
 
     def _run_observer_batch(self, pending: list, *, force: bool) -> None:
+        if not self._config:
+            return
         try:
-            from observational_memory.observe import run_observer
+            run_observer = _om_module("observe").run_observer
 
             cfg = replace(self._config, min_messages=1) if force else self._config
             run_observer(pending, cfg, dry_run=False)
@@ -698,10 +715,9 @@ class ObservationalMemoryProvider(MemoryProvider):
         if not self._config:
             return
         try:
-            from observational_memory.reflect import (
-                reflector_catchup_needed,
-                run_reflector,
-            )
+            reflect_mod = _om_module("reflect")
+            reflector_catchup_needed = reflect_mod.reflector_catchup_needed
+            run_reflector = reflect_mod.run_reflector
 
             if reflector_catchup_needed(self._config):
                 logger.info(
@@ -715,7 +731,7 @@ class ObservationalMemoryProvider(MemoryProvider):
             logger.debug("Observational Memory reflector catch-up skipped: %s", e)
 
     def _make_message(self, role: str, content: str):
-        from observational_memory.transcripts import Message
+        Message = _om_module("transcripts").Message
 
         return Message(
             role=role,
