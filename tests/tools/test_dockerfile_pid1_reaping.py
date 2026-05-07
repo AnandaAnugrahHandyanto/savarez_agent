@@ -76,3 +76,39 @@ def test_dockerfile_entrypoint_routes_through_the_init(dockerfile_text):
         "If tini is only installed but not wired into ENTRYPOINT, hermes "
         "still runs as PID 1 and zombies will accumulate (#15012)."
     )
+
+
+def test_dockerfile_venv_owned_by_hermes_user(dockerfile_text):
+    """The Python virtualenv must be owned by the hermes user after creation.
+
+    The venv is created as root during the build.  If it is not chowned
+    to the hermes user (UID 10000), the container cannot run as a
+    non-root user — Python bytecode caching, runtime package installs,
+    and plugin installations all fail with PermissionError.
+
+    See issue #21536.
+    """
+    # Find the RUN block that creates the venv and check it includes chown.
+    in_venv_block = False
+    venv_block = []
+    for raw_line in dockerfile_text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("#") or not line:
+            continue
+        if "uv venv" in line and line.startswith("RUN"):
+            in_venv_block = True
+        if in_venv_block:
+            venv_block.append(line)
+            if not line.endswith("\\"):
+                break
+
+    block_text = " ".join(venv_block)
+    assert "chown" in block_text and ".venv" in block_text, (
+        "The venv creation RUN step does not chown /opt/hermes/.venv. "
+        "Non-root containers will fail with PermissionError on bytecode "
+        "caching and plugin installs. See issue #21536."
+    )
+    assert "hermes:hermes" in block_text or "hermes" in block_text, (
+        "The chown target must be hermes:hermes for non-root container support. "
+        "See issue #21536."
+    )
