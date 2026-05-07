@@ -97,3 +97,109 @@ class TestPluginDispatch:
         assert payload["success"] is True
         assert payload["provider"] == "codex"
         assert payload["aspect_ratio"] == "portrait"
+
+
+class _FakeReferenceCapableProvider(ImageGenProvider):
+    """Provider that opts in to references — records what the dispatcher forwards."""
+
+    def __init__(self):
+        self.last_call: dict = {}
+
+    @property
+    def name(self) -> str:
+        return "ref-capable"
+
+    @property
+    def supports_references(self) -> bool:
+        return True
+
+    def generate(self, prompt, aspect_ratio="landscape", **kwargs):
+        self.last_call = {
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "references": kwargs.get("references"),
+        }
+        return {
+            "success": True,
+            "image": "/tmp/ref.png",
+            "model": "ref-model",
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "provider": "ref-capable",
+            "references": len(kwargs.get("references") or []),
+        }
+
+
+class TestReferencesDispatch:
+    def test_references_forwarded_to_capable_provider(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from hermes_cli import plugins as plugins_module
+        from agent import image_gen_registry as registry_module
+
+        prov = _FakeReferenceCapableProvider()
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "ref-capable")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda force=False: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: prov)
+
+        dispatched = image_generation_tool._dispatch_to_plugin_provider(
+            "merge these",
+            "square",
+            references=["/path/a.png", "/path/b.png"],
+        )
+        payload = json.loads(dispatched)
+
+        assert payload["success"] is True
+        assert prov.last_call["references"] == ["/path/a.png", "/path/b.png"]
+
+    def test_references_rejected_for_non_capable_provider(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from hermes_cli import plugins as plugins_module
+        from agent import image_gen_registry as registry_module
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "codex")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda force=False: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: _FakeCodexProvider())
+
+        dispatched = image_generation_tool._dispatch_to_plugin_provider(
+            "merge these",
+            "square",
+            references=["/path/a.png"],
+        )
+        payload = json.loads(dispatched)
+
+        assert payload["success"] is False
+        assert payload["error_type"] == "references_unsupported"
+
+    def test_references_rejected_for_fal_fallback(self, monkeypatch, tmp_path):
+        # FAL is the in-tree default; the dispatcher short-circuits to None
+        # for it, but references must still be rejected so the caller gets
+        # an actionable error instead of a silently dropped kwarg.
+        from tools import image_generation_tool
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "fal")
+
+        dispatched = image_generation_tool._dispatch_to_plugin_provider(
+            "merge these",
+            "square",
+            references=["/path/a.png"],
+        )
+        payload = json.loads(dispatched)
+
+        assert payload["success"] is False
+        assert payload["error_type"] == "references_unsupported"
+
+    def test_no_references_still_falls_through_to_fal(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "fal")
+
+        # No references → original fall-through behaviour preserved.
+        dispatched = image_generation_tool._dispatch_to_plugin_provider(
+            "just a cat", "square"
+        )
+        assert dispatched is None
