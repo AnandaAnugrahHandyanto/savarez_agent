@@ -74,15 +74,6 @@ CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
         VALUES (new.fact_id, new.content, new.tags);
 END;
 
-CREATE TABLE IF NOT EXISTS memory_banks (
-    bank_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-    bank_name  TEXT NOT NULL UNIQUE,
-    vector     BLOB NOT NULL,
-    dim        INTEGER NOT NULL,
-    fact_count INTEGER DEFAULT 0,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
 CREATE TABLE IF NOT EXISTS plugin_state (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -92,17 +83,31 @@ CREATE TABLE IF NOT EXISTS plugin_state (
 def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
     """v1 → v2 schema migration.
 
-    Drops `facts.retrieval_count` (ADR-002) via the SQLite table-rebuild
-    dance: capture surviving columns, drop the FTS5 virtual table and
-    its triggers (they reference `facts`), rebuild `facts` without the
-    column, copy data, swap names, recreate indexes/FTS5/triggers, and
-    rebuild the FTS5 index from the surviving content. Wrapped in a
-    single transaction so a mid-flight crash leaves v1 intact.
+    Two ordered drops, both atomic within one transaction:
 
-    Idempotent: returns early if `retrieval_count` is already absent.
+    1. ADR-002 — drop ``facts.retrieval_count`` via the SQLite
+       table-rebuild dance: capture surviving columns, drop the FTS5
+       virtual table and its triggers (they reference ``facts``),
+       rebuild ``facts`` without the column, copy data, swap names,
+       recreate indexes/FTS5/triggers, rebuild the FTS5 index from the
+       surviving content.
+    2. ADR-003 — ``DROP TABLE memory_banks`` (write-only side table,
+       zero readers).
+
+    Idempotent on each step: each drop is gated by a presence check, so
+    re-running the migration on a v2 DB is a no-op. A v1 DB that's
+    already had only ADR-002 applied (mid-branch state) will still pick
+    up ADR-003 on the next boot.
+
+    Atomicity: a mid-flight crash in either step rolls back to the
+    pre-migration state — both drops succeed or neither does.
     """
     cols = [r[1] for r in conn.execute("PRAGMA table_info(facts)").fetchall()]
-    if "retrieval_count" not in cols:
+    has_retrieval_count = "retrieval_count" in cols
+    has_memory_banks = bool(conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_banks'"
+    ).fetchone())
+    if not has_retrieval_count and not has_memory_banks:
         return
     keep = [c for c in cols if c != "retrieval_count"]
     keep_csv = ", ".join(keep)
@@ -120,70 +125,78 @@ def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
     try:
         conn.execute("BEGIN")
 
-        # FTS5 + triggers reference `facts` — drop before rebuilding.
-        for stmt in (
-            "DROP TRIGGER IF EXISTS facts_ai",
-            "DROP TRIGGER IF EXISTS facts_ad",
-            "DROP TRIGGER IF EXISTS facts_au",
-            "DROP TABLE IF EXISTS facts_fts",
-        ):
-            conn.execute(stmt)
+        if has_retrieval_count:
+            # FTS5 + triggers reference `facts` — drop before rebuilding.
+            for stmt in (
+                "DROP TRIGGER IF EXISTS facts_ai",
+                "DROP TRIGGER IF EXISTS facts_ad",
+                "DROP TRIGGER IF EXISTS facts_au",
+                "DROP TABLE IF EXISTS facts_fts",
+            ):
+                conn.execute(stmt)
 
-        conn.execute("""
-            CREATE TABLE facts_new (
-                fact_id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                content          TEXT NOT NULL UNIQUE,
-                category         TEXT DEFAULT 'general',
-                tags             TEXT DEFAULT '',
-                trust_score      REAL DEFAULT 0.5,
-                helpful_count    INTEGER DEFAULT 0,
-                created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                hrr_vector       BLOB,
-                encoding_version INTEGER NOT NULL DEFAULT 1
+            conn.execute("""
+                CREATE TABLE facts_new (
+                    fact_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content          TEXT NOT NULL UNIQUE,
+                    category         TEXT DEFAULT 'general',
+                    tags             TEXT DEFAULT '',
+                    trust_score      REAL DEFAULT 0.5,
+                    helpful_count    INTEGER DEFAULT 0,
+                    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    hrr_vector       BLOB,
+                    encoding_version INTEGER NOT NULL DEFAULT 1
+                )
+            """)
+            conn.execute(
+                f"INSERT INTO facts_new ({keep_csv}) "
+                f"SELECT {keep_csv} FROM facts"
             )
-        """)
-        conn.execute(
-            f"INSERT INTO facts_new ({keep_csv}) SELECT {keep_csv} FROM facts"
-        )
-        conn.execute("DROP TABLE facts")
-        conn.execute("ALTER TABLE facts_new RENAME TO facts")
+            conn.execute("DROP TABLE facts")
+            conn.execute("ALTER TABLE facts_new RENAME TO facts")
 
-        # Recreate non-FTS indexes.
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_facts_trust ON facts(trust_score DESC)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category)"
-        )
-
-        # Recreate FTS5 + triggers, then rebuild the FTS index from facts.
-        conn.execute("""
-            CREATE VIRTUAL TABLE facts_fts USING fts5(
-                content, tags, content=facts, content_rowid=fact_id
+            # Recreate non-FTS indexes.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_facts_trust "
+                "ON facts(trust_score DESC)"
             )
-        """)
-        conn.execute("INSERT INTO facts_fts(facts_fts) VALUES('rebuild')")
-        conn.execute("""
-            CREATE TRIGGER facts_ai AFTER INSERT ON facts BEGIN
-                INSERT INTO facts_fts(rowid, content, tags)
-                    VALUES (new.fact_id, new.content, new.tags);
-            END
-        """)
-        conn.execute("""
-            CREATE TRIGGER facts_ad AFTER DELETE ON facts BEGIN
-                INSERT INTO facts_fts(facts_fts, rowid, content, tags)
-                    VALUES ('delete', old.fact_id, old.content, old.tags);
-            END
-        """)
-        conn.execute("""
-            CREATE TRIGGER facts_au AFTER UPDATE ON facts BEGIN
-                INSERT INTO facts_fts(facts_fts, rowid, content, tags)
-                    VALUES ('delete', old.fact_id, old.content, old.tags);
-                INSERT INTO facts_fts(rowid, content, tags)
-                    VALUES (new.fact_id, new.content, new.tags);
-            END
-        """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_facts_category "
+                "ON facts(category)"
+            )
+
+            # Recreate FTS5 + triggers, then rebuild the FTS index from facts.
+            conn.execute("""
+                CREATE VIRTUAL TABLE facts_fts USING fts5(
+                    content, tags, content=facts, content_rowid=fact_id
+                )
+            """)
+            conn.execute("INSERT INTO facts_fts(facts_fts) VALUES('rebuild')")
+            conn.execute("""
+                CREATE TRIGGER facts_ai AFTER INSERT ON facts BEGIN
+                    INSERT INTO facts_fts(rowid, content, tags)
+                        VALUES (new.fact_id, new.content, new.tags);
+                END
+            """)
+            conn.execute("""
+                CREATE TRIGGER facts_ad AFTER DELETE ON facts BEGIN
+                    INSERT INTO facts_fts(facts_fts, rowid, content, tags)
+                        VALUES ('delete', old.fact_id, old.content, old.tags);
+                END
+            """)
+            conn.execute("""
+                CREATE TRIGGER facts_au AFTER UPDATE ON facts BEGIN
+                    INSERT INTO facts_fts(facts_fts, rowid, content, tags)
+                        VALUES ('delete', old.fact_id, old.content, old.tags);
+                    INSERT INTO facts_fts(rowid, content, tags)
+                        VALUES (new.fact_id, new.content, new.tags);
+                END
+            """)
+
+        if has_memory_banks:
+            # ADR-003: write-only table with zero readers. Just drop it.
+            conn.execute("DROP TABLE memory_banks")
 
         conn.execute("COMMIT")
     except Exception:
@@ -434,7 +447,6 @@ class MemoryStore:
 
             # Compute HRR vector after entity linking
             self._compute_hrr_vector(fact_id, content)
-            self._rebuild_bank(category)
 
             return fact_id
 
@@ -534,11 +546,6 @@ class MemoryStore:
             # Recompute HRR vector if content changed
             if content is not None:
                 self._compute_hrr_vector(fact_id, content)
-            # Rebuild bank for relevant category
-            cat = category or self._conn.execute(
-                "SELECT category FROM facts WHERE fact_id = ?", (fact_id,)
-            ).fetchone()["category"]
-            self._rebuild_bank(cat)
 
             return True
 
@@ -546,7 +553,7 @@ class MemoryStore:
         """Delete a fact and its entity links. Returns True if the row existed."""
         with self._lock:
             row = self._conn.execute(
-                "SELECT fact_id, category FROM facts WHERE fact_id = ?", (fact_id,)
+                "SELECT fact_id FROM facts WHERE fact_id = ?", (fact_id,)
             ).fetchone()
             if row is None:
                 return False
@@ -556,7 +563,6 @@ class MemoryStore:
             )
             self._conn.execute("DELETE FROM facts WHERE fact_id = ?", (fact_id,))
             self._conn.commit()
-            self._rebuild_bank(row["category"])
             return True
 
     def list_facts(
@@ -749,50 +755,8 @@ class MemoryStore:
             if commit:
                 self._conn.commit()
 
-    def _rebuild_bank(self, category: str, *, commit: bool = True) -> None:
-        """Full rebuild of a category's memory bank from all its fact vectors.
-
-        Pass ``commit=False`` to participate in a larger transaction.
-        """
-        with self._lock:
-            if not self._hrr_available:
-                return
-
-            bank_name = f"cat:{category}"
-            rows = self._conn.execute(
-                "SELECT hrr_vector FROM facts WHERE category = ? AND hrr_vector IS NOT NULL",
-                (category,),
-            ).fetchall()
-
-            if not rows:
-                self._conn.execute("DELETE FROM memory_banks WHERE bank_name = ?", (bank_name,))
-                if commit:
-                    self._conn.commit()
-                return
-
-            vectors = [hrr.bytes_to_phases(row["hrr_vector"]) for row in rows]
-            bank_vector = hrr.bundle(*vectors)
-            fact_count = len(vectors)
-
-            hrr.snr_estimate(self.hrr_dim, fact_count)
-
-            self._conn.execute(
-                """
-                INSERT INTO memory_banks (bank_name, vector, dim, fact_count, updated_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(bank_name) DO UPDATE SET
-                    vector = excluded.vector,
-                    dim = excluded.dim,
-                    fact_count = excluded.fact_count,
-                    updated_at = excluded.updated_at
-                """,
-                (bank_name, hrr.phases_to_bytes(bank_vector), self.hrr_dim, fact_count),
-            )
-            if commit:
-                self._conn.commit()
-
     def rebuild_all_vectors(self, dim: int | None = None) -> int:
-        """Recompute all HRR vectors + banks from text. For recovery/migration.
+        """Recompute all HRR vectors from text. For recovery/migration.
 
         Returns the number of facts processed.
         """
@@ -804,16 +768,11 @@ class MemoryStore:
                 self.hrr_dim = dim
 
             rows = self._conn.execute(
-                "SELECT fact_id, content, category FROM facts"
+                "SELECT fact_id, content FROM facts"
             ).fetchall()
 
-            categories: set[str] = set()
             for row in rows:
                 self._compute_hrr_vector(row["fact_id"], row["content"])
-                categories.add(row["category"])
-
-            for category in categories:
-                self._rebuild_bank(category)
 
             return len(rows)
 
@@ -984,9 +943,6 @@ class MemoryStore:
                 # Re-encode each linked fact (reads the new entity name via JOIN).
                 for fid, content in affected_facts:
                     self._compute_hrr_vector(fid, content, commit=False)
-                # Rebuild affected category banks from the fresh vectors.
-                for cat in categories:
-                    self._rebuild_bank(cat, commit=False)
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
@@ -1106,8 +1062,6 @@ class MemoryStore:
                 # — source is gone, target may already have been there).
                 for fid, content in affected_facts:
                     self._compute_hrr_vector(fid, content, commit=False)
-                for cat in categories:
-                    self._rebuild_bank(cat, commit=False)
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
@@ -1206,14 +1160,6 @@ class MemoryStore:
                 # Update in place. update_fact handles entity re-extraction + HRR rebuild.
                 self.update_fact(fid, content=new_content)
                 changed += 1
-
-        # Rebuild banks for all categories, since vectors moved.
-        with self._lock:
-            cats = [r["category"] for r in self._conn.execute(
-                "SELECT DISTINCT category FROM facts"
-            ).fetchall()]
-        for cat in cats:
-            self._rebuild_bank(cat)
 
         return {"changed": changed, "merged": merged, "skipped": skipped}
 

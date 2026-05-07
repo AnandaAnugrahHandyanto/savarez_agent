@@ -159,6 +159,16 @@ def _check_schema_version(conn: sqlite3.Connection, expected: int) -> dict:
             "facts.retrieval_count column still present (ADR-002)"
         )
 
+    # ADR-003: memory_banks table must be absent at v2+.
+    has_memory_banks = bool(conn.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type='table' AND name='memory_banks'"
+    ).fetchone())
+    if has_memory_banks:
+        structural_failures.append(
+            "memory_banks table still present (ADR-003)"
+        )
+
     if structural_failures:
         return _check(
             "schema_version", "error",
