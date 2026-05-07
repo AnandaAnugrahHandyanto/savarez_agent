@@ -441,13 +441,19 @@ class TestVisionConfig:
                 "tools.vision_tools._image_to_base64_data_url",
                 return_value="data:image/png;base64,abc",
             ),
-            patch("tools.vision_tools.async_call_llm", side_effect=slow_llm) as mock_llm,
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                side_effect=slow_llm,
+            ) as mock_llm,
         ):
             result = json.loads(await vision_analyze_tool(str(img), "describe this", "test/model"))
 
         assert result["success"] is False
         assert "timed out" in result["analysis"].lower()
-        assert mock_llm.await_args.kwargs["timeout"] == 0.01
+        await_args = mock_llm.await_args
+        assert await_args is not None
+        assert await_args.kwargs["timeout"] == 0.01
 
 
 class TestVisionSafetyGuards:
