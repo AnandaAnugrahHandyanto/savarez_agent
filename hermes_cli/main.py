@@ -6460,7 +6460,7 @@ def _update_via_zip(args):
     pip_cmd = [sys.executable, "-m", "pip"]
     uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        uv_env = {**os.environ, "VIRTUAL_ENV": str(_detect_project_venv_dir())}
         if _is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
@@ -7002,6 +7002,30 @@ def _load_installable_optional_extras(group: str = "all") -> list[str]:
                 referenced.append(name)
 
     return referenced
+
+
+def _detect_project_venv_dir() -> Path:
+    """Return the best project venv directory for update/install commands.
+
+    Preference order:
+    1) Active interpreter's parent venv when inside PROJECT_ROOT (supports .venv)
+    2) PROJECT_ROOT/.venv
+    3) PROJECT_ROOT/venv (legacy fallback)
+    """
+    exe = Path(sys.executable).resolve()
+    try:
+        if PROJECT_ROOT in exe.parents:
+            candidate = exe.parent.parent
+            if (candidate / "bin" / "python").exists():
+                return candidate
+    except Exception:
+        pass
+
+    dot_venv = PROJECT_ROOT / ".venv"
+    if (dot_venv / "bin" / "python").exists():
+        return dot_venv
+
+    return PROJECT_ROOT / "venv"
 
 
 def _run_install_with_heartbeat(
@@ -8141,7 +8165,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         install_group = "all"
 
         if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            uv_env = {**os.environ, "VIRTUAL_ENV": str(_detect_project_venv_dir())}
             if _is_termux_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
                 uv_env.pop("PYTHONHOME", None)
