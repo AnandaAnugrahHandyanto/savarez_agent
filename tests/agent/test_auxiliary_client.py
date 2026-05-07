@@ -2311,3 +2311,104 @@ class TestAnthropicExplicitApiKey:
         assert mock_build.call_args.args[0] == "explicit-fallback-key", (
             "resolve_provider_client must forward explicit_api_key to _try_anthropic()"
         )
+
+
+class TestExhaustedPoolErrorMessage:
+    """Regression tests for #21428: when an explicit provider's credential pool
+    is exhausted (all entries marked failed), call_llm/async_call_llm must
+    raise an error pointing the user at `hermes auth reset <provider>` —
+    NOT the misleading "no API key was found" message.
+    """
+
+    def test_call_llm_raises_pool_exhausted_message_for_explicit_provider(self):
+        """When provider='anthropic' is explicit and the pool is exhausted,
+        the RuntimeError must mention 'pool is exhausted' and the auth-reset
+        command, not the generic 'no API key' message."""
+        with patch("agent.auxiliary_client._get_cached_client", return_value=(None, None)), \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)):
+            with pytest.raises(RuntimeError, match=r"pool is exhausted"):
+                call_llm(
+                    task="test",
+                    provider="anthropic",
+                    model="claude-sonnet-4-5",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+
+    def test_call_llm_pool_exhausted_message_mentions_auth_reset(self):
+        """The error must include the literal `hermes auth reset` command so
+        the user knows the exact remediation."""
+        with patch("agent.auxiliary_client._get_cached_client", return_value=(None, None)), \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)):
+            with pytest.raises(RuntimeError, match=r"hermes auth reset anthropic"):
+                call_llm(
+                    task="test",
+                    provider="anthropic",
+                    model="claude-sonnet-4-5",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+
+    def test_call_llm_falls_back_to_no_api_key_when_pool_absent(self):
+        """When there is no pool at all (pool_present=False), the original
+        'no API key was found' message must still fire — that's the correct
+        diagnosis for "configured but never authenticated"."""
+        with patch("agent.auxiliary_client._get_cached_client", return_value=(None, None)), \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            with pytest.raises(RuntimeError, match=r"no API key was found"):
+                call_llm(
+                    task="test",
+                    provider="anthropic",
+                    model="claude-sonnet-4-5",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+
+    def test_call_llm_pool_exhausted_skipped_for_auto_provider(self):
+        """The new pool-exhausted check only fires for explicit providers
+        (not 'auto'/'openrouter'/'custom'). For implicit auto-detection,
+        the original auto-chain fallback path is preserved."""
+        # _select_pool_entry should NOT be consulted for the explicit-error
+        # path when provider is auto/openrouter/custom — the code should
+        # fall through to the auto-detection chain instead.
+        with patch("agent.auxiliary_client._get_cached_client", return_value=(None, None)) as mock_cached, \
+             patch("agent.auxiliary_client._select_pool_entry") as mock_pool:
+            with pytest.raises(RuntimeError, match=r"No LLM provider configured"):
+                call_llm(
+                    task="test",
+                    provider="auto",
+                    model="some-model",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+            # The pool-exhausted check should not have run for "auto".
+            mock_pool.assert_not_called()
+            # _get_cached_client is called twice: once for the configured
+            # provider, once for the "auto" fallback chain (per the comment
+            # in auxiliary_client.py at the resolution site).
+            assert mock_cached.call_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_raises_pool_exhausted_message(self):
+        """async_call_llm has the same diagnosis path — ensure it stays
+        in sync with the sync version."""
+        with patch("agent.auxiliary_client._get_cached_client", return_value=(None, None)), \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)):
+            with pytest.raises(RuntimeError, match=r"pool is exhausted"):
+                await async_call_llm(
+                    task="test",
+                    provider="anthropic",
+                    model="claude-sonnet-4-5",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+
+    def test_try_anthropic_logs_warning_when_pool_exhausted(self, caplog):
+        """The narrower _try_anthropic() helper logs a warning before
+        returning (None, None) so operators see the real cause in logs
+        even when callers don't surface our improved error message."""
+        from agent.auxiliary_client import _try_anthropic
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)):
+            with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+                client, model = _try_anthropic()
+        assert client is None and model is None
+        assert any(
+            "pool exists but all entries are exhausted" in rec.message
+            and "hermes auth reset anthropic" in rec.message
+            for rec in caplog.records
+        ), f"expected pool-exhaustion warning, got: {[r.message for r in caplog.records]}"
