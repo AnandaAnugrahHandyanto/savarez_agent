@@ -3542,13 +3542,17 @@ class GatewayRunner:
             return
 
         TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out")
-        # Terminal event kinds trigger automatic unsubscription — the task
-        # is done, blocked, or in a retry-needed state that the human
-        # shouldn't keep pinging a stale chat for. Previously we only
-        # unsubbed when task.status in ('done', 'archived'), which left
-        # subscriptions on 'blocked' / 'gave_up' / 'crashed' / 'timed_out'
-        # tasks stranded forever.
-        TERMINAL_EVENT_KINDS = TERMINAL_KINDS
+        # Kinds that warrant a push notification. The subscription is kept
+        # alive after delivery so the cursor naturally deduplicates — the
+        # same event is never re-fetched because its id <= last_event_id.
+        # Subscriptions are removed only when the task reaches a final
+        # status (done / archived). Previously we also unsubbed on any
+        # terminal event kind, which caused re-fires: unsub removed the
+        # subscription, but if the unsub failed (WAL contention, transient
+        # error) the next tick would re-deliver the already-notified event
+        # because there was no subscription left to carry the advanced
+        # cursor. Keeping the sub alive until task completion means the
+        # cursor is the sole dedup mechanism, and it is idempotent.
         # Per-subscription send-failure counter. Adapter.send raising
         # means the chat is dead (deleted, bot kicked, etc.) — after N
         # consecutive send failures the sub is dropped so we don't spin
@@ -3715,19 +3719,23 @@ class GatewayRunner:
                             # Don't advance cursor on send failure — retry next tick.
                             break
                     else:
-                        # All events delivered; advance cursor + maybe unsub.
+                        # All events delivered; advance cursor. The cursor
+                        # is the dedup mechanism — it prevents re-delivery
+                        # of the same event on subsequent ticks.
                         await asyncio.to_thread(
                             self._kanban_advance, sub, d["cursor"], board_slug,
                         )
-                        # Unsubscribe when the LAST delivered event is a
-                        # terminal kind (the task hit a "no further updates"
-                        # state), not just on task.status in {done, archived}.
-                        # Covers blocked / gave_up / crashed / timed_out which
-                        # used to leak subs forever.
-                        last_kind = d["events"][-1].kind if d["events"] else None
+                        # Unsubscribe only when the task has reached a truly
+                        # final status (done / archived). For blocked, gave_up,
+                        # crashed, or timed_out, the subscription is kept alive
+                        # so the cursor can dedup re-fires. Previously, we
+                        # unsubbed on any terminal event kind, which deleted the
+                        # subscription and its cursor. If the unsub then failed
+                        # (WAL contention, transient error), the subscription
+                        # survived with a stale cursor, causing the same blocked
+                        # notification to fire every tick indefinitely.
                         task_terminal = task and task.status in ("done", "archived")
-                        event_terminal = last_kind in TERMINAL_EVENT_KINDS
-                        if task_terminal or event_terminal:
+                        if task_terminal:
                             await asyncio.to_thread(
                                 self._kanban_unsub, sub, board_slug,
                             )
