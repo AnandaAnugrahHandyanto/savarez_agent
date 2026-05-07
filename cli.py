@@ -1781,9 +1781,14 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
 
 
 def _bind_prompt_submit_keys(kb, handler) -> None:
-    """Bind both CR and LF terminal Enter forms to the submit handler."""
-    for key in ("enter", "c-j"):
-        kb.add(key)(handler)
+    """Bind the normal Enter key to the submit handler.
+
+    prompt_toolkit maps ``enter`` to Control-M (CR).  Do not also bind
+    Control-J (LF) here: many terminal emulators send LF for Ctrl+Enter,
+    and Hermes has historically used that chord for inserting a newline in
+    the multiline prompt.
+    """
+    kb.add("enter")(handler)
 
 
 def _disable_prompt_toolkit_cpr_warning(app) -> None:
@@ -10567,6 +10572,11 @@ class HermesCLI:
         @kb.add('escape', 'enter')
         def handle_alt_enter(event):
             """Alt+Enter inserts a newline for multi-line input."""
+            event.current_buffer.insert_text('\n')
+
+        @kb.add('c-j')
+        def handle_ctrl_enter(event):
+            """Ctrl+Enter (LF / c-j) inserts a newline for multi-line input."""
             event.current_buffer.insert_text('\n')
 
         # VSCode/Cursor bind Ctrl+G to "Find Next" at the editor level, so
