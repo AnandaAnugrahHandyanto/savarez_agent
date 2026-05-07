@@ -34,11 +34,32 @@ Your job description says "route, don't execute." The rules that enforce that:
 - **If no specialist fits, ask the user which profile to create.** Do not default to doing it yourself under "close enough."
 - **Decompose, route, and summarize — that's the whole job.**
 
+## Worker framing: peers, NOT sub-agents
+
+Workers are **independent profiles** with their own gateway, memory, Telegram bot, and config. They are peers coordinated via the Kanban dispatcher — not children of the orchestrator.
+
+❌ WRONG in SOUL.md: "I receive task assignments from PM Agent" (implies hierarchy)
+✅ RIGHT: "I am an independent Agent. I receive tasks via the Kanban system." (implies peer coordination)
+
+When workers have Telegram bots in a shared group, use `require_mention: true` so they only respond when @mentioned. The orchestrator/PM bot should have `require_mention: false` as the default responder.
+
 ## The standard specialist roster (convention)
 
-Unless the user's setup has customized profiles, assume these exist. Adjust to whatever the user actually has — ask if you're unsure.
+> **PITFALL**: These are *example* role names, NOT real profile names. Always check the user's actual profiles (`ls ~/.hermes/profiles/`) before assigning tasks. Using non-existent profile names as assignee will cause tasks to get stuck — the dispatcher can't spawn workers that don't exist.
 
-| Profile | Does | Typical workspace |
+If the user has custom profiles, create a mapping in the orchestrator's SOUL.md. Example:
+```
+| 任务类型 | assignee |
+|---------|----------|
+| 后端/调研 | fullstack_agent |
+| 前端/UI | ui_agent |
+| 测试 | qa_agent |
+| 需求/文档 | pm_agent |
+```
+
+The generic roles below are for reference only:
+
+| Role | Does | Typical workspace |
 |---|---|---|
 | `researcher` | Reads sources, gathers facts, writes findings | `scratch` |
 | `analyst` | Synthesizes, ranks, de-dupes. Consumes multiple `researcher` outputs | `scratch` |
@@ -51,6 +72,21 @@ Unless the user's setup has customized profiles, assume these exist. Adjust to w
 
 ## Decomposition playbook
 
+### Step 0 — Check available profiles
+
+Before planning any tasks, run `ls ~/.hermes/profiles/` to discover which agents actually exist. The roster table above is a reference — real profiles may differ.
+
+```
+$ ls ~/.hermes/profiles/
+fullstack_agent  pm_agent  qa_agent  ui_agent
+```
+
+Build a mental mapping of task types → available profiles. If a needed capability has no matching profile:
+1. Can an existing profile handle it? (e.g. "research" → fullstack_agent)
+2. If not, tell the user which profile is missing and ask if they want to create one.
+
+**Never use a profile name that doesn't exist.** The dispatcher will silently fail.
+
 ### Step 1 — Understand the goal
 
 Ask clarifying questions if the goal is ambiguous. Cheap to ask; expensive to spawn the wrong fleet.
@@ -60,40 +96,42 @@ Ask clarifying questions if the goal is ambiguous. Cheap to ask; expensive to sp
 Before creating anything, draft the graph out loud (in your response to the user). Example for "Analyze whether we should migrate to Postgres":
 
 ```
-T1  researcher        research: Postgres cost vs current
-T2  researcher        research: Postgres performance vs current
-T3  analyst           synthesize migration recommendation       parents: T1, T2
-T4  writer            draft decision memo                       parents: T3
+T1  fullstack_agent   research: Postgres cost vs current
+T2  fullstack_agent   research: Postgres performance vs current
+T3  pm_agent          synthesize migration recommendation       parents: T1, T2
+T4  pm_agent          draft decision memo                       parents: T3
 ```
 
 Show this to the user. Let them correct it before you create anything.
 
-### Step 3 — Create tasks and link
+### Step 3 — Create tasks and assign to profiles
+
+Use the profile names from Step 0. Example:
 
 ```python
 t1 = kanban_create(
     title="research: Postgres cost vs current",
-    assignee="researcher",
-    body="Compare estimated infrastructure costs, migration costs, and ongoing ops costs over a 3-year window. Sources: AWS/GCP pricing, team time estimates, current Postgres bills from peers.",
-    tenant=os.environ.get("HERMES_TENANT"),
-)["task_id"]
+    assignee="fullstack_agent",
+    body="...",
+)[
+```
 
 t2 = kanban_create(
     title="research: Postgres performance vs current",
-    assignee="researcher",
+    assignee="fullstack_agent",   # NOT "researcher"
     body="Compare query latency, throughput, and scaling characteristics at our expected data volume (~500GB, 10k QPS peak). Sources: benchmark papers, public case studies, pgbench results if easy.",
 )["task_id"]
 
 t3 = kanban_create(
     title="synthesize migration recommendation",
-    assignee="analyst",
+    assignee="pm_agent",          # NOT "analyst"
     body="Read the findings from T1 (cost) and T2 (performance). Produce a 1-page recommendation with explicit trade-offs and a go/no-go call.",
     parents=[t1, t2],
 )["task_id"]
 
 t4 = kanban_create(
     title="draft decision memo",
-    assignee="writer",
+    assignee="pm_agent",          # NOT "writer"
     body="Turn the analyst's recommendation into a 2-page memo for the CTO. Match the tone of previous decision memos in the team's knowledge base.",
     parents=[t3],
 )["task_id"]
@@ -107,13 +145,13 @@ If you were spawned as a task yourself (e.g. `planner` profile was assigned `T0:
 
 ```python
 kanban_complete(
-    summary="decomposed into T1-T4: 2 researchers parallel, 1 analyst on their outputs, 1 writer on the recommendation",
+    summary="decomposed into T1-T4: 2 research tasks parallel, 1 synthesis, 1 memo",
     metadata={
         "task_graph": {
-            "T1": {"assignee": "researcher", "parents": []},
-            "T2": {"assignee": "researcher", "parents": []},
-            "T3": {"assignee": "analyst", "parents": ["T1", "T2"]},
-            "T4": {"assignee": "writer", "parents": ["T3"]},
+            "T1": {"assignee": "fullstack_agent", "parents": []},
+            "T2": {"assignee": "fullstack_agent", "parents": []},
+            "T3": {"assignee": "pm_agent", "parents": ["T1", "T2"]},
+            "T4": {"assignee": "pm_agent", "parents": ["T3"]},
         },
     },
 )
@@ -124,22 +162,55 @@ kanban_complete(
 Tell them what you created in plain prose:
 
 > I've queued 4 tasks:
-> - **T1** (researcher): cost comparison
-> - **T2** (researcher): performance comparison, in parallel with T1
-> - **T3** (analyst): synthesizes T1 + T2 into a recommendation
-> - **T4** (writer): turns T3 into a CTO memo
+> - **T1** (fullstack_agent): cost comparison
+> - **T2** (fullstack_agent): performance comparison, in parallel with T1
+> - **T3** (pm_agent): synthesizes T1 + T2 into a recommendation
+> - **T4** (pm_agent): turns T3 into a CTO memo
 >
 > The dispatcher will pick up T1 and T2 now. T3 starts when both finish. You'll get a gateway ping when T4 completes. Use the dashboard or `hermes kanban tail <id>` to follow along.
 
 ## Common patterns
 
-**Fan-out + fan-in (research → synthesize):** N `researcher` tasks with no parents, one `analyst` task with all of them as parents.
+**Fan-out + fan-in (research → synthesize):** N `fullstack_agent` tasks with no parents, one `pm_agent` task with all of them as parents.
 
-**Pipeline with gates:** `pm → backend-eng → reviewer`. Each stage's `parents=[previous_task]`. Reviewer blocks or completes; if reviewer blocks, the operator unblocks with feedback and respawns.
+**Pipeline with gates:** `pm_agent → fullstack_agent → qa_agent`.
 
-**Same-profile queue:** 50 tasks, all assigned to `translator`, no dependencies between them. Dispatcher serializes — translator processes them in priority order, accumulating experience in their own memory.
+**Same-profile queue:** 50 tasks, all assigned to `fullstack_agent`,
 
 **Human-in-the-loop:** Any task can `kanban_block()` to wait for input. Dispatcher respawns after `/unblock`. The comment thread carries the full context.
+
+## Worker Profile Setup
+
+Kanban workers are Hermes profiles. Each `assignee` in `kanban_create(assignee="X")` maps to a profile under `~/.hermes/profiles/X/`. Profiles created via the dashboard (`hermes profile create` or the dashboard UI) may only have SOUL.md — they need `config.yaml` to specify the model, otherwise the dispatcher can't spawn them.
+
+**Minimal worker config.yaml:**
+```yaml
+model:
+  api_key: <key>
+  base_url: <url>
+  default: mimo-v2.5-pro   # model name
+  provider: custom          # or a named provider from main config
+```
+
+**SOUL.md preamble:** Every profile's SOUL.md starts with a ~300-token default English preamble injected by Hermes. For Kanban workers that only need their Chinese role definition, strip this line to save tokens. It's safe to remove — the profile's persona is fully defined by the user's content below it.
+
+**Model tiering by role:** Hermes has no built-in per-task model override. To use cheaper models for low-priority work, create separate profiles (e.g., `qa_agent` with mimo-v2.5 for routine testing, `fullstack_agent` with mimo-v2.5-pro for critical logic). The orchestrator routes by choosing the right `assignee`.
+
+## Making Kanban Visible to Humans
+
+By default, Kanban runs silently in the background. Options to surface it:
+
+### Telegram Notifications (per-task)
+```bash
+hermes kanban notify-subscribe <task_id> --platform telegram --chat-id <user_telegram_id>
+```
+Every event (create, start, heartbeat, complete, block) pushes to the user's Telegram. Good for watching specific critical tasks.
+
+### PM Agent Proactive Reporting
+Add a rule to the PM Agent's SOUL.md: report at key milestones (PRD ready, tasks assigned, QA pass/fail, blockers). The PM uses the Telegram platform tools to message the user directly. The user can reply and the PM reads the response in the next turn.
+
+### Telegram Group as War Room
+Create a Telegram group, add the bot. All agents can post activity there. The user sees everything and can jump in with context or corrections. Configure in `channel_prompts` if different agents need different behavior in the group.
 
 ## Pitfalls
 
@@ -150,6 +221,9 @@ Tell them what you created in plain prose:
 **Don't pre-create the whole graph if the shape depends on intermediate findings.** If T3's structure depends on what T1 and T2 find, let T3 exist as a "synthesize findings" task whose own first step is to read parent handoffs and plan the rest. Orchestrators can spawn orchestrators.
 
 **Tenant inheritance.** If `HERMES_TENANT` is set in your env, pass `tenant=os.environ.get("HERMES_TENANT")` on every `kanban_create` call so child tasks stay in the same namespace.
+
+## Further reading
+- **`references/kanban-profile-setup.md`** — How to create and configure profiles for Kanban multi-agent workflows (model config pitfalls, SOUL.md structure, role definitions, gateway requirements).
 
 ## Recovering stuck workers
 
