@@ -84,6 +84,7 @@ from gateway.platforms.telegram_network import (
     discover_fallback_ips,
     parse_fallback_ip_env,
 )
+from gateway.todo_replies import apply_structured_todo_reply, looks_like_structured_todo_reply, parse_structured_todo_reply
 from utils import atomic_replace
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -268,6 +269,8 @@ class TelegramAdapter(BasePlatformAdapter):
     _SPLIT_THRESHOLD = 4000
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     _GENERAL_TOPIC_THREAD_ID = "1"
+    _FRONTPAGE_OVERRIDE_COMMAND_RE = re.compile(r"^/(?:frontpage(?:-override)?|fp)(?:@\w+)?(?:\s+(.*))?$", re.IGNORECASE)
+    _DEFAULT_FRONTPAGE_ENGINE_DIR = "/Users/nickgeorge-studio/Projects/hermes-frontpage-engine"
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
@@ -379,6 +382,170 @@ class TelegramAdapter(BasePlatformAdapter):
     @staticmethod
     def _is_thread_not_found_error(error: Exception) -> bool:
         return "thread not found" in str(error).lower()
+
+    def _frontpage_engine_dir(self) -> str:
+        configured = None
+        if getattr(self.config, "extra", None):
+            configured = self.config.extra.get("frontpage_engine_dir")
+        return str(
+            os.getenv("HERMES_FRONTPAGE_ENGINE_DIR")
+            or configured
+            or self._DEFAULT_FRONTPAGE_ENGINE_DIR
+        )
+
+    def _frontpage_override_manifest_path(self) -> Optional[str]:
+        configured = None
+        if getattr(self.config, "extra", None):
+            configured = self.config.extra.get("frontpage_override_manifest")
+        value = os.getenv("HERMES_FRONTPAGE_OVERRIDE_MANIFEST") or configured
+        if not value:
+            return None
+        return str(value)
+
+    def _parse_frontpage_override_caption(self, text: Optional[str]) -> Optional[Dict[str, Any]]:
+        if not text:
+            return None
+        raw_lines = text.splitlines()
+        if not raw_lines:
+            return None
+        first_line = raw_lines[0].strip()
+        match = self._FRONTPAGE_OVERRIDE_COMMAND_RE.match(first_line)
+        if not match:
+            return None
+
+        title = (match.group(1) or "").strip()
+        note_lines: list[str] = []
+        bias_terms: list[str] = []
+
+        for raw_line in raw_lines[1:]:
+            stripped = raw_line.strip()
+            if not stripped:
+                if note_lines:
+                    note_lines.append("")
+                continue
+            lowered = stripped.lower()
+            if lowered.startswith("title:"):
+                explicit_title = stripped.split(":", 1)[1].strip()
+                if explicit_title:
+                    title = explicit_title
+                continue
+            if lowered.startswith("bias:"):
+                bias_value = stripped.split(":", 1)[1].strip()
+                if bias_value:
+                    bias_terms.extend(term.strip() for term in bias_value.split(",") if term.strip())
+                continue
+            if lowered.startswith("note:"):
+                note_value = stripped.split(":", 1)[1].strip()
+                if note_value:
+                    note_lines.append(note_value)
+                continue
+            note_lines.append(stripped)
+
+        compact_notes = [line for line in note_lines if line.strip()]
+        if not title and compact_notes:
+            title = compact_notes[0]
+            note_lines = note_lines[1:]
+
+        note = "\n".join(note_lines).strip()
+        return {
+            "title": title or "Telegram inspiration override",
+            "note": note,
+            "bias_terms": bias_terms,
+        }
+
+    async def _write_frontpage_override_manifest(
+        self,
+        *,
+        image_path: str,
+        title: str,
+        note: str,
+        bias_terms: list[str],
+    ) -> tuple[bool, str]:
+        repo_dir = self._frontpage_engine_dir()
+        script_path = os.path.join(repo_dir, "scripts", "set-inspiration-override.mjs")
+        if not os.path.isdir(repo_dir):
+            return False, f"frontpage engine dir not found: {repo_dir}"
+        if not os.path.isfile(script_path):
+            return False, f"override writer not found: {script_path}"
+
+        command = [
+            "node",
+            script_path,
+            "--image",
+            image_path,
+            "--title",
+            title or "Telegram inspiration override",
+            "--note",
+            note or "",
+            "--source",
+            "telegram",
+        ]
+        if bias_terms:
+            command.extend(["--bias-terms", ",".join(bias_terms)])
+        manifest_path = self._frontpage_override_manifest_path()
+        if manifest_path:
+            command.extend(["--manifest", manifest_path])
+
+        proc = await asyncio.create_subprocess_exec(
+            *command,
+            cwd=repo_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_bytes, stderr_bytes = await proc.communicate()
+        stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
+        stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
+        if proc.returncode != 0:
+            return False, stderr or stdout or "frontpage override writer failed"
+
+        manifest = None
+        if stdout:
+            try:
+                manifest = json.loads(stdout).get("manifest")
+            except Exception:
+                manifest = None
+        return True, str(manifest or manifest_path or "next-run override staged")
+
+    async def _reply_to_media_message(self, msg: Message, content: str) -> None:
+        metadata: Dict[str, Any] = {}
+        thread_id = getattr(msg, "message_thread_id", None)
+        if thread_id is not None:
+            metadata["thread_id"] = str(thread_id)
+        await self.send(
+            str(getattr(msg.chat, "id", "")),
+            content,
+            reply_to=str(getattr(msg, "message_id", "")),
+            metadata=metadata or None,
+        )
+
+    async def _maybe_stage_frontpage_override(self, msg: Message, cached_path: str, caption_text: Optional[str]) -> bool:
+        override = self._parse_frontpage_override_caption(caption_text)
+        if not override:
+            return False
+        if getattr(msg, "media_group_id", None):
+            await self._reply_to_media_message(
+                msg,
+                "Frontpage override needs a single image, not an album. Send one photo with `/frontpage`."
+            )
+            return True
+
+        ok, detail = await self._write_frontpage_override_manifest(
+            image_path=cached_path,
+            title=override["title"],
+            note=override["note"],
+            bias_terms=override["bias_terms"],
+        )
+        if ok:
+            await self._reply_to_media_message(
+                msg,
+                f"Queued next frontpage override.\nTitle: {override['title']}\nManifest: `{detail}`"
+            )
+        else:
+            await self._reply_to_media_message(
+                msg,
+                f"Frontpage override failed: {detail}"
+            )
+        return True
 
     def _fallback_ips(self) -> list[str]:
         """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
@@ -2951,6 +3118,41 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         return self._message_matches_mention_patterns(message)
 
+    def _todo_tasks_path(self) -> Optional[str]:
+        if not getattr(self.config, "extra", None):
+            return None
+        value = self.config.extra.get("todo_tasks_path")
+        if not value:
+            return None
+        return str(value)
+
+    async def _maybe_handle_structured_todo_reply(self, message: Message) -> bool:
+        text = getattr(message, "text", None) or ""
+        reply = getattr(message, "reply_to_message", None)
+        reply_to_text = None
+        if reply is not None:
+            reply_to_text = getattr(reply, "text", None) or getattr(reply, "caption", None)
+        if not looks_like_structured_todo_reply(text, reply_to_text):
+            return False
+
+        tasks_path = self._todo_tasks_path()
+        if not tasks_path:
+            logger.warning("[%s] Structured todo reply detected but no todo_tasks_path configured", self.name)
+            return False
+
+        result = apply_structured_todo_reply(tasks_path, parse_structured_todo_reply(text))
+        metadata: Dict[str, Any] = {}
+        thread_id = getattr(message, "message_thread_id", None)
+        if thread_id is not None:
+            metadata["thread_id"] = str(thread_id)
+        await self.send(
+            chat_id=str(getattr(getattr(message, "chat", None), "id", "")),
+            content=result.render_message(),
+            reply_to=str(getattr(message, "message_id", "")),
+            metadata=metadata or None,
+        )
+        return True
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -2963,7 +3165,14 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._should_process_message(update.message):
             return
 
-        event = self._build_message_event(update.message, MessageType.TEXT, update_id=update.update_id)
+        if await self._maybe_handle_structured_todo_reply(update.message):
+            return
+
+        update_id = getattr(update, "update_id", None)
+        if update_id is None:
+            event = self._build_message_event(update.message, MessageType.TEXT)
+        else:
+            event = self._build_message_event(update.message, MessageType.TEXT, update_id=update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         self._enqueue_text_event(event)
 
@@ -3194,6 +3403,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.media_urls = [cached_path]
                 event.media_types = [f"image/{ext.lstrip('.')}" ]
                 logger.info("[Telegram] Cached user photo at %s", cached_path)
+                if await self._maybe_stage_frontpage_override(msg, cached_path, event.text):
+                    return
                 media_group_id = getattr(msg, "media_group_id", None)
                 if media_group_id:
                     await self._queue_media_group_event(str(media_group_id), event)

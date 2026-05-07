@@ -490,6 +490,59 @@ class TestMediaGroups:
         adapter.handle_message.assert_not_awaited()
 
 
+class TestFrontpageOverride:
+    @pytest.mark.asyncio
+    async def test_photo_caption_command_stages_override_and_replies(self, adapter):
+        adapter._bot = AsyncMock()
+        adapter._bot.username = "hermesbot"
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="77"))
+        adapter._write_frontpage_override_manifest = AsyncMock(return_value=(True, "/tmp/frontpage.json"))
+
+        photo = _make_photo(_make_file_obj(b"override"))
+        msg = _make_message(
+            caption="/frontpage urgent trend seed\nbias: election, breaking\nnote: Keep source discovery broad.",
+            photo=[photo],
+        )
+
+        with patch("gateway.platforms.telegram.cache_image_from_bytes", return_value="/tmp/override.jpg"):
+            await adapter._handle_media_message(_make_update(msg), MagicMock())
+
+        adapter._write_frontpage_override_manifest.assert_awaited_once_with(
+            image_path="/tmp/override.jpg",
+            title="urgent trend seed",
+            note="Keep source discovery broad.",
+            bias_terms=["election", "breaking"],
+        )
+        adapter.send.assert_awaited_once()
+        reply_args = adapter.send.await_args
+        assert reply_args.args[0] == "100"
+        assert "Queued next frontpage override." in reply_args.args[1]
+        assert reply_args.kwargs["reply_to"] == "42"
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_frontpage_override_rejects_albums(self, adapter):
+        adapter._bot = AsyncMock()
+        adapter._bot.username = "hermesbot"
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="78"))
+        adapter._write_frontpage_override_manifest = AsyncMock()
+
+        photo = _make_photo(_make_file_obj(b"override"))
+        msg = _make_message(
+            caption="/frontpage\nbias: urgent",
+            media_group_id="album-override",
+            photo=[photo],
+        )
+
+        with patch("gateway.platforms.telegram.cache_image_from_bytes", return_value="/tmp/override.jpg"):
+            await adapter._handle_media_message(_make_update(msg), MagicMock())
+
+        adapter._write_frontpage_override_manifest.assert_not_awaited()
+        adapter.send.assert_awaited_once()
+        assert "single image" in adapter.send.await_args.args[1]
+        adapter.handle_message.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # TestSendVoice — outbound audio delivery
 # ---------------------------------------------------------------------------
