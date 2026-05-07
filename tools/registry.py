@@ -175,11 +175,10 @@ class ToolRegistry:
         """Run a toolset check, treating missing or failing checks as unavailable/available."""
         if not check:
             return True
-        try:
-            return bool(check())
-        except Exception:
-            logger.debug("Toolset %s check raised; marking unavailable", toolset)
-            return False
+        value = _check_fn_cached(check)
+        if not value:
+            logger.debug("Toolset %s check failed; marking unavailable", toolset)
+        return value
 
     def get_entry(self, name: str) -> Optional[ToolEntry]:
         """Return a registered tool entry by name, or None."""
