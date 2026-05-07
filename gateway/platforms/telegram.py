@@ -3557,6 +3557,12 @@ class TelegramAdapter(BasePlatformAdapter):
         """Check if message reactions are enabled via config/env."""
         return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in ("false", "0", "no")
 
+    @staticmethod
+    def _reaction_emoji(env_name: str, default: str) -> str:
+        """Return the configured Telegram lifecycle reaction emoji."""
+        value = os.getenv(env_name, "").strip()
+        return value or default
+
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Set a single emoji reaction on a Telegram message."""
         if not self._bot:
@@ -3579,7 +3585,11 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id:
-            await self._set_reaction(chat_id, message_id, "\U0001f440")
+            await self._set_reaction(
+                chat_id,
+                message_id,
+                self._reaction_emoji("TELEGRAM_REACTION_START_EMOJI", "\U0001f440"),
+            )
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction.
@@ -3592,8 +3602,13 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id and outcome != ProcessingOutcome.CANCELLED:
+            env_name, default_emoji = (
+                ("TELEGRAM_REACTION_SUCCESS_EMOJI", "\U0001f44d")
+                if outcome == ProcessingOutcome.SUCCESS
+                else ("TELEGRAM_REACTION_FAILURE_EMOJI", "\U0001f44e")
+            )
             await self._set_reaction(
                 chat_id,
                 message_id,
-                "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
+                self._reaction_emoji(env_name, default_emoji),
             )

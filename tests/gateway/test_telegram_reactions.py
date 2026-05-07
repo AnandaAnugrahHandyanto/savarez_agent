@@ -90,13 +90,13 @@ async def test_set_reaction_calls_bot_api(monkeypatch):
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
     adapter = _make_adapter()
 
-    result = await adapter._set_reaction("123", "456", "\U0001f440")
+    result = await adapter._set_reaction("123", "456", "\u26a1")
 
     assert result is True
     adapter._bot.set_message_reaction.assert_awaited_once_with(
         chat_id=123,
         message_id=456,
-        reaction="\U0001f440",
+        reaction="\u26a1",
     )
 
 
@@ -107,7 +107,7 @@ async def test_set_reaction_returns_false_without_bot(monkeypatch):
     adapter = _make_adapter()
     adapter._bot = None
 
-    result = await adapter._set_reaction("123", "456", "\U0001f440")
+    result = await adapter._set_reaction("123", "456", "\u26a1")
     assert result is False
 
 
@@ -118,7 +118,7 @@ async def test_set_reaction_handles_api_error_gracefully(monkeypatch):
     adapter = _make_adapter()
     adapter._bot.set_message_reaction = AsyncMock(side_effect=RuntimeError("no perms"))
 
-    result = await adapter._set_reaction("123", "456", "\U0001f440")
+    result = await adapter._set_reaction("123", "456", "\u26a1")
     assert result is False
 
 
@@ -126,9 +126,10 @@ async def test_set_reaction_handles_api_error_gracefully(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_on_processing_start_adds_eyes_reaction(monkeypatch):
-    """Processing start should add eyes reaction when enabled."""
+async def test_on_processing_start_adds_zap_reaction(monkeypatch):
+    """Processing start should add zap reaction when enabled."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    monkeypatch.setenv("TELEGRAM_REACTION_START_EMOJI", "\u26a1")
     adapter = _make_adapter()
     event = _make_event()
 
@@ -137,7 +138,7 @@ async def test_on_processing_start_adds_eyes_reaction(monkeypatch):
     adapter._bot.set_message_reaction.assert_awaited_once_with(
         chat_id=123,
         message_id=456,
-        reaction="\U0001f440",
+        reaction="\u26a1",
     )
 
 
@@ -175,8 +176,9 @@ async def test_on_processing_start_handles_missing_ids(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_on_processing_complete_success(monkeypatch):
-    """Successful processing should set thumbs-up reaction."""
+    """Successful processing should set check-mark reaction."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    monkeypatch.setenv("TELEGRAM_REACTION_SUCCESS_EMOJI", "\u2705")
     adapter = _make_adapter()
     event = _make_event()
 
@@ -185,14 +187,15 @@ async def test_on_processing_complete_success(monkeypatch):
     adapter._bot.set_message_reaction.assert_awaited_once_with(
         chat_id=123,
         message_id=456,
-        reaction="\U0001f44d",
+        reaction="\u2705",
     )
 
 
 @pytest.mark.asyncio
 async def test_on_processing_complete_failure(monkeypatch):
-    """Failed processing should set thumbs-down reaction."""
+    """Failed processing should set cross-mark reaction."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    monkeypatch.setenv("TELEGRAM_REACTION_FAILURE_EMOJI", "\u274c")
     adapter = _make_adapter()
     event = _make_event()
 
@@ -201,7 +204,7 @@ async def test_on_processing_complete_failure(monkeypatch):
     adapter._bot.set_message_reaction.assert_awaited_once_with(
         chat_id=123,
         message_id=456,
-        reaction="\U0001f44e",
+        reaction="\u274c",
     )
 
 
@@ -239,6 +242,9 @@ def test_config_bridges_telegram_reactions(monkeypatch, tmp_path):
     config_file.write_text(yaml.dump({
         "telegram": {
             "reactions": True,
+            "reaction_start_emoji": "\u26a1",
+            "reaction_success_emoji": "\u2705",
+            "reaction_failure_emoji": "\u274c",
         },
     }))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -251,6 +257,9 @@ def test_config_bridges_telegram_reactions(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("TELEGRAM_REACTIONS") == "true"
+    assert os.getenv("TELEGRAM_REACTION_START_EMOJI") == "\u26a1"
+    assert os.getenv("TELEGRAM_REACTION_SUCCESS_EMOJI") == "\u2705"
+    assert os.getenv("TELEGRAM_REACTION_FAILURE_EMOJI") == "\u274c"
 
 
 def test_config_reactions_env_takes_precedence(monkeypatch, tmp_path):

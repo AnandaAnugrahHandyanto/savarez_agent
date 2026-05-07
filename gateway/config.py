@@ -865,6 +865,13 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["TELEGRAM_IGNORED_THREADS"] = str(ignored_threads)
                 if "reactions" in telegram_cfg and not os.getenv("TELEGRAM_REACTIONS"):
                     os.environ["TELEGRAM_REACTIONS"] = str(telegram_cfg["reactions"]).lower()
+                for yaml_key, env_key in (
+                    ("reaction_start_emoji", "TELEGRAM_REACTION_START_EMOJI"),
+                    ("reaction_success_emoji", "TELEGRAM_REACTION_SUCCESS_EMOJI"),
+                    ("reaction_failure_emoji", "TELEGRAM_REACTION_FAILURE_EMOJI"),
+                ):
+                    if yaml_key in telegram_cfg and not os.getenv(env_key):
+                        os.environ[env_key] = str(telegram_cfg[yaml_key])
                 if "proxy_url" in telegram_cfg and not os.getenv("TELEGRAM_PROXY"):
                     os.environ["TELEGRAM_PROXY"] = str(telegram_cfg["proxy_url"]).strip()
                 allowed_users = telegram_cfg.get("allow_from")
