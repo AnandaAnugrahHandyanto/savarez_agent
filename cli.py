@@ -2494,18 +2494,19 @@ class HermesCLI:
         except Exception:
             pass
 
-    def _clear_prompt_toolkit_screen(self, app, *, rebuild_scrollback: bool = False) -> None:
-        """Clear the terminal and reset prompt_toolkit renderer state."""
+    def _clear_prompt_toolkit_screen(self, app) -> None:
+        """Clear the visible screen and reset prompt_toolkit renderer state.
+
+        Intentionally does NOT emit CSI 3 J (``\x1b[3J``): that sequence clears
+        terminal scrollback. On mobile terminals (notably Termux), benign touch
+        gestures can trigger resize recovery; clearing scrollback there erases
+        chat history unexpectedly.
+        """
         try:
             renderer = app.renderer
             out = renderer.output
             out.reset_attributes()
             out.erase_screen()
-            if rebuild_scrollback:
-                try:
-                    out.write_raw("\x1b[3J")
-                except Exception:
-                    pass
             out.cursor_goto(0, 0)
             out.flush()
             # Drop prompt_toolkit's cached screen + cursor state so the
@@ -2517,7 +2518,7 @@ class HermesCLI:
 
     def _recover_after_resize(self, app, original_on_resize) -> None:
         """Recover a resized classic CLI without desynchronizing cursor state."""
-        self._clear_prompt_toolkit_screen(app, rebuild_scrollback=True)
+        self._clear_prompt_toolkit_screen(app)
         _replay_output_history()
         original_on_resize()
 
