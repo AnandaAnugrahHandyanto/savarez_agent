@@ -781,14 +781,14 @@ class NapCatAdapter(BasePlatformAdapter):
                     )
                     if chunk_index == total_chunks - 1:
                         params["expected_sha256"] = sha256.hexdigest()
-                    response = await self._call_action("upload_file_stream", params)
+                    response = await self._call_action_raw("upload_file_stream", params)
                     if response.get("status") != "ok" or response.get("retcode", 0) != 0:
                         return None, (
                             response.get("message")
                             or response.get("wording")
                             or "upload_file_stream failed"
                         )
-            final_response = await self._call_action(
+            final_response = await self._call_action_raw(
                 "upload_file_stream", {"stream_id": stream_id, "is_complete": True}
             )
             if final_response.get("status") != "ok" or final_response.get("retcode", 0) != 0:
@@ -824,6 +824,36 @@ class NapCatAdapter(BasePlatformAdapter):
             self.name, local_path, error,
         )
         return self._media_file_uri(str(local_path)), error
+
+    async def _prepare_upload_file_action_params(
+        self,
+        action: str,
+        params: Dict[str, Any],
+    ) -> tuple[Dict[str, Any], Optional[str]]:
+        """Stream-upload Hermes-local ``upload_*_file`` params before dispatch."""
+        if action not in {"upload_private_file", "upload_group_file"}:
+            return params, None
+        file_value = params.get("file")
+        if not isinstance(file_value, str) or not file_value.strip():
+            return params, None
+        local_path = self._local_stream_upload_path(file_value)
+        if local_path is None:
+            return params, None
+        uploaded_path, error = await self._upload_local_file_stream(local_path)
+        if not uploaded_path:
+            logger.warning(
+                "[%s] upload_file_stream failed for direct %s %s (%s); "
+                "falling back to original file parameter.",
+                self.name,
+                action,
+                local_path,
+                error,
+            )
+            return params, error
+        updated = dict(params)
+        updated["file"] = uploaded_path
+        updated.setdefault("name", local_path.name)
+        return updated, None
 
     async def _send_media_message(
         self,
@@ -1059,6 +1089,32 @@ class NapCatAdapter(BasePlatformAdapter):
         this method; internal code may still use the private alias
         ``_call_action`` for backwards compatibility.
         """
+        params, stream_upload_error = await self._prepare_upload_file_action_params(
+            action, params or {}
+        )
+        response = await self._call_action_raw(action, params, timeout=timeout)
+        if (
+            stream_upload_error
+            and response.get("status") != "ok"
+            and (response.get("message") or response.get("wording"))
+        ):
+            combined_error = self._combine_errors(
+                stream_upload_error,
+                response.get("message") or response.get("wording"),
+            )
+            response = dict(response)
+            response["message"] = combined_error
+            response["wording"] = combined_error
+        return response
+
+    async def _call_action_raw(
+        self,
+        action: str,
+        params: Dict[str, Any],
+        *,
+        timeout: float = DEFAULT_SEND_TIMEOUT,
+    ) -> Dict[str, Any]:
+        """Send an action without high-level adapter preprocessing."""
         if self._ws is None or getattr(self._ws, "closed", True):
             raise RuntimeError("NapCat websocket not connected")
         echo = uuid.uuid4().hex

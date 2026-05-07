@@ -57,6 +57,96 @@ class TestCallActionAlias:
         # use of the public `call_action`.
         assert NapCatAdapter.call_action is NapCatAdapter._call_action
 
+    def test_direct_upload_private_file_stream_uploads_local_file_first(self, tmp_path):
+        adapter = _make_adapter()
+        adapter._mark_connected()
+        adapter._stream_upload_chunk_size = 4
+        local_file = tmp_path / "hermes_napcat_file_test.txt"
+        file_bytes = b"hello from hermes"
+        local_file.write_bytes(file_bytes)
+        uploaded_path = r"C:\NapCat\Temp\hermes_napcat_file_test.txt"
+        payloads = []
+
+        class FakeWebSocket:
+            closed = False
+
+            async def send_json(self, payload):
+                payloads.append(payload)
+                action = payload["action"]
+                params = payload["params"]
+                if action == "upload_file_stream" and params.get("is_complete"):
+                    response = {
+                        "status": "ok",
+                        "retcode": 0,
+                        "data": {"status": "file_complete", "file_path": uploaded_path},
+                        "echo": payload["echo"],
+                    }
+                elif action == "upload_file_stream":
+                    response = {
+                        "status": "ok",
+                        "retcode": 0,
+                        "data": {"received_chunks": params["chunk_index"] + 1},
+                        "echo": payload["echo"],
+                    }
+                else:
+                    response = _ok(message_id="uploaded")
+                    response["echo"] = payload["echo"]
+                adapter._pending_responses[payload["echo"]].set_result(response)
+
+        adapter._ws = FakeWebSocket()
+
+        result = _run(
+            adapter.call_action(
+                "upload_private_file",
+                {"user_id": 10001, "file": str(local_file), "name": local_file.name},
+            )
+        )
+
+        assert result["status"] == "ok"
+        actions = [payload["action"] for payload in payloads]
+        assert "upload_file_stream" in actions
+        assert actions[-1] == "upload_private_file"
+        assert payloads[-1]["params"]["file"] == uploaded_path
+
+    def test_direct_upload_private_file_combines_stream_and_upload_errors(self, tmp_path):
+        adapter = _make_adapter()
+        adapter._mark_connected()
+        local_file = tmp_path / "hermes_napcat_file_test.txt"
+        local_file.write_text("hello")
+
+        class FakeWebSocket:
+            closed = False
+
+            async def send_json(self, payload):
+                if payload["action"] == "upload_file_stream":
+                    response = {
+                        "status": "failed",
+                        "retcode": 404,
+                        "message": "STREAM_UNSUPPORTED",
+                        "echo": payload["echo"],
+                    }
+                else:
+                    response = {
+                        "status": "failed",
+                        "retcode": 1,
+                        "message": "识别URL失败",
+                        "echo": payload["echo"],
+                    }
+                adapter._pending_responses[payload["echo"]].set_result(response)
+
+        adapter._ws = FakeWebSocket()
+
+        result = _run(
+            adapter.call_action(
+                "upload_private_file",
+                {"user_id": 10001, "file": str(local_file), "name": local_file.name},
+            )
+        )
+
+        assert result["status"] == "failed"
+        assert "STREAM_UNSUPPORTED" in result["message"]
+        assert "识别URL失败" in result["message"]
+
 
 # ---------------------------------------------------------------------------
 # _segment_marker — inbound rich-media markers
@@ -376,6 +466,7 @@ class TestSendImageFile:
 
         adapter.call_action = fake_call_action
         adapter._call_action = fake_call_action
+        adapter._call_action_raw = fake_call_action
         result = _run(adapter.send_image_file("555", str(image_path), caption="meow"))
 
         assert result.success is True
@@ -429,6 +520,7 @@ class TestSendImageFile:
 
         adapter.call_action = fake_call_action
         adapter._call_action = fake_call_action
+        adapter._call_action_raw = fake_call_action
         result = _run(adapter.send_image_file("555", str(image_path)))
 
         assert result.success is False
@@ -522,6 +614,7 @@ class TestSendDocument:
 
         adapter.call_action = fake_call_action
         adapter._call_action = fake_call_action
+        adapter._call_action_raw = fake_call_action
         result = _run(adapter.send_document("10001", str(local_file)))
 
         assert result.success is True
@@ -552,6 +645,7 @@ class TestSendDocument:
 
         adapter.call_action = fake_call_action
         adapter._call_action = fake_call_action
+        adapter._call_action_raw = fake_call_action
         result = _run(adapter.send_document("10001", str(local_file)))
 
         assert result.success is False
