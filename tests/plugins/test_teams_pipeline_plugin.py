@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from plugins.teams_pipeline import register
 from plugins.teams_pipeline.pipeline import TeamsMeetingPipeline
 from plugins.teams_pipeline.store import TeamsPipelineStore
@@ -46,6 +48,111 @@ def test_register_adds_cli_only():
     assert entry["plugin"] == "teams_pipeline"
     assert callable(entry["setup_fn"])
     assert callable(entry["handler_fn"])
+
+
+def test_runtime_config_uses_existing_teams_platform_settings():
+    from plugins.teams_pipeline.runtime import build_pipeline_runtime_config
+
+    gateway_config = GatewayConfig(
+        platforms={
+            Platform("teams"): PlatformConfig(
+                enabled=True,
+                extra={
+                    "delivery_mode": "graph",
+                    "team_id": "team-1",
+                    "channel_id": "channel-1",
+                    "meeting_pipeline": {
+                        "transcript_min_chars": 120,
+                        "notion": {"enabled": True, "database_id": "db-1"},
+                    },
+                },
+            )
+        }
+    )
+
+    runtime_config = build_pipeline_runtime_config(gateway_config)
+
+    assert runtime_config["transcript_min_chars"] == 120
+    assert runtime_config["notion"]["database_id"] == "db-1"
+    assert runtime_config["teams_delivery"] == {
+        "enabled": True,
+        "mode": "graph",
+        "team_id": "team-1",
+        "channel_id": "channel-1",
+    }
+
+
+@pytest.mark.anyio
+async def test_bind_gateway_runtime_attaches_scheduler(monkeypatch, tmp_path):
+    from plugins.teams_pipeline import runtime as runtime_module
+
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.scheduler = None
+
+        def set_notification_scheduler(self, scheduler) -> None:
+            self.scheduler = scheduler
+
+    class FakePipeline:
+        def __init__(self) -> None:
+            self.notifications = []
+
+        async def run_notification(self, notification):
+            self.notifications.append(notification)
+
+    adapter = FakeAdapter()
+    pipeline = FakePipeline()
+    gateway = SimpleNamespace(
+        adapters={Platform.MSGRAPH_WEBHOOK: adapter},
+        config=GatewayConfig(platforms={}),
+        _teams_pipeline_runtime=None,
+        _teams_pipeline_runtime_error=None,
+    )
+
+    monkeypatch.setattr(runtime_module, "build_pipeline_runtime", lambda gateway_runner: pipeline)
+
+    bound = runtime_module.bind_gateway_runtime(gateway)
+
+    assert bound is True
+    assert gateway._teams_pipeline_runtime is pipeline
+    assert callable(adapter.scheduler)
+
+    notification = {"id": "notif-1"}
+    await adapter.scheduler(notification, object())
+    assert pipeline.notifications == [notification]
+
+
+@pytest.mark.anyio
+async def test_bind_gateway_runtime_drops_notifications_when_unavailable(monkeypatch):
+    from plugins.teams_pipeline import runtime as runtime_module
+    from tools.microsoft_graph_auth import MicrosoftGraphConfigError
+
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.scheduler = None
+
+        def set_notification_scheduler(self, scheduler) -> None:
+            self.scheduler = scheduler
+
+    adapter = FakeAdapter()
+    gateway = SimpleNamespace(
+        adapters={Platform.MSGRAPH_WEBHOOK: adapter},
+        config=GatewayConfig(platforms={}),
+        _teams_pipeline_runtime=None,
+        _teams_pipeline_runtime_error=None,
+    )
+
+    def _raise(_gateway_runner):
+        raise MicrosoftGraphConfigError("missing graph env")
+
+    monkeypatch.setattr(runtime_module, "build_pipeline_runtime", _raise)
+
+    bound = runtime_module.bind_gateway_runtime(gateway)
+
+    assert bound is False
+    assert "missing graph env" in gateway._teams_pipeline_runtime_error
+    assert callable(adapter.scheduler)
+    await adapter.scheduler({"id": "notif-2"}, object())
 
 
 def test_store_persists_subscription_event_and_job_state(tmp_path):
