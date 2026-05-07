@@ -183,9 +183,12 @@ atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
 # a ``prompt.submit`` that mirrors how real user turns are handled.
 #
 # All waits are on ``threading.Event`` / blocking ``queue.get()`` — no polling.
-_notify_pool_workers = max(
-    2, int(os.environ.get("HERMES_TUI_NOTIFY_POOL_WORKERS") or "16")
-)
+try:
+    _notify_pool_workers = max(
+        2, int(os.environ.get("HERMES_TUI_NOTIFY_POOL_WORKERS") or "16")
+    )
+except (ValueError, TypeError):
+    _notify_pool_workers = 16
 _notify_pool = concurrent.futures.ThreadPoolExecutor(
     max_workers=_notify_pool_workers,
     thread_name_prefix="tui-notify",
@@ -196,9 +199,12 @@ _notify_router_lock = threading.Lock()
 # Bound on how long a dispatcher waits for a busy session to go idle before
 # giving up.  5 minutes is well past any reasonable single-turn duration; a
 # turn that runs that long has a real problem and the notification is stale.
-_NOTIFY_IDLE_TIMEOUT_SECONDS = float(
-    os.environ.get("HERMES_TUI_NOTIFY_IDLE_TIMEOUT") or "300"
-)
+try:
+    _NOTIFY_IDLE_TIMEOUT_SECONDS = float(
+        os.environ.get("HERMES_TUI_NOTIFY_IDLE_TIMEOUT") or "300"
+    )
+except (ValueError, TypeError):
+    _NOTIFY_IDLE_TIMEOUT_SECONDS = 300.0
 
 # Reserve real stdout for JSON-RPC only; redirect Python's stdout to stderr
 # so stray print() from libraries/tools becomes harmless gateway.stderr instead
@@ -769,10 +775,6 @@ def _format_process_notification(evt: dict) -> str | None:
         msg = evt.get("message", "")
         return f"[SYSTEM: {msg}]" if msg else None
 
-    if evt_type == "watch_overflow_released":
-        msg = evt.get("message", "")
-        return f"[SYSTEM: {msg}]" if msg else None
-
     if evt_type == "watch_match":
         pattern = evt.get("pattern", "?")
         output = evt.get("output", "")
@@ -832,8 +834,13 @@ def _dispatch_process_notification(evt: dict) -> None:
     Runs in a short-lived worker thread from ``_notify_pool``.  Blocks on
     ``session['idle']`` — no polling.  Drops the event if:
       - the session has already been closed
-      - the agent is still busy after ``_NOTIFY_IDLE_TIMEOUT_SECONDS``
+      - the overall deadline (``_NOTIFY_IDLE_TIMEOUT_SECONDS``) elapses
       - the completion was already consumed via ``wait/poll/log``
+
+    ``prompt.submit`` can race with a goal-continuation turn or a user
+    prompt that re-claims the slot between ``idle.set()`` and our
+    dispatch; on a 4009 "session busy" response we re-wait on ``idle``
+    and retry, bounded by the same overall deadline.
     """
     evt_type = evt.get("type", "completion")
     pid = str(evt.get("session_id") or "")
@@ -859,51 +866,70 @@ def _dispatch_process_notification(evt: dict) -> None:
         return
     sid, session = match
 
-    # Wait for the agent to finish its current turn.  ``idle`` is set at
-    # session creation and flipped around every ``prompt.submit`` turn.
-    # Absent (legacy session or race): assume idle to preserve delivery.
-    idle = session.get("idle")
-    if idle is not None:
-        if not idle.wait(timeout=_NOTIFY_IDLE_TIMEOUT_SECONDS):
-            logger.warning(
-                "Dropping process notification for %s: session %s busy for >%ss",
-                pid or "unknown",
-                sid,
-                _NOTIFY_IDLE_TIMEOUT_SECONDS,
-            )
-            return
-
-    # Re-check everything after the wait — the session may have been closed,
-    # or an explicit wait/poll/log may have consumed the completion while we
-    # were sleeping.
-    if _sessions.get(sid) is not session:
-        return
-    if evt_type == "completion" and pid:
-        try:
-            from tools.process_registry import process_registry
-
-            if process_registry.is_completion_consumed(pid):
-                return
-        except Exception:
-            pass
-
     text = _format_process_notification(evt)
     if not text:
         return
 
-    resp = handle_request(
-        {
-            "id": f"process-notify-{uuid.uuid4().hex[:8]}",
-            "method": "prompt.submit",
-            "params": {"session_id": sid, "text": text},
-        }
-    )
-    if resp and resp.get("error"):
+    idle = session.get("idle")
+    deadline = time.monotonic() + _NOTIFY_IDLE_TIMEOUT_SECONDS
+
+    while True:
+        # Wait for the agent to finish its current turn.  ``idle`` is set
+        # at session creation and flipped around every ``prompt.submit``
+        # turn.  Absent (legacy session): assume idle to preserve delivery.
+        if idle is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not idle.wait(timeout=remaining):
+                logger.warning(
+                    "Dropping process notification for %s: session %s busy for >%ss",
+                    pid or "unknown",
+                    sid,
+                    _NOTIFY_IDLE_TIMEOUT_SECONDS,
+                )
+                return
+
+        # Re-check everything after the wait — the session may have been
+        # closed, or an explicit wait/poll/log may have consumed the
+        # completion while we were sleeping.
+        if _sessions.get(sid) is not session:
+            return
+        if evt_type == "completion" and pid:
+            try:
+                from tools.process_registry import process_registry
+
+                if process_registry.is_completion_consumed(pid):
+                    return
+            except Exception:
+                pass
+
+        resp = handle_request(
+            {
+                "id": f"process-notify-{uuid.uuid4().hex[:8]}",
+                "method": "prompt.submit",
+                "params": {"session_id": sid, "text": text},
+            }
+        )
+        err = (resp or {}).get("error")
+        if not err:
+            return
+        # Lost the race to a goal-continuation turn or a real user prompt.
+        # Re-wait on the next idle edge, bounded by the overall deadline.
+        # Without an ``idle`` Event we have nothing to wait on, so bail
+        # rather than busy-spin.
+        if err.get("code") == 4009 and idle is not None:
+            logger.debug(
+                "Process notification for %s deferred: session %s busy, "
+                "re-waiting on idle",
+                pid or "unknown",
+                sid,
+            )
+            continue
         logger.warning(
             "Process notification dispatch failed for %s: %s",
             pid or "unknown",
-            resp.get("error", {}).get("message", resp["error"]),
+            err.get("message", err),
         )
+        return
 
 
 def _process_notification_router() -> None:

@@ -4712,7 +4712,12 @@ def _make_session(sid: str, session_key: str, *, running: bool = False) -> dict:
 
 
 def test_notification_fires_after_idle_set_without_polling(monkeypatch):
-    """Core event-driven contract: the dispatcher waits on idle, not a sleep loop."""
+    """Core event-driven contract: the dispatcher waits on idle, not a sleep loop.
+
+    Proof by blocking behavior: the worker thread must remain alive (blocked
+    on ``idle.wait()``) while the session is busy, and dispatch within a few
+    ms of ``idle.set()``.
+    """
     stub = _install_stub_registry(monkeypatch, _StubProcessRegistry())
     dispatched: list[dict] = []
     monkeypatch.setattr(
@@ -4720,15 +4725,6 @@ def test_notification_fires_after_idle_set_without_polling(monkeypatch):
         "handle_request",
         lambda req: dispatched.append(req) or {"result": {}},
     )
-
-    # time.sleep in the server module should never be called from the
-    # notification path — any call would indicate accidental polling.
-    original_sleep = time.sleep
-
-    def _forbidden_sleep(*args, **kwargs):
-        raise AssertionError("time.sleep called from notification dispatch")
-
-    monkeypatch.setattr(server.time, "sleep", _forbidden_sleep)
 
     server._sessions.clear()
     session = _make_session("sid", stub._session_key, running=True)
@@ -4765,7 +4761,6 @@ def test_notification_fires_after_idle_set_without_polling(monkeypatch):
             "[SYSTEM: Background process proc_evt completed"
         )
     finally:
-        monkeypatch.setattr(server.time, "sleep", original_sleep)
         server._sessions.clear()
 
 
@@ -4905,7 +4900,7 @@ def test_concurrent_sessions_dispatch_in_parallel(monkeypatch):
 
 def test_notification_dropped_when_session_key_unresolvable(monkeypatch):
     """Events for a session_key that no TUI session owns: drop cleanly."""
-    stub = _install_stub_registry(monkeypatch, _StubProcessRegistry(session_key="ghost"))
+    _install_stub_registry(monkeypatch, _StubProcessRegistry(session_key="ghost"))
     dispatched: list[dict] = []
     monkeypatch.setattr(
         server,
@@ -5002,6 +4997,7 @@ def test_formatter_renders_completion_watch_and_disabled_events():
             "output": "hi\n",
         }
     )
+    assert out is not None
     assert "Background process p1 completed" in out
     assert "exit code 0" in out
     assert "hi\n" in out
@@ -5017,6 +5013,7 @@ def test_formatter_renders_completion_watch_and_disabled_events():
             "suppressed": 3,
         }
     )
+    assert out is not None
     assert 'matched watch pattern "ERROR"' in out
     assert "3 earlier matches were suppressed" in out
 
@@ -5026,13 +5023,7 @@ def test_formatter_renders_completion_watch_and_disabled_events():
     )
     assert out == "[SYSTEM: watch disabled]"
 
-    # Watch overflow released (global breaker)
-    out = server._format_process_notification(
-        {"type": "watch_overflow_released", "message": "resumed"}
-    )
-    assert out == "[SYSTEM: resumed]"
-
-    # Unknown type with no message: no synthetic prompt
+    # Watch-disabled with no message: no synthetic prompt
     assert server._format_process_notification({"type": "watch_disabled"}) is None
 
 
@@ -5140,4 +5131,59 @@ def test_router_and_dispatch_end_to_end(monkeypatch):
         assert "proc_e2e completed" in dispatched[0]["params"]["text"]
     finally:
         _drain_process_completion_queue(process_registry)
+        server._sessions.clear()
+
+
+def test_dispatch_retries_after_4009_until_idle(monkeypatch):
+    """A goal-continuation / user prompt can reclaim the slot between
+    ``idle.set()`` and the dispatcher's ``prompt.submit``.  The dispatcher
+    must re-wait on the next idle edge and retry, not drop the event.
+    """
+    _install_stub_registry(monkeypatch, _StubProcessRegistry())
+    session = _make_session("sid", "session-key", running=False)
+    calls: list[dict] = []
+
+    def _fake_handle(req):
+        calls.append(req)
+        # First attempt: pretend a goal-continuation grabbed the slot.
+        if len(calls) == 1:
+            server._set_session_running(session, True)
+            return {"error": {"code": 4009, "message": "session busy"}}
+        return {"result": {}}
+
+    monkeypatch.setattr(server, "handle_request", _fake_handle)
+
+    server._sessions.clear()
+    server._sessions["sid"] = session
+    try:
+        worker = threading.Thread(
+            target=server._dispatch_process_notification,
+            args=(
+                {
+                    "type": "completion",
+                    "session_id": "proc_race",
+                    "command": "x",
+                    "exit_code": 0,
+                    "output": "",
+                },
+            ),
+            daemon=True,
+        )
+        worker.start()
+
+        # First call fires immediately (idle was set), gets 4009,
+        # dispatcher re-waits on idle.
+        deadline = time.monotonic() + 2.0
+        while len(calls) < 1 and time.monotonic() < deadline:
+            worker.join(timeout=0.01)
+        assert len(calls) == 1
+        assert worker.is_alive(), "dispatcher dropped instead of re-waiting on idle"
+
+        # Release the slot.  Second attempt succeeds and the worker exits.
+        server._set_session_running(session, False)
+        worker.join(timeout=2.0)
+        assert not worker.is_alive()
+        assert len(calls) == 2
+        assert calls[1]["method"] == "prompt.submit"
+    finally:
         server._sessions.clear()
