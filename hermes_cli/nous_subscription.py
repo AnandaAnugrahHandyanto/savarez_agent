@@ -286,6 +286,7 @@ def get_nous_subscription_features(
     direct_parallel = bool(get_env_value("PARALLEL_API_KEY"))
     direct_tavily = bool(get_env_value("TAVILY_API_KEY"))
     direct_searxng = bool(get_env_value("SEARXNG_URL"))
+    direct_brave = bool(os.environ.get("BRAVE_API_KEY", "").strip())
     direct_fal = fal_key_is_configured()
     direct_openai_tts = bool(resolve_openai_audio_api_key())
     direct_elevenlabs = bool(get_env_value("ELEVENLABS_API_KEY"))
@@ -300,6 +301,7 @@ def get_nous_subscription_features(
         direct_exa = False
         direct_parallel = False
         direct_tavily = False
+        direct_brave = False
     if image_use_gateway:
         direct_fal = False
     if tts_use_gateway:
@@ -341,7 +343,6 @@ def get_nous_subscription_features(
             or (web_search_backend == "tavily" and direct_tavily)
         )
     )
-    direct_brave = bool(os.environ.get("BRAVE_API_KEY", "").strip())
     web_available = bool(
         managed_web_available or direct_exa or direct_firecrawl or direct_parallel or direct_tavily or direct_searxng or direct_brave
     )
