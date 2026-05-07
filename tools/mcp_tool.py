@@ -868,7 +868,8 @@ class MCPServerTask:
         "_task", "_ready", "_shutdown_event", "_reconnect_event",
         "_tools", "_error", "_config",
         "_sampling", "_registered_tool_names", "_auth_type", "_refresh_lock",
-        "_rpc_lock", "_pending_refresh_tasks",
+        "_rpc_lock", "_pending_refresh_tasks", "_transport_kind",
+        "_stdio_child_pids",
     )
 
     def __init__(self, name: str):
@@ -899,6 +900,8 @@ class MCPServerTask:
         # transports for conservative per-server ordering.
         self._rpc_lock = asyncio.Lock()
         self._pending_refresh_tasks: set[asyncio.Task] = set()
+        self._transport_kind: str = ""
+        self._stdio_child_pids: set[int] = set()
 
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
@@ -1091,6 +1094,8 @@ class MCPServerTask:
 
     async def _run_stdio(self, config: dict):
         """Run the server using stdio transport."""
+        self._transport_kind = "stdio"
+        self._stdio_child_pids = set()
         command = config.get("command")
         args = config.get("args", [])
         user_env = config.get("env")
@@ -1138,6 +1143,7 @@ class MCPServerTask:
                 # Capture the newly spawned subprocess PID for force-kill cleanup.
                 new_pids = _snapshot_child_pids() - pids_before
                 if new_pids:
+                    self._stdio_child_pids = set(new_pids)
                     with _lock:
                         for _pid in new_pids:
                             _stdio_pids[_pid] = self.name
@@ -1148,6 +1154,7 @@ class MCPServerTask:
                     self.session = session
                     await self._discover_tools()
                     self._ready.set()
+                    _reset_server_error(self.name)
                     # stdio transport does not use OAuth, but we still honor
                     # _reconnect_event (e.g. future manual /mcp refresh) for
                     # consistency with _run_http.
@@ -1168,6 +1175,7 @@ class MCPServerTask:
                         except (ProcessLookupError, PermissionError, OSError):
                             continue  # process already exited — nothing to do
                         _orphan_stdio_pids.add(pid)
+                self._stdio_child_pids = set()
 
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP transport."""
@@ -1505,6 +1513,47 @@ def _reset_server_error(server_name: str) -> None:
     """
     _server_error_counts[server_name] = 0
     _server_breaker_opened_at.pop(server_name, None)
+
+
+def _stdio_pids_dead(server: Any) -> bool:
+    """Return True when a stdio server has only dead tracked child PIDs.
+
+    Some stdio transports can leave a session object around after the child
+    process has died.  In that state a half-open circuit-breaker probe will
+    just write into a closed pipe and re-open forever.  If PID tracking is
+    unavailable, return False and let the normal probe path decide.
+    """
+    if getattr(server, "_transport_kind", "") != "stdio":
+        return False
+    pids = set(getattr(server, "_stdio_child_pids", set()) or set())
+    if not pids:
+        return False
+    for pid in pids:
+        try:
+            os.kill(pid, 0)
+            return False
+        except ProcessLookupError:
+            continue
+        except (PermissionError, OSError):
+            return False
+    return True
+
+
+def _request_reconnect_for_dead_stdio(server_name: str, server: Any) -> None:
+    """Signal the server task to rebuild a stale stdio transport."""
+    event = getattr(server, "_reconnect_event", None)
+    if event is None:
+        return
+    loop = _mcp_loop
+    if loop is not None and loop.is_running():
+        loop.call_soon_threadsafe(event.set)
+    else:
+        event.set()
+    logger.warning(
+        "MCP server '%s': stdio child process is gone; requesting reconnect "
+        "before circuit-breaker probe.",
+        server_name,
+    )
 
 # ---------------------------------------------------------------------------
 # Auth-failure detection helpers (Task 6 of MCP OAuth consolidation)
@@ -2037,6 +2086,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             _bump_server_error(server_name)
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
+            }, ensure_ascii=False)
+        if _stdio_pids_dead(server):
+            _request_reconnect_for_dead_stdio(server_name, server)
+            _bump_server_error(server_name)
+            return json.dumps({
+                "error": (
+                    f"MCP server '{server_name}' stdio transport is stale; "
+                    "reconnect requested. Do NOT retry this tool immediately."
+                )
             }, ensure_ascii=False)
 
         async def _call():
