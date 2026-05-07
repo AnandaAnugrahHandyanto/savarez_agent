@@ -2014,14 +2014,16 @@ class TestTitleSqlWildcards:
 class TestListSessionsRich:
     """Tests for enhanced session listing with preview and last_active."""
 
-    def test_preview_from_first_user_message(self, db):
+    def test_preview_from_latest_user_message(self, db):
         db.create_session("s1", "cli")
         db.append_message("s1", "system", "You are a helpful assistant.")
         db.append_message("s1", "user", "Help me refactor the auth module please")
         db.append_message("s1", "assistant", "Sure, let me look at it.")
+        db.append_message("s1", "user", "Now switch Kimi from OpenRouter to Ollama Cloud")
         sessions = db.list_sessions_rich()
         assert len(sessions) == 1
-        assert "Help me refactor the auth module" in sessions[0]["preview"]
+        assert "Now switch Kimi" in sessions[0]["preview"]
+        assert "Help me refactor" not in sessions[0]["preview"]
 
     def test_preview_truncated_at_60(self, db):
         db.create_session("s1", "cli")

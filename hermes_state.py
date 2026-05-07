@@ -1002,10 +1002,10 @@ class SessionDB:
         project_compression_tips: bool = True,
         order_by_last_active: bool = False,
     ) -> List[Dict[str, Any]]:
-        """List sessions with preview (first user message) and last active timestamp.
+        """List sessions with preview (latest user message) and last active timestamp.
 
         Returns dicts with keys: id, source, model, title, started_at, ended_at,
-        message_count, preview (first 60 chars of first user message),
+        message_count, preview (first 60 chars of latest user message),
         last_active (timestamp of last message).
 
         Uses a single query with correlated subqueries instead of N+2 queries.
@@ -1093,7 +1093,7 @@ class SessionDB:
                         (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                          FROM messages m
                          WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
-                         ORDER BY m.timestamp, m.id LIMIT 1),
+                         ORDER BY m.timestamp DESC, m.id DESC LIMIT 1),
                         ''
                     ) AS _preview_raw,
                     COALESCE(
@@ -1116,7 +1116,7 @@ class SessionDB:
                         (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                          FROM messages m
                          WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
-                         ORDER BY m.timestamp, m.id LIMIT 1),
+                         ORDER BY m.timestamp DESC, m.id DESC LIMIT 1),
                         ''
                     ) AS _preview_raw,
                     COALESCE(
@@ -1193,7 +1193,7 @@ class SessionDB:
                     (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                      FROM messages m
                      WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
-                     ORDER BY m.timestamp, m.id LIMIT 1),
+                     ORDER BY m.timestamp DESC, m.id DESC LIMIT 1),
                     ''
                 ) AS _preview_raw,
                 COALESCE(
@@ -2521,7 +2521,7 @@ class SessionDB:
                             (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                              FROM messages m
                              WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
-                             ORDER BY m.timestamp, m.id LIMIT 1),
+                             ORDER BY m.timestamp DESC, m.id DESC LIMIT 1),
                             ''
                         ) AS _preview_raw,
                         COALESCE(
@@ -2550,7 +2550,7 @@ class SessionDB:
                             (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                              FROM messages m
                              WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
-                             ORDER BY m.timestamp, m.id LIMIT 1),
+                             ORDER BY m.timestamp DESC, m.id DESC LIMIT 1),
                             ''
                         ) AS _preview_raw,
                         COALESCE(
