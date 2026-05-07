@@ -138,21 +138,33 @@ export const api = {
   },
 
   // Cron jobs
-  getCronJobs: () => fetchJSON<CronJob[]>("/api/cron/jobs"),
-  createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string }) =>
-    fetchJSON<CronJob>("/api/cron/jobs", {
+  getCronJobs: async () => {
+    const res = await fetchJSON<{ jobs: CronJob[] }>("/api/jobs");
+    return res.jobs ?? [];
+  },
+  createCronJob: async (job: { prompt: string; schedule: string; name?: string; deliver?: string }) => {
+    const name = job.name?.trim() || job.prompt.trim().slice(0, 50) || "cron job";
+    const res = await fetchJSON<{ job: CronJob }>("/api/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(job),
-    }),
-  pauseCronJob: (id: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${id}/pause`, { method: "POST" }),
-  resumeCronJob: (id: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${id}/resume`, { method: "POST" }),
-  triggerCronJob: (id: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${id}/trigger`, { method: "POST" }),
+      body: JSON.stringify({ ...job, name }),
+    });
+    return res.job;
+  },
+  pauseCronJob: async (id: string) => {
+    const res = await fetchJSON<{ job: CronJob }>(`/api/jobs/${encodeURIComponent(id)}/pause`, { method: "POST" });
+    return res.job;
+  },
+  resumeCronJob: async (id: string) => {
+    const res = await fetchJSON<{ job: CronJob }>(`/api/jobs/${encodeURIComponent(id)}/resume`, { method: "POST" });
+    return res.job;
+  },
+  triggerCronJob: async (id: string) => {
+    const res = await fetchJSON<{ job: CronJob }>(`/api/jobs/${encodeURIComponent(id)}/run`, { method: "POST" });
+    return res.job;
+  },
   deleteCronJob: (id: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${id}`, { method: "DELETE" }),
+    fetchJSON<{ ok: boolean }>(`/api/jobs/${encodeURIComponent(id)}`, { method: "DELETE" }),
 
   // Profiles (minimal)
   getProfiles: () =>
