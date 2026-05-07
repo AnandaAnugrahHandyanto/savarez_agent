@@ -1164,7 +1164,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                 if "ephemeral_disk" in inspect.signature(modal.Sandbox.create).parameters:
                     sandbox_kwargs["ephemeral_disk"] = disk
             except Exception:
-                pass
+                logger.debug("Could not inspect Modal Sandbox.create signature; skipping ephemeral_disk")
 
         modal_state = _get_modal_backend_state(cc.get("modal_mode"))
 
