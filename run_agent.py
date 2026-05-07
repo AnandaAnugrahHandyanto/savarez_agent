@@ -69,6 +69,7 @@ from datetime import datetime
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
+from session_workspace import current_session_workspace_metadata
 
 
 _OPENAI_CLS_CACHE: Optional[type] = None
@@ -2558,6 +2559,7 @@ class AIAgent:
                 system_prompt=self._cached_system_prompt,
                 user_id=None,
                 parent_session_id=self._parent_session_id,
+                **current_session_workspace_metadata(),
             )
             self._session_db_created = True
         except Exception as e:
@@ -10747,6 +10749,7 @@ class AIAgent:
                     model=self.model,
                     model_config=self._session_init_model_config,
                     parent_session_id=old_session_id,
+                    **current_session_workspace_metadata(),
                 )
                 self._session_db_created = True
                 # Auto-number the title for the continuation session
@@ -11781,6 +11784,15 @@ class AIAgent:
                     )
                 except Exception as _ver_err:
                     logging.debug("file-mutation verifier record failed: %s", _ver_err)
+
+            if not _execution_blocked and function_name == "terminal" and self._session_db:
+                try:
+                    env = get_active_env(effective_task_id)
+                    cwd = getattr(env, "cwd", None)
+                    if cwd:
+                        self._session_db.update_session_cwd(self.session_id, cwd)
+                except Exception:
+                    pass
 
             if not _execution_blocked and self.tool_progress_callback:
                 try:

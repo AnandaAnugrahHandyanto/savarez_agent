@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 13
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -194,6 +194,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     model TEXT,
     model_config TEXT,
     system_prompt TEXT,
+    workspace_path TEXT,
+    last_cwd TEXT,
     parent_session_id TEXT,
     started_at REAL NOT NULL,
     ended_at REAL,
@@ -688,6 +690,8 @@ class SessionDB:
         model: str = None,
         model_config: Dict[str, Any] = None,
         system_prompt: str = None,
+        workspace_path: str = None,
+        last_cwd: str = None,
         user_id: str = None,
         parent_session_id: str = None,
     ) -> None:
@@ -695,8 +699,8 @@ class SessionDB:
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
-                   system_prompt, parent_session_id, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   system_prompt, workspace_path, last_cwd, parent_session_id, started_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
@@ -704,6 +708,8 @@ class SessionDB:
                     model,
                     json.dumps(model_config) if model_config else None,
                     system_prompt,
+                    workspace_path,
+                    last_cwd,
                     parent_session_id,
                     time.time(),
                 ),
@@ -714,6 +720,20 @@ class SessionDB:
         """Create a new session record. Returns the session_id."""
         self._insert_session_row(session_id, source, **kwargs)
         return session_id
+
+    def update_session_cwd(self, session_id: str, cwd: str) -> None:
+        """Update the latest observed working directory for a session."""
+        if not cwd:
+            return
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET last_cwd = ? WHERE id = ?",
+                (cwd, session_id),
+            )
+
+        self._execute_write(_do)
+
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session as ended.
 
@@ -2863,7 +2883,6 @@ class SessionDB:
             result["error"] = str(exc)
 
         return result
-
     # ── Handoff (cross-platform session transfer) ──────────────────────────
     #
     # State machine:
@@ -2963,4 +2982,3 @@ class SessionDB:
                 (error[:500], session_id),
             )
         self._execute_write(_do)
-
