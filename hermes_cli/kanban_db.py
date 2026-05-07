@@ -78,6 +78,7 @@ import secrets
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -883,6 +884,50 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 # ---------------------------------------------------------------------------
 
 _INITIALIZED_PATHS: set[str] = set()
+_INITIALIZED_PATHS_LOCK = threading.RLock()
+
+
+def _resolve_db_path(
+    db_path: Optional[Path] = None,
+    *,
+    board: Optional[str] = None,
+) -> Path:
+    if db_path is not None:
+        return db_path
+    return kanban_db_path(board=board)
+
+
+def _open_connection(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
+def _ensure_initialized(path: Path, *, force: bool = False) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    resolved = str(path.resolve())
+    if not force and resolved in _INITIALIZED_PATHS:
+        return resolved
+    with _INITIALIZED_PATHS_LOCK:
+        if not force and resolved in _INITIALIZED_PATHS:
+            return resolved
+        conn: Optional[sqlite3.Connection] = None
+        try:
+            conn = _open_connection(path)
+            conn.executescript(SCHEMA_SQL)
+            _migrate_add_optional_columns(conn)
+            _INITIALIZED_PATHS.add(resolved)
+        except Exception:
+            _INITIALIZED_PATHS.discard(resolved)
+            if conn is not None:
+                conn.close()
+            raise
+        else:
+            conn.close()
+        return resolved
 
 
 def connect(
@@ -908,26 +953,9 @@ def connect(
       ``HERMES_KANBAN_DB`` env → ``HERMES_KANBAN_BOARD`` env →
       ``<root>/kanban/current`` → ``default``.
     """
-    if db_path is not None:
-        path = db_path
-    else:
-        path = kanban_db_path(board=board)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    resolved = str(path.resolve())
-    needs_init = resolved not in _INITIALIZED_PATHS
-    conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    if needs_init:
-        # Idempotent: runs CREATE TABLE IF NOT EXISTS + the additive
-        # migrations. Cached so subsequent connect() calls in the same
-        # process are cheap.
-        conn.executescript(SCHEMA_SQL)
-        _migrate_add_optional_columns(conn)
-        _INITIALIZED_PATHS.add(resolved)
-    return conn
+    path = _resolve_db_path(db_path, board=board)
+    _ensure_initialized(path)
+    return _open_connection(path)
 
 
 def init_db(
@@ -945,17 +973,11 @@ def init_db(
     external tools that upgrade an old DB file — can call this to
     force re-migration.
     """
-    if db_path is not None:
-        path = db_path
-    else:
-        path = kanban_db_path(board=board)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = _resolve_db_path(db_path, board=board)
     resolved = str(path.resolve())
-    # Clear the cache entry so the underlying connect() re-runs the
-    # schema + migration pass unconditionally.
-    _INITIALIZED_PATHS.discard(resolved)
-    with contextlib.closing(connect(path)):
-        pass
+    with _INITIALIZED_PATHS_LOCK:
+        _INITIALIZED_PATHS.discard(resolved)
+    _ensure_initialized(path, force=True)
     return path
 
 

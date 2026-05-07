@@ -11,6 +11,7 @@ parity across every registered verb.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import subprocess
@@ -2838,6 +2839,35 @@ def test_legacy_db_without_skills_column_migrates(tmp_path):
     assert "skills" in keys
     assert row["skills"] is None
     conn.close()
+
+
+def test_concurrent_connect_initializes_kanban_db_once(tmp_path, monkeypatch):
+    """Concurrent first-use connect() must serialize schema initialization."""
+    db_path = tmp_path / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    resolved = str(db_path.resolve())
+    with kb._INITIALIZED_PATHS_LOCK:
+        kb._INITIALIZED_PATHS.discard(resolved)
+
+    def worker():
+        conn = kb.connect()
+        try:
+            row = conn.execute("SELECT COUNT(*) AS count FROM tasks").fetchone()
+            assert row["count"] == 0
+        finally:
+            conn.close()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(worker) for _ in range(8)]
+        for future in futures:
+            future.result()
+
+    conn = kb.connect()
+    try:
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    finally:
+        conn.close()
+    assert "consecutive_failures" in cols
 
 
 def test_legacy_spawn_failure_columns_are_copied_not_renamed(tmp_path):
