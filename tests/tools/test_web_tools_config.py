@@ -252,6 +252,7 @@ class TestBackendSelection:
     _ENV_KEYS = (
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
+        "TINYFISH_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
         "FIRECRAWL_GATEWAY_URL",
@@ -305,6 +306,12 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={"backend": "tavily"}):
             assert _get_backend() == "tavily"
 
+    def test_config_tinyfish(self):
+        """web.backend=tinyfish in config → 'tinyfish' regardless of other keys."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "tinyfish"}):
+            assert _get_backend() == "tinyfish"
+
     def test_config_tavily_overrides_env_keys(self):
         """web.backend=tavily in config → 'tavily' even if Firecrawl key set."""
         from tools.web_tools import _get_backend
@@ -353,6 +360,15 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
             assert _get_backend() == "tavily"
+
+    def test_fallback_tinyfish_only_key(self):
+        """Only TINYFISH_API_KEY set → 'tinyfish'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.web_tools._is_tool_gateway_ready", return_value=False), \
+             patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch.dict(os.environ, {"TINYFISH_API_KEY": "tf-test"}):
+            assert _get_backend() == "tinyfish"
 
     def test_fallback_tavily_with_firecrawl_prefers_firecrawl(self):
         """Tavily + Firecrawl keys, no config → 'firecrawl' (backward compat)."""
@@ -530,6 +546,7 @@ class TestCheckWebApiKey:
     _ENV_KEYS = (
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
+        "TINYFISH_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
         "FIRECRAWL_GATEWAY_URL",
@@ -580,6 +597,11 @@ class TestCheckWebApiKey:
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
+    def test_tinyfish_key_only(self):
+        with patch.dict(os.environ, {"TINYFISH_API_KEY": "tf-test"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
     def test_no_keys_returns_false(self):
         from tools.web_tools import check_web_api_key
         assert check_web_api_key() is False
@@ -625,3 +647,4 @@ def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+    assert "TINYFISH_API_KEY" in _web_requires_env()

@@ -309,6 +309,15 @@ TOOL_CATEGORIES = {
                 ],
             },
             {
+                "name": "TinyFish",
+                "badge": "free · search + fetch",
+                "tag": "Free web search and page fetch APIs — crawl not included",
+                "web_backend": "tinyfish",
+                "env_vars": [
+                    {"key": "TINYFISH_API_KEY", "prompt": "TinyFish API key", "url": "https://agent.tinyfish.ai/api-keys"},
+                ],
+            },
+            {
                 "name": "Brave Search (Free Tier)",
                 "badge": "free tier · search only",
                 "tag": "2,000 queries/mo free — search only (pair with any extract provider)",
