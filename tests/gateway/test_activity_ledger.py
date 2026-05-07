@@ -177,3 +177,47 @@ def test_default_config_is_opt_in():
 
     assert DEFAULT_CONFIG["activity_ledger"]["enabled"] is False
     assert DEFAULT_CONFIG["activity_ledger"]["capture_turns"] is True
+
+
+def test_missing_or_malformed_config_is_disabled_by_default():
+    assert activity_ledger.load_settings({}).enabled is False
+    assert activity_ledger.load_settings({"activity_ledger": "invalid"}).enabled is False
+    settings = activity_ledger.load_settings(
+        {"activity_ledger": {"enabled": "yes", "capture_turns": "no", "max_preview_chars": "9999"}}
+    )
+    assert settings.enabled is True
+    assert settings.capture_turns is False
+    assert settings.max_preview_chars == activity_ledger.MAX_PREVIEW_CHARS_CAP
+
+
+@pytest.mark.asyncio
+async def test_agent_end_can_record_tool_names_without_step_event(monkeypatch):
+    fixed_now = datetime(2026, 5, 6, 12, 34, 56, tzinfo=timezone.utc)
+    monkeypatch.setattr(activity_ledger, "hermes_now", lambda: fixed_now)
+    _write_config(
+        "activity_ledger:\n"
+        "  enabled: true\n"
+        "  capture_turns: true\n"
+    )
+
+    registry = HookRegistry()
+    with patch("gateway.hooks.HOOKS_DIR", _hermes_home() / "missing-hooks"):
+        registry.discover_and_load()
+
+    await registry.emit(
+        "agent:start",
+        {"session_id": "sess-end-tools", "platform": "discord", "message": "hello"},
+    )
+    await registry.emit(
+        "agent:end",
+        {
+            "session_id": "sess-end-tools",
+            "platform": "discord",
+            "response": "done",
+            "tool_names": ["terminal", "read_file", "terminal"],
+        },
+    )
+
+    turns = _read_turns("2026-05-06")
+    assert len(turns) == 1
+    assert turns[0]["tool_names"] == ["terminal", "read_file"]

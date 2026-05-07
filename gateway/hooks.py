@@ -54,6 +54,10 @@ class HookRegistry:
         """Return metadata about all loaded hooks."""
         return list(self._loaded_hooks)
 
+    def has_handlers(self, event_type: str) -> bool:
+        """Return True when any user or built-in handler would fire."""
+        return bool(self._resolve_handlers(event_type))
+
     def _register_builtin_hooks(self) -> None:
         """Register built-in hooks that are always active.
 
