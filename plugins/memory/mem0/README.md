@@ -111,6 +111,24 @@ hermes memory setup mem0 --mode oss --oss-llm-key sk-... --dry-run
 | `mem0_update` | Update a memory's text by ID |
 | `mem0_delete` | Delete a memory by ID |
 
+## Telemetry
+
+Anonymous usage telemetry is collected via PostHog to help improve the plugin. Events are sampled at 10% and contain no personally identifiable information.
+
+To disable telemetry:
+
+```bash
+export MEM0_TELEMETRY=false
+# Or add to your .env:
+echo "MEM0_TELEMETRY=false" >> ~/.hermes/.env
+```
+
+You can also adjust the sample rate:
+
+```bash
+export MEM0_TELEMETRY_SAMPLE_RATE=0.0  # disable sampling entirely
+```
+
 ## Troubleshooting
 
 ### "Mem0 temporarily unavailable"

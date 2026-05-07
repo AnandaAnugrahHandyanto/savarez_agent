@@ -34,6 +34,9 @@ def _inject_fake_hermes_cli(monkeypatch):
     monkeypatch.setitem(sys.modules, "hermes_cli", fake_hermes_cli)
     monkeypatch.setitem(sys.modules, "hermes_cli.config", fake_config_mod)
     monkeypatch.setitem(sys.modules, "hermes_cli.memory_setup", fake_setup_mod)
+
+    monkeypatch.setattr("plugins.memory.mem0._setup._curses_select", lambda *a, **kw: 0)
+    monkeypatch.setattr("plugins.memory.mem0._setup._prompt", lambda label, default=None, secret=False: default or "")
     return fake_config_mod
 
 

@@ -13,7 +13,6 @@ import hashlib
 import json
 import logging
 import os
-import platform
 import random
 import sys
 import threading
@@ -140,12 +139,8 @@ def capture_event(
                 "client_source": "python",
                 "client_version": _get_plugin_version(),
                 "language": "python",
-                "python_version": sys.version,
+                "python_version": ".".join(str(x) for x in sys.version_info[:2]),
                 "os": sys.platform,
-                "os_version": platform.version(),
-                "os_release": platform.release(),
-                "processor": platform.processor(),
-                "machine": platform.machine(),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "sample_rate": 1.0 if is_lifecycle else sample_rate,
                 "$process_person_profile": False,
