@@ -5,9 +5,9 @@
 > simultaneously instead of being locked to a single provider.
 
 **Fork:** [someaka/hermes-agent](https://github.com/someaka/hermes-agent) —
-branch `feat/multi-provider-memory`
+branch `main`
 
-**Base:** upstream `main` at tag `v2026.5.7`
+**Base:** upstream v0.13.0 (v2026.5.7)
 
 ---
 
@@ -46,13 +46,13 @@ Upstream Hermes Agent only supports one memory provider at a time
 ### From fork (recommended)
 
 ```bash
-uv pip install "hermes-agent @ git+https://github.com/someaka/hermes-agent@feat/multi-provider-memory"
+uv pip install "hermes-agent @ git+https://github.com/someaka/hermes-agent@main"
 ```
 
 Or clone and install locally:
 
 ```bash
-git clone -b feat/multi-provider-memory https://github.com/someaka/hermes-agent
+git clone https://github.com/someaka/hermes-agent
 cd hermes-agent
 uv pip install -e ".[all]"
 ```
@@ -93,7 +93,7 @@ uv pip install "hermes-agent @ git+https://github.com/NousResearch/hermes-agent@
 # Apply fork changes
 git remote add someaka https://github.com/someaka/hermes-agent
 git fetch someaka
-git cherry-pick someaka/feat/multi-provider-memory
+git cherry-pick someaka/main
 ```
 
 > **Note:** cherry-pick may conflict if upstream has diverged since the
@@ -107,7 +107,7 @@ This fork rebases on upstream release tags. When a new upstream tag drops:
 
 ```bash
 git fetch upstream
-git rebase --onto v<NEW_TAG> v<OLD_TAG> feat/multi-provider-memory
+git rebase --onto v<NEW_TAG> v<OLD_TAG> main
 # resolve conflicts (usually 1-3 files)
 # run tests: uv run pytest tests/ -x --timeout=60
 git tag v<NEW_TAG>-multi-mem
