@@ -87,6 +87,22 @@ echo placeholder local paths like `/path/to/...`, `/abs/path/to/...`, or
 Only use a local `MEDIA:` path or `file://` URI when you know that exact path
 exists on the NapCat machine, not merely inside the Hermes workspace.
 
+If you need to send a Hermes-side local file:
+
+1. Prefer creating a public or LAN-reachable HTTP(S) URL for the file, then use
+   `MEDIA:https://...`.
+2. For small media, encode the file as base64 and use NapCat's supported
+   `base64://...` form if size limits allow it.
+3. If both hosts share storage, copy the file into the shared mount and use the
+   path exactly as NapCat sees it on the NapCat machine.
+4. If none of those are available, do not send a `MEDIA:` tag. Reply in text
+   that the file is only local to Hermes and needs to be exposed or copied to
+   the NapCat host first.
+
+If a previous media send failed and the conversation contains a
+`[Hermes gateway delivery feedback]` message, treat it as authoritative. Fix
+the path/URL strategy before trying to send the same media again.
+
 ---
 
 ## 4. The `napcat_call` tool
@@ -233,6 +249,12 @@ make it reachable to NapCat: publish it as an HTTP(S) URL, convert it to
 `base64://...`, or place it in a directory mounted at the same path on the
 NapCat host. Never send a Hermes-only temp/cache path and assume NapCat can
 open it.
+
+For Hermes-generated local files, a safe pattern is:
+create/download file on Hermes → expose it as URL or copy it to a shared
+NapCat-readable path → include only that URL/path in `MEDIA:`. If you cannot
+make the file reachable to NapCat, explain the limitation in text instead of
+emitting `MEDIA:/tmp/...` or another Hermes-only path.
 
 If you really need to control the segment array yourself (e.g. inline image +
 text in one bubble), call:

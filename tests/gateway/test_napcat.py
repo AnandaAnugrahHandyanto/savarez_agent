@@ -339,7 +339,9 @@ class TestSendImageFile:
 
         # Two send_group_msg calls: image attempt, then text fallback.
         assert attempts == ["send_group_msg", "send_group_msg"]
-        assert result.success is True
+        assert result.success is False
+        assert result.message_id == "text_msg_1"
+        assert result.error == "BAD_FILE"
 
 
 class TestSendVoice:
@@ -462,9 +464,11 @@ class TestSendDocument:
         adapter._call_action = fake_call_action
         result = _run(adapter.send_document("12345", "/tmp/big.bin", file_name="big.bin"))
 
-        # The fallback `send` path returns success; the original error is logged.
-        assert result.success is True
+        # The fallback text notice is sent, but the original upload failure is
+        # still returned so the gateway can surface/log media delivery errors.
+        assert result.success is False
         assert result.message_id == "notice"
+        assert result.error == "QUOTA"
 
 
 # ---------------------------------------------------------------------------

@@ -720,7 +720,14 @@ class NapCatAdapter(BasePlatformAdapter):
             self.name, result.error,
         )
         fallback = caption.strip() if caption and caption.strip() else "[图片发送失败]"
-        return await self.send(chat_id=chat_id, content=fallback, reply_to=reply_to)
+        fallback_result = await self.send(chat_id=chat_id, content=fallback, reply_to=reply_to)
+        return SendResult(
+            success=False,
+            message_id=fallback_result.message_id,
+            error=result.error or fallback_result.error,
+            raw_response=result.raw_response,
+            retryable=result.retryable,
+        )
 
     async def send_voice(
         self,
@@ -742,7 +749,14 @@ class NapCatAdapter(BasePlatformAdapter):
             self.name, result.error,
         )
         fallback = caption.strip() if caption and caption.strip() else "[语音发送失败]"
-        return await self.send(chat_id=chat_id, content=fallback, reply_to=reply_to)
+        fallback_result = await self.send(chat_id=chat_id, content=fallback, reply_to=reply_to)
+        return SendResult(
+            success=False,
+            message_id=fallback_result.message_id,
+            error=result.error or fallback_result.error,
+            raw_response=result.raw_response,
+            retryable=result.retryable,
+        )
 
     async def send_video(
         self,
@@ -764,7 +778,14 @@ class NapCatAdapter(BasePlatformAdapter):
             self.name, result.error,
         )
         fallback = caption.strip() if caption and caption.strip() else "[视频发送失败]"
-        return await self.send(chat_id=chat_id, content=fallback, reply_to=reply_to)
+        fallback_result = await self.send(chat_id=chat_id, content=fallback, reply_to=reply_to)
+        return SendResult(
+            success=False,
+            message_id=fallback_result.message_id,
+            error=result.error or fallback_result.error,
+            raw_response=result.raw_response,
+            retryable=result.retryable,
+        )
 
     async def send_document(
         self,
@@ -839,13 +860,13 @@ class NapCatAdapter(BasePlatformAdapter):
             else f"[文件:{display_name}]"
         )
         fallback = await self.send(chat_id=chat_id, content=notice, reply_to=reply_to)
-        if not fallback.success:
-            return SendResult(
-                success=False,
-                error=error or fallback.error,
-                raw_response=response,
-            )
-        return fallback
+        return SendResult(
+            success=False,
+            message_id=fallback.message_id,
+            error=error or fallback.error,
+            raw_response=response,
+            retryable=fallback.retryable,
+        )
 
     async def call_action(
         self,

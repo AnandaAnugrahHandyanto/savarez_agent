@@ -8765,6 +8765,17 @@ class GatewayRunner:
         from pathlib import Path
         from urllib.parse import quote as _quote
 
+        delivery_errors: List[str] = []
+
+        def _record_delivery_error(kind: str, path: str, error: Any) -> None:
+            error_text = str(error or "unknown error").strip()
+            path_text = str(path or "").strip()
+            if len(path_text) > 240:
+                path_text = path_text[:237] + "..."
+            if len(error_text) > 500:
+                error_text = error_text[:497] + "..."
+            delivery_errors.append(f"{kind} failed for {path_text}: {error_text}")
+
         try:
             media_files, _ = adapter.extract_media(response)
             _, cleaned = adapter.extract_images(response)
@@ -8798,55 +8809,87 @@ class GatewayRunner:
             if image_paths:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    await adapter.send_multiple_images(
+                    image_results = await adapter.send_multiple_images(
                         chat_id=event.source.chat_id,
                         images=images,
                         metadata=_thread_meta,
                     )
+                    for idx, image_result in enumerate(image_results or []):
+                        if not image_result.success:
+                            image_path = image_paths[idx] if idx < len(image_paths) else "image"
+                            _record_delivery_error("image", image_path, image_result.error)
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
+                    _record_delivery_error("image batch", f"{len(image_paths)} image(s)", e)
 
             for media_path, is_voice in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
+                        result = await adapter.send_voice(
                             chat_id=event.source.chat_id,
                             audio_path=media_path,
                             metadata=_thread_meta,
                         )
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(
+                        result = await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=media_path,
                             metadata=_thread_meta,
                         )
                     else:
-                        await adapter.send_document(
+                        result = await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=media_path,
                             metadata=_thread_meta,
                         )
+                    if not result.success:
+                        _record_delivery_error("media", media_path, result.error)
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+                    _record_delivery_error("media", media_path, e)
 
             for file_path in non_image_local:
                 try:
                     ext = Path(file_path).suffix.lower()
                     if ext in _VIDEO_EXTS:
-                        await adapter.send_video(
+                        result = await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=file_path,
                             metadata=_thread_meta,
                         )
                     else:
-                        await adapter.send_document(
+                        result = await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=file_path,
                             metadata=_thread_meta,
                         )
+                    if not result.success:
+                        _record_delivery_error("file", file_path, result.error)
                 except Exception as e:
                     logger.warning("[%s] Post-stream file delivery failed: %s", adapter.name, e)
+                    _record_delivery_error("file", file_path, e)
+
+            if delivery_errors:
+                feedback = (
+                    "[Hermes gateway delivery feedback]\n"
+                    + "\n".join(f"- {item}" for item in delivery_errors)
+                    + "\nIf this was a local path, remember the messaging platform may run on a different machine; use a URL, base64://, or a shared path readable by the platform host."
+                )
+                try:
+                    session_store = getattr(self, "session_store", None)
+                    if session_store is not None:
+                        session_entry = session_store.get_or_create_session(event.source)
+                        session_store.append_to_transcript(
+                            session_entry.session_id,
+                            {
+                                "role": "user",
+                                "content": feedback,
+                                "timestamp": datetime.now().isoformat(),
+                            },
+                        )
+                except Exception as feedback_err:
+                    logger.debug("Post-stream media feedback persistence failed: %s", feedback_err)
 
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)
