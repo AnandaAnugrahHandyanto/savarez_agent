@@ -597,6 +597,14 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if self.has_fatal_error:
             return
+        # Cancel any previously scheduled probe to maintain at most one in
+        # flight per adapter. Without this, multiple sleeping probes can
+        # accumulate (cold_boot then later reconnect) and `disconnect()`
+        # cancels only `_latest_probe_task`; older probes wake on a
+        # torn-down adapter and recurse into `_handle_polling_network_error`.
+        prev = self._latest_probe_task
+        if prev is not None and not prev.done():
+            prev.cancel()
         probe = asyncio.ensure_future(self._verify_polling_after_reconnect(trigger=trigger))
         self._background_tasks.add(probe)
         probe.add_done_callback(self._background_tasks.discard)
@@ -645,7 +653,15 @@ class TelegramAdapter(BasePlatformAdapter):
 
         if self.has_fatal_error:
             return
-        if not (self._app and self._app.updater and self._app.updater.running):
+        # Bail if the adapter has been torn down while we slept. `disconnect()`
+        # cancels the latest probe directly, but a previously scheduled probe
+        # whose cancellation raced with disconnect can still wake here with
+        # `_app=None` — without this guard, the wedge-detection branch below
+        # would falsely fire and call `_handle_polling_network_error` against
+        # a torn-down adapter.
+        if self._app is None:
+            return
+        if not (self._app.updater and self._app.updater.running):
             logger.warning(
                 "[%s] Updater not running %ds after %s probe scheduled — treating as wedged",
                 self.name, HEARTBEAT_PROBE_DELAY, trigger,
@@ -680,8 +696,11 @@ class TelegramAdapter(BasePlatformAdapter):
             # (`_request[0]`), not the general pool (`_request[1]`). See the
             # docstring above for the dispatch rationale.
             # Serialize against `_drain_polling_connections` so the probe
-            # never hits a half-torn-down pool.
-            base = self._app.bot.base_url
+            # never hits a half-torn-down pool. Strip any trailing slash on
+            # `base_url` — the default config has none, but callable /
+            # format-map / `local_mode=True` configs can produce one and
+            # `f"{base}/getMe"` would yield a `//getMe`.
+            base = str(self._app.bot.base_url).rstrip("/")
             async with self._probe_drain_lock:
                 await asyncio.wait_for(pool.post(f"{base}/getMe"), PROBE_TIMEOUT)
             # Probe succeeded — reset the strike history so a single isolated

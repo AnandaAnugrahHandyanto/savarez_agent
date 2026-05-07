@@ -643,3 +643,108 @@ async def test_wedge_log_distinguishes_cold_boot_vs_reconnect_trigger(caplog):
         "Expected at least one WARNING containing both 'cold_boot' and "
         f"'wedge detected'. Got: {[rec.getMessage() for rec in caplog.records]}"
     )
+
+
+# -----------------------------------------------------------------------------
+# Iteration 9 — schedule cancels prior pending probe (PR #21548 review)
+# -----------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_schedule_cancels_previously_pending_probe():
+    """
+    `_schedule_polling_pool_probe` is called from both cold-boot and
+    reconnect paths. Without cancelling a prior pending probe, multiple
+    60s-sleeping probes can accumulate; `disconnect()` cancels only the
+    most recent (`_latest_probe_task`), so older probes wake on a torn-down
+    adapter and call `_handle_polling_network_error` against `_app=None`,
+    leaking into a recursive reconnect failure.
+
+    Invariant: at most one probe in flight per adapter.
+    """
+    adapter = _make_adapter()
+    adapter._app = MagicMock()  # any truthy value so probes don't bail early
+
+    # First schedule (e.g. cold_boot)
+    adapter._schedule_polling_pool_probe(trigger="cold_boot")
+    first = adapter._latest_probe_task
+    assert first is not None and not first.done()
+
+    # Second schedule (e.g. reconnect after a transient blip)
+    adapter._schedule_polling_pool_probe(trigger="reconnect")
+    second = adapter._latest_probe_task
+    assert second is not None and not second.done()
+    assert second is not first, "Second schedule must produce a distinct task"
+
+    # The first probe must have been cancelled — at most one in flight.
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert first.cancelled() or first.done(), (
+        "Previous probe must be cancelled when a new one is scheduled "
+        f"(state: cancelled={first.cancelled()}, done={first.done()})"
+    )
+
+    # Cleanup
+    second.cancel()
+    try:
+        await second
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_probe_bails_when_app_torn_down_after_sleep():
+    """
+    If the adapter is disconnected (`self._app = None`) while a probe is
+    sleeping its 60s heartbeat, the probe must bail silently after waking —
+    not call `_handle_polling_network_error` against a torn-down adapter.
+    """
+    adapter = _make_adapter()
+    adapter._app = None  # simulates a disconnect that already happened
+
+    with patch("asyncio.sleep", new_callable=AsyncMock), \
+         patch.object(adapter, "_handle_polling_network_error",
+                      new_callable=AsyncMock) as mock_handler:
+        await adapter._verify_polling_after_reconnect()
+
+    assert mock_handler.await_count == 0, (
+        "Probe must not call _handle_polling_network_error after "
+        f"disconnect (called {mock_handler.await_count} times)"
+    )
+
+
+# -----------------------------------------------------------------------------
+# Iteration 10 — URL normalization for trailing-slash base_url (PR #21548 review)
+# -----------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_probe_url_normalizes_trailing_slash_in_base_url():
+    """
+    PTB's `Bot.base_url` is built via `_parse_base_url(base_url, token)`.
+    For default config it has no trailing slash, but custom configs
+    (callable `base_url`, `format_map`-based, `local_mode=True` self-hosted
+    Bot API servers) can produce one. `f"{base}/getMe"` then yields
+    `.../bot<TOKEN>//getMe` — most servers normalize, but it's avoidable.
+    """
+    adapter = _make_adapter()
+
+    pool0_post = AsyncMock(return_value={"id": 1, "is_bot": True})
+    pool1_post = AsyncMock(return_value={"id": 1, "is_bot": True})
+    _wire_adapter_with_pools(
+        adapter,
+        pool0_post=pool0_post,
+        pool1_post=pool1_post,
+        # Trailing slash — the case Copilot flagged on PR #21548.
+        base_url="https://api.telegram.org/bot<REDACTED>/",
+    )
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._verify_polling_after_reconnect()
+
+    pool0_post.assert_awaited_once()
+    call_url = pool0_post.await_args.args[0]
+    assert "//getMe" not in call_url, (
+        f"Probe URL must not contain double slash; got: {call_url!r}"
+    )
+    assert call_url.endswith("/getMe"), (
+        f"Probe URL must end in '/getMe' (single slash); got: {call_url!r}"
+    )
