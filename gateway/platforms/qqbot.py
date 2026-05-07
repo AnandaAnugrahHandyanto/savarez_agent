@@ -311,10 +311,14 @@ class QQAdapter(BasePlatformAdapter):
             return False
 
         try:
+            # Tighter keepalive pool so idle CLOSE_WAIT sockets drain
+            # faster behind proxies like Cloudflare Warp (#18451).
+            from gateway.platforms._http_client_limits import platform_httpx_limits
             self.setup_http_client(httpx.AsyncClient(
                 timeout=30.0,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
+                limits=platform_httpx_limits(),
             ))
 
             await self._api.ensure_token()
@@ -1064,6 +1068,26 @@ class QQAdapter(BasePlatformAdapter):
             return self._is_dm_allowed(event.user_id)
         if event.event_type == EventType.GROUP_AT_MESSAGE_CREATE:
             return self._is_group_allowed(event.chat_id, event.user_id)
+        # Guild channels are group-like contexts — apply group_policy ACL.
+        # Without this check any guild member could bypass the configured allowlist.
+        if event.event_type == EventType.AT_MESSAGE_CREATE:
+            if not self._is_group_allowed(event.chat_id, event.user_id):
+                logger.debug(
+                    "[%s] Guild message blocked by ACL: channel=%s user=%s",
+                    self._log_tag, event.chat_id, event.user_id,
+                )
+                return False
+            return True
+        # Guild DMs were previously unauthenticated — apply dm_policy ACL.
+        # Without this check any guild member could bypass the allowlist via DMs.
+        if event.event_type == EventType.DIRECT_MESSAGE_CREATE:
+            if not self._is_dm_allowed(event.user_id):
+                logger.debug(
+                    "[%s] Guild DM blocked by ACL: user=%s",
+                    self._log_tag, event.user_id,
+                )
+                return False
+            return True
         return True
 
     def _get_cache_dir(self) -> str:
