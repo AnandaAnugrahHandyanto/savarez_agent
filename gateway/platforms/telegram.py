@@ -1663,15 +1663,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 f"Select a provider:"
             )
 
-            thread_id = metadata.get("thread_id") if metadata else None
-            msg = await self._bot.send_message(
-                chat_id=int(chat_id),
-                text=text,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=keyboard,
-                message_thread_id=int(thread_id) if thread_id else None,
+            thread_id = self._metadata_thread_id(metadata)
+            message_thread_id = self._message_thread_id_for_send(thread_id)
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": text,
+                "parse_mode": ParseMode.MARKDOWN,
+                "reply_markup": keyboard,
                 **self._link_preview_kwargs(),
-            )
+            }
+            if message_thread_id is not None:
+                kwargs["message_thread_id"] = message_thread_id
+            msg = await self._bot.send_message(**kwargs)
 
             # Store picker state keyed by chat_id
             self._model_picker_state[str(chat_id)] = {
