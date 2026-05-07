@@ -566,6 +566,86 @@ class _H2Driver:
 # ----------------------------------------------------------------------------
 # Envelope codec for the WS bridge
 # ----------------------------------------------------------------------------
+#
+# Two layers stack on the bridge stream:
+#
+#   H2 DATA → RFC-6455 WebSocket frames → length-prefixed JSON envelopes
+#
+# The bridge stream is a real WebSocket negotiated via RFC-8441 extended
+# CONNECT (``:protocol=inkbox-tunnel-ws``), so hypercorn (server) and we
+# (client) MUST exchange standard WS frames on the wire — opcode + length
+# (+ mask key for client→server) + payload — all wrapped inside the H2
+# DATA frames of the CONNECT stream. Server→client frames are unmasked;
+# client→server frames are masked (RFC-6455 §5.3).
+# ----------------------------------------------------------------------------
+
+_WS_OPCODE_TEXT = 0x1
+_WS_OPCODE_BINARY = 0x2
+_WS_OPCODE_CLOSE = 0x8
+_WS_OPCODE_PING = 0x9
+_WS_OPCODE_PONG = 0xA
+
+
+def _encode_ws_frame(opcode: int, payload: bytes, *, mask: bool = True) -> bytes:
+    """Encode a single RFC-6455 WS frame. ``mask=True`` is required client→server."""
+    out = bytearray()
+    out.append(0x80 | (opcode & 0x0F))  # FIN=1, no RSV
+    plen = len(payload)
+    mask_bit = 0x80 if mask else 0x00
+    if plen < 126:
+        out.append(mask_bit | plen)
+    elif plen < 65536:
+        out.append(mask_bit | 126)
+        out += plen.to_bytes(2, "big")
+    else:
+        out.append(mask_bit | 127)
+        out += plen.to_bytes(8, "big")
+    if mask:
+        mask_key = os.urandom(4)
+        out += mask_key
+        out += bytes(p ^ mask_key[i % 4] for i, p in enumerate(payload))
+    else:
+        out += payload
+    return bytes(out)
+
+
+def _decode_ws_frames(buf: bytearray) -> List[Tuple[int, bytes, bool]]:
+    """Drain complete WS frames out of ``buf`` (mutated). Returns ``(opcode, payload, fin)``."""
+    frames: List[Tuple[int, bytes, bool]] = []
+    while True:
+        if len(buf) < 2:
+            return frames
+        b0 = buf[0]
+        b1 = buf[1]
+        fin = bool(b0 & 0x80)
+        opcode = b0 & 0x0F
+        masked = bool(b1 & 0x80)
+        plen = b1 & 0x7F
+        offset = 2
+        if plen == 126:
+            if len(buf) < 4:
+                return frames
+            plen = int.from_bytes(bytes(buf[2:4]), "big")
+            offset = 4
+        elif plen == 127:
+            if len(buf) < 10:
+                return frames
+            plen = int.from_bytes(bytes(buf[2:10]), "big")
+            offset = 10
+        mask_key = b""
+        if masked:
+            if len(buf) < offset + 4:
+                return frames
+            mask_key = bytes(buf[offset:offset + 4])
+            offset += 4
+        if len(buf) < offset + plen:
+            return frames
+        payload = bytes(buf[offset:offset + plen])
+        if masked and mask_key:
+            payload = bytes(p ^ mask_key[i % 4] for i, p in enumerate(payload))
+        del buf[:offset + plen]
+        frames.append((opcode, payload, fin))
+
 
 def _encode_envelope(envelope: Dict[str, Any]) -> bytes:
     payload = json.dumps(envelope, separators=(",", ":")).encode("utf-8")
@@ -1301,8 +1381,20 @@ class InkboxTunnel:
         local_ws: aiohttp.ClientWebSocketResponse,
         stream: _Stream,
     ) -> None:
+        """Local WS → bridge stream.
+
+        Each ASGI websocket message becomes a length-prefixed JSON envelope,
+        which we then wrap in an RFC-6455 BINARY frame (masked, FIN=1)
+        before sending as H2 DATA on the bridge stream. Server's hypercorn
+        layer parses WS frames and hands the envelope bytes to the bridge's
+        ASGI handler, which decodes the envelope.
+        """
         driver = self._driver
         assert driver is not None
+
+        async def _send_ws_binary(payload: bytes) -> None:
+            await driver.send_data(stream, _encode_ws_frame(_WS_OPCODE_BINARY, payload))
+
         try:
             async for msg in local_ws:
                 if msg.type == WSMsgType.TEXT:
@@ -1314,11 +1406,19 @@ class InkboxTunnel:
                     }
                 elif msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING):
                     env = {"type": "close", "code": int(local_ws.close_code or 1000)}
-                    await driver.send_data(stream, _encode_envelope(env))
+                    await _send_ws_binary(_encode_envelope(env))
+                    # Send a real WS CLOSE frame so the server's hypercorn
+                    # adapter cleanly tears down its side of the bridge.
+                    close_payload = (1000).to_bytes(2, "big")
+                    with suppress(Exception):
+                        await driver.send_data(
+                            stream,
+                            _encode_ws_frame(_WS_OPCODE_CLOSE, close_payload),
+                        )
                     break
                 else:
                     continue
-                await driver.send_data(stream, _encode_envelope(env))
+                await _send_ws_binary(_encode_envelope(env))
         except asyncio.CancelledError:
             return
         except Exception as exc:
@@ -1330,28 +1430,58 @@ class InkboxTunnel:
         local_ws: aiohttp.ClientWebSocketResponse,
         stream: _Stream,
     ) -> None:
+        """Bridge stream → local WS.
+
+        H2 DATA bytes are accumulated then parsed as RFC-6455 WS frames.
+        BINARY frame payloads are concatenated into an envelope buffer
+        which we drain via :func:`_decode_envelopes`. PING frames get a
+        PONG reply; CLOSE terminates the pump.
+        """
         assert stream.frame_q is not None
-        buf = bytearray()
+        driver = self._driver
+        assert driver is not None
+        wire_buf = bytearray()       # raw H2 DATA bytes, parsed as WS frames
+        env_buf = bytearray()        # WS BINARY payloads, parsed as envelopes
         try:
             while True:
                 chunk = await stream.frame_q.get()
                 if chunk is None:
                     return
-                buf.extend(chunk)
-                for env in _decode_envelopes(buf):
-                    kind = env.get("type")
-                    if kind == "text":
-                        await local_ws.send_str(env.get("data") or "")
-                    elif kind == "binary":
-                        try:
-                            data = base64.b64decode(env.get("data") or "")
-                        except Exception:
-                            continue
-                        await local_ws.send_bytes(data)
-                    elif kind == "close":
+                wire_buf.extend(chunk)
+                for opcode, payload, _fin in _decode_ws_frames(wire_buf):
+                    if opcode == _WS_OPCODE_PING:
+                        # Echo PING payload back as PONG (masked client→server).
                         with suppress(Exception):
-                            await local_ws.close(code=int(env.get("code") or 1000))
+                            await driver.send_data(
+                                stream,
+                                _encode_ws_frame(_WS_OPCODE_PONG, payload),
+                            )
+                        continue
+                    if opcode == _WS_OPCODE_PONG:
+                        continue
+                    if opcode == _WS_OPCODE_CLOSE:
+                        with suppress(Exception):
+                            await local_ws.close(code=1000)
                         return
+                    if opcode in (_WS_OPCODE_TEXT, _WS_OPCODE_BINARY):
+                        # Both carry length-prefixed JSON envelope bytes.
+                        env_buf.extend(payload)
+                        for env in _decode_envelopes(env_buf):
+                            kind = env.get("type")
+                            if kind == "text":
+                                await local_ws.send_str(env.get("data") or "")
+                            elif kind == "binary":
+                                try:
+                                    data = base64.b64decode(env.get("data") or "")
+                                except Exception:
+                                    continue
+                                await local_ws.send_bytes(data)
+                            elif kind == "close":
+                                with suppress(Exception):
+                                    await local_ws.close(
+                                        code=int(env.get("code") or 1000),
+                                    )
+                                return
         except asyncio.CancelledError:
             return
         except Exception as exc:
