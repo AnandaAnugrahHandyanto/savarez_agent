@@ -622,10 +622,6 @@ class DingTalkAdapter(BasePlatformAdapter):
         # Determine message type and build media list
         msg_type, media_urls, media_types = self._extract_media(message, raw_data)
 
-        if not text and not media_urls:
-            logger.debug("[%s] Empty message, skipping", self.name)
-            return
-
         # Post-process: swap resolved file download codes back into media_urls
         pending = getattr(self, "_pending_file_refs", None)
         if pending:
@@ -636,6 +632,24 @@ class DingTalkAdapter(BasePlatformAdapter):
                     resolved = file_ref.get("downloadCode", "")
                     if resolved:
                         media_urls[idx] = resolved
+
+        # DEBUG: log ALL incoming message types and raw_data keys
+        raw_data_keys = list(raw_data.keys()) if isinstance(raw_data, dict) else "NOT_DICT"
+        with open("/tmp/dingtalk_debug.log", "a") as f:
+            f.write(f"DEBUG _on_message ENTRY: msg_type={getattr(message, 'message_type', '')}, raw_data_keys={raw_data_keys}\n")
+        logger.info("[DEBUG] msg_type=%s conversationType=%s raw_data_keys=%s text=%s",
+            getattr(message, "message_type", ""),
+            getattr(message, "conversation_type", ""),
+            raw_data_keys,
+            (str(message.text)[:100] if hasattr(message, "text") else "N/A"))
+        msg_type_str = getattr(message, "message_type", "") or ""
+        if msg_type_str == "file" and raw_data:
+            logger.info("[DEBUG] File message raw_data keys: %s", list(raw_data.keys()) if isinstance(raw_data, dict) else "NOT_DICT")
+            logger.info("[DEBUG] File info: %s", raw_data.get("file", "NO_FILE_KEY"))
+
+        if not text and not media_urls:
+            logger.info("[DEBUG] Empty message, skipping. msg_type=%s media_urls=%s", msg_type_str, media_urls)
+            return
 
         source = self.build_source(
             chat_id=chat_id,
@@ -721,16 +735,25 @@ class DingTalkAdapter(BasePlatformAdapter):
                             parts.append(item.text)
                     content = " ".join(parts).strip()
 
-        # Voice-message ASR fallback: transcription may live in raw_data["text"]["content"]
-        # when the SDK stashes the full voice payload in extensions (no dedicated voice type).
+        # Voice-message ASR fallback: transcription lives in raw_data["content"]
+        # DingTalk sends msgtype="audio" for voice messages, ASR text in raw_data["content"].
         if not content and raw_data and isinstance(raw_data, dict):
             msg_type = raw_data.get("msgtype", "") or getattr(message, "message_type", "") or ""
-            if msg_type == "voice":
-                text_dict = raw_data.get("text")
-                if isinstance(text_dict, dict):
-                    content = text_dict.get("content", "").strip()
-                elif isinstance(text_dict, str):
-                    content = text_dict.strip()
+            if msg_type == "audio":
+                # Primary: ASR text directly in raw_data["content"] (may be str or nested dict)
+                raw_content = raw_data.get("content", "")
+                if isinstance(raw_content, str):
+                    content = raw_content.strip()
+                elif isinstance(raw_content, dict):
+                    # Nested dict: raw_data["content"]["content"]
+                    content = raw_content.get("content", "").strip() if isinstance(raw_content.get("content"), str) else ""
+                if not content:
+                    # Fallback: text dict with download code (old DingTalk format)
+                    text_dict = raw_data.get("text")
+                    if isinstance(text_dict, dict):
+                        content = text_dict.get("content", "").strip()
+                    elif isinstance(text_dict, str):
+                        content = text_dict.strip()
 
         # longText (drag-and-drop file): content is embedded directly in raw_data["content"]
         # msgtype is "longText", fileName in raw_data["fileName"], actual content in raw_data["content"]["content"]
@@ -799,7 +822,16 @@ class DingTalkAdapter(BasePlatformAdapter):
                                 if msg_type == MessageType.TEXT:
                                     msg_type = MessageType.DOCUMENT
 
+        # Handle file attachments from raw_data (DingTalk SDK doesn't parse file type)
         msg_type_str = getattr(message, "message_type", "") or ""
+        if msg_type_str == "file" and raw_data:
+            file_info = raw_data.get("file", {})
+            dl_code = file_info.get("downloadCode") or ""
+            if dl_code:
+                media_urls.append(dl_code)
+                media_types.append("application/octet-stream")
+                msg_type = MessageType.DOCUMENT
+
         if msg_type_str == "picture" and not media_urls:
             msg_type = MessageType.PHOTO
         elif msg_type_str == "richText":
@@ -808,16 +840,6 @@ class DingTalkAdapter(BasePlatformAdapter):
                 if any("image" in t for t in media_types)
                 else MessageType.TEXT
             )
-
-        # Handle file attachments from raw_data (DingTalk SDK doesn't parse file type)
-        if msg_type_str == "file" and raw_data:
-            # Note: DingTalk embeds file info in raw_data["content"], not raw_data["file"]
-            content_info = raw_data.get("content", {})
-            dl_code = content_info.get("downloadCode") or ""
-            if dl_code:
-                media_urls.append(dl_code)
-                media_types.append("application/octet-stream")
-                msg_type = MessageType.DOCUMENT
 
         return msg_type, media_urls, media_types
 
