@@ -1483,7 +1483,7 @@ def estimate_request_tokens_rough(
     return (total_chars + 3) // 4
 
 
-def model_requires_max_completion_tokens(model: str) -> bool:
+def model_requires_max_completion_tokens(model: str | None) -> bool:
     """Return True when a model requires max_completion_tokens instead of max_tokens.
 
     OpenAI's newer model families (gpt-4o, gpt-4.1, gpt-5, o1/o3/o4) only accept
