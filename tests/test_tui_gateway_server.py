@@ -12,7 +12,7 @@ from unittest.mock import patch
 if "pytest" not in sys.modules:
     raise RuntimeError("test_tui_gateway_server must only be loaded by pytest")
 
-import pytest
+import pytest  # ty: ignore[unresolved-import]
 
 from tui_gateway import server
 
