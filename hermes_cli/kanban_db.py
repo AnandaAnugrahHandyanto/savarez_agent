@@ -959,22 +959,62 @@ def init_db(
     return path
 
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    """Return column names for known Kanban tables across row factories."""
+    if table not in {"tasks", "task_events"}:
+        raise ValueError(f"unsupported Kanban table for schema inspection: {table}")
+    names: set[str] = set()
+    for row in conn.execute("PRAGMA table_info(" + table + ")"):
+        try:
+            names.add(row["name"])
+        except (TypeError, IndexError):
+            names.add(row[1])
+    return names
+
+
+def _ensure_column(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    ddl: str,
+) -> bool:
+    """Add ``column`` if missing, tolerating concurrent SQLite migration races.
+
+    SQLite does not support ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS``.
+    In multi-process Hermes runs, another process can add the same column
+    between our ``PRAGMA table_info`` check and ``ALTER TABLE`` execution.
+    Treat that duplicate-column race as success only after verifying the
+    column now exists.
+
+    Returns ``True`` when this call added the column, otherwise ``False``.
+    """
+    existing = {name.lower() for name in _table_columns(conn, table)}
+    if column.lower() in existing:
+        return False
+    try:
+        conn.execute(ddl)
+        return True
+    except sqlite3.OperationalError as exc:
+        msg = str(exc).lower()
+        if "duplicate column name" in msg and column.lower() in msg:
+            if column.lower() in {name.lower() for name in _table_columns(conn, table)}:
+                return False
+        raise
+
+
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns that were introduced after v1 release to legacy DBs.
 
     Called by ``init_db`` so opening an old DB is always safe.
     """
-    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
-    if "tenant" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN tenant TEXT")
-    if "result" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN result TEXT")
-    if "idempotency_key" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN idempotency_key TEXT")
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency "
-            "ON tasks(idempotency_key)"
-        )
+    cols = _table_columns(conn, "tasks")
+    _ensure_column(conn, "tasks", "tenant", "ALTER TABLE tasks ADD COLUMN tenant TEXT")
+    _ensure_column(conn, "tasks", "result", "ALTER TABLE tasks ADD COLUMN result TEXT")
+    _ensure_column(conn, "tasks", "idempotency_key", "ALTER TABLE tasks ADD COLUMN idempotency_key TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency "
+        "ON tasks(idempotency_key)"
+    )
     # Legacy column migration: ``spawn_failures`` → ``consecutive_failures``
     # and ``last_spawn_error`` → ``last_failure_error``.
     #
@@ -988,60 +1028,40 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # ADD-first-then-copy is tolerant of both shapes and preserves
     # historical counter values when the legacy columns do exist.
     #
-    # NOTE: ``cols`` reflects the schema at entry to this function and is
-    # not refreshed between ALTER TABLE calls.  Every guard below checks
-    # the *original* snapshot; this is intentional and safe as long as
-    # no step depends on a column added by a previous step in the same call.
-    if "consecutive_failures" not in cols:
-        conn.execute(
-            "ALTER TABLE tasks ADD COLUMN consecutive_failures "
-            "INTEGER NOT NULL DEFAULT 0"
-        )
+    # ``cols`` reflects the legacy schema at entry to this function so we can
+    # decide whether to copy legacy values.  Actual ADD COLUMN operations use
+    # ``_ensure_column`` to re-check just-in-time and tolerate concurrent
+    # migrations from another Hermes process.
+    if _ensure_column(conn, "tasks", "consecutive_failures", "ALTER TABLE tasks ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0"):
         if "spawn_failures" in cols:
             conn.execute(
                 "UPDATE tasks SET consecutive_failures = COALESCE(spawn_failures, 0)"
             )
-    if "worker_pid" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN worker_pid INTEGER")
-    if "last_failure_error" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN last_failure_error TEXT")
+    _ensure_column(conn, "tasks", "worker_pid", "ALTER TABLE tasks ADD COLUMN worker_pid INTEGER")
+    if _ensure_column(conn, "tasks", "last_failure_error", "ALTER TABLE tasks ADD COLUMN last_failure_error TEXT"):
         if "last_spawn_error" in cols:
             conn.execute(
                 "UPDATE tasks SET last_failure_error = last_spawn_error"
             )
-    if "max_runtime_seconds" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN max_runtime_seconds INTEGER")
-    if "last_heartbeat_at" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN last_heartbeat_at INTEGER")
-    if "current_run_id" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN current_run_id INTEGER")
-    if "workflow_template_id" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN workflow_template_id TEXT")
-    if "current_step_key" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN current_step_key TEXT")
-    if "skills" not in cols:
-        # JSON array of skill names the dispatcher force-loads into the
-        # worker (additive to the built-in `kanban-worker`). NULL is fine
-        # for existing rows.
-        conn.execute("ALTER TABLE tasks ADD COLUMN skills TEXT")
-
-    if "max_retries" not in cols:
-        # Per-task override for the consecutive-failure circuit breaker.
-        # NULL = fall through to the dispatcher-level ``kanban.failure_limit``
-        # config, then ``DEFAULT_FAILURE_LIMIT``. Existing rows get NULL,
-        # which is the correct default (they keep the global behaviour
-        # they were getting before the column existed).
-        conn.execute("ALTER TABLE tasks ADD COLUMN max_retries INTEGER")
+    _ensure_column(conn, "tasks", "max_runtime_seconds", "ALTER TABLE tasks ADD COLUMN max_runtime_seconds INTEGER")
+    _ensure_column(conn, "tasks", "last_heartbeat_at", "ALTER TABLE tasks ADD COLUMN last_heartbeat_at INTEGER")
+    _ensure_column(conn, "tasks", "current_run_id", "ALTER TABLE tasks ADD COLUMN current_run_id INTEGER")
+    _ensure_column(conn, "tasks", "workflow_template_id", "ALTER TABLE tasks ADD COLUMN workflow_template_id TEXT")
+    _ensure_column(conn, "tasks", "current_step_key", "ALTER TABLE tasks ADD COLUMN current_step_key TEXT")
+    # JSON array of skill names the dispatcher force-loads into the worker
+    # (additive to the built-in `kanban-worker`). NULL is fine for existing rows.
+    _ensure_column(conn, "tasks", "skills", "ALTER TABLE tasks ADD COLUMN skills TEXT")
+    # Per-task override for the consecutive-failure circuit breaker. NULL =
+    # fall through to dispatcher/global defaults, preserving existing behavior.
+    _ensure_column(conn, "tasks", "max_retries", "ALTER TABLE tasks ADD COLUMN max_retries INTEGER")
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
-    ev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_events)")}
-    if "run_id" not in ev_cols:
-        conn.execute("ALTER TABLE task_events ADD COLUMN run_id INTEGER")
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_events_run "
-            "ON task_events(run_id, id)"
-        )
+    _ensure_column(conn, "task_events", "run_id", "ALTER TABLE task_events ADD COLUMN run_id INTEGER")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_events_run "
+        "ON task_events(run_id, id)"
+    )
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.

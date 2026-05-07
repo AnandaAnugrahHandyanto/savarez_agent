@@ -2840,6 +2840,46 @@ def test_legacy_db_without_skills_column_migrates(tmp_path):
     conn.close()
 
 
+def test_ensure_column_tolerates_duplicate_column_race(monkeypatch, tmp_path):
+    """Concurrent migrators may add a column after our PRAGMA snapshot.
+
+    SQLite has no ADD COLUMN IF NOT EXISTS. The migration helper should treat
+    duplicate-column as success only after a fresh schema check confirms that
+    the column now exists.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "race.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY)")
+
+    calls = {"columns": 0}
+
+    def fake_columns(_conn, table):
+        assert table == "tasks"
+        calls["columns"] += 1
+        return set() if calls["columns"] == 1 else {"max_retries"}
+
+    class RaceConn:
+        def execute(self, sql):
+            assert sql == "ALTER TABLE tasks ADD COLUMN max_retries INTEGER"
+            raise sqlite3.OperationalError("duplicate column name: max_retries")
+
+    monkeypatch.setattr(kb, "_table_columns", fake_columns)
+
+    added = kb._ensure_column(
+        RaceConn(),
+        "tasks",
+        "max_retries",
+        "ALTER TABLE tasks ADD COLUMN max_retries INTEGER",
+    )
+
+    assert added is False
+    assert calls["columns"] == 2
+    conn.close()
+
+
 def test_legacy_spawn_failure_columns_are_copied_not_renamed(tmp_path):
     """Legacy failure counters survive migration without fragile column renames."""
     import sqlite3

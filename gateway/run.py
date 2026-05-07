@@ -3876,10 +3876,6 @@ class GatewayRunner:
             conn = None
             try:
                 conn = _kb.connect(board=slug)
-                try:
-                    _kb.init_db(board=slug)  # idempotent, handles first-run
-                except Exception:
-                    pass
                 return _kb.dispatch_once(
                     conn,
                     board=slug,
