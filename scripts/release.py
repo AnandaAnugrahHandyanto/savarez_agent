@@ -901,6 +901,7 @@ AUTHOR_MAP = {
     "promptsiren@gmail.com": "firefly",  # PR #18123 salvage of #16660 (ContextVars)
     "wtyopenclaw@gmail.com": "WuTianyi123",  # PR #20275 salvage of #13723 (feishu markdown)
     # pander: empty email, salvaged via PR #19665 from #16126 by @ms-alan
+    "info@bourillon.net": "Alterpolo",  # PR #21453 (Windows compat: pty_bridge + __main__)
 }
 
 
