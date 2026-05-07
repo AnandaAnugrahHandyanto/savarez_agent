@@ -882,6 +882,15 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+def _memory_provider_tools_allowed(enabled_toolsets=None, disabled_toolsets=None) -> bool:
+    """Return whether external memory provider tools may be exposed."""
+    if disabled_toolsets and "memory" in disabled_toolsets:
+        return False
+    if enabled_toolsets is None:
+        return True
+    return "memory" in enabled_toolsets
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -1823,7 +1832,11 @@ class AIAgent:
         # through get_tool_definitions()).  Duplicate function names cause
         # 400 errors on providers that enforce unique names (e.g. Xiaomi
         # MiMo via Nous Portal).
-        if self._memory_manager and self.tools is not None:
+        if (
+            self._memory_manager
+            and self.tools is not None
+            and _memory_provider_tools_allowed(self.enabled_toolsets, self.disabled_toolsets)
+        ):
             _existing_tool_names = {
                 t.get("function", {}).get("name")
                 for t in self.tools

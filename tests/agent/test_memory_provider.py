@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from agent.memory_provider import MemoryProvider
 from agent.memory_manager import MemoryManager
+from run_agent import _memory_provider_tools_allowed
 
 # ---------------------------------------------------------------------------
 # Concrete test provider
@@ -978,6 +979,18 @@ class TestOnMemoryWriteBridge:
         assert tool_names.count("ext_remember") == 1
         assert tool_names.count("web_search") == 1
         assert len(existing_tools) == 3  # web_search + ext_recall + ext_remember
+
+    def test_memory_provider_tools_respect_enabled_toolsets(self):
+        """Provider tools should not bypass platform toolset filtering."""
+        assert _memory_provider_tools_allowed(None, None) is True
+        assert _memory_provider_tools_allowed(["memory"], None) is True
+        assert _memory_provider_tools_allowed([], None) is False
+        assert _memory_provider_tools_allowed(["terminal", "file"], None) is False
+
+    def test_memory_provider_tools_respect_disabled_toolsets(self):
+        """An explicit disabled memory toolset must win over default injection."""
+        assert _memory_provider_tools_allowed(None, ["memory"]) is False
+        assert _memory_provider_tools_allowed(["memory"], ["memory"]) is False
 
     def test_on_memory_write_tolerates_provider_failure(self):
         """If a provider's on_memory_write raises, others still get notified."""

@@ -60,3 +60,40 @@ def test_tool_search_sorts_missing_raw_score_after_negative_scores():
     ]
     assert [entry["score"] for entry in result["results"]] == [0.1, 0.0, -0.25]
     assert result["total"] == 3
+
+
+def test_handle_tool_call_reconnects_after_startup_health_failure(monkeypatch):
+    instances = []
+
+    class FakeVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            self.endpoint = endpoint
+            self.posts = []
+            self.index = len(instances)
+            instances.append(self)
+
+        def health(self):
+            return self.index > 0
+
+        def post(self, path, payload=None, **kwargs):
+            self.posts.append((path, payload or {}))
+            return {}
+
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://openviking.local")
+    monkeypatch.setattr("plugins.memory.openviking._VikingClient", FakeVikingClient)
+
+    provider = OpenVikingMemoryProvider()
+    provider.initialize("session-1")
+
+    assert provider._client is None
+
+    result = json.loads(provider.handle_tool_call("viking_remember", {"content": "stable fact"}))
+
+    assert result["status"] == "stored"
+    assert len(instances) == 2
+    assert instances[1].posts == [
+        (
+            "/api/v1/sessions/session-1/messages",
+            {"role": "user", "parts": [{"type": "text", "text": "[Remember] stable fact"}]},
+        )
+    ]
