@@ -85,6 +85,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant`, `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
 | `deliver_extra` | No | Additional delivery config — keys depend on `deliver` type (e.g. `repo`, `pr_number`, `chat_id`). Values support the same `{dot.notation}` templates as `prompt`. |
 | `deliver_only` | No | If `true`, skip the agent entirely — the rendered `prompt` template becomes the literal message that gets delivered. Zero LLM cost, sub-second delivery. See [Direct Delivery Mode](#direct-delivery-mode) for use cases. Requires `deliver` to be a real target (not `log`). |
+| `deterministic_handler` | No | Operator-controlled Python callable for reviewed intake routes that must preserve exact raw request bytes. Bypasses payload parsing, prompt rendering, delivery, and agent execution. Static config only; dynamic `hermes webhook subscribe` routes cannot install handlers. See [Deterministic Handler Mode](#deterministic-handler-mode). |
 
 ### Full example
 
@@ -327,6 +328,68 @@ hermes webhook subscribe antenna-matches \
 
 ---
 
+## Deterministic Handler Mode {#deterministic-handler-mode}
+
+Most webhook routes either start an agent run or use `deliver_only` for a plain notification. Some integrations need a stricter boundary: the gateway should authenticate and rate-limit the request, then call reviewed Python code with the **exact raw request bytes** and return that code's HTTP response without parsing the payload or launching an agent.
+
+Use `deterministic_handler` for those operator-reviewed routes.
+
+```yaml
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      port: 8644
+      routes:
+        github-review-intake:
+          secret: "github-webhook-secret"
+          deterministic_handler:
+            import: "my_package.github_review:handle_webhook"
+            pass_secret: true  # default; set false if the handler should not receive the route secret
+            config:
+              mode: "observe-only"
+```
+
+The callable is invoked as:
+
+```python
+handle_webhook(
+    method="POST",
+    path="/webhooks/github-review-intake",
+    route_name="github-review-intake",
+    headers={...},
+    raw_body=b"exact bytes received from sender",
+    config={...},
+    webhook_secret="route secret, unless INSECURE_NO_AUTH or pass_secret=false",
+    now="2026-05-07T07:45:00Z",
+)
+```
+
+It may be synchronous or async and should return:
+
+```python
+{"status_code": 202, "body": {"status": "accepted"}}
+```
+
+Supported handler references:
+
+- `deterministic_handler: "package.module:function"`
+- `deterministic_handler: {import: "package.module:function", config: {...}}`
+- `deterministic_handler: {module: "package.module", callable: "function", config: {...}}`
+- `deterministic_handler: {path: "/absolute/path/to/handler.py", callable: "function", config: {...}}`
+
+Security boundaries:
+
+- static operator config only; routes created by `hermes webhook subscribe` cannot install deterministic handlers;
+- `deliver_only` cannot be combined with `deterministic_handler`;
+- gateway HMAC validation, body-size limits, and route rate limiting still happen before the callable;
+- prompt rendering, JSON/form parsing, cross-platform delivery, and `handle_message()` are bypassed;
+- if the callable raises, the HTTP response is a generic `502` without the exception text.
+
+Deterministic handlers intentionally return before the normal delivery pipeline. That means they also bypass the delivery-id idempotency cache used by agent/delivery routes; side-effectful handlers should use a sender delivery ID such as `X-GitHub-Delivery` to perform their own deduplication.
+
+---
+
 ## Dynamic Subscriptions (CLI) {#dynamic-subscriptions}
 
 In addition to static routes in `config.yaml`, you can create webhook subscriptions dynamically using the `hermes webhook` CLI command. This is especially useful when the agent itself needs to set up event-driven triggers.
@@ -368,7 +431,7 @@ hermes webhook test github-issues --payload '{"issue": {"number": 42, "title": "
 - Subscriptions are stored in `~/.hermes/webhook_subscriptions.json`
 - The webhook adapter hot-reloads this file on each incoming request (mtime-gated, negligible overhead)
 - Static routes from `config.yaml` always take precedence over dynamic ones with the same name
-- Dynamic subscriptions use the same route format and capabilities as static routes (events, prompt templates, skills, delivery)
+- Dynamic subscriptions use the same prompt, skills, and delivery route format as static routes, but cannot install `deterministic_handler` callables
 - No gateway restart required — subscribe and it's immediately live
 
 ### Agent-driven subscriptions

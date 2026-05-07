@@ -17,6 +17,11 @@ Each route defines:
     message that gets delivered.  Use for external push notifications
     (Supabase, monitoring alerts, inter-agent pings) where zero LLM cost
     and sub-second delivery matter more than agent reasoning.
+  - deterministic_handler: operator-configured Python callable that receives
+    exact raw request bytes and returns an HTTP response without invoking an
+    agent, rendering a prompt, or delivering a chat message.  This is for
+    reviewed, deterministic webhook intake paths that must preserve sender
+    bytes for their own validation.
 
 Security:
   - HMAC secret is required per route (validated at startup)
@@ -27,13 +32,18 @@ Security:
 """
 
 import asyncio
+from datetime import datetime, timezone
 import hashlib
 import hmac
+import importlib
+import importlib.util
+import inspect
 import json
 import logging
 import re
 import subprocess
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
@@ -138,6 +148,8 @@ class WebhookAdapter(BasePlatformAdapter):
                         f"deliver is '{deliver}'. Direct delivery requires a "
                         f"real target (telegram, discord, slack, github_comment, etc.)."
                     )
+
+            self._validate_deterministic_handler_route(name, route)
 
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
@@ -273,11 +285,24 @@ class WebhookAdapter(BasePlatformAdapter):
             data = json.loads(subs_path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 return
-            # Merge: static routes take precedence over dynamic ones
-            self._dynamic_routes = {
-                k: v for k, v in data.items()
-                if k not in self._static_routes
-            }
+            # Merge: static routes take precedence over dynamic ones.
+            # Agent-created dynamic subscriptions are intentionally prompt or
+            # deliver-only routes.  They must not install arbitrary Python
+            # deterministic handlers, which are operator-controlled runtime
+            # bindings and belong in static config.
+            dynamic_routes: Dict[str, dict] = {}
+            for key, value in data.items():
+                if key in self._static_routes:
+                    continue
+                if isinstance(value, dict) and value.get("deterministic_handler"):
+                    logger.warning(
+                        "[webhook] Ignoring dynamic route '%s' with deterministic_handler; "
+                        "deterministic handlers require static operator config",
+                        key,
+                    )
+                    continue
+                dynamic_routes[key] = value
+            self._dynamic_routes = dynamic_routes
             self._routes = {**self._dynamic_routes, **self._static_routes}
             self._dynamic_routes_mtime = mtime
             logger.info(
@@ -315,6 +340,10 @@ class WebhookAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[webhook] Failed to read body: %s", e)
             return web.json_response({"error": "Bad request"}, status=400)
+        if len(raw_body) > self._max_body_bytes:
+            return web.json_response(
+                {"error": "Payload too large"}, status=413
+            )
 
         # Validate HMAC signature FIRST (skip for INSECURE_NO_AUTH testing mode)
         secret = route_config.get("secret", self._global_secret)
@@ -336,6 +365,20 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"error": "Rate limit exceeded"}, status=429
             )
         window.append(now)
+
+        # ── Deterministic handler mode ───────────────────────────
+        # Bypass prompt rendering, payload parsing, direct delivery, and agent
+        # execution.  The reviewed handler receives the exact sender bytes so
+        # it can perform its own deterministic validation and write bounded
+        # intake artifacts.
+        if route_config.get("deterministic_handler"):
+            return await self._run_deterministic_handler(
+                request=request,
+                route_name=route_name,
+                route_config=route_config,
+                raw_body=raw_body,
+                route_secret=secret,
+            )
 
         # Parse payload
         try:
@@ -547,6 +590,157 @@ class WebhookAdapter(BasePlatformAdapter):
             },
             status=202,
         )
+
+    # ------------------------------------------------------------------
+    # Deterministic handlers
+    # ------------------------------------------------------------------
+
+    def _validate_deterministic_handler_route(self, name: str, route: dict) -> None:
+        handler_config = route.get("deterministic_handler")
+        if not handler_config:
+            return
+        if route.get("deliver_only"):
+            raise ValueError(
+                f"[webhook] Route '{name}' has deterministic_handler and deliver_only=true. "
+                "deterministic_handler routes bypass prompt rendering, delivery, and agent execution; "
+                "do not combine them with deliver_only."
+            )
+        if isinstance(handler_config, str):
+            if ":" not in handler_config:
+                raise ValueError(
+                    f"[webhook] Route '{name}' deterministic_handler string must be 'module:function'."
+                )
+            return
+        if not isinstance(handler_config, dict):
+            raise ValueError(
+                f"[webhook] Route '{name}' deterministic_handler must be a dict or 'module:function' string."
+            )
+        import_spec = handler_config.get("import")
+        module_name = handler_config.get("module")
+        callable_name = handler_config.get("callable")
+        file_path = handler_config.get("path")
+        if import_spec:
+            if not isinstance(import_spec, str) or ":" not in import_spec:
+                raise ValueError(
+                    f"[webhook] Route '{name}' deterministic_handler.import must be 'module:function'."
+                )
+            return
+        if module_name and callable_name:
+            return
+        if file_path and callable_name:
+            return
+        raise ValueError(
+            f"[webhook] Route '{name}' deterministic_handler requires import='module:function', "
+            "or module+callable, or path+callable."
+        )
+
+    def _load_deterministic_handler(self, handler_config: Any):
+        if isinstance(handler_config, str):
+            module_name, callable_name = handler_config.split(":", 1)
+            module = importlib.import_module(module_name)
+            return getattr(module, callable_name)
+
+        if not isinstance(handler_config, dict):
+            raise ValueError("deterministic_handler must be a dict or string")
+
+        import_spec = handler_config.get("import")
+        if import_spec:
+            module_name, callable_name = str(import_spec).split(":", 1)
+            module = importlib.import_module(module_name)
+            return getattr(module, callable_name)
+
+        callable_name = handler_config.get("callable")
+        module_name = handler_config.get("module")
+        if module_name and callable_name:
+            module = importlib.import_module(str(module_name))
+            return getattr(module, str(callable_name))
+
+        file_path = handler_config.get("path")
+        if file_path and callable_name:
+            path = Path(str(file_path)).expanduser()
+            spec = importlib.util.spec_from_file_location(
+                f"_hermes_webhook_deterministic_handler_{abs(hash(str(path)))}",
+                path,
+            )
+            if spec is None or spec.loader is None:
+                raise ImportError(f"Unable to load deterministic handler from {path}")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return getattr(module, str(callable_name))
+
+        raise ValueError("invalid deterministic_handler config")
+
+    async def _run_deterministic_handler(
+        self,
+        *,
+        request: "web.Request",
+        route_name: str,
+        route_config: dict,
+        raw_body: bytes,
+        route_secret: str,
+    ) -> "web.Response":
+        handler_config = route_config.get("deterministic_handler")
+        try:
+            handler = self._load_deterministic_handler(handler_config)
+            pass_secret = True
+            handler_extra_config: Dict[str, Any] = {}
+            if isinstance(handler_config, dict):
+                pass_secret = bool(handler_config.get("pass_secret", True))
+                maybe_config = handler_config.get("config", {})
+                if isinstance(maybe_config, dict):
+                    handler_extra_config = dict(maybe_config)
+            webhook_secret = None
+            if pass_secret and route_secret != _INSECURE_NO_AUTH:
+                webhook_secret = route_secret
+            result = handler(
+                method=request.method,
+                path=request.path,
+                route_name=route_name,
+                headers=dict(request.headers),
+                raw_body=raw_body,
+                config=handler_extra_config,
+                webhook_secret=webhook_secret,
+                now=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
+            if inspect.isawaitable(result):
+                result = await result
+            return self._deterministic_handler_response(result)
+        except Exception as e:
+            logger.error(
+                "[webhook] deterministic handler failed route=%s error_type=%s",
+                route_name,
+                type(e).__name__,
+            )
+            return web.json_response(
+                {"status": "error", "error": "Deterministic handler failed"},
+                status=502,
+            )
+
+    def _deterministic_handler_response(self, result: Any) -> "web.Response":
+        if isinstance(result, web.Response):
+            return result
+        if not isinstance(result, dict):
+            return web.json_response(
+                {"status": "error", "error": "Invalid deterministic handler response"},
+                status=502,
+            )
+        raw_status_code = result.get("status_code", 200)
+        try:
+            status_code = int(raw_status_code)
+        except (TypeError, ValueError):
+            return web.json_response(
+                {"status": "error", "error": "Invalid deterministic handler response"},
+                status=502,
+            )
+        body = result.get("body", {})
+        headers = result.get("headers")
+        if not isinstance(headers, dict):
+            headers = None
+        if isinstance(body, (dict, list)):
+            return web.json_response(body, status=status_code, headers=headers)
+        if body is None:
+            body = ""
+        return web.Response(text=str(body), status=status_code, headers=headers)
 
     # ------------------------------------------------------------------
     # Signature validation
