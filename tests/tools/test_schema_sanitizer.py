@@ -298,6 +298,143 @@ def test_strip_empty_tools_returns_zero():
     assert stripped == 0
 
 
+# =============================================================================
+# Tuple-form items: [a, b]  →  prefixItems: [a, b]   (xAI / Grok strict mode)
+# =============================================================================
+#
+# JSON Schema draft-07 allowed array tuple validation via ``items: [a, b]``.
+# JSON Schema 2020-12 retired this form and requires ``prefixItems: [a, b]``.
+# xAI/Grok's tool-schema validator enforces 2020-12 strictly and HTTP-400s on
+# the array form with: "'items' must be a schema (object or boolean), not an
+# array. For tuple validation use 'prefixItems' instead."
+#
+# Camoufox's MCP server (and other older MCP/Pydantic-derived schemas) emit
+# the draft-07 tuple form for fixed-shape arrays like [width, height]. The
+# sanitizer normalises to the 2020-12 form so the schema is portable across
+# all providers (OpenAI, Anthropic, Google, xAI all accept prefixItems).
+
+
+def test_tuple_items_array_converted_to_prefix_items():
+    """The exact camoufox/xAI repro: window: array[number, number]."""
+    tools = [_tool("mcp_camoufox_browse", {
+        "type": "object",
+        "properties": {
+            "window": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": [
+                    {"type": "number", "minimum": 320, "maximum": 3840},
+                    {"type": "number", "minimum": 240, "maximum": 2160},
+                ],
+                "description": "[width, height]",
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    window = out[0]["function"]["parameters"]["properties"]["window"]
+    # The array form of items is gone, replaced by prefixItems.
+    assert "prefixItems" in window
+    assert window["prefixItems"] == [
+        {"type": "number", "minimum": 320, "maximum": 3840},
+        {"type": "number", "minimum": 240, "maximum": 2160},
+    ]
+    # ``items`` must NOT remain as an array (xAI rejects it).
+    items = window.get("items")
+    assert not isinstance(items, list), (
+        f"items must not stay as array after sanitization, got {items!r}"
+    )
+    # Length constraints + description are preserved.
+    assert window["minItems"] == 2
+    assert window["maxItems"] == 2
+    assert window["description"] == "[width, height]"
+
+
+def test_tuple_items_homogeneous_left_alone_when_already_object():
+    """Single-schema items (the homogeneous form) is valid in both drafts and must
+    not be touched."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    tags = out[0]["function"]["parameters"]["properties"]["tags"]
+    assert tags["items"] == {"type": "string"}
+    assert "prefixItems" not in tags
+
+
+def test_tuple_items_nested_inside_anyof():
+    """Tuple-form inside anyOf variants is also converted."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "size": {
+                "anyOf": [
+                    {
+                        "type": "array",
+                        "items": [
+                            {"type": "integer"},
+                            {"type": "integer"},
+                        ],
+                    },
+                    {"type": "string"},
+                ],
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    variants = out[0]["function"]["parameters"]["properties"]["size"]["anyOf"]
+    assert variants[0].get("prefixItems") == [
+        {"type": "integer"},
+        {"type": "integer"},
+    ]
+    assert not isinstance(variants[0].get("items"), list)
+    assert variants[1] == {"type": "string"}
+
+
+def test_tuple_items_inner_schemas_still_sanitized():
+    """The per-position schemas inside the tuple are themselves sanitized
+    (e.g. type: ['string', 'null'] → type: 'string')."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "pair": {
+                "type": "array",
+                "items": [
+                    {"type": ["string", "null"]},
+                    {"type": "integer"},
+                ],
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prefix = out[0]["function"]["parameters"]["properties"]["pair"]["prefixItems"]
+    assert prefix[0]["type"] == "string"
+    assert prefix[0].get("nullable") is True
+    assert prefix[1] == {"type": "integer"}
+
+
+def test_tuple_items_idempotent():
+    """Running sanitization twice produces the same result."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "window": {
+                "type": "array",
+                "items": [{"type": "number"}, {"type": "number"}],
+            },
+        },
+    }
+    once = sanitize_tool_schemas([_tool("t", copy.deepcopy(schema))])
+    twice = sanitize_tool_schemas(copy.deepcopy(once))
+    assert once == twice
+
+
 def test_strip_none_returns_zero():
     tools, stripped = strip_pattern_and_format(None)
     assert tools is None

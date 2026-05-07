@@ -213,6 +213,32 @@ def _sanitize_node(node: Any, path: str) -> Any:
                 sub_k: _sanitize_node(sub_v, f"{path}.{key}.{sub_k}")
                 for sub_k, sub_v in value.items()
             }
+        elif key == "items" and isinstance(value, list):
+            # Draft-07 tuple form ``items: [a, b]`` is rejected by xAI/Grok's
+            # 2020-12 strict validator with: "'items' must be a schema (object
+            # or boolean), not an array. For tuple validation use 'prefixItems'
+            # instead." Convert to the 2020-12 form, which is also accepted by
+            # OpenAI / Anthropic / Google / DeepSeek. The per-position schemas
+            # are themselves recursively sanitized. Length constraints
+            # (minItems / maxItems) on the parent are left untouched and
+            # continue to enforce the tuple's fixed shape.
+            #
+            # Skip the rewrite if ``prefixItems`` was already provided
+            # alongside the array-form ``items`` — the producer is mixing
+            # drafts and we'd rather drop the redundant tuple-items than
+            # clobber a hand-authored ``prefixItems``.
+            if "prefixItems" in node:
+                logger.debug(
+                    "schema_sanitizer[%s]: dropping redundant tuple-form items "
+                    "(prefixItems already present)",
+                    path,
+                )
+                continue
+            out["prefixItems"] = [
+                _sanitize_node(item, f"{path}.prefixItems[{i}]")
+                for i, item in enumerate(value)
+            ]
+            continue
         elif key in {"items", "additionalProperties"}:
             if isinstance(value, bool):
                 # Keep bool ``additionalProperties`` as-is — it's a valid form
