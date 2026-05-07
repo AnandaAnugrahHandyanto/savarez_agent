@@ -1417,6 +1417,7 @@ def _cprint(text: str):
         current_loop = None
     except Exception:
         current_loop = None
+
     # Same thread as the app's loop → safe to print directly.
     if current_loop is loop and loop.is_running():
         _pt_print(_PT_ANSI(text))
@@ -1429,7 +1430,7 @@ def _cprint(text: str):
     def _schedule():
         try:
             run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
-        except Exception:
+        except Exception as _sch_err:
             try:
                 _pt_print(_PT_ANSI(text))
             except Exception:
@@ -8456,6 +8457,30 @@ class HermesCLI:
                     if is_error:
                         line = f"{line} [error]"
                     _cprint(f"  {line}")
+                except Exception:
+                    pass
+                # ── Inline image rendering for visual tool results ──
+                # When a tool like browser_vision or image_generate completes,
+                # render the screenshot/image inline if the terminal supports it.
+                try:
+                    tool_result = kwargs.get("result", "")
+                    if tool_result and function_name:
+                        from agent.inline_images import (
+                            extract_image_path_from_tool_result,
+                            try_render_inline,
+                        )
+                        img_path = extract_image_path_from_tool_result(
+                            function_name, tool_result
+                        )
+                        if img_path:
+                            inline_cfg = CLI_CONFIG.get("display", {}).get(
+                                "inline_images", "auto"
+                            )
+                            rendered = try_render_inline(
+                                img_path,
+                                config_value=inline_cfg,
+                                indent="  ┊ ",
+                            )
                 except Exception:
                     pass
                 # First-touch onboarding: on the first tool in this process
