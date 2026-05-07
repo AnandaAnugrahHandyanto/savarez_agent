@@ -226,6 +226,35 @@ def test_do_review_prints_diff_for_pending_change(monkeypatch):
     assert "content: new content" in output
 
 
+def test_do_review_prints_diff_file_when_available(tmp_path, monkeypatch):
+    from hermes_cli.skills_hub import do_review
+
+    diff_path = tmp_path / "diff.md"
+    diff_path.write_text("--- before\n+++ after\n@@\n-old\n+new\n")
+
+    _install_fake_skill_evolution(
+        monkeypatch,
+        list_pending_changes=lambda: [
+            {
+                "id": "change-1",
+                "action": "patch",
+                "name": "writer",
+                "diff_path": str(diff_path),
+                "payload": {"old_string": "old", "new_string": "new"},
+            }
+        ],
+    )
+
+    console = _capture_console()
+    do_review(diff_id="change-1", console=console)
+    output = console.export_text()
+
+    assert "--- before" in output
+    assert "+++ after" in output
+    assert "-old" in output
+    assert "+new" in output
+
+
 def test_do_review_rejects_pending_change(monkeypatch):
     from hermes_cli.skills_hub import do_review
 

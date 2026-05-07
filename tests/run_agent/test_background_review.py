@@ -190,3 +190,70 @@ def test_background_review_summary_is_attributed_to_self_improvement_loop(monkey
     assert captured_bg_callback[0].startswith("💾 Self-improvement review:"), (
         captured_bg_callback[0]
     )
+
+
+def test_background_review_pending_summary_mentions_skills_review_for_gateway(monkeypatch):
+    """Non-interactive users need an actionable review command."""
+    import json
+
+    captured_bg_callback: list = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = [
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_bg",
+                    "content": json.dumps(
+                        {
+                            "success": True,
+                            "queued": True,
+                            "pending_id": "change-1",
+                            "message": "Skill change queued for review: patch 'writer'.",
+                        }
+                    ),
+                }
+            ]
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent.platform = "telegram"
+    agent.background_review_callback = lambda msg: captured_bg_callback.append(msg)
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hi"}],
+        review_skills=True,
+    )
+
+    assert len(captured_bg_callback) == 1
+    assert "Skill change queued for review" in captured_bg_callback[0]
+    assert "hermes skills review" in captured_bg_callback[0]
+    assert "change-1" in captured_bg_callback[0]
+
+
+def test_agent_cleanup_expired_pending_skill_changes_uses_configured_ttl(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        "agent.skill_evolution.cleanup_expired_pending_changes",
+        lambda ttl_days=None: calls.append(ttl_days) or [],
+    )
+
+    removed = AIAgent._cleanup_expired_pending_skill_changes(
+        {"skills": {"pending_ttl_days": 12}}
+    )
+
+    assert removed == []
+    assert calls == [12]

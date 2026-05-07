@@ -236,6 +236,19 @@ def _format_pending_change_diff(change: Dict[str, Any]) -> str:
     if change.get("origin"):
         lines.append(f"Origin: {change['origin']}")
 
+    diff_path = change.get("diff_path")
+    if diff_path:
+        try:
+            path = Path(str(diff_path))
+            if path.exists() and path.is_file():
+                lines.append("")
+                lines.append(f"Diff: {path}")
+                lines.append("")
+                lines.append(path.read_text(encoding="utf-8", errors="replace"))
+                return "\n".join(lines)
+        except OSError:
+            pass
+
     lines.append("")
     lines.append("Payload:")
     if not payload:

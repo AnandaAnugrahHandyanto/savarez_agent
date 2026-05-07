@@ -104,4 +104,6 @@ def test_background_review_summary_includes_queued_skill_evolution():
         prior_snapshot=[],
     )
 
-    assert actions == ["Skill change queued for review: create 'demo'."]
+    assert len(actions) == 1
+    assert "Skill change queued for review: create 'demo'." in actions[0]
+    assert "hermes skills review" in actions[0]

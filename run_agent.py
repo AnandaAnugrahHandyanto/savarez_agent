@@ -1844,6 +1844,7 @@ class AIAgent:
         try:
             skills_config = _agent_cfg.get("skills", {})
             self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
+            self._cleanup_expired_pending_skill_changes(_agent_cfg)
         except Exception:
             pass
 
@@ -3574,6 +3575,27 @@ class AIAgent:
     )
 
     @staticmethod
+    def _cleanup_expired_pending_skill_changes(config: Optional[Dict[str, Any]] = None) -> List[str]:
+        """Best-effort cleanup for stale confirm-mode skill evolution proposals."""
+        try:
+            if config is None:
+                from hermes_cli.config import load_config
+                config = load_config()
+            skills_config = config.get("skills", {}) if isinstance(config, dict) else {}
+            if not isinstance(skills_config, dict):
+                skills_config = {}
+            try:
+                pending_ttl_days = int(skills_config.get("pending_ttl_days", 30))
+            except (TypeError, ValueError):
+                pending_ttl_days = 30
+            if pending_ttl_days <= 0:
+                return []
+            from agent.skill_evolution import cleanup_expired_pending_changes
+            return cleanup_expired_pending_changes(ttl_days=pending_ttl_days)
+        except Exception:
+            return []
+
+    @staticmethod
     def _summarize_background_review_actions(
         review_messages: List[Dict],
         prior_snapshot: List[Dict],
@@ -3622,7 +3644,19 @@ class AIAgent:
             message = data.get("message", "")
             target = data.get("target", "")
             if data.get("queued") or data.get("skipped"):
-                actions.append(message or "Skill evolution change queued for review")
+                if data.get("queued"):
+                    pending_id = data.get("pending_id")
+                    review_hint = "Run `hermes skills review` to inspect or apply it."
+                    if pending_id:
+                        review_hint = (
+                            f"Run `hermes skills review --diff {pending_id}` "
+                            "to inspect it, then approve or reject it."
+                        )
+                    actions.append(
+                        f"{message or 'Skill evolution change queued for review'} {review_hint}"
+                    )
+                else:
+                    actions.append(message or "Skill evolution change skipped")
             elif "created" in message.lower():
                 actions.append(message)
             elif "updated" in message.lower():

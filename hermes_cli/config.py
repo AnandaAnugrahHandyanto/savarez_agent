@@ -1038,6 +1038,9 @@ DEFAULT_CONFIG = {
         #   confirm  - background review queues changes for `hermes skills review`
         #   readonly - background review may inspect skills but cannot write them
         "evolution_mode": "auto",
+        # Pending background skill evolution changes older than this many days
+        # are discarded at session start. Set to 0 or a negative value to disable.
+        "pending_ttl_days": 30,
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id
         # before the agent sees it.  Lets skill authors reference bundled
