@@ -687,16 +687,18 @@ function MdImpl({ compact, t, text }: MdProps) {
 
         const task = bullet[2]!.match(TASK_RE)
         const marker = task ? (task[1]!.toLowerCase() === 'x' ? '☑' : '☐') : '•'
+        const indent = ' '.repeat(indentDepth(bullet[1]!) * 2)
 
         nodes.push(
-          <Text key={key}>
+          <Box key={key}>
             <Text color={t.color.muted}>
-              {' '.repeat(indentDepth(bullet[1]!) * 2)}
+              {indent}
               {marker}{' '}
             </Text>
-
-            <MdInline t={t} text={task ? task[2]! : bullet[2]!} />
-          </Text>
+            <Box flexGrow={1}>
+              <MdInline t={t} text={task ? task[2]! : bullet[2]!} />
+            </Box>
+          </Box>
         )
         i++
 
@@ -707,15 +709,19 @@ function MdImpl({ compact, t, text }: MdProps) {
 
       if (numbered) {
         start('list')
-        nodes.push(
-          <Text key={key}>
-            <Text color={t.color.muted}>
-              {' '.repeat(indentDepth(numbered[1]!) * 2)}
-              {numbered[2]}.{' '}
-            </Text>
+        const indent = ' '.repeat(indentDepth(numbered[1]!) * 2)
+        const marker = `${numbered[2]}. `
 
-            <MdInline t={t} text={numbered[3]!} />
-          </Text>
+        nodes.push(
+          <Box key={key}>
+            <Text color={t.color.muted}>
+              {indent}
+              {marker}
+            </Text>
+            <Box flexGrow={1}>
+              <MdInline t={t} text={numbered[3]!} />
+            </Box>
+          </Box>
         )
         i++
 

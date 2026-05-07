@@ -28,6 +28,50 @@ describe('toTranscriptMessages', () => {
 })
 
 describe('MessageLine', () => {
+  it('preserves assistant text after a wrapped long list URL in narrow layouts', () => {
+    const stdout = new PassThrough()
+    const stdin = new PassThrough()
+    const stderr = new PassThrough()
+    let output = ''
+
+    Object.assign(stdout, { columns: 56, isTTY: false, rows: 24 })
+    Object.assign(stdin, { isTTY: false })
+    Object.assign(stderr, { isTTY: false })
+    stdout.on('data', chunk => {
+      output += chunk.toString()
+    })
+
+    const text = [
+      '✅ Commit + push',
+      '',
+      '- Compare URL (ready for PR):',
+      '- https://github.com/NousResearch/hermes-agent/compare/main...adybag14-cyber:hermes-agent:fix/update-progress-heartbeat?expand=1',
+      '',
+      'If you want, I can also generate a clean PR draft body ready to paste.'
+    ].join('\n')
+
+    const instance = renderSync(
+      React.createElement(MessageLine, {
+        cols: 56,
+        msg: { role: 'assistant', text },
+        t: DEFAULT_THEME
+      }),
+      {
+        patchConsole: false,
+        stderr: stderr as NodeJS.WriteStream,
+        stdin: stdin as NodeJS.ReadStream,
+        stdout: stdout as NodeJS.WriteStream
+      }
+    )
+
+    instance.unmount()
+    instance.cleanup()
+
+    const rendered = stripAnsi(output)
+    expect(rendered).toContain('If you want, I can also generate a clean PR draft')
+    expect(rendered).toContain('body ready to paste.')
+  })
+
   it('preserves a separator after compound user prompt glyphs in transcript rows', () => {
     const stdout = new PassThrough()
     const stdin = new PassThrough()
