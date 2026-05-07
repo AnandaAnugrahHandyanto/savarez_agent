@@ -47,14 +47,20 @@ When workers have Telegram bots in a shared group, use `require_mention: true` s
 
 > **PITFALL**: These are *example* role names, NOT real profile names. Always check the user's actual profiles (`ls ~/.hermes/profiles/`) before assigning tasks. Using non-existent profile names as assignee will cause tasks to get stuck — the dispatcher can't spawn workers that don't exist.
 
-If the user has custom profiles, create a mapping in the orchestrator's SOUL.md. Example:
+The orchestrator should dynamically build this mapping by reading each profile's SOUL.md. Example workflow:
+1. Run `hermes profile list` to get all profiles
+2. For each profile, read `~/.hermes/profiles/<name>/SOUL.md`
+3. Parse the SOUL.md to identify the profile's primary responsibility
+4. Build a mapping: task type → profile name
+
+Example mapping output:
 ```
-| 任务类型 | assignee |
-|---------|----------|
-| 后端/调研 | fullstack_agent |
-| 前端/UI | ui_agent |
-| 测试 | qa_agent |
-| 需求/文档 | pm_agent |
+| Task Type | Profile | Evidence from SOUL.md |
+|-----------|---------|----------------------|
+| Backend/API | fullstack_agent | "我是全栈工程师，负责后端API开发" |
+| Frontend/UI | ui_agent | "我是UI工程师，负责前端界面" |
+| Testing | qa_agent | "我是测试工程师，负责质量保证" |
+| PM/Planning | pm_agent | "我是产品经理，负责需求分析" |
 ```
 
 The generic roles below are for reference only:
@@ -72,18 +78,30 @@ The generic roles below are for reference only:
 
 ## Decomposition playbook
 
-### Step 0 — Check available profiles
+### Step 0 — Discover available profiles
 
-Before planning any tasks, run `ls ~/.hermes/profiles/` to discover which agents actually exist. The roster table above is a reference — real profiles may differ.
+Before planning any tasks, discover which agents actually exist and understand their capabilities:
 
+```bash
+hermes profile list
 ```
-$ ls ~/.hermes/profiles/
-fullstack_agent  pm_agent  qa_agent  ui_agent
+
+This returns the actual profile names and their status. Then read each profile's SOUL.md to understand what it can do:
+
+```bash
+# For each profile, check its role definition
+cat ~/.hermes/profiles/<profile-name>/SOUL.md
 ```
 
-Build a mental mapping of task types → available profiles. If a needed capability has no matching profile:
-1. Can an existing profile handle it? (e.g. "research" → fullstack_agent)
-2. If not, tell the user which profile is missing and ask if they want to create one.
+Match task types to discovered profiles based on their SOUL.md capabilities:
+1. **Backend/API/infrastructure tasks** → profile whose SOUL.md defines backend or fullstack responsibilities
+2. **Frontend/UI tasks** → profile whose SOUL.md defines frontend or design responsibilities
+3. **Testing/QA tasks** → profile whose SOUL.md defines testing responsibilities
+4. **PM/planning/writing tasks** → profile whose SOUL.md defines PM or coordination responsibilities
+
+If a needed capability has no matching profile:
+1. Can an existing profile handle it? (e.g. research tasks might fit a fullstack agent)
+2. If not, tell the user which capability is missing and ask if they want to create a new profile
 
 **Never use a profile name that doesn't exist.** The dispatcher will silently fail.
 
@@ -96,43 +114,46 @@ Ask clarifying questions if the goal is ambiguous. Cheap to ask; expensive to sp
 Before creating anything, draft the graph out loud (in your response to the user). Example for "Analyze whether we should migrate to Postgres":
 
 ```
-T1  fullstack_agent   research: Postgres cost vs current
-T2  fullstack_agent   research: Postgres performance vs current
-T3  pm_agent          synthesize migration recommendation       parents: T1, T2
-T4  pm_agent          draft decision memo                       parents: T3
+T1  <discovered-backend-profile>   research: Postgres cost vs current
+T2  <discovered-backend-profile>   research: Postgres performance vs current
+T3  <discovered-pm-profile>        synthesize migration recommendation       parents: T1, T2
+T4  <discovered-pm-profile>        draft decision memo                       parents: T3
 ```
 
-Show this to the user. Let them correct it before you create anything.
+Replace `<discovered-backend-profile>` and `<discovered-pm-profile>` with the actual profile names from Step 0. Show this to the user. Let them correct it before you create anything.
 
 ### Step 3 — Create tasks and assign to profiles
 
-Use the profile names from Step 0. Example:
+Use the actual profile names discovered in Step 0. Example:
 
 ```python
+# Replace with actual profile names from `hermes profile list`
+backend_profile = "<discovered-backend-profile>"  # e.g. "fullstack_agent"
+pm_profile = "<discovered-pm-profile>"            # e.g. "pm_agent"
+
 t1 = kanban_create(
     title="research: Postgres cost vs current",
-    assignee="fullstack_agent",
-    body="...",
-)[
-```
+    assignee=backend_profile,
+    body="Compare estimated infrastructure costs...",
+)["task_id"]
 
 t2 = kanban_create(
     title="research: Postgres performance vs current",
-    assignee="fullstack_agent",   # NOT "researcher"
-    body="Compare query latency, throughput, and scaling characteristics at our expected data volume (~500GB, 10k QPS peak). Sources: benchmark papers, public case studies, pgbench results if easy.",
+    assignee=backend_profile,
+    body="Compare query latency, throughput...",
 )["task_id"]
 
 t3 = kanban_create(
     title="synthesize migration recommendation",
-    assignee="pm_agent",          # NOT "analyst"
-    body="Read the findings from T1 (cost) and T2 (performance). Produce a 1-page recommendation with explicit trade-offs and a go/no-go call.",
+    assignee=pm_profile,
+    body="Read the findings from T1 and T2...",
     parents=[t1, t2],
 )["task_id"]
 
 t4 = kanban_create(
     title="draft decision memo",
-    assignee="pm_agent",          # NOT "writer"
-    body="Turn the analyst's recommendation into a 2-page memo for the CTO. Match the tone of previous decision memos in the team's knowledge base.",
+    assignee=pm_profile,
+    body="Turn the recommendation into a memo...",
     parents=[t3],
 )["task_id"]
 ```
@@ -144,14 +165,15 @@ t4 = kanban_create(
 If you were spawned as a task yourself (e.g. `planner` profile was assigned `T0: "investigate Postgres migration"`), mark it done with a summary of what you created:
 
 ```python
+# Use actual profile names from Step 0
 kanban_complete(
     summary="decomposed into T1-T4: 2 research tasks parallel, 1 synthesis, 1 memo",
     metadata={
         "task_graph": {
-            "T1": {"assignee": "fullstack_agent", "parents": []},
-            "T2": {"assignee": "fullstack_agent", "parents": []},
-            "T3": {"assignee": "pm_agent", "parents": ["T1", "T2"]},
-            "T4": {"assignee": "pm_agent", "parents": ["T3"]},
+            "T1": {"assignee": "<discovered-backend-profile>", "parents": []},
+            "T2": {"assignee": "<discovered-backend-profile>", "parents": []},
+            "T3": {"assignee": "<discovered-pm-profile>", "parents": ["T1", "T2"]},
+            "T4": {"assignee": "<discovered-pm-profile>", "parents": ["T3"]},
         },
     },
 )
@@ -162,20 +184,20 @@ kanban_complete(
 Tell them what you created in plain prose:
 
 > I've queued 4 tasks:
-> - **T1** (fullstack_agent): cost comparison
-> - **T2** (fullstack_agent): performance comparison, in parallel with T1
-> - **T3** (pm_agent): synthesizes T1 + T2 into a recommendation
-> - **T4** (pm_agent): turns T3 into a CTO memo
+> - **T1** (<discovered-backend-profile>): cost comparison
+> - **T2** (<discovered-backend-profile>): performance comparison, in parallel with T1
+> - **T3** (<discovered-pm-profile>): synthesizes T1 + T2 into a recommendation
+> - **T4** (<discovered-pm-profile>): turns T3 into a CTO memo
 >
 > The dispatcher will pick up T1 and T2 now. T3 starts when both finish. You'll get a gateway ping when T4 completes. Use the dashboard or `hermes kanban tail <id>` to follow along.
 
 ## Common patterns
 
-**Fan-out + fan-in (research → synthesize):** N `fullstack_agent` tasks with no parents, one `pm_agent` task with all of them as parents.
+**Fan-out + fan-in (research → synthesize):** N `<discovered-backend-profile>` tasks with no parents, one `<discovered-pm-profile>` task with all of them as parents.
 
-**Pipeline with gates:** `pm_agent → fullstack_agent → qa_agent`.
+**Pipeline with gates:** `<discovered-pm-profile> → <discovered-backend-profile> → <discovered-qa-profile>`.
 
-**Same-profile queue:** 50 tasks, all assigned to `fullstack_agent`,
+**Same-profile queue:** 50 tasks, all assigned to `<discovered-backend-profile>`,
 
 **Human-in-the-loop:** Any task can `kanban_block()` to wait for input. Dispatcher respawns after `/unblock`. The comment thread carries the full context.
 
@@ -194,7 +216,7 @@ model:
 
 **SOUL.md preamble:** Every profile's SOUL.md starts with a ~300-token default English preamble injected by Hermes. For Kanban workers that only need their Chinese role definition, strip this line to save tokens. It's safe to remove — the profile's persona is fully defined by the user's content below it.
 
-**Model tiering by role:** Hermes has no built-in per-task model override. To use cheaper models for low-priority work, create separate profiles (e.g., `qa_agent` with mimo-v2.5 for routine testing, `fullstack_agent` with mimo-v2.5-pro for critical logic). The orchestrator routes by choosing the right `assignee`.
+**Model tiering by role:** Hermes has no built-in per-task model override. To use cheaper models for low-priority work, create separate profiles with different model configurations. The orchestrator routes by choosing the right `assignee` based on the discovered profiles.
 
 ## Making Kanban Visible to Humans
 
