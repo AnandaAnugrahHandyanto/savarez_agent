@@ -520,7 +520,45 @@ def _resolve_named_custom_runtime(
     if not base_url:
         return None
 
-    # Check if a credential pool exists for this custom endpoint
+    # Prefer the named custom provider's own configured API key when present.
+    # Multiple custom_providers can share the same base_url but use different
+    # gateway keys (e.g. one key exposes GPT, another Claude, another DeepSeek).
+    # Looking up the credential pool by base_url alone can select the first
+    # matching pool (often the GPT key), causing /model validation to see the
+    # wrong /models listing.  Only fall back to the shared custom pool when the
+    # named entry does not carry a usable secret.
+    configured_api_key = str(custom_provider.get("api_key", "") or "").strip()
+    configured_key_env = str(custom_provider.get("key_env", "") or "").strip()
+    env_api_key = os.getenv(configured_key_env, "").strip() if configured_key_env else ""
+    direct_api_key = next(
+        (
+            candidate
+            for candidate in (
+                (explicit_api_key or "").strip(),
+                configured_api_key,
+                env_api_key,
+            )
+            if has_usable_secret(candidate)
+        ),
+        "",
+    )
+
+    if direct_api_key:
+        result = {
+            "provider": "custom",
+            "api_mode": custom_provider.get("api_mode")
+            or _detect_api_mode_for_url(base_url)
+            or "chat_completions",
+            "base_url": base_url,
+            "api_key": direct_api_key,
+            "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
+        }
+        if custom_provider.get("model"):
+            result["model"] = custom_provider["model"]
+        return result
+
+    # Check if a credential pool exists for this custom endpoint when no
+    # provider-specific API key is configured.
     pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"))
     if pool_result:
         # Propagate the model name even when using pooled credentials —
@@ -531,9 +569,6 @@ def _resolve_named_custom_runtime(
         return pool_result
 
     api_key_candidates = [
-        (explicit_api_key or "").strip(),
-        str(custom_provider.get("api_key", "") or "").strip(),
-        os.getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
         os.getenv("OPENAI_API_KEY", "").strip(),
         os.getenv("OPENROUTER_API_KEY", "").strip(),
     ]

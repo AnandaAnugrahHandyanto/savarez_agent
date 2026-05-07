@@ -751,6 +751,70 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     assert resolved["source"] == "custom_provider:Local"
 
 
+def test_named_custom_provider_direct_key_takes_priority_over_shared_custom_pool(monkeypatch):
+    """A named custom provider's own key must win over base_url pool lookup.
+
+    Multiple custom providers can share a gateway URL while each key exposes a
+    different /models listing. Choosing the first pool entry for the shared URL
+    makes model validation use the wrong provider's model list.
+    """
+
+    class _Entry:
+        runtime_api_key = "pool-gpt-key"
+        access_token = "pool-gpt-key"
+        source = "manual:gpt"
+        base_url = "https://gateway.example.com/v1"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "GPT",
+                    "base_url": "https://gateway.example.com/v1",
+                    "api_key": "gpt-provider-key",
+                    "model": "gpt-5-mini",
+                },
+                {
+                    "name": "DeepSeek",
+                    "base_url": "https://gateway.example.com/v1",
+                    "api_key": "deepseek-provider-key",
+                    "model": "deepseek-chat",
+                },
+            ]
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom:deepseek")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://gateway.example.com/v1"
+    assert resolved["api_key"] == "deepseek-provider-key"
+    assert resolved["source"] == "custom_provider:DeepSeek"
+    assert resolved["model"] == "deepseek-chat"
+    assert resolved.get("credential_pool") is None
+
+
 def test_named_custom_provider_uses_providers_dict_when_list_missing(monkeypatch):
     """After v11→v12 migration deletes custom_providers, resolution should
     still find entries in the providers dict via get_compatible_custom_providers."""
@@ -1631,7 +1695,6 @@ def test_named_custom_runtime_propagates_model_pool_path(monkeypatch):
         lambda p: {
             "name": "my-server",
             "base_url": "http://localhost:8000/v1",
-            "api_key": "test-key",
             "model": "qwen3.6-plus",
         },
     )

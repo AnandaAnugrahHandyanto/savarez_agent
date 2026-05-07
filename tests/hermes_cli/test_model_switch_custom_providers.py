@@ -293,30 +293,37 @@ def test_list_authenticated_providers_groups_same_endpoint(monkeypatch):
     assert group["name"] == "Ollama"
 
 
-def test_list_authenticated_providers_current_endpoint_uses_current_slug(monkeypatch):
-    """When current_base_url matches the grouped endpoint, the slug must
-    equal current_provider so picker selection routes through the live
-    credential pipeline — provided current_provider is a real slug, not
-    the corrupt bare "custom" (see #17478)."""
+def test_list_authenticated_providers_current_endpoint_keeps_provider_slug(monkeypatch):
+    """When custom providers share a gateway base_url, the picker must keep
+    each provider's own slug even if one endpoint matches the current runtime.
+
+    Reusing ``current_provider`` for every same-base-url row can route a
+    DeepSeek/Claude selection through the GPT key currently attached to the
+    shared gateway, so /models validation sees the wrong model listing.
+    """
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
 
     providers = list_authenticated_providers(
-        current_provider="custom:ollama",
-        current_base_url="http://localhost:11434/v1",
+        current_provider="custom:gpt",
+        current_base_url="https://gateway.example.com/v1",
         user_providers={},
         custom_providers=[
-            {"name": "Ollama — GLM 5.1", "base_url": "http://localhost:11434/v1",
-             "api_key": "ollama", "model": "glm-5.1"},
+            {"name": "GPT", "base_url": "https://gateway.example.com/v1",
+             "api_key": "gpt-key", "model": "gpt-5-mini"},
+            {"name": "DeepSeek", "base_url": "https://gateway.example.com/v1",
+             "api_key": "deepseek-key", "model": "deepseek-chat"},
         ],
         max_models=50,
     )
 
-    matches = [p for p in providers if p.get("is_user_defined")]
-    assert len(matches) == 1
-    group = matches[0]
-    assert group["slug"] == "custom:ollama"
-    assert group["is_current"] is True
+    custom_groups = [p for p in providers if p.get("is_user_defined")]
+    slugs = {p["name"]: p["slug"] for p in custom_groups}
+    assert slugs["GPT"] == "custom:gpt"
+    assert slugs["DeepSeek"] == "custom:deepseek"
+    current = [p for p in custom_groups if p["is_current"]]
+    assert len(current) == 1
+    assert current[0]["slug"] == "custom:gpt"
 
 
 def test_list_authenticated_providers_bare_custom_slug_recovers(monkeypatch):
