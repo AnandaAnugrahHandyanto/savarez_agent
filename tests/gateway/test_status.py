@@ -75,6 +75,40 @@ class TestGatewayPidState:
         assert status.get_running_pid() is None
         assert not pid_path.exists()
 
+    def test_get_running_pid_handles_systemerror_from_oskill_on_windows(self, tmp_path, monkeypatch):
+        """Regression for #21432: on Windows, ``os.kill(pid, 0)`` can raise
+        ``SystemError`` ("returned a result with an exception set") because
+        signal 0 isn't supported. The ``except OSError`` branch alone doesn't
+        catch this, and the user-visible result was an immediate crash of
+        ``hermes gateway`` after ``hermes update``.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        dead_pid = 999999
+        pid_path.write_text(json.dumps({
+            "pid": dead_pid,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": 111,
+        }))
+
+        # Force the runtime-lock check to return True so the os.kill probe
+        # path is actually exercised — without this, get_running_pid takes
+        # the early-return branch before ever calling os.kill.
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda lock_path=None: True)
+
+        def _systemerror_kill(pid, sig):
+            raise SystemError(
+                "<built-in function kill> returned a result with an exception set"
+            )
+
+        monkeypatch.setattr(status.os, "kill", _systemerror_kill)
+
+        # Must not propagate SystemError; treat the probe as "process gone"
+        # and fall through to the cleanup path.
+        assert status.get_running_pid() is None
+        assert not pid_path.exists()
+
     def test_get_running_pid_accepts_gateway_metadata_when_cmdline_unavailable(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         pid_path = tmp_path / "gateway.pid"
@@ -435,6 +469,39 @@ class TestScopedLocks:
 
         acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
 
+        assert acquired is True
+        payload = json.loads(lock_path.read_text())
+        assert payload["pid"] == os.getpid()
+        assert payload["metadata"]["platform"] == "telegram"
+
+    def test_acquire_scoped_lock_treats_systemerror_as_stale(self, tmp_path, monkeypatch):
+        """Regression for #21432: the scope-lock liveness probe must also
+        absorb ``SystemError`` from ``os.kill(pid, 0)`` on Windows; otherwise
+        gateway lock-acquisition crashes on the same platform path that
+        broke ``hermes gateway`` startup.
+        """
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": 99999,
+            "start_time": 123,
+            "kind": "hermes-gateway",
+        }))
+
+        def fake_kill(pid, sig):
+            raise SystemError(
+                "<built-in function kill> returned a result with an exception set"
+            )
+
+        monkeypatch.setattr(status.os, "kill", fake_kill)
+
+        acquired, existing = status.acquire_scoped_lock(
+            "telegram-bot-token", "secret", metadata={"platform": "telegram"}
+        )
+
+        # Must treat the prior holder as stale rather than propagate
+        # SystemError up through start_gateway().
         assert acquired is True
         payload = json.loads(lock_path.read_text())
         assert payload["pid"] == os.getpid()

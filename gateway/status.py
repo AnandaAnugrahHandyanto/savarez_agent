@@ -505,8 +505,10 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
         if not stale:
             try:
                 os.kill(existing_pid, 0)
-            except (ProcessLookupError, PermissionError, OSError):
-                # Windows raises OSError with WinError 87 for invalid pid check
+            except (ProcessLookupError, PermissionError, OSError, SystemError):
+                # Windows raises OSError with WinError 87 for invalid pid check;
+                # signal 0 is unsupported on Windows so os.kill can also raise
+                # SystemError ("returned a result with an exception set").
                 stale = True
             else:
                 current_start = _get_process_start_time(existing_pid)
@@ -838,6 +840,12 @@ def get_running_pid(
         except OSError:
             # Windows raises OSError with WinError 87 for an invalid pid
             # (process is definitely gone). Treat as "process doesn't exist".
+            continue
+        except SystemError:
+            # Windows: signal 0 is unsupported, so os.kill can surface as
+            # SystemError ("returned a result with an exception set") instead
+            # of OSError. Treat the same as a definitively-gone process so
+            # `hermes gateway` doesn't crash on startup (#21432).
             continue
 
         recorded_start = record.get("start_time")
