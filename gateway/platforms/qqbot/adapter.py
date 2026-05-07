@@ -423,7 +423,8 @@ class QQAdapter(BasePlatformAdapter):
 
         Close code handling follows the OpenClaw qqbot reference implementation:
           4004 → invalid token, refresh and reconnect
-          4006/4007/4009 → session invalid, clear session and re-identify
+          4006/4007 → session invalid, clear session and re-identify
+          4009 → session timed out, preserve state for resume (op 6)
           4008 → rate limited, back off 60s
           4914 → bot offline/sandbox, stop reconnecting
           4915 → bot banned, stop reconnecting
@@ -517,15 +518,14 @@ class QQAdapter(BasePlatformAdapter):
                     self._access_token = None
                     self._token_expires_at = 0.0
 
-                # 4009 = Session timed out → preserve session for resume
+                # 4009 = Session timed out → preserve state; next Hello will trigger _send_resume() (op 6)
                 # Per QQ docs: https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/error-trace/websocket.html
-                # 4009 should use Resume (op 6), not re-identify (op 2)
+                # Keep session_id and last_seq so Hello handler picks Resume over Identify
                 if code == 4009:
                     logger.info(
                         "[%s] Session timed out (4009), will resume on reconnect",
                         self._log_tag,
                     )
-                    # Keep session_id and last_seq for resume
 
                 # Session invalid → clear session, will re-identify on next Hello
                 elif code in (
