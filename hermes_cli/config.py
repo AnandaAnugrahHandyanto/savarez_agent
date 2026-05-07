@@ -389,6 +389,12 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    "profiles": {
+        # When true, new profiles symlink their per-profile gh CLI config to
+        # the default user's ~/.config/gh so specialist workers can create PRs
+        # without re-running gh auth login in every isolated profile HOME.
+        "share_gh_config": False,
+    },
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).

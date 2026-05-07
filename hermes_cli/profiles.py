@@ -359,6 +359,56 @@ def _check_gateway_running(profile_dir: Path) -> bool:
         return False
 
 
+def _share_gh_config_enabled() -> bool:
+    """Return whether new profiles should share the default gh CLI config."""
+    env_value = os.environ.get("HERMES_PROFILE_SHARE_GH_CONFIG")
+    if env_value is not None:
+        return env_value.strip().lower() in {"1", "true", "yes", "on"}
+
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        profiles_cfg = cfg.get("profiles") or {}
+        return bool(profiles_cfg.get("share_gh_config"))
+    except Exception:
+        return False
+
+
+def _link_shared_gh_config(profile_dir: Path) -> None:
+    """Best-effort symlink of default gh CLI auth into a new profile.
+
+    Profile subprocesses use ``{profile_dir}/home`` as HOME, so gh looks under
+    ``home/.config/gh``.  Some profile-aware subprocesses may instead set
+    XDG_CONFIG_HOME to ``{profile_dir}/.config``; link both locations to keep
+    GitHub auth available without copying tokens into each profile.
+    """
+    if not _share_gh_config_enabled():
+        return
+
+    source = Path.home() / ".config" / "gh"
+    if not source.is_dir():
+        return
+
+    for config_root in (profile_dir / "home" / ".config", profile_dir / ".config"):
+        target = config_root / "gh"
+        try:
+            config_root.mkdir(parents=True, exist_ok=True)
+            if target.is_symlink():
+                if target.resolve() == source.resolve():
+                    continue
+                target.unlink()
+            elif target.exists():
+                # Do not overwrite profile-local gh auth/config.  Users may
+                # intentionally want a different GitHub account in this profile.
+                continue
+            target.symlink_to(source, target_is_directory=True)
+        except OSError:
+            # Profile creation must not fail just because external tool config
+            # sharing is unavailable on this filesystem/platform.
+            continue
+
+
 def _count_skills(profile_dir: Path) -> int:
     """Count installed skills in a profile."""
     skills_dir = profile_dir / "skills"
@@ -526,6 +576,11 @@ def create_profile(
             soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
         except Exception:
             pass  # best-effort — don't fail profile creation over this
+
+    # Seed shared external tool auth/config after the profile's per-profile
+    # HOME exists.  This is opt-in because profiles are otherwise isolated by
+    # design.
+    _link_shared_gh_config(profile_dir)
 
     return profile_dir
 
