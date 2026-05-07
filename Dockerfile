@@ -2,6 +2,15 @@ FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df228
 FROM tianon/gosu:1.19-trixie@sha256:3b176695959c71e123eb390d427efc665eeb561b1540e82679c15e992006b8b9 AS gosu_source
 FROM debian:13.4
 
+# Build-time switch: set INCLUDE_BROWSER=false to skip the Playwright +
+# Chromium install. Saves ~800 MB-1 GB on the final image. Useful for
+# CLI-only / gateway-only / API-only deployments where browser_tool isn't
+# needed. The full image (default) and the slim image come from this single
+# Dockerfile via:
+#   docker build .                                       # full (default)
+#   docker build --build-arg INCLUDE_BROWSER=false .     # slim
+ARG INCLUDE_BROWSER=true
+
 # Disable Python stdout buffering to ensure logs are printed immediately
 ENV PYTHONUNBUFFERED=1
 
@@ -50,7 +59,11 @@ COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 ENV npm_config_install_links=false
 
 RUN npm install --prefer-offline --no-audit && \
-    npx playwright install --with-deps chromium --only-shell && \
+    if [ "$INCLUDE_BROWSER" = "true" ]; then \
+        npx playwright install --with-deps chromium --only-shell ; \
+    else \
+        echo "INCLUDE_BROWSER=false: skipping Playwright/Chromium install (slim image)" ; \
+    fi && \
     (cd web && npm install --prefer-offline --no-audit) && \
     (cd ui-tui && npm install --prefer-offline --no-audit) && \
     npm cache clean --force

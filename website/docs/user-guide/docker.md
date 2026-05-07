@@ -262,6 +262,20 @@ The official image is based on `debian:13.4` and includes:
 - **`openssh-client`** — enables the [SSH terminal backend](/docs/user-guide/configuration#ssh-backend) from inside the container. The SSH backend shells out to the system `ssh` binary; without this, it failed silently in containerized installs.
 - The WhatsApp bridge (`scripts/whatsapp-bridge/`)
 
+### Building a slim image without Playwright/Chromium
+
+The `Dockerfile` accepts `INCLUDE_BROWSER` as a build arg. Set it to `false` to skip `npx playwright install --with-deps chromium`, which removes the Chromium binary and its `apt` system dependencies — roughly 800 MB to 1 GB of image size.
+
+```sh
+# Full image (default — includes Playwright/Chromium)
+docker build -t hermes-agent:full .
+
+# Slim image (no browser_tool — CLI / gateway / API only)
+docker build --build-arg INCLUDE_BROWSER=false -t hermes-agent:slim .
+```
+
+The Python `playwright` package itself is still installed (it's bundled in `[all]` Python extras, and removing it would change the agent's import surface). Only the Chromium runtime and its system libraries are skipped, so any tool that tries to launch a browser at runtime will fail with the standard "Executable doesn't exist" error from Playwright. Use the slim image only if you have `browser_tool` disabled in your toolsets or are using the CLI / gateway / API without browser automation.
+
 The entrypoint script (`docker/entrypoint.sh`) bootstraps the data volume on first run:
 - Creates the directory structure (`sessions/`, `memories/`, `skills/`, etc.)
 - Copies `.env.example` → `.env` if no `.env` exists
