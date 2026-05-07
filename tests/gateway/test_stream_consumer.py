@@ -132,6 +132,36 @@ class TestFinalizeCapabilityGate:
         picky.edit_message.assert_called_once()
         assert picky.edit_message.call_args[1]["finalize"] is True
 
+    @pytest.mark.asyncio
+    async def test_final_response_override_replaces_streamed_preview(self):
+        """The gateway can replace dirty streamed text with the clean final answer."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = True
+        adapter.send = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="m1",
+        ))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="m1",
+        ))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+        )
+        consumer.on_delta("internal reasoning sentence.\n\n")
+        consumer.on_delta("Visible answer.")
+        consumer.set_final_response("Visible answer.")
+        consumer.finish()
+
+        task = asyncio.create_task(consumer.run())
+        await asyncio.wait_for(task, timeout=1.0)
+
+        assert adapter.edit_message.call_args[1]["content"] == "Visible answer."
+        assert adapter.edit_message.call_args[1]["finalize"] is True
+        assert consumer.final_response_sent is True
+
 
 class TestEditMessageFinalizeSignature:
     """Every concrete platform adapter must accept the ``finalize`` kwarg.

@@ -116,6 +116,10 @@ SEND_MESSAGE_SCHEMA = {
     "name": "send_message",
     "description": (
         "Send a message to a connected messaging platform, or list available targets.\n\n"
+        "IMPORTANT: Do NOT use send_message for normal in-conversation file delivery. "
+        "If you need to deliver local files or attachments back to the current user/chat, "
+        "put MEDIA:<absolute_path> tags in the final response instead so Hermes can deliver "
+        "native attachments in the current conversation.\n"
         "IMPORTANT: When the user asks to send to a specific channel or person "
         "(not just a bare platform name), call send_message(action='list') FIRST to see "
         "available targets, then send to the correct one.\n"
@@ -136,7 +140,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "message": {
                 "type": "string",
-                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment."
+                "description": "The text message to send across channels. Do not use this tool for normal attachment delivery back to the current user. For local files, prefer MEDIA:<absolute_path> in the final response so Hermes sends native attachments in the current conversation."
             }
         },
         "required": []
@@ -169,6 +173,13 @@ def _handle_send(args):
     message = args.get("message", "")
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
+
+    if "MEDIA:" in message:
+        return tool_error(
+            "send_message is disabled for file/attachment delivery. "
+            "To deliver files, put MEDIA:<absolute_path> tags in the final response "
+            "for the current conversation instead of calling send_message."
+        )
 
     parts = target.split(":", 1)
     platform_name = parts[0].strip().lower()

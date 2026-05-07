@@ -6556,6 +6556,11 @@ class AIAgent:
             except Exception:
                 pass
 
+    def _should_buffer_pre_tool_stream_text(self) -> bool:
+        """Buffer early visible text on chat platforms where tool preambles leak."""
+        platform = str(getattr(self, "platform", "") or "").lower()
+        return platform in {"wecom", "wecom_callback"}
+
     def _fire_tool_gen_started(self, tool_name: str) -> None:
         """Notify display layer that the model is generating tool call arguments.
 
@@ -6762,6 +6767,30 @@ class AIAgent:
             role = "assistant"
             reasoning_parts: list = []
             usage_obj = None
+            pre_tool_stream_buffer: list[str] = []
+            pre_tool_stream_buffer_flushed = False
+            pre_tool_stream_buffer_started: Optional[float] = None
+            pre_tool_stream_buffer_enabled = (
+                self._should_buffer_pre_tool_stream_text()
+                and self.stream_delta_callback is not None
+            )
+            pre_tool_stream_buffer_chars = int(
+                os.getenv("HERMES_PRE_TOOL_STREAM_BUFFER_CHARS", "240") or "240"
+            )
+            pre_tool_stream_buffer_seconds = float(
+                os.getenv("HERMES_PRE_TOOL_STREAM_BUFFER_SECONDS", "0.45") or "0.45"
+            )
+
+            def _flush_pre_tool_stream_buffer() -> None:
+                nonlocal pre_tool_stream_buffer_flushed
+                if not pre_tool_stream_buffer:
+                    return
+                _fire_first_delta()
+                self._fire_stream_delta("".join(pre_tool_stream_buffer))
+                deltas_were_sent["yes"] = True
+                pre_tool_stream_buffer.clear()
+                pre_tool_stream_buffer_flushed = True
+
             for chunk in stream:
                 last_chunk_time["t"] = time.time()
                 self._touch_activity("receiving stream response")
@@ -6791,7 +6820,26 @@ class AIAgent:
                 # Accumulate text content — fire callback only when no tool calls
                 if delta and delta.content:
                     content_parts.append(delta.content)
-                    if not tool_calls_acc:
+                    current_chunk_has_tool_calls = bool(getattr(delta, "tool_calls", None))
+                    if (
+                        pre_tool_stream_buffer_enabled
+                        and not pre_tool_stream_buffer_flushed
+                        and not tool_calls_acc
+                    ):
+                        if current_chunk_has_tool_calls:
+                            pre_tool_stream_buffer.clear()
+                        else:
+                            if pre_tool_stream_buffer_started is None:
+                                pre_tool_stream_buffer_started = time.time()
+                            pre_tool_stream_buffer.append(delta.content)
+                            buffered_text = "".join(pre_tool_stream_buffer)
+                            buffered_age = time.time() - pre_tool_stream_buffer_started
+                            if (
+                                len(buffered_text) >= pre_tool_stream_buffer_chars
+                                or buffered_age >= pre_tool_stream_buffer_seconds
+                            ):
+                                _flush_pre_tool_stream_buffer()
+                    elif not tool_calls_acc:
                         _fire_first_delta()
                         self._fire_stream_delta(delta.content)
                         deltas_were_sent["yes"] = True
@@ -6816,6 +6864,8 @@ class AIAgent:
 
                 # Accumulate tool call deltas — notify display on first name
                 if delta and delta.tool_calls:
+                    if pre_tool_stream_buffer and not pre_tool_stream_buffer_flushed:
+                        pre_tool_stream_buffer.clear()
                     for tc_delta in delta.tool_calls:
                         raw_idx = tc_delta.index if tc_delta.index is not None else 0
                         delta_id = tc_delta.id or ""
@@ -6886,6 +6936,11 @@ class AIAgent:
                 # Usage in the final chunk
                 if hasattr(chunk, "usage") and chunk.usage:
                     usage_obj = chunk.usage
+
+            if pre_tool_stream_buffer and not tool_calls_acc:
+                _flush_pre_tool_stream_buffer()
+            elif pre_tool_stream_buffer and tool_calls_acc:
+                pre_tool_stream_buffer.clear()
 
             # Build mock response matching non-streaming shape
             full_content = "".join(content_parts) or None

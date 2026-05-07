@@ -1,6 +1,7 @@
 """Tests for the WeCom platform adapter."""
 
 import base64
+import logging
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -138,6 +139,68 @@ class TestWeComReplyMode:
         # (unsupported type). Markdown renders everywhere.
         assert args[1]["msgtype"] == "markdown"
         assert args[1]["markdown"]["content"] == "hello from reply"
+
+    @pytest.mark.asyncio
+    async def test_streaming_send_uses_passive_reply_stream_when_reply_context_exists(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+
+        result = await adapter.send(
+            "chat-123",
+            "partial",
+            reply_to="msg-1",
+            metadata={"streaming": True},
+        )
+
+        assert result.success is True
+        assert result.message_id
+        adapter._send_reply_request.assert_awaited_once()
+        args = adapter._send_reply_request.await_args.args
+        assert args[0] == "req-1"
+        assert args[1] == {
+            "msgtype": "stream",
+            "stream": {
+                "id": result.message_id,
+                "content": "partial",
+                "finish": False,
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_edit_message_updates_existing_reply_stream(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_stream_req_ids["stream-1"] = "req-1"
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+
+        result = await adapter.edit_message(
+            "chat-123",
+            "stream-1",
+            "final text",
+            finalize=True,
+        )
+
+        assert result.success is True
+        assert result.message_id == "stream-1"
+        adapter._send_reply_request.assert_awaited_once()
+        args = adapter._send_reply_request.await_args.args
+        assert args[0] == "req-1"
+        assert args[1] == {
+            "msgtype": "stream",
+            "stream": {
+                "id": "stream-1",
+                "content": "final text",
+                "finish": True,
+            },
+        }
 
     @pytest.mark.asyncio
     async def test_send_image_file_uses_passive_reply_media_when_reply_context_exists(self):
@@ -294,6 +357,24 @@ class TestMediaHelpers:
         encrypted = encryptor.update(padded) + encryptor.finalize()
 
         decrypted = WeComAdapter._decrypt_file_bytes(encrypted, base64.b64encode(key).decode("ascii"))
+
+        assert decrypted == plaintext
+
+    def test_decrypt_file_bytes_accepts_unpadded_aes_key(self):
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        from gateway.platforms.wecom import WeComAdapter
+
+        plaintext = b"wecom-secret"
+        key = os.urandom(32)
+        pad_len = 32 - (len(plaintext) % 32)
+        padded = plaintext + bytes([pad_len]) * pad_len
+        encryptor = Cipher(algorithms.AES(key), modes.CBC(key[:16])).encryptor()
+        encrypted = encryptor.update(padded) + encryptor.finalize()
+
+        decrypted = WeComAdapter._decrypt_file_bytes(
+            encrypted,
+            base64.b64encode(key).decode("ascii").rstrip("="),
+        )
 
         assert decrypted == plaintext
 
@@ -594,6 +675,101 @@ class TestInboundMessages:
         await adapter._on_message(payload)
         adapter.handle_message.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_on_message_keeps_group_file_with_empty_sender(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"group_policy": "allowlist", "group_allow_from": ["group-allowed"]},
+            )
+        )
+        adapter._text_batch_delay_seconds = 0
+        adapter.handle_message = AsyncMock()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+
+        payload = {
+            "cmd": "aibot_callback",
+            "headers": {"req_id": "req-1"},
+            "body": {
+                "msgid": "msg-1",
+                "chatid": "group-allowed",
+                "chattype": "group",
+                "from": {"userid": ""},
+                "msgtype": "file",
+                "file": {"url": "https://example.com/file.pdf", "filename": "file.pdf"},
+            },
+        }
+
+        await adapter._on_message(payload)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "[收到文件消息]"
+        assert event.source.chat_id == "group-allowed"
+        assert event.source.user_id is None
+
+    @pytest.mark.asyncio
+    async def test_on_message_still_blocks_disallowed_group_file_with_empty_sender(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"group_policy": "allowlist", "group_allow_from": ["group-allowed"]},
+            )
+        )
+        adapter.handle_message = AsyncMock()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+
+        payload = {
+            "cmd": "aibot_callback",
+            "headers": {"req_id": "req-1"},
+            "body": {
+                "msgid": "msg-1",
+                "chatid": "group-blocked",
+                "chattype": "group",
+                "from": {"userid": ""},
+                "msgtype": "file",
+                "file": {"url": "https://example.com/file.pdf", "filename": "file.pdf"},
+            },
+        }
+
+        await adapter._on_message(payload)
+
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_on_message_keeps_file_when_media_download_fails(self, caplog):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._text_batch_delay_seconds = 0
+        adapter.handle_message = AsyncMock()
+        adapter._download_remote_bytes = AsyncMock(side_effect=RuntimeError("expired"))
+
+        payload = {
+            "cmd": "aibot_callback",
+            "headers": {"req_id": "req-1"},
+            "body": {
+                "msgid": "msg-1",
+                "chatid": "user-1",
+                "from": {"userid": "user-1"},
+                "msgtype": "file",
+                "file": {"url": "https://example.com/file.pdf", "filename": "file.pdf"},
+            },
+        }
+
+        with caplog.at_level(logging.WARNING, logger="gateway.platforms.wecom"):
+            await adapter._on_message(payload)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "[收到文件消息]"
+        assert event.media_urls == []
+        assert "Failed to download file" in caplog.text
+
 
 class TestWeComZombieSessionFix:
     """Tests for PR #11572 — device_id, markdown reply, group req_id fallback."""
@@ -783,4 +959,3 @@ class TestWeComZombieSessionFix:
         adapter._send_request.assert_awaited_once()
         cmd = adapter._send_request.await_args.args[0]
         assert cmd == APP_CMD_SEND
-

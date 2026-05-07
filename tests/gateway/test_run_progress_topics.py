@@ -38,12 +38,13 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         )
         return SendResult(success=True, message_id="progress-1")
 
-    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+    async def edit_message(self, chat_id, message_id, content, *, finalize=False) -> SendResult:
         self.edits.append(
             {
                 "chat_id": chat_id,
                 "message_id": message_id,
                 "content": content,
+                "finalize": finalize,
             }
         )
         return SendResult(success=True, message_id=message_id)
@@ -457,6 +458,23 @@ class StreamingRefineAgent:
         }
 
 
+class DirtyStreamingCleanFinalAgent:
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.stream_delta_callback:
+            self.stream_delta_callback("internal reasoning sentence that should not survive final delivery.\n\n")
+            time.sleep(0.2)
+            self.stream_delta_callback("Visible answer.")
+        return {
+            "final_response": "Visible answer.",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class QueuedCommentaryAgent:
     calls = 0
 
@@ -614,6 +632,28 @@ async def test_run_agent_suppresses_interim_commentary_when_disabled(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_run_agent_suppresses_interim_commentary_per_platform(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-commentary-wecom-disabled",
+        platform=Platform.WECOM,
+        config_data={
+            "display": {
+                "interim_assistant_messages": True,
+                "platforms": {
+                    "wecom": {"interim_assistant_messages": False},
+                },
+            },
+        },
+    )
+
+    assert result.get("already_sent") is not True
+    assert not any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+
+
+@pytest.mark.asyncio
 async def test_run_agent_tool_progress_does_not_control_interim_commentary(monkeypatch, tmp_path):
     """tool_progress=all with interim_assistant_messages=false should not surface commentary."""
     adapter, result = await _run_with_agent(
@@ -646,6 +686,58 @@ async def test_run_agent_streaming_does_not_enable_completed_interim_commentary(
 
     assert result.get("already_sent") is True
     assert not any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_streaming_final_response_replaces_dirty_preview(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        DirtyStreamingCleanFinalAgent,
+        session_id="sess-streaming-clean-final",
+        platform=Platform.WECOM,
+        config_data={
+            "display": {
+                "platforms": {
+                    "wecom": {"streaming": True},
+                },
+            },
+            "streaming": {"enabled": True},
+        },
+    )
+
+    assert result.get("already_sent") is True
+    assert adapter.edits
+    assert adapter.edits[-1]["content"] == "Visible answer."
+    assert "internal reasoning" not in adapter.edits[-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_wecom_stream_text_false_suppresses_live_text_deltas(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        DirtyStreamingCleanFinalAgent,
+        session_id="sess-wecom-no-live-text",
+        platform=Platform.WECOM,
+        config_data={
+            "display": {
+                "platforms": {
+                    "wecom": {
+                        "streaming": True,
+                        "stream_text": False,
+                        "interim_assistant_messages": False,
+                    },
+                },
+            },
+            "streaming": {"enabled": True},
+        },
+    )
+
+    assert result.get("already_sent") is not True
+    assert result["final_response"] == "Visible answer."
+    assert adapter.sent == []
+    assert adapter.edits == []
 
 
 @pytest.mark.asyncio

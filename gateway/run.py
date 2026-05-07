@@ -2081,18 +2081,18 @@ class GatewayRunner:
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
         if is_steer_mode:
             message = (
-                f"⏩ Steered into current run{status_detail}. "
-                f"Your message arrives after the next tool call."
+                f"⏩ 已插入当前任务{status_detail}。"
+                f"你的新消息会在下一次工具调用后生效。"
             )
         elif is_queue_mode:
             message = (
-                f"⏳ Queued for the next turn{status_detail}. "
-                f"I'll respond once the current task finishes."
+                f"⏳ 已加入下一轮处理队列{status_detail}。"
+                f"当前任务完成后我会继续回复你。"
             )
         else:
             message = (
-                f"⚡ Interrupting current task{status_detail}. "
-                f"I'll respond to your message shortly."
+                f"⚡ 正在打断当前任务{status_detail}。"
+                f"我很快就来处理你刚发的消息。"
             )
 
         # First-touch onboarding: the very first time a user sends a message
@@ -11697,12 +11697,15 @@ class GatewayRunner:
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
+        _interim_assistant_messages = resolve_display_setting(
+            user_config,
+            platform_key,
+            "interim_assistant_messages",
+            display_config.get("interim_assistant_messages"),
+        )
         interim_assistant_messages_enabled = (
             source.platform != Platform.WEBHOOK
-            and is_truthy_value(
-                display_config.get("interim_assistant_messages"),
-                default=True,
-            )
+            and is_truthy_value(_interim_assistant_messages, default=True)
         )
         
         # Queue for progress messages (thread-safe)
@@ -12159,7 +12162,11 @@ class GatewayRunner:
                 if _plat_streaming is None
                 else bool(_plat_streaming)
             )
-            _want_stream_deltas = _streaming_enabled
+            _stream_text_enabled = is_truthy_value(
+                resolve_display_setting(user_config, platform_key, "stream_text", True),
+                default=True,
+            )
+            _want_stream_deltas = _streaming_enabled and _stream_text_enabled
             _want_interim_messages = interim_assistant_messages_enabled
             _want_interim_consumer = _want_interim_messages
             if _want_stream_deltas or _want_interim_consumer:
@@ -12653,12 +12660,17 @@ class GatewayRunner:
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
 
+            # Return final response, or a message if something went wrong
+            final_response = result.get("final_response")
+            if _stream_consumer is not None and _want_stream_deltas and final_response:
+                try:
+                    _stream_consumer.set_final_response(final_response)
+                except Exception:
+                    logger.debug("Could not set stream final response override", exc_info=True)
+
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:
                 _stream_consumer.finish()
-            
-            # Return final response, or a message if something went wrong
-            final_response = result.get("final_response")
 
             # Extract actual token counts from the agent instance used for this run
             _last_prompt_toks = 0
@@ -12926,7 +12938,7 @@ class GatewayRunner:
                 try:
                     await _notify_adapter.send(
                         source.chat_id,
-                        f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
+                        f"⏳ 还在处理中（已运行 {_elapsed_mins} 分钟{_status_detail}）",
                         metadata=_status_thread_metadata,
                     )
                 except Exception as _ne:

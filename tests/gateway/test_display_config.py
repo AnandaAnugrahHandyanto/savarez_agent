@@ -78,6 +78,35 @@ class TestResolveDisplaySetting:
         assert resolve_display_setting(config, "slack", "tool_progress") == "off"
         assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
 
+    def test_interim_assistant_messages_can_be_disabled_per_platform(self):
+        """Per-platform interim assistant setting beats the global setting."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "interim_assistant_messages": True,
+                "platforms": {
+                    "wecom": {"interim_assistant_messages": False},
+                },
+            }
+        }
+        assert resolve_display_setting(config, "wecom", "interim_assistant_messages") is False
+        assert resolve_display_setting(config, "telegram", "interim_assistant_messages") is True
+
+    def test_stream_text_can_be_disabled_per_platform(self):
+        """Per-platform stream_text controls live text deltas only."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "wecom": {"stream_text": False},
+                },
+            }
+        }
+        assert resolve_display_setting(config, "wecom", "stream_text") is False
+        assert resolve_display_setting(config, "telegram", "stream_text") is True
+
 
 # ---------------------------------------------------------------------------
 # Backward compatibility: tool_progress_overrides

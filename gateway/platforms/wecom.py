@@ -142,6 +142,7 @@ class WeComAdapter(BasePlatformAdapter):
     """WeCom AI Bot adapter backed by a persistent WebSocket connection."""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    REQUIRES_EDIT_FINALIZE = True
     # Threshold for detecting WeCom client-side message splits.
     # When a chunk is near the 4000-char limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 3900
@@ -173,6 +174,7 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE)
         self._reply_req_ids: Dict[str, str] = {}
+        self._reply_stream_req_ids: Dict[str, str] = {}
 
         # Text batching: merge rapid successive messages (Telegram-style).
         # WeCom clients split long messages around 4000 chars.
@@ -498,6 +500,9 @@ class WeComAdapter(BasePlatformAdapter):
             # Group file messages often have empty sender_id; bypass sender check in that case
             msgtype_for_policy = str(body.get("msgtype") or "").lower()
             if msgtype_for_policy == "file" and not sender_id:
+                if not self._is_group_chat_allowed(chat_id):
+                    logger.debug("[%s] Group %s blocked by policy", self.name, chat_id)
+                    return
                 logger.debug("[%s] Group file with empty sender_id, bypassing sender check", self.name)
             elif not self._is_group_allowed(chat_id, sender_id):
                 logger.debug("[%s] Group %s / sender %s blocked by policy", self.name, chat_id, sender_id)
@@ -759,7 +764,7 @@ class WeComAdapter(BasePlatformAdapter):
         try:
             raw, headers = await self._download_remote_bytes(url, max_bytes=ABSOLUTE_MAX_BYTES)
         except Exception as exc:
-            logger.debug("[%s] Failed to download %s from %s: %s", self.name, kind, url, exc)
+            logger.warning("[%s] Failed to download %s from %s: %s", self.name, kind, url, exc)
             return None
 
         aes_key = str(media.get("aeskey") or "").strip()
@@ -861,15 +866,20 @@ class WeComAdapter(BasePlatformAdapter):
         return True
 
     def _is_group_allowed(self, chat_id: str, sender_id: str) -> bool:
-        if self._group_policy == "disabled":
-            return False
-        if self._group_policy == "allowlist" and not _entry_matches(self._group_allow_from, chat_id):
+        if not self._is_group_chat_allowed(chat_id):
             return False
 
         group_cfg = self._resolve_group_cfg(chat_id)
         sender_allow = _coerce_list(group_cfg.get("allow_from") or group_cfg.get("allowFrom"))
         if sender_allow:
             return _entry_matches(sender_allow, sender_id)
+        return True
+
+    def _is_group_chat_allowed(self, chat_id: str) -> bool:
+        if self._group_policy == "disabled":
+            return False
+        if self._group_policy == "allowlist" and not _entry_matches(self._group_allow_from, chat_id):
+            return False
         return True
 
     def _resolve_group_cfg(self, chat_id: str) -> Dict[str, Any]:
@@ -892,6 +902,15 @@ class WeComAdapter(BasePlatformAdapter):
         self._reply_req_ids[normalized_message_id] = normalized_req_id
         while len(self._reply_req_ids) > DEDUP_MAX_SIZE:
             self._reply_req_ids.pop(next(iter(self._reply_req_ids)))
+
+    def _remember_reply_stream_req_id(self, stream_id: str, req_id: str) -> None:
+        normalized_stream_id = str(stream_id or "").strip()
+        normalized_req_id = str(req_id or "").strip()
+        if not normalized_stream_id or not normalized_req_id:
+            return
+        self._reply_stream_req_ids[normalized_stream_id] = normalized_req_id
+        while len(self._reply_stream_req_ids) > DEDUP_MAX_SIZE:
+            self._reply_stream_req_ids.pop(next(iter(self._reply_stream_req_ids)))
 
     def _remember_chat_req_id(self, chat_id: str, req_id: str) -> None:
         """Cache the most recent inbound req_id per chat.
@@ -1035,6 +1054,8 @@ class WeComAdapter(BasePlatformAdapter):
         if not aes_key:
             raise ValueError("aes_key is required")
 
+        if len(aes_key) % 4:
+            aes_key += "=" * (4 - len(aes_key) % 4)
         key = base64.b64decode(aes_key)
         if len(key) != 32:
             raise ValueError(f"Invalid WeCom AES key length: expected 32 bytes, got {len(key)}")
@@ -1278,6 +1299,28 @@ class WeComAdapter(BasePlatformAdapter):
         self._raise_for_wecom_error(response, "send reply markdown")
         return response
 
+    async def _send_reply_stream(
+        self,
+        reply_req_id: str,
+        stream_id: str,
+        content: str,
+        *,
+        finish: bool,
+    ) -> Dict[str, Any]:
+        response = await self._send_reply_request(
+            reply_req_id,
+            {
+                "msgtype": "stream",
+                "stream": {
+                    "id": stream_id,
+                    "content": content[:self.MAX_MESSAGE_LENGTH],
+                    "finish": bool(finish),
+                },
+            },
+        )
+        self._raise_for_wecom_error(response, "send reply stream")
+        return response
+
     async def _send_reply_media_message(
         self,
         reply_req_id: str,
@@ -1398,7 +1441,6 @@ class WeComAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send markdown to a WeCom chat via proactive ``aibot_send_msg``."""
-        del metadata
 
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
@@ -1410,7 +1452,18 @@ class WeComAdapter(BasePlatformAdapter):
                 reply_req_id = self._last_chat_req_ids[chat_id]
 
             if reply_req_id:
-                response = await self._send_reply_markdown(reply_req_id, content)
+                wants_stream = bool((metadata or {}).get("streaming"))
+                if wants_stream:
+                    stream_id = str((metadata or {}).get("stream_id") or self._new_req_id("stream"))
+                    response = await self._send_reply_stream(
+                        reply_req_id,
+                        stream_id,
+                        content,
+                        finish=False,
+                    )
+                    self._remember_reply_stream_req_id(stream_id, reply_req_id)
+                else:
+                    response = await self._send_reply_markdown(reply_req_id, content)
             else:
                 response = await self._send_request(
                     APP_CMD_SEND,
@@ -1432,9 +1485,53 @@ class WeComAdapter(BasePlatformAdapter):
 
         return SendResult(
             success=True,
-            message_id=self._payload_req_id(response) or uuid.uuid4().hex[:12],
+            message_id=(
+                stream_id
+                if reply_req_id and (metadata or {}).get("streaming")
+                else self._payload_req_id(response) or uuid.uuid4().hex[:12]
+            ),
             raw_response=response,
         )
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+    ) -> SendResult:
+        """Update an existing WeCom stream reply using its stream id."""
+        del chat_id
+        stream_id = str(message_id or "").strip()
+        if not stream_id:
+            return SendResult(success=False, error="message_id is required")
+
+        reply_req_id = self._reply_stream_req_ids.get(stream_id)
+        if not reply_req_id:
+            return SendResult(success=False, error="WeCom stream reply context expired")
+
+        try:
+            response = await self._send_reply_stream(
+                reply_req_id,
+                stream_id,
+                content,
+                finish=finalize,
+            )
+        except asyncio.TimeoutError:
+            return SendResult(success=False, error="Timeout editing WeCom stream")
+        except Exception as exc:
+            logger.error("[%s] Stream edit failed: %s", self.name, exc)
+            return SendResult(success=False, error=str(exc))
+
+        error = self._response_error(response)
+        if error:
+            return SendResult(success=False, error=error)
+
+        if finalize:
+            self._reply_stream_req_ids.pop(stream_id, None)
+
+        return SendResult(success=True, message_id=stream_id, raw_response=response)
 
     async def send_image(
         self,

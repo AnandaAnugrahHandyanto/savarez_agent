@@ -135,6 +135,7 @@ class GatewayStreamConsumer:
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
         self._think_buffer = ""
+        self._final_response_override: Optional[str] = None
 
     @property
     def already_sent(self) -> bool:
@@ -190,6 +191,12 @@ class GatewayStreamConsumer:
     def finish(self) -> None:
         """Signal that the stream is complete."""
         self._queue.put(_DONE)
+
+    def set_final_response(self, text: str) -> None:
+        """Provide the cleaned final response to use for the final stream edit."""
+        cleaned = self._clean_for_display(text or "")
+        if cleaned.strip():
+            self._final_response_override = cleaned
 
     # ── Think-block filtering ────────────────────────────────────────
     # Models like MiniMax emit inline <think>...</think> blocks in their
@@ -329,6 +336,10 @@ class GatewayStreamConsumer:
                 # so trailing text that was waiting for a potential open
                 # tag is not lost.
                 if got_done:
+                    if self._final_response_override is not None:
+                        self._accumulated = self._final_response_override
+                        self._think_buffer = ""
+                        self._in_think_block = False
                     self._flush_think_buffer()
 
                 # Decide whether to flush an edit
@@ -538,6 +549,7 @@ class GatewayStreamConsumer:
             return reply_to_id
         try:
             meta = dict(self.metadata) if self.metadata else {}
+            meta["streaming"] = True
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
@@ -980,10 +992,12 @@ class GatewayStreamConsumer:
                     return False
             else:
                 # First message — send new
+                meta = dict(self.metadata) if self.metadata else {}
+                meta["streaming"] = True
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=text,
-                    metadata=self.metadata,
+                    metadata=meta,
                 )
                 if result.success:
                     if result.message_id:

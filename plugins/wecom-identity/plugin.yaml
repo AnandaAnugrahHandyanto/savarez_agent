@@ -1,0 +1,9 @@
+name: wecom-identity
+version: 1.0.0
+description: "Track WeCom user identities per chat session. Stores user_id -> name mapping and injects identity context into the agent."
+author: "@huangxurui"
+hooks:
+  - pre_llm_call
+provides_tools: []
+provides_hooks:
+  - pre_llm_call

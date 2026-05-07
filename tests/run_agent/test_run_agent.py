@@ -4354,6 +4354,22 @@ class TestStreamingApiCall:
         assert resp.choices[0].message.content == "I'll search"
         assert len(resp.choices[0].message.tool_calls) == 1
 
+    def test_wecom_pre_tool_content_not_streamed(self, agent):
+        chunks = [
+            _make_chunk(content="wants to create a proposal. Let me load the skill first."),
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "skill_view", '{"name":"lifebee"}')]),
+            _make_chunk(finish_reason="tool_calls"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+        agent.platform = "wecom"
+        agent.stream_delta_callback = MagicMock()
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        assert resp.choices[0].message.content == "wants to create a proposal. Let me load the skill first."
+        assert len(resp.choices[0].message.tool_calls) == 1
+        agent.stream_delta_callback.assert_not_called()
+
     def test_empty_content_returns_none(self, agent):
         chunks = [_make_chunk(finish_reason="stop")]
         agent.client.chat.completions.create.return_value = iter(chunks)
