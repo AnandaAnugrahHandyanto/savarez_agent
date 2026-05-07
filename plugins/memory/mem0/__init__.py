@@ -226,6 +226,14 @@ class Mem0MemoryProvider(MemoryProvider):
         config_path.write_text(json.dumps(existing, indent=2))
 
     def get_config_schema(self):
+        cfg = _load_config()
+        mode = cfg.get("mode", "platform")
+        if mode == "oss":
+            return [
+                {"key": "mode", "description": "Backend mode", "default": "oss"},
+                {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
+                {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
+            ]
         return [
             {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": True, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
@@ -308,7 +316,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._agent_id = self._config.get("agent_id", "hermes")
         self._channel = kwargs.get("platform") or "cli"
         self._backend = self._create_backend()
-        if self._backend and hasattr(self._backend, "close"):
+        if self._backend:
             atexit.register(self._shutdown_backend)
         capture_event("hermes.plugin.registered", {"mode": self._mode}, api_key=self._api_key, mode=self._mode)
 
@@ -450,7 +458,8 @@ class Mem0MemoryProvider(MemoryProvider):
                 latency = (time.monotonic() - start) * 1000
                 capture_tool_event("memory_list", success=False, latency_ms=latency,
                                    api_key=self._api_key, mode=self._mode)
-                self._record_failure()
+                if not _is_client_error(e):
+                    self._record_failure()
                 return tool_error(self._format_error("Failed to list memories", e))
 
         elif tool_name == "mem0_search":
@@ -475,7 +484,8 @@ class Mem0MemoryProvider(MemoryProvider):
                 latency = (time.monotonic() - start) * 1000
                 capture_tool_event("memory_search", success=False, latency_ms=latency,
                                    api_key=self._api_key, mode=self._mode)
-                self._record_failure()
+                if not _is_client_error(e):
+                    self._record_failure()
                 return tool_error(self._format_error("Search failed", e))
 
         elif tool_name == "mem0_add":
@@ -555,7 +565,7 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def _shutdown_backend(self):
         try:
-            if self._backend and hasattr(self._backend, "close"):
+            if self._backend:
                 self._backend.close()
                 self._backend = None
         except Exception:

@@ -24,6 +24,33 @@ from ._oss_providers import (
 )
 
 
+def _curses_select(title: str, items: list[tuple[str, str]], default: int = 0) -> int:
+    """Interactive single-select with arrow keys."""
+    from hermes_cli.curses_ui import curses_radiolist
+    display_items = [
+        f"{label}  {desc}" if desc else label
+        for label, desc in items
+    ]
+    return curses_radiolist(title, display_items, selected=default, cancel_returns=default)
+
+
+def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:
+    """Prompt for a value with optional default and secret masking."""
+    suffix = f" [{default}]" if default else ""
+    if secret:
+        sys.stdout.write(f"  {label}{suffix}: ")
+        sys.stdout.flush()
+        if sys.stdin.isatty():
+            val = getpass.getpass(prompt="")
+        else:
+            val = sys.stdin.readline().strip()
+    else:
+        sys.stdout.write(f"  {label}{suffix}: ")
+        sys.stdout.flush()
+        val = sys.stdin.readline().strip()
+    return val or (default or "")
+
+
 def has_oss_flags() -> bool:
     """Check if OSS-related flags are present in sys.argv."""
     flags = parse_flags(sys.argv[1:])
@@ -199,8 +226,6 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
     Delegates to the same code path the framework uses when post_setup
     doesn't exist, preserving the original platform onboarding experience.
     """
-    from hermes_cli.memory_setup import _curses_select, _prompt
-
     schema = [
         {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": True, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
         {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
@@ -574,8 +599,6 @@ def _vector_description(pid: str, v: dict) -> str:
 
 def _setup_oss_interactive(hermes_home: str, config: dict) -> None:
     """Interactive OSS setup using curses pickers."""
-    from hermes_cli.memory_setup import _curses_select
-
     llm_items = [(v["label"], _provider_description(v)) for pid, v in LLM_PROVIDERS.items()]
     llm_idx = _curses_select("LLM Provider", llm_items, 0)
     llm_id = list(LLM_PROVIDERS.keys())[llm_idx]
@@ -779,6 +802,25 @@ def _run_connectivity_checks(oss_config: dict) -> None:
             print(f"  Warning: {msg}")
 
 
+def _check_min_dep_version() -> None:
+    """Ensure mem0ai meets the minimum version from plugin.yaml."""
+    try:
+        import mem0
+        installed_ver = getattr(mem0, "__version__", None)
+        if not installed_ver:
+            return
+        installed_parts = tuple(int(x) for x in installed_ver.split(".")[:3])
+        required_parts = (2, 0, 1)
+        if installed_parts < required_parts:
+            req_str = ".".join(str(x) for x in required_parts)
+            print(f"\n  ⚠ mem0ai {installed_ver} installed but >={req_str} required.")
+            print(f"  Run: uv pip install --python {sys.executable} 'mem0ai>={req_str}'")
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+
 def post_setup(hermes_home: str, config: dict) -> None:
     """Entry point called by hermes memory setup framework.
 
@@ -787,6 +829,7 @@ def post_setup(hermes_home: str, config: dict) -> None:
     framework's schema-based flow handles it (preserving the original
     platform onboarding experience).
     """
+    _check_min_dep_version()
     flags = parse_flags(sys.argv[1:])
 
     if flags["mode"] == "oss":
@@ -799,7 +842,6 @@ def post_setup(hermes_home: str, config: dict) -> None:
         return
 
     # No --mode flag: show interactive picker
-    from hermes_cli.memory_setup import _curses_select
     mode_items = [
         ("Platform", "Mem0 Cloud API (lightweight, just needs an API key)"),
         ("Open Source", "Run Mem0 locally (self-hosted LLM + vector store)"),

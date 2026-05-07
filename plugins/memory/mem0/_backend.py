@@ -37,6 +37,9 @@ class Mem0Backend(ABC):
     def delete(self, memory_id: str) -> dict:
         ...
 
+    def close(self) -> None:
+        pass
+
 
 def _unwrap_results(response: Any) -> list:
     """Normalize API response — extract results list from dict or pass through."""
@@ -178,8 +181,11 @@ class OSSBackend(Mem0Backend):
 
     def get_all(self, *, filters: dict, page: int = 1, page_size: int = 100) -> dict:
         response = self._memory.get_all(filters=filters)
-        results = _unwrap_results(response)
-        return {"results": results, "count": len(results)}
+        all_results = _unwrap_results(response)
+        total = len(all_results)
+        start = (page - 1) * page_size
+        results = all_results[start : start + page_size]
+        return {"results": results, "count": total}
 
     def add(
         self,
