@@ -380,6 +380,25 @@ class TestExtractMedia:
         assert "MEDIA:/absolute/path/to/file.png*" in cleaned
         assert "MEDIA:/tmp/rendered-output.png" not in cleaned
 
+    def test_media_tag_ignores_inline_code_without_path(self):
+        """Inline `MEDIA:` prose is documentation, not an attachment."""
+        content = "MCP image results render as `MEDIA:` tags, not silent drops."
+
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+
+        assert media == []
+        assert cleaned == content
+
+    def test_media_tag_ignores_inline_code_with_path_example(self):
+        """Inline code examples should stay visible and not upload files."""
+        content = "Use `MEDIA:/tmp/example.png` in final responses to attach a file."
+
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+
+        assert media == []
+        assert cleaned == content
+
+
 # ---------------------------------------------------------------------------
 # should_send_media_as_audio
 # ---------------------------------------------------------------------------
@@ -542,6 +561,16 @@ class TestGetHumanDelay:
             delay = BasePlatformAdapter._get_human_delay()
             assert 0.8 <= delay <= 2.5
 
+    def test_natural_mode_ignores_malformed_custom_env_vars(self):
+        env = {
+            "HERMES_HUMAN_DELAY_MODE": "natural",
+            "HERMES_HUMAN_DELAY_MIN_MS": "oops",
+            "HERMES_HUMAN_DELAY_MAX_MS": "still-bad",
+        }
+        with patch.dict(os.environ, env):
+            delay = BasePlatformAdapter._get_human_delay()
+            assert 0.8 <= delay <= 2.5
+
     def test_custom_mode_uses_env_vars(self):
         env = {
             "HERMES_HUMAN_DELAY_MODE": "custom",
@@ -551,6 +580,17 @@ class TestGetHumanDelay:
         with patch.dict(os.environ, env):
             delay = BasePlatformAdapter._get_human_delay()
             assert 0.1 <= delay <= 0.2
+
+    def test_custom_mode_tolerates_malformed_env_vars(self):
+        env = {
+            "HERMES_HUMAN_DELAY_MODE": "custom",
+            "HERMES_HUMAN_DELAY_MIN_MS": "oops",
+            "HERMES_HUMAN_DELAY_MAX_MS": "still-bad",
+        }
+        with patch.dict(os.environ, env):
+            # falls back to the custom-mode defaults instead of crashing
+            delay = BasePlatformAdapter._get_human_delay()
+            assert 0.8 <= delay <= 2.5
 
 
 # ---------------------------------------------------------------------------
