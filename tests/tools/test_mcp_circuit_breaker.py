@@ -179,6 +179,57 @@ def test_circuit_breaker_reopens_on_probe_failure(monkeypatch, tmp_path):
         _cleanup(mcp_tool, "srv")
 
 
+def test_half_open_dead_stdio_requests_reconnect_without_probe(monkeypatch, tmp_path):
+    """A half-open probe must not reuse a stdio session whose child died."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    call_count = {"n": 0}
+
+    async def _call_tool_unused(*a, **kw):
+        call_count["n"] += 1
+        raise AssertionError("dead stdio session should not be probed")
+
+    server = _install_stub_server(mcp_tool, "srv", _call_tool_unused)
+    server._transport_kind = "stdio"
+    server._stdio_child_pids = {424242}
+    # Force the reconnect helper down the direct event.set path so the test
+    # can assert synchronously without depending on the background MCP loop.
+    monkeypatch.setattr(mcp_tool, "_mcp_loop", None)
+
+    def _fake_kill(pid, sig):
+        assert pid == 424242
+        assert sig == 0
+        raise ProcessLookupError
+
+    monkeypatch.setattr(mcp_tool.os, "kill", _fake_kill)
+
+    try:
+        mcp_tool._server_error_counts["srv"] = mcp_tool._CIRCUIT_BREAKER_THRESHOLD
+        fake_now = [1000.0]
+
+        def _fake_monotonic():
+            return fake_now[0]
+
+        monkeypatch.setattr(mcp_tool.time, "monotonic", _fake_monotonic)
+        if hasattr(mcp_tool, "_server_breaker_opened_at"):
+            mcp_tool._server_breaker_opened_at["srv"] = fake_now[0]
+        cooldown = getattr(mcp_tool, "_CIRCUIT_BREAKER_COOLDOWN_SEC", 60.0)
+        fake_now[0] += cooldown + 1.0
+
+        handler = _make_tool_handler("srv", "tool1", 10.0)
+        result = handler({})
+        parsed = json.loads(result)
+
+        assert "stale" in parsed.get("error", "").lower(), parsed
+        server._reconnect_event.set.assert_called_once()
+        assert call_count["n"] == 0
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
 def test_circuit_breaker_cleared_on_reconnect(monkeypatch, tmp_path):
     """When the auth-recovery path successfully reconnects the server,
     the breaker should be cleared so subsequent calls aren't gated on a
