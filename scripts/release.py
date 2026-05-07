@@ -46,13 +46,17 @@ AUTHOR_MAP = {
     "oleksii.lisikh@gmail.com": "olisikh",
     "leone.parise@gmail.com": "leoneparise",
     "teknium@nousresearch.com": "teknium1",
+    "piyushvp1@gmail.com": "thelumiereguy",
+    "harish.kukreja@gmail.com": "counterposition",
     "cleo@edaphic.xyz": "curiouscleo",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
+    "128259593+Gutslabs@users.noreply.github.com": "Gutslabs",
     "159539633+MottledShadow@users.noreply.github.com": "MottledShadow",
     "aludwin+gh@gmail.com": "adamludwin",
     "ngusev@astralinux.ru": "NikolayGusev-astra",
     "liuguangyong201@hellobike.com": "liuguangyong93",
     "2093036+exiao@users.noreply.github.com": "exiao",
+    "kevyan1998@gmail.com": "kyan12",
     "rylen.anil@gmail.com": "rylena",
     "godnanijatin@gmail.com": "jatingodnani",
     "252811164+adybag14-cyber@users.noreply.github.com": "adybag14-cyber",
@@ -68,6 +72,9 @@ AUTHOR_MAP = {
     "wysie@users.noreply.github.com": "wysie",
     "jkausel@gmail.com": "jkausel-ai",
     "e.silacandmr@gmail.com": "Es1la",
+    "51599529+stephen0110@users.noreply.github.com": "stephen0110",
+    "265632032+sonic-netizen@users.noreply.github.com": "sonic-netizen",
+    "82531659+mwnickerson@users.noreply.github.com": "mwnickerson",
     "154585401+LeonSGP43@users.noreply.github.com": "LeonSGP43",
     "zjtan1@gmail.com": "zeejaytan",
     "asslaenn5@gmail.com": "Aslaaen",
@@ -117,6 +124,8 @@ AUTHOR_MAP = {
     "heathley@Heathley-MacBook-Air.local": "heathley",
     "vlad19@gmail.com": "dandaka",
     "adamrummer@gmail.com": "cyclingwithelephants",
+    # Temporary tool-progress cleanup salvage (May 2026)
+    "Mrcharlesiv@gmail.com": "mrcharlesiv",
     "nbot@liizfq.top": "liizfq",
     "274096618+hermes-agent-dhabibi@users.noreply.github.com": "dhabibi",
     "dejie.guo@gmail.com": "JayGwod",
@@ -439,6 +448,9 @@ AUTHOR_MAP = {
     "xowiekk@gmail.com": "Xowiek",
     "1243352777@qq.com": "zons-zhaozhy",
     "e.silacandmr@gmail.com": "Es1la",
+    "51599529+stephen0110@users.noreply.github.com": "stephen0110",
+    "265632032+sonic-netizen@users.noreply.github.com": "sonic-netizen",
+    "82531659+mwnickerson@users.noreply.github.com": "mwnickerson",
     "h3057183414@gmail.com": "CoreyNoDream",
     "franksong2702@gmail.com": "franksong2702",
     "673088860@qq.com": "ambition0802",
@@ -844,6 +856,9 @@ AUTHOR_MAP = {
     "charliekerfoot@gmail.com": "CharlieKerfoot",  # PR #18951
     # Debug share upload-time redaction (May 2026)
     "dhuysamen@gmail.com": "GodsBoy",  # PR #19318
+    "mrcoferland@gmail.com": "mrcoferland",  # PR #19023
+    "chenlinfeng@ruije.com.cn": "noOne-list",  # PR #19050
+    "briansu@Mac-mini.attlocal.net": "likejudy",  # PR #19052
 }
 
 
