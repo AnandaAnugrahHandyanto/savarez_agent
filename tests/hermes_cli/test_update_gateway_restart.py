@@ -415,7 +415,7 @@ class TestCmdUpdateLaunchdRestart:
             pid=12345,
         )
 
-        with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
+        with patch.object(gateway_cli, "find_gateway_pids", side_effect=[[12345], []]), \
              patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
              patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
              patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=True) as graceful, \
@@ -453,7 +453,7 @@ class TestCmdUpdateLaunchdRestart:
             pid=12345,
         )
 
-        with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
+        with patch.object(gateway_cli, "find_gateway_pids", side_effect=[[12345], []]), \
              patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
              patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
              patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=False) as graceful, \
@@ -872,7 +872,13 @@ class TestServicePidExclusion:
             launchctl_loaded=True,
         )
 
+        find_calls = 0
+
         def fake_find(exclude_pids=None, all_profiles=False):
+            nonlocal find_calls
+            find_calls += 1
+            if find_calls > 1:
+                return []
             _exclude = exclude_pids or set()
             return [p for p in [SERVICE_PID, MANUAL_PID] if p not in _exclude]
 
@@ -902,6 +908,7 @@ class TestGetServicePids:
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_service_name", lambda: "hermes-gateway")
 
         def fake_run(cmd, **kwargs):
             joined = " ".join(str(c) for c in cmd)
@@ -919,6 +926,34 @@ class TestGetServicePids:
 
         pids = gateway_cli._get_service_pids()
         assert 12345 in pids
+
+    def test_systemd_pids_default_to_current_profile(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_service_name", lambda: "hermes-gateway")
+
+        def fake_run(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "list-units" in joined:
+                return subprocess.CompletedProcess(
+                    cmd, 0,
+                    stdout=(
+                        "hermes-gateway.service loaded active running Hermes Gateway\n"
+                        "hermes-gateway-coder.service loaded active running Hermes Gateway\n"
+                    ),
+                    stderr="",
+                )
+            if "show" in joined and "MainPID" in joined:
+                service = cmd[cmd.index("show") + 1]
+                pid = "11111" if service == "hermes-gateway.service" else "22222"
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{pid}\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._get_service_pids() == {11111}
+        assert gateway_cli._get_service_pids(all_profiles=True) == {11111, 22222}
 
     def test_returns_launchd_pid(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_linux", lambda: False)
@@ -1033,7 +1068,7 @@ class TestFindGatewayPidsExclude:
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
         monkeypatch.setattr("os.getpid", lambda: 999)
-        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda all_profiles=False: set())
         monkeypatch.setattr(gateway_cli, "_profile_arg", lambda hermes_home=None: "--profile orcha")
 
         pids = gateway_cli.find_gateway_pids()
