@@ -23,6 +23,8 @@ from typing import IO, Callable, Protocol
 from hermes_constants import get_hermes_home
 from tools.interrupt import is_interrupted
 
+_IS_WINDOWS = os.name == "nt"
+
 logger = logging.getLogger(__name__)
 
 # Opt-in debug tracing for the interrupt/activity/poll machinery.  Set
@@ -489,39 +491,59 @@ class BaseEnvironment(ABC):
 
         def _drain():
             fd = proc.stdout.fileno()
-            idle_after_exit = 0
-            try:
-                while True:
-                    try:
-                        ready, _, _ = select.select([fd], [], [], 0.1)
-                    except (ValueError, OSError):
-                        break  # fd already closed
-                    if ready:
-                        try:
-                            chunk = os.read(fd, 4096)
-                        except (ValueError, OSError):
-                            break
-                        if not chunk:
-                            break  # true EOF — all writers closed
-                        output_chunks.append(decoder.decode(chunk))
-                        idle_after_exit = 0
-                    elif proc.poll() is not None:
-                        # bash is gone and the pipe was idle for ~100ms.  Give
-                        # it two more cycles to catch any buffered tail, then
-                        # stop — otherwise we wait forever on a grandchild pipe.
-                        idle_after_exit += 1
-                        if idle_after_exit >= 3:
-                            break
-            finally:
-                # Flush any bytes buffered mid-sequence.  With ``errors="replace"``
-                # this emits U+FFFD for any final incomplete sequence rather than
-                # raising.
+
+            # On Windows, select.select() does NOT work on pipe file descriptors
+            # (only sockets). Use blocking os.read() in a daemon thread instead.
+            # EOF arrives promptly when bash exits, so blocking reads are safe.
+            if _IS_WINDOWS:
                 try:
-                    tail = decoder.decode(b"", final=True)
-                    if tail:
-                        output_chunks.append(tail)
-                except Exception:
+                    while True:
+                        chunk = os.read(fd, 4096)
+                        if not chunk:
+                            break
+                        output_chunks.append(decoder.decode(chunk))
+                except (ValueError, OSError):
                     pass
+                finally:
+                    try:
+                        tail = decoder.decode(b"", final=True)
+                        if tail:
+                            output_chunks.append(tail)
+                    except Exception:
+                        pass
+                return
+
+            # Unix: use select.select() for efficient waiting
+            idle_after_exit = 0
+            while True:
+                try:
+                    ready, _, _ = select.select([fd], [], [], 0.1)
+                except (ValueError, OSError):
+                    break  # fd already closed
+                if ready:
+                    try:
+                        chunk = os.read(fd, 4096)
+                    except (ValueError, OSError):
+                        break
+                    if not chunk:
+                        break  # true EOF — all writers closed
+                    output_chunks.append(decoder.decode(chunk))
+                    idle_after_exit = 0
+                elif proc.poll() is not None:
+                    # bash is gone and the pipe was idle for ~100ms.  Give
+                    # it two more cycles to catch any buffered tail, then
+                    # stop — otherwise we wait forever on a grandchild pipe.
+                    idle_after_exit += 1
+                    if idle_after_exit >= 3:
+                        break
+
+            # Flush any bytes buffered mid-sequence
+            try:
+                tail = decoder.decode(b"", final=True)
+                if tail:
+                    output_chunks.append(tail)
+            except Exception:
+                pass
 
         drain_thread = threading.Thread(target=_drain, daemon=True)
         drain_thread.start()
