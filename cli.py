@@ -5747,10 +5747,13 @@ class HermesCLI:
             _ask()
         return result[0]
 
-    def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:
+    def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None, recents: list = None) -> None:
         """Open prompt_toolkit-native /model picker modal."""
         self._capture_modal_input_snapshot()
         default_idx = next((i for i, p in enumerate(providers) if p.get("is_current")), 0)
+        # Shift default if we have recents entries (they come first)
+        if recents:
+            default_idx += len(recents) + 1  # +1 for the divider
         self._model_picker_state = {
             "stage": "provider",
             "providers": providers,
@@ -5759,6 +5762,7 @@ class HermesCLI:
             "current_provider": current_provider,
             "user_provs": user_provs,
             "custom_provs": custom_provs,
+            "_recents": recents or [],
         }
         self._invalidate(min_interval=0.0)
 
@@ -5766,6 +5770,22 @@ class HermesCLI:
         self._model_picker_state = None
         self._restore_modal_input_snapshot()
         self._invalidate(min_interval=0.0)
+
+    def _load_picker_recents(self) -> list:
+        """Load recents for the /model picker, respecting config toggle."""
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            limit = cfg.get("display", {}).get("model_recents", 8)
+            if not isinstance(limit, int) or limit <= 0:
+                return []
+        except Exception:
+            limit = 8
+        try:
+            from hermes_cli.model_recents import load_recent_models
+            return load_recent_models(limit=limit)
+        except Exception:
+            return []
 
     @staticmethod
     def _compute_model_picker_viewport(
@@ -5884,10 +5904,45 @@ class HermesCLI:
         stage = state.get("stage")
         if stage == "provider":
             providers = state.get("providers") or []
-            if selected >= len(providers):
+            recents = state.get("_recents") or []
+            recents_count = len(recents)
+            recents_section_height = 0
+            if recents:
+                recents_section_height = recents_count + 2  # header + entries + divider
+            # Determine what was actually selected
+            choice_offset = selected  # index into the virtual choices list
+            if recents and choice_offset < recents_section_height:
+                # Selected a header, divider, or recent entry
+                if choice_offset == 0 or choice_offset == recents_section_height - 1:
+                    self._close_model_picker()  # divider or header — close
+                    return
+                # It's a recents entry (index 1..recents_count)
+                r_idx = choice_offset - 1
+                if r_idx < len(recents):
+                    r = recents[r_idx]
+                    from hermes_cli.model_switch import switch_model
+                    result = switch_model(
+                        raw_input=r["model"],
+                        current_provider=self.provider or "",
+                        current_model=self.model or "",
+                        current_base_url=self.base_url or "",
+                        current_api_key=self.api_key or "",
+                        is_global=persist_global,
+                        explicit_provider=str(r.get("provider", "")),
+                        user_providers=state.get("user_provs"),
+                        custom_providers=state.get("custom_provs"),
+                    )
+                    self._close_model_picker()
+                    self._apply_model_switch_result(result, persist_global)
+                else:
+                    self._close_model_picker()
+                return
+            # Adjust selected for the providers portion
+            provider_idx = selected - recents_section_height
+            if provider_idx >= len(providers):
                 self._close_model_picker()
                 return
-            provider_data = providers[selected]
+            provider_data = providers[provider_idx]
             # Use the curated model list from list_authenticated_providers()
             # (same lists as `hermes model` and gateway pickers).
             # Only fall back to the live provider catalog when the curated
@@ -5914,7 +5969,10 @@ class HermesCLI:
             cancel_idx = len(model_list) + 1
             if selected == back_idx:
                 state["stage"] = "provider"
-                state["selected"] = next((i for i, p in enumerate(state.get("providers") or []) if p.get("slug") == provider_data.get("slug")), 0)
+                recents = state.get("_recents") or []
+                recents_offset = len(recents) + 2 if recents else 0
+                provider_idx = next((i for i, p in enumerate(state.get("providers") or []) if p.get("slug") == provider_data.get("slug")), 0)
+                state["selected"] = provider_idx + recents_offset
                 self._invalidate(min_interval=0.0)
                 return
             if selected >= cancel_idx:
@@ -6000,6 +6058,7 @@ class HermesCLI:
                 provider_display,
                 user_provs=user_provs,
                 custom_provs=custom_provs,
+                recents=self._load_picker_recents(),
             )
             return
 
@@ -11697,7 +11756,17 @@ class HermesCLI:
             if stage == "provider":
                 title = "⚙ Model Picker — Select Provider"
                 choices = []
-                _providers = state.get("providers")
+                _providers = state.get("_providers") if "_providers" in state else state.get("providers")
+                _recents = state.get("_recents") or []
+
+                # Recent models section (injected before providers)
+                if _recents:
+                    choices.append("── RECENT ──────────────")
+                    for r in _recents:
+                        label = f"  {r['model']}  (via {r.get('provider', '?')})"
+                        choices.append(label)
+                    choices.append("── PROVIDERS ───────────")
+
                 for p in _providers if isinstance(_providers, list) else []:
                     count = p.get("total_models", len(p.get("models", [])))
                     label = f"{p['name']} ({count} model{'s' if count != 1 else ''})"

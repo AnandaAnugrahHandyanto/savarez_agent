@@ -851,6 +851,10 @@ DEFAULT_CONFIG = {
             "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
         },
         "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
+        # Show recently-used models at the top of the /model picker.
+        # Integer number of recents to display (default 8).  Set to 0 to
+        # disable the section entirely.
+        "model_recents": 8,
     },
 
     # Web dashboard settings

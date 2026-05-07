@@ -1024,6 +1024,11 @@ def switch_model(
         warnings.append(hermes_warn)
 
     # --- Build result ---
+    try:
+        from hermes_cli.model_recents import record_model_selection
+        record_model_selection(target_provider, new_model)
+    except Exception:
+        pass  # never fail a model switch over recents tracking
     return ModelSwitchResult(
         success=True,
         new_model=new_model,
