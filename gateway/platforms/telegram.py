@@ -2095,6 +2095,10 @@ class TelegramAdapter(BasePlatformAdapter):
             )
         return error
 
+    def _invalid_media_path_error(self, label: str, path: str) -> str:
+        """Build an actionable error for paths that exist but are not regular files."""
+        return f"{label} path is not a file: {path}"
+
     async def send_voice(
         self,
         chat_id: str,
@@ -2359,6 +2363,8 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             if not os.path.exists(file_path):
                 return SendResult(success=False, error=self._missing_media_path_error("File", file_path))
+            if not os.path.isfile(file_path):
+                return SendResult(success=False, error=self._invalid_media_path_error("File", file_path))
 
             display_name = file_name or os.path.basename(file_path)
             _thread = self._metadata_thread_id(metadata)
@@ -2374,8 +2380,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            print(f"[{self.name}] Failed to send document: {e}")
-            return await super().send_document(chat_id, file_path, caption, file_name, reply_to)
+            logger.error(
+                "[%s] Failed to send Telegram document: %s",
+                self.name,
+                e,
+                exc_info=True,
+            )
+            return SendResult(success=False, error=f"Failed to send Telegram document: {e}")
 
     async def send_video(
         self,
