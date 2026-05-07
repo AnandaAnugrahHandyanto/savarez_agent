@@ -19,7 +19,10 @@ Output is saved as PNG under ``$HERMES_HOME/cache/images/``.
 
 from __future__ import annotations
 
+import base64
 import logging
+import mimetypes
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_gen_provider import (
@@ -161,7 +164,50 @@ def _build_codex_client():
         return None
 
 
-def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> Optional[str]:
+def _reference_image_to_input_url(ref: str) -> str:
+    """Normalize a reference image into a Responses API-compatible URL."""
+    value = (ref or "").strip()
+    if not value:
+        raise ValueError("Reference image entries must be non-empty strings")
+
+    lowered = value.lower()
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        return value
+    if lowered.startswith("data:image/"):
+        return value
+
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    if not path.is_file():
+        raise ValueError(f"Reference image path does not exist: {value}")
+
+    mime, _ = mimetypes.guess_type(str(path))
+    if not mime or not mime.startswith("image/"):
+        mime = "image/png"
+    b64 = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{b64}"
+
+
+def _build_input_parts(prompt: str, reference_images: Optional[List[str]]) -> List[Dict[str, Any]]:
+    content: List[Dict[str, Any]] = [{"type": "input_text", "text": prompt}]
+    for ref in reference_images or []:
+        content.append({
+            "type": "input_image",
+            "image_url": _reference_image_to_input_url(ref),
+            "detail": "high",
+        })
+    return [{"type": "message", "role": "user", "content": content}]
+
+
+def _collect_image_b64(
+    client: Any,
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    reference_images: Optional[List[str]] = None,
+) -> Optional[str]:
     """Stream a Codex Responses image_generation call and return the b64 image."""
     image_b64: Optional[str] = None
 
@@ -169,11 +215,7 @@ def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> 
         model=_CODEX_CHAT_MODEL,
         store=False,
         instructions=_CODEX_INSTRUCTIONS,
-        input=[{
-            "type": "message",
-            "role": "user",
-            "content": [{"type": "input_text", "text": prompt}],
-        }],
+        input=_build_input_parts(prompt, reference_images),
         tools=[{
             "type": "image_generation",
             "model": API_MODEL,
@@ -274,6 +316,9 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
     ) -> Dict[str, Any]:
         prompt = (prompt or "").strip()
         aspect = resolve_aspect_ratio(aspect_ratio)
+        reference_images = kwargs.get("reference_images") or []
+        if not isinstance(reference_images, list):
+            reference_images = []
 
         if not prompt:
             return error_response(
@@ -324,6 +369,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 prompt=prompt,
                 size=size,
                 quality=meta["quality"],
+                reference_images=reference_images,
             )
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
@@ -364,7 +410,11 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             prompt=prompt,
             aspect_ratio=aspect,
             provider="openai-codex",
-            extra={"size": size, "quality": meta["quality"]},
+            extra={
+                "size": size,
+                "quality": meta["quality"],
+                "reference_image_count": len(reference_images),
+            },
         )
 
 

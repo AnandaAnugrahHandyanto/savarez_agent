@@ -873,6 +873,12 @@ IMAGE_GENERATE_SCHEMA = {
                 "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
             },
+            "reference_images": {
+                "type": "array",
+                "description": "Optional local file paths, http(s) URLs, or data:image URLs to use as reference images for providers that support image-conditioned generation or editing.",
+                "items": {"type": "string"},
+                "maxItems": 4,
+            },
         },
         "required": ["prompt"],
     },
@@ -900,7 +906,7 @@ def _read_configured_image_provider():
     return None
 
 
-def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str, reference_images=None):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
@@ -914,6 +920,9 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
     configured = _read_configured_image_provider()
     if not configured or configured == "fal":
         return None
+
+    if not isinstance(reference_images, list):
+        reference_images = []
 
     try:
         # Import locally so plugin discovery isn't triggered just by
@@ -950,7 +959,11 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
         })
 
     try:
-        result = provider.generate(prompt=prompt, aspect_ratio=aspect_ratio)
+        result = provider.generate(
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            reference_images=reference_images,
+        )
     except Exception as exc:
         logger.warning(
             "Image gen provider '%s' raised: %s",
@@ -977,10 +990,11 @@ def _handle_image_generate(args, **kw):
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+    reference_images = args.get("reference_images") or []
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
-    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
+    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio, reference_images=reference_images)
     if dispatched is not None:
         return dispatched
 

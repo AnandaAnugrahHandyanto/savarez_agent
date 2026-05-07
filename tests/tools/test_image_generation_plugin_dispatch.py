@@ -27,6 +27,7 @@ class _FakeCodexProvider(ImageGenProvider):
             "prompt": prompt,
             "aspect_ratio": aspect_ratio,
             "provider": "codex",
+            "reference_images": kwargs.get("reference_images", []),
         }
 
 
@@ -44,13 +45,18 @@ class TestPluginDispatch:
         monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda: None)
         monkeypatch.setattr(registry_module, "get_provider", lambda name: _FakeCodexProvider() if name == "codex" else None)
 
-        dispatched = image_generation_tool._dispatch_to_plugin_provider("draw cat", "square")
+        dispatched = image_generation_tool._dispatch_to_plugin_provider(
+            "draw cat",
+            "square",
+            reference_images=["/tmp/ref.png"],
+        )
         payload = json.loads(dispatched)
 
         assert payload["success"] is True
         assert payload["provider"] == "codex"
         assert payload["image"] == "/tmp/codex-test.png"
         assert payload["aspect_ratio"] == "square"
+        assert payload["reference_images"] == ["/tmp/ref.png"]
 
     def test_dispatch_reports_missing_registered_provider(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
