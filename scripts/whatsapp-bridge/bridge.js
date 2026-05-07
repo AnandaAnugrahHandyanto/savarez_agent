@@ -69,6 +69,18 @@ function normalizeWhatsAppId(value) {
   return String(value).replace(':', '@');
 }
 
+function normalizeChatJid(value) {
+  // Baileys jidDecode() returns undefined for bare numeric IDs and crashes
+  // sock.sendMessage. Append @g.us for groups, @s.whatsapp.net for DMs.
+  if (!value) return value;
+  const v = String(value);
+  if (v.includes('@')) return v;
+  // Group JIDs: newer 120363... format, or legacy <phone>-<timestamp>.
+  if (v.startsWith('120363') || v.includes('-')) return v + '@g.us';
+  return v + '@s.whatsapp.net';
+}
+
+
 function getMessageContent(msg) {
   const content = msg?.message || {};
   if (content.ephemeralMessage?.message) return content.ephemeralMessage.message;
@@ -423,7 +435,7 @@ app.post('/send', async (req, res) => {
   }
 
   try {
-    const sent = await sock.sendMessage(chatId, { text: formatOutgoingMessage(message) });
+    const sent = await sock.sendMessage(normalizeChatJid(chatId), { text: formatOutgoingMessage(message) });
 
     // Track sent message ID to prevent echo-back loops
     if (sent?.key?.id) {
@@ -451,8 +463,8 @@ app.post('/edit', async (req, res) => {
   }
 
   try {
-    const key = { id: messageId, fromMe: true, remoteJid: chatId };
-    await sock.sendMessage(chatId, { text: formatOutgoingMessage(message), edit: key });
+    const key = { id: messageId, fromMe: true, remoteJid: normalizeChatJid(chatId) };
+    await sock.sendMessage(normalizeChatJid(chatId), { text: formatOutgoingMessage(message), edit: key });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -545,7 +557,7 @@ app.post('/send-media', async (req, res) => {
         break;
     }
 
-    const sent = await sock.sendMessage(chatId, msgPayload);
+    const sent = await sock.sendMessage(normalizeChatJid(chatId), msgPayload);
 
     // Track sent message ID to prevent echo-back loops
     if (sent?.key?.id) {
@@ -571,7 +583,7 @@ app.post('/typing', async (req, res) => {
   if (!chatId) return res.status(400).json({ error: 'chatId required' });
 
   try {
-    await sock.sendPresenceUpdate('composing', chatId);
+    await sock.sendPresenceUpdate('composing', normalizeChatJid(chatId));
     res.json({ success: true });
   } catch (err) {
     res.json({ success: false });
@@ -580,7 +592,7 @@ app.post('/typing', async (req, res) => {
 
 // Chat info
 app.get('/chat/:id', async (req, res) => {
-  const chatId = req.params.id;
+  const chatId = normalizeChatJid(req.params.id);
   const isGroup = chatId.endsWith('@g.us');
 
   if (isGroup && sock) {
