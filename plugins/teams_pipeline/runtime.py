@@ -13,6 +13,28 @@ from plugins.teams_pipeline.subscriptions import build_graph_client
 logger = logging.getLogger(__name__)
 
 
+def _teams_delivery_is_configured(teams_extra: dict[str, Any], teams_delivery: dict[str, Any]) -> bool:
+    delivery_mode = str(
+        teams_delivery.get("mode")
+        or teams_delivery.get("delivery_mode")
+        or teams_extra.get("delivery_mode")
+        or ""
+    ).strip().lower()
+
+    if delivery_mode == "incoming_webhook":
+        return bool(
+            teams_delivery.get("incoming_webhook_url")
+            or teams_extra.get("incoming_webhook_url")
+        )
+    if delivery_mode == "graph":
+        chat_id = teams_delivery.get("chat_id") or teams_extra.get("chat_id")
+        team_id = teams_delivery.get("team_id") or teams_extra.get("team_id")
+        channel_id = teams_delivery.get("channel_id") or teams_extra.get("channel_id")
+        return bool(chat_id or (team_id and channel_id))
+
+    return False
+
+
 def build_pipeline_runtime_config(gateway_config: Any) -> dict[str, Any]:
     """Build pipeline config from gateway platform config.
 
@@ -27,7 +49,6 @@ def build_pipeline_runtime_config(gateway_config: Any) -> dict[str, Any]:
 
     if teams_config and teams_config.enabled:
         teams_delivery = dict(pipeline_config.get("teams_delivery") or {})
-        teams_delivery.setdefault("enabled", True)
 
         delivery_mode = str(teams_extra.get("delivery_mode") or "").strip()
         if delivery_mode:
@@ -45,16 +66,27 @@ def build_pipeline_runtime_config(gateway_config: Any) -> dict[str, Any]:
                 teams_delivery[key] = value
 
         if teams_delivery:
+            teams_delivery["enabled"] = _teams_delivery_is_configured(teams_extra, teams_delivery)
             pipeline_config["teams_delivery"] = teams_delivery
 
     return pipeline_config
 
 
 def build_pipeline_runtime(gateway: Any) -> TeamsMeetingPipeline:
+    teams_sender = None
+    teams_config = gateway.config.platforms.get(Platform("teams"))
+    pipeline_config = build_pipeline_runtime_config(gateway.config)
+    teams_delivery = dict(pipeline_config.get("teams_delivery") or {})
+    if teams_config and teams_config.enabled and teams_delivery.get("enabled"):
+        from plugins.platforms.teams.adapter import TeamsSummaryWriter
+
+        teams_sender = TeamsSummaryWriter(platform_config=teams_config)
+
     return TeamsMeetingPipeline(
         graph_client=build_graph_client(),
         store=TeamsPipelineStore(resolve_teams_pipeline_store_path()),
-        config=build_pipeline_runtime_config(gateway.config),
+        config=pipeline_config,
+        teams_sender=teams_sender,
     )
 
 
