@@ -1,0 +1,5 @@
+name: role-doc-router
+version: "0.1.0"
+description: Route each user turn to the most relevant role document via a delegated child agent
+provides_hooks:
+  - pre_llm_call

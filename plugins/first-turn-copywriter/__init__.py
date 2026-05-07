@@ -72,7 +72,7 @@ def register(ctx):
                 "delegate_task",
                 {
                     "goal": _SUBAGENT_GOAL,
-                    "context": f"当前用户消息：{user_message}",
+                    "context": "",
                     "max_iterations": 2,
                 },
                 parent_agent=agent,
