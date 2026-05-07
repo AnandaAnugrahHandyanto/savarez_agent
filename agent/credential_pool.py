@@ -29,6 +29,7 @@ from hermes_cli.auth import (
     _resolve_zai_base_url,
     _save_auth_store,
     _save_provider_state,
+    detect_zai_endpoint,
     read_credential_pool,
     write_credential_pool,
 )
@@ -594,6 +595,56 @@ class CredentialPool:
             logger.debug("Failed to sync Nous entry from auth.json: %s", exc)
         return entry
 
+    def _sync_endpoint_from_provider_state(self, entry: PooledCredential) -> PooledCredential:
+        """Sync a pool entry's base_url from provider_state when endpoints can change.
+
+        Some providers (Z.AI, and potentially others in future) have multiple API
+        surfaces and cache the working endpoint in ``provider_state.<provider>.detected_endpoint``.
+        When a pool entry was seeded with one endpoint but runtime resolution later
+        detected a different working endpoint, the pool entry's ``base_url`` becomes
+        stale and the entry may stay exhausted on the wrong endpoint indefinitely.
+
+        This method checks provider_state for a cached endpoint that differs from
+        the entry's current base_url. If found, it adopts the new endpoint and
+        clears exhaustion so the entry can be retried immediately.
+
+        Returns the updated entry (or the original if no change was needed).
+        """
+        if self.provider not in ("zai",):
+            return entry
+        try:
+            with _auth_store_lock():
+                auth_store = _load_auth_store()
+                state = _load_provider_state(auth_store, self.provider)
+            if not isinstance(state, dict):
+                return entry
+            detected = state.get("detected_endpoint")
+            if not isinstance(detected, dict):
+                return entry
+            detected_url = detected.get("base_url", "").rstrip("/")
+            entry_url = (entry.base_url or "").rstrip("/")
+            if detected_url and detected_url != entry_url:
+                logger.debug(
+                    "Pool entry %s: syncing %s endpoint from auth.json %s -> %s",
+                    entry.id, self.provider, entry_url, detected_url,
+                )
+                updated = replace(
+                    entry,
+                    base_url=detected_url,
+                    last_status=None,
+                    last_status_at=None,
+                    last_error_code=None,
+                    last_error_reason=None,
+                    last_error_message=None,
+                    last_error_reset_at=None,
+                )
+                self._replace_entry(entry, updated)
+                self._persist()
+                return updated
+        except Exception as exc:
+            logger.debug("Failed to sync %s entry endpoint from auth.json: %s", self.provider, exc)
+        return entry
+
     def _sync_device_code_entry_to_auth_store(self, entry: PooledCredential) -> None:
         """Write refreshed pool entry tokens back to auth.json providers.
 
@@ -883,11 +934,23 @@ class CredentialPool:
                 if synced is not entry:
                     entry = synced
                     cleared_any = True
+            # For providers with multiple endpoints cached in provider_state,
+            # sync the detected endpoint from auth.json before checking exhaustion.
+            # This prevents entries from staying stranded on a stale base_url
+            # after runtime resolution has found a different working endpoint.
+            if entry.last_status == STATUS_EXHAUSTED:
+                synced = self._sync_endpoint_from_provider_state(entry)
+                if synced is not entry:
+                    entry = synced
+                    cleared_any = True
             if entry.last_status == STATUS_EXHAUSTED:
                 exhausted_until = _exhausted_until(entry)
                 if exhausted_until is not None and now < exhausted_until:
                     continue
                 if clear_expired:
+                    previous_error_code = entry.last_error_code
+                    previous_error_reason = entry.last_error_reason
+                    previous_error_message = entry.last_error_message
                     cleared = replace(
                         entry,
                         last_status=STATUS_OK,
@@ -900,6 +963,60 @@ class CredentialPool:
                     self._replace_entry(entry, cleared)
                     entry = cleared
                     cleared_any = True
+                    # For providers with endpoint detection, re-probe after
+                    # cooldown clears to ensure the cached base_url is still
+                    # valid.  Quota may have shifted between endpoints.
+                    if self.provider == "zai":
+                        api_key = entry.access_token or ""
+                        if api_key:
+                            try:
+                                detected = detect_zai_endpoint(api_key, timeout=8.0)
+                                if detected and detected.get("base_url"):
+                                    new_url = detected["base_url"].rstrip("/")
+                                    old_url = (entry.base_url or "").rstrip("/")
+                                    if new_url != old_url:
+                                        logger.debug(
+                                            "Pool entry %s: re-probed %s endpoint %s -> %s",
+                                            entry.id, self.provider, old_url, new_url,
+                                        )
+                                        entry = replace(entry, base_url=new_url)
+                                        self._replace_entry(cleared, entry)
+                                        cleared_any = True
+                                else:
+                                    # Probe failed — no endpoint works, keep exhausted
+                                    logger.debug(
+                                        "Pool entry %s: %s re-probe failed, keeping exhausted",
+                                        entry.id, self.provider,
+                                    )
+                                    entry = replace(
+                                        entry,
+                                        last_status=STATUS_EXHAUSTED,
+                                        last_status_at=now,
+                                        last_error_code=previous_error_code,
+                                        last_error_reason=previous_error_reason,
+                                        last_error_message=previous_error_message,
+                                        last_error_reset_at=None,
+                                    )
+                                    self._replace_entry(cleared, entry)
+                                    cleared_any = True
+                                    continue
+                            except Exception as exc:
+                                logger.debug(
+                                    "Pool entry %s: %s re-probe error: %s",
+                                    entry.id, self.provider, exc,
+                                )
+                                entry = replace(
+                                    entry,
+                                    last_status=STATUS_EXHAUSTED,
+                                    last_status_at=now,
+                                    last_error_code=previous_error_code,
+                                    last_error_reason=previous_error_reason,
+                                    last_error_message=previous_error_message,
+                                    last_error_reset_at=None,
+                                )
+                                self._replace_entry(cleared, entry)
+                                cleared_any = True
+                                continue
             if refresh and self._entry_needs_refresh(entry):
                 refreshed = self._refresh_entry(entry, force=False)
                 if refreshed is None:
