@@ -46,6 +46,10 @@ class TestProviderEnvDetection:
         content = "KIMI_CN_API_KEY=sk-test\n"
         assert _has_provider_env_config(content)
 
+    def test_detects_gemini_api_key(self):
+        content = "GOOGLE_API_KEY=sk-test\n"
+        assert _has_provider_env_config(content)
+
     def test_returns_false_when_no_provider_settings(self):
         content = "TERMINAL_ENV=local\n"
         assert not _has_provider_env_config(content)
@@ -704,6 +708,137 @@ def test_run_doctor_dashscope_retries_china_endpoint_after_intl_unauthorized(mon
         url == "https://dashscope.aliyuncs.com/compatible-mode/v1/models"
         for url, _, _ in calls
     )
+
+
+def test_run_doctor_gemini_uses_google_api_key_auth(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    (home / ".env").write_text("GOOGLE_API_KEY=gemini-key\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    monkeypatch.setattr(
+        doctor_mod,
+        "_APIKEY_PROVIDERS_CACHE",
+        [
+            (
+                "gemini",
+                ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+                "https://generativelanguage.googleapis.com/v1beta/models",
+                None,
+                True,
+            )
+        ],
+    )
+    monkeypatch.setenv("GOOGLE_API_KEY", "gemini-key")
+    monkeypatch.setenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta")
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    except ImportError:
+        pass
+
+    calls = []
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append((url, headers, timeout))
+        return types.SimpleNamespace(status_code=200)
+
+    import httpx
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert "gemini" in out
+    assert len(calls) == 1
+    assert calls[0][0] == "https://generativelanguage.googleapis.com/v1beta/models"
+    assert calls[0][2] == 10
+    headers = calls[0][1]
+    assert headers["x-goog-api-key"] == "gemini-key"
+    assert "Authorization" not in headers
+    assert "invalid API key" not in out
+
+
+def test_run_doctor_gemini_auth_failure_reports_google_key_issue(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    (home / ".env").write_text("GOOGLE_API_KEY=bad-key\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    monkeypatch.setattr(
+        doctor_mod,
+        "_APIKEY_PROVIDERS_CACHE",
+        [
+            (
+                "gemini",
+                ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+                "https://generativelanguage.googleapis.com/v1beta/models",
+                None,
+                True,
+            )
+        ],
+    )
+    monkeypatch.setenv("GOOGLE_API_KEY", "bad-key")
+    monkeypatch.delenv("GEMINI_BASE_URL", raising=False)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    except ImportError:
+        pass
+
+    class FakeResponse:
+        status_code = 403
+        text = ""
+
+        def json(self):
+            return {"error": {"status": "PERMISSION_DENIED", "message": "API key not valid"}}
+
+    calls = []
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append((url, headers, timeout))
+        return FakeResponse()
+
+    import httpx
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert calls[0][0] == "https://generativelanguage.googleapis.com/v1beta/models"
+    assert "Authorization" not in calls[0][1]
+    assert "authentication failed" in out
+    assert "Check GOOGLE_API_KEY or GEMINI_API_KEY in .env" in out
 
 
 @pytest.mark.parametrize("base_url", [None, "https://opencode.ai/zen/go/v1"])

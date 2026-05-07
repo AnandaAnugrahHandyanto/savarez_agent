@@ -54,6 +54,9 @@ _PROVIDER_ENV_HINTS = (
     "OPENCODE_GO_API_KEY",
     "XIAOMI_API_KEY",
     "TOKENHUB_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "GEMINI_BASE_URL",
 )
 
 
@@ -190,6 +193,34 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
 
 
 _APIKEY_PROVIDERS_CACHE: list | None = None
+
+_GEMINI_DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+
+
+def _gemini_doctor_error_detail(resp) -> str:
+    try:
+        data = resp.json()
+        if isinstance(data, dict):
+            error = data.get("error")
+            if isinstance(error, dict):
+                message = str(error.get("message") or "").strip()
+                status = str(error.get("status") or "").strip()
+                return message or status
+    except Exception:
+        pass
+    return str(getattr(resp, "text", "") or "").strip()
+
+
+def _gemini_doctor_auth_failed(resp) -> bool:
+    if resp.status_code in (401, 403):
+        return True
+    if resp.status_code != 400:
+        return False
+    detail = _gemini_doctor_error_detail(resp).lower()
+    return any(
+        marker in detail
+        for marker in ("api key", "apikey", "credential", "auth", "permission")
+    )
 
 
 def _build_apikey_providers_list() -> list:
@@ -1213,6 +1244,29 @@ def run_doctor(args):
                     _base = _to_openai_base_url(_base)
                 if base_url_host_matches(_base, "api.kimi.com") and _base.rstrip("/").endswith("/coding"):
                     _base = _base.rstrip("/") + "/v1"
+                if _pname == "gemini":
+                    _base = os.getenv("GEMINI_BASE_URL", "") or _base or _GEMINI_DEFAULT_BASE_URL
+                    _url = _base.rstrip("/") + "/models"
+                    _resp = httpx.get(
+                        _url,
+                        headers={
+                            "x-goog-api-key": _key,
+                            "User-Agent": _HERMES_USER_AGENT,
+                        },
+                        timeout=10,
+                    )
+                    if _resp.status_code == 200:
+                        print(f"\r  {color('✓', Colors.GREEN)} {_label}                          ")
+                    elif _gemini_doctor_auth_failed(_resp):
+                        print(f"\r  {color('✗', Colors.RED)} {_label} {color('(authentication failed)', Colors.DIM)}           ")
+                        issues.append("Check GOOGLE_API_KEY or GEMINI_API_KEY in .env")
+                    else:
+                        _detail = _gemini_doctor_error_detail(_resp)
+                        _msg = f"HTTP {_resp.status_code}"
+                        if _detail:
+                            _msg = f"{_msg}: {_detail[:120]}"
+                        print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'({_msg})', Colors.DIM)}           ")
+                    continue
                 _url = (_base.rstrip("/") + "/models") if _base else _default_url
                 _headers = {
                     "Authorization": f"Bearer {_key}",
