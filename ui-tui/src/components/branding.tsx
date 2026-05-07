@@ -1,5 +1,5 @@
 import { Box, Text, useStdout } from '@hermes/ink'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
@@ -129,56 +129,42 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
     return line
   }
 
+  const sectionListBody = (
+    entries: [string, string[]][],
+    maxItems: number,
+    overflowLabel: string,
+    emptyFallback?: ReactNode
+  ) => {
+    if (emptyFallback && entries.length === 0) {
+      return emptyFallback
+    }
+
+    const shown = entries.slice(0, maxItems)
+    const overflow = entries.length - maxItems
+
+    return (
+      <>
+        {shown.map(([k, vs]) => (
+          <Text key={k} wrap="truncate">
+            <Text color={t.color.muted}>{strip(k)}: </Text>
+            <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
+          </Text>
+        ))}
+        {overflow > 0 && (
+          <Text color={t.color.muted}>(and {overflow} more {overflowLabel}…)</Text>
+        )}
+      </>
+    )
+  }
+
   // ── Collapsible skills section ──
   const skillEntries = Object.entries(info.skills).sort()
   const skillsTotal = flat(info.skills).length
   const skillsCatCount = skillEntries.length
 
-  const skillsBody = () => {
-    if (info.lazy && skillEntries.length === 0) {
-      return <InlineLoader label="scanning skills" t={t} />
-    }
-
-    const shown = skillEntries.slice(0, SKILLS_MAX)
-    const overflow = skillEntries.length - SKILLS_MAX
-
-    return (
-      <>
-        {shown.map(([k, vs]) => (
-          <Text key={k} wrap="truncate">
-            <Text color={t.color.muted}>{strip(k)}: </Text>
-            <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
-          </Text>
-        ))}
-        {overflow > 0 && (
-          <Text color={t.color.muted}>(and {overflow} more categories…)</Text>
-        )}
-      </>
-    )
-  }
-
   // ── Collapsible tools section ──
   const toolEntries = Object.entries(info.tools).sort()
   const toolsTotal = flat(info.tools).length
-
-  const toolsBody = () => {
-    const shown = toolEntries.slice(0, TOOLSETS_MAX)
-    const overflow = toolEntries.length - TOOLSETS_MAX
-
-    return (
-      <>
-        {shown.map(([k, vs]) => (
-          <Text key={k} wrap="truncate">
-            <Text color={t.color.muted}>{strip(k)}: </Text>
-            <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
-          </Text>
-        ))}
-        {overflow > 0 && (
-          <Text color={t.color.muted}>(and {overflow} more toolsets…)</Text>
-        )}
-      </>
-    )
-  }
 
   // ── Collapsible MCP section ──
   const mcpBody = () => (
@@ -257,7 +243,7 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
             t={t}
             title="Available Tools"
           />
-          {toolsOpen && toolsBody()}
+          {toolsOpen && sectionListBody(toolEntries, TOOLSETS_MAX, 'toolsets')}
         </Box>
 
         {/* ── Skills (collapsed by default) ── */}
@@ -270,7 +256,13 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
             t={t}
             title="Available Skills"
           />
-          {skillsOpen && skillsBody()}
+          {skillsOpen &&
+            sectionListBody(
+              skillEntries,
+              SKILLS_MAX,
+              'categories',
+              info.lazy ? <InlineLoader label="scanning skills" t={t} /> : null
+            )}
         </Box>
 
         {/* ── System Prompt (collapsed by default) ── */}
