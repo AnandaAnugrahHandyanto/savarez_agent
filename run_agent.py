@@ -2098,6 +2098,15 @@ class AIAgent:
             _api_retries = 3
         self._api_max_retries = _api_retries
 
+        # Whether to eagerly fallback on rate-limit/billing errors (429/402)
+        # instead of retrying the primary model.  Default True preserves
+        # existing behavior.  Configurable via agent.eager_rate_limit_fallback.
+        try:
+            _eager_rl = str(_agent_section.get("eager_rate_limit_fallback", True)).lower()
+            self._eager_rate_limit_fallback = _eager_rl in ("true", "1", "yes")
+        except Exception:
+            self._eager_rate_limit_fallback = True
+
         # Initialize context compressor for automatic context management
         # Compresses conversation when approaching model's context limit
         # Configuration via config.yaml (compression section)
@@ -13837,7 +13846,7 @@ class AIAgent:
                         FailoverReason.rate_limit,
                         FailoverReason.billing,
                     }
-                    if is_rate_limited and self._fallback_index < len(self._fallback_chain):
+                    if is_rate_limited and self._eager_rate_limit_fallback and self._fallback_index < len(self._fallback_chain):
                         # Don't eagerly fallback if credential pool rotation may
                         # still recover.  See _pool_may_recover_from_rate_limit
                         # for the single-credential-pool and CloudCode-quota
