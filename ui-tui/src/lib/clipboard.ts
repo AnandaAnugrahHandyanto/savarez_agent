@@ -1,6 +1,8 @@
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 
+import { type ClipboardResult, setClipboard as setInkClipboard } from '@hermes/ink'
+
 const execFileAsync = promisify(execFile)
 const CLIPBOARD_MAX_BUFFER = 4 * 1024 * 1024
 const POWERSHELL_ARGS = ['-NoProfile', '-NonInteractive', '-Command', 'Get-Clipboard -Raw'] as const
@@ -120,6 +122,24 @@ function writeClipboardCommands(
   attempts.push({ cmd: 'xsel', args: ['--clipboard', '--input'] })
 
   return attempts
+}
+
+export async function writeClipboardSmart(
+  text: string,
+  setClipboard: (text: string) => Promise<ClipboardResult> = setInkClipboard,
+  stdout: Pick<NodeJS.WriteStream, 'write'> = process.stdout
+): Promise<boolean> {
+  try {
+    const result = await setClipboard(text)
+
+    if (result.sequence) {
+      stdout.write(result.sequence)
+    }
+
+    return result.success
+  } catch {
+    return false
+  }
 }
 
 /**

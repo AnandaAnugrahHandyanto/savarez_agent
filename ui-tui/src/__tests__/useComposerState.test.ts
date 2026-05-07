@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
-import { looksLikeDroppedPath } from '../app/useComposerState.js'
+import { looksLikeDroppedPath, readPreferredClipboardText } from '../app/useComposerState.js'
 
 describe('looksLikeDroppedPath', () => {
   it('recognizes macOS screenshot temp paths and file URIs', () => {
@@ -55,5 +55,31 @@ describe('looksLikeDroppedPath', () => {
     expect(looksLikeDroppedPath('/usr/bin/test')).toBe(true)
     expect(looksLikeDroppedPath('/tmp/file.txt')).toBe(true)
     expect(looksLikeDroppedPath('/etc/hosts')).toBe(true) // has second /
+  })
+})
+
+describe('readPreferredClipboardText', () => {
+  it('tries OSC52 before native clipboard in remote shells', async () => {
+    const querier = {} as any
+    const readOsc52 = vi.fn().mockResolvedValueOnce(null)
+    const readNative = vi.fn().mockResolvedValueOnce('native text')
+
+    await expect(readPreferredClipboardText({ preferOsc52: true, querier, readNative, readOsc52 })).resolves.toBe(
+      'native text'
+    )
+
+    expect(readOsc52).toHaveBeenCalledBefore(readNative)
+  })
+
+  it('tries native before OSC52 in local shells', async () => {
+    const querier = {} as any
+    const readNative = vi.fn().mockResolvedValueOnce(null)
+    const readOsc52 = vi.fn().mockResolvedValueOnce('osc52 text')
+
+    await expect(readPreferredClipboardText({ preferOsc52: false, querier, readNative, readOsc52 })).resolves.toBe(
+      'osc52 text'
+    )
+
+    expect(readNative).toHaveBeenCalledBefore(readOsc52)
   })
 })

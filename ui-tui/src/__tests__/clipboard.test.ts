@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { isUsableClipboardText, readClipboardText, writeClipboardText } from '../lib/clipboard.js'
+import { isUsableClipboardText, readClipboardText, writeClipboardSmart, writeClipboardText } from '../lib/clipboard.js'
 
 describe('readClipboardText', () => {
   it('reads text from pbpaste on macOS', async () => {
@@ -96,6 +96,27 @@ describe('isUsableClipboardText', () => {
   it('rejects binary-looking clipboard payloads', () => {
     expect(isUsableClipboardText('PNG\u0000\u0001\u0002\u0003IHDR')).toBe(false)
     expect(isUsableClipboardText('TIFF\ufffd\ufffd\ufffdmetadata')).toBe(false)
+  })
+})
+
+describe('writeClipboardSmart', () => {
+  it('delegates to ink setClipboard, emits returned OSC52 bytes, and reports success', async () => {
+    const setClipboard = vi.fn().mockResolvedValue({ sequence: '\x1b]52;c;abc\x07', success: true })
+    const stdout = { write: vi.fn() }
+
+    await expect(writeClipboardSmart('hello world', setClipboard, stdout as any)).resolves.toBe(true)
+
+    expect(setClipboard).toHaveBeenCalledWith('hello world')
+    expect(stdout.write).toHaveBeenCalledWith('\x1b]52;c;abc\x07')
+  })
+
+  it('does not write to stdout when setClipboard returns no sequence', async () => {
+    const setClipboard = vi.fn().mockResolvedValue({ sequence: '', success: true })
+    const stdout = { write: vi.fn() }
+
+    await expect(writeClipboardSmart('hello world', setClipboard, stdout as any)).resolves.toBe(true)
+
+    expect(stdout.write).not.toHaveBeenCalled()
   })
 })
 

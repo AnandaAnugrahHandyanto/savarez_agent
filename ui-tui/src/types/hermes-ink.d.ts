@@ -105,6 +105,8 @@ declare module '@hermes/ink' {
   export const Text: React.ComponentType<any>
   export const TextInput: React.ComponentType<any>
   export const stringWidth: (s: string) => number
+  export type ClipboardResult = { readonly sequence?: string; readonly success: boolean }
+  export function setClipboard(text: string): Promise<ClipboardResult>
   export function isXtermJs(): boolean
 
   export type ScrollFastPathStats = {

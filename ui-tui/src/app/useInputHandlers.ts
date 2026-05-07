@@ -10,13 +10,15 @@ import type {
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
-import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
+import { isAction, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
+import { classifyKeyEvent } from '../lib/terminalShortcuts.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
 import type { InputHandlerContext, InputHandlerResult } from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
+import { $terminalEnvironment } from './terminalEnvironmentStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState } from './uiStore.js'
@@ -46,6 +48,7 @@ export function applyVoiceRecordResponse(
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
   const { actions: cActions, refs: cRefs, state: cState } = composer
+  const { capabilities } = useStore($terminalEnvironment)
 
   const overlay = useStore($overlayState)
   const isBlocked = useStore($isBlocked)
@@ -400,33 +403,36 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       }
     }
 
-    if (isCopyShortcut(key, ch)) {
+    const inputSel = getInputSelection()
+
+    const shortcut = classifyKeyEvent({
+      input: ch,
+      raw: '',
+      key,
+      caps: capabilities,
+      state: {
+        hasSelection: terminal.hasSelection || Boolean(inputSel && inputSel.end > inputSel.start),
+        busy: live.busy
+      }
+    })
+
+    if (shortcut.type === 'paste') {
+      return
+    }
+
+    if (shortcut.type === 'copy') {
       if (terminal.hasSelection) {
         return copySelection()
       }
 
-      const inputSel = getInputSelection()
-
       if (inputSel && inputSel.end > inputSel.start) {
         inputSel.clear()
-
-        return
       }
 
-      // On macOS, Cmd+C with no selection is a no-op (Ctrl+C below handles interrupt).
-      // On non-macOS, isAction uses Ctrl, so fall through to interrupt/clear/exit.
-      if (isMac) {
-        return
-      }
+      return
     }
 
-    if (isCtrl(key, ch, 'x') && cState.queueEditIdx !== null) {
-      cActions.removeQueue(cState.queueEditIdx)
-
-      return cActions.clearIn()
-    }
-
-    if (key.ctrl && ch.toLowerCase() === 'c') {
+    if (shortcut.type === 'interrupt') {
       if (live.busy && live.sid) {
         return turnController.interruptTurn({
           appendMessage: actions.appendMessage,
@@ -441,6 +447,16 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       }
 
       return actions.die()
+    }
+
+    if (isCtrl(key, ch, 'x') && cState.queueEditIdx !== null) {
+      cActions.removeQueue(cState.queueEditIdx)
+
+      return cActions.clearIn()
+    }
+
+    if (shortcut.type === 'noop' && ch.length > 0 && (key.ctrl || key.meta || key.super)) {
+      return
     }
 
     if (isAction(key, ch, 'd')) {

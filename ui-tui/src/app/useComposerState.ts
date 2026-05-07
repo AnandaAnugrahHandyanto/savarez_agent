@@ -98,6 +98,42 @@ export function looksLikeDroppedPath(text: string): boolean {
   return false
 }
 
+export type ClipboardReadDependencies = {
+  preferOsc52: boolean
+  querier: Parameters<typeof readOsc52Clipboard>[0]
+  readNative?: () => Promise<null | string>
+  readOsc52?: (querier: Parameters<typeof readOsc52Clipboard>[0]) => Promise<null | string>
+}
+
+export async function readPreferredClipboardText({
+  preferOsc52,
+  querier,
+  readNative = readClipboardText,
+  readOsc52 = readOsc52Clipboard
+}: ClipboardReadDependencies): Promise<null | string> {
+  if (preferOsc52) {
+    const osc52Text = await readOsc52(querier)
+
+    if (isUsableClipboardText(osc52Text)) {
+      return osc52Text
+    }
+
+    const nativeText = await readNative()
+
+    return isUsableClipboardText(nativeText) ? nativeText : null
+  }
+
+  const nativeText = await readNative()
+
+  if (isUsableClipboardText(nativeText)) {
+    return nativeText
+  }
+
+  const osc52Text = await readOsc52(querier)
+
+  return isUsableClipboardText(osc52Text) ? osc52Text : null
+}
+
 export function useComposerState({
   gw,
   onClipboardPaste,
@@ -230,25 +266,10 @@ export function useComposerState({
       value
     }: PasteEvent): MaybePromise<null | { cursor: number; value: string }> => {
       if (hotkey) {
-        const preferOsc52 = isRemoteShellSession(process.env)
-
-        const readPreferredText = preferOsc52
-          ? readOsc52Clipboard(querier).then(async osc52Text => {
-              if (isUsableClipboardText(osc52Text)) {
-                return osc52Text
-              }
-
-              return readClipboardText()
-            })
-          : readClipboardText().then(async clipText => {
-              if (isUsableClipboardText(clipText)) {
-                return clipText
-              }
-
-              return readOsc52Clipboard(querier)
-            })
-
-        return readPreferredText.then(async preferredText => {
+        return readPreferredClipboardText({
+          preferOsc52: isRemoteShellSession(process.env),
+          querier
+        }).then(async preferredText => {
           if (isUsableClipboardText(preferredText)) {
             return handleResolvedPaste({ bracketed: false, cursor, text: preferredText, value })
           }

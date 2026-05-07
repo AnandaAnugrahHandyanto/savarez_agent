@@ -31,34 +31,6 @@ describe('platform action modifier', () => {
   })
 })
 
-describe('isCopyShortcut', () => {
-  it('keeps Ctrl+C as the local non-macOS copy chord', async () => {
-    const { isCopyShortcut } = await importPlatform('linux')
-
-    expect(isCopyShortcut({ ctrl: true, meta: false, super: false }, 'c', {})).toBe(true)
-  })
-
-  it('accepts client Cmd+C over SSH even when running on Linux', async () => {
-    const { isCopyShortcut } = await importPlatform('linux')
-    const env = { SSH_CONNECTION: '1 2 3 4' } as NodeJS.ProcessEnv
-
-    expect(isCopyShortcut({ ctrl: false, meta: false, super: true }, 'c', env)).toBe(true)
-    expect(isCopyShortcut({ ctrl: false, meta: true, super: false }, 'c', env)).toBe(true)
-  })
-
-  it('does not treat local Linux Alt+C as copy', async () => {
-    const { isCopyShortcut } = await importPlatform('linux')
-
-    expect(isCopyShortcut({ ctrl: false, meta: true, super: false }, 'c', {})).toBe(false)
-  })
-
-  it('accepts the VS Code/Cursor forwarded Cmd+C copy sequence on macOS', async () => {
-    const { isCopyShortcut } = await importPlatform('darwin')
-
-    expect(isCopyShortcut({ ctrl: true, meta: false, super: true }, 'c', {})).toBe(true)
-  })
-})
-
 describe('isVoiceToggleKey', () => {
   it('matches raw Ctrl+B on macOS (doc-default across platforms)', async () => {
     const { isVoiceToggleKey } = await importPlatform('darwin')
@@ -250,7 +222,7 @@ describe('parseVoiceRecordKey (#18994)', () => {
     // hermes-ink reports Alt as ``key.meta`` on many terminals, and
     // ``isActionMod`` on darwin accepts ``key.meta`` as the action
     // modifier. So ``alt+c`` / ``alt+d`` / ``alt+l`` get claimed by
-    // isCopyShortcut / isAction('d') / isAction('l') before voice
+    // terminalShortcuts / isAction('d') / isAction('l') before voice
     // runs (Copilot round-12 on #19835).
     expect(parseVoiceRecordKey('alt+c')).toEqual(DEFAULT_VOICE_RECORD_KEY)
     expect(parseVoiceRecordKey('alt+d')).toEqual(DEFAULT_VOICE_RECORD_KEY)

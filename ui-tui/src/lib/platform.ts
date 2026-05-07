@@ -5,8 +5,7 @@
  * as `key.meta`. Some macOS terminals also translate Cmd+Left/Right/Backspace
  * into readline-style Ctrl+A/Ctrl+E/Ctrl+U before the app sees them.
  * On other platforms the action modifier is Ctrl.
- * Ctrl+C stays the interrupt key on macOS. On non-mac terminals it can also
- * copy an active TUI selection, matching common terminal selection behavior.
+ * Ctrl+C stays the interrupt key; selection copy is classified by terminalShortcuts.ts.
  */
 
 export const isMac = process.platform === 'darwin'
@@ -36,19 +35,6 @@ export const isAction = (key: { ctrl: boolean; meta: boolean; super?: boolean },
 
 export const isRemoteShell = (env: NodeJS.ProcessEnv = process.env): boolean =>
   Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY)
-
-export const isCopyShortcut = (
-  key: { ctrl: boolean; meta: boolean; super?: boolean },
-  ch: string,
-  env: NodeJS.ProcessEnv = process.env
-): boolean =>
-  ch.toLowerCase() === 'c' &&
-  (isAction(key, ch, 'c') ||
-    (isRemoteShell(env) && (key.meta || key.super === true)) ||
-    // VS Code/Cursor/Windsurf terminal setup forwards Cmd+C as a CSI-u
-    // sequence with the super bit plus a benign ctrl bit. Accept that shape
-    // even though raw Ctrl+C should remain interrupt on local macOS.
-    (isMac && key.ctrl && (key.meta || key.super === true)))
 
 /**
  * Voice recording toggle key — configurable via ``voice.record_key`` in
@@ -153,7 +139,7 @@ const _NAMED_KEY_ALIASES: Record<string, VoiceRecordKeyNamed> = {
 const _RESERVED_CTRL_CHARS = new Set(['c', 'd', 'l'])
 
 /** On macOS the action-modifier intercepts these editor chords via
- * ``isCopyShortcut`` / ``isAction`` in ``useInputHandlers()``:
+ * ``isAction`` / ``terminalShortcuts`` / the TextInput paste layer:
  *  - super+c → copy
  *  - super+d → exit
  *  - super+l → clear screen
@@ -167,7 +153,7 @@ const _RESERVED_SUPER_CHARS = new Set(['c', 'd', 'l', 'v'])
 /** On macOS ``isActionMod`` accepts ``key.meta`` as the action
  * modifier — but hermes-ink reports Alt as ``key.meta`` on many
  * terminals. So on darwin a configured ``alt+c`` / ``alt+d`` / ``alt+l``
- * gets swallowed by ``isCopyShortcut`` / ``isAction`` before the voice
+ * collides with copy / exit / clear before the voice
  * check runs. Block at parse time so /voice status doesn't advertise
  * a shortcut that actually copies / quits / clears (Copilot round-12
  * review on #19835). */
@@ -284,7 +270,7 @@ export const parseVoiceRecordKey = (raw: unknown): ParsedVoiceRecordKey => {
 
   // Same for ``super+c`` / ``super+d`` / ``super+l`` / ``super+v`` on
   // macOS only — those are copy / exit / clear / paste and get claimed
-  // by ``isCopyShortcut`` / ``isAction`` / the TextInput paste layer
+  // by ``terminalShortcuts`` / ``isAction`` / the TextInput paste layer
   // before voice has a chance to toggle. On Linux/Windows the TUI
   // globals key off Ctrl (not Super), so kitty/CSI-u ``super+<letter>``
   // bindings stay usable for non-mac users.
