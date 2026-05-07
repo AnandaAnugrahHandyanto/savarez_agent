@@ -1234,9 +1234,21 @@ class InkboxTunnel:
                 await local_ws.close()
             return
         try:
+            # Hypercorn validates the WS upgrade BEFORE the ASGI handler
+            # runs, including a check for sec-websocket-version: 13. Without
+            # it, hypercorn rejects the extended-CONNECT with :status=400
+            # and our bridge never reaches find_bridge() server-side.  Auth
+            # headers are sent on every CONNECT to align with the
+            # tunnel-server contract used by the reference SDK.
             bridge_stream = await driver.open_extended_connect(
                 path=f"/_system/ws/{ws_id}",
                 protocol=WS_SUBPROTOCOL,
+                extra_headers={
+                    "sec-websocket-version": "13",
+                    "x-tunnel-id": self._tunnel_id or "",
+                    "x-tunnel-secret": self._connect_secret or "",
+                    "inkbox-ws-id": str(ws_id),
+                },
             )
         except Exception as exc:
             logger.warning(
