@@ -732,8 +732,9 @@ Isolation model:
 - **Tenant** is a soft namespace *within* a board — one specialist
   fleet can serve multiple businesses with workspace-path + memory-key
   isolation.
-- After ~5 consecutive spawn failures on the same task the dispatcher
-  auto-blocks it to prevent spin loops.
+- After `failure_limit` consecutive spawn failures on the same task
+  (default 2; configure via `kanban.failure_limit` or per-task
+  `max_retries`) the dispatcher auto-blocks it to prevent spin loops.
 
 Full user-facing docs: `website/docs/user-guide/features/kanban.md`.
 
