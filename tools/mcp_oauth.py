@@ -92,6 +92,37 @@ class OAuthNonInteractiveError(RuntimeError):
 # tests can verify the callback server and the redirect_uri share a port.
 _oauth_port: int | None = None
 
+# Shared callback result for live OAuth flows. ``_wait_for_callback`` may be
+# invoked more than once per flow (e.g. SDK retries, or a second concurrent
+# waiter sharing the already-bound port). Storing the handler's result dict by
+# (callback port, flow identity) lets sibling waiters poll the same buffer
+# instead of binding a fresh server, without letting distinct servers/providers
+# on the same port consume each other's code/state.
+#
+# MUST be reset to None on completion, failure, or timeout so a subsequent
+# login attempt cannot inherit stale auth_code/state/error from a prior
+# flow. ``build_oauth_auth`` also resets inactive slots defensively at flow
+# start.
+_oauth_result: dict[str, Any] | None = None
+_oauth_result_active = False
+_oauth_result_port: int | None = None
+_oauth_flow_key: tuple[Any, ...] = ("legacy",)
+_oauth_results_by_port: dict[tuple[int, tuple[Any, ...]], dict[str, Any]] = {}
+# Flows that have reached the user-visible redirect step but may not have
+# entered ``_wait_for_callback`` yet. The MCP SDK emits the authorization URL
+# before opening the callback listener, so checking for cross-flow port reuse
+# only inside ``_wait_for_callback`` is too late: a browser could already hit a
+# listener owned by another flow. Claiming here lets the redirect handler fail
+# before the URL is shown for a conflicting flow.
+_oauth_active_flow_claims: set[tuple[int, tuple[Any, ...]]] = set()
+# Ports for which a waiter has decided to bind a listener but has not yet
+# finished (the bind may still succeed and publish, or fail). This is an
+# explicit "in-progress" marker -- NOT a result buffer. A concurrent waiter
+# that sees a pending port must wait for the binding waiter to resolve
+# instead of racing its own bind (which would lose and spuriously raise).
+_oauth_pending_ports: set[tuple[int, tuple[Any, ...]]] = set()
+_oauth_result_lock = threading.Lock()
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -344,6 +375,29 @@ class HermesTokenStorage:
 # ---------------------------------------------------------------------------
 
 
+# Query parameters that carry OAuth secrets and must never reach the logs.
+# ``code``/``state`` are the authorization code and CSRF token; ``error``
+# can echo provider-side detail. ``BaseHTTPRequestHandler`` log lines embed
+# the raw request line (e.g. ``"GET /callback?code=...&state=..."``), so the
+# formatted message is scrubbed before it is handed to the logger.
+_SENSITIVE_CALLBACK_QUERY_RE = re.compile(
+    r"\b(code|state|error)=[^&\s\"']*",
+    re.IGNORECASE,
+)
+
+
+def _redact_callback_log(message: str) -> str:
+    """Redact OAuth secrets from a callback HTTP-server log line.
+
+    Replaces the value of any ``code``/``state``/``error`` query parameter
+    with ``REDACTED`` so the authorization code and CSRF state never land in
+    debug logs (which may be shipped off-box or shared in bug reports).
+    """
+    return _SENSITIVE_CALLBACK_QUERY_RE.sub(
+        lambda m: f"{m.group(1)}=REDACTED", message
+    )
+
+
 def _make_callback_handler() -> tuple[type, dict]:
     """Create a per-flow callback HTTP handler class with its own result dict.
 
@@ -378,7 +432,9 @@ def _make_callback_handler() -> tuple[type, dict]:
             self.wfile.write(body.encode())
 
         def log_message(self, fmt: str, *args: Any) -> None:
-            logger.debug("OAuth callback: %s", fmt % args)
+            # The request line embedded here contains the callback query
+            # string (?code=...&state=...); redact secrets before logging.
+            logger.debug("OAuth callback: %s", _redact_callback_log(fmt % args))
 
     return _Handler, result
 
@@ -388,7 +444,7 @@ def _make_callback_handler() -> tuple[type, dict]:
 # ---------------------------------------------------------------------------
 
 
-async def _redirect_handler(authorization_url: str) -> None:
+async def _redirect_handler(authorization_url: str, callback_port: int | None = None) -> None:
     """Show the authorization URL to the user.
 
     Opens the browser automatically when possible; always prints the URL
@@ -405,14 +461,15 @@ async def _redirect_handler(authorization_url: str) -> None:
     # http://127.0.0.1:<port>/callback, which reaches the callback server on
     # the *remote* machine — not the user's local machine where the browser
     # opened.  Print a port-forward hint so the user knows to tunnel first.
-    if _oauth_port and (os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY")):
+    callback_port = callback_port or _oauth_port
+    if callback_port and (os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY")):
         print(
             f"  Remote session detected. The OAuth provider will redirect your browser to\n"
-            f"    http://127.0.0.1:{_oauth_port}/callback\n"
+            f"    http://127.0.0.1:{callback_port}/callback\n"
             f"  which the callback listener on THIS machine is waiting on. If your browser\n"
             f"  is on a different machine, forward the port first in a separate terminal:\n"
             f"\n"
-            f"    ssh -N -L {_oauth_port}:127.0.0.1:{_oauth_port} <user>@<this-host>\n"
+            f"    ssh -N -L {callback_port}:127.0.0.1:{callback_port} <user>@<this-host>\n"
             f"\n"
             f"  Then open the URL above. See: https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh\n",
             file=sys.stderr,
@@ -431,7 +488,96 @@ async def _redirect_handler(authorization_url: str) -> None:
         print("  (Headless environment detected — open the URL manually.)\n", file=sys.stderr)
 
 
-async def _wait_for_callback() -> tuple[str, str | None]:
+def _claim_callback_flow(
+    port: int,
+    flow_key: tuple[Any, ...] | None = None,
+) -> tuple[int, tuple[Any, ...]]:
+    """Reserve a callback port for one OAuth flow before URL emission.
+
+    ``OAuthClientProvider`` calls ``redirect_handler`` before it calls the
+    callback waiter. If two distinct flows share a configured callback port,
+    allowing the second URL to be shown risks the user's browser redirecting to
+    the first flow's listener and writing the second code/state into the first
+    result buffer. This guard is therefore shared by the redirect handler and
+    callback waiter and runs before any conflicting authorization URL is shown.
+    """
+    slot_key = _callback_result_key(port, flow_key)
+    with _oauth_result_lock:
+        same_port_other_flow_active = any(
+            key[0] == port and key != slot_key
+            for key in (
+                *_oauth_active_flow_claims,
+                *_oauth_results_by_port.keys(),
+                *_oauth_pending_ports,
+            )
+        )
+        if same_port_other_flow_active:
+            raise OAuthNonInteractiveError(
+                f"OAuth callback port 127.0.0.1:{port} is already in use by "
+                "another active OAuth flow. Set 'oauth.redirect_port: 0' or "
+                "configure unique callback ports for concurrent MCP logins."
+            )
+        _oauth_active_flow_claims.add(slot_key)
+    return slot_key
+
+
+def _make_redirect_handler(port: int, flow_key: tuple[Any, ...]):
+    """Return a redirect handler that claims this flow before showing its URL."""
+
+    async def _bound_redirect_handler(authorization_url: str) -> None:
+        _claim_callback_flow(port, flow_key)
+        await _redirect_handler(authorization_url, callback_port=port)
+
+    return _bound_redirect_handler
+
+
+def _callback_result_key(
+    port: int,
+    flow_key: tuple[Any, ...] | None = None,
+) -> tuple[int, tuple[Any, ...]]:
+    """Return the isolation key for an OAuth callback result buffer."""
+    return (port, flow_key or _oauth_flow_key)
+
+
+def _flow_key_for_config(
+    server_name: str,
+    server_url: str,
+    cfg: dict[str, Any],
+) -> tuple[Any, ...]:
+    """Build a stable in-process identity for one OAuth login flow.
+
+    The callback server is keyed by port *and* this flow identity. That lets
+    sibling waiters for the same provider reuse the listener/result, while
+    distinct MCP servers/providers that intentionally share a redirect_port do
+    not consume each other's authorization code/state.
+    """
+    cfg_items: list[tuple[str, str]] = []
+    for key, value in sorted(cfg.items()):
+        if key.startswith("_") or key == "timeout":
+            continue
+        try:
+            encoded = json.dumps(value, sort_keys=True, default=str)
+        except TypeError:
+            encoded = repr(value)
+        cfg_items.append((key, encoded))
+    return (server_name, server_url, tuple(cfg_items))
+
+
+def _make_wait_for_callback(
+    port: int,
+    flow_key: tuple[Any, ...],
+):
+    """Return a provider callback handler bound to one flow identity."""
+    async def _bound_wait_for_callback() -> tuple[str, str | None]:
+        return await _wait_for_callback(port=port, flow_key=flow_key)
+
+    return _bound_wait_for_callback
+
+
+async def _wait_for_callback(
+    port: int | None = None,
+    flow_key: tuple[Any, ...] | None = None,
+) -> tuple[str, str | None]:
     """Wait for the OAuth callback to arrive on the local callback server.
 
     Uses the module-level ``_oauth_port`` which is set by ``build_oauth_auth``
@@ -445,51 +591,171 @@ async def _wait_for_callback() -> tuple[str, str | None]:
             that ``build_oauth_auth`` was skipped — the asserting form below
             was a silent bug when running Python with ``-O``/``-OO``.
     """
-    if _oauth_port is None:
+    if port is None:
+        port = _oauth_port
+    if port is None:
         raise RuntimeError(
             "OAuth callback port not set — build_oauth_auth must be called "
             "before _wait_for_oauth_callback"
         )
 
-    # The callback server is already running (started in build_oauth_auth).
-    # We just need to poll for the result.
-    handler_cls, result = _make_callback_handler()
-
-    # Start a temporary server on the known port
-    try:
-        server = HTTPServer(("127.0.0.1", _oauth_port), handler_cls)
-    except OSError:
-        # Port already in use — the server from build_oauth_auth is running.
-        # Fall back to polling the server started by build_oauth_auth.
-        raise OAuthNonInteractiveError(
-            "OAuth callback timed out — could not bind callback port. "
-            "Complete the authorization in a browser first, then retry."
+    # Reuse the shared result buffer only after a sibling waiter has
+    # successfully bound and published a listener for this exact port. Do not
+    # publish a fresh result before HTTPServer succeeds: a concurrent waiter
+    # could otherwise poll an unbacked buffer if the bind fails.
+    global _oauth_result, _oauth_result_active, _oauth_result_port
+    slot_key = _claim_callback_flow(port, flow_key)
+    waiting_for_pending = False
+    with _oauth_result_lock:
+        existing_result = _oauth_results_by_port.get(slot_key)
+        same_port_other_flow_active = any(
+            key[0] == port and key != slot_key
+            for key in (*_oauth_results_by_port.keys(), *_oauth_pending_ports)
         )
+        if existing_result is not None:
+            # A sibling already bound and published a live listener for this
+            # exact flow. Reuse that listener/result so SDK retries do not
+            # race a second bind.
+            handler_cls = None
+            result = existing_result
+            owns_shared_slot = False
+        elif slot_key in _oauth_pending_ports:
+            # A sibling has committed to binding this exact port/flow but has
+            # not yet finished. Binding ourselves would lose the race and
+            # raise spuriously even though that sibling is about to publish a
+            # listener. Wait below for its bind to resolve instead.
+            handler_cls = None
+            result = None
+            owns_shared_slot = False
+            waiting_for_pending = True
+        elif same_port_other_flow_active:
+            # One HTTPServer can only hand its callback to the result buffer it
+            # was created with. Without a state-aware demux layer, a different
+            # flow on the same callback port would either fail a second bind or
+            # risk consuming the wrong code/state. Fail early and tell the user
+            # to let Hermes choose unique callback ports for concurrent flows.
+            raise OAuthNonInteractiveError(
+                f"OAuth callback port 127.0.0.1:{port} is already in use by "
+                "another active OAuth flow. Set 'oauth.redirect_port: 0' or "
+                "configure unique callback ports for concurrent MCP logins."
+            )
+        else:
+            handler_cls, result = _make_callback_handler()
+            owns_shared_slot = True
+            # Reserve the in-progress marker while still holding the lock so
+            # concurrent waiters observe it atomically with our decision to
+            # bind. This is not a result buffer -- nothing polls it.
+            _oauth_pending_ports.add(slot_key)
 
-    server_thread = threading.Thread(target=server.handle_request, daemon=True)
-    server_thread.start()
+    server: HTTPServer | None = None
+    if handler_cls is not None:
+        try:
+            server = HTTPServer(("127.0.0.1", port), handler_cls)
+        except OSError as exc:
+            with _oauth_result_lock:
+                # Bind failed: drop the in-progress marker so a waiting
+                # sibling stops waiting, and fall back to any listener a
+                # sibling may already have published for this port.
+                _oauth_pending_ports.discard(slot_key)
+                existing_result = _oauth_results_by_port.get(slot_key)
+            if existing_result is not None:
+                result = existing_result
+                owns_shared_slot = False
+            else:
+                # We could not bind and no sibling has published a live
+                # listener for this port, so nothing will populate a result
+                # buffer. Surface the failure immediately rather than polling
+                # until timeout.
+                with _oauth_result_lock:
+                    _oauth_active_flow_claims.discard(slot_key)
+                raise OAuthNonInteractiveError(
+                    f"OAuth callback server failed to bind on 127.0.0.1:{port}. "
+                    "The configured callback port may already be in use; set "
+                    "'oauth.redirect_port: 0' in config.yaml to auto-pick a free port."
+                ) from exc
+        else:
+            with _oauth_result_lock:
+                # The in-progress marker guarantees we are the sole binder
+                # for this port, so the published slot below cannot collide
+                # with a sibling. Publish the live buffer and drop the
+                # marker atomically so siblings switch from waiting to
+                # reusing the listener.
+                _oauth_results_by_port[slot_key] = result
+                _oauth_result = result
+                _oauth_result_active = True
+                _oauth_result_port = port
+                _oauth_pending_ports.discard(slot_key)
+            threading.Thread(target=server.handle_request, daemon=True).start()
 
-    timeout = 300.0
-    poll_interval = 0.5
-    elapsed = 0.0
+    if waiting_for_pending:
+        # Poll for the binding sibling to either publish a listener or
+        # abandon its bind. Binding a local socket is fast, so this resolves
+        # quickly; the bound below is a safety net, not the expected path.
+        pending_timeout = 10.0
+        pending_poll = 0.05
+        pending_elapsed = 0.0
+        while True:
+            with _oauth_result_lock:
+                result = _oauth_results_by_port.get(slot_key)
+                still_pending = slot_key in _oauth_pending_ports
+            if result is not None:
+                break
+            if not still_pending:
+                # The binding sibling failed to bind and published nothing.
+                with _oauth_result_lock:
+                    _oauth_active_flow_claims.discard(slot_key)
+                raise OAuthNonInteractiveError(
+                    f"OAuth callback server failed to bind on 127.0.0.1:{port}. "
+                    "The configured callback port may already be in use; set "
+                    "'oauth.redirect_port: 0' in config.yaml to auto-pick a free port."
+                )
+            if pending_elapsed >= pending_timeout:
+                with _oauth_result_lock:
+                    _oauth_active_flow_claims.discard(slot_key)
+                raise OAuthNonInteractiveError(
+                    f"OAuth callback listener did not come up on 127.0.0.1:{port}."
+                )
+            await asyncio.sleep(pending_poll)
+            pending_elapsed += pending_poll
+
     try:
+        timeout = 300.0
+        poll_interval = 0.5
+        elapsed = 0.0
         while elapsed < timeout:
             if result["auth_code"] is not None or result["error"] is not None:
                 break
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
+
+        if result["error"]:
+            raise RuntimeError(f"OAuth authorization failed: {result['error']}")
+        if result["auth_code"] is None:
+            raise OAuthNonInteractiveError(
+                "OAuth callback timed out — no authorization code received. "
+                "Ensure you completed the browser authorization flow."
+            )
+
+        return result["auth_code"], result["state"]
     finally:
-        server.server_close()
-
-    if result["error"]:
-        raise RuntimeError(f"OAuth authorization failed: {result['error']}")
-    if result["auth_code"] is None:
-        raise OAuthNonInteractiveError(
-            "OAuth callback timed out — no authorization code received. "
-            "Ensure you completed the browser authorization flow."
-        )
-
-    return result["auth_code"], result["state"]
+        if server is not None:
+            server.server_close()
+        # Clear the shared slot on any exit (success, error, timeout) so a
+        # subsequent login attempt cannot inherit stale auth_code/state/error.
+        # Only the waiter that installed the slot clears it, to avoid a
+        # concurrent sibling waiter wiping out a result it still needs.
+        if owns_shared_slot:
+            with _oauth_result_lock:
+                if _oauth_results_by_port.get(slot_key) is result:
+                    _oauth_results_by_port.pop(slot_key, None)
+                _oauth_active_flow_claims.discard(slot_key)
+                if _oauth_result is result:
+                    _oauth_result = None
+                    _oauth_result_active = bool(_oauth_results_by_port)
+                    next_key = next(iter(_oauth_results_by_port), None)
+                    _oauth_result_port = next_key[0] if next_key is not None else None
+                    if next_key is not None:
+                        _oauth_result = _oauth_results_by_port[next_key]
 
 
 # ---------------------------------------------------------------------------
@@ -513,6 +779,30 @@ def remove_oauth_tokens(server_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _reset_shared_callback_result() -> None:
+    """Drop stale ``_oauth_result`` before a new provider is constructed.
+
+    Active callback listeners own the shared slot until their waiter exits.
+    Provider construction must not clear that live buffer, because sibling
+    waiters may still need to reuse it instead of racing a second bind on the
+    same port. Stale, inactive slots left by tests or unexpected paths are safe
+    to discard.
+    """
+    global _oauth_result, _oauth_result_active, _oauth_result_port
+    with _oauth_result_lock:
+        if not _oauth_result_active:
+            _oauth_result = None
+            _oauth_result_port = None
+            _oauth_results_by_port.clear()
+            # Do not clear _oauth_active_flow_claims here. A redirect handler
+            # claims its (port, flow) before the provider publishes its
+            # callback listener, so _oauth_result_active can still be false in
+            # that handoff window. Clearing claims during unrelated provider
+            # construction would let a different flow on the same port emit a
+            # competing auth URL instead of failing closed. The waiter that owns
+            # a claim releases it in _wait_for_callback() cleanup/error paths.
+
+
 def _configure_callback_port(cfg: dict) -> int:
     """Pick or validate the OAuth callback port.
 
@@ -521,10 +811,8 @@ def _configure_callback_port(cfg: dict) -> int:
     resolved port.
 
     NOTE: also sets the legacy module-level ``_oauth_port`` so existing
-    calls to ``_wait_for_callback`` keep working. The legacy global is
-    the root cause of issue #5344 (port collision on concurrent OAuth
-    flows); replacing it with a ContextVar is out of scope for this
-    consolidation PR.
+    direct calls to ``_wait_for_callback`` keep working. Provider callbacks
+    are bound to their resolved port/flow identity via ``_make_wait_for_callback``.
     """
     global _oauth_port
     requested = int(cfg.get("redirect_port", 0))
@@ -532,6 +820,20 @@ def _configure_callback_port(cfg: dict) -> int:
     cfg["_resolved_port"] = port
     _oauth_port = port  # legacy consumer: _wait_for_callback reads this
     return port
+
+
+def _configure_callback_flow(
+    server_name: str,
+    server_url: str,
+    cfg: dict[str, Any],
+) -> tuple[int, tuple[Any, ...]]:
+    """Resolve callback port and flow identity for provider construction."""
+    global _oauth_flow_key
+    port = _configure_callback_port(cfg)
+    flow_key = _flow_key_for_config(server_name, server_url, cfg)
+    _oauth_flow_key = flow_key  # legacy consumer: direct _wait_for_callback()
+    cfg["_flow_key"] = flow_key
+    return port, flow_key
 
 
 def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
@@ -626,6 +928,11 @@ def build_oauth_auth(
     cfg = dict(oauth_config or {})  # copy — we mutate _resolved_port
     storage = HermesTokenStorage(server_name)
 
+    # Defensive reset: if a previous flow exited via an unexpected path
+    # (e.g. test harness) and left stale callback state behind, drop it
+    # before the new flow's _wait_for_callback can latch onto it.
+    _reset_shared_callback_result()
+
     if not _is_interactive() and not storage.has_cached_tokens():
         logger.warning(
             "MCP OAuth for '%s': non-interactive environment and no cached tokens "
@@ -635,7 +942,7 @@ def build_oauth_auth(
             server_name,
         )
 
-    _configure_callback_port(cfg)
+    port, flow_key = _configure_callback_flow(server_name, server_url, cfg)
     client_metadata = _build_client_metadata(cfg)
     _maybe_preregister_client(storage, cfg, client_metadata)
 
@@ -643,7 +950,7 @@ def build_oauth_auth(
         server_url=server_url,
         client_metadata=client_metadata,
         storage=storage,
-        redirect_handler=_redirect_handler,
-        callback_handler=_wait_for_callback,
+        redirect_handler=_make_redirect_handler(port, flow_key),
+        callback_handler=_make_wait_for_callback(port, flow_key),
         timeout=float(cfg.get("timeout", 300)),
     )

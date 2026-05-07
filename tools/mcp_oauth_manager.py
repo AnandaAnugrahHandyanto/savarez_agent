@@ -410,11 +410,12 @@ class MCPOAuthManager:
             HermesTokenStorage,
             _OAUTH_AVAILABLE,
             _build_client_metadata,
-            _configure_callback_port,
+            _configure_callback_flow,
             _is_interactive,
             _maybe_preregister_client,
-            _redirect_handler,
-            _wait_for_callback,
+            _make_redirect_handler,
+            _reset_shared_callback_result,
+            _make_wait_for_callback,
         )
 
         if not _OAUTH_AVAILABLE:
@@ -422,6 +423,13 @@ class MCPOAuthManager:
 
         cfg = dict(entry.oauth_config or {})
         storage = HermesTokenStorage(server_name)
+
+        # Mirror ``build_oauth_auth``: drop any stale shared callback result
+        # before the new flow begins. The manager path bypasses
+        # ``build_oauth_auth`` entirely, so without this a crashed prior
+        # flow's auth_code/state/error could leak into the next
+        # ``_wait_for_callback``.
+        _reset_shared_callback_result()
 
         if not _is_interactive() and not storage.has_cached_tokens():
             logger.warning(
@@ -431,7 +439,7 @@ class MCPOAuthManager:
                 server_name,
             )
 
-        _configure_callback_port(cfg)
+        port, flow_key = _configure_callback_flow(server_name, entry.server_url, cfg)
         client_metadata = _build_client_metadata(cfg)
         _maybe_preregister_client(storage, cfg, client_metadata)
 
@@ -440,8 +448,8 @@ class MCPOAuthManager:
             server_url=entry.server_url,
             client_metadata=client_metadata,
             storage=storage,
-            redirect_handler=_redirect_handler,
-            callback_handler=_wait_for_callback,
+            redirect_handler=_make_redirect_handler(port, flow_key),
+            callback_handler=_make_wait_for_callback(port, flow_key),
             timeout=float(cfg.get("timeout", 300)),
         )
 
