@@ -303,15 +303,21 @@ async def test_drain_helper_noop_without_app():
 async def test_heartbeat_probe_no_op_when_polling_healthy():
     """
     Probe scheduled after a successful reconnect: Updater.running=True and
-    bot.get_me() returns quickly → recovery confirmed, no further action.
+    the polling pool probe (`_request[0].post(...)`) returns quickly →
+    recovery confirmed, no further action. See issue #5729 for why the
+    probe must route through `_request[0]` (polling pool) rather than
+    `bot.get_me()` which routes through `_request[1]` (general pool).
     """
     adapter = _make_adapter()
 
     mock_updater = MagicMock()
     mock_updater.running = True
 
+    pool0_post = AsyncMock(return_value={"id": 1, "is_bot": True})
     mock_app = MagicMock()
     mock_app.updater = mock_updater
+    mock_app.bot._request = (MagicMock(post=pool0_post), MagicMock())
+    mock_app.bot.base_url = "https://api.telegram.org/bot<REDACTED>"
     mock_app.bot.get_me = AsyncMock(return_value=MagicMock())
     adapter._app = mock_app
 
@@ -320,7 +326,10 @@ async def test_heartbeat_probe_no_op_when_polling_healthy():
     with patch("asyncio.sleep", new_callable=AsyncMock):
         await adapter._verify_polling_after_reconnect()
 
-    mock_app.bot.get_me.assert_awaited_once()
+    pool0_post.assert_awaited_once()
+    # The new probe must NOT route through bot.get_me() — that exercises
+    # the wrong pool (`_request[1]`). See #5729.
+    mock_app.bot.get_me.assert_not_called()
     adapter._handle_polling_network_error.assert_not_awaited()
 
 
@@ -353,10 +362,10 @@ async def test_heartbeat_probe_reenters_ladder_when_updater_not_running():
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_probe_reenters_ladder_when_get_me_times_out():
+async def test_heartbeat_probe_reenters_ladder_when_polling_pool_times_out():
     """
-    If bot.get_me() hangs longer than PROBE_TIMEOUT, treat as wedged.
-    Simulates the connection-pool wedge that motivated this fix.
+    If `_request[0].post(...)` hangs longer than PROBE_TIMEOUT, treat as wedged.
+    Simulates the polling-pool connection wedge that motivated #5729.
     """
     adapter = _make_adapter()
 
@@ -366,9 +375,11 @@ async def test_heartbeat_probe_reenters_ladder_when_get_me_times_out():
     async def hang_forever(*args, **kwargs):
         await asyncio.sleep(3600)
 
+    pool0_post = AsyncMock(side_effect=hang_forever)
     mock_app = MagicMock()
     mock_app.updater = mock_updater
-    mock_app.bot.get_me = AsyncMock(side_effect=hang_forever)
+    mock_app.bot._request = (MagicMock(post=pool0_post), MagicMock())
+    mock_app.bot.base_url = "https://api.telegram.org/bot<REDACTED>"
     adapter._app = mock_app
 
     adapter._handle_polling_network_error = AsyncMock()
@@ -386,19 +397,22 @@ async def test_heartbeat_probe_reenters_ladder_when_get_me_times_out():
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_probe_reenters_ladder_on_get_me_network_error():
+async def test_heartbeat_probe_reenters_ladder_on_polling_pool_network_error():
     """
-    Any exception raised by bot.get_me() (NetworkError, ConnectionError, etc.)
-    should re-enter the reconnect ladder with the original exception.
+    Any exception raised by the polling-pool probe (NetworkError,
+    ConnectionError, etc.) should re-enter the reconnect ladder with the
+    original exception.
     """
     adapter = _make_adapter()
 
     mock_updater = MagicMock()
     mock_updater.running = True
 
+    pool0_post = AsyncMock(side_effect=ConnectionError("pool wedged"))
     mock_app = MagicMock()
     mock_app.updater = mock_updater
-    mock_app.bot.get_me = AsyncMock(side_effect=ConnectionError("pool wedged"))
+    mock_app.bot._request = (MagicMock(post=pool0_post), MagicMock())
+    mock_app.bot.base_url = "https://api.telegram.org/bot<REDACTED>"
     adapter._app = mock_app
 
     adapter._handle_polling_network_error = AsyncMock()

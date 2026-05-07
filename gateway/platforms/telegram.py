@@ -8,6 +8,7 @@ Uses python-telegram-bot library for:
 """
 
 import asyncio
+import time as _time
 import json
 import logging
 import os
@@ -269,6 +270,10 @@ class TelegramAdapter(BasePlatformAdapter):
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     _GENERAL_TOPIC_THREAD_ID = "1"
 
+    # Two-strike escalation window for polling-pool probe failures (issue #5729).
+    # Two failures within this many seconds escalate to fatal-retryable.
+    _PROBE_STRIKE_WINDOW: float = 300.0  # 5 minutes
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None
@@ -294,6 +299,19 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
+        # Serializes the polling-pool probe and `_drain_polling_connections`
+        # so the probe never hits a half-torn-down `_request[0]` (issue #5729).
+        self._probe_drain_lock: asyncio.Lock = asyncio.Lock()
+        # Two-strike escalation: monotonic timestamps of recent probe
+        # failures. Pruned to the last `_PROBE_STRIKE_WINDOW` seconds on each
+        # failure. Two failures within the window mean the reconnect ladder
+        # didn't actually fix the wedge — escalate so the supervisor
+        # restarts the process from a clean interpreter.
+        self._probe_failure_history: List[float] = []
+        # Track the most recently scheduled probe task so `disconnect()` can
+        # cancel it cleanly instead of leaking a 60s-sleeping task into
+        # asyncio's "Task was destroyed but it is pending" warnings.
+        self._latest_probe_task: Optional[asyncio.Task] = None
         # DM Topics: map of topic_name -> message_thread_id (populated at startup)
         self._dm_topics: Dict[str, int] = {}
         # DM Topics config from extra.dm_topics
@@ -459,23 +477,26 @@ class TelegramAdapter(BasePlatformAdapter):
             polling_req = self._app.bot._request[0]  # noqa: SLF001
         except Exception:
             return
-        try:
-            await polling_req.shutdown()
-        except Exception:
-            logger.debug(
-                "[%s] Polling request shutdown failed (non-fatal)",
-                self.name, exc_info=True,
-            )
-        try:
-            await polling_req.initialize()
-            logger.debug(
-                "[%s] Polling request pool drained before reconnect", self.name
-            )
-        except Exception:
-            logger.debug(
-                "[%s] Polling request re-initialize failed (non-fatal)",
-                self.name, exc_info=True,
-            )
+        # Serialize against the polling-pool probe so the probe never hits a
+        # half-torn-down pool (issue #5729).
+        async with self._probe_drain_lock:
+            try:
+                await polling_req.shutdown()
+            except Exception:
+                logger.debug(
+                    "[%s] Polling request shutdown failed (non-fatal)",
+                    self.name, exc_info=True,
+                )
+            try:
+                await polling_req.initialize()
+                logger.debug(
+                    "[%s] Polling request pool drained before reconnect", self.name
+                )
+            except Exception:
+                logger.debug(
+                    "[%s] Polling request re-initialize failed (non-fatal)",
+                    self.name, exc_info=True,
+                )
 
     async def _handle_polling_network_error(self, error: Exception) -> None:
         """Reconnect polling after a transient network interruption.
@@ -542,10 +563,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # in that state, so the reconnect ladder won't advance on its
             # own. Schedule a deferred probe to detect the wedge and
             # re-enter the ladder if needed.
-            if not self.has_fatal_error:
-                probe = asyncio.ensure_future(self._verify_polling_after_reconnect())
-                self._background_tasks.add(probe)
-                probe.add_done_callback(self._background_tasks.discard)
+            self._schedule_polling_pool_probe()
         except Exception as retry_err:
             logger.warning("[%s] Telegram polling reconnect failed: %s", self.name, retry_err)
             # start_polling failed — polling is dead and no further error
@@ -557,26 +575,71 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)
 
-    async def _verify_polling_after_reconnect(self) -> None:
-        """Heartbeat probe scheduled after a successful reconnect.
+    def _schedule_polling_pool_probe(self, trigger: str = "reconnect") -> None:
+        """Schedule a polling-pool wedge-detection probe.
+
+        Called from two paths:
+          * After a successful cold-boot ``start_polling`` in :meth:`connect`
+            (``trigger="cold_boot"``), so silent cold-boot wedges (DNS / TCP
+            transient that doesn't raise) are detected at all — the error
+            callback can't see them.
+          * After a successful reconnect ``start_polling`` in
+            :meth:`_handle_polling_network_error` (``trigger="reconnect"``),
+            so PTB ``Updater`` states with ``running=True`` but a wedged
+            consumer task are caught.
+
+        The trigger label is forwarded into the wedge-detection log so
+        operators can tell cold-boot vs post-reconnect wedges apart in
+        production.
+
+        The probe routes through ``Bot._request[0]`` (the polling pool); see
+        :meth:`_verify_polling_after_reconnect` for the dispatch rationale.
+        """
+        if self.has_fatal_error:
+            return
+        probe = asyncio.ensure_future(self._verify_polling_after_reconnect(trigger=trigger))
+        self._background_tasks.add(probe)
+        probe.add_done_callback(self._background_tasks.discard)
+        self._latest_probe_task = probe
+
+    async def _verify_polling_after_reconnect(self, trigger: str = "reconnect") -> None:
+        """Heartbeat probe that exercises the polling pool specifically.
 
         PTB's Updater can survive a botched stop()+start_polling() cycle
         with `running=True` but a wedged consumer task. No error callback
-        fires, so the reconnect ladder doesn't advance on its own. This
-        probe detects the wedge by:
+        fires, so the reconnect ladder doesn't advance on its own. The
+        same wedge can also occur on cold-boot if DNS / TCP transiently
+        fails on the polling pool but the long-poll task is created
+        anyway — no exception is raised, the long-poll just never makes
+        progress (issue #5729).
 
-        1. Sleeping HEARTBEAT_PROBE_DELAY so a healthy long-poll has time
-           to complete at least one cycle.
+        This probe detects the wedge by:
+
+        1. Sleeping HEARTBEAT_PROBE_DELAY so a healthy long-poll has
+           time to complete at least one cycle.
         2. Verifying `Updater.running` is still True.
-        3. Probing the bot endpoint with a tight asyncio timeout. A
-           wedged httpx pool fails this probe; a healthy one returns
-           well under the timeout.
+        3. Probing the *polling* connection pool (`Bot._request[0]`)
+           with a non-destructive `getMe` call against the bot's base
+           URL.
+
+        Critical: the probe must route through `_request[0]`, not the
+        general pool `_request[1]` that `bot.get_me()` uses. PTB v22
+        `_bot.py:717` dispatches `getUpdates` to `_request[0]` and
+        everything else to `_request[1]`. A wedged polling pool with a
+        healthy general pool — exactly the rblakemesser/#5729 failure
+        mode — would falsely pass a `bot.get_me()` heartbeat. We
+        therefore bypass `Bot._do_post`'s endpoint dispatch and call
+        `BaseRequest.post` directly on `_request[0]` against `getMe`,
+        which exercises the same connection pool the long-poll uses
+        without invoking Telegram's destructive `getUpdates` semantics
+        (`offset=-1` "forgets" the queue; concurrent `getUpdates` is
+        forbidden).
 
         On any failure, re-enter the reconnect ladder so the existing
         MAX_NETWORK_RETRIES path can ultimately escalate to fatal-error.
         """
         HEARTBEAT_PROBE_DELAY = 60
-        PROBE_TIMEOUT = 10
+        PROBE_TIMEOUT = 65  # must exceed long-poll contention window
 
         await asyncio.sleep(HEARTBEAT_PROBE_DELAY)
 
@@ -584,22 +647,85 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if not (self._app and self._app.updater and self._app.updater.running):
             logger.warning(
-                "[%s] Updater not running %ds after reconnect — treating as wedged",
-                self.name, HEARTBEAT_PROBE_DELAY,
+                "[%s] Updater not running %ds after %s probe scheduled — treating as wedged",
+                self.name, HEARTBEAT_PROBE_DELAY, trigger,
             )
             await self._handle_polling_network_error(
-                RuntimeError("Updater not running after reconnect heartbeat")
+                RuntimeError(f"Updater not running after {trigger} heartbeat")
+            )
+            return
+
+        # Shape-check `bot._request` before probing. PTB-internal layout can
+        # be replaced by a caller-supplied HTTPXRequest (via
+        # ApplicationBuilder.request() / get_updates_request()) or could shift
+        # in a future PTB version. On shape mismatch, log-and-skip — never
+        # crash, never falsely declare wedge. The cost of skipping is losing
+        # this layer of protection; the cost of a false-positive is an
+        # unnecessary supervisor restart.
+        request_attr = getattr(self._app.bot, "_request", None)
+        try:
+            pool = request_attr[0]
+        except (TypeError, IndexError, KeyError):
+            pool = None
+        if pool is None or not callable(getattr(pool, "post", None)):
+            logger.warning(
+                "[%s] Polling pool probe skipped: bot._request shape unrecognized "
+                "(type=%s). Wedge detection on this connection unavailable.",
+                self.name, type(request_attr).__name__,
             )
             return
 
         try:
-            await asyncio.wait_for(self._app.bot.get_me(), PROBE_TIMEOUT)
+            # Bypass Bot._do_post so the call routes through the polling pool
+            # (`_request[0]`), not the general pool (`_request[1]`). See the
+            # docstring above for the dispatch rationale.
+            # Serialize against `_drain_polling_connections` so the probe
+            # never hits a half-torn-down pool.
+            base = self._app.bot.base_url
+            async with self._probe_drain_lock:
+                await asyncio.wait_for(pool.post(f"{base}/getMe"), PROBE_TIMEOUT)
+            # Probe succeeded — reset the strike history so a single isolated
+            # failure plus a much later one doesn't escalate.
+            self._probe_failure_history.clear()
         except Exception as probe_err:
+            # Don't log probe_err repr — HTTPX exceptions can include the
+            # URL, which embeds the bot token. Log type + class only.
             logger.warning(
-                "[%s] Polling heartbeat probe failed %ds after reconnect: %s",
-                self.name, HEARTBEAT_PROBE_DELAY, probe_err,
+                "[%s] Polling pool wedge detected by %s probe (exception=%s)",
+                self.name, trigger, type(probe_err).__name__,
             )
+            if self._record_probe_failure_and_should_escalate():
+                # Two failures within the window — the reconnect ladder
+                # already had a chance and didn't fix it. Escalate so the
+                # supervisor restarts the process from a clean interpreter.
+                message = (
+                    "Telegram polling pool wedged twice within "
+                    f"{int(self._PROBE_STRIKE_WINDOW)}s — escalating to "
+                    "supervisor restart."
+                )
+                logger.error("[%s] %s", self.name, message)
+                self._set_fatal_error(
+                    "telegram_network_error", message, retryable=True,
+                )
+                await self._notify_fatal_error()
+                return
             await self._handle_polling_network_error(probe_err)
+
+    def _record_probe_failure_and_should_escalate(self) -> bool:
+        """Record a probe failure timestamp and return True if 2nd within window.
+
+        Two-strike escalation per issue #5729 council ruling: a single probe
+        failure exercises the existing reconnect ladder; a second within the
+        window means that ladder didn't actually fix the wedge.
+        """
+        now = _time.monotonic()
+        cutoff = now - self._PROBE_STRIKE_WINDOW
+        # Prune timestamps older than the window.
+        self._probe_failure_history = [
+            t for t in self._probe_failure_history if t >= cutoff
+        ]
+        self._probe_failure_history.append(now)
+        return len(self._probe_failure_history) >= 2
 
     async def _handle_polling_conflict(self, error: Exception) -> None:
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":
@@ -1101,7 +1227,12 @@ class TelegramAdapter(BasePlatformAdapter):
                     drop_pending_updates=True,
                     error_callback=_polling_error_callback,
                 )
-            
+                # Schedule a polling-pool wedge probe. The error callback can't
+                # see a silent cold-boot wedge (the long-poll task is running
+                # but never makes progress and never raises), so an explicit
+                # probe is the only signal — see issue #5729.
+                self._schedule_polling_pool_probe(trigger="cold_boot")
+
             # Register bot commands so Telegram shows a hint menu when users type /
             # List is derived from the central COMMAND_REGISTRY — adding a new
             # gateway command there automatically adds it to the Telegram menu.
@@ -1154,6 +1285,17 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending album flushes, and disconnect."""
+        # Cancel any pending polling-pool wedge probe so its 60s heartbeat
+        # sleep doesn't keep the event loop alive past intended shutdown.
+        probe = self._latest_probe_task
+        if probe is not None and not probe.done():
+            probe.cancel()
+            try:
+                await probe
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._latest_probe_task = None
+
         pending_media_group_tasks = list(self._media_group_tasks.values())
         for task in pending_media_group_tasks:
             task.cancel()
