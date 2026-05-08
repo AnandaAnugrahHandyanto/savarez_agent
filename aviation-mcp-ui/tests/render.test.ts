@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { escapeHtml, renderTemplate } from "../src/render.js";
+import { escapeHtml, renderTemplate, buildResource } from "../src/render.js";
 
 describe("escapeHtml", () => {
   it("escapes ampersand, lt, gt, quotes", () => {
@@ -53,5 +53,15 @@ describe("renderTemplate", () => {
 
   it("treats missing fields as empty", () => {
     expect(renderTemplate("a={{a}} b={{b}}", { a: "x" })).toBe("a=x b=");
+  });
+});
+
+describe("buildResource", () => {
+  it("returns an MCP-UI EmbeddedResource shape", () => {
+    const r = buildResource("airport", "LSZH", "<!DOCTYPE html><html></html>");
+    expect(r.type).toBe("resource");
+    expect(r.resource.uri).toBe("ui://aviation/airport/LSZH");
+    expect(r.resource.mimeType).toBe("text/html");
+    expect(r.resource.text).toContain("<!DOCTYPE html>");
   });
 });

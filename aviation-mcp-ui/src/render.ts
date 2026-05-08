@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
 export function escapeHtml(value: unknown): string {
   if (value === null || value === undefined) return "";
   const s = String(value);
@@ -50,4 +54,37 @@ export function renderTemplate(template: string, data: Ctx): string {
   // Double-brace escaped.
   out = out.replace(/\{\{(\.|\w+)\}\}/g, (_, k) => escapeHtml(lookup(data, k)));
   return out;
+}
+
+export interface UIResource {
+  type: "resource";
+  resource: {
+    uri: string;
+    mimeType: "text/html";
+    text: string;
+  };
+}
+
+export function buildResource(view: string, id: string, html: string): UIResource {
+  return {
+    type: "resource",
+    resource: {
+      uri: `ui://aviation/${view}/${id}`,
+      mimeType: "text/html",
+      text: html,
+    },
+  };
+}
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const TEMPLATE_DIR = join(__dirname, "..", "templates");
+
+const cache = new Map<string, string>();
+
+export function loadTemplate(name: string): string {
+  if (!cache.has(name)) {
+    cache.set(name, readFileSync(join(TEMPLATE_DIR, name), "utf8"));
+  }
+  return cache.get(name)!;
 }
