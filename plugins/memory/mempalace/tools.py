@@ -379,6 +379,14 @@ class MemPalaceToolsMixin:
         if shorter and longer.startswith(shorter[: min(len(shorter), 120)]):
             if len(shorter) >= 40:
                 return True
-        if len(shorter) >= 40 and SequenceMatcher(a=left, b=right).ratio() >= 0.92:
+        if len(shorter) < 40:
+            return False
+        length_ratio = len(shorter) / max(len(longer), 1)
+        if length_ratio < 0.65:
+            return False
+        shared_tokens = set(shorter.split()).intersection(longer.split())
+        if len(shared_tokens) < 4:
+            return False
+        if SequenceMatcher(a=left, b=right).ratio() >= 0.92:
             return True
         return False

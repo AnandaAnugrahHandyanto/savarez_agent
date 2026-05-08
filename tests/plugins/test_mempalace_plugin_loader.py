@@ -106,6 +106,26 @@ def test_status_tool_still_works_before_initialize(plugin_module):
     assert result["collection_name"] == ""
 
 
+def test_dedup_uses_cheap_filters_before_sequence_matcher(plugin_module):
+    from plugins.memory.mempalace import tools as tools_module
+
+    provider = plugin_module.MemPalaceMemoryProvider()
+    original = tools_module.SequenceMatcher
+    tools_module.SequenceMatcher = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("SequenceMatcher should not run for unrelated content")
+    )
+    try:
+        assert (
+            provider._looks_like_duplicate(
+                "alpha bravo charlie delta echo foxtrot golf hotel",
+                "zulu yankee xray whiskey victor uniform tango sierra",
+            )
+            is False
+        )
+    finally:
+        tools_module.SequenceMatcher = original
+
+
 def test_write_queue_drops_after_retry_limit(plugin_module, caplog):
     from plugins.memory.mempalace import writer
 
