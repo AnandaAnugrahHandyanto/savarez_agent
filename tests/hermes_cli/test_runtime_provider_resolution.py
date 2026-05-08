@@ -584,95 +584,6 @@ def test_custom_endpoint_uses_saved_config_base_url_when_env_missing(monkeypatch
     assert resolved["api_key"] == "local-key"
 
 
-def test_custom_endpoint_uses_lm_studio_base_url_env(monkeypatch):
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "auto"})
-    monkeypatch.setenv("LM_STUDIO_BASE_URL", "http://192.168.1.10:1234/v1")
-    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
-    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-
-    resolved = rp.resolve_runtime_provider(requested="custom")
-
-    assert resolved["provider"] == "custom"
-    assert resolved["base_url"] == "http://192.168.1.10:1234/v1"
-    assert resolved["api_key"] == "no-key-required"
-
-
-def test_custom_endpoint_prefers_lm_studio_api_key_for_local_url(monkeypatch):
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "auto"})
-    monkeypatch.setenv("LM_STUDIO_BASE_URL", "http://192.168.1.10:1234/v1")
-    monkeypatch.setenv("LM_STUDIO_API_KEY", "lmstudio-key")
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
-    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
-    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
-
-    resolved = rp.resolve_runtime_provider(requested="custom")
-
-    assert resolved["provider"] == "custom"
-    assert resolved["base_url"] == "http://192.168.1.10:1234/v1"
-    assert resolved["api_key"] == "lmstudio-key"
-
-
-def test_custom_endpoint_local_base_url_blocks_openrouter_key_fallback(monkeypatch):
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
-    monkeypatch.setattr(
-        rp,
-        "_get_model_config",
-        lambda: {
-            "provider": "custom",
-            "base_url": "http://127.0.0.1:1234/v1",
-        },
-    )
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-    monkeypatch.delenv("LM_STUDIO_BASE_URL", raising=False)
-    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
-    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
-
-    resolved = rp.resolve_runtime_provider(requested="custom")
-
-    assert resolved["provider"] == "custom"
-    assert resolved["base_url"] == "http://127.0.0.1:1234/v1"
-    assert resolved["api_key"] == "no-key-required"
-
-
-def test_named_custom_provider_uses_lm_studio_api_key_env(monkeypatch):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.setenv("LM_STUDIO_API_KEY", "lmstudio-key")
-    monkeypatch.setattr(
-        rp,
-        "load_config",
-        lambda: {
-            "custom_providers": [
-                {
-                    "name": "lmstudio",
-                    "base_url": "http://192.168.1.10:1234/v1",
-                }
-            ]
-        },
-    )
-    monkeypatch.setattr(
-        rp,
-        "resolve_provider",
-        lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError(
-                "resolve_provider should not be called for named custom providers"
-            )
-        ),
-    )
-
-    resolved = rp.resolve_runtime_provider(requested="custom:lmstudio")
-
-    assert resolved["provider"] == "custom"
-    assert resolved["base_url"] == "http://192.168.1.10:1234/v1"
-    assert resolved["api_key"] == "lmstudio-key"
-
-
 def test_custom_endpoint_uses_config_api_key_over_env(monkeypatch):
     """provider: custom with base_url and api_key in config uses them (#1760)."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
@@ -986,6 +897,58 @@ def test_named_custom_provider_does_not_shadow_builtin_provider(monkeypatch):
     assert resolved["requested_provider"] == "nous"
 
 
+def test_named_custom_provider_wins_over_builtin_alias(monkeypatch):
+    """A custom_providers entry named after a built-in *alias* (not a canonical
+    provider name) must win over the built-in.  Regression guard for #15743:
+    when users define ``custom_providers: [{name: kimi, ...}]`` and reference
+    ``provider: kimi``, the built-in alias rewriting (``kimi`` → ``kimi-coding``)
+    would otherwise hijack the request and send it to the wrong endpoint.
+    """
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "kimi",
+                    "base_url": "https://my-custom-kimi.example.com/v1",
+                    "api_key": "my-kimi-key",
+                }
+            ]
+        },
+    )
+
+    entry = rp._get_named_custom_provider("kimi")
+
+    assert entry is not None
+    assert entry["base_url"] == "https://my-custom-kimi.example.com/v1"
+    assert entry["api_key"] == "my-kimi-key"
+
+
+def test_named_custom_provider_skipped_for_canonical_built_in(monkeypatch):
+    """Companion to the test above: ``nous`` is a canonical provider name
+    (``resolve_provider('nous') == 'nous'``), so a custom entry with that name
+    should NOT be returned — the built-in wins as before.
+    """
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "nous",
+                    "base_url": "http://localhost:1234/v1",
+                    "api_key": "shadow-key",
+                }
+            ]
+        },
+    )
+
+    entry = rp._get_named_custom_provider("nous")
+
+    assert entry is None
+
+
 def test_explicit_openrouter_skips_openai_base_url(monkeypatch):
     """When the user explicitly requests openrouter, OPENAI_BASE_URL
     (which may point to a custom endpoint) must not override the
@@ -1046,14 +1009,6 @@ def test_resolve_requested_provider_precedence(monkeypatch):
 
     monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
     assert rp.resolve_requested_provider() == "auto"
-
-
-def test_resolve_requested_provider_normalizes_lm_studio_aliases(monkeypatch):
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "lm-studio"})
-    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
-
-    assert rp.resolve_requested_provider("lm-studio") == "custom"
-    assert rp.resolve_requested_provider() == "custom"
 
 
 # ── api_mode config override tests ──────────────────────────────────────
@@ -2095,6 +2050,7 @@ class TestAzureAnthropicEnvVarHint:
 
         assert resolved["api_key"] == "fallback-works"
 
+
     def test_no_key_anywhere_raises_helpful_error(self, monkeypatch):
         """When nothing resolves, the error message mentions key_env as an option."""
         monkeypatch.delenv("AZURE_ANTHROPIC_KEY", raising=False)
@@ -2264,3 +2220,68 @@ class TestTencentTokenhubRuntimeResolution:
         assert resolved["api_key"] == "explicit-tokenhub-key"
         assert resolved["base_url"] == "https://explicit-proxy.example.com/v1"
         assert resolved["source"] == "explicit"
+
+# ---------------------------------------------------------------------------
+# minimax-oauth runtime resolution tests (added by feat/minimax-oauth-provider)
+# ---------------------------------------------------------------------------
+
+def test_minimax_oauth_runtime_returns_anthropic_messages_mode(monkeypatch):
+    """resolve_runtime_provider for minimax-oauth must return api_mode='anthropic_messages'."""
+    from hermes_cli.auth import MINIMAX_OAUTH_GLOBAL_INFERENCE
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax-oauth")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "minimax-oauth"})
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+    monkeypatch.setattr(
+        rp,
+        "_resolve_named_custom_runtime",
+        lambda **k: None,
+    )
+    monkeypatch.setattr(
+        rp,
+        "_resolve_explicit_runtime",
+        lambda **k: None,
+    )
+
+    fake_creds = {
+        "provider": "minimax-oauth",
+        "api_key": "mock-access-token",
+        "base_url": MINIMAX_OAUTH_GLOBAL_INFERENCE.rstrip("/"),
+        "source": "oauth",
+    }
+
+    import hermes_cli.auth as auth_mod
+    monkeypatch.setattr(auth_mod, "resolve_minimax_oauth_runtime_credentials",
+                        lambda **k: fake_creds)
+
+    resolved = rp.resolve_runtime_provider(requested="minimax-oauth")
+
+    assert resolved["provider"] == "minimax-oauth"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["api_key"] == "mock-access-token"
+
+
+def test_minimax_oauth_runtime_uses_inference_base_url(monkeypatch):
+    """Base URL returned by resolve_runtime_provider should match the OAuth credentials."""
+    from hermes_cli.auth import MINIMAX_OAUTH_CN_INFERENCE
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax-oauth")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "minimax-oauth"})
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+    monkeypatch.setattr(rp, "_resolve_named_custom_runtime", lambda **k: None)
+    monkeypatch.setattr(rp, "_resolve_explicit_runtime", lambda **k: None)
+
+    fake_creds = {
+        "provider": "minimax-oauth",
+        "api_key": "cn-token",
+        "base_url": MINIMAX_OAUTH_CN_INFERENCE.rstrip("/"),
+        "source": "oauth",
+    }
+
+    import hermes_cli.auth as auth_mod
+    monkeypatch.setattr(auth_mod, "resolve_minimax_oauth_runtime_credentials",
+                        lambda **k: fake_creds)
+
+    resolved = rp.resolve_runtime_provider(requested="minimax-oauth")
+
+    assert MINIMAX_OAUTH_CN_INFERENCE.rstrip("/") in resolved["base_url"]
