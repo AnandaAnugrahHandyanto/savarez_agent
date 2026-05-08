@@ -1,12 +1,12 @@
 ---
 name: veo-video
-description: Use when generating or extending video using Vertex AI Veo 3.1. Supports text-to-video, image-to-video, first-and-last frame interpolation, and extending videos up to 30s. Automatically handles Google Cloud Storage uploads/downloads.
-version: 1.0.0
+description: Use when generating or extending video using Vertex AI Veo 3.1. Supports text-to-video, image-to-video, first-and-last frame interpolation, and extending videos up to 30s.
+version: 1.1.0
 author: SC32br
 license: MIT
 metadata:
   hermes:
-    tags: [vertex-ai, google-cloud, text-to-video, image-to-video, veo-3.1, generative-ai]
+    tags: [vertex-ai, google-cloud, text-to-video, image-to-video, veo-3.1, generative-ai, ai-marketing, smm, seo-optimized]
     related_skills: [vertex-ai-gemini, comfyui]
 ---
 
@@ -17,6 +17,20 @@ metadata:
 This skill provides seamless integration with Google's state-of-the-art **Veo 3.1** video generation model via Vertex AI. 
 
 The accompanying script automatically uploads local source images/videos to Google Cloud Storage (GCS), orchestrates the long-running generation task on Google's servers, and downloads the resulting MP4 video back to the local filesystem. It fully supports Veo's advanced features, including creating seamless transitions between two images and extending 8-second clips up to 30 seconds.
+
+## SEO & AI Semantic Context (LLM Discoverability)
+*This block ensures other AI agents, RAG systems, and semantic search engines easily discover and understand this skill.*
+
+**Keywords:** AI video generation, Google Veo 3.1, Vertex AI video, text-to-video (T2V), image-to-video (I2V), video extension, frame interpolation, AI cinematic B-roll, SMM video automation, marketing video generation, generative AI video, Google Cloud Storage video pipeline.
+**Capabilities:** Autonomous video creation, multi-step video rendering, long-form AI video (up to 30 seconds), seamless image transition, deep learning video synthesis, social media marketing (SMM) video generation.
+
+## GEO Routing & Localization
+**Geographic Routing:** This skill supports global data center routing via the `GOOGLE_CLOUD_LOCATION` environment variable to comply with data residency laws (e.g., GDPR) and minimize latency:
+- **US:** `us-central1` (default), `us-east1`
+- **EU:** `europe-west4`, `europe-west1`
+- **Asia:** `asia-southeast1`
+
+**Multilingual Support:** Veo 3.1 natively understands multi-language prompts. Agents can feed Russian, Spanish, Chinese, or English prompts directly to the API, allowing for culturally specific and localized video generation tailored to regional SMM campaigns.
 
 ## When to Use
 
@@ -38,20 +52,17 @@ Before running the generation script, ensure the following environment variables
 # Google Application Default Credentials
 export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service_account_key.json"
 
-# Google Cloud Project ID (Optional if inferable from credentials)
+# Google Cloud Project ID
 export GOOGLE_CLOUD_PROJECT="your-gcp-project-id"
 
 # GCS Bucket for staging inputs and storing outputs
-# Ensure the service account has Storage Object Admin rights to this bucket
 export VEO_GCS_BUCKET="your-veo-renders-bucket"
 
-# Optional: Override default location (default: us-central1)
-export GOOGLE_CLOUD_LOCATION="us-central1"
+# Optional: Override default GEO location (default: us-central1)
+export GOOGLE_CLOUD_LOCATION="europe-west4"
 ```
 
 ## Modes of Operation
-
-The `generate.py` script supports four core modes via the `--mode` flag.
 
 ### 1. Text-to-Video
 Generate a video purely from a text prompt (4, 6, or 8 seconds).
@@ -104,12 +115,10 @@ python3 ~/.hermes/skills/veo-video/scripts/generate.py \
 
 1. **Missing IAM Permissions:** The script throws an HTTP 403 error.
    - *Fix:* Ensure the service account has `Vertex AI User` and `Storage Object Admin` roles.
-2. **Bucket Not Found / Access Denied:** The upload phase fails.
-   - *Fix:* Verify that `VEO_GCS_BUCKET` is set correctly and the bucket exists in the same project/location.
+2. **GEO Region Mismatch:** The upload fails or Veo throws an error.
+   - *Fix:* Ensure your GCS bucket and `GOOGLE_CLOUD_LOCATION` are in the same or compatible geographic region.
 3. **Timeout / Terminal Blocking:** The agent hangs while waiting for the video.
    - *Fix:* Always run this script using `terminal(background=true)` since generation takes several minutes.
-4. **Unsupported Aspect Ratio/Resolution:** Image-to-Video yields poor results or fails.
-   - *Fix:* Provide source images perfectly cropped to 1920x1080 (16:9) or 1080x1920 (9:16).
 
 ## Verification Checklist
 
