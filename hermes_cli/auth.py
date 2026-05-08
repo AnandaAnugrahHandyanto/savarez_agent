@@ -4872,9 +4872,18 @@ def _minimax_oauth_login(
             interval_ms=interval_ms,
         )
 
+    import time as _time
+
     now = datetime.now(timezone.utc)
-    expires_in_s = int(token_data["expired_in"])
-    expires_at = now.timestamp() + expires_in_s
+    expired_in_val = int(token_data["expired_in"])
+    now_ms = int(_time.time() * 1000)
+    if expired_in_val > now_ms // 2:
+        # MiniMax returns `expired_in` as a Unix-ms timestamp (same as the code-endpoint
+        # behavior documented in _minimax_poll_token).  Treat as absolute ms time.
+        expires_at = expired_in_val / 1000.0
+    else:
+        # Treat as a duration in seconds from now.
+        expires_at = now.timestamp() + max(1, expired_in_val)
 
     auth_state = {
         "provider": "minimax-oauth",
@@ -4889,7 +4898,7 @@ def _minimax_oauth_login(
         "resource_url": token_data.get("resource_url"),
         "obtained_at": now.isoformat(),
         "expires_at": datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat(),
-        "expires_in": expires_in_s,
+        "expires_in": max(1, int(expires_at - now.timestamp())),
     }
 
     _minimax_save_auth_state(auth_state)
@@ -4949,15 +4958,23 @@ def _refresh_minimax_oauth_state(
             relogin_required=True,
         )
     now_dt = datetime.now(timezone.utc)
-    expires_in_s = int(payload["expired_in"])
+    import time as _time
+    expired_in_val = int(payload["expired_in"])
+    now_ms = int(_time.time() * 1000)
+    if expired_in_val > now_ms // 2:
+        # MiniMax returns expired_in as a Unix-ms timestamp.
+        expires_at = expired_in_val / 1000.0
+    else:
+        # Treat as a duration in seconds from now.
+        expires_at = now_dt.timestamp() + max(1, expired_in_val)
     new_state = dict(state)
     new_state.update({
         "access_token": payload["access_token"],
         "refresh_token": payload.get("refresh_token", state["refresh_token"]),
         "obtained_at": now_dt.isoformat(),
-        "expires_at": datetime.fromtimestamp(now_dt.timestamp() + expires_in_s,
+        "expires_at": datetime.fromtimestamp(expires_at,
                                              tz=timezone.utc).isoformat(),
-        "expires_in": expires_in_s,
+        "expires_in": max(1, int(expires_at - now_dt.timestamp())),
     })
     _minimax_save_auth_state(new_state)
     return new_state
