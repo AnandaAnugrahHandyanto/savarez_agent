@@ -79,7 +79,7 @@ MINIMAX_OAUTH_GLOBAL_BASE = "https://api.minimax.io"
 MINIMAX_OAUTH_CN_BASE = "https://api.minimaxi.com"
 MINIMAX_OAUTH_GLOBAL_INFERENCE = "https://api.minimax.io/anthropic"
 MINIMAX_OAUTH_CN_INFERENCE = "https://api.minimaxi.com/anthropic"
-MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 60
+MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 86400  # refresh 1 day before expiry
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
@@ -4873,8 +4873,16 @@ def _minimax_oauth_login(
         )
 
     now = datetime.now(timezone.utc)
-    expires_in_s = int(token_data["expired_in"])
-    expires_at = now.timestamp() + expires_in_s
+    raw_expired = int(token_data["expired_in"])
+    # MiniMax "expired_in" is a unix-ms absolute timestamp, not a TTL.
+    if raw_expired > 1_000_000_000_000:
+        expires_at = raw_expired / 1000.0
+    elif raw_expired > 1_000_000_000:
+        # Relative seconds that is suspiciously large — treat as ms TTL.
+        expires_at = now.timestamp() + raw_expired / 1000.0
+    else:
+        expires_at = now.timestamp() + raw_expired
+    expires_in_s = int(expires_at - now.timestamp())
 
     auth_state = {
         "provider": "minimax-oauth",
@@ -4949,7 +4957,14 @@ def _refresh_minimax_oauth_state(
             relogin_required=True,
         )
     now_dt = datetime.now(timezone.utc)
-    expires_in_s = int(payload["expired_in"])
+    raw_expired = int(payload["expired_in"])
+    if raw_expired > 1_000_000_000_000:
+        expires_at_new = raw_expired / 1000.0
+    elif raw_expired > 1_000_000_000:
+        expires_at_new = now_dt.timestamp() + raw_expired / 1000.0
+    else:
+        expires_at_new = now_dt.timestamp() + raw_expired
+    expires_in_s = int(expires_at_new - now_dt.timestamp())
     new_state = dict(state)
     new_state.update({
         "access_token": payload["access_token"],
