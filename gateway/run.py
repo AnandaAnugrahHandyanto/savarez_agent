@@ -216,6 +216,28 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
     return None
 
 
+def _filtered_history_count(history: list) -> int:
+    """Count history entries that would actually be passed to the agent.
+
+    Excludes ``session_meta`` and ``system`` rows (tool definitions, session
+    metadata, system injections) that are stripped by ``_run_agent`` before
+    being sent to the LLM.  Using ``len(history)`` instead causes an off-by-N
+    when these entries exist, leading to silent message retrieval failures
+    and suppressed final delivery.  (Fixes #21611)
+    """
+    if not history:
+        return 0
+    count = 0
+    for msg in history:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role in ("session_meta", "system"):
+            continue
+        count += 1
+    return count
+
+
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
 # Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
@@ -6515,7 +6537,7 @@ class GatewayRunner:
             # Normalize empty responses: surface errors, partial failures, and
             # the case where agent did work but returned no text. Fix for #18765.
             response = _normalize_empty_agent_response(
-                agent_result, response, history_len=len(history),
+                agent_result, response, history_len=_filtered_history_count(history),
             )
 
             # If the agent's session_id changed during compression, update
@@ -6714,7 +6736,7 @@ class GatewayRunner:
                     {"role": "user", "content": message_text, "timestamp": ts},
                 )
             else:
-                history_len = agent_result.get("history_offset", len(history))
+                history_len = agent_result.get("history_offset", _filtered_history_count(history))
                 new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
 
                 # If no new messages found (edge case), fall back to simple user/assistant
@@ -12638,7 +12660,7 @@ class GatewayRunner:
                                 "messages": [],
                                 "api_calls": 0,
                                 "tools": [],
-                                "history_offset": len(history),
+                                "history_offset": _filtered_history_count(history),
                                 "session_id": session_id,
                                 "response_previewed": False,
                             }
@@ -12702,7 +12724,7 @@ class GatewayRunner:
                 "messages": [],
                 "api_calls": 0,
                 "tools": [],
-                "history_offset": len(history),
+                "history_offset": _filtered_history_count(history),
                 "session_id": session_id,
                 "response_previewed": False,
             }
@@ -12719,7 +12741,7 @@ class GatewayRunner:
             ],
             "api_calls": 1,
             "tools": [],
-            "history_offset": len(history),
+            "history_offset": _filtered_history_count(history),
             "session_id": session_id,
             "response_previewed": _stream_consumer is not None and bool(full_response),
         }
