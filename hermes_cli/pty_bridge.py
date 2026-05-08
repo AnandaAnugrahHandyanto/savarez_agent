@@ -29,22 +29,35 @@ Design constraints:
 from __future__ import annotations
 
 import errno
-import fcntl
 import os
 import select
 import signal
 import struct
 import sys
-import termios
 import time
 from typing import Optional, Sequence
 
 try:
+    import fcntl  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - native Windows
+    fcntl = None  # type: ignore[assignment]
+
+try:
+    import termios  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - native Windows
+    termios = None  # type: ignore[assignment]
+
+try:
     import ptyprocess  # type: ignore
-    _PTY_AVAILABLE = not sys.platform.startswith("win")
 except ImportError:  # pragma: no cover - dev env without ptyprocess
-    ptyprocess = None  # type: ignore
-    _PTY_AVAILABLE = False
+    ptyprocess = None  # type: ignore[assignment]
+
+_PTY_AVAILABLE = (
+    ptyprocess is not None
+    and fcntl is not None
+    and termios is not None
+    and not sys.platform.startswith("win")
+)
 
 
 __all__ = ["PtyBridge", "PtyUnavailableError"]
