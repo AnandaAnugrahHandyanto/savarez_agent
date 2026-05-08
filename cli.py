@@ -3750,6 +3750,7 @@ class HermesCLI:
         resolved_acp_command = runtime.get("command")
         resolved_acp_args = list(runtime.get("args") or [])
         resolved_credential_pool = runtime.get("credential_pool")
+        resolved_max_output_tokens = runtime.get("max_output_tokens")
         if not isinstance(api_key, str) or not api_key:
             # Custom / local endpoints (llama.cpp, ollama, vLLM, etc.) often
             # don't require authentication.  When a base_url IS configured but
@@ -3788,6 +3789,11 @@ class HermesCLI:
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
+        if (
+            isinstance(resolved_max_output_tokens, int)
+            and resolved_max_output_tokens > 0
+        ):
+            self.max_tokens = resolved_max_output_tokens
 
         # When a custom_provider entry carries an explicit `model` field,
         # use it as the effective model name.  Without this, running
@@ -3851,6 +3857,7 @@ class HermesCLI:
             "command": self.acp_command,
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
+            "max_output_tokens": getattr(self, "max_tokens", None),
         }
         route = {
             "model": self.model,
@@ -3963,6 +3970,7 @@ class HermesCLI:
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
+                "max_output_tokens": getattr(self, "max_tokens", None),
             }
             effective_model = model_override or self.model
             self.agent = AIAgent(
@@ -3974,6 +3982,7 @@ class HermesCLI:
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
+                max_tokens=runtime.get("max_output_tokens"),
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 disabled_toolsets=self.disabled_toolsets,
@@ -7171,6 +7180,7 @@ class HermesCLI:
                     api_mode=turn_route["runtime"].get("api_mode"),
                     acp_command=turn_route["runtime"].get("command"),
                     acp_args=turn_route["runtime"].get("args"),
+                    max_tokens=turn_route["runtime"].get("max_output_tokens"),
                     max_iterations=self.max_turns,
                     enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True,
