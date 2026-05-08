@@ -866,9 +866,16 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     cron_hint = (
         "[IMPORTANT: You are running as a scheduled cron job. "
         "DELIVERY: Your final response will be automatically delivered "
-        "to the user — do NOT use send_message or try to deliver "
-        "the output yourself. Just produce your report/output as your "
-        "final response and the system handles the rest. "
+        "to the configured target — do NOT produce the report as your "
+        "final response AND also call send_message (that would duplicate it). "
+        "THREADING (Slack/Discord): If your deliver target is a Slack or "
+        "Discord channel and you want to keep the channel clean, use "
+        "send_message TWICE: first call posts a short title to the channel, "
+        "second call posts the full report as a thread reply by passing the "
+        "thread_ts/message_ts from the first response. After both calls "
+        "respond with exactly \"[SILENT]\" so the scheduler does not "
+        "auto-deliver a third copy. If threading is not needed, just produce "
+        "your report as the final response and the system auto-delivers it. "
         "SILENT: If there is genuinely nothing new to report, respond "
         "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
         "Never combine [SILENT] with content — either report your "
@@ -1362,7 +1369,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
             enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
-            disabled_toolsets=["cronjob", "messaging", "clarify"],
+            disabled_toolsets=["cronjob", "clarify"],
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from
             # HERMES_HOME. When a workdir is configured, also inject project
