@@ -27,6 +27,11 @@ def curator_env(tmp_path, monkeypatch):
     import agent.curator as curator
     importlib.reload(curator)
 
+    # Keep curator state path pinned to this fixture's home even if another
+    # same-worker test leaves background cleanup code that mutates process env.
+    state_file = home / "skills" / ".curator_state"
+    monkeypatch.setattr(curator, "_state_file", lambda: state_file)
+
     # Neutralize the real LLM pass by default — tests opt in per-case.
     monkeypatch.setattr(curator, "_run_llm_review", lambda prompt: "llm-stub")
 
