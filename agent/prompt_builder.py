@@ -705,6 +705,10 @@ _SKILLS_V2_PREAMBLE = (
 
 
 def _render_skills_prompt_v2(inventory: Inventory, *, token_budget: int) -> str:
+    # Not cached at prompt-string level: inventory caching covers expensive
+    # parsing, and rendering from structured metadata is cheap.
+    from agent import skill_usage_tracker
+
     skills_by_category: dict[str, list[SkillEntry]] = {}
     for entry in inventory.entries:
         skills_by_category.setdefault(entry.category, []).append(entry)
@@ -717,10 +721,9 @@ def _render_skills_prompt_v2(inventory: Inventory, *, token_budget: int) -> str:
             critical_count,
         )
 
-    body_lines: list[str] = []
-    for category in sorted(skills_by_category.keys()):
+    def category_block(category: str) -> list[str]:
         cat_desc = inventory.category_descriptions.get(category, "")
-        body_lines.append(f"  {category}/  {cat_desc}".rstrip() if cat_desc else f"  {category}/")
+        block = [f"  {category}/  {cat_desc}".rstrip() if cat_desc else f"  {category}/"]
         critical_entries = sorted(
             (entry for entry in skills_by_category[category] if entry.priority == "critical"),
             key=lambda entry: entry.name,
@@ -731,11 +734,41 @@ def _render_skills_prompt_v2(inventory: Inventory, *, token_budget: int) -> str:
         )
         for entry in critical_entries:
             if entry.description:
-                body_lines.append(f"    - {entry.name}: {entry.description}")
+                block.append(f"    - {entry.name}: {entry.description}")
             else:
-                body_lines.append(f"    - {entry.name}")
+                block.append(f"    - {entry.name}")
         if normal_entries:
-            body_lines.append("    " + ", ".join(entry.name for entry in normal_entries))
+            block.append("    " + ", ".join(entry.name for entry in normal_entries))
+        return block
+
+    preferred_categories = skill_usage_tracker.top_categories()
+    ordered_categories = list(
+        dict.fromkeys(preferred_categories + sorted(skills_by_category.keys()))
+    )
+    ordered_categories = [
+        category for category in ordered_categories if category in skills_by_category
+    ]
+
+    body_lines: list[str] = []
+    folded: list[str] = []
+    running_tokens = _estimate_tokens(
+        _SKILLS_V2_PREAMBLE + "<available_skills>\n</available_skills>\n"
+    )
+    for category in ordered_categories:
+        block = category_block(category)
+        block_cost = _estimate_tokens("\n".join(block) + "\n")
+        if body_lines and running_tokens + block_cost > token_budget:
+            folded.append(category)
+            continue
+        body_lines.extend(block)
+        running_tokens += block_cost
+
+    if folded:
+        body_lines.append(
+            f"  … and {len(folded)} more categories: "
+            + ", ".join(folded)
+            + ". Call skill_describe(category=...) to expand any of these."
+        )
 
     return (
         _SKILLS_V2_PREAMBLE
@@ -743,6 +776,10 @@ def _render_skills_prompt_v2(inventory: Inventory, *, token_budget: int) -> str:
         + "\n".join(body_lines)
         + "\n</available_skills>\n"
     )
+
+
+def _estimate_tokens(text: str) -> int:
+    return max(1, len(text) // 4)
 
 
 def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -> str:

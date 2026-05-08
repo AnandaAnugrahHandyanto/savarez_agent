@@ -478,6 +478,47 @@ class TestBuildSkillsSystemPrompt:
         assert "cat-a" in out and "cat-b" in out
         assert "skill_describe" in out
 
+    def test_v2_budget_folds_least_used_categories(self, tmp_path, monkeypatch):
+        skills_dir = tmp_path / "skills"
+        for category_index in range(20):
+            for skill_index in range(10):
+                skill_dir = (
+                    skills_dir
+                    / f"cat-{category_index:02d}"
+                    / f"skill-{category_index:02d}-{skill_index:02d}"
+                )
+                skill_dir.mkdir(parents=True, exist_ok=True)
+                (skill_dir / "SKILL.md").write_text(
+                    f"---\nname: skill-{category_index:02d}-{skill_index:02d}\n"
+                    "description: desc\n---\nbody\n",
+                    encoding="utf-8",
+                )
+        monkeypatch.setattr("agent.skill_inventory.get_skills_dir", lambda: skills_dir)
+        monkeypatch.setattr("agent.skill_inventory.get_all_skills_dirs", lambda: [skills_dir])
+        from agent.skill_inventory import clear_inventory_cache
+
+        clear_inventory_cache(clear_snapshot=True)
+        out = build_skills_system_prompt(index_v2=True, index_token_budget=300)
+        assert "more categories" in out
+        assert "skill_describe" in out
+
+    def test_v2_under_budget_renders_full(self, tmp_path, monkeypatch):
+        skills_dir = tmp_path / "skills"
+        for index in range(3):
+            skill_dir = skills_dir / "cat" / f"sk-{index}"
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: sk-{index}\ndescription: d\n---\nbody\n",
+                encoding="utf-8",
+            )
+        monkeypatch.setattr("agent.skill_inventory.get_skills_dir", lambda: skills_dir)
+        monkeypatch.setattr("agent.skill_inventory.get_all_skills_dirs", lambda: [skills_dir])
+        from agent.skill_inventory import clear_inventory_cache
+
+        clear_inventory_cache(clear_snapshot=True)
+        out = build_skills_system_prompt(index_v2=True, index_token_budget=2000)
+        assert "more categories" not in out
+
 
 class TestBuildNousSubscriptionPrompt:
     def test_includes_active_subscription_features(self, monkeypatch):
@@ -1136,5 +1177,4 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 
