@@ -101,6 +101,7 @@ const sidebars: SidebarsConfig = {
           items: [
             'user-guide/features/rl-training',
             'user-guide/features/spotify',
+            'user-guide/features/jira',
           ],
         },
         {
