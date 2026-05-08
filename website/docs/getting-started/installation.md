@@ -111,6 +111,8 @@ If you use Nix (on NixOS, macOS, or Linux), there's a dedicated setup path with 
 
 If you want to clone the repo and install from source — for contributing, running from a specific branch, or having full control over the virtual environment — see the [Development Setup](../developer-guide/contributing.md#development-setup) section in the Contributing guide.
 
+When you run `scripts/install.sh` from a local checkout, the installer uses that checkout's current tracked remote and branch by default. This keeps fork/feature-branch testing from silently updating `~/.hermes/hermes-agent` back to `NousResearch/main`. Override explicitly with `--repo URL --branch NAME` if needed.
+
 ---
 
 ## Troubleshooting

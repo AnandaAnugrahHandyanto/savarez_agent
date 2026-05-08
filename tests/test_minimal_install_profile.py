@@ -95,6 +95,20 @@ def test_installer_invokes_setup_with_install_option_not_hermes_profile() -> Non
     assert 'setup --profile "$INSTALL_OPTION"' not in text
 
 
+def test_local_checkout_installer_uses_checkout_branch_and_remote_for_target_update() -> None:
+    """Running scripts/install.sh from a fork branch must install that branch, not upstream main."""
+    text = INSTALL_SH.read_text()
+    assert "SOURCE_REPO_URL" in text
+    assert "BRANCH_EXPLICIT=false" in text
+    assert "detect_installer_source()" in text
+    assert 'source_root="$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null || true)"' in text
+    assert 'branch_remote="$(git -C "$source_root" config "branch.${source_branch}.remote" 2>/dev/null || true)"' in text
+    assert 'BRANCH="$source_branch"' in text
+    assert 'git remote set-url origin "$SOURCE_REPO_URL"' in text
+    assert 'git fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"' in text
+    assert 'git checkout -B "$BRANCH" "origin/$BRANCH"' in text
+
+
 def test_setup_install_option_flag_does_not_require_named_hermes_profile(tmp_path) -> None:
     env = os.environ.copy()
     env["HERMES_HOME"] = str(tmp_path / "hermes-home")

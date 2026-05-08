@@ -69,6 +69,8 @@ ROOT_FHS_LAYOUT=false
 USE_VENV=true
 RUN_SETUP=true
 BRANCH="main"
+BRANCH_EXPLICIT=false
+SOURCE_REPO_URL="${HERMES_INSTALL_REPO_URL:-}"
 INSTALL_OPTION="${HERMES_INSTALL_OPTION:-minimal}"
 WITH_FEATURES=()
 
@@ -94,6 +96,15 @@ while [[ $# -gt 0 ]]; do
             ;;
         --branch)
             BRANCH="$2"
+            BRANCH_EXPLICIT=true
+            shift 2
+            ;;
+        --repo)
+            if [ -z "${2:-}" ]; then
+                echo "Missing value for --repo"
+                exit 1
+            fi
+            SOURCE_REPO_URL="$2"
             shift 2
             ;;
         --dir)
@@ -157,6 +168,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-venv      Don't create virtual environment"
             echo "  --skip-setup   Skip interactive setup wizard"
             echo "  --branch NAME  Git branch to install (default: main)"
+            echo "  --repo URL     Git repository to install (default: NousResearch/hermes-agent)"
             echo "  --install-option NAME  Install option: minimal (default), standard, full"
             echo "  --minimal      Alias for --install-option minimal"
             echo "  --full         Alias for --install-option full / --with all"
@@ -993,6 +1005,64 @@ show_manual_install_hint() {
     esac
 }
 
+detect_installer_source() {
+    # If the installer is run from a local git checkout (common when testing a
+    # fork/feature branch), install that checkout's remote + branch by default.
+    # A piped curl installer has no checkout path, so it keeps the public
+    # NousResearch/main defaults unless --repo/--branch or env vars override it.
+    if [ -n "$SOURCE_REPO_URL" ] && [ "$BRANCH_EXPLICIT" = true ]; then
+        return 0
+    fi
+
+    local script_source="${BASH_SOURCE[0]}"
+    if [ -z "$script_source" ] || [ ! -f "$script_source" ]; then
+        return 0
+    fi
+
+    local script_dir
+    script_dir="$(cd "$(dirname "$script_source")" 2>/dev/null && pwd -P)" || return 0
+
+    local source_root
+    source_root="$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -z "$source_root" ] || [ ! -f "$source_root/scripts/install.sh" ]; then
+        return 0
+    fi
+
+    if ! [ "$source_root/scripts/install.sh" -ef "$script_dir/$(basename "$script_source")" ] 2>/dev/null; then
+        return 0
+    fi
+
+    local source_branch
+    source_branch="$(git -C "$source_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    if [ -n "$source_branch" ] && [ "$source_branch" != "HEAD" ] && [ "$BRANCH_EXPLICIT" = false ]; then
+        BRANCH="$source_branch"
+        log_info "Installing from local checkout branch '$BRANCH'"
+    fi
+
+    if [ -n "$SOURCE_REPO_URL" ]; then
+        return 0
+    fi
+
+    local branch_remote=""
+    if [ -n "$source_branch" ] && [ "$source_branch" != "HEAD" ]; then
+        branch_remote="$(git -C "$source_root" config "branch.${source_branch}.remote" 2>/dev/null || true)"
+    fi
+    if [ -z "$branch_remote" ]; then
+        branch_remote="origin"
+    fi
+
+    local remote_url
+    remote_url="$(git -C "$source_root" remote get-url "$branch_remote" 2>/dev/null || true)"
+    if [ -z "$remote_url" ] && [ "$branch_remote" != "origin" ]; then
+        remote_url="$(git -C "$source_root" remote get-url origin 2>/dev/null || true)"
+    fi
+
+    if [ -n "$remote_url" ]; then
+        SOURCE_REPO_URL="$remote_url"
+        log_info "Installing from local checkout remote '$branch_remote'"
+    fi
+}
+
 # ============================================================================
 # Installation
 # ============================================================================
@@ -1014,8 +1084,21 @@ clone_repo() {
                 autostash_ref="$(git rev-parse --verify refs/stash)"
             fi
 
-            git fetch origin
-            git checkout "$BRANCH"
+            if [ -n "$SOURCE_REPO_URL" ]; then
+                local current_origin
+                current_origin="$(git remote get-url origin 2>/dev/null || true)"
+                if [ "$current_origin" != "$SOURCE_REPO_URL" ]; then
+                    log_info "Pointing existing installation at selected repository..."
+                    git remote set-url origin "$SOURCE_REPO_URL"
+                fi
+            fi
+
+            git fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+            if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+                git checkout "$BRANCH"
+            else
+                git checkout -B "$BRANCH" "origin/$BRANCH"
+            fi
             git pull --ff-only origin "$BRANCH"
 
             if [ -n "$autostash_ref" ]; then
@@ -1055,21 +1138,31 @@ clone_repo() {
             exit 1
         fi
     else
-        # Try SSH first (for private repo access), fall back to HTTPS
-        # GIT_SSH_COMMAND disables interactive prompts and sets a short timeout
-        # so SSH fails fast instead of hanging when no key is configured.
-        log_info "Trying SSH clone..."
-        if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-           git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
-            log_success "Cloned via SSH"
-        else
-            rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
-            log_info "SSH failed, trying HTTPS..."
-            if git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
-                log_success "Cloned via HTTPS"
+        if [ -n "$SOURCE_REPO_URL" ]; then
+            log_info "Cloning selected repository..."
+            if git clone --branch "$BRANCH" "$SOURCE_REPO_URL" "$INSTALL_DIR"; then
+                log_success "Cloned selected repository"
             else
-                log_error "Failed to clone repository"
+                log_error "Failed to clone selected repository"
                 exit 1
+            fi
+        else
+            # Try SSH first (for private repo access), fall back to HTTPS
+            # GIT_SSH_COMMAND disables interactive prompts and sets a short timeout
+            # so SSH fails fast instead of hanging when no key is configured.
+            log_info "Trying SSH clone..."
+            if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
+               git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
+                log_success "Cloned via SSH"
+            else
+                rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
+                log_info "SSH failed, trying HTTPS..."
+                if git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+                    log_success "Cloned via HTTPS"
+                else
+                    log_error "Failed to clone repository"
+                    exit 1
+                fi
             fi
         fi
     fi
@@ -1779,6 +1872,7 @@ main() {
     install_uv
     check_python
     check_git
+    detect_installer_source
     check_node
     check_network_prerequisites
     install_system_packages
