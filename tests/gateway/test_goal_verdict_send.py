@@ -249,6 +249,31 @@ async def test_goal_set_starts_background_mission_without_replaying_goal_as_plai
 
 
 @pytest.mark.asyncio
+async def test_goal_resume_restarts_background_mission(hermes_home):
+    """/goal resume must actually restart the autonomous background mission."""
+    runner, _adapter, session_entry, _src = _make_runner_with_adapter()
+    runner._run_goal_background_mission = AsyncMock()
+
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_entry.session_id)
+    state = mgr.set("ship the feature")
+    mgr.pause(reason="test pause")
+
+    response = await runner._handle_goal_command(_make_goal_event("/goal resume"))
+    await asyncio.sleep(0)
+
+    assert "Goal resumed" in response
+    assert "background mission" in response
+    runner._run_goal_background_mission.assert_awaited_once()
+    await_args = runner._run_goal_background_mission.await_args
+    assert await_args is not None
+    state_arg, source_arg = await_args.args
+    assert state_arg.goal == state.goal
+    assert source_arg.chat_id == "c1"
+
+
+@pytest.mark.asyncio
 async def test_goal_background_mission_judges_response_and_marks_goal_done(hermes_home):
     """The dedicated /goal mission must still feed output into GoalManager."""
     runner, adapter, session_entry, src = _make_runner_with_adapter()

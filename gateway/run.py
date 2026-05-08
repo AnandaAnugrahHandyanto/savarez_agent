@@ -8469,9 +8469,27 @@ class GatewayRunner:
             state = mgr.resume()
             if state is None:
                 return "No goal to resume."
+            if event.source is not None:
+                try:
+                    session_id = getattr(session_entry, "session_id", None)
+                    if session_id:
+                        goal_missions = getattr(self, "_goal_background_missions", None)
+                        if goal_missions is None:
+                            goal_missions = {}
+                            self._goal_background_missions = goal_missions
+                        goal_missions[session_id] = (state.goal, state.created_at)
+                    goal_task = asyncio.create_task(
+                        self._run_goal_background_mission(state, event.source)
+                    )
+                    background_tasks = getattr(self, "_background_tasks", None)
+                    if background_tasks is not None:
+                        background_tasks.add(goal_task)
+                        goal_task.add_done_callback(background_tasks.discard)
+                except Exception as exc:
+                    logger.debug("goal background mission resume failed: %s", exc)
             return (
                 f"▶ Goal resumed: {state.goal}\n"
-                "Send any message to continue, or wait — I'll take the next step on the next turn."
+                "I'll continue it in a dedicated background mission."
             )
 
         if lower in ("clear", "stop", "done"):
