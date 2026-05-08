@@ -1,10 +1,18 @@
 export type RatingLevel = 1 | 2 | 3 | 4 | 5;
 
+// All map coordinates use GeoJSON ordering: [longitude, latitude].
+export type LngLat = [number, number];
+
 export interface Runway {
   id: string;
   length_ft: number;
   width_ft: number;
   elevation_ft: number;
+}
+
+export interface GroundHandling {
+  slots_required: boolean;
+  handling_required: boolean;
 }
 
 export interface Airport {
@@ -23,7 +31,7 @@ export interface Airport {
   medical_risk: RatingLevel;
   medical_risk_label: string;
   runways: Runway[];
-  ground_handling: { slots_required: boolean; handling_required: boolean };
+  ground_handling: GroundHandling;
   date_of_publish: string;
 }
 
@@ -43,7 +51,7 @@ export interface FIR {
   id: string;
   name: string;
   country: string;
-  polygon: [number, number][];
+  polygon: LngLat[];
   weaponry_range_floor: number;
   flight_level_floor: number;
   flight_level_ceiling: number;
@@ -79,6 +87,15 @@ export interface Alert {
 
 export type AircraftStatus = "in_flight" | "on_ground" | "maintenance" | "issue";
 
+// Subset of AlertSeverity — fleet issues never use "notice".
+export type IssueSeverity = "advisory" | "warning" | "critical";
+
+export interface AircraftIssue {
+  severity: IssueSeverity;
+  headline: string;
+  detail: string;
+}
+
 export interface Aircraft {
   tail_number: string;
   type: string;
@@ -87,11 +104,11 @@ export interface Aircraft {
   location: { icao?: string; lat?: number; lng?: number };
   origin?: string;
   dest?: string;
-  issue?: { severity: "advisory" | "warning" | "critical"; headline: string; detail: string };
+  issue?: AircraftIssue;
 }
 
 export interface Route {
   origin: string;
   dest: string;
-  waypoints: [number, number][]; // [lng, lat][]
+  waypoints: LngLat[];
 }
