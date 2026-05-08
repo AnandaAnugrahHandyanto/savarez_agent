@@ -154,6 +154,38 @@ class TestStartRun:
         assert resp.status == 400
 
     @pytest.mark.asyncio
+    async def test_start_passes_requested_platform(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    headers={"X-Platform": "mobile_chat"},
+                    json={"input": "hello"},
+                )
+                assert resp.status == 202
+                assert resp.headers.get("X-Hermes-Platform") == "mobile_chat"
+                data = await resp.json()
+                assert data["status"] == "started"
+
+                for _ in range(20):
+                    if mock_create.called:
+                        break
+                    await asyncio.sleep(0.01)
+
+                assert mock_create.call_args.kwargs["api_platform"] == "mobile_chat"
+                status_resp = await cli.get(f"/v1/runs/{data['run_id']}")
+                status = await status_resp.json()
+                assert status["api_platform"] == "mobile_chat"
+
+    @pytest.mark.asyncio
     async def test_start_invalid_history_does_not_allocate_run(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:

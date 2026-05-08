@@ -368,6 +368,23 @@ TOOLSETS = {
         ],
         "includes": []
     },
+
+    "hermes-web": {
+        "description": "Browser-facing API client surface — conversational and web-capable, without local execution or file-system tools",
+        "tools": [
+            "web_search", "web_extract",
+            "vision_analyze",
+            "skills_list", "skill_view",
+            "todo", "memory", "session_search",
+        ],
+        "includes": []
+    },
+
+    "hermes-mobile-chat": {
+        "description": "Lightweight mobile/API chat surface — no tools by default; configure platform_toolsets.mobile_chat to opt in server-controlled tools",
+        "tools": [],
+        "includes": []
+    },
     
     "hermes-cli": {
         "description": "Full interactive CLI toolset - all default tools plus cronjob management",

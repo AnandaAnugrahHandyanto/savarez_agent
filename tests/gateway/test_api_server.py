@@ -361,6 +361,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
+    app.router.add_post("/v1/runs", adapter._handle_runs)
     return app
 
 
@@ -595,6 +596,12 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
+            assert data["features"]["api_platform_selection"] is True
+            assert "X-Platform" in data["features"]["api_platform_headers"]
+            assert data["features"]["api_platform_response_header"] == "X-Hermes-Platform"
+            assert "api_server" in data["features"]["api_platforms"]
+            assert "web" in data["features"]["api_platforms"]
+            assert "mobile_chat" in data["features"]["api_platforms"]
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
 
     @pytest.mark.asyncio
@@ -647,6 +654,42 @@ class TestChatCompletionsEndpoint:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/v1/chat/completions", json={"model": "test", "messages": []})
             assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_passes_requested_platform(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                assert kwargs["api_platform"] == "mobile_chat"
+                return (
+                    {"final_response": "ok", "messages": [], "api_calls": 1, "session_id": "sid-1"},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-Platform": "mobile_chat"},
+                    json={"model": "test", "messages": [{"role": "user", "content": "hi"}]},
+                )
+
+            assert resp.status == 200
+            assert resp.headers.get("X-Hermes-Platform") == "mobile_chat"
+            data = await resp.json()
+            assert data["choices"][0]["message"]["content"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_unknown_platform_returns_400(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions",
+                headers={"X-Platform": "not-a-platform"},
+                json={"model": "test", "messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert "Unknown API platform selector" in data["error"]["message"]
 
     @pytest.mark.asyncio
     async def test_stream_true_returns_sse(self, adapter):
@@ -1253,6 +1296,7 @@ class TestResponsesEndpoint:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                 resp = await cli.post(
                     "/v1/responses",
+                    headers={"X-Platform": "web"},
                     json={
                         "model": "hermes-agent",
                         "input": "What is the capital of France?",
@@ -1260,6 +1304,8 @@ class TestResponsesEndpoint:
                 )
 
             assert resp.status == 200
+            assert resp.headers.get("X-Hermes-Platform") == "web"
+            assert mock_run.call_args.kwargs["api_platform"] == "web"
             data = await resp.json()
             assert data["object"] == "response"
             assert data["id"].startswith("resp_")
