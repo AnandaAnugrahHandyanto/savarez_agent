@@ -1,7 +1,7 @@
 [
   {"tail_number":"N737AZ","type":"B737-800","callsign":"OSPREY101","status":"in_flight","location":{"lat":36.5,"lng":-95.0},"origin":"KPHX","dest":"KJFK"},
   {"tail_number":"N320EU","type":"A320neo","callsign":"OSPREY204","status":"in_flight","location":{"lat":48.0,"lng":15.0},"origin":"EDDF","dest":"LTBA"},
-  {"tail_number":"N787LR","type":"B787-9","callsign":"OSPREY312","status":"in_flight","location":{"lat":22.0,"lng":42.0},"origin":"OMDB","dest":"OEJN","issue":{"severity":"warning","headline":"DIVERTING — MEDICAL EMERGENCY","detail":"Passenger medical event onboard. Currently 80nm SE of OEJN, requesting priority handling. Note proximity to active OYSC threat envelope."}},
+  {"tail_number":"N787LR","type":"B787-9","callsign":"OSPREY312","status":"issue","location":{"lat":22.0,"lng":42.0},"origin":"OMDB","dest":"OEJN","issue":{"severity":"warning","headline":"DIVERTING — MEDICAL EMERGENCY","detail":"Passenger medical event onboard. Currently 80nm SE of OEJN, requesting priority handling. Note proximity to active OYSC threat envelope."}},
   {"tail_number":"N350IF","type":"A350-900","callsign":"OSPREY418","status":"in_flight","location":{"lat":15,"lng":-30},"origin":"KJFK","dest":"EGLL"},
   {"tail_number":"N777BG","type":"B777-300ER","callsign":"OSPREY521","status":"on_ground","location":{"icao":"EHAM"}},
   {"tail_number":"N220RG","type":"CRJ-900","callsign":"OSPREY602","status":"on_ground","location":{"icao":"KSFO"}},
