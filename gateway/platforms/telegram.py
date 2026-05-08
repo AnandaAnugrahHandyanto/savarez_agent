@@ -14,7 +14,7 @@ import os
 import tempfile
 import html as _html
 import re
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -1210,11 +1210,50 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        priority: Literal["silent", "normal", "urgent"] = "normal"
     ) -> SendResult:
         """Send a message to a Telegram chat."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        
+        # Support priority via parameter or metadata (metadata takes precedence for backward compat)
+        effective_priority = priority
+        if metadata and "priority" in metadata:
+            effective_priority = metadata["priority"]
+        
+        # Auto-classify priority if still default "normal" - check content for silent indicators
+        if effective_priority == "normal" and content:
+            content_lower = content.lower()
+            
+            # Check for system message indicators
+            
+            # 1. Check for leading emoji (system messages often start with emoji)
+            system_emoji_prefixes = ['⏳', '🔄', '📊', '⏲️', '🔁', '⏱️', '📡', '🧠', '🤔', '💭', '⚙️', '🔧', '📝', '🔎', '🌐', '💻', '📥', '📤']
+            for emoji in system_emoji_prefixes:
+                if content.startswith(emoji):
+                    effective_priority = "silent"
+                    break
+            if effective_priority != "normal":
+                pass  # Already classified as silent
+            # 2. Check for silent patterns in content
+            elif any(pattern in content_lower for pattern in [
+                "still working", "iterating", "iteration", "checking ",
+                "analyzing", "processing", "searching", "running ",
+                "waiting for", "provider:", "retrying", "elapsed",
+                "thinking...", "working on this", "in progress",
+            ]):
+                effective_priority = "silent"
+            # 3. Check for urgent patterns
+            elif any(pattern in content_lower for pattern in [
+                "error", "failed", "exception", "crashed", "blocked",
+                "abort", "critical", "urgent", "requires approval",
+                "api key", "authentication", "unauthorized", "forbidden",
+            ]):
+                effective_priority = "urgent"
+        
+        # Determine notification setting based on priority
+        disable_notification = effective_priority == "silent"
         
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
@@ -1269,6 +1308,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
                                 message_thread_id=effective_thread_id,
+                                disable_notification=disable_notification,
                                 **self._link_preview_kwargs(),
                             )
                         except Exception as md_error:
@@ -1282,6 +1322,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
                                     message_thread_id=effective_thread_id,
+                                    disable_notification=disable_notification,
                                     **self._link_preview_kwargs(),
                                 )
                             else:
@@ -1476,6 +1517,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self, chat_id: str, prompt: str, default: str = "",
         session_key: str = "",
         metadata: Optional[Dict[str, Any]] = None,
+        priority: Literal["silent", "normal", "urgent"] = "normal"
     ) -> SendResult:
         """Send an inline-keyboard update prompt (Yes / No buttons).
 
@@ -1484,6 +1526,11 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        
+        # Determine notification setting - these prompts always notify
+        effective_priority = metadata.get("priority", priority) if metadata else priority
+        disable_notification = effective_priority == "silent"
+        
         try:
             default_hint = f" (default: {default})" if default else ""
             text = f"⚕ *Update needs your input:*\n\n{prompt}{default_hint}"
@@ -1501,6 +1548,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=keyboard,
                 message_thread_id=message_thread_id,
+                disable_notification=disable_notification,
                 **self._link_preview_kwargs(),
             )
             return SendResult(success=True, message_id=str(msg.message_id))
@@ -1512,6 +1560,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
+        priority: Literal["silent", "normal", "urgent"] = "normal"
     ) -> SendResult:
         """Send an inline-keyboard approval prompt with interactive buttons.
 
@@ -1520,6 +1569,10 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        
+        # Determine notification setting - approval prompts always notify
+        effective_priority = metadata.get("priority", priority) if metadata else priority
+        disable_notification = effective_priority == "silent"
 
         try:
             cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
@@ -1556,6 +1609,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "text": text,
                 "parse_mode": ParseMode.HTML,
                 "reply_markup": keyboard,
+                "disable_notification": disable_notification,
                 **self._link_preview_kwargs(),
             }
             message_thread_id = self._message_thread_id_for_send(thread_id)
@@ -1575,10 +1629,15 @@ class TelegramAdapter(BasePlatformAdapter):
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
         confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
+        priority: Literal["silent", "normal", "urgent"] = "normal"
     ) -> SendResult:
         """Render a three-button slash-command confirmation prompt."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        
+        # Determine notification setting - confirmation prompts always notify
+        effective_priority = metadata.get("priority", priority) if metadata else priority
+        disable_notification = effective_priority == "silent"
 
         try:
             # Message body: render as plain text (message already contains
@@ -1601,6 +1660,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "text": preview,
                 "parse_mode": ParseMode.MARKDOWN,
                 "reply_markup": keyboard,
+                "disable_notification": disable_notification,
                 **self._link_preview_kwargs(),
             }
             message_thread_id = self._message_thread_id_for_send(thread_id)
