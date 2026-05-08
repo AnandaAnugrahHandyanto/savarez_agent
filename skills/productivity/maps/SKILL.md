@@ -198,3 +198,4 @@ python3 /opt/hermes/skills/productivity/maps/scripts/maps_client.py nearby --nea
 ## References
 
 - `references/ventura-commute-times.md` — Gordon Rouse's commute times from 1920 E Linda Vista Ave, Ventura to key local employers (The Trade Desk, Northrop Grumman, Amgen). Useful for job-search and relocation research.
+- `references/ventura-commute-reference.md` — Same data plus direct career site URLs, LinkedIn job links, role filters, salary ranges, and the active cron job ID for daily job alerts.
