@@ -1138,6 +1138,12 @@ class GatewayRunner:
         self._queued_events: Dict[str, List[MessageEvent]] = {}
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
+        # When a user sends a follow-up while the agent is busy but before
+        # the first tool-progress bubble exists, briefly wait for that bubble
+        # so the controls can land on the tool flow instead of a standalone
+        # queue notice.  Keeps Telegram chats linear without losing the
+        # fallback ack for genuinely pre-tool/streaming waits.
+        self._busy_ack_tool_bubble_defer_seconds = 1.8
         self._session_run_generation: Dict[str, int] = {}
         # LRU cache of live SessionSources keyed by session_key. Used by
         # fallback routing paths (shutdown notifications, synthetic
@@ -2467,8 +2473,6 @@ class GatewayRunner:
         if now - last_ack < _BUSY_ACK_COOLDOWN:
             return True  # interrupt sent (if not queue), ack already delivered recently
 
-        self._busy_ack_ts[session_key] = now
-
         # Build a status-rich acknowledgment
         status_parts = []
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
@@ -2534,6 +2538,41 @@ class GatewayRunner:
             logger.debug("Failed to apply busy-input onboarding hint: %s", _onb_err)
 
         thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+
+        # Queue-mode follow-ups often arrive just before the first tool
+        # progress bubble is sent.  If we emit the ack immediately, Telegram
+        # shows a standalone queue bubble followed by the tool-flow bubble a
+        # moment later.  Briefly wait for that next bot/tool message; if it
+        # appears, anchor the keyboard there and suppress the standalone ack.
+        if is_queue_mode:
+            try:
+                defer_seconds = float(getattr(self, "_busy_ack_tool_bubble_defer_seconds", 0.0) or 0.0)
+            except Exception:
+                defer_seconds = 0.0
+            if defer_seconds > 0:
+                _tbm = getattr(self, "_tool_bubble_msg_ids", None)
+                if not (_tbm and _tbm.get(session_key)):
+                    try:
+                        await asyncio.sleep(defer_seconds)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        pass
+                _tbm = getattr(self, "_tool_bubble_msg_ids", None)
+                bubble_id = _tbm.get(session_key) if _tbm else None
+                if bubble_id:
+                    try:
+                        await self._ensure_busy_session_controls(session_key, event)
+                    except Exception as _bs_err:
+                        logger.debug(
+                            "Deferred busy ack tool-bubble anchor failed for %s: %s",
+                            session_key,
+                            _bs_err,
+                        )
+                    self._busy_ack_ts[session_key] = time.time()
+                    return True
+
+        self._busy_ack_ts[session_key] = time.time()
         try:
             ack_result = await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
