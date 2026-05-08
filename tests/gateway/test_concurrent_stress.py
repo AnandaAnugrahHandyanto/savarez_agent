@@ -79,6 +79,7 @@ def _make_runner(max_concurrent=3):
     runner.delivery_router = MagicMock()
     runner._concurrent_tasks = {}
     runner._concurrent_tasks_ts = {}
+    runner._concurrent_agents = {}
     runner._concurrent_counter = 0
     runner._concurrent_executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent)
     runner._busy_input_mode = "concurrent"
