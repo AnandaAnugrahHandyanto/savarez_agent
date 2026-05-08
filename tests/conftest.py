@@ -381,6 +381,19 @@ def _reset_module_state():
     except Exception:
         pass
 
+    # --- agent.skill_inventory + agent.prompt_builder — skill index caches ---
+    # Both modules carry an OrderedDict LRU keyed by (skills_dir, ...).  Because
+    # the per-test HERMES_HOME redirect changes the skills_dir each test, stale
+    # cache entries for past tmp dirs accumulate inside the same xdist worker
+    # and only get evicted when _INVENTORY_CACHE_MAX (8) is exceeded.  Clearing
+    # both up front keeps the cache a per-test resource — matches the way
+    # production behaves on a fresh process.
+    try:
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache()
+    except Exception:
+        pass
+
     yield
 
 
