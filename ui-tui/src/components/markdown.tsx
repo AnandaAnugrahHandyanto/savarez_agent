@@ -689,7 +689,7 @@ function MdImpl({ compact, t, text }: MdProps) {
         const marker = task ? (task[1]!.toLowerCase() === 'x' ? '☑' : '☐') : '•'
 
         nodes.push(
-          <Text key={key}>
+          <Text key={key} wrap="wrap-trim">
             <Text color={t.color.muted}>
               {' '.repeat(indentDepth(bullet[1]!) * 2)}
               {marker}{' '}
@@ -708,7 +708,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (numbered) {
         start('list')
         nodes.push(
-          <Text key={key}>
+          <Text key={key} wrap="wrap-trim">
             <Text color={t.color.muted}>
               {' '.repeat(indentDepth(numbered[1]!) * 2)}
               {numbered[2]}.{' '}
@@ -737,7 +737,7 @@ function MdImpl({ compact, t, text }: MdProps) {
         nodes.push(
           <Box flexDirection="column" key={key}>
             {quoteLines.map((ql, qi) => (
-              <Text color={t.color.muted} key={qi}>
+              <Text color={t.color.muted} key={qi} wrap="wrap-trim">
                 {' '.repeat(Math.max(0, ql.depth - 1) * 2)}
                 {'│ '}
                 <MdInline t={t} text={ql.text} />
