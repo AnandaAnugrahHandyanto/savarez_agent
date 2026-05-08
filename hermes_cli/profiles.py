@@ -64,8 +64,27 @@ _CLONE_SUBDIR_FILES = [
     "memories/USER.md",
 ]
 
-# Runtime files stripped after --clone-all (shouldn't carry over)
-_CLONE_ALL_STRIP = [
+# Infrastructure artifacts excluded from --clone-all at the profile root.
+# These are never read at runtime — Python imports resolve from the shared
+# checkout (Path(__file__)), not the profile copy.  See also the shared
+# export exclusion set _DEFAULT_EXPORT_EXCLUDE_ROOT for the canonical list
+# of artifact vs. data items in the default profile.
+#
+# Rationale per item:
+#   hermes-agent  — git repo checkout (84 MB source + .git); venv inside is ~3 GB
+#   .worktrees    — git worktrees
+#   node_modules  — npm packages (hundreds of MB)
+_CLONE_ALL_EXCLUDE_ROOT: frozenset[str] = frozenset({
+    "hermes-agent",
+    ".worktrees",
+    "profiles",        # sibling profiles — recursive copy is never intended
+    "node_modules",
+})
+
+# Runtime state files stripped after --clone-all (shouldn't carry over).
+# Kept as a post-copy step rather than in the ignore filter because they
+# are created dynamically during normal use and may be absent at copy time.
+_CLONE_ALL_STRIP: list[str] = [
     "gateway.pid",
     "gateway_state.json",
     "processes.json",
@@ -89,23 +108,35 @@ def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
 
 
 def _clone_all_copytree_ignore(source_dir: Path):
-    """Ignore ``profiles/`` at the root of *source_dir* only.
+    """Exclude infrastructure artifacts when cloning a profile via --clone-all.
 
-    ``~/.hermes`` contains ``profiles/<name>/`` for sibling named profiles.
-    ``shutil.copytree`` would otherwise duplicate that entire tree inside the
-    new profile (recursive ``.../profiles/.../profiles/...``). Export already
-    excludes ``profiles`` via ``_DEFAULT_EXPORT_EXCLUDE_ROOT`` — match that
-    behavior for ``--clone-all``.
+    Two categories:
+      1. Root-level entries in ``_CLONE_ALL_EXCLUDE_ROOT`` — known Hermes
+         infrastructure directories that are never read at runtime.
+      2. Universal exclusions at any depth — Python bytecode caches that
+         are stale or regenerated (``__pycache__``, ``*.pyc``, ``*.pyo``).
+
+    Export (``_default_export_ignore``) uses the same two-tier pattern for
+    the same reason, but with a different exclusion set (``_DEFAULT_EXPORT_EXCLUDE_ROOT``
+    is broader because export goes to an archive, not a local clone).
     """
     source_resolved = source_dir.resolve()
 
     def _ignore(directory: str, names: List[str]) -> List[str]:
-        try:
-            if Path(directory).resolve() == source_resolved:
-                return [n for n in names if n == "profiles"]
-        except (OSError, ValueError):
-            pass
-        return []
+        ignored: list[str] = []
+        for entry in names:
+            # Universal exclusions at any depth
+            if entry == "__pycache__" or entry.endswith((".pyc", ".pyo")):
+                ignored.append(entry)
+                continue
+            # Root-level exclusions only
+            try:
+                if Path(directory).resolve() == source_resolved:
+                    if entry in _CLONE_ALL_EXCLUDE_ROOT:
+                        ignored.append(entry)
+            except (OSError, ValueError):
+                pass  # resolve() can fail on unusual FS layouts
+        return ignored
 
     return _ignore
 
