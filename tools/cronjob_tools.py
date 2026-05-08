@@ -274,6 +274,7 @@ def cronjob(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    wrap_response: Optional[bool] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -341,6 +342,7 @@ def cronjob(
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
+                wrap_response=wrap_response,
             )
             return json.dumps(
                 {
@@ -468,6 +470,8 @@ def cronjob(
                             success=False,
                         )
                 updates["no_agent"] = target_no_agent
+            if wrap_response is not None:
+                updates["wrap_response"] = bool(wrap_response)
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
@@ -607,6 +611,16 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
             },
+            "wrap_response": {
+                "type": "boolean",
+                "description": (
+                    "Per-job override for the 'Cronjob Response: <name>' header and "
+                    "'To stop or manage this job…' footer that wrap delivered output. "
+                    "True forces wrapping on; False delivers the raw agent output verbatim "
+                    "(useful for briefings the user wants to read clean). "
+                    "Omit to inherit the global cron.wrap_response config (defaults True)."
+                ),
+            },
         },
         "required": ["action"]
     }
@@ -655,6 +669,7 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        wrap_response=args.get("wrap_response"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,
