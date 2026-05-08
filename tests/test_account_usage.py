@@ -201,3 +201,30 @@ def test_fetch_account_usage_openrouter_omits_quota_window_when_key_has_no_limit
     assert snapshot.windows == ()
     assert "Credits balance: $74.50" in snapshot.details
     assert "API key usage: $25.50 total • $1.25 today • $4.50 this week • $18.00 this month" in snapshot.details
+
+
+def test_fetch_account_usage_nous_renders_paid_access_and_credits(monkeypatch):
+    from hermes_cli.nous_account import NousAccountStatus
+
+    monkeypatch.setattr(
+        "agent.account_usage.get_nous_account_status",
+        lambda force_refresh=True: NousAccountStatus(
+            available=True,
+            portal_base_url="https://portal.example.com",
+            paid_access=True,
+            has_active_subscription=False,
+            subscription_plan="Plus",
+            total_usable_credits=12.5,
+            subscription_credits_remaining=0,
+            purchased_credits_remaining=12.5,
+        ),
+    )
+
+    snapshot = fetch_account_usage("nous")
+
+    assert snapshot is not None
+    assert snapshot.title == "Nous account"
+    assert snapshot.plan == "Plus"
+    assert "Paid access: yes" in snapshot.details
+    assert "Usable credits: $12.50" in snapshot.details
+    assert "Purchased credits: $12.50" in snapshot.details

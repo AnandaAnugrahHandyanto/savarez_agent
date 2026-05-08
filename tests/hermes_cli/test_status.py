@@ -78,7 +78,7 @@ def test_show_status_reports_nous_auth_error(monkeypatch, capsys, tmp_path):
     assert "Nous Portal   ✗ not logged in (run: hermes auth add nous --type oauth)" in output
     assert "Error:      Refresh session has been revoked" in output
     assert "Access exp:" in output
-    assert "Key exp:" in output
+    assert "JWT exp:" in output
 
 
 def test_show_status_reports_vercel_backend_contract(monkeypatch, capsys, tmp_path):

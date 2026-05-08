@@ -49,7 +49,10 @@ def _enable_managed_nous_tools(monkeypatch):
     """Patch the source modules so managed_nous_tools_enabled() returns True
     even after tool modules are dynamically reloaded."""
     monkeypatch.setattr("hermes_cli.auth.get_nous_auth_status", lambda: {"logged_in": True})
-    monkeypatch.setattr("hermes_cli.models.check_nous_free_tier", lambda: False)
+    monkeypatch.setattr(
+        "hermes_cli.nous_account.get_nous_account_status",
+        lambda: type("Status", (), {"available": True, "paid_access": True})(),
+    )
 
 
 def _install_fake_tools_package():

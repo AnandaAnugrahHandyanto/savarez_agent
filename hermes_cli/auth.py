@@ -9,7 +9,7 @@ Architecture:
 - ProviderConfig registry defines known OAuth providers
 - Auth store (auth.json) holds per-provider credential state
 - resolve_provider() picks the active provider via priority chain
-- resolve_*_runtime_credentials() handles token refresh and key minting
+- resolve_*_runtime_credentials() handles token refresh and runtime credentials
 - logout_command() is the CLI entry point for clearing auth
 """
 
@@ -2818,7 +2818,7 @@ def _poll_for_token(
 
 
 # =============================================================================
-# Nous Portal — token refresh, agent key minting, model discovery
+# Nous Portal — token refresh, JWT runtime aliasing, model discovery
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -2886,7 +2886,7 @@ def _nous_shared_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
     to be held, acquire ``_auth_store_lock`` FIRST. All runtime refresh
     paths follow this order. The one exception is
     ``_try_import_shared_nous_state``, which holds this lock alone for
-    the entire refresh+mint cycle so concurrent imports on sibling
+    the entire refresh cycle so concurrent imports on sibling
     profiles can't race on the single-use shared refresh token; that
     helper must NOT be called with ``_auth_store_lock`` already held.
     """
@@ -2948,8 +2948,9 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
     is a convenience layer; the per-profile auth.json remains the source
     of truth.
 
-    We deliberately omit the short-lived ``agent_key`` (24h TTL, profile-
-    specific) — only the long-lived OAuth tokens are cross-profile useful.
+    We deliberately omit the legacy ``agent_key`` compatibility alias.  The
+    NAS access JWT is already shared as ``access_token`` and gets copied into
+    ``agent_key`` in each profile when runtime credentials are resolved.
     """
     refresh_token = state.get("refresh_token")
     access_token = state.get("access_token")
@@ -3047,8 +3048,8 @@ def _try_import_shared_nous_state(
 ) -> Optional[Dict[str, Any]]:
     """Attempt to rehydrate Nous OAuth state from the shared store.
 
-    Reads the shared file (if present), runs a forced refresh+mint using
-    the stored refresh_token to produce a fresh access_token + agent_key
+    Reads the shared file (if present), runs a forced refresh using
+    the stored refresh_token to produce a fresh access_token/JWT alias
     scoped to this profile, and returns the full auth_state dict ready
     for ``persist_nous_credentials()``.
 
@@ -3065,7 +3066,8 @@ def _try_import_shared_nous_state(
 
             # Build a full state dict so refresh_nous_oauth_from_state has every
             # field it needs. force_refresh=True gets us a fresh access_token
-            # for this profile; force_mint=True gets us a fresh agent_key.
+            # for this profile; force_mint=True is kept as a compatibility
+            # alias for forcing a JWT refresh.
             state: Dict[str, Any] = {
                 "access_token": shared.get("access_token"),
                 "refresh_token": shared.get("refresh_token"),
@@ -3172,30 +3174,17 @@ def _mint_agent_key(
     access_token: str,
     min_ttl_seconds: int,
 ) -> Dict[str, Any]:
-    """Mint (or reuse) a short-lived inference API key."""
-    response = client.post(
-        f"{portal_base_url}/api/oauth/agent-key",
-        headers={"Authorization": f"Bearer {access_token}"},
-        json={"min_ttl_seconds": max(60, int(min_ttl_seconds))},
+    """Legacy stub retained for older tests/extensions.
+
+    Hermes no longer mints opaque Nous inference keys.  Runtime auth uses the
+    NAS OAuth access JWT directly and aliases it into the historical
+    ``agent_key`` storage fields for compatibility.
+    """
+    raise AuthError(
+        "Nous opaque agent-key minting has been removed; use the NAS access JWT.",
+        provider="nous",
+        code="agent_key_mint_removed",
     )
-
-    if response.status_code == 200:
-        payload = response.json()
-        if "api_key" not in payload:
-            raise AuthError("Mint response missing api_key",
-                            provider="nous", code="server_error")
-        return payload
-
-    try:
-        error_payload = response.json()
-    except Exception as exc:
-        raise AuthError("Agent key mint request failed",
-                        provider="nous", code="server_error") from exc
-
-    code = str(error_payload.get("error", "server_error"))
-    description = str(error_payload.get("error_description") or "Agent key mint request failed")
-    relogin = code in {"invalid_token", "invalid_grant"}
-    raise AuthError(description, provider="nous", code=code, relogin_required=relogin)
 
 
 def fetch_nous_models(
@@ -3262,6 +3251,29 @@ def _agent_key_is_usable(state: Dict[str, Any], min_ttl_seconds: int) -> bool:
     return not _is_expiring(state.get("agent_key_expires_at"), min_ttl_seconds)
 
 
+def _alias_nous_access_jwt_as_agent_key(
+    state: Dict[str, Any],
+    *,
+    obtained_at: Optional[str] = None,
+) -> None:
+    """Copy the NAS access JWT into legacy inference-key fields."""
+    access_token = state.get("access_token")
+    if not isinstance(access_token, str) or not access_token.strip():
+        return
+    state["agent_key"] = access_token.strip()
+    state["agent_key_expires_at"] = state.get("expires_at")
+    state["agent_key_expires_in"] = _coerce_ttl_seconds(state.get("expires_in"))
+    state["agent_key_reused"] = False
+    state["agent_key_obtained_at"] = (
+        obtained_at
+        or state.get("obtained_at")
+        or datetime.now(timezone.utc).isoformat()
+    )
+    claims = _decode_jwt_claims(access_token)
+    token_id = claims.get("jti") or claims.get("sid") or claims.get("sub")
+    state["agent_key_id"] = str(token_id) if token_id not in (None, "") else None
+
+
 def resolve_nous_access_token(
     *,
     timeout_seconds: float = 15.0,
@@ -3302,7 +3314,8 @@ def resolve_nous_access_token(
                 )
 
             if not _is_expiring(state.get("expires_at"), refresh_skew_seconds):
-                if merged_shared:
+                if merged_shared or state.get("agent_key") != access_token:
+                    _alias_nous_access_jwt_as_agent_key(state)
                     _save_provider_state(auth_store, "nous", state)
                     _save_auth_store(auth_store)
                 return access_token
@@ -3345,6 +3358,7 @@ def resolve_nous_access_token(
                 "insecure": verify is False,
                 "ca_bundle": verify if isinstance(verify, str) else None,
             }
+            _alias_nous_access_jwt_as_agent_key(state)
             _save_provider_state(auth_store, "nous", state)
             _save_auth_store(auth_store)
             _write_shared_nous_state(state)
@@ -3393,7 +3407,7 @@ def refresh_nous_oauth_pure(
     timeout = httpx.Timeout(timeout_seconds if timeout_seconds else 15.0)
 
     with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
-        if force_refresh or _is_expiring(state.get("expires_at"), ACCESS_TOKEN_REFRESH_SKEW_SECONDS):
+        if force_refresh or force_mint or _is_expiring(state.get("expires_at"), ACCESS_TOKEN_REFRESH_SKEW_SECONDS):
             refreshed = _refresh_access_token(
                 client=client,
                 portal_base_url=state["portal_base_url"],
@@ -3415,23 +3429,7 @@ def refresh_nous_oauth_pure(
                 now.timestamp() + access_ttl, tz=timezone.utc
             ).isoformat()
 
-        if force_mint or not _agent_key_is_usable(state, max(60, int(min_key_ttl_seconds))):
-            mint_payload = _mint_agent_key(
-                client=client,
-                portal_base_url=state["portal_base_url"],
-                access_token=state["access_token"],
-                min_ttl_seconds=min_key_ttl_seconds,
-            )
-            now = datetime.now(timezone.utc)
-            state["agent_key"] = mint_payload.get("api_key")
-            state["agent_key_id"] = mint_payload.get("key_id")
-            state["agent_key_expires_at"] = mint_payload.get("expires_at")
-            state["agent_key_expires_in"] = mint_payload.get("expires_in")
-            state["agent_key_reused"] = bool(mint_payload.get("reused", False))
-            state["agent_key_obtained_at"] = now.isoformat()
-            minted_url = _optional_base_url(mint_payload.get("inference_base_url"))
-            if minted_url:
-                state["inference_base_url"] = minted_url
+        _alias_nous_access_jwt_as_agent_key(state)
 
     return state
 
@@ -3475,7 +3473,7 @@ def persist_nous_credentials(
     *,
     label: Optional[str] = None,
 ):
-    """Persist minted Nous OAuth credentials as the singleton provider state
+    """Persist Nous OAuth credentials as the singleton provider state
     and ensure the credential pool is in sync.
 
     Nous credentials are read at runtime from two independent locations:
@@ -3486,7 +3484,7 @@ def persist_nous_credentials(
     - ``credential_pool.nous``: used by the runtime ``pool.select()`` path.
 
     Historically ``hermes auth add nous`` wrote a ``manual:device_code`` pool
-    entry only, skipping ``providers.nous``.  When the 24h agent_key TTL
+    entry only, skipping ``providers.nous``.  When the runtime credential
     expired, the recovery path read the empty singleton state and raised
     ``AuthError`` silently (``logger.debug`` at INFO level).
 
@@ -3508,6 +3506,7 @@ def persist_nous_credentials(
     from agent.credential_pool import load_pool
 
     state = dict(creds)
+    _alias_nous_access_jwt_as_agent_key(state)
     if label and str(label).strip():
         state["label"] = str(label).strip()
 
@@ -3540,8 +3539,8 @@ def resolve_nous_runtime_credentials(
     """
     Resolve Nous inference credentials for runtime use.
 
-    Ensures access_token is valid (refreshes if needed) and a short-lived
-    inference key is present with minimum TTL (mints/reuses as needed).
+    Ensures the NAS OAuth access JWT is valid (refreshes if needed) and stores
+    that JWT in the legacy agent_key fields expected by older runtime paths.
     Concurrent processes coordinate through the auth store file lock.
 
     Returns dict with: provider, base_url, api_key, key_id, expires_at,
@@ -3606,6 +3605,7 @@ def resolve_nous_runtime_credentials(
             refresh_token_fp=_token_fingerprint(state.get("refresh_token")),
         )
 
+        refreshed_runtime_token = False
         with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
             access_token = state.get("access_token")
             refresh_token = state.get("refresh_token")
@@ -3614,15 +3614,17 @@ def resolve_nous_runtime_credentials(
                 raise AuthError("No access token found for Nous Portal login.",
                                 provider="nous", relogin_required=True)
 
-            # Step 1: refresh access token if expiring
-            if _is_expiring(state.get("expires_at"), ACCESS_TOKEN_REFRESH_SKEW_SECONDS):
+            # Refresh the NAS access JWT if expiring. force_mint is a public
+            # compatibility flag from the old opaque-key path; now it means
+            # "force a fresh JWT".
+            if force_mint or _is_expiring(state.get("expires_at"), ACCESS_TOKEN_REFRESH_SKEW_SECONDS):
                 with _nous_shared_store_lock(timeout_seconds=max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)):
                     if _merge_shared_nous_oauth_state(state):
                         access_token = state.get("access_token")
                         refresh_token = state.get("refresh_token")
                         _persist_state("post_shared_merge_access_expiring")
 
-                    if _is_expiring(state.get("expires_at"), ACCESS_TOKEN_REFRESH_SKEW_SECONDS):
+                    if force_mint or _is_expiring(state.get("expires_at"), ACCESS_TOKEN_REFRESH_SKEW_SECONDS):
                         if not isinstance(refresh_token, str) or not refresh_token:
                             raise AuthError("Session expired and no refresh token is available.",
                                             provider="nous", relogin_required=True)
@@ -3654,6 +3656,7 @@ def resolve_nous_runtime_credentials(
                         ).isoformat()
                         access_token = state["access_token"]
                         refresh_token = state["refresh_token"]
+                        refreshed_runtime_token = True
                         _oauth_trace(
                             "refresh_success",
                             sequence_id=sequence_id,
@@ -3661,107 +3664,13 @@ def resolve_nous_runtime_credentials(
                             previous_refresh_token_fp=_token_fingerprint(previous_refresh_token),
                             new_refresh_token_fp=_token_fingerprint(refresh_token),
                         )
-                        # Persist immediately so downstream mint failures cannot drop rotated refresh tokens.
+                        # Persist immediately so downstream failures cannot drop rotated refresh tokens.
                         _persist_state("post_refresh_access_expiring")
 
-            # Step 2: mint agent key if missing/expiring
-            used_cached_key = False
-            mint_payload: Optional[Dict[str, Any]] = None
+            _alias_nous_access_jwt_as_agent_key(state)
+            used_cached_key = not refreshed_runtime_token and not force_mint
 
-            if not force_mint and _agent_key_is_usable(state, min_key_ttl_seconds):
-                used_cached_key = True
-                _oauth_trace("agent_key_reuse", sequence_id=sequence_id)
-            else:
-                try:
-                    _oauth_trace(
-                        "mint_start",
-                        sequence_id=sequence_id,
-                        access_token_fp=_token_fingerprint(access_token),
-                    )
-                    mint_payload = _mint_agent_key(
-                        client=client, portal_base_url=portal_base_url,
-                        access_token=access_token, min_ttl_seconds=min_key_ttl_seconds,
-                    )
-                except AuthError as exc:
-                    _oauth_trace(
-                        "mint_error",
-                        sequence_id=sequence_id,
-                        code=exc.code,
-                    )
-                    # Retry path: access token may be stale server-side despite local checks
-                    latest_refresh_token = state.get("refresh_token")
-                    if (
-                        exc.code in {"invalid_token", "invalid_grant"}
-                        and isinstance(latest_refresh_token, str)
-                        and latest_refresh_token
-                    ):
-                        with _nous_shared_store_lock(timeout_seconds=max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)):
-                            if _merge_shared_nous_oauth_state(state):
-                                access_token = state.get("access_token")
-                                latest_refresh_token = state.get("refresh_token")
-                                _persist_state("post_shared_merge_mint_retry")
-                            else:
-                                _oauth_trace(
-                                    "refresh_start",
-                                    sequence_id=sequence_id,
-                                    reason="mint_retry_after_invalid_token",
-                                    refresh_token_fp=_token_fingerprint(latest_refresh_token),
-                                )
-                                refreshed = _refresh_access_token(
-                                    client=client, portal_base_url=portal_base_url,
-                                    client_id=client_id, refresh_token=latest_refresh_token,
-                                )
-                                now = datetime.now(timezone.utc)
-                                access_ttl = _coerce_ttl_seconds(refreshed.get("expires_in"))
-                                state["access_token"] = refreshed["access_token"]
-                                state["refresh_token"] = refreshed.get("refresh_token") or latest_refresh_token
-                                state["token_type"] = refreshed.get("token_type") or state.get("token_type") or "Bearer"
-                                state["scope"] = refreshed.get("scope") or state.get("scope")
-                                refreshed_url = _optional_base_url(refreshed.get("inference_base_url"))
-                                if refreshed_url:
-                                    inference_base_url = refreshed_url
-                                state["obtained_at"] = now.isoformat()
-                                state["expires_in"] = access_ttl
-                                state["expires_at"] = datetime.fromtimestamp(
-                                    now.timestamp() + access_ttl, tz=timezone.utc
-                                ).isoformat()
-                                access_token = state["access_token"]
-                                refresh_token = state["refresh_token"]
-                                _oauth_trace(
-                                    "refresh_success",
-                                    sequence_id=sequence_id,
-                                    reason="mint_retry_after_invalid_token",
-                                    previous_refresh_token_fp=_token_fingerprint(latest_refresh_token),
-                                    new_refresh_token_fp=_token_fingerprint(refresh_token),
-                                )
-                                # Persist retry refresh immediately for crash safety and cross-process visibility.
-                                _persist_state("post_refresh_mint_retry")
-
-                        mint_payload = _mint_agent_key(
-                            client=client, portal_base_url=portal_base_url,
-                            access_token=access_token, min_ttl_seconds=min_key_ttl_seconds,
-                        )
-                    else:
-                        raise
-
-            if mint_payload is not None:
-                now = datetime.now(timezone.utc)
-                state["agent_key"] = mint_payload.get("api_key")
-                state["agent_key_id"] = mint_payload.get("key_id")
-                state["agent_key_expires_at"] = mint_payload.get("expires_at")
-                state["agent_key_expires_in"] = mint_payload.get("expires_in")
-                state["agent_key_reused"] = bool(mint_payload.get("reused", False))
-                state["agent_key_obtained_at"] = now.isoformat()
-                minted_url = _optional_base_url(mint_payload.get("inference_base_url"))
-                if minted_url:
-                    inference_base_url = minted_url
-                _oauth_trace(
-                    "mint_success",
-                    sequence_id=sequence_id,
-                    reused=bool(mint_payload.get("reused", False)),
-                )
-
-            # Persist routing and TLS metadata for non-interactive refresh/mint
+            # Persist routing and TLS metadata for non-interactive refresh
             state["portal_base_url"] = portal_base_url
             state["inference_base_url"] = inference_base_url
             state["client_id"] = client_id
@@ -3774,7 +3683,7 @@ def resolve_nous_runtime_credentials(
 
     api_key = state.get("agent_key")
     if not isinstance(api_key, str) or not api_key:
-        raise AuthError("Failed to resolve a Nous inference API key",
+        raise AuthError("Failed to resolve a Nous inference JWT",
                         provider="nous", code="server_error")
 
     expires_at = state.get("agent_key_expires_at")
@@ -3815,8 +3724,7 @@ def _snapshot_nous_pool_status() -> Dict[str, Any]:
     """Best-effort status from the credential pool.
 
     This is a fallback only. The auth-store provider state is the runtime source
-    of truth because it is what ``resolve_nous_runtime_credentials()`` refreshes
-    and mints against.
+    of truth because it is what ``resolve_nous_runtime_credentials()`` refreshes.
     """
     try:
         from agent.credential_pool import load_pool
@@ -3863,7 +3771,7 @@ def get_nous_auth_status() -> Dict[str, Any]:
     """Status snapshot for Nous auth.
 
     Prefer the auth-store provider state, because that is the live source of
-    truth for refresh + mint operations. When provider state exists, validate it
+    truth for refresh operations. When provider state exists, validate it
     by resolving runtime credentials so revoked refresh sessions do not show up
     as a healthy login. If provider state is absent, fall back to the credential
     pool for the just-logged-in / not-yet-promoted case.
@@ -5130,7 +5038,7 @@ def _nous_device_code_login(
             min_key_ttl_seconds=min_key_ttl_seconds,
             timeout_seconds=timeout_seconds,
             force_refresh=False,
-            force_mint=True,
+            force_mint=False,
         )
     except AuthError as exc:
         if exc.code == "subscription_required":

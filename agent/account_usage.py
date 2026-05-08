@@ -8,6 +8,7 @@ import httpx
 
 from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
 from hermes_cli.auth import _read_codex_tokens, resolve_codex_runtime_credentials
+from hermes_cli.nous_account import get_nous_account_status
 from hermes_cli.runtime_provider import resolve_runtime_provider
 
 
@@ -305,6 +306,51 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+def _money_detail(label: str, value: Optional[float]) -> Optional[str]:
+    if value is None:
+        return None
+    return f"{label}: ${value:.2f}"
+
+
+def _fetch_nous_account_usage() -> Optional[AccountUsageSnapshot]:
+    status = get_nous_account_status(force_refresh=True)
+    if not status.available:
+        return AccountUsageSnapshot(
+            provider="nous",
+            source="nas_account",
+            fetched_at=_utc_now(),
+            title="Nous account",
+            unavailable_reason=status.unavailable_reason or "NAS account status unavailable",
+        )
+
+    details: list[str] = [
+        f"Paid access: {'yes' if status.paid_access else 'no'}",
+    ]
+    if status.has_active_subscription is not None:
+        details.append(
+            f"Active subscription: {'yes' if status.has_active_subscription else 'no'}"
+        )
+    for item in (
+        _money_detail("Usable credits", status.total_usable_credits),
+        _money_detail("Subscription credits", status.subscription_credits_remaining),
+        _money_detail("Purchased credits", status.purchased_credits_remaining),
+    ):
+        if item:
+            details.append(item)
+    if status.reason:
+        details.append(f"Entitlement reason: {status.reason}")
+
+    plan = status.subscription_plan or status.subscription_tier
+    return AccountUsageSnapshot(
+        provider="nous",
+        source="nas_account",
+        fetched_at=_utc_now(),
+        title="Nous account",
+        plan=_title_case_slug(plan),
+        details=tuple(details),
+    )
+
+
 def fetch_account_usage(
     provider: Optional[str],
     *,
@@ -321,6 +367,8 @@ def fetch_account_usage(
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
+        if normalized == "nous":
+            return _fetch_nous_account_usage()
     except Exception:
         return None
     return None

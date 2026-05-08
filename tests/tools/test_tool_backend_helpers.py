@@ -51,8 +51,8 @@ class TestManagedNousToolsEnabled:
             lambda: {"logged_in": True},
         )
         monkeypatch.setattr(
-            "hermes_cli.models.check_nous_free_tier",
-            lambda: True,
+            "hermes_cli.nous_account.get_nous_account_status",
+            lambda: type("Status", (), {"available": True, "paid_access": False})(),
         )
         assert managed_nous_tools_enabled() is False
 
@@ -62,8 +62,8 @@ class TestManagedNousToolsEnabled:
             lambda: {"logged_in": True},
         )
         monkeypatch.setattr(
-            "hermes_cli.models.check_nous_free_tier",
-            lambda: False,
+            "hermes_cli.nous_account.get_nous_account_status",
+            lambda: type("Status", (), {"available": True, "paid_access": True})(),
         )
         assert managed_nous_tools_enabled() is True
 
