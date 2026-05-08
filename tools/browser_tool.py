@@ -2719,14 +2719,19 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
     effective_task_id = _last_session_key(task_id or "default")
 
     # Use eval to run JavaScript that extracts images
-    js_code = """JSON.stringify(
-        [...document.images].map(img => ({
-            src: img.src,
-            alt: img.alt || '',
-            width: img.naturalWidth,
-            height: img.naturalHeight
-        })).filter(img => img.src && !img.src.startsWith('data:'))
-    )"""
+    # Note: document.images is unreliable on SPA/js-heavy pages.
+    # document.querySelectorAll('img') is more robust.
+    js_code = """(() => {
+        const imgs = Array.from(document.querySelectorAll('img'));
+        return JSON.stringify(
+            imgs.map(img => ({
+                src: img.src || '',
+                alt: img.alt || '',
+                width: img.naturalWidth || 0,
+                height: img.naturalHeight || 0
+            })).filter(img => img.src && !img.src.startsWith('data:'))
+        );
+    })()"""
 
     result = _run_browser_command(effective_task_id, "eval", [js_code])
 
