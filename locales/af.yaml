@@ -1,0 +1,25 @@
+# Hermes static-message catalog -- Afrikaans
+#
+# See en.yaml for scope and contribution requirements.
+
+approval:
+  dangerous_header: "⚠️  GEVAARLIKE OPDRAG: {description}"
+  choose_long:     "      [o]nce  |  [s]ession  |  [a]lways  |  [d]eny"
+  choose_short:    "      [o]nce  |  [s]ession  |  [d]eny"
+  prompt_long:     "      Keuse [o/s/a/D]: "
+  prompt_short:    "      Keuse [o/s/D]: "
+  timeout:         "      ⏱ Tyd verstreke - opdrag geweier"
+  allowed_once:    "      ✓ Eenmalig toegelaat"
+  allowed_session: "      ✓ Toegelaat vir hierdie sessie"
+  allowed_always:  "      ✓ By permanente toelaatlys gevoeg"
+  denied:          "      ✗ Geweier"
+  cancelled:       "      ✗ Gekanselleer"
+  blocklist_message: "Hierdie opdrag is op die onvoorwaardelike blokkeerlys en kan nie goedgekeur word nie."
+
+gateway:
+  approval_expired: "⚠️ Goedkeuring verval (agent wag nie meer nie). Vra die agent om weer te probeer."
+  draining:         "⏳ Besig om {count} aktiewe agent(e) te dreineer voor herbegin..."
+  goal_cleared:     "✓ Doelwit skoongemaak."
+  no_active_goal:   "Geen aktiewe doelwit nie."
+  config_read_failed: "⚠️ Kon nie config.yaml lees nie: {error}"
+  config_save_failed: "⚠️ Kon nie config stoor nie: {error}"
