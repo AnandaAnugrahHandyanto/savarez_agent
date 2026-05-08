@@ -3387,12 +3387,16 @@ class AIAgent:
         # to inline extraction when no structured reasoning was found.
         content = getattr(assistant_message, "content", None)
         if not reasoning_parts and isinstance(content, list):
+            text_parts = []
             for part in content:
-                if not isinstance(part, dict) or part.get("type") != "thinking":
-                    continue
-                cleaned = str(part.get("thinking") or part.get("content") or "").strip()
-                if cleaned and cleaned not in reasoning_parts:
-                    reasoning_parts.append(cleaned)
+                # Persist only visible text; thinking blocks are stored separately.
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text_parts.append(str(part.get("text", "")))
+                if isinstance(part, dict) and part.get("type") == "thinking":
+                    cleaned = str(part.get("thinking") or part.get("content") or "").strip()
+                    if cleaned and cleaned not in reasoning_parts:
+                        reasoning_parts.append(cleaned)
+            assistant_message.content = "\n".join(text_parts)
         elif not reasoning_parts and isinstance(content, str) and content:
             for tag in ("think", "thinking", "thought", "reasoning", "REASONING_SCRATCHPAD"):
                 flags = re.DOTALL | re.IGNORECASE
@@ -9005,13 +9009,7 @@ class AIAgent:
         # Sanitize surrogates from API response — some models (e.g. Kimi/GLM via Ollama)
         # can return invalid surrogate code points that crash json.dumps() on persist.
         _raw_content = assistant_message.content or ""
-        if isinstance(_raw_content, list):
-            _raw_content = "\n".join(
-                str(p.get("text", ""))
-                for p in _raw_content
-                if isinstance(p, dict) and p.get("type") == "text"
-            )
-        _san_content = _sanitize_surrogates(str(_raw_content))
+        _san_content = _sanitize_surrogates(_raw_content)
         if reasoning_text:
             reasoning_text = _sanitize_surrogates(reasoning_text)
 
@@ -9019,10 +9017,6 @@ class AIAgent:
         # assistant content.  Reasoning was already captured into
         # ``reasoning_text`` above (either from structured fields or the
         # inline-block fallback), so the raw tags in content are redundant.
-        # Leaving them in place caused reasoning to leak to messaging
-        # platforms (#8878, #9568), inflate context on subsequent turns
-        # (#9306 observed 16% content-size reduction on a real MiniMax
-        # session), and pollute generated session titles.  One strip at the
         # storage boundary cleans content for every downstream consumer:
         # API replay, session transcript, gateway delivery, CLI display,
         # compression, title generation.
