@@ -28,8 +28,8 @@ The installer detects Termux automatically and switches to a tested Android flow
 - uses Termux `pkg` for hard requirements (`git`, `python`, certificates/curl, build tools as needed)
 - creates the virtualenv with `python -m venv`
 - exports `ANDROID_API_LEVEL` automatically for Android wheel builds
-- installs `.[termux-minimal]` by default, `.[termux]` for `--profile standard`, or `.[termux-all]` for `--full`
-- skips Node/browser, WhatsApp, TUI/npm, voice/TTS, dashboard, and `ffmpeg` unless the selected profile or `--with ...` requests them
+- installs `.[termux-minimal]` by default, `.[termux]` for `--install-option standard`, or `.[termux-all]` for `--full`
+- skips Node/browser, WhatsApp, TUI/npm, voice/TTS, dashboard, and `ffmpeg` unless the selected install option or `--with ...` requests them
 
 If you want the fully explicit path, follow the dedicated [Termux guide](./termux.md).
 
@@ -37,7 +37,7 @@ If you want the fully explicit path, follow the dedicated [Termux guide](./termu
 Native Windows is **not supported**. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run Hermes Agent from there. The install command above works inside WSL2.
 :::
 
-The default installer creates a **minimal** Hermes profile: it installs the Python CLI, provider/model setup, skills, and a small default toolset. It does **not** install Node.js, browser automation, the TUI/npm frontend, dashboard server deps, voice/TTS deps, messaging gateway extras, or `ffmpeg`.
+The default installer uses the **minimal** install option: it installs the Python CLI, provider/model setup, skills, and a small default toolset. It does **not** install Node.js, browser automation, the TUI/npm frontend, dashboard server deps, voice/TTS deps, messaging gateway extras, or `ffmpeg`.
 
 For the legacy all-in install, pass `--full`:
 
@@ -53,7 +53,7 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 
 ### What the Installer Does
 
-The installer handles the repo clone, virtual environment, global `hermes` command setup, and LLM provider configuration. The minimal profile installs only the core Python package dependencies. Selected profiles/features add their own extras: for example `--with dashboard` installs web server dependencies, `--with browser` enables Node/browser setup, and `--with tts`/`--with voice` checks `ffmpeg`. By the end, you're ready to chat in the classic CLI; install extra features only when you need them.
+The installer handles the repo clone, virtual environment, global `hermes` command setup, and LLM provider configuration. The minimal install option installs only the core Python package dependencies. Selected install options/features add their own extras: for example `--with dashboard` installs web server dependencies, `--with browser` enables Node/browser setup, and `--with tts`/`--with voice` checks `ffmpeg`. By the end, you're ready to chat in the classic CLI; install extra features only when you need them.
 
 #### Install Layout
 

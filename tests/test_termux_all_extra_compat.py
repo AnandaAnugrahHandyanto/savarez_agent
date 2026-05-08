@@ -1,4 +1,4 @@
-"""Regression coverage for the Termux broad install profile."""
+"""Regression coverage for the Termux broad install option."""
 
 from pathlib import Path
 
@@ -24,5 +24,5 @@ def test_install_script_resolves_termux_profile_extras_and_fallbacks() -> None:
     assert 'echo "termux-minimal"' in text
     assert 'termux_extra="$(resolve_termux_extra)"' in text
     assert 'pip install -e ".[${termux_extra}]" -c constraints-termux.txt' in text
-    assert "Termux profile (.[${termux_extra}]) failed, trying minimal Termux profile..." in text
-    assert "Termux minimal profile (.[termux-minimal]) failed, trying base install..." in text
+    assert "Termux install option (.[${termux_extra}]) failed, trying minimal Termux install option..." in text
+    assert "Termux minimal install option (.[termux-minimal]) failed, trying base install..." in text

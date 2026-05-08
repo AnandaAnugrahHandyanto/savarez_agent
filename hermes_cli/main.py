@@ -989,15 +989,15 @@ def _hermes_ink_bundle_stale(tui_dir: Path) -> bool:
     return False
 
 
-def _tui_minimal_profile_active() -> bool:
-    """Return True when config says the current install profile is minimal."""
+def _tui_minimal_option_active() -> bool:
+    """Return True when config says the current install option is minimal."""
     if os.environ.get("HERMES_TUI_AUTO_INSTALL"):
         return False
     try:
         from hermes_cli.config import load_config
 
         cfg = load_config()
-        return cfg.get("install_profile") == "minimal"
+        return cfg.get("install_option") == "minimal"
     except Exception:
         return False
 
@@ -1027,8 +1027,8 @@ def _ensure_tui_node() -> None:
     """
     if shutil.which("node") and shutil.which("npm"):
         return
-    if _tui_minimal_profile_active():
-        _exit_tui_missing("Node.js/npm are absent in the minimal profile")
+    if _tui_minimal_option_active():
+        _exit_tui_missing("Node.js/npm are absent in the minimal install option")
     if os.environ.get("HERMES_SKIP_NODE_BOOTSTRAP"):
         return
 
@@ -1095,10 +1095,10 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                 node = _node_bin("node")
                 return [node, str(p / "dist" / "entry.js")], p
 
-    if _tui_minimal_profile_active() and (
+    if _tui_minimal_option_active() and (
         _tui_need_npm_install(tui_dir) or _tui_build_needed(tui_dir)
     ):
-        _exit_tui_missing("npm dependencies or built assets are missing in the minimal profile")
+        _exit_tui_missing("npm dependencies or built assets are missing in the minimal install option")
 
     npm = _node_bin("npm")
     if _tui_need_npm_install(tui_dir):
@@ -8922,16 +8922,16 @@ def main():
         "or unset, instead of running the full reconfigure wizard.",
     )
     setup_parser.add_argument(
-        "--install-profile",
+        "--install-option",
         choices=["minimal", "standard", "full"],
         default=None,
-        help="Installer/setup dependency profile. 'minimal' asks only for provider/model and enables the bare toolset.",
+        help="Installer/setup dependency option. 'minimal' asks only for provider/model and enables the bare toolset.",
     )
     setup_parser.add_argument(
         "--minimal",
         dest="setup_minimal",
         action="store_true",
-        help="Alias for --install-profile minimal.",
+        help="Alias for --install-option minimal.",
     )
     setup_parser.set_defaults(func=cmd_setup)
 

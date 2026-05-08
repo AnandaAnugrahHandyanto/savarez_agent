@@ -1,4 +1,4 @@
-"""Regression coverage for the minimal installer profile."""
+"""Regression coverage for the minimal installer option."""
 
 import os
 import subprocess
@@ -37,7 +37,7 @@ def test_pyproject_keeps_minimal_base_light() -> None:
         assert optional_dep not in base
 
 
-def test_pyproject_defines_profile_and_feature_extras() -> None:
+def test_pyproject_defines_install_option_and_feature_extras() -> None:
     extras = _optional_deps()
     for name in [
         "minimal",
@@ -67,11 +67,12 @@ def test_pyproject_defines_profile_and_feature_extras() -> None:
     assert any(dep.startswith("croniter") for dep in extras["cron"])
 
 
-def test_install_script_defaults_to_minimal_profile_and_selected_extras() -> None:
+def test_install_script_defaults_to_minimal_install_option_and_selected_extras() -> None:
     text = INSTALL_SH.read_text()
-    assert 'INSTALL_PROFILE="${HERMES_INSTALL_PROFILE:-minimal}"' in text
+    assert 'INSTALL_OPTION="${HERMES_INSTALL_OPTION:-minimal}"' in text
     assert "WITH_FEATURES=()" in text
-    assert "--profile NAME Install profile: minimal (default), standard, full" in text
+    assert "--install-option NAME  Install option: minimal (default), standard, full" in text
+    assert "--profile NAME Install profile" not in text
     assert "resolve_python_extras()" in text
     assert 'minimal) extras+=("minimal") ;;' in text
     assert 'standard) extras+=("standard") ;;' in text
@@ -81,13 +82,20 @@ def test_install_script_defaults_to_minimal_profile_and_selected_extras() -> Non
     assert 'uv pip install -e ".[all]"' not in text
 
 
-def test_installer_invokes_setup_with_install_profile_not_hermes_profile() -> None:
+def test_default_config_uses_install_option_not_install_profile() -> None:
+    text = (REPO_ROOT / "hermes_cli" / "config.py").read_text()
+    assert '"install_option": "minimal"' in text
+    assert '"install_profile": "minimal"' not in text
+
+
+def test_installer_invokes_setup_with_install_option_not_hermes_profile() -> None:
     text = INSTALL_SH.read_text()
-    assert 'setup --install-profile "$INSTALL_PROFILE"' in text
-    assert 'setup --profile "$INSTALL_PROFILE"' not in text
+    assert 'setup --install-option "$INSTALL_OPTION"' in text
+    assert 'setup --install-profile "$INSTALL_OPTION"' not in text
+    assert 'setup --profile "$INSTALL_OPTION"' not in text
 
 
-def test_setup_install_profile_flag_does_not_require_named_hermes_profile(tmp_path) -> None:
+def test_setup_install_option_flag_does_not_require_named_hermes_profile(tmp_path) -> None:
     env = os.environ.copy()
     env["HERMES_HOME"] = str(tmp_path / "hermes-home")
     env.pop("PYTHONPATH", None)
@@ -98,7 +106,7 @@ def test_setup_install_profile_flag_does_not_require_named_hermes_profile(tmp_pa
             "-m",
             "hermes_cli.main",
             "setup",
-            "--install-profile",
+            "--install-option",
             "minimal",
             "--non-interactive",
         ],
@@ -115,7 +123,7 @@ def test_setup_install_profile_flag_does_not_require_named_hermes_profile(tmp_pa
     assert result.returncode == 0, output
 
 
-def test_install_profile_flag_can_be_combined_with_named_hermes_profile(tmp_path) -> None:
+def test_install_option_flag_can_be_combined_with_named_hermes_profile(tmp_path) -> None:
     env = os.environ.copy()
     env["HERMES_HOME"] = str(tmp_path / "hermes-root")
     env.pop("PYTHONPATH", None)
@@ -139,7 +147,7 @@ def test_install_profile_flag_can_be_combined_with_named_hermes_profile(tmp_path
             "--profile",
             "dev",
             "setup",
-            "--install-profile",
+            "--install-option",
             "minimal",
             "--non-interactive",
         ],
@@ -156,7 +164,7 @@ def test_install_profile_flag_can_be_combined_with_named_hermes_profile(tmp_path
     assert result.returncode == 0, output
 
 
-def test_install_script_gates_heavy_probes_for_minimal_profile() -> None:
+def test_install_script_gates_heavy_probes_for_minimal_option() -> None:
     text = INSTALL_SH.read_text()
     assert "should_check_node()" in text
     assert "should_check_ffmpeg()" in text
@@ -175,7 +183,7 @@ def test_dashboard_missing_dependencies_message_points_to_feature_extra() -> Non
     assert "pip install 'hermes-agent[web]'" in text
 
 
-def test_tui_and_install_feature_have_minimal_profile_opt_in_messages() -> None:
+def test_tui_and_install_feature_have_minimal_option_opt_in_messages() -> None:
     text = (REPO_ROOT / "hermes_cli" / "main.py").read_text()
     assert "def cmd_install_feature(args):" in text
     assert '"browser", "tts", "voice", "dashboard", "tui", "gateway", "web",' in text

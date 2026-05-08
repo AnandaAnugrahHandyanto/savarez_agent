@@ -397,7 +397,7 @@ DEFAULT_CONFIG = {
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
-    "install_profile": "minimal",
+    "install_option": "minimal",
     # Legacy top-level toolsets value is kept for compatibility with callers
     # that have not moved to platform_toolsets yet.
     "toolsets": ["hermes-minimal"],

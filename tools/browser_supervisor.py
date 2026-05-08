@@ -31,7 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple
 try:
     import websockets
     from websockets.asyncio.client import ClientConnection
-except ImportError:  # Browser/CDP support is optional in the minimal profile.
+except ImportError:  # Browser/CDP support is optional in the minimal install option.
     websockets = None  # type: ignore[assignment]
     ClientConnection = Any  # type: ignore[misc, assignment]
 

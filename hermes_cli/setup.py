@@ -3062,13 +3062,13 @@ def run_setup_wizard(args):
         )
         return
 
-    requested_profile = getattr(args, "install_profile", None)
+    requested_option = getattr(args, "install_option", None)
     if getattr(args, "setup_minimal", False):
-        requested_profile = "minimal"
+        requested_option = "minimal"
 
-    if requested_profile:
-        config["install_profile"] = requested_profile
-        if requested_profile == "minimal":
+    if requested_option:
+        config["install_option"] = requested_option
+        if requested_option == "minimal":
             config["toolsets"] = ["hermes-minimal"]
             config.setdefault("platform_toolsets", {})["cli"] = ["hermes-minimal"]
             print()
@@ -3079,12 +3079,12 @@ def run_setup_wizard(args):
             _print_setup_summary(config, hermes_home)
             _offer_launch_chat()
             return
-        if requested_profile == "standard":
+        if requested_option == "standard":
             config["toolsets"] = ["skills", "file", "terminal", "todo", "memory", "session_search", "clarify"]
             config.setdefault("platform_toolsets", {})["cli"] = [
                 "skills", "file", "terminal", "todo", "memory", "session_search", "clarify"
             ]
-        elif requested_profile == "full":
+        elif requested_option == "full":
             config["toolsets"] = ["hermes-cli"]
             config.setdefault("platform_toolsets", {})["cli"] = ["hermes-cli"]
 
