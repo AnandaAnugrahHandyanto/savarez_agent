@@ -914,3 +914,94 @@ def test_latest_summaries_batch_omits_tasks_without_summary(kanban_home):
         assert out == {t1: "alpha", t3: "charlie"}
         # Empty input → empty dict, no SQL syntax error from "IN ()".
         assert kb.latest_summaries(conn, []) == {}
+
+
+# ---------------------------------------------------------------------------
+# Migration — concurrent / repeated invocation must not surface
+# `duplicate column name` from racing ALTER TABLE statements.
+# ---------------------------------------------------------------------------
+
+def test_migration_is_idempotent_against_itself(tmp_path):
+    """`_migrate_add_optional_columns` may be invoked twice on the same
+    DB by callers that legitimately race (the embedded gateway dispatcher
+    used to call `connect()` immediately followed by `init_db()`, and a
+    second process can open the DB during gateway startup). SQLite has
+    no `ADD COLUMN IF NOT EXISTS`, so the loser would raise
+    `OperationalError: duplicate column name`. The helper now swallows
+    exactly that error and re-raises anything else.
+    """
+    import sqlite3
+    import threading
+
+    db = tmp_path / "legacy.db"
+    # Build a pre-migration "legacy" DB: tasks table missing every
+    # optional column the migration expects to add.
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE tasks (
+          id TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT,
+          assignee TEXT, status TEXT NOT NULL, priority INTEGER DEFAULT 0,
+          created_by TEXT, created_at INTEGER NOT NULL,
+          started_at INTEGER, completed_at INTEGER,
+          workspace_kind TEXT NOT NULL DEFAULT 'scratch',
+          workspace_path TEXT, claim_lock TEXT, claim_expires INTEGER
+        );
+        CREATE TABLE task_events (id INTEGER PRIMARY KEY, kind TEXT);
+        """
+    )
+    conn.close()
+
+    errors: list[BaseException] = []
+
+    def migrate_once() -> None:
+        try:
+            cc = sqlite3.connect(str(db), isolation_level=None)
+            cc.row_factory = sqlite3.Row
+            kb._migrate_add_optional_columns(cc)
+            cc.close()
+        except BaseException as exc:  # pragma: no cover - regression guard
+            errors.append(exc)
+
+    # Four concurrent migrators against the same legacy DB. Without the
+    # helper, at least one thread would raise OperationalError.
+    threads = [threading.Thread(target=migrate_once) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+
+    # Final schema must contain every column the migration is supposed
+    # to add — proves the helper didn't silently drop any ALTER.
+    final = sqlite3.connect(str(db))
+    final.row_factory = sqlite3.Row
+    cols = {r["name"] for r in final.execute("PRAGMA table_info(tasks)")}
+    final.close()
+    expected = {
+        "tenant", "result", "idempotency_key", "consecutive_failures",
+        "worker_pid", "last_failure_error", "max_runtime_seconds",
+        "last_heartbeat_at", "current_run_id", "workflow_template_id",
+        "current_step_key", "skills", "max_retries",
+    }
+    assert expected <= cols
+
+
+def test_safe_add_column_reraises_unrelated_errors(tmp_path):
+    """The helper must only swallow `duplicate column name`. Any other
+    OperationalError (bad SQL, missing table, etc.) must propagate so
+    real schema bugs don't get masked.
+    """
+    import sqlite3
+
+    db = tmp_path / "tiny.db"
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            kb._safe_add_column(
+                conn, "ALTER TABLE does_not_exist ADD COLUMN foo TEXT"
+            )
+    finally:
+        conn.close()

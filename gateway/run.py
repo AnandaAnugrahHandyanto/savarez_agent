@@ -3929,10 +3929,15 @@ class GatewayRunner:
             conn = None
             try:
                 conn = _kb.connect(board=slug)
-                try:
-                    _kb.init_db(board=slug)  # idempotent, handles first-run
-                except Exception:
-                    pass
+                # `connect()` runs the schema + idempotent migration on
+                # first open per process, so an explicit `init_db()` here
+                # would be redundant. Worse: `init_db()` deliberately
+                # busts the per-process cache and re-runs the migration
+                # on a *second* connection, which races the first and
+                # used to log a benign but noisy `duplicate column name`
+                # traceback on every gateway start against a legacy DB.
+                # The migration helper now tolerates that race, but we
+                # still skip the redundant call to avoid the wasted work.
                 return _kb.dispatch_once(
                     conn,
                     board=slug,
