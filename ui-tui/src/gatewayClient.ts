@@ -273,7 +273,9 @@ export class GatewayClient extends EventEmitter {
         this.pushLog('[sidecar] mirror connection error')
       })
     } catch (err) {
-      this.pushLog(`[sidecar] failed to connect: ${err instanceof Error ? err.message : String(err)}`)
+      const errorName = err instanceof Error && err.name ? err.name : 'Error'
+
+      this.pushLog(`[sidecar] failed to connect ${redactUrl(this.sidecarUrl)} (${errorName})`)
       this.sidecarWs = null
     }
   }
@@ -468,7 +470,9 @@ export class GatewayClient extends EventEmitter {
         this.publish({ type: 'gateway.stderr', payload: { line } })
       })
     } catch (err) {
-      this.pushLog(`[startup] failed to connect websocket gateway: ${err instanceof Error ? err.message : String(err)}`)
+      const errorName = err instanceof Error && err.name ? err.name : 'Error'
+
+      this.pushLog(`[startup] failed to connect websocket gateway ${safeAttachUrl} (${errorName})`)
       this.handleTransportExit(1, 'gateway websocket startup failed')
     }
   }

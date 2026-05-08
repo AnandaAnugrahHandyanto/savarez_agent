@@ -272,6 +272,61 @@ describe('GatewayClient websocket attach mode', () => {
     gw.kill()
   })
 
+  it('redacts attach URL secrets when the WebSocket constructor throws', () => {
+    const secretUrl = 'ws://gateway.test/api/ws?token=hunter2&channel=secret'
+
+    process.env.HERMES_TUI_GATEWAY_URL = secretUrl
+    ;(globalThis as { WebSocket?: unknown }).WebSocket = class ThrowingWebSocket extends FakeWebSocket {
+      constructor(url: string) {
+        throw new TypeError(`Invalid URL: ${url}`)
+      }
+    } as unknown as typeof WebSocket
+
+    const gw = new GatewayClient()
+
+    gw.start()
+    gw.drain()
+
+    const tail = gw.getLogTail(20)
+    expect(tail).not.toContain('hunter2')
+    expect(tail).not.toContain('channel=secret')
+    expect(tail).not.toContain(secretUrl)
+    expect(tail).toContain('ws://gateway.test/api/ws?***')
+
+    gw.kill()
+  })
+
+  it('redacts sidecar URL secrets when the WebSocket constructor throws', async () => {
+    const sidecarUrl = 'ws://gateway.test/api/pub?token=hunter2&channel=secret'
+
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    process.env.HERMES_TUI_SIDECAR_URL = sidecarUrl
+    ;(globalThis as { WebSocket?: unknown }).WebSocket = class ThrowingSidecarWebSocket extends FakeWebSocket {
+      constructor(url: string) {
+        if (url.includes('/api/pub')) {
+          throw new TypeError(`Invalid URL: ${url}`)
+        }
+
+        super(url)
+      }
+    } as unknown as typeof WebSocket
+
+    const gw = new GatewayClient()
+
+    gw.start()
+    const gatewaySocket = FakeWebSocket.instances[0]!
+    gatewaySocket.open()
+    await vi.waitFor(() => expect(gw.getLogTail(20)).toContain('[sidecar] failed to connect'))
+
+    const tail = gw.getLogTail(20)
+    expect(tail).not.toContain('hunter2')
+    expect(tail).not.toContain('channel=secret')
+    expect(tail).not.toContain(sidecarUrl)
+    expect(tail).toContain('ws://gateway.test/api/pub?***')
+
+    gw.kill()
+  })
+
   it('redacts user-info credentials even on URLs the WHATWG parser rejects', () => {
     // Port 99999 is outside the WHATWG URL parser's valid 0–65535
     // range and survives `.trim()`, so the fixture deterministically
