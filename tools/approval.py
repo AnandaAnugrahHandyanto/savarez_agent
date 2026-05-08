@@ -220,6 +220,19 @@ HARDLINE_PATTERNS_COMPILED = [
     for pattern, description in HARDLINE_PATTERNS
 ]
 
+DIRECT_CODEX_PATTERN_COMPILED = re.compile(
+    _CMDPOS + r'(?:\S*/)?codex(?:\s|$)',
+    _RE_FLAGS,
+)
+CODEX_PHASE_WRAPPER = "/home/ubuntu/.hermes/scripts/hermes-codex-phase"
+
+
+def _is_direct_codex_command(normalized_command: str) -> bool:
+    """Return True when a shell command invokes Codex outside Hermes orchestration."""
+    if CODEX_PHASE_WRAPPER in normalized_command:
+        return False
+    return bool(DIRECT_CODEX_PATTERN_COMPILED.search(normalized_command))
+
 
 def detect_hardline_command(command: str) -> tuple:
     """Check if a command matches the unconditional hardline blocklist.
@@ -228,6 +241,11 @@ def detect_hardline_command(command: str) -> tuple:
         (is_hardline, description) or (False, None)
     """
     normalized = _normalize_command_for_detection(command).lower()
+    if _is_direct_codex_command(normalized):
+        return (
+            True,
+            "direct Codex execution outside Hermes Kanban/Codex phase wrapper",
+        )
     for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
         if pattern_re.search(normalized):
             return (True, description)

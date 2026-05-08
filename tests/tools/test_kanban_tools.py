@@ -527,6 +527,8 @@ def test_kanban_guidance_not_in_normal_prompt(monkeypatch, tmp_path):
     prompt = a._build_system_prompt()
     assert "You are a Kanban worker" not in prompt
     assert "kanban_show()" not in prompt
+    assert "Repository code intake" in prompt
+    assert "/home/ubuntu/.hermes/scripts/hermes-codex-phase" in prompt
 
 
 def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
@@ -555,6 +557,9 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     assert "kanban_complete" in prompt
     assert "kanban_block" in prompt
     assert "kanban_create" in prompt
+    assert "prd-phased-codex" in prompt
+    assert "/home/ubuntu/.hermes/scripts/hermes-codex-phase" in prompt
+    assert "Direct `codex ...` commands" in prompt
     # Anti-shell guidance
     assert "Do not shell out" in prompt or "tools — they work" in prompt
 

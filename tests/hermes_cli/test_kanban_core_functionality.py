@@ -414,6 +414,34 @@ def test_detect_crashed_workers_reclaims(kanban_home):
         conn.close()
 
 
+def test_detect_crashed_workers_auto_blocks_after_limit(kanban_home, monkeypatch):
+    """Repeated dead workers are deterministic failures, not useful retries."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="broken worker", assignee="worker")
+        monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
+
+        for _ in range(2):
+            kb.claim_task(conn, tid)
+            kb._set_worker_pid(conn, tid, 98765)
+            kb.detect_crashed_workers(conn, crash_limit=3)
+            assert kb.get_task(conn, tid).status == "ready"
+
+        kb.claim_task(conn, tid)
+        kb._set_worker_pid(conn, tid, 98765)
+        kb.detect_crashed_workers(conn, crash_limit=3)
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.current_run_id is None
+        runs = kb.list_runs(conn, tid)
+        assert [r.outcome for r in runs] == ["crashed", "crashed", "crashed"]
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert "gave_up" in kinds
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Daemon loop
 # ---------------------------------------------------------------------------
@@ -1836,6 +1864,88 @@ def test_dashboard_direct_status_change_within_same_state_is_noop_for_runs(kanba
         conn.close()
 
 
+def test_dashboard_create_ready_unassigned_returns_warning(kanban_home):
+    from plugins.kanban.dashboard.plugin_api import CreateTaskBody, create_task
+
+    response = create_task(CreateTaskBody(title="unassigned"))
+
+    assert response["task"]["status"] == "ready"
+    assert response["task"]["assignee"] is None
+    assert "unassigned" in response["warning"]
+    assert "will not spawn" in response["warning"]
+
+
+def test_dashboard_create_assigned_task_subscribes_telegram_home(kanban_home, monkeypatch):
+    from plugins.kanban.dashboard.plugin_api import CreateTaskBody, create_task
+
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "12345")
+
+    response = create_task(CreateTaskBody(title="notify me", assignee="codex"))
+    task_id = response["task"]["id"]
+
+    assert response["notify"] == {"platform": "telegram", "target": "home"}
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, task_id)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "telegram"
+    assert subs[0]["chat_id"] == "12345"
+    assert subs[0]["user_id"] == "dashboard"
+
+
+def test_dashboard_assign_task_subscribes_telegram_home(kanban_home, monkeypatch):
+    from plugins.kanban.dashboard.plugin_api import UpdateTaskBody, update_task
+
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "12345")
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="notify on assign", triage=True)
+    finally:
+        conn.close()
+
+    response = update_task(tid, UpdateTaskBody(assignee="codex"))
+
+    assert response["notify"] == {"platform": "telegram", "target": "home"}
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["chat_id"] == "12345"
+
+
+def test_dashboard_refuses_ready_without_assignee(kanban_home):
+    from fastapi import HTTPException
+    from plugins.kanban.dashboard.plugin_api import UpdateTaskBody, update_task
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="unassigned", triage=True)
+    finally:
+        conn.close()
+
+    with pytest.raises(HTTPException) as exc:
+        update_task(tid, UpdateTaskBody(status="ready"))
+
+    assert exc.value.status_code == 400
+    assert "require an assignee" in str(exc.value.detail)
+
+
+def test_known_assignees_includes_default_profile(kanban_home):
+    (kanban_home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+
+    conn = kb.connect()
+    try:
+        names = [entry["name"] for entry in kb.known_assignees(conn)]
+    finally:
+        conn.close()
+
+    assert "default" in names
+
+
 def test_cli_bulk_complete_with_summary_rejects(kanban_home):
     conn = kb.connect()
     try:
@@ -2598,6 +2708,102 @@ def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
     env = captured["env"]
     assert env.get("HERMES_KANBAN_TASK") == tid
     assert env.get("HERMES_PROFILE") == "some-profile"
+    assert env.get("HERMES_KANBAN_DB") == str(kanban_home / "kanban.db")
+
+
+def test_default_spawn_uses_codex_phase_wrapper_when_phases_exist(kanban_home, monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeProc:
+        pid = 12345
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env", {})
+        captured["cwd"] = kwargs.get("cwd")
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    repo = tmp_path / "repo"
+    phase_dir = repo / ".hermes" / "phases"
+    event_dir = repo / ".hermes" / "events"
+    phase_dir.mkdir(parents=True)
+    event_dir.mkdir(parents=True)
+    (phase_dir / "phase-001-setup.md").write_text("# done\n", encoding="utf-8")
+    (phase_dir / "phase-002-code.md").write_text("# next\n", encoding="utf-8")
+    (event_dir / "phase-001-setup-complete.json").write_text(
+        '{"type":"phase_complete"}\n',
+        encoding="utf-8",
+    )
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="phase worker",
+            assignee="codex",
+            workspace_kind="dir",
+            workspace_path=str(repo),
+            skills=["prd-phased-codex"],
+        )
+        task = kb.get_task(conn, tid)
+        pid = kb._default_spawn(task, str(repo))
+        assert pid == 12345
+    finally:
+        conn.close()
+
+    assert captured["cmd"] == [
+        "/home/ubuntu/.hermes/scripts/hermes-codex-phase",
+        str(repo),
+        ".hermes/phases/phase-002-code.md",
+        "45",
+    ]
+    assert captured["cwd"] == str(repo)
+    assert captured["env"]["HERMES_KANBAN_TASK"] == tid
+    assert captured["env"]["HERMES_KANBAN_DB"] == str(kanban_home / "kanban.db")
+
+
+def test_default_spawn_routes_claude_assignee_to_claude_cli_wrapper(kanban_home, monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeProc:
+        pid = 23456
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env", {})
+        captured["cwd"] = kwargs.get("cwd")
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="claude worker",
+            assignee="claude",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        task = kb.get_task(conn, tid)
+        pid = kb._default_spawn(task, str(workspace))
+        assert pid == 23456
+    finally:
+        conn.close()
+
+    assert captured["cmd"] == [
+        str(Path(kb.__file__).resolve().parents[1] / "scripts" / "hermes-claude-kanban"),
+        tid,
+        str(workspace),
+    ]
+    assert captured["cwd"] == str(workspace)
+    assert captured["env"]["HERMES_KANBAN_TASK"] == tid
+    assert captured["env"]["HERMES_PROFILE"] == "claude"
+    assert captured["env"]["HERMES_KANBAN_DB"] == str(kanban_home / "kanban.db")
 
 
 

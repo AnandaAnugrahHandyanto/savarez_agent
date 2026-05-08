@@ -96,6 +96,11 @@ VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 # ``heartbeat_claim(task_id)`` periodically.  In practice most kanban
 # workloads either finish within 15m or set a longer claim explicitly.
 DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
+CODEX_PHASE_WRAPPER = "/home/ubuntu/.hermes/scripts/hermes-codex-phase"
+CLAUDE_KANBAN_WRAPPER = (
+    str(Path(__file__).resolve().parents[1] / "scripts" / "hermes-claude-kanban")
+)
+CLAUDE_CLI_ASSIGNEES = {"claude", "claude-eng", "claude-dev", "codex-claude"}
 
 
 # Worker-context caps so build_worker_context() stays bounded on
@@ -2415,6 +2420,7 @@ def block_task(
     *,
     reason: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    metadata: Optional[dict] = None,
 ) -> bool:
     """Transition ``running -> blocked``."""
     with write_txn(conn):
@@ -2427,7 +2433,7 @@ def block_task(
                        claim_expires= NULL,
                        worker_pid   = NULL
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ('running', 'ready', 'blocked')
                 """,
                 (task_id,),
             )
@@ -2451,6 +2457,7 @@ def block_task(
             conn, task_id,
             outcome="blocked", status="blocked",
             summary=reason,
+            metadata=metadata,
         )
         # Synthesize a run when blocking a never-claimed task so the
         # reason is preserved in attempt history.
@@ -2459,6 +2466,7 @@ def block_task(
                 conn, task_id,
                 outcome="blocked",
                 summary=reason,
+                metadata=metadata,
             )
         _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
         return True
@@ -3097,7 +3105,11 @@ def set_max_runtime(
     return cur.rowcount == 1
 
 
-def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+def detect_crashed_workers(
+    conn: sqlite3.Connection,
+    *,
+    crash_limit: Optional[int] = None,
+) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
     Appends a ``crashed`` event and drops the task back to ``ready``.
@@ -3209,7 +3221,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             conn, tid,
             error=error_text,
             outcome="crashed",
-            failure_limit=(1 if protocol_violation else None),
+            failure_limit=(1 if protocol_violation else crash_limit),
             release_claim=False,
             end_run=False,
             event_payload_extra={"pid": pid, "claimer": claimer},
@@ -3651,6 +3663,28 @@ def _rotate_worker_log(log_path: Path, max_bytes: int) -> None:
         pass
 
 
+def _next_prd_phase(workspace: str) -> Optional[str]:
+    """Return the first incomplete PRD phased-Codex phase for ``workspace``."""
+    hermes_dir = Path(workspace) / ".hermes"
+    candidates = [
+        hermes_dir / "plans" / "phases",
+        hermes_dir / "phases",
+    ]
+    events_dir = Path(workspace) / ".hermes" / "events"
+    for phases_dir in candidates:
+        if not phases_dir.is_dir():
+            continue
+        try:
+            for phase_path in sorted(phases_dir.glob("phase-*.md")):
+                phase_name = phase_path.stem
+                event_path = events_dir / f"{phase_name}-complete.json"
+                if not event_path.exists():
+                    return str(phase_path.relative_to(Path(workspace)))
+        except OSError:
+            return None
+    return None
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -3706,34 +3740,40 @@ def _default_spawn(
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
 
-    cmd = [
-        "hermes",
-        "-p", profile_arg,
-        # Auto-load the kanban-worker skill so every dispatched worker
-        # has the pattern library (good summary/metadata shapes, retry
-        # diagnostics, block-reason examples) in its context, even if
-        # the profile hasn't wired it into skills config. The MANDATORY
-        # lifecycle is already in the system prompt via KANBAN_GUIDANCE;
-        # this skill is the deeper reference. Users can point a profile
-        # at a different/additional skill via config if they want —
-        # --skills is additive to the profile's default skill set.
-        "--skills", "kanban-worker",
-    ]
-    # Per-task force-loaded skills. Each name goes in its own
-    # `--skills X` pair rather than a single comma-joined arg: the CLI
-    # accepts both forms (action='append' + comma-split), but
-    # per-name pairs are easier to read in `ps` output and avoid any
-    # quoting ambiguity if a skill name ever contains unusual chars.
-    # Dedupe against the built-in so we don't double-load kanban-worker
-    # if a task author asks for it explicitly.
-    if task.skills:
-        for sk in task.skills:
+    task_skills = task.skills or []
+    phase = _next_prd_phase(workspace) if "prd-phased-codex" in task_skills else None
+    if phase:
+        cmd = [CODEX_PHASE_WRAPPER, workspace, phase, "45"]
+    elif profile_arg in CLAUDE_CLI_ASSIGNEES:
+        cmd = [CLAUDE_KANBAN_WRAPPER, task.id, workspace]
+    else:
+        cmd = [
+            "hermes",
+            "-p", profile_arg,
+            # Auto-load the kanban-worker skill so every dispatched worker
+            # has the pattern library (good summary/metadata shapes, retry
+            # diagnostics, block-reason examples) in its context, even if
+            # the profile hasn't wired it into skills config. The MANDATORY
+            # lifecycle is already in the system prompt via KANBAN_GUIDANCE;
+            # this skill is the deeper reference. Users can point a profile
+            # at a different/additional skill via config if they want —
+            # --skills is additive to the profile's default skill set.
+            "--skills", "kanban-worker",
+        ]
+        # Per-task force-loaded skills. Each name goes in its own
+        # `--skills X` pair rather than a single comma-joined arg: the CLI
+        # accepts both forms (action='append' + comma-split), but
+        # per-name pairs are easier to read in `ps` output and avoid any
+        # quoting ambiguity if a skill name ever contains unusual chars.
+        # Dedupe against the built-in so we don't double-load kanban-worker
+        # if a task author asks for it explicitly.
+        for sk in task_skills:
             if sk and sk != "kanban-worker":
                 cmd.extend(["--skills", sk])
-    cmd.extend([
-        "chat",
-        "-q", prompt,
-    ])
+        cmd.extend([
+            "chat",
+            "-q", prompt,
+        ])
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `hermes kanban log` on a specific board reads its own file and
@@ -4091,13 +4131,17 @@ def add_notify_sub(
     for ``task_id``. Idempotent on (task, platform, chat, thread)."""
     now = int(time.time())
     with write_txn(conn):
+        current_event_id = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM task_events WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()[0]
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
-                (task_id, platform, chat_id, thread_id, user_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (task_id, platform, chat_id, thread_id, user_id, created_at, last_event_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (task_id, platform, chat_id, thread_id or "", user_id, now),
+            (task_id, platform, chat_id, thread_id or "", user_id, now, int(current_event_id)),
         )
 
 
@@ -4326,10 +4370,68 @@ def list_profiles_on_disk() -> list[str]:
     return sorted(names)
 
 
+def profile_config_status(name: str) -> dict:
+    """Return a dashboard-friendly health summary for an assignee profile."""
+    normalized = (name or "").strip()
+    if normalized in CLAUDE_CLI_ASSIGNEES:
+        claude_bin = Path("/home/ubuntu/.hermes/node/bin/claude")
+        if claude_bin.exists():
+            return {
+                "healthy": True,
+                "reason": "claude cli configured",
+                "executor": "claude-cli",
+            }
+        return {
+            "healthy": False,
+            "reason": f"claude cli not found at {claude_bin}",
+            "executor": "claude-cli",
+        }
+
+    try:
+        import yaml
+        from hermes_constants import get_default_hermes_root
+
+        default_root = get_default_hermes_root()
+        if normalized == "default":
+            config_path = default_root / "config.yaml"
+        else:
+            config_path = default_root / "profiles" / normalized / "config.yaml"
+        if not config_path.is_file():
+            return {
+                "healthy": False,
+                "reason": "profile config not found",
+                "executor": "hermes-profile",
+            }
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        model_config = data.get("model")
+        if isinstance(model_config, dict):
+            model_name = model_config.get("default")
+        else:
+            model_name = model_config
+        if model_name:
+            return {
+                "healthy": True,
+                "reason": f"model configured: {model_name}",
+                "executor": "hermes-profile",
+            }
+        return {
+            "healthy": False,
+            "reason": "profile has no default model configured",
+            "executor": "hermes-profile",
+        }
+    except Exception as exc:
+        return {
+            "healthy": False,
+            "reason": f"profile health check failed: {exc}",
+            "executor": "hermes-profile",
+        }
+
+
 def known_assignees(conn: sqlite3.Connection) -> list[dict]:
     """Return every assignee name known to the board or on disk.
 
-    Each entry is ``{"name": str, "on_disk": bool, "counts": {status: n}}``.
+    Each entry is ``{"name": str, "on_disk": bool, "healthy": bool,
+    "health_reason": str, "executor": str, "counts": {status: n}}``.
     A name is included when it's a configured profile on disk OR when
     any non-archived task has it as the assignee. Used by:
 
@@ -4350,15 +4452,28 @@ def known_assignees(conn: sqlite3.Connection) -> list[dict]:
     ):
         counts.setdefault(row["assignee"], {})[row["status"]] = int(row["n"])
 
-    names = sorted(on_disk | set(counts.keys()))
-    return [
-        {
-            "name": name,
-            "on_disk": name in on_disk,
-            "counts": counts.get(name, {}),
-        }
-        for name in names
-    ]
+    names = sorted(on_disk | set(counts.keys()) | CLAUDE_CLI_ASSIGNEES)
+    assignees: list[dict] = []
+    for name in names:
+        if name in on_disk or name in CLAUDE_CLI_ASSIGNEES:
+            status = profile_config_status(name)
+        else:
+            status = {
+                "healthy": False,
+                "reason": "profile config not found",
+                "executor": "hermes-profile",
+            }
+        assignees.append(
+            {
+                "name": name,
+                "on_disk": name in on_disk,
+                "healthy": bool(status.get("healthy")),
+                "health_reason": str(status.get("reason") or ""),
+                "executor": str(status.get("executor") or ""),
+                "counts": counts.get(name, {}),
+            }
+        )
+    return assignees
 
 
 # ---------------------------------------------------------------------------

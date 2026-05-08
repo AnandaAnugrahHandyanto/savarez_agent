@@ -46,6 +46,67 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _auto_subscribe_telegram_home(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Subscribe dashboard-created work to the Telegram home channel if set."""
+    try:
+        from hermes_cli.env_loader import load_hermes_dotenv
+        from hermes_constants import get_hermes_home
+
+        load_hermes_dotenv(hermes_home=get_hermes_home())
+    except Exception:
+        pass
+
+    chat_id = os.environ.get("TELEGRAM_HOME_CHANNEL", "").strip()
+    if not chat_id:
+        return False
+
+    kanban_db.add_notify_sub(
+        conn,
+        task_id=task_id,
+        platform="telegram",
+        chat_id=chat_id,
+        user_id="dashboard",
+    )
+    return True
+
+
+def _reject_unhealthy_ready_assignee(assignee: Optional[str]) -> None:
+    if not assignee:
+        return
+    health = kanban_db.profile_config_status(assignee)
+    if health.get("healthy"):
+        return
+    reason = str(health.get("reason") or "")
+    # Historical dashboard behavior allowed free-form assignee names. Keep
+    # that for not-yet-created profiles; only reject profiles that exist but
+    # are unusable, such as config.yaml with an empty model.
+    if reason.startswith("profile config not found"):
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"assignee {assignee!r} is not runnable: "
+            f"{reason or 'profile health check failed'}"
+        ),
+    )
+
+
+def _create_payload_would_be_ready(
+    conn: sqlite3.Connection, payload: "CreateTaskBody",
+) -> bool:
+    if payload.triage:
+        return False
+    parents = [p for p in payload.parents if p]
+    if not parents:
+        return True
+    rows = conn.execute(
+        "SELECT status FROM tasks WHERE id IN "
+        "(" + ",".join("?" * len(parents)) + ")",
+        parents,
+    ).fetchall()
+    return len(rows) == len(parents) and all(r["status"] == "done" for r in rows)
+
+
 # ---------------------------------------------------------------------------
 # Auth helper — WebSocket only (HTTP routes live behind the dashboard's
 # existing plugin-bypass; this is documented above).
@@ -82,6 +143,8 @@ def _resolve_board(board: Optional[str]) -> Optional[str]:
     through to the active board inside ``kb.connect()``).
     """
     if board is None or board == "":
+        return None
+    if board.__class__.__name__ == "Query":
         return None
     try:
         normed = kanban_db._normalize_board_slug(board)
@@ -510,6 +573,8 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
+        if payload.assignee and _create_payload_would_be_ready(conn, payload):
+            _reject_unhealthy_ready_assignee(payload.assignee)
         task_id = kanban_db.create_task(
             conn,
             title=payload.title,
@@ -528,6 +593,13 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
         )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
+        if task and task.assignee and _auto_subscribe_telegram_home(conn, task_id):
+            body["notify"] = {"platform": "telegram", "target": "home"}
+        if task and task.status == "ready" and not task.assignee:
+            body["warning"] = (
+                "Task is ready but unassigned; the dispatcher will not spawn "
+                "a worker until an assignee/profile is set."
+            )
         # Surface a dispatcher-presence warning so the UI can show a
         # banner when a `ready` task would otherwise sit idle because no
         # gateway is running (or dispatch_in_gateway=false). Only emit
@@ -573,12 +645,15 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
+        response: dict[str, Any] = {}
         task = kanban_db.get_task(conn, task_id)
         if task is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
         # --- assignee ----------------------------------------------------
         if payload.assignee is not None:
+            if payload.assignee and task.status == "ready":
+                _reject_unhealthy_ready_assignee(payload.assignee)
             try:
                 ok = kanban_db.assign_task(
                     conn, task_id, payload.assignee or None,
@@ -587,6 +662,8 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 raise HTTPException(status_code=409, detail=str(e))
             if not ok:
                 raise HTTPException(status_code=404, detail="task not found")
+            if payload.assignee and _auto_subscribe_telegram_home(conn, task_id):
+                response["notify"] = {"platform": "telegram", "target": "home"}
 
         # --- status -------------------------------------------------------
         if payload.status is not None:
@@ -604,6 +681,16 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
             elif s == "ready":
                 # Re-open a blocked task, or just an explicit status set.
                 current = kanban_db.get_task(conn, task_id)
+                if current and not current.assignee:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "ready tasks require an assignee; set an assignee "
+                            "before moving this task to ready"
+                        ),
+                    )
+                if current:
+                    _reject_unhealthy_ready_assignee(current.assignee)
                 if current and current.status == "blocked":
                     ok = kanban_db.unblock_task(conn, task_id)
                 else:
@@ -663,7 +750,8 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 )
 
         updated = kanban_db.get_task(conn, task_id)
-        return {"task": _task_dict(updated) if updated else None}
+        response["task"] = _task_dict(updated) if updated else None
+        return response
     finally:
         conn.close()
 
@@ -851,6 +939,24 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         ok = kanban_db.block_task(conn, tid)
                     elif s == "ready":
                         cur = kanban_db.get_task(conn, tid)
+                        if cur and not cur.assignee and not payload.assignee:
+                            entry.update(
+                                ok=False,
+                                error=(
+                                    "ready tasks require an assignee; set an "
+                                    "assignee before moving this task to ready"
+                                ),
+                            )
+                            results.append(entry)
+                            continue
+                        if cur:
+                            target_assignee = payload.assignee if payload.assignee is not None else cur.assignee
+                            try:
+                                _reject_unhealthy_ready_assignee(target_assignee)
+                            except HTTPException as exc:
+                                entry.update(ok=False, error=str(exc.detail))
+                                results.append(entry)
+                                continue
                         if cur and cur.status == "blocked":
                             ok = kanban_db.unblock_task(conn, tid)
                         else:
@@ -864,6 +970,13 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                     if not ok:
                         entry.update(ok=False, error=f"transition to {s!r} refused")
                 if payload.assignee is not None:
+                    if payload.assignee and task.status == "ready":
+                        try:
+                            _reject_unhealthy_ready_assignee(payload.assignee)
+                        except HTTPException as exc:
+                            entry.update(ok=False, error=str(exc.detail))
+                            results.append(entry)
+                            continue
                     try:
                         if not kanban_db.assign_task(
                             conn, tid, payload.assignee or None,

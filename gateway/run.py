@@ -23,6 +23,7 @@ import re
 import shlex
 import sys
 import signal
+import subprocess
 import tempfile
 import threading
 import time
@@ -3656,6 +3657,163 @@ class GatewayRunner:
         )
         self._kanban_sub_fail_counts = sub_fail_counts
 
+        def _run_metadata(run: Any) -> dict[str, Any]:
+            meta = getattr(run, "metadata", None) if run else None
+            return meta if isinstance(meta, dict) else {}
+
+        def _summary_from_event(ev: Any, task: Any, run: Any) -> str:
+            if ev.payload and ev.payload.get("summary"):
+                return str(ev.payload["summary"]).strip()
+            if getattr(run, "summary", None):
+                return str(run.summary).strip()
+            if task and getattr(task, "result", None):
+                return str(task.result).strip()
+            return ""
+
+        def _changed_files(task: Any, run: Any) -> list[str]:
+            meta = _run_metadata(run)
+            files = meta.get("changed_files") or meta.get("files") or []
+            if isinstance(files, str):
+                files = [files]
+            if isinstance(files, list):
+                return [str(f) for f in files if str(f).strip()][:12]
+            return []
+
+        def _artifact_files(run: Any) -> list[str]:
+            meta = _run_metadata(run)
+            artifacts = meta.get("artifacts") or meta.get("artifact_paths") or []
+            if isinstance(artifacts, str):
+                artifacts = [artifacts]
+            result: list[str] = []
+            if isinstance(artifacts, list):
+                for artifact in artifacts:
+                    path = str(artifact).strip()
+                    if path and os.path.isfile(path):
+                        result.append(path)
+            return result[:5]
+
+        def _repo_path(task: Any, run: Any) -> str:
+            meta = _run_metadata(run)
+            repo = meta.get("repo") or meta.get("workspace") or ""
+            if not repo and task is not None:
+                repo = getattr(task, "workspace_path", "") or ""
+            return str(repo)
+
+        def _branch_name(repo: str) -> str:
+            if not repo or not os.path.isdir(repo):
+                return ""
+            try:
+                proc = subprocess.run(
+                    ["git", "branch", "--show-current"],
+                    cwd=repo,
+                    text=True,
+                    capture_output=True,
+                    timeout=3,
+                    check=False,
+                )
+                return proc.stdout.strip()
+            except Exception:
+                return ""
+
+        def _is_code_task(task: Any, run: Any) -> bool:
+            meta = _run_metadata(run)
+            if any(k in meta for k in ("changed_files", "repo", "branch", "artifacts")):
+                return True
+            if task is None:
+                return False
+            if getattr(task, "workspace_kind", "") in {"dir", "worktree"}:
+                return True
+            skills = getattr(task, "skills", None) or []
+            return "prd-phased-codex" in skills
+
+        def _kanban_link(board_slug: Optional[str]) -> str:
+            for path in (
+                _hermes_home / "kanban-dashboard-url",
+                _hermes_home / "dashboard-url",
+                _hermes_home / "kanban" / "dashboard-url",
+            ):
+                try:
+                    if path.exists():
+                        base = path.read_text(encoding="utf-8").strip().rstrip("/")
+                        if base:
+                            if not base.endswith("/kanban"):
+                                base = f"{base}/kanban"
+                            if board_slug and board_slug != "default":
+                                return f"{base}?board={board_slug}"
+                            return base
+                except OSError:
+                    pass
+            return ""
+
+        def _plain_change_explanation(task: Any, run: Any) -> str:
+            meta = _run_metadata(run)
+            explanation = meta.get("plain_explanation") or meta.get("change_explanation")
+            if explanation:
+                return str(explanation).strip()[:900]
+            summary = str(getattr(run, "summary", "") or "").strip()
+            if summary:
+                return summary[:900]
+            if task and getattr(task, "result", None):
+                return str(task.result).strip()[:900]
+            return "A task finished and produced changes/artifacts. Review the listed files before publishing."
+
+        def _text_artifact_preview(task: Any, run: Any) -> str:
+            if _is_code_task(task, run):
+                return ""
+            text = str(getattr(task, "result", "") or "").strip()
+            if not text:
+                text = str(getattr(run, "summary", "") or "").strip()
+            if not text:
+                return ""
+            return text[:1600]
+
+        def _kanban_action_keyboard(task_id: str, board_slug: Optional[str]) -> list[list[dict[str, str]]]:
+            suffix = f":{board_slug}" if board_slug else ""
+            return [[
+                {"text": "Approve", "callback_data": f"kb:ap:{task_id}{suffix}"},
+                {"text": "Reject", "callback_data": f"kb:rj:{task_id}{suffix}"},
+                {"text": "Opinar", "callback_data": f"kb:op:{task_id}{suffix}"},
+            ]]
+
+        def _kanban_done_keyboard(task_id: str, board_slug: Optional[str]) -> list[list[dict[str, str]]]:
+            suffix = f":{board_slug}" if board_slug else ""
+            return [[
+                {"text": "PR", "callback_data": f"kb:pr:{task_id}{suffix}"},
+                {"text": "Follow-up", "callback_data": f"kb:fu:{task_id}{suffix}"},
+                {"text": "Archive", "callback_data": f"kb:ar:{task_id}{suffix}"},
+            ]]
+
+        def _base_lines(
+            status_label: str,
+            sub: dict,
+            task: Any,
+            ev: Any,
+            run: Any,
+            board_slug: Optional[str],
+        ) -> list[str]:
+            repo = _repo_path(task, run)
+            branch = str(_run_metadata(run).get("branch") or "") or _branch_name(repo)
+            link = _kanban_link(board_slug)
+            title = getattr(task, "title", None) or sub["task_id"]
+            assignee = getattr(task, "assignee", None) or "unassigned"
+            summary = _summary_from_event(ev, task, run)
+            lines = [
+                "Hermes Kanban update",
+                f"Task: {sub['task_id']}",
+                f"Status: {status_label}",
+                f"Title: {str(title)[:160]}",
+                f"Assignee: {assignee}",
+            ]
+            if repo:
+                lines.append(f"Repo: {repo}")
+            if branch:
+                lines.append(f"Branch: {branch}")
+            if link:
+                lines.append(f"Kanban: {link}")
+            if summary:
+                lines.extend(["", f"Summary: {summary[:900]}"])
+            return lines
+
         # Initial delay so the gateway can finish wiring adapters.
         await asyncio.sleep(5)
 
@@ -3694,11 +3852,13 @@ class GatewayRunner:
                                 if not events:
                                     continue
                                 task = _kb.get_task(conn, sub["task_id"])
+                                run = _kb.latest_run(conn, sub["task_id"])
                                 deliveries.append({
                                     "sub": sub,
                                     "cursor": cursor,
                                     "events": events,
                                     "task": task,
+                                    "run": run,
                                     "board": slug,
                                 })
                         finally:
@@ -3709,6 +3869,7 @@ class GatewayRunner:
                 for d in deliveries:
                     sub = d["sub"]
                     task = d["task"]
+                    run = d.get("run")
                     board_slug = d.get("board")
                     platform_str = (sub["platform"] or "").lower()
                     try:
@@ -3723,7 +3884,6 @@ class GatewayRunner:
                     adapter = self.adapters.get(plat)
                     if adapter is None:
                         continue  # platform not currently connected
-                    title = (task.title if task else sub["task_id"])[:120]
                     for ev in d["events"]:
                         kind = ev.kind
                         # Identity prefix: attribute terminal pings to the
@@ -3732,30 +3892,65 @@ class GatewayRunner:
                         who = (task.assignee if task and task.assignee else None)
                         tag = f"@{who} " if who else ""
                         if kind == "completed":
-                            # Prefer the run's summary (the worker's
-                            # intentional human-facing handoff, carried
-                            # in the event payload), then fall back to
-                            # task.result for legacy rows written before
-                            # runs shipped.
-                            handoff = ""
-                            payload_summary = None
-                            if ev.payload and ev.payload.get("summary"):
-                                payload_summary = str(ev.payload["summary"])
-                            if payload_summary:
-                                h = payload_summary.strip().splitlines()[0][:200]
-                                handoff = f"\n{h}"
-                            elif task and task.result:
-                                r = task.result.strip().splitlines()[0][:160]
-                                handoff = f"\n{r}"
-                            msg = (
-                                f"✔ {tag}Kanban {sub['task_id']} done"
-                                f" — {title}{handoff}"
-                            )
+                            lines = _base_lines("done", sub, task, ev, run, board_slug)
+                            if _is_code_task(task, run):
+                                repo = _repo_path(task, run)
+                                lines.extend([
+                                    "",
+                                    "What this means:",
+                                    "- This Kanban task is finished; no approval is pending.",
+                                    "- Review the changed files and artifacts before publishing.",
+                                    "",
+                                    "Plain English:",
+                                    _plain_change_explanation(task, run),
+                                ])
+                                changed = _changed_files(task, run)
+                                if changed:
+                                    lines.extend(["", "Files:"])
+                                    lines.extend(f"- {path}" for path in changed)
+                                if repo:
+                                    lines.extend([
+                                        "",
+                                        "Validate:",
+                                        f"cd {repo} && git status --short && git diff --stat",
+                                    ])
+                                lines.extend([
+                                    "",
+                                    "Next options:",
+                                    "- Use PR to publish the branch.",
+                                    "- Use Follow-up to ask for changes.",
+                                    "- Use Archive if satisfied.",
+                                ])
+                            else:
+                                preview = _text_artifact_preview(task, run)
+                                if preview:
+                                    lines.extend(["", "Result:", preview])
+                            artifacts = _artifact_files(run)
+                            if artifacts:
+                                lines.extend(["", "Artifacts:"])
+                                lines.extend(f"- {path}" for path in artifacts)
+                            msg = "\n".join(lines)
                         elif kind == "blocked":
-                            reason = ""
-                            if ev.payload and ev.payload.get("reason"):
-                                reason = f": {str(ev.payload['reason'])[:160]}"
-                            msg = f"⏸ {tag}Kanban {sub['task_id']} blocked{reason}"
+                            lines = _base_lines("blocked", sub, task, ev, run, board_slug)
+                            reason = str((ev.payload or {}).get("reason") or "").strip()
+                            if reason:
+                                lines.extend(["", f"Blocker: {reason[:900]}"])
+                            lines.extend([
+                                "",
+                                "What this means:",
+                                "- Work is paused and waiting for your decision.",
+                                "- The worker should not continue until this is approved or rejected.",
+                                "",
+                                "Next:",
+                                "- Approve to unblock the task.",
+                                "- Reject to keep it blocked with a rejection note.",
+                                "- Opinar to add feedback before continuing.",
+                            ])
+                            artifacts = _artifact_files(run)
+                            if artifacts:
+                                lines.extend(["", "Artifacts:"])
+                                lines.extend(f"- {path}" for path in artifacts)
+                            msg = "\n".join(lines)
                         elif kind == "gave_up":
                             err = ""
                             if ev.payload and ev.payload.get("error"):
@@ -3782,6 +3977,14 @@ class GatewayRunner:
                         metadata: dict[str, Any] = {}
                         if sub.get("thread_id"):
                             metadata["thread_id"] = sub["thread_id"]
+                        if kind == "completed" and _is_code_task(task, run):
+                            metadata["inline_keyboard"] = _kanban_done_keyboard(
+                                sub["task_id"], board_slug,
+                            )
+                        elif kind == "blocked":
+                            metadata["inline_keyboard"] = _kanban_action_keyboard(
+                                sub["task_id"], board_slug,
+                            )
                         sub_key = (
                             sub["task_id"], sub["platform"],
                             sub["chat_id"], sub.get("thread_id") or "",
@@ -3790,6 +3993,20 @@ class GatewayRunner:
                             await adapter.send(
                                 sub["chat_id"], msg, metadata=metadata,
                             )
+                            for artifact in _artifact_files(run):
+                                try:
+                                    await adapter.send_document(
+                                        sub["chat_id"],
+                                        artifact,
+                                        caption=f"Kanban {sub['task_id']} artifact",
+                                        metadata=metadata,
+                                    )
+                                except TypeError:
+                                    await adapter.send_document(
+                                        sub["chat_id"],
+                                        artifact,
+                                        caption=f"Kanban {sub['task_id']} artifact",
+                                    )
                             # Reset the failure counter on success.
                             sub_fail_counts.pop(sub_key, None)
                         except Exception as exc:

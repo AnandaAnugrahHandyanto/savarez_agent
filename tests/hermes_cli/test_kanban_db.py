@@ -47,6 +47,43 @@ def test_init_creates_expected_tables(kanban_home):
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
 
 
+def test_notify_subscribe_starts_at_current_task_event(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="notify", assignee="worker")
+        kb.claim_task(conn, tid)
+        kb.block_task(conn, tid, reason="old blocker")
+
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="12345",
+            user_id="dashboard",
+        )
+        _, events = kb.unseen_events_for_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="12345",
+            kinds=["blocked"],
+        )
+
+    assert events == []
+
+
+def test_kanban_db_path_honors_shared_db_override(kanban_home, tmp_path, monkeypatch):
+    shared = tmp_path / "shared-board.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(shared))
+
+    with kb.connect() as conn:
+        kb.create_task(conn, title="shared board")
+
+    assert shared.exists()
+    with kb.connect() as conn:
+        tasks = kb.list_tasks(conn)
+    assert [t.title for t in tasks] == ["shared board"]
+
+
 # ---------------------------------------------------------------------------
 # Task creation + status inference
 # ---------------------------------------------------------------------------

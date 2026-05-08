@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TASK_ID="${1:?task id required}"
+WORKSPACE="${2:?workspace required}"
+HERMES_AGENT="${HERMES_AGENT:-/home/ubuntu/.hermes/hermes-agent}"
+CLAUDE_BIN="${CLAUDE_BIN:-/home/ubuntu/.hermes/node/bin/claude}"
+
+mkdir -p "$WORKSPACE"
+cd "$WORKSPACE"
+
+RUN_DIR="/home/ubuntu/.hermes/kanban/claude-runs/$TASK_ID"
+mkdir -p "$RUN_DIR"
+CONTEXT_FILE="$RUN_DIR/context.md"
+PROMPT_FILE="$RUN_DIR/prompt.md"
+STDOUT_FILE="$RUN_DIR/stdout.md"
+STDERR_FILE="$RUN_DIR/stderr.log"
+MARKER="$RUN_DIR/start.marker"
+
+touch "$MARKER"
+
+PYTHONPATH="$HERMES_AGENT" "$HERMES_AGENT/venv/bin/python" - "$TASK_ID" > "$CONTEXT_FILE" <<'PY'
+import sys
+from hermes_cli import kanban_db as kb
+
+task_id = sys.argv[1]
+conn = kb.connect()
+try:
+    print(kb.build_worker_context(conn, task_id))
+finally:
+    conn.close()
+PY
+
+{
+  printf 'You are executing a Hermes Kanban task via Claude Code CLI.\n\n'
+  printf 'Work in the current workspace only unless the task explicitly names another path.\n'
+  printf 'For writing/content tasks, create a clear deliverable file in the workspace.\n'
+  printf 'For code tasks, edit the repository files directly and run focused validation when practical.\n'
+  printf 'Do not call Hermes Kanban tools. The wrapper will update task status after you exit.\n'
+  printf 'Return a concise summary followed by any files changed.\n\n'
+  printf '%s\n' '--- Kanban context ---'
+  cat "$CONTEXT_FILE"
+} > "$PROMPT_FILE"
+
+set +e
+"$CLAUDE_BIN" \
+  --print \
+  --permission-mode acceptEdits \
+  --output-format text \
+  "$(cat "$PROMPT_FILE")" \
+  > "$STDOUT_FILE" 2> "$STDERR_FILE"
+EXIT_CODE=$?
+set -e
+
+if [ "$EXIT_CODE" -ne 0 ]; then
+  PYTHONPATH="$HERMES_AGENT" "$HERMES_AGENT/venv/bin/python" - "$TASK_ID" "$EXIT_CODE" "$STDERR_FILE" <<'PY'
+import sys
+from pathlib import Path
+from hermes_cli import kanban_db as kb
+
+task_id, exit_code, stderr_path = sys.argv[1], sys.argv[2], Path(sys.argv[3])
+stderr = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else ""
+reason = f"Claude CLI exited {exit_code}: {stderr.strip()[:700]}"
+conn = kb.connect()
+try:
+    kb.block_task(
+        conn,
+        task_id,
+        reason=reason,
+        metadata={"executor": "claude-cli", "stderr": str(stderr_path)},
+    )
+finally:
+    conn.close()
+PY
+  exit "$EXIT_CODE"
+fi
+
+if [ ! -s "$STDOUT_FILE" ]; then
+  printf 'Claude CLI completed without textual output.\n' > "$STDOUT_FILE"
+fi
+
+if ! find . -type f -newer "$MARKER" \
+  ! -path './.git/*' \
+  ! -path './node_modules/*' \
+  ! -path './.hermes/codex-logs/*' \
+  | grep -q .; then
+  cp "$STDOUT_FILE" "$WORKSPACE/claude-output.md"
+fi
+
+PYTHONPATH="$HERMES_AGENT" "$HERMES_AGENT/venv/bin/python" - "$TASK_ID" "$WORKSPACE" "$STDOUT_FILE" "$MARKER" <<'PY'
+import subprocess
+import sys
+from pathlib import Path
+from hermes_cli import kanban_db as kb
+
+task_id, workspace, stdout_path, marker = sys.argv[1:5]
+workspace_path = Path(workspace)
+stdout = Path(stdout_path).read_text(encoding="utf-8", errors="replace").strip()
+summary = stdout.splitlines()[0][:500] if stdout else "Claude CLI completed task."
+
+changed: list[str] = []
+if (workspace_path / ".git").exists():
+    try:
+        out = subprocess.check_output(
+            ["git", "status", "--short"],
+            cwd=workspace,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        for line in out.splitlines():
+            if line.strip():
+                changed.append(line[3:].strip())
+    except Exception:
+        pass
+if not changed:
+    marker_mtime = Path(marker).stat().st_mtime
+    for path in workspace_path.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(workspace_path)
+        if rel.parts and rel.parts[0] in {".git", "node_modules"}:
+            continue
+        try:
+            if path.stat().st_mtime >= marker_mtime:
+                changed.append(str(rel))
+        except OSError:
+            continue
+
+conn = kb.connect()
+try:
+    kb.complete_task(
+        conn,
+        task_id,
+        summary=summary,
+        metadata={
+            "executor": "claude-cli",
+            "stdout": stdout_path,
+            "changed_files": changed[:20],
+        },
+    )
+finally:
+    conn.close()
+PY

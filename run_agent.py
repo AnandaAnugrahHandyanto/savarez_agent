@@ -59,6 +59,52 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 
+_REPO_CODE_INTAKE_VERBS = (
+    "implemente", "implementa", "implementar", "implement",
+    "conserte", "corrija", "corrigir", "fix",
+    "refatore", "refatorar", "refactor",
+    "adicione", "adicionar", "add",
+    "altere", "alterar", "change",
+    "crie", "criar", "build",
+)
+_REPO_PATH_RE = re.compile(r"(/home/ubuntu/repos/[^\s'\"`]+)")
+
+
+def _clean_repo_path_candidate(raw: str) -> Optional[Path]:
+    if not raw:
+        return None
+    candidate = raw.rstrip(".,;:) ]}")
+    path = Path(candidate).expanduser()
+    if path.is_file():
+        path = path.parent
+    for current in [path, *path.parents]:
+        try:
+            if (current / ".git").exists():
+                return current.resolve()
+        except OSError:
+            return None
+        if str(current) == "/home/ubuntu/repos":
+            break
+    return None
+
+
+def _detect_repo_code_intake(message: Any) -> Optional[Path]:
+    """Return repo path when a normal user turn should be routed to Kanban."""
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return None
+    if os.environ.get("HERMES_DISABLE_REPO_CODE_INTAKE_ROUTER"):
+        return None
+    if not isinstance(message, str):
+        return None
+    lowered = message.lower()
+    if not any(verb in lowered for verb in _REPO_CODE_INTAKE_VERBS):
+        return None
+    for match in _REPO_PATH_RE.finditer(message):
+        repo = _clean_repo_path_candidate(match.group(1))
+        if repo is not None:
+            return repo
+    return None
+
 
 _OPENAI_CLS_CACHE: Optional[type] = None
 
@@ -135,6 +181,7 @@ from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
+    REPO_CODE_INTAKE_GUIDANCE,
     KANBAN_GUIDANCE,
     build_nous_subscription_prompt,
 )
@@ -5294,6 +5341,7 @@ class AIAgent:
 
         # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
         prompt_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+        prompt_parts.append(REPO_CODE_INTAKE_GUIDANCE)
 
         # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []
@@ -11095,6 +11143,83 @@ class AIAgent:
 
         # Initialize conversation (copy to avoid mutating the caller's list)
         messages = list(conversation_history) if conversation_history else []
+
+        routed_repo = _detect_repo_code_intake(user_message)
+        if routed_repo is not None:
+            try:
+                from hermes_cli import kanban_db as _kanban_db
+
+                with _kanban_db.connect() as conn:
+                    assignees = {
+                        entry.get("name")
+                        for entry in _kanban_db.known_assignees(conn)
+                        if entry.get("name")
+                    }
+                    assignee = "codex" if "codex" in assignees else "default"
+                    task_title = _summarize_user_message_for_log(user_message)
+                    if len(task_title) > 96:
+                        task_title = task_title[:93].rstrip() + "..."
+                    task_id = _kanban_db.create_task(
+                        conn,
+                        title=task_title or f"repo code task: {routed_repo.name}",
+                        body=str(user_message),
+                        assignee=assignee,
+                        created_by="repo-code-intake",
+                        workspace_kind="dir",
+                        workspace_path=str(routed_repo),
+                        skills=["prd-phased-codex"],
+                    )
+                    if (self.platform or "").lower() == "telegram" and self._chat_id:
+                        _kanban_db.add_notify_sub(
+                            conn,
+                            task_id=task_id,
+                            platform="telegram",
+                            chat_id=str(self._chat_id),
+                            thread_id=str(self._thread_id or ""),
+                            user_id=str(self._user_id or "repo-code-intake"),
+                        )
+                final_response = (
+                    "Roteei essa tarefa de código para o Kanban antes de mexer "
+                    f"no repositório.\n\n"
+                    f"Task: `{task_id}`\n"
+                    f"Assignee: `{assignee}`\n"
+                    f"Workspace: `{routed_repo}`\n\n"
+                    "O dispatcher do gateway deve pegar a task como `ready`. "
+                    "Acompanhe no dashboard Kanban ou com "
+                    f"`hermes kanban tail {task_id}`."
+                )
+                messages.append({"role": "user", "content": user_message})
+                self._persist_user_message_idx = len(messages) - 1
+                messages.append({"role": "assistant", "content": final_response})
+                self._persist_session(messages, conversation_history)
+                return {
+                    "final_response": final_response,
+                    "last_reasoning": None,
+                    "messages": messages,
+                    "api_calls": 0,
+                    "completed": True,
+                    "turn_exit_reason": "repo_code_intake_routed",
+                    "partial": False,
+                    "interrupted": False,
+                    "response_previewed": False,
+                    "model": self.model,
+                    "provider": self.provider,
+                    "base_url": self.base_url,
+                    "input_tokens": self.session_input_tokens,
+                    "output_tokens": self.session_output_tokens,
+                    "cache_read_tokens": self.session_cache_read_tokens,
+                    "cache_write_tokens": self.session_cache_write_tokens,
+                    "reasoning_tokens": self.session_reasoning_tokens,
+                    "prompt_tokens": self.session_prompt_tokens,
+                    "completion_tokens": self.session_completion_tokens,
+                    "total_tokens": self.session_total_tokens,
+                    "last_prompt_tokens": 0,
+                    "estimated_cost_usd": self.session_estimated_cost_usd,
+                    "cost_status": self.session_cost_status,
+                    "cost_source": self.session_cost_source,
+                }
+            except Exception as exc:
+                logger.warning("repo code intake routing failed: %s", exc)
 
         # Hydrate todo store from conversation history (gateway creates a fresh
         # AIAgent per message, so the in-memory store is empty -- we need to

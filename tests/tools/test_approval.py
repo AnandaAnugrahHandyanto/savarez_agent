@@ -11,6 +11,7 @@ from tools.approval import (
     _smart_approve,
     approve_session,
     detect_dangerous_command,
+    detect_hardline_command,
     is_approved,
     load_permanent,
     prompt_dangerous_approval,
@@ -124,6 +125,41 @@ class TestSafeCommand:
         is_dangerous, key, desc = detect_dangerous_command("git status")
         assert is_dangerous is False
         assert key is None
+        assert desc is None
+
+
+class TestDirectCodexHardline:
+    def test_direct_codex_is_blocked(self):
+        blocked, desc = detect_hardline_command("codex --yolo exec 'implement this'")
+        assert blocked is True
+        assert "direct Codex execution" in desc
+
+    def test_direct_codex_after_shell_separator_is_blocked(self):
+        blocked, desc = detect_hardline_command(
+            "cd /home/ubuntu/repos/pivotree-liquid-flow && codex exec 'work'"
+        )
+        assert blocked is True
+        assert "direct Codex execution" in desc
+
+    def test_direct_codex_by_absolute_path_is_blocked(self):
+        blocked, desc = detect_hardline_command(
+            "/home/ubuntu/.hermes/node/bin/codex --yolo exec 'work'"
+        )
+        assert blocked is True
+        assert "direct Codex execution" in desc
+
+    def test_hermes_codex_phase_wrapper_is_allowed_by_codex_guard(self):
+        blocked, desc = detect_hardline_command(
+            "/home/ubuntu/.hermes/scripts/hermes-codex-phase "
+            "/home/ubuntu/repos/pivotree-liquid-flow "
+            ".hermes/phases/phase-002-pre-planning-pause.md 45"
+        )
+        assert blocked is False
+        assert desc is None
+
+    def test_text_search_for_codex_is_not_blocked(self):
+        blocked, desc = detect_hardline_command("rg codex /home/ubuntu/.hermes")
+        assert blocked is False
         assert desc is None
 
 

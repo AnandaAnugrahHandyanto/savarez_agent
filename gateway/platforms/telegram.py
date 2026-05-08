@@ -1237,6 +1237,26 @@ class TelegramAdapter(BasePlatformAdapter):
             
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
+            reply_markup = None
+            if metadata and isinstance(metadata.get("inline_keyboard"), list):
+                rows = []
+                for row in metadata.get("inline_keyboard") or []:
+                    if not isinstance(row, list):
+                        continue
+                    buttons = []
+                    for button in row:
+                        if not isinstance(button, dict):
+                            continue
+                        text = str(button.get("text") or "").strip()
+                        callback_data = str(button.get("callback_data") or "").strip()
+                        if text and callback_data:
+                            buttons.append(
+                                InlineKeyboardButton(text, callback_data=callback_data)
+                            )
+                    if buttons:
+                        rows.append(buttons)
+                if rows:
+                    reply_markup = InlineKeyboardMarkup(rows)
             
             try:
                 from telegram.error import NetworkError as _NetErr
@@ -1269,6 +1289,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
                                 message_thread_id=effective_thread_id,
+                                reply_markup=reply_markup if i == len(chunks) - 1 else None,
                                 **self._link_preview_kwargs(),
                             )
                         except Exception as md_error:
@@ -1282,6 +1303,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
                                     message_thread_id=effective_thread_id,
+                                    reply_markup=reply_markup if i == len(chunks) - 1 else None,
                                     **self._link_preview_kwargs(),
                                 )
                             else:
@@ -2062,6 +2084,50 @@ class TelegramAdapter(BasePlatformAdapter):
                     logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
             return
 
+        # --- Kanban task action callbacks (kb:choice:task_id) ---
+        if data.startswith("kb:"):
+            parts = data.split(":")
+            if len(parts) not in (3, 4):
+                await query.answer(text="Invalid Kanban action.")
+                return
+            choice, task_id = parts[1], parts[2]
+            board = parts[3] if len(parts) == 4 else None
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to update this task.")
+                return
+
+            result_text = self._handle_kanban_callback_action(
+                task_id=task_id,
+                choice=choice,
+                board=board,
+                user_display=getattr(query.from_user, "first_name", "Telegram user"),
+                chat_id=str(query_chat_id) if query_chat_id is not None else "",
+            )
+            await query.answer(text=result_text[:180])
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            if query.message:
+                thread_id = getattr(query.message, "message_thread_id", None)
+                send_kwargs: Dict[str, Any] = {
+                    "chat_id": int(query.message.chat_id),
+                    "text": result_text,
+                    "parse_mode": ParseMode.MARKDOWN,
+                    **self._link_preview_kwargs(),
+                }
+                if thread_id is not None:
+                    send_kwargs["message_thread_id"] = thread_id
+                await self._bot.send_message(**send_kwargs)
+            return
+
         # --- Update prompt callbacks ---
         if not data.startswith("update_prompt:"):
             return
@@ -2099,6 +2165,120 @@ class TelegramAdapter(BasePlatformAdapter):
                         answer, getattr(query.from_user, "id", "unknown"))
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
+
+    def _handle_kanban_callback_action(
+        self,
+        *,
+        task_id: str,
+        choice: str,
+        user_display: str,
+        chat_id: str,
+        board: Optional[str] = None,
+    ) -> str:
+        from datetime import datetime, timezone
+
+        from hermes_cli import kanban_db as _kb
+
+        conn = _kb.connect(board=board)
+        try:
+            task = _kb.get_task(conn, task_id)
+            if not task:
+                return f"Kanban task {task_id} not found."
+
+            run = _kb.latest_run(conn, task_id)
+            meta = getattr(run, "metadata", None) if run else None
+            if not isinstance(meta, dict):
+                meta = {}
+            repo = meta.get("repo") or task.workspace_path
+
+            if choice == "ap":
+                if not repo:
+                    return f"Task {task_id} has no repo/workspace path to approve."
+                phase = str(meta.get("phase") or "").strip()
+                if phase == "post-prd":
+                    approval_path = _Path(str(repo)) / ".hermes" / "verification-answers.json"
+                else:
+                    approval_path = _Path(str(repo)) / ".hermes" / "approval-pre-planning.json"
+                approval_path.parent.mkdir(parents=True, exist_ok=True)
+                approval = {
+                    "approved": True,
+                    "approvedBy": user_display,
+                    "approvedVia": "telegram",
+                    "approvedAt": datetime.now(timezone.utc).isoformat(),
+                    "taskId": task_id,
+                }
+                if phase == "post-prd":
+                    approval["answers"] = [
+                        "Approved from Telegram; no extra verification notes provided."
+                    ]
+                tmp = approval_path.with_suffix(".json.tmp")
+                tmp.write_text(json.dumps(approval, indent=2) + "\n", encoding="utf-8")
+                tmp.replace(approval_path)
+                _kb.add_comment(
+                    conn,
+                    task_id,
+                    author="telegram",
+                    body=f"Approved by {user_display}; wrote {approval_path}",
+                )
+                _kb.add_notify_sub(
+                    conn,
+                    task_id=task_id,
+                    platform="telegram",
+                    chat_id=chat_id,
+                    user_id="kanban-approval",
+                )
+                if task.status == "blocked":
+                    _kb.unblock_task(conn, task_id)
+                return (
+                    f"✅ Approved {task_id}. Wrote `{approval_path}` and unblocked "
+                    "the task for the next dispatcher pass."
+                )
+
+            if choice == "rj":
+                reason = f"Rejected from Telegram by {user_display}."
+                _kb.add_comment(conn, task_id, author="telegram", body=reason)
+                _kb.block_task(conn, task_id, reason=reason)
+                return f"❌ Rejected {task_id}. It remains blocked."
+
+            if choice == "op":
+                return (
+                    f"💬 To add an opinion/comment, reply with:\n"
+                    f"`/kanban comment {task_id} your feedback here`\n\n"
+                    "I kept the task blocked."
+                )
+
+            if choice == "pr":
+                _kb.add_comment(
+                    conn,
+                    task_id,
+                    author="telegram",
+                    body=f"{user_display} requested PR publication from Telegram.",
+                )
+                return (
+                    f"🚀 PR requested for {task_id}.\n\n"
+                    "Reply to Hermes with:\n"
+                    f"`create a PR for Kanban task {task_id}`\n\n"
+                    "The task stays done; this button records intent and gives the exact next command."
+                )
+
+            if choice == "fu":
+                return (
+                    f"🔁 Follow-up for {task_id}.\n\n"
+                    "Reply with:\n"
+                    f"`follow up on Kanban task {task_id}: <what should change>`"
+                )
+
+            if choice == "ar":
+                if _kb.archive_task(conn, task_id):
+                    return f"📦 Archived {task_id}."
+                return f"Could not archive {task_id}; check its current state in Kanban."
+
+            return f"Unknown Kanban action for {task_id}."
+        except Exception as exc:
+            logger.error("Kanban callback failed for %s: %s", task_id, exc, exc_info=True)
+            return f"Kanban action failed for {task_id}: {exc}"
+        finally:
+            conn.close()
 
     def _missing_media_path_error(self, label: str, path: str) -> str:
         """Build an actionable file-not-found error for gateway MEDIA delivery.

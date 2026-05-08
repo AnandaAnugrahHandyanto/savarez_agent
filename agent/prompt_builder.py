@@ -182,6 +182,16 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+REPO_CODE_INTAKE_GUIDANCE = (
+    "# Repository code intake\n"
+    "When a user asks Hermes to implement, fix, refactor, or otherwise change "
+    "code in a git repository, create or use a Kanban task for the work before "
+    "execution. Do not run Codex directly from normal chat. Repository code "
+    "execution must go through the Kanban worker path and "
+    "`/home/ubuntu/.hermes/scripts/hermes-codex-phase` so progress, logs, "
+    "blocked state, completion, and notifications remain observable."
+)
+
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from "
@@ -227,6 +237,15 @@ KANBAN_GUIDANCE = (
     "express dependencies. Then `kanban_complete` your own task with a summary "
     "of the decomposition. Do NOT execute the work yourself; your job is "
     "routing, not implementation.\n"
+    "\n"
+    "## Repository code tasks\n"
+    "\n"
+    "For implementation work in a git repository, use the `prd-phased-codex` "
+    "workflow and run every Codex execution through "
+    "`/home/ubuntu/.hermes/scripts/hermes-codex-phase`. Direct `codex ...` "
+    "commands bypass durable Kanban state and are blocked. The phase wrapper "
+    "records start/finish events, log paths, blocked/complete state, and "
+    "notification handoff back to this board.\n"
     "\n"
     "## Do NOT\n"
     "\n"

@@ -66,6 +66,20 @@ process(action="submit", session_id="<id>", data="yes")
 process(action="kill", session_id="<id>")
 ```
 
+## Hermes Background Repo Work
+
+For user-owned repositories managed by Hermes, do not call `codex ...`
+directly from normal chat. Create or use a Kanban task and run Codex through
+the guarded phase wrapper so progress is observable:
+
+```bash
+/home/ubuntu/.hermes/scripts/hermes-codex-phase /absolute/repo/path .hermes/phases/phase-001-name.md 45
+```
+
+The wrapper captures `.hermes/codex-logs`, writes `.hermes/events`, and mirrors
+start/finish/block state back to Kanban when the worker was spawned from a
+Kanban task.
+
 ## Key Flags
 
 | Flag | Effect |
