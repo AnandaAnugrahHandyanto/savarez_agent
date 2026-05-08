@@ -16,6 +16,7 @@ tests in ``tests/gateway/test_busy_session_buttons.py``.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import types
 from unittest.mock import AsyncMock, MagicMock
@@ -73,6 +74,7 @@ def _make_runner():
     runner._running_agents_ts = {}
     runner._pending_messages = {}
     runner._busy_ack_ts = {}
+    runner._busy_ack_tool_bubble_defer_seconds = 0.0
     runner._draining = False
     runner.adapters = {}
     runner.config = MagicMock()
@@ -405,6 +407,32 @@ class TestAckAnchorAndToolBubbleAnchor:
 
         adapter.attach_busy_session_buttons.assert_not_called()
         adapter.send_or_update_busy_control_bubble.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_deferred_queue_ack_anchors_to_tool_bubble_and_suppresses_ack(self):
+        """If the first tool bubble appears during the short defer window,
+        controls move to that bubble instead of sending a separate queue
+        notice above it.
+        """
+        from gateway.run import GatewayRunner
+
+        runner, _ = _make_runner()
+        adapter = _make_adapter()
+        event = _make_event(text="follow-up just before first tool")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+        runner._running_agents[sk] = MagicMock()
+        runner._busy_ack_tool_bubble_defer_seconds = 0.01
+
+        task = asyncio.create_task(
+            GatewayRunner._handle_active_session_busy_message(runner, event, sk)
+        )
+        await asyncio.sleep(0)
+        runner._tool_bubble_msg_ids[sk] = "tool_bubble_99"
+
+        assert await task is True
+        adapter._send_with_retry.assert_not_called()
+        adapter.attach_busy_session_buttons.assert_awaited_with(sk, "tool_bubble_99")
 
     @pytest.mark.asyncio
     async def test_tool_bubble_present_attaches_keyboard_directly(self):
