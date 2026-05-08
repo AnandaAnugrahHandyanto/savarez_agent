@@ -48,8 +48,17 @@ def test_registry_entries_and_schemas_exist():
     assert "timeout_seconds" in kasia_entry.schema["parameters"]["properties"]
 
 
-def test_toolset_resolves_both_tools():
-    assert resolve_toolset("kaspa") == ["kasia_indexer_health", "kaspa_api_health"]
+def test_toolset_resolves_kaspa_tools():
+    assert resolve_toolset("kaspa") == [
+        "kasia_indexer_contextual_messages_by_sender",
+        "kasia_indexer_handshakes_by_receiver",
+        "kasia_indexer_handshakes_by_sender",
+        "kasia_indexer_health",
+        "kasia_indexer_payments_by_receiver",
+        "kasia_indexer_payments_by_sender",
+        "kasia_indexer_self_stash_by_owner",
+        "kaspa_api_health",
+    ]
 
 
 def test_tools_are_not_in_core_tools():
@@ -226,3 +235,79 @@ def test_network_error_becomes_json_error(monkeypatch):
     assert result["url"] == "https://node.example"
     assert result["endpoint"] == "https://node.example/info/health"
     assert "Network error" in result["error"]
+
+
+def test_kasia_indexer_query_encodes_required_and_optional_params(monkeypatch):
+    seen = {}
+
+    def fake_urlopen(req, timeout):
+        seen["url"] = req.full_url
+        seen["timeout"] = timeout
+        return FakeResponse(200, b'[{"id": "m1"}]')
+
+    monkeypatch.setattr(kaspa_tools.request, "urlopen", fake_urlopen)
+
+    result = _json(kaspa_tools.kasia_indexer_contextual_messages_by_sender({
+        "url": "http://indexer.example",
+        "address": "kaspa:qz sender",
+        "alias": "00ff",
+        "limit": 25,
+        "block_time": 123456789,
+        "timeout_seconds": 3,
+    }))
+
+    assert result == {
+        "ok": True,
+        "url": "http://indexer.example",
+        "endpoint": "http://indexer.example/contextual-messages/by-sender?address=kaspa%3Aqz+sender&alias=00ff&limit=25&block_time=123456789",
+        "status_code": 200,
+        "items": [{"id": "m1"}],
+    }
+    assert seen == {"url": result["endpoint"], "timeout": 3}
+
+
+def test_kasia_indexer_query_rejects_missing_required_param():
+    result = _json(kaspa_tools.kasia_indexer_payments_by_sender({"url": "http://indexer.example"}))
+
+    assert result["ok"] is False
+    assert "address is required" in result["error"]
+
+
+def test_kasia_indexer_query_clamps_limit_and_omits_empty_optional_params(monkeypatch):
+    seen = {}
+
+    def fake_urlopen(req, timeout):
+        seen["url"] = req.full_url
+        return FakeResponse(200, b'[]')
+
+    monkeypatch.setattr(kaspa_tools.request, "urlopen", fake_urlopen)
+
+    result = _json(kaspa_tools.kasia_indexer_handshakes_by_receiver({
+        "url": "http://indexer.example",
+        "address": "kaspa:qreceiver",
+        "limit": 5000,
+        "block_time": "",
+    }))
+
+    assert result["ok"] is True
+    assert seen["url"] == "http://indexer.example/handshakes/by-receiver?address=kaspa%3Aqreceiver&limit=1000"
+
+
+def test_kasia_indexer_self_stash_by_owner_uses_scope_and_owner(monkeypatch):
+    seen = {}
+
+    def fake_urlopen(req, timeout):
+        seen["url"] = req.full_url
+        return FakeResponse(200, b'{"stash": []}')
+
+    monkeypatch.setattr(kaspa_tools.request, "urlopen", fake_urlopen)
+
+    result = _json(kaspa_tools.kasia_indexer_self_stash_by_owner({
+        "url": "http://indexer.example",
+        "scope": "00",
+        "owner": "kaspa:qowner",
+    }))
+
+    assert result["ok"] is True
+    assert result["items"] == {"stash": []}
+    assert seen["url"] == "http://indexer.example/self-stash/by-owner?scope=00&owner=kaspa%3Aqowner"

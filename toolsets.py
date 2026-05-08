@@ -232,8 +232,17 @@ TOOLSETS = {
     },
 
     "kaspa": {
-        "description": "Read-only Kaspa/Kasia API status tools",
-        "tools": ["kaspa_api_health", "kasia_indexer_health"],
+        "description": "Read-only Kaspa/Kasia API and indexer tools",
+        "tools": [
+            "kaspa_api_health",
+            "kasia_indexer_health",
+            "kasia_indexer_handshakes_by_sender",
+            "kasia_indexer_handshakes_by_receiver",
+            "kasia_indexer_payments_by_sender",
+            "kasia_indexer_payments_by_receiver",
+            "kasia_indexer_contextual_messages_by_sender",
+            "kasia_indexer_self_stash_by_owner",
+        ],
         "includes": [],
     },
 
