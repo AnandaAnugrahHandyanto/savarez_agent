@@ -448,6 +448,7 @@ class TestRunDebugShare:
         args.lines = 50
         args.expire = 7
         args.local = False
+        args.yes = True
 
         with patch("hermes_cli.dump.run_dump"), \
              patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)) as mock_sweep, \
@@ -466,6 +467,7 @@ class TestRunDebugShare:
         args.lines = 50
         args.expire = 7
         args.local = False
+        args.yes = True
 
         with patch("hermes_cli.dump.run_dump"), \
              patch(
@@ -503,6 +505,7 @@ class TestRunDebugShare:
         args.lines = 50
         args.expire = 7
         args.local = False
+        args.yes = True
 
         call_count = [0]
         uploaded_content = []
@@ -551,6 +554,7 @@ class TestRunDebugShare:
         args.lines = 50
         args.expire = 7
         args.local = False
+        args.yes = True
 
         uploaded_content = []
 
@@ -596,6 +600,7 @@ class TestRunDebugShare:
         args.lines = 50
         args.expire = 7
         args.local = False
+        args.yes = True
 
         call_count = [0]
         def _mock_upload(content, expiry_days=7):
@@ -620,6 +625,7 @@ class TestRunDebugShare:
         args.lines = 50
         args.expire = 7
         args.local = False
+        args.yes = True
 
         call_count = [0]
         def _mock_upload(content, expiry_days=7):
@@ -646,6 +652,7 @@ class TestRunDebugShare:
         args.lines = 50
         args.expire = 7
         args.local = False
+        args.yes = True
 
         with patch("hermes_cli.dump.run_dump"), \
              patch("hermes_cli.debug.upload_to_pastebin",
@@ -657,6 +664,47 @@ class TestRunDebugShare:
         out = capsys.readouterr()
         assert "all failed" in out.err
 
+
+
+    def test_share_aborts_on_user_decline(self, hermes_home, capsys, monkeypatch):
+        """When user declines the confirmation prompt, no upload occurs."""
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+        args.yes = False
+
+        monkeypatch.setattr("builtins.input", lambda _: "n")
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug.upload_to_pastebin") as mock_upload:
+            run_debug_share(args)
+
+        mock_upload.assert_not_called()
+        out = capsys.readouterr().out
+        assert "Aborted" in out
+
+    def test_share_skips_prompt_with_yes_flag(self, hermes_home, capsys):
+        """--yes flag skips the confirmation prompt and uploads directly."""
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+        args.yes = True
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)), \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                    return_value="https://paste.rs/test"):
+            run_debug_share(args)
+
+        out = capsys.readouterr().out
+        assert "Debug report uploaded" in out
+        assert "Aborted" not in out
 
 # ---------------------------------------------------------------------------
 # Share-time redaction wiring + visible banner
@@ -694,6 +742,7 @@ class TestRunDebugShareRedaction:
         args.lines = 50
         args.expire = 7
         args.local = False
+        args.yes = True
         args.no_redact = False
 
         captured: list[str] = []
@@ -724,6 +773,7 @@ class TestRunDebugShareRedaction:
         args.lines = 50
         args.expire = 7
         args.local = False
+        args.yes = True
         args.no_redact = False
 
         captured: list[str] = []
@@ -752,6 +802,7 @@ class TestRunDebugShareRedaction:
         args.lines = 50
         args.expire = 7
         args.local = False
+        args.yes = True
         args.no_redact = True
 
         captured: list[str] = []
@@ -1180,6 +1231,7 @@ class TestShareIncludesAutoDelete:
         args.lines = 50
         args.expire = 7
         args.local = False
+        args.yes = True
 
         with patch("hermes_cli.dump.run_dump"), \
              patch("hermes_cli.debug.upload_to_pastebin",
@@ -1202,6 +1254,7 @@ class TestShareIncludesAutoDelete:
         args.lines = 50
         args.expire = 7
         args.local = False
+        args.yes = True
 
         with patch("hermes_cli.dump.run_dump"), \
              patch("hermes_cli.debug.upload_to_pastebin",
