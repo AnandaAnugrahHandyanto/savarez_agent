@@ -3149,7 +3149,11 @@ def _refresh_access_token(
     relogin = code in {"invalid_grant", "invalid_token"}
 
     # Detect the OAuth 2.1 "refresh token reuse" signal from the Nous portal
-    # server and surface an actionable message.
+    # server and surface an actionable message. This typically happens when an
+    # external process (for example a health-check script, monitoring tool, or
+    # self-heal hook) refreshes Hermes's token chain but does not persist the
+    # rotated refresh token back into auth.json, so the portal treats Hermes's
+    # next refresh as token reuse / token theft and revokes the session chain.
     lowered = description.lower()
     if "reuse" in lowered or "reuse detected" in lowered:
         description = (
