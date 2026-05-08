@@ -10,6 +10,7 @@ import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
     get_default_hermes_root,
+    get_hermes_dir,
     get_optional_skills_dir,
     is_container,
     parse_reasoning_effort,
@@ -208,3 +209,44 @@ class TestGetOptionalSkillsDir:
         monkeypatch.delenv("HERMES_OPTIONAL_SKILLS", raising=False)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         assert get_optional_skills_dir() == tmp_path / "optional-skills"
+
+
+class TestGetHermesDir:
+    """Tests for get_hermes_dir() — backward-compatible subdir resolver."""
+
+    def test_returns_new_path_when_neither_exists(self, tmp_path, monkeypatch):
+        """Fresh install: nothing on disk → new layout wins."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        result = get_hermes_dir("cache/images", "image_cache")
+        assert result == tmp_path / "cache/images"
+
+    def test_returns_old_path_when_legacy_dir_exists(self, tmp_path, monkeypatch):
+        """Legacy install: old dir on disk → old layout preserved."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        legacy = tmp_path / "image_cache"
+        legacy.mkdir()
+        result = get_hermes_dir("cache/images", "image_cache")
+        assert result == legacy
+
+    def test_legacy_wins_even_if_new_path_also_exists(self, tmp_path, monkeypatch):
+        """When both exist, the legacy path keeps winning — no migration."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        legacy = tmp_path / "image_cache"
+        legacy.mkdir()
+        (tmp_path / "cache/images").mkdir(parents=True)
+        result = get_hermes_dir("cache/images", "image_cache")
+        assert result == legacy
+
+    def test_legacy_file_at_old_path_also_counts(self, tmp_path, monkeypatch):
+        """``exists()`` matches files too — a stray file pins the old path."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "image_cache").write_text("legacy data")
+        result = get_hermes_dir("cache/images", "image_cache")
+        assert result == tmp_path / "image_cache"
+
+    def test_returned_path_is_absolute(self, tmp_path, monkeypatch):
+        """Result is always rooted at HERMES_HOME, regardless of cwd."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        result = get_hermes_dir("nested/deep/dir", "old_dir")
+        assert result.is_absolute()
+        assert result == tmp_path / "nested/deep/dir"
