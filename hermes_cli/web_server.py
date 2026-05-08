@@ -64,6 +64,24 @@ except ImportError:
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)
 
+MAX_SESSION_MESSAGES_LIMIT = 500
+DEFAULT_SESSION_SEARCH_LIMIT = 20
+MAX_SESSION_SEARCH_LIMIT = 100
+
+
+def _clamp_optional_int(value: Optional[int], *, minimum: int = 0, maximum: int) -> Optional[int]:
+    if value is None:
+        return None
+    return max(minimum, min(int(value), maximum))
+
+
+def _is_recent_active_session(session: Dict[str, Any], now: float) -> bool:
+    return (
+        session.get("ended_at") is None
+        and (now - session.get("last_active", session.get("started_at", 0))) < 300
+    )
+
+
 app = FastAPI(title="Hermes Agent", version=__version__)
 
 # ---------------------------------------------------------------------------
@@ -446,6 +464,22 @@ class EnvVarReveal(BaseModel):
     key: str
 
 
+class SessionMessagesResponse(BaseModel):
+    """Contract for GET /api/sessions/{session_id}/messages.
+
+    ``limit=None`` keeps the legacy behavior and returns the full transcript.
+    With ``tail=true``, ``offset`` is resolved server-side to the final page and
+    the response reports that resolved offset so clients can prepend older
+    pages without trusting a stale message_count snapshot.
+    """
+
+    session_id: str
+    messages: List[Dict[str, Any]]
+    total: int
+    limit: Optional[int]
+    offset: int
+
+
 class ModelAssignment(BaseModel):
     """Payload for POST /api/model/set — assign a provider/model to a slot.
 
@@ -781,7 +815,7 @@ async def get_sessions(limit: int = 20, offset: int = 0):
 
 
 @app.get("/api/sessions/search")
-async def search_sessions(q: str = "", limit: int = 20):
+async def search_sessions(q: str = "", limit: int = DEFAULT_SESSION_SEARCH_LIMIT):
     """Full-text search across session message content using FTS5."""
     if not q or not q.strip():
         return {"results": []}
@@ -800,12 +834,21 @@ async def search_sessions(q: str = "", limit: int = 20):
                 else:
                     terms.append(token + "*")
             prefix_query = " ".join(terms)
-            matches = db.search_messages(query=prefix_query, limit=limit)
-            # Group by session_id — return unique sessions with their best snippet
+            safe_limit = max(0, min(int(limit), MAX_SESSION_SEARCH_LIMIT))
+            matches = db.search_messages(query=prefix_query, limit=safe_limit)
+            ordered_session_ids = list(dict.fromkeys(m["session_id"] for m in matches))
+            sessions_by_id = db.list_sessions_rich_by_ids(ordered_session_ids)
+            # Group by session_id — return unique sessions with their best snippet.
+            # Session summaries are batch-loaded above so search result rendering
+            # does not depend on which session pages the client has already loaded.
             seen: dict = {}
+            now = time.time()
             for m in matches:
                 sid = m["session_id"]
                 if sid not in seen:
+                    session = sessions_by_id.get(sid)
+                    if session:
+                        session["is_active"] = _is_recent_active_session(session, now)
                     seen[sid] = {
                         "session_id": sid,
                         "snippet": m.get("snippet", ""),
@@ -813,6 +856,7 @@ async def search_sessions(q: str = "", limit: int = 20):
                         "source": m.get("source"),
                         "model": m.get("model"),
                         "session_started": m.get("session_started"),
+                        "session": session,
                     }
             return {"results": list(seen.values())}
         finally:
@@ -2277,16 +2321,44 @@ async def get_session_latest_descendant(session_id: str):
         "changed": bool(path and latest != path[0]),
     }
 
-@app.get("/api/sessions/{session_id}/messages")
-async def get_session_messages(session_id: str):
+
+@app.get("/api/sessions/{session_id}/messages", response_model=SessionMessagesResponse)
+async def get_session_messages(
+    session_id: str,
+    limit: Optional[int] = None,
+    offset: int = 0,
+    tail: bool = False,
+):
+    """Return a session transcript page.
+
+    Contract:
+    - omitted ``limit`` preserves legacy full-transcript responses;
+    - ``limit`` is clamped to ``MAX_SESSION_MESSAGES_LIMIT``;
+    - negative or out-of-range offsets are resolved server-side;
+    - ``tail=true`` ignores the client offset and returns the newest page.
+    """
     from hermes_state import SessionDB
     db = SessionDB()
     try:
         sid = db.resolve_session_id(session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
-        messages = db.get_messages(sid)
-        return {"session_id": sid, "messages": messages}
+        total = db.message_count(sid)
+        safe_limit = _clamp_optional_int(limit, maximum=MAX_SESSION_MESSAGES_LIMIT)
+        if safe_limit is None:
+            safe_offset = 0
+        elif tail:
+            safe_offset = max(0, total - safe_limit)
+        else:
+            safe_offset = min(max(0, int(offset or 0)), total)
+        messages = db.get_messages(sid, limit=safe_limit, offset=safe_offset)
+        return SessionMessagesResponse(
+            session_id=sid,
+            messages=messages,
+            total=total,
+            limit=safe_limit,
+            offset=safe_offset,
+        )
     finally:
         db.close()
 

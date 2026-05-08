@@ -61,12 +61,29 @@ async function getSessionToken(): Promise<string> {
   throw new Error("Session token not available — page must be served by the Hermes dashboard server");
 }
 
+export interface SessionMessagesParams {
+  /** Maximum messages to return. Omit to preserve legacy full-transcript behavior. */
+  limit?: number;
+  /** Zero-based resolved offset. Ignored when tail=true. */
+  offset?: number;
+  /** Return the newest page and let the server resolve the offset. */
+  tail?: boolean;
+}
+
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
-  getSessionMessages: (id: string) =>
-    fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages`),
+  getSessionMessages: (id: string, params?: SessionMessagesParams) => {
+    const qs = new URLSearchParams();
+    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params?.offset !== undefined) qs.set("offset", String(params.offset));
+    if (params?.tail !== undefined) qs.set("tail", String(params.tail));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return fetchJSON<SessionMessagesResponse>(
+      `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`,
+    );
+  },
   getSessionLatestDescendant: (id: string) =>
     fetchJSON<SessionLatestDescendantResponse>(
       `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
@@ -424,6 +441,7 @@ export interface EnvVarInfo {
 }
 
 export interface SessionMessage {
+  id?: number;
   role: "user" | "assistant" | "system" | "tool";
   content: string | null;
   tool_calls?: Array<{
@@ -438,6 +456,9 @@ export interface SessionMessage {
 export interface SessionMessagesResponse {
   session_id: string;
   messages: SessionMessage[];
+  total?: number;
+  limit?: number | null;
+  offset?: number;
 }
 
 export interface LogsResponse {
@@ -588,6 +609,7 @@ export interface SessionSearchResult {
   source: string | null;
   model: string | null;
   session_started: number | null;
+  session?: SessionInfo | null;
 }
 
 export interface SessionSearchResponse {

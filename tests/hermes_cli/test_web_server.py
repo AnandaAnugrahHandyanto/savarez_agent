@@ -125,6 +125,99 @@ class TestWebServerEndpoints:
         assert "hermes_home" in data
         assert "active_sessions" in data
 
+    def test_get_session_messages_supports_pagination_and_tail(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="paged-session", source="cli")
+            for i in range(5):
+                db.append_message("paged-session", role="user", content=f"m{i}")
+        finally:
+            db.close()
+
+        page = self.client.get("/api/sessions/paged-session/messages?limit=2&offset=1")
+        assert page.status_code == 200
+        body = page.json()
+        assert body["total"] == 5
+        assert body["limit"] == 2
+        assert body["offset"] == 1
+        assert [m["content"] for m in body["messages"]] == ["m1", "m2"]
+
+        tail = self.client.get("/api/sessions/paged-session/messages?limit=2&tail=true")
+        assert tail.status_code == 200
+        body = tail.json()
+        assert body["offset"] == 3
+        assert [m["content"] for m in body["messages"]] == ["m3", "m4"]
+
+    def test_get_session_messages_clamps_offset_and_limit(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="clamped-session", source="cli")
+            db.append_message("clamped-session", role="user", content="only")
+        finally:
+            db.close()
+
+        resp = self.client.get(
+            "/api/sessions/clamped-session/messages?limit=999&offset=999"
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["limit"] == 500
+        assert body["offset"] == 1
+        assert body["messages"] == []
+
+    def test_search_sessions_includes_session_summary(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="search-session",
+                source="cli",
+                model="test-model",
+            )
+            db.set_session_title("search-session", "Needle Session")
+            db.append_message("search-session", role="user", content="needle-in-history")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/search?q=needle-in-history")
+        assert resp.status_code == 200
+        results = resp.json()["results"]
+        assert results[0]["session_id"] == "search-session"
+        assert results[0]["session"]["id"] == "search-session"
+        assert results[0]["session"]["title"] == "Needle Session"
+        assert results[0]["session"]["preview"] == "needle-in-history"
+        assert "last_active" in results[0]["session"]
+
+    def test_search_sessions_clamps_limit(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+        from hermes_state import SessionDB
+
+        seen = {}
+        original_search_messages = SessionDB.search_messages
+
+        def tracking_search_messages(self, query, limit=20):
+            seen["limit"] = limit
+            return original_search_messages(self, query=query, limit=limit)
+
+        monkeypatch.setattr(SessionDB, "search_messages", tracking_search_messages)
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="search-limit-session", source="cli")
+            db.append_message("search-limit-session", role="user", content="clampneedle")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/search?q=clampneedle&limit=9999")
+        assert resp.status_code == 200
+        assert seen["limit"] == web_server.MAX_SESSION_SEARCH_LIMIT
+        assert resp.json()["results"][0]["session_id"] == "search-limit-session"
+
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
         import hermes_cli.web_server as web_server

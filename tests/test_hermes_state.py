@@ -153,6 +153,40 @@ class TestMessageStorage:
         assert messages[0]["content"] == "Hello"
         assert messages[1]["role"] == "assistant"
 
+    def test_get_messages_paginates_in_timestamp_order(self, db):
+        db.create_session(session_id="s1", source="cli")
+        for i in range(5):
+            db.append_message("s1", role="user", content=f"m{i}")
+
+        page = db.get_messages("s1", limit=2, offset=1)
+
+        assert [m["content"] for m in page] == ["m1", "m2"]
+
+    def test_get_messages_normalizes_pagination_bounds(self, db):
+        db.create_session(session_id="s1", source="cli")
+        for i in range(3):
+            db.append_message("s1", role="user", content=f"m{i}")
+
+        assert [m["content"] for m in db.get_messages("s1", limit=2, offset=-10)] == [
+            "m0",
+            "m1",
+        ]
+        assert db.get_messages("s1", limit=0, offset=0) == []
+
+    def test_list_sessions_rich_by_ids_batches_enriched_rows(self, db):
+        db.create_session(session_id="s1", source="cli", model="m1")
+        db.create_session(session_id="s2", source="telegram", model="m2")
+        db.append_message("s1", role="user", content="first session preview text")
+        db.append_message("s2", role="user", content="second session preview text")
+        db.set_session_title("s2", "Second")
+
+        rows = db.list_sessions_rich_by_ids(["s2", "missing", "s1", "s2"])
+
+        assert set(rows) == {"s1", "s2"}
+        assert rows["s1"]["preview"].startswith("first session")
+        assert rows["s2"]["title"] == "Second"
+        assert rows["s2"]["last_active"] >= rows["s2"]["started_at"]
+
     def test_message_increments_session_count(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="Hello")

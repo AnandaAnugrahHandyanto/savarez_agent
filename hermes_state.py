@@ -1182,12 +1182,20 @@ class SessionDB:
 
         return sessions
 
-    def _get_session_rich_row(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Fetch a single session with the same enriched columns as
-        ``list_sessions_rich`` (preview + last_active). Returns None if the
-        session doesn't exist.
+    def list_sessions_rich_by_ids(self, session_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        """Fetch enriched session summaries for a set of ids in one query.
+
+        Returns a mapping keyed by session id. The rows use the same lightweight
+        preview and last_active fields as ``list_sessions_rich`` without paging
+        or compression-root projection. This is intended for search endpoints
+        that already know the matched session ids and need to avoid one
+        ``get_session`` query per hit.
         """
-        query = """
+        unique_ids = list(dict.fromkeys(session_ids))
+        if not unique_ids:
+            return {}
+        placeholders = ",".join("?" for _ in unique_ids)
+        query = f"""
             SELECT s.*,
                 COALESCE(
                     (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
@@ -1201,13 +1209,14 @@ class SessionDB:
                     s.started_at
                 ) AS last_active
             FROM sessions s
-            WHERE s.id = ?
+            WHERE s.id IN ({placeholders})
         """
         with self._lock:
-            cursor = self._conn.execute(query, (session_id,))
-            row = cursor.fetchone()
-        if not row:
-            return None
+            rows = self._conn.execute(query, unique_ids).fetchall()
+        return {s["id"]: s for s in (self._format_session_rich_row(row) for row in rows)}
+
+    @staticmethod
+    def _format_session_rich_row(row) -> Dict[str, Any]:
         s = dict(row)
         raw = s.pop("_preview_raw", "").strip()
         if raw:
@@ -1216,6 +1225,14 @@ class SessionDB:
         else:
             s["preview"] = ""
         return s
+
+    def _get_session_rich_row(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch a single session with the same enriched columns as
+        ``list_sessions_rich`` (preview + last_active). Returns None if the
+        session doesn't exist.
+        """
+        rows = self.list_sessions_rich_by_ids([session_id])
+        return rows.get(session_id)
 
     # =========================================================================
     # Message storage
@@ -1429,13 +1446,24 @@ class SessionDB:
 
         self._execute_write(_do)
 
-    def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
-        """Load all messages for a session, ordered by timestamp."""
+    def get_messages(
+        self,
+        session_id: str,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Load messages for a session, ordered by timestamp."""
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp, id",
-                (session_id,),
-            )
+            if limit is None:
+                cursor = self._conn.execute(
+                    "SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp, id",
+                    (session_id,),
+                )
+            else:
+                cursor = self._conn.execute(
+                    "SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp, id LIMIT ? OFFSET ?",
+                    (session_id, max(0, int(limit)), max(0, int(offset))),
+                )
             rows = cursor.fetchall()
         result = []
         for row in rows:

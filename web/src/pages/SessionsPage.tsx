@@ -10,7 +10,6 @@ import {
   AlertTriangle,
   CheckCircle2,
   ChevronDown,
-  ChevronLeft,
   ChevronRight,
   Database,
   MessageSquare,
@@ -59,6 +58,15 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
     whatsapp: { icon: Globe, color: "text-success" },
     cron: { icon: Clock, color: "text-warning" },
   };
+
+const MESSAGE_PAGE_SIZE = 50;
+const SESSION_LIST_PREFETCH_MARGIN = "300px 0px";
+const SEARCH_DEBOUNCE_MS = 300;
+
+const tailMessagePageParams = () => ({
+  limit: MESSAGE_PAGE_SIZE,
+  tail: true,
+});
 
 /** Render an FTS5 snippet with highlighted matches.
  *  The backend wraps matches in >>> and <<< delimiters. */
@@ -224,11 +232,48 @@ function MessageBubble({
 function MessageList({
   messages,
   highlight,
+  hasMoreBefore = false,
+  loadingOlder = false,
+  loadOlderLabel,
+  onLoadOlder,
 }: {
   messages: SessionMessage[];
   highlight?: string;
+  hasMoreBefore?: boolean;
+  loadingOlder?: boolean;
+  loadOlderLabel: string;
+  onLoadOlder?: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const initialScrollDoneRef = useRef(false);
+  const restoreAfterPrependRef = useRef<number | null>(null);
+
+  const requestOlder = useCallback(() => {
+    const el = containerRef.current;
+    if (!el || !hasMoreBefore || loadingOlder) return;
+    restoreAfterPrependRef.current = el.scrollHeight;
+    onLoadOlder?.();
+  }, [hasMoreBefore, loadingOlder, onLoadOlder]);
+
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    const previousHeight = restoreAfterPrependRef.current;
+    if (!el || previousHeight === null) return;
+    restoreAfterPrependRef.current = null;
+    el.scrollTop += Math.max(0, el.scrollHeight - previousHeight);
+  }, [messages.length]);
+
+  useEffect(() => {
+    if (highlight || !containerRef.current || initialScrollDoneRef.current) return;
+    const timer = setTimeout(() => {
+      const el = containerRef.current;
+      if (el) {
+        el.scrollTop = el.scrollHeight;
+        initialScrollDoneRef.current = true;
+      }
+    }, 50);
+    return () => clearTimeout(timer);
+  }, [messages.length, highlight]);
 
   useEffect(() => {
     if (!highlight || !containerRef.current) return;
@@ -246,9 +291,17 @@ function MessageList({
     <div
       ref={containerRef}
       className="flex flex-col gap-3 max-h-[600px] overflow-y-auto pr-2"
+      onScroll={(e) => {
+        if (e.currentTarget.scrollTop <= 80) requestOlder();
+      }}
     >
+      {hasMoreBefore && (
+        <div className="flex items-center justify-center py-2 text-xs text-muted-foreground">
+          {loadingOlder ? <Spinner className="text-primary" /> : loadOlderLabel}
+        </div>
+      )}
       {messages.map((msg, i) => (
-        <MessageBubble key={i} msg={msg} highlight={highlight} />
+        <MessageBubble key={msg.id ?? i} msg={msg} highlight={highlight} />
       ))}
     </div>
   );
@@ -272,21 +325,95 @@ function SessionRow({
   resumeInChatEnabled: boolean;
 }) {
   const [messages, setMessages] = useState<SessionMessage[] | null>(null);
+  const [loadedStart, setLoadedStart] = useState(0);
+  const [hasMoreBefore, setHasMoreBefore] = useState(false);
+  const [allMessagesLoaded, setAllMessagesLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const loadingOlderRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const { t } = useI18n();
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (isExpanded && messages === null && !loading) {
+    if (!isExpanded || messages !== null || loading) return;
+    const timer = window.setTimeout(() => {
+      const loadAllForSearch = Boolean(searchQuery?.trim());
+      // Search highlights can target old messages, so search-mode expansion keeps
+      // the legacy full-transcript call. Normal expansion asks the backend for
+      // the newest page and uses the returned offset as the pagination cursor.
       setLoading(true);
+      setError(null);
       api
-        .getSessionMessages(session.id)
-        .then((resp) => setMessages(resp.messages))
+        .getSessionMessages(
+          session.id,
+          loadAllForSearch ? undefined : tailMessagePageParams(),
+        )
+        .then((resp) => {
+          const offset = resp.offset ?? 0;
+          setMessages(resp.messages);
+          setLoadedStart(offset);
+          setHasMoreBefore(!loadAllForSearch && offset > 0);
+          setAllMessagesLoaded(loadAllForSearch || offset === 0);
+        })
         .catch((err) => setError(String(err)))
         .finally(() => setLoading(false));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [isExpanded, session.id, searchQuery, messages, loading]);
+
+  useEffect(() => {
+    if (!isExpanded || !searchQuery?.trim() || allMessagesLoaded || loading) return;
+    const timer = window.setTimeout(() => {
+      setLoading(true);
+      setError(null);
+      api
+        .getSessionMessages(session.id)
+        .then((resp) => {
+          setMessages(resp.messages);
+          setLoadedStart(0);
+          setHasMoreBefore(false);
+          setAllMessagesLoaded(true);
+        })
+        .catch((err) => setError(String(err)))
+        .finally(() => setLoading(false));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [allMessagesLoaded, isExpanded, loading, searchQuery, session.id]);
+
+  const loadOlderMessages = useCallback(() => {
+    if (
+      !hasMoreBefore ||
+      loadingOlderRef.current ||
+      loading ||
+      messages === null
+    ) {
+      return;
     }
-  }, [isExpanded, session.id, messages, loading]);
+    const nextOffset = Math.max(0, loadedStart - MESSAGE_PAGE_SIZE);
+    const nextLimit = loadedStart - nextOffset;
+    if (nextLimit <= 0) return;
+    loadingOlderRef.current = true;
+    setLoadingOlder(true);
+    setError(null);
+    api
+      .getSessionMessages(session.id, {
+        limit: nextLimit,
+        offset: nextOffset,
+      })
+      .then((resp) => {
+        const offset = resp.offset ?? nextOffset;
+        setMessages((prev) => [...resp.messages, ...(prev ?? [])]);
+        setLoadedStart(offset);
+        setHasMoreBefore(offset > 0);
+        setAllMessagesLoaded(offset === 0);
+      })
+      .catch((err) => setError(String(err)))
+      .finally(() => {
+        loadingOlderRef.current = false;
+        setLoadingOlder(false);
+      });
+  }, [hasMoreBefore, loadedStart, loading, messages, session.id]);
 
   const sourceInfo = (session.source
     ? SOURCE_CONFIG[session.source]
@@ -401,7 +528,14 @@ function SessionRow({
             </p>
           )}
           {messages && messages.length > 0 && (
-            <MessageList messages={messages} highlight={searchQuery} />
+            <MessageList
+              messages={messages}
+              highlight={searchQuery}
+              hasMoreBefore={hasMoreBefore}
+              loadingOlder={loadingOlder}
+              loadOlderLabel={t.sessions.loadOlderMessages}
+              onLoadOlder={loadOlderMessages}
+            />
           )}
         </div>
       )}
@@ -415,6 +549,7 @@ export default function SessionsPage() {
   const [page, setPage] = useState(0);
   const PAGE_SIZE = 20;
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [searchResults, setSearchResults] = useState<
@@ -422,6 +557,9 @@ export default function SessionsPage() {
   >(null);
   const [searching, setSearching] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
+  const historyEndRef = useRef<HTMLDivElement | null>(null);
+  const loadingSessionsRef = useRef(false);
+  const searchRequestRef = useRef(0);
   const logScrollRef = useRef<HTMLPreElement | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [overviewSessions, setOverviewSessions] = useState<SessionInfo[]>([]);
@@ -484,19 +622,42 @@ export default function SessionsPage() {
   ]);
 
   const loadSessions = useCallback((p: number) => {
-    setLoading(true);
+    loadingSessionsRef.current = true;
+    if (p === 0) {
+      setLoading(true);
+    } else {
+      setLoadingMore(true);
+    }
     api
       .getSessions(PAGE_SIZE, p * PAGE_SIZE)
       .then((resp) => {
-        setSessions(resp.sessions);
+        setSessions((prev) => {
+          if (p === 0) return resp.sessions;
+          const seen = new Set(prev.map((s) => s.id));
+          return [...prev, ...resp.sessions.filter((s) => !seen.has(s.id))];
+        });
         setTotal(resp.total);
       })
       .catch(() => {})
-      .finally(() => setLoading(false));
+      .finally(() => {
+        loadingSessionsRef.current = false;
+        setLoading(false);
+        setLoadingMore(false);
+      });
   }, []);
 
+  const requestNextPage = useCallback(() => {
+    // IntersectionObserver and the fallback button can both fire before React
+    // commits loadingMore. The ref closes that synchronous race.
+    if (loadingSessionsRef.current || loadingMore) return;
+    loadingSessionsRef.current = true;
+    setLoadingMore(true);
+    setPage((p) => p + 1);
+  }, [loadingMore]);
+
   useEffect(() => {
-    loadSessions(page);
+    const timer = window.setTimeout(() => loadSessions(page), 0);
+    return () => window.clearTimeout(timer);
   }, [loadSessions, page]);
 
   useEffect(() => {
@@ -525,19 +686,37 @@ export default function SessionsPage() {
     if (debounceRef.current) clearTimeout(debounceRef.current);
 
     if (!search.trim()) {
-      setSearchResults(null);
-      setSearching(false);
-      return;
+      searchRequestRef.current += 1;
+      const timer = window.setTimeout(() => {
+        setSearchResults(null);
+        setSearching(false);
+      }, 0);
+      return () => window.clearTimeout(timer);
     }
 
-    setSearching(true);
+    const query = search.trim();
+    const requestId = searchRequestRef.current + 1;
+    searchRequestRef.current = requestId;
     debounceRef.current = setTimeout(() => {
+      setSearching(true);
       api
-        .searchSessions(search.trim())
-        .then((resp) => setSearchResults(resp.results))
-        .catch(() => setSearchResults(null))
-        .finally(() => setSearching(false));
-    }, 300);
+        .searchSessions(query)
+        .then((resp) => {
+          if (searchRequestRef.current === requestId) {
+            setSearchResults(resp.results);
+          }
+        })
+        .catch(() => {
+          if (searchRequestRef.current === requestId) {
+            setSearchResults(null);
+          }
+        })
+        .finally(() => {
+          if (searchRequestRef.current === requestId) {
+            setSearching(false);
+          }
+        });
+    }, SEARCH_DEBOUNCE_MS);
 
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -579,11 +758,30 @@ export default function SessionsPage() {
     }
   }
 
-  // When searching, filter sessions to those with FTS matches;
-  // when not searching, show all sessions
+  // When searching, render the sessions returned by the search endpoint so
+  // matches outside the currently loaded infinite-scroll window still appear.
+  const loadedSessionMap = new Map(sessions.map((s) => [s.id, s]));
   const filtered = searchResults
-    ? sessions.filter((s) => snippetMap.has(s.id))
+    ? searchResults
+        .map((r) => r.session ?? loadedSessionMap.get(r.session_id) ?? null)
+        .filter((s): s is SessionInfo => s !== null)
     : sessions;
+  const hasMoreSessions = !searchResults && sessions.length < total;
+
+  useEffect(() => {
+    const target = historyEndRef.current;
+    if (!target || !hasMoreSessions || loading || loadingMore) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry?.isIntersecting) {
+          requestNextPage();
+        }
+      },
+      { rootMargin: SESSION_LIST_PREFETCH_MARGIN },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [hasMoreSessions, loading, loadingMore, requestNextPage, sessions.length]);
 
   const platformEntries = status
     ? Object.entries(status.gateway_platforms ?? {})
@@ -812,22 +1010,22 @@ export default function SessionsPage() {
             ))}
           </div>
 
+          {!searchResults && (
+            <div ref={historyEndRef} aria-hidden="true" className="h-px" />
+          )}
+
+          {loadingMore && (
+            <div className="flex items-center justify-center py-2">
+              <Spinner className="text-sm text-primary" />
+            </div>
+          )}
+
           {!searchResults && total > PAGE_SIZE && (
             <div className="flex items-center justify-between pt-2">
               <span className="text-xs text-muted-foreground">
-                {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)}{" "}
-                {t.common.of} {total}
+                1–{Math.min(sessions.length, total)} {t.common.of} {total}
               </span>
               <div className="flex items-center gap-1">
-                <Button
-                  outlined
-                  size="icon"
-                  disabled={page === 0}
-                  onClick={() => setPage((p) => p - 1)}
-                  aria-label={t.sessions.previousPage}
-                >
-                  <ChevronLeft />
-                </Button>
                 <span className="text-xs text-muted-foreground px-2">
                   {t.common.page} {page + 1} {t.common.of}{" "}
                   {Math.ceil(total / PAGE_SIZE)}
@@ -835,8 +1033,8 @@ export default function SessionsPage() {
                 <Button
                   outlined
                   size="icon"
-                  disabled={(page + 1) * PAGE_SIZE >= total}
-                  onClick={() => setPage((p) => p + 1)}
+                  disabled={!hasMoreSessions || loadingMore}
+                  onClick={requestNextPage}
                   aria-label={t.sessions.nextPage}
                 >
                   <ChevronRight />

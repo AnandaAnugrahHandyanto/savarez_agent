@@ -131,6 +131,7 @@ export const zh: Translations = {
     noMatch: "没有匹配的会话",
     startConversation: "开始对话后将显示在此处",
     noMessages: "暂无消息",
+    loadOlderMessages: "向上滚动以加载更早的消息",
     untitledSession: "无标题会话",
     deleteSession: "删除会话",
     confirmDeleteTitle: "删除会话？",
