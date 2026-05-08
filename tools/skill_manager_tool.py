@@ -268,11 +268,26 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
     return None
 
 
+def _default_creation_root() -> Path:
+    """Return the preferred root dir for new skills.
+
+    If the user has configured ``skills.external_dirs``, the first entry is
+    used so that newly created skills land in the user-managed directory
+    rather than the bundled ``~/.hermes/skills/``.  Falls back to
+    ``SKILLS_DIR`` when no external dirs are configured.
+    """
+    from agent.skill_utils import get_external_skills_dirs
+
+    ext = get_external_skills_dirs()
+    return ext[0] if ext else SKILLS_DIR
+
+
 def _resolve_skill_dir(name: str, category: str = None) -> Path:
     """Build the directory path for a new skill, optionally under a category."""
+    root = _default_creation_root()
     if category:
-        return SKILLS_DIR / category / name
-    return SKILLS_DIR / name
+        return root / category / name
+    return root / name
 
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
