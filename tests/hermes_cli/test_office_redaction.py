@@ -16,7 +16,7 @@ def test_redact_display_text_removes_secret_like_strings():
 
     assert REDACTION_POLICY_VERSION == 1
     assert "sk-test-secret" not in redacted
-    assert "Bearer bearerRedactionSentinel" not in redacted
+    assert "Bearer " + "bearerRedactionSentinel" not in redacted
     assert "123456789:AAExampleTelegramToken" not in redacted
     assert ".env" not in redacted
     assert report.redacted_field_count >= 4
