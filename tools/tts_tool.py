@@ -128,6 +128,7 @@ def _import_piper():
 DEFAULT_PROVIDER = "edge"
 DEFAULT_EDGE_VOICE = "en-US-AriaNeural"
 DEFAULT_EDGE_PITCH = "+0Hz"
+DEFAULT_EDGE_VOLUME = "+0%"
 DEFAULT_ELEVENLABS_VOICE_ID = "pNInz6obpgDQGcFmaJgB"  # Adam
 DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
@@ -749,6 +750,7 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
     voice = edge_config.get("voice", DEFAULT_EDGE_VOICE)
     speed = float(edge_config.get("speed", tts_config.get("speed", 1.0)))
     pitch = edge_config.get("pitch", DEFAULT_EDGE_PITCH)
+    volume = edge_config.get("volume", DEFAULT_EDGE_VOLUME)
 
     kwargs: Dict[str, Any] = {"voice": voice}
     if speed != 1.0:
@@ -756,6 +758,8 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
         kwargs["rate"] = f"{pct:+d}%"
     if pitch != DEFAULT_EDGE_PITCH:
         kwargs["pitch"] = pitch
+    if volume != DEFAULT_EDGE_VOLUME:
+        kwargs["volume"] = volume
 
     communicate = _edge_tts.Communicate(text, **kwargs)
     await communicate.save(output_path)
