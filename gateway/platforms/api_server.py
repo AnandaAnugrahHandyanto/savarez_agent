@@ -2092,9 +2092,22 @@ class APIServerAdapter(BasePlatformAdapter):
             if instructions is None:
                 instructions = stored.get("instructions")
 
-        # Append new input messages to history (all but the last become history)
-        for msg in input_messages[:-1]:
-            conversation_history.append(msg)
+        # When conversation_history was loaded from a prior source
+        # (body.conversation_history or previous_response_id), the request's
+        # input array's leading items are a client-side replay of the same
+        # turns we just loaded — appending them would duplicate every prior
+        # turn.  Open WebUI's Responses mode triggers this: it sends
+        # previous_response_id AND re-inlines the entire prior transcript
+        # in input[], so without this guard each chained turn doubled the
+        # stored conversation_history.
+        history_from_prior_source = bool(conversation_history)
+
+        # Append new input messages to history (all but the last become
+        # history). Skip when prior was loaded — those inlined items are a
+        # redundant client-side replay of what we already have.
+        if not history_from_prior_source:
+            for msg in input_messages[:-1]:
+                conversation_history.append(msg)
 
         # Last input message is the user_message
         user_message: Any = input_messages[-1].get("content", "") if input_messages else ""
