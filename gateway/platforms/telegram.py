@@ -368,6 +368,47 @@ class TelegramAdapter(BasePlatformAdapter):
         return int(thread_id)
 
     @classmethod
+    def _is_direct_messages_topic(
+        cls,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]],
+    ) -> bool:
+        """Return True when thread_id refers to a Telegram DM-topic id.
+
+        Telegram now has two unrelated topic id fields:
+        - forum/group topics: ``message_thread_id``;
+        - Direct Messages topics: ``direct_messages_topic_id``.
+
+        Hermes stores both as ``source.thread_id`` for session routing, so the
+        send path must choose the Telegram API field from chat context.  Prefer
+        explicit ``chat_type=dm`` metadata; fall back to Telegram's id shape
+        because private chats are positive and groups/supergroups are negative.
+        """
+        chat_type = str((metadata or {}).get("chat_type") or "").lower()
+        if chat_type in {"dm", "private", "direct"}:
+            return True
+        if chat_type in {"group", "forum", "supergroup", "channel"}:
+            return False
+        return not str(chat_id).strip().startswith("-")
+
+    @classmethod
+    def _topic_send_kwargs(
+        cls,
+        chat_id: str,
+        thread_id: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Dict[str, Optional[int]]:
+        message_thread_id = cls._message_thread_id_for_send(thread_id)
+        if message_thread_id is None:
+            return {"message_thread_id": None}
+        if cls._is_direct_messages_topic(chat_id, metadata):
+            return {
+                "message_thread_id": None,
+                "direct_messages_topic_id": message_thread_id,
+            }
+        return {"message_thread_id": message_thread_id}
+
+    @classmethod
     def _message_thread_id_for_typing(cls, thread_id: Optional[str]) -> Optional[int]:
         # Asymmetric with _message_thread_id_for_send on purpose. Telegram's
         # sendMessage and sendChatAction treat thread id "1" (the forum General
@@ -1256,7 +1297,8 @@ class TelegramAdapter(BasePlatformAdapter):
             for i, chunk in enumerate(chunks):
                 should_thread = self._should_thread_reply(reply_to, i)
                 reply_to_id = int(reply_to) if should_thread else None
-                effective_thread_id = self._message_thread_id_for_send(thread_id)
+                topic_kwargs = self._topic_send_kwargs(chat_id, thread_id, metadata)
+                effective_thread_id = topic_kwargs.get("message_thread_id")
 
                 msg = None
                 for _send_attempt in range(3):
@@ -1268,7 +1310,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
-                                message_thread_id=effective_thread_id,
+                                **topic_kwargs,
                                 **self._link_preview_kwargs(),
                             )
                         except Exception as md_error:
@@ -1281,7 +1323,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     text=plain_chunk,
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
-                                    message_thread_id=effective_thread_id,
+                                    **topic_kwargs,
                                     **self._link_preview_kwargs(),
                                 )
                             else:
@@ -1302,6 +1344,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     self.name, effective_thread_id,
                                 )
                                 effective_thread_id = None
+                                topic_kwargs = {"message_thread_id": None}
                                 continue
                             err_lower = str(send_err).lower()
                             if "message to be replied not found" in err_lower and reply_to_id is not None:

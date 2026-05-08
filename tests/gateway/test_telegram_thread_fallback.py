@@ -224,7 +224,7 @@ async def test_send_retries_without_thread_on_thread_not_found():
     result = await adapter.send(
         chat_id="123",
         content="test message",
-        metadata={"thread_id": "99999"},
+        metadata={"thread_id": "99999", "chat_type": "group"},
     )
 
     assert result.success is True
@@ -233,6 +233,65 @@ async def test_send_retries_without_thread_on_thread_not_found():
     assert len(call_log) == 2
     assert call_log[0]["message_thread_id"] == 99999
     assert call_log[1]["message_thread_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_send_to_dm_topic_uses_direct_messages_topic_id_not_forum_thread_id():
+    """Telegram Direct Messages topics are not forum topics.
+
+    Bot API/ptb expose them as ``direct_messages_topic_id``. Sending the same
+    id as ``message_thread_id`` makes Telegram reject it with "Thread not
+    found", after which Hermes used to fall back to the root DM/global view.
+    """
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        return SimpleNamespace(message_id=43)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="1009248010",
+        content="test message",
+        metadata={"thread_id": "281962", "chat_type": "dm"},
+    )
+
+    assert result.success is True
+    assert result.message_id == "43"
+    assert len(call_log) == 1
+    assert call_log[0]["message_thread_id"] is None
+    assert call_log[0]["direct_messages_topic_id"] == 281962
+
+
+@pytest.mark.asyncio
+async def test_send_to_positive_chat_thread_defaults_to_dm_topic_for_gateway_metadata():
+    """Gateway stream metadata currently carries thread_id without chat_type.
+
+    Telegram private/direct chats have positive ids while groups are negative,
+    so a positive chat id with a thread id must be treated as a Direct Messages
+    topic to keep current deployments working before metadata is enriched.
+    """
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        return SimpleNamespace(message_id=44)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="1009248010",
+        content="test message",
+        metadata={"thread_id": "281962"},
+    )
+
+    assert result.success is True
+    assert result.message_id == "44"
+    assert call_log[0]["message_thread_id"] is None
+    assert call_log[0]["direct_messages_topic_id"] == 281962
 
 
 @pytest.mark.asyncio
