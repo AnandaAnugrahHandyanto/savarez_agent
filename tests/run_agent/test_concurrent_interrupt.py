@@ -72,6 +72,9 @@ def _make_agent(monkeypatch):
         def _has_stream_consumers(self):
             return False
 
+        def _observe_tool_activity(self, *args, **kwargs):
+            pass
+
     stub = _Stub()
     # Bind the real methods under test
     stub._execute_tool_calls_concurrent = _ra.AIAgent._execute_tool_calls_concurrent.__get__(stub)
