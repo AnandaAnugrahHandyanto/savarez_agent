@@ -750,6 +750,35 @@ class AIAgent:
         self._base_url_lower = value.lower() if value else ""
         self._base_url_hostname = base_url_hostname(value)
 
+    _DEFAULT_NUDGE_USER_PHRASES = ["next time", "remember", "from now on", "记一下", "下次", "以后"]
+    _DEFAULT_NUDGE_COMMON_CLIS = [
+        "git", "python", "python3", "node", "npm", "pnpm",
+        "uv", "pytest", "rg", "sed", "cat", "ls", "mkdir",
+    ]
+
+    def _init_nudge_state(self, agent_cfg: dict) -> None:
+        from collections import deque
+
+        self._nudge_disabled = False
+        self._nudge_signals: set[str] = set()
+        self._tool_call_history = deque(maxlen=10)
+        self._error_history = deque(maxlen=10)
+        self._last_error_tool: dict[str, str] = {}
+
+        skills_cfg = (agent_cfg or {}).get("skills", {}) or {}
+        ns = skills_cfg.get("nudge_signals", {}) or {}
+        self._nudge_signals_enabled = bool(ns.get("enabled", False))
+        self._nudge_repeated_threshold = int(ns.get("repeated_pattern_threshold", 3))
+        self._nudge_error_threshold = int(ns.get("error_repeat_threshold", 2))
+        self._nudge_cli_window_days = int(ns.get("novel_cli_window_days", 30))
+        self._nudge_common_clis_suppressed = list(
+            ns.get("common_cli_suppressions", self._DEFAULT_NUDGE_COMMON_CLIS)
+        )
+        self._nudge_user_phrases = list(ns.get("user_phrases", self._DEFAULT_NUDGE_USER_PHRASES))
+
+        if os.environ.get("HERMES_SKILL_NUDGE_DISABLE") == "1":
+            self._nudge_disabled = True
+
     def __init__(
         self,
         base_url: str = None,
@@ -1615,6 +1644,7 @@ class AIAgent:
             self._skill_index_token_budget = int(skills_config.get("index_token_budget", 2000))
         except Exception:
             pass
+        self._init_nudge_state(_agent_cfg)
 
         # Tool-use enforcement config: "auto" (default — matches hardcoded
         # model list), true (always), false (never), or list of substrings.
