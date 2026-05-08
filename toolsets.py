@@ -231,6 +231,12 @@ TOOLSETS = {
         "includes": [],
     },
 
+    "kaspa": {
+        "description": "Read-only Kaspa/Kasia API status tools",
+        "tools": ["kaspa_api_health", "kasia_indexer_health"],
+        "includes": [],
+    },
+
     "discord": {
         "description": "Discord read and participate tools (fetch messages, search members, create threads)",
         "tools": ["discord"],
