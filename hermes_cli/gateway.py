@@ -5,7 +5,9 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 """
 
 import asyncio
+import contextlib
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -427,6 +429,56 @@ def _read_systemd_unit_properties(
     return parsed
 
 
+def _resolve_system_service_hermes_home(system: bool = False) -> str | None:
+    """Resolve HERMES_HOME from the installed systemd unit's Environment.
+
+    When running ``sudo hermes gateway restart --system``, ``$HOME`` is
+    ``/root`` and :func:`get_hermes_home` would point to
+    ``/root/.hermes/``.  The gateway service, however, runs as a non-root
+    user with ``Environment="HERMES_HOME=/home/<user>/.hermes"`` baked
+    into the unit file.  This helper reads that value so callers can
+    temporarily override the environment before inspecting runtime state
+    files written by the service process.
+    """
+    props = _read_systemd_unit_properties(
+        system=system, properties=("Environment",)
+    )
+    env_line = props.get("Environment", "")
+    # systemctl show renders the value as a space-separated list of
+    # "KEY=VALUE" pairs, each optionally double-quoted.
+    # E.g. Environment="HERMES_HOME=/home/user/.hermes" "PATH=..."
+    match = re.search(r'HERMES_HOME=(?P<path>[^"\s]+)', env_line)
+    return match.group("path") if match else None
+
+
+@contextlib.contextmanager
+def _system_service_hermes_home_override(system: bool = False):
+    """Temporarily set ``HERMES_HOME`` for ``--system`` scope operations.
+
+    Under ``sudo``, ``$HOME=/root`` which makes status helpers read from
+    ``/root/.hermes/`` instead of the service user's real home.  This
+    context manager resolves the correct path from the unit file's
+    ``Environment`` directive and patches ``os.environ`` for the duration
+    of the block, restoring the original value on exit.
+    """
+    if not system:
+        yield
+        return
+    resolved = _resolve_system_service_hermes_home(system=True)
+    if not resolved:
+        yield
+        return
+    original = os.environ.get("HERMES_HOME")
+    os.environ["HERMES_HOME"] = resolved
+    try:
+        yield
+    finally:
+        if original is None:
+            os.environ.pop("HERMES_HOME", None)
+        else:
+            os.environ["HERMES_HOME"] = original
+
+
 def _wait_for_systemd_service_restart(
     *,
     system: bool = False,
@@ -440,31 +492,32 @@ def _wait_for_systemd_service_restart(
     scope_label = _service_scope_label(system).capitalize()
     deadline = time.time() + timeout
 
-    while time.time() < deadline:
-        props = _read_systemd_unit_properties(system=system)
-        active_state = props.get("ActiveState", "")
-        sub_state = props.get("SubState", "")
-        new_pid = None
-        try:
-            from gateway.status import get_running_pid
-
-            new_pid = get_running_pid()
-        except Exception:
+    with _system_service_hermes_home_override(system):
+        while time.time() < deadline:
+            props = _read_systemd_unit_properties(system=system)
+            active_state = props.get("ActiveState", "")
+            sub_state = props.get("SubState", "")
             new_pid = None
+            try:
+                from gateway.status import get_running_pid
 
-        if active_state == "active":
-            if new_pid and (previous_pid is None or new_pid != previous_pid):
-                print(f"✓ {scope_label} service restarted (PID {new_pid})")
-                return True
-            if previous_pid is None:
-                print(f"✓ {scope_label} service restarted")
-                return True
+                new_pid = get_running_pid()
+            except Exception:
+                new_pid = None
 
-        if active_state == "activating" and sub_state == "auto-restart":
-            time.sleep(1)
-            continue
+            if active_state == "active":
+                if new_pid and (previous_pid is None or new_pid != previous_pid):
+                    print(f"✓ {scope_label} service restarted (PID {new_pid})")
+                    return True
+                if previous_pid is None:
+                    print(f"✓ {scope_label} service restarted")
+                    return True
 
-        time.sleep(2)
+            if active_state == "activating" and sub_state == "auto-restart":
+                time.sleep(1)
+                continue
+
+            time.sleep(2)
 
     print(
         f"⚠ {scope_label} service did not become active within {int(timeout)}s.\n"
@@ -485,7 +538,8 @@ def _recover_pending_systemd_restart(system: bool = False, previous_pid: int | N
     except Exception:
         return False
 
-    runtime_state = read_runtime_status() or {}
+    with _system_service_hermes_home_override(system):
+        runtime_state = read_runtime_status() or {}
     if not runtime_state.get("restart_requested"):
         return False
 
@@ -1848,7 +1902,8 @@ def systemd_restart(system: bool = False):
     refresh_systemd_unit_if_needed(system=system)
     from gateway.status import get_running_pid
 
-    pid = get_running_pid()
+    with _system_service_hermes_home_override(system):
+        pid = get_running_pid()
     if pid is not None and _request_gateway_self_restart(pid):
         import time
         scope_label = _service_scope_label(system).capitalize()
