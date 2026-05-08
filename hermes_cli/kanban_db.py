@@ -1741,22 +1741,91 @@ def _synthesize_ended_run(
 
 
 # ---------------------------------------------------------------------------
+# Governance routing headers
+# ---------------------------------------------------------------------------
+
+_HEADER_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*):\s*(.*?)\s*$")
+_EXECUTION_ALLOWED_RE = re.compile(r"^(self|worker|hold|assigned:[A-Za-z0-9_.-]+)$")
+_DISPATCHABLE_APPROVALS = {"observe", "propose", "execute-safe"}
+_NON_DISPATCHABLE_APPROVALS = {"approval-required", "blocked"}
+
+
+def _task_header_value(body: Optional[str], key: str) -> Optional[str]:
+    """Return a top-of-body metadata header value.
+
+    Stop parsing at the first non-header line so incidental later prose like
+    "Rollback:" in a doctor-rundown is not treated as routing metadata.
+    """
+    if not body:
+        return None
+    wanted = key.lower()
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line:
+            break
+        match = _HEADER_RE.match(line)
+        if not match:
+            break
+        if match.group(1).lower() == wanted:
+            value = match.group(2).strip()
+            return value or None
+    return None
+
+
+def task_execution_mode(body: Optional[str]) -> str:
+    """Return the task's Execution mode.
+
+    Missing/unknown values default to ``worker`` for backward compatibility
+    with older boards; new Cameron cards are expected to include an explicit
+    ``Execution: self|worker|assigned:<profile>|hold`` header.
+    """
+    value = (_task_header_value(body, "Execution") or "worker").strip()
+    if _EXECUTION_ALLOWED_RE.match(value):
+        return value
+    return "worker"
+
+
+def task_approval_mode(body: Optional[str]) -> str:
+    """Return the task's Approval mode, defaulting legacy cards to safe exec."""
+    return (_task_header_value(body, "Approval") or "execute-safe").strip().lower()
+
+
+def task_is_dispatchable(body: Optional[str], assignee: Optional[str]) -> bool:
+    """True iff dispatcher may promote/claim/spawn this task."""
+    approval = task_approval_mode(body)
+    if approval in _NON_DISPATCHABLE_APPROVALS:
+        return False
+    if approval not in _DISPATCHABLE_APPROVALS:
+        return False
+
+    execution = task_execution_mode(body)
+    if execution == "worker":
+        return True
+    if execution.startswith("assigned:"):
+        return bool(assignee) and execution.split(":", 1)[1] == assignee
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Dependency resolution (todo -> ready)
 # ---------------------------------------------------------------------------
 
 def recompute_ready(conn: sqlite3.Connection) -> int:
-    """Promote ``todo`` tasks to ``ready`` when all parents are ``done``.
+    """Promote dispatchable ``todo`` tasks to ``ready`` when parents are done.
 
-    Returns the number of tasks promoted.  Safe to call inside or outside
-    an existing transaction; it opens its own IMMEDIATE txn.
+    ``Execution:self``/``hold`` and approval-gated cards intentionally stay
+    non-ready even if dependencies are satisfied; they are journals/holds, not
+    worker queue items. Returns number promoted.
     """
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id FROM tasks WHERE status = 'todo'"
+            "SELECT id, body, assignee FROM tasks WHERE status = 'todo'"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
+            if not task_is_dispatchable(row["body"], row["assignee"]):
+                continue
             parents = conn.execute(
                 "SELECT t.status FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
@@ -1798,9 +1867,11 @@ def claim_task(
         # it when the CAS resets the pointer below. No-op when the invariant
         # holds (the common case).
         stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status = 'ready'",
+            "SELECT current_run_id, body, assignee FROM tasks WHERE id = ? AND status = 'ready'",
             (task_id,),
         ).fetchone()
+        if stale and not task_is_dispatchable(stale["body"], stale["assignee"]):
+            return None
         if stale and stale["current_run_id"]:
             conn.execute(
                 """
@@ -3454,10 +3525,11 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     the warning still fires in degraded environments.
     """
     rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
+        "SELECT DISTINCT assignee, body FROM tasks "
         "WHERE status = 'ready' AND assignee IS NOT NULL "
         "    AND claim_lock IS NULL"
     ).fetchall()
+    rows = [row for row in rows if task_is_dispatchable(row["body"], row["assignee"])]
     if not rows:
         return False
     try:
@@ -3541,7 +3613,7 @@ def dispatch_once(
     result.promoted = recompute_ready(conn)
 
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, body FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -3551,6 +3623,9 @@ def dispatch_once(
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
+            continue
+        if not task_is_dispatchable(row["body"], row["assignee"]):
+            result.skipped_nonspawnable.append(row["id"])
             continue
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
