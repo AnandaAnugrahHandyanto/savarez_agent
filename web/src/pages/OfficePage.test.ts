@@ -4,6 +4,7 @@ import {
   buildOfficeAttentionItems,
   buildOfficeMapFlows,
   buildOfficeMapNodes,
+  buildOfficeSceneObjects,
   groupByText,
   visibleRows,
 } from "./officeView";
@@ -136,6 +137,38 @@ describe("OfficePage view helpers", () => {
     expect(flows.map((flow) => flow.label).join(" ")).not.toContain("raw");
     expect(nodes.map((node) => node.zone)).toEqual(["entry", "workbench", "machine", "routing"]);
     expect(nodes.every((node) => node.x >= 12 && node.x <= 88 && node.y >= 16 && node.y <= 84)).toBe(true);
+  });
+
+  it("builds safe 2D office scene objects with caps and no raw field projection", () => {
+    const state = officeFixture({
+      data_sources: [
+        { id: "sessions", status: "ok", checked_at: "2026-05-08T00:00:00Z", item_count: 8 },
+        { id: "kanban", status: "partial", checked_at: "2026-05-08T00:00:00Z", item_count: 7 },
+        { id: "cron", status: "error", checked_at: "2026-05-08T00:00:00Z", item_count: 2 },
+        { id: "topics", status: "missing", checked_at: "2026-05-08T00:00:00Z", item_count: 0 },
+      ],
+      agents: Array.from({ length: 8 }, (_, index) => ({ id: `session-${index}`, source_platform: "cli", status: "active", transcript: "raw transcript must not matter" })),
+      work_items: Array.from({ length: 7 }, (_, index) => ({ id: `task-${index}`, title: "Safe task", status: index === 0 ? "blocked" : "open", body: "raw task body must not matter" })),
+      automations: [
+        { id: "job-1", name: "Cron job job-1", state: "scheduled", last_status: "ok", script: "raw script must not matter" },
+        { id: "job-2", name: "Cron job job-2", state: "error", last_status: "error", secret: "raw secret must not matter" },
+      ],
+      topics: [],
+      provenance: [],
+    });
+    const nodes = buildOfficeMapNodes(state);
+    const objects = buildOfficeSceneObjects(state, nodes);
+
+    expect(objects.map((object) => object.kind)).toContain("avatar");
+    expect(objects.map((object) => object.kind)).toContain("desk");
+    expect(objects.map((object) => object.kind)).toContain("machine");
+    expect(objects.map((object) => object.kind)).toContain("mail");
+    expect(objects.filter((object) => object.roomId === "sessions" && object.kind === "avatar")).toHaveLength(6);
+    expect(objects.find((object) => object.id === "sessions-overflow")?.label).toBe("+2 sessions");
+    expect(objects.find((object) => object.id === "work-overflow")?.label).toBe("+1 work");
+    expect(objects.find((object) => object.roomId === "routing")?.label).toBe("unrouted bucket");
+    expect(objects.every((object) => object.x >= 10 && object.x <= 90 && object.y >= 12 && object.y <= 88)).toBe(true);
+    expect(objects.map((object) => `${object.label} ${object.detail}`).join(" ")).not.toMatch(/raw|transcript|body|script|secret/i);
   });
 
 });

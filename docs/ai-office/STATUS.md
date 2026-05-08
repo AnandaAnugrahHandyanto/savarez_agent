@@ -1,16 +1,71 @@
 # Hermes AI Office — STATUS
 
-Last updated: 2026-05-09 00:34 KST
+Last updated: 2026-05-09 01:30 KST
 
 ## Current phase
 
-Stage 9-B CSS/SVG office-map semantics/layout polish completed on top of Stage 9-A and the Stage 8 read-only dashboard. Stage 8-A final density polish, Stage 8-B topic/provenance read-only depth, Stage 8-C frontend tests/fixtures, and Stage 9-A office-map first slice remain completed and verified.
+Stage 9-C dependency-free DeskRPG-like 2D office prototype completed on top of Stage 9-B and the Stage 8 read-only dashboard. Stage 8-A/B/C, Stage 9-A office-map first slice, and Stage 9-B semantics/layout polish remain completed and verified.
 
-Next phase: keep the page read-only and localhost-first; recommended next work is Stage 8-D fixture expansion/visual regression or a separately approved pixel/renderer research stage after dependency/licensing/security review.
+Next phase: keep the page read-only and localhost-first; recommended next work is Stage 8-D fixture/visual-regression expansion or a separately approved renderer dependency review if the project should move beyond CSS/SVG.
 
 Stage 6 slices were approved by the user, including proceeding through the recommended remaining slices. Stage 7 was approved with testing deferred until the end. Stage 8-A was approved as the next safe step by the user saying to proceed in order, and the user then requested items 1 through 3 to run automatically in sequence. The user also approved installing missing test/runtime extras as needed in earlier setup. No gateway restart, cron change, Kanban mutation, NAS/Obsidian write, service/config mutation, memory/skill update, pixel dependency, or mutation-control implementation has been performed. The local dashboard process was restarted only to smoke-test the newly built local frontend bundle.
 
 
+
+
+## Stage 9-C dependency-free 2D office prototype completed
+
+The user approved the DeskRPG-like 2D direction after a material sufficiency check. This slice keeps the renderer Hermes-native and dependency-free: CSS/SVG only, frontend projection only, read-only UI, and safe `OfficeState` metadata only. It does not copy DeskRPG code/assets and does not add Phaser/PixiJS/canvas.
+
+Implemented files/changes:
+
+- `web/src/pages/officeView.ts`
+  - Added `OfficeSceneObject` and `buildOfficeSceneObjects(state, nodes)` to derive bounded 2D office markers from safe DTO arrays.
+  - Renders capped placeholders per room: session avatars, work desks, automation machines, routing mail/unrouted bucket, plus safe `+N` overflow markers.
+  - Scene labels/details are deterministic safe metadata and do not read raw prompt/transcript/body/script/log/auth/secret-like fixture fields.
+- `web/src/pages/OfficePage.tsx`
+  - Extended the existing Office map into a tile-like 2D office floor with lobby/workbench/machine-room/mailroom panels.
+  - Added small CSS object markers for avatars/desks/machines/mail/overflow alerts while keeping room buttons as the accessible click targets.
+  - Preserved SVG flow paths, flow legend, safe room inspection, and no-mutation safety copy.
+- `web/src/pages/OfficePage.test.ts`
+  - Added a Stage 9-C fixture covering object caps, overflow markers, unrouted bucket visibility, bounded coordinates, object kinds, and raw-field avoidance.
+
+Verification performed on Mac:
+
+```text
+cd /Users/lidises/dev/hermes-agent/web
+npm test -- --run OfficePage.test.ts
+# 1 test file passed, 6 tests passed
+
+./node_modules/.bin/eslint src/pages/OfficePage.tsx src/pages/officeView.ts src/pages/OfficePage.test.ts
+# passed: 0 errors
+
+npm run build
+# passed: tsc -b && vite build
+
+cd /Users/lidises/dev/hermes-agent
+source .venv/bin/activate
+scripts/run_tests.sh tests/hermes_cli/test_office_redaction.py tests/hermes_cli/test_office_state_adapters.py tests/hermes_cli/test_office_api.py -q --tb=short
+# 18 passed in 1.05s
+
+git diff --check
+# passed
+
+Browser smoke: http://127.0.0.1:8765/office
+# visible: OFFICE MAP, tile-like lobby/workbench/machine-room/mailroom zones, CSS scene markers, safe flow legend
+# Sessions click updates Safe inspector with office-map safe metadata including zone
+# fixture raw-field strings are absent from browser text
+# console: no JS errors
+# visual inspection: no blocking layout issue; only minor small/low-contrast text noted
+```
+
+Safety notes:
+
+- No PixiJS, Phaser, canvas engine, sprite assets, copied DeskRPG code/assets, or new dependency.
+- No mutation controls were added.
+- No backend API/schema change.
+- No Kanban/cron/topic registry/NAS/Obsidian writes.
+- Raw prompts, transcripts, task bodies, cron scripts, logs, auth, and secrets remain outside browser DTOs/tooltips/inspector rows.
 
 ## Stage 9-B office-map semantics/layout polish completed
 

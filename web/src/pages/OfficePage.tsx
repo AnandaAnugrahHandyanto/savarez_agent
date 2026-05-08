@@ -22,12 +22,14 @@ import {
   buildOfficeAttentionItems,
   buildOfficeMapFlows,
   buildOfficeMapNodes,
+  buildOfficeSceneObjects,
   groupByText,
   numberField,
   textField,
   visibleRows,
   type OfficeMapFlow,
   type OfficeMapNode,
+  type OfficeSceneObject,
 } from "./officeView";
 
 const FOCUS_OPTIONS = ["overview", "work", "automation", "routing"] as const;
@@ -198,7 +200,52 @@ function mapFlowTone(health: OfficeMapFlow["health"]): string {
   return "text-sky-300/45";
 }
 
-function OfficeMap({ nodes, flows, onInspect }: { nodes: OfficeMapNode[]; flows: OfficeMapFlow[]; onInspect: (node: OfficeMapNode) => void }) {
+function mapSceneObjectTone(health: OfficeSceneObject["health"]): string {
+  if (health === "ok") return "border-emerald-300/50 bg-emerald-300/20 text-emerald-100";
+  if (health === "partial") return "border-yellow-300/55 bg-yellow-300/20 text-yellow-100";
+  if (health === "error") return "border-red-300/60 bg-red-300/20 text-red-100";
+  return "border-sky-300/45 bg-sky-300/15 text-sky-100";
+}
+
+function sceneObjectGlyph(kind: OfficeSceneObject["kind"]): string {
+  if (kind === "avatar") return "●";
+  if (kind === "desk") return "▤";
+  if (kind === "machine") return "▣";
+  if (kind === "mail") return "▥";
+  return "!";
+}
+
+function SceneObjectMarker({ object }: { object: OfficeSceneObject }) {
+  return (
+    <div
+      className={`pointer-events-none absolute flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center border text-[11px] font-semibold shadow-sm ${mapSceneObjectTone(object.health)}`}
+      style={{ left: `${object.x}%`, top: `${object.y}%` }}
+      title={`${object.label} · ${object.detail}`}
+      aria-hidden="true"
+    >
+      {sceneObjectGlyph(object.kind)}
+    </div>
+  );
+}
+
+const OFFICE_ZONE_PANELS: Array<{ id: OfficeMapNode["id"]; label: string; className: string; style: React.CSSProperties }> = [
+  { id: "sessions", label: "lobby", className: "border-emerald-300/15 bg-[repeating-linear-gradient(45deg,rgba(16,185,129,0.10)_0_6px,rgba(16,185,129,0.04)_6px_12px)]", style: { left: "10%", top: "14%", width: "34%", height: "30%" } },
+  { id: "work", label: "workbench", className: "border-yellow-300/15 bg-[repeating-linear-gradient(0deg,rgba(234,179,8,0.10)_0_5px,rgba(234,179,8,0.04)_5px_11px)]", style: { left: "56%", top: "14%", width: "34%", height: "30%" } },
+  { id: "automation", label: "machine room", className: "border-cyan-300/15 bg-[repeating-linear-gradient(90deg,rgba(34,211,238,0.10)_0_5px,rgba(34,211,238,0.04)_5px_11px)]", style: { left: "10%", top: "56%", width: "34%", height: "30%" } },
+  { id: "routing", label: "mailroom", className: "border-sky-300/15 bg-[repeating-linear-gradient(135deg,rgba(125,211,252,0.10)_0_6px,rgba(125,211,252,0.04)_6px_12px)]", style: { left: "56%", top: "56%", width: "34%", height: "30%" } },
+];
+
+function OfficeMap({
+  nodes,
+  flows,
+  sceneObjects,
+  onInspect,
+}: {
+  nodes: OfficeMapNode[];
+  flows: OfficeMapFlow[];
+  sceneObjects: OfficeSceneObject[];
+  onInspect: (node: OfficeMapNode) => void;
+}) {
   return (
     <Card>
       <CardHeader>
@@ -210,7 +257,7 @@ function OfficeMap({ nodes, flows, onInspect }: { nodes: OfficeMapNode[]; flows:
         </div>
       </CardHeader>
       <CardContent>
-        <div className="relative min-h-[460px] overflow-hidden border border-current/15 bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.14),transparent_34%),linear-gradient(135deg,rgba(255,255,255,0.04),rgba(0,0,0,0.16))] p-4 sm:min-h-[390px]">
+        <div className="relative min-h-[500px] overflow-hidden border border-current/15 bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.14),transparent_34%),linear-gradient(135deg,rgba(255,255,255,0.04),rgba(0,0,0,0.16))] p-4 sm:min-h-[430px]">
           <svg className="absolute inset-0 h-full w-full text-midground/20" role="img" aria-label="Read-only office floor connections" viewBox="0 0 100 100" preserveAspectRatio="none">
             <defs>
               <marker id="office-map-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
@@ -238,13 +285,21 @@ function OfficeMap({ nodes, flows, onInspect }: { nodes: OfficeMapNode[]; flows:
             })}
           </svg>
           <div className="absolute left-4 top-4 text-[10px] uppercase tracking-[0.22em] text-midground/50">safe office projection</div>
+          {OFFICE_ZONE_PANELS.map((zone) => (
+            <div key={zone.id} className={`absolute border ${zone.className}`} style={zone.style} aria-hidden="true">
+              <div className="absolute bottom-2 right-2 text-[8px] uppercase tracking-[0.18em] text-midground/25">{zone.label}</div>
+            </div>
+          ))}
+          {sceneObjects.map((object) => (
+            <SceneObjectMarker key={object.id} object={object} />
+          ))}
           {nodes.map((node) => (
             <button
               key={node.id}
               type="button"
               onClick={() => onInspect(node)}
               aria-label={`${node.label} office map room, ${node.count} safe item count, ${node.health} health`}
-              className={`absolute w-[min(10rem,42vw)] -translate-x-1/2 -translate-y-1/2 border p-3 text-left shadow-lg backdrop-blur transition hover:scale-[1.02] hover:border-current/60 ${mapNodeTone(node.health)}`}
+              className={`absolute w-[min(8.75rem,40vw)] -translate-x-1/2 -translate-y-1/2 border p-2 text-left shadow-lg backdrop-blur transition hover:scale-[1.02] hover:border-current/60 ${mapNodeTone(node.health)}`}
               style={{ left: `${node.x}%`, top: `${node.y}%` }}
             >
               <div className="text-[9px] uppercase tracking-[0.18em] text-current/55">{node.zone}</div>
@@ -396,6 +451,7 @@ export default function OfficePage() {
   const needsAttention = useMemo(() => (state ? buildOfficeAttentionItems(state) : []), [state]);
   const mapNodes = useMemo(() => (state ? buildOfficeMapNodes(state) : []), [state]);
   const mapFlows = useMemo(() => buildOfficeMapFlows(mapNodes), [mapNodes]);
+  const sceneObjects = useMemo(() => (state ? buildOfficeSceneObjects(state, mapNodes) : []), [state, mapNodes]);
 
   const sourceCounts = useMemo(() => {
     if (!state) return { ok: 0, partial: 0, missing: 0, unavailable: 0, error: 0 };
@@ -497,6 +553,7 @@ export default function OfficePage() {
         <OfficeMap
           nodes={mapNodes}
           flows={mapFlows}
+          sceneObjects={sceneObjects}
           onInspect={(node) => inspectRecord("office map room", node.label, [
             ["room", node.id],
             ["zone", node.zone],

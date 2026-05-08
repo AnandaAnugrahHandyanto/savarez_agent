@@ -24,6 +24,17 @@ export type OfficeMapFlow = {
   health: OfficeMapNode["health"];
 };
 
+export type OfficeSceneObject = {
+  id: string;
+  roomId: OfficeMapNode["id"];
+  kind: "avatar" | "desk" | "machine" | "mail" | "alert";
+  label: string;
+  detail: string;
+  health: OfficeMapNode["health"];
+  x: number;
+  y: number;
+};
+
 export function textField(row: Record<string, unknown>, key: string): string {
   const value = row[key];
   return typeof value === "string" && value.length > 0 ? value : "—";
@@ -118,6 +129,80 @@ export function buildOfficeMapFlows(nodes: OfficeMapNode[]): OfficeMapFlow[] {
     const to = byId.get(flow.to);
     const score = Math.max(severity[from?.health ?? "missing"], severity[to?.health ?? "missing"]);
     return { ...flow, health: healthBySeverity[score] };
+  });
+}
+
+const SCENE_OBJECT_LIMIT = 6;
+
+const SCENE_SLOTS: Record<OfficeMapNode["id"], Array<[number, number]>> = {
+  sessions: [[17, 22], [24, 22], [31, 22], [17, 34], [24, 34], [31, 34]],
+  work: [[63, 21], [70, 21], [77, 21], [63, 34], [70, 34], [77, 34]],
+  automation: [[17, 64], [24, 64], [31, 64], [17, 77], [24, 77], [31, 77]],
+  routing: [[63, 64], [70, 64], [77, 64], [63, 77], [70, 77], [77, 77]],
+};
+
+const SCENE_ROOM_CONFIG: Record<OfficeMapNode["id"], { kind: OfficeSceneObject["kind"]; singular: string; plural: string; emptyLabel?: string; emptyDetail?: string }> = {
+  sessions: { kind: "avatar", singular: "session avatar", plural: "sessions" },
+  work: { kind: "desk", singular: "work desk", plural: "work" },
+  automation: { kind: "machine", singular: "automation machine", plural: "automations" },
+  routing: { kind: "mail", singular: "routing mail", plural: "routes", emptyLabel: "unrouted bucket", emptyDetail: "topic/provenance gap remains explicit" },
+};
+
+function roomRows(state: OfficeState, roomId: OfficeMapNode["id"]): Array<Record<string, unknown>> {
+  if (roomId === "sessions") return state.agents;
+  if (roomId === "work") return state.work_items;
+  if (roomId === "automation") return state.automations;
+  return [...state.topics, ...state.provenance];
+}
+
+export function buildOfficeSceneObjects(state: OfficeState, nodes: OfficeMapNode[]): OfficeSceneObject[] {
+  return nodes.flatMap((node) => {
+    const config = SCENE_ROOM_CONFIG[node.id];
+    const rows = roomRows(state, node.id);
+    const slots = SCENE_SLOTS[node.id];
+    const visibleRows = rows.slice(0, SCENE_OBJECT_LIMIT);
+    const objects = visibleRows.map<OfficeSceneObject>((_, index) => {
+      const [x, y] = slots[index];
+      return {
+        id: `${node.id}-${config.kind}-${index + 1}`,
+        roomId: node.id,
+        kind: config.kind,
+        label: `${config.singular} ${index + 1}`,
+        detail: `${node.zone} safe marker`,
+        health: node.health,
+        x,
+        y,
+      };
+    });
+
+    if (rows.length === 0 && config.emptyLabel) {
+      const [x, y] = slots[0];
+      objects.push({
+        id: `${node.id}-empty`,
+        roomId: node.id,
+        kind: config.kind,
+        label: config.emptyLabel,
+        detail: config.emptyDetail ?? `${node.zone} empty marker`,
+        health: node.health,
+        x,
+        y,
+      });
+    }
+
+    if (rows.length > SCENE_OBJECT_LIMIT) {
+      objects.push({
+        id: `${node.id}-overflow`,
+        roomId: node.id,
+        kind: "alert",
+        label: `+${rows.length - SCENE_OBJECT_LIMIT} ${config.plural}`,
+        detail: "additional safe count hidden from map density",
+        health: node.health,
+        x: Math.min(node.x + 12, 90),
+        y: Math.min(node.y + 11, 88),
+      });
+    }
+
+    return objects;
   });
 }
 

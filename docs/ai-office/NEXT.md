@@ -1,6 +1,6 @@
 # Hermes AI Office — NEXT
 
-Last updated: 2026-05-09 00:34 KST
+Last updated: 2026-05-09 01:30 KST
 
 ## Start here after `/new`
 
@@ -64,55 +64,21 @@ When not to rely on `/goal` alone:
 
 ## Current next stage
 
-Stage 9-B office-map semantics/layout polish is completed on top of Stage 9-A and the Stage 8 read-only dashboard. Stage 8-A/B/C and Stage 9-A remain completed and verified.
+Stage 9-C dependency-free DeskRPG-like 2D office prototype is completed on top of Stage 9-B and the Stage 8 read-only dashboard. Stage 8-A/B/C, Stage 9-A, and Stage 9-B remain completed and verified.
 
+Stage 9-C completed:
 
-Stage 9-B office-map semantics/layout polish completed:
+- `web/src/pages/officeView.ts` adds `OfficeSceneObject` and `buildOfficeSceneObjects(state, nodes)` for safe, capped 2D office markers.
+- `web/src/pages/OfficePage.tsx` renders tile-like lobby/workbench/machine-room/mailroom panels with small CSS scene markers while preserving room buttons, SVG flows, and Safe inspector behavior.
+- `web/src/pages/OfficePage.test.ts` covers object caps, overflow markers, unrouted bucket display, bounded coordinates, object kinds, and raw-field avoidance.
+- Still no PixiJS/Phaser, canvas engine, sprite assets, copied DeskRPG code/assets, new dependency, backend route/schema, or mutation controls.
 
-- `web/src/pages/officeView.ts` adds `OfficeMapFlow`, `buildOfficeMapFlows()`, and zone labels for entry/workbench/machine/routing.
-- `web/src/pages/OfficePage.tsx` renders safe SVG flow paths, a bottom flow legend, visible zone labels, and responsive node sizing.
-- `web/src/pages/OfficePage.test.ts` covers partial/error/missing source-health combinations, flow degradation, zone labels, bounded coordinates, and raw-field avoidance.
-- Still no PixiJS/Phaser, new dependency, pixel assets, backend route/schema, or mutation controls.
-
-Verification for Stage 9-B:
-
-```text
-cd /Users/lidises/dev/hermes-agent/web
-npm test -- --run OfficePage.test.ts
-# 1 test file passed, 5 tests passed
-
-./node_modules/.bin/eslint src/pages/OfficePage.tsx src/pages/officeView.ts src/pages/OfficePage.test.ts
-# passed: 0 errors
-
-npm run build
-# passed: tsc -b && vite build
-
-cd /Users/lidises/dev/hermes-agent
-source .venv/bin/activate
-scripts/run_tests.sh tests/hermes_cli/test_office_redaction.py tests/hermes_cli/test_office_state_adapters.py tests/hermes_cli/test_office_api.py -q --tb=short
-# 18 passed in 0.99s
-
-git diff --check
-# passed
-
-Browser smoke: http://127.0.0.1:8765/office
-# OFFICE MAP visible with zone labels, safe flow legend, flow lines, Safe inspector zone metadata, no console JS errors
-```
-
-Stage 9-A CSS/SVG office-map slice completed:
-
-- `web/src/pages/officeView.ts` adds `buildOfficeMapNodes()` and safe `OfficeMapNode` DTO projection.
-- `web/src/pages/OfficePage.tsx` renders an overview-only `Office map` with four room-like nodes: Sessions, Work, Automation, Routing.
-- The map is browser-local CSS/SVG only; no PixiJS/Phaser, new dependency, pixel assets, backend route/schema, or mutation controls.
-- Nodes inspect safe metadata through the existing Safe inspector.
-- `web/src/pages/OfficePage.test.ts` covers safe count projection and confirms raw-looking fixture fields are ignored.
-
-Verification for Stage 9-A:
+Verification for Stage 9-C:
 
 ```text
 cd /Users/lidises/dev/hermes-agent/web
 npm test -- --run OfficePage.test.ts
-# 1 test file passed, 4 tests passed
+# 1 test file passed, 6 tests passed
 
 ./node_modules/.bin/eslint src/pages/OfficePage.tsx src/pages/officeView.ts src/pages/OfficePage.test.ts
 # passed: 0 errors
@@ -123,68 +89,24 @@ npm run build
 cd /Users/lidises/dev/hermes-agent
 source .venv/bin/activate
 scripts/run_tests.sh tests/hermes_cli/test_office_redaction.py tests/hermes_cli/test_office_state_adapters.py tests/hermes_cli/test_office_api.py -q --tb=short
-# 18 passed in 0.99s
+# 18 passed in 1.05s
 
 git diff --check
 # passed
 
 Browser smoke: http://127.0.0.1:8765/office
-# OFFICE MAP visible, four safe nodes visible, Safe inspector updates from node click, no console JS errors
+# Office map visible with DeskRPG-like 2D floor zones, object markers, flow legend, Safe inspector zone metadata, no fixture raw-field leaks, no console JS errors
 ```
-
-Completed in this Stage 8 continuation:
-
-- `web/src/pages/OfficePage.tsx` now caps dense lists and exposes browser-local `show N more` / `show fewer` controls.
-- The cap applies to attention rail, rooms, sessions/agents, work groups, automation groups, topic rows, and safe events without changing the underlying DTO.
-- `web/src/pages/officeView.ts` holds pure view helpers for grouping, visible-row capping, and attention-item derivation.
-- `web/src/pages/OfficePage.test.ts` adds Vitest coverage for unknown-status grouping, capped list behavior, and attention rail derivation from safe DTO fields.
-- `web/package.json` now has `npm test`; `web/package-lock.json` records the Vitest dev dependency.
-- `hermes_cli/office_adapters.py` now has a read-only optional topic registry adapter for an existing `~/.hermes/office/topics.json`; it never creates or edits the file.
-- Cron explicit Telegram delivery targets now project safe topic/provenance hints: hidden chat/thread display, opaque `topic_ref` hashes, derived topic label, and `delivered_to` provenance records.
-- `hermes_cli/office_state.py` merges the topic registry adapter and refreshes topic/provenance source health from safe topic/provenance records.
-- `tests/hermes_cli/test_office_state_adapters.py` covers missing registry no-write behavior, safe topic projection, cron topic/provenance projection, and merged OfficeState source-health behavior.
-
-Verification for this Stage 8 continuation:
-
-```text
-cd /Users/lidises/dev/hermes-agent
-source .venv/bin/activate
-scripts/run_tests.sh tests/hermes_cli/test_office_redaction.py tests/hermes_cli/test_office_state_adapters.py tests/hermes_cli/test_office_api.py -q --tb=short
-# 18 passed in 0.99s
-
-cd /Users/lidises/dev/hermes-agent/web
-npm test
-# 1 test file passed, 3 tests passed
-
-./node_modules/.bin/eslint src/pages/OfficePage.tsx src/pages/officeView.ts src/pages/OfficePage.test.ts
-# passed: 0 errors
-
-npm run build
-# passed: tsc -b && vite build
-
-git diff --check
-# passed
-
-Browser smoke: http://127.0.0.1:8765/office
-# loaded with title: Hermes Agent - Dashboard
-# visible/interactable: HERMES AI OFFICE, Source health, Attention rail, focus chips, Safe inspector, Topic routing, Provenance/Redaction, capped sessions list with show-more control
-# console: no messages, no JS errors
-```
-
-TDD note:
-
-- The first frontend test attempt failed because importing the full `OfficePage` pulled `@nous-research/ui` ESM directory imports into Vitest.
-- The fix was to extract pure helpers into `officeView.ts` and test those helpers directly.
 
 ## Immediate next action
 
 Immediate next action should remain a product/UX decision point, not a control-plane expansion:
 
-1. Stage 8-D hardening: add more frontend fixtures for empty/error/loading/source-health states and consider lightweight visual regression for `/office`.
-2. Stage 9-C map fixture polish: only if needed, add richer fixture-driven examples for partial/error/missing flow states and small-screen snapshots without changing backend DTOs.
-3. Review the topic registry read path against real local registry data only if explicitly approved; do not create or edit registry data by default.
-4. Separately approve pixel/renderer research after dependency/licensing/security review if the project should move beyond CSS/SVG.
-5. Do not add mutation controls, expose dashboard remotely, add Pixi/Phaser, create/edit topic registry data, or create/modify Kanban/Cron state without separate approval.
+1. Stage 8-D hardening: add frontend fixtures for empty/error/loading/source-health states and consider lightweight visual regression/screenshot smoke for `/office`.
+2. Stage 9-D visual polish: improve contrast/spacing for small labels and object markers in the 2D office floor without changing DTOs or adding dependencies.
+3. Stage 9-C fixture expansion: add small-screen/responsive fixtures and partial/error/missing scene-object examples if needed.
+4. Renderer research: only after separate dependency/licensing/security/accessibility review, decide whether Phaser/PixiJS is worth the bundle/maintenance cost.
+5. Do not add mutation controls, expose dashboard remotely, add Pixi/Phaser, copy DeskRPG assets/code, create/edit topic registry data, or create/modify Kanban/Cron state without separate approval.
 
 Completed Stage 6 files:
 
