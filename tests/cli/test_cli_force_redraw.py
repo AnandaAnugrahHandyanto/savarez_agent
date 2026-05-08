@@ -72,6 +72,10 @@ class TestForceFullRedraw:
         ]
 
     def test_resize_rebuilds_scrollback_before_prompt_toolkit_redraw(self, bare_cli, monkeypatch):
+        """Resize recovery clears screen, rebuilds scrollback, resets renderer,
+        then hands off to prompt_toolkit WITHOUT replaying output history.
+        (Replay on every resize is too jarring — users can Ctrl+L instead.)
+        """
         app = MagicMock()
         out = app.renderer.output
         events = []
@@ -86,6 +90,8 @@ class TestForceFullRedraw:
 
         bare_cli._recover_after_resize(app, original_on_resize)
 
+        # _recover_after_resize clears screen + resets renderer, then
+        # calls original_on_resize directly — NO output history replay.
         assert events == [
             "reset_attrs",
             "erase",
@@ -93,7 +99,6 @@ class TestForceFullRedraw:
             "home",
             "flush",
             "renderer_reset",
-            "replay",
             "original_resize",
         ]
         app.invalidate.assert_not_called()

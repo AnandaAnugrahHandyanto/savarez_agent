@@ -2521,9 +2521,16 @@ class HermesCLI:
             pass
 
     def _recover_after_resize(self, app, original_on_resize) -> None:
-        """Recover a resized classic CLI without desynchronizing cursor state."""
+        """Recover a resized classic CLI without desynchronizing cursor state.
+
+        Only clears the screen and resets the renderer — does NOT replay
+        output history.  Replaying on every resize causes jarring
+        "re-streaming" of entire conversation.  Users who want history
+        restored can press Ctrl+L (/redraw) which calls _force_full_redraw.
+        """
         self._clear_prompt_toolkit_screen(app, rebuild_scrollback=True)
-        _replay_output_history()
+        # Deliberately NOT calling _replay_output_history() here.
+        # See docstring above.
         original_on_resize()
 
     def _schedule_resize_recovery(self, app, original_on_resize, delay: float = 0.12) -> None:
