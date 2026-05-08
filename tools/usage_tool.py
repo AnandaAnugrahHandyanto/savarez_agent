@@ -7,10 +7,11 @@ account limits. This enables quota-aware planning for large tasks.
 """
 
 import json
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
 
 from agent.account_usage import fetch_account_usage
+
+def _json_cost(value):
+    return float(value)
 
 def get_usage_tool(agent=None) -> str:
     """
@@ -58,7 +59,7 @@ def get_usage_tool(agent=None) -> str:
         )
         if cost_result.amount_usd is not None:
             data["cost"] = {
-                "amount_usd": cost_result.amount_usd,
+                "amount_usd": _json_cost(cost_result.amount_usd),
                 "status": cost_result.status
             }
     except Exception:

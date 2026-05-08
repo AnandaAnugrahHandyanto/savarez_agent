@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 import json
-import sys
-from typing import Any, Dict, List, Optional
 
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
@@ -10,6 +8,9 @@ from hermes_state import SessionDB
 
 def _format_token(n: int) -> str:
     return f"{n:,}"
+
+def _json_cost(value):
+    return float(value)
 
 def cmd_usage(args):
     """Show token usage for the current session and account limits."""
@@ -85,7 +86,7 @@ def cmd_usage(args):
         
         if cost_usd is not None:
             data["cost"] = {
-                "amount_usd": cost_usd,
+                "amount_usd": _json_cost(cost_usd),
                 "status": cost_status
             }
         

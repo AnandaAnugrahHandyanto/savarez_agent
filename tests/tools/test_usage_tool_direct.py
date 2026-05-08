@@ -1,5 +1,6 @@
 import json
 import unittest
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 from tools.usage_tool import get_usage_tool
 
@@ -21,7 +22,7 @@ class TestUsageTool(unittest.TestCase):
         with patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
             from agent.usage_pricing import CostResult
             mock_cost.return_value = CostResult(
-                amount_usd=0.05, 
+                amount_usd=Decimal("0.05"),
                 status="calculated", 
                 source="official_docs_snapshot",
                 label="Test Label"
