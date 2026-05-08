@@ -115,7 +115,7 @@ const extractBracketedPaste = (value: unknown): boolean | undefined => {
       return undefined
     }
 
-    return Number(match[2]) === 1
+    return Number(match[2]) === 1 || Number(match[2]) === 3
   }
 
   if (!isRecord(value) || typeof value.mode !== 'number' || value.mode !== 2004 || typeof value.status !== 'number') {
@@ -141,7 +141,7 @@ const extractKittyKeyboardFlags = (value: unknown): number | undefined => {
 
 const extractOsc52Read = (value: unknown): boolean | undefined => {
   if (typeof value === 'string') {
-    return OSC52_RAW_RE.test(value) || value.trim().length > 0 ? true : undefined
+    return OSC52_RAW_RE.test(value) ? true : undefined
   }
 
   if (isRecord(value) && typeof value.code === 'number' && value.code === 52) {
@@ -169,48 +169,117 @@ const withTimeout = async <T>(task: Promise<T>, timeoutMs: number): Promise<T | 
   }
 }
 
-const safeFlush = async (querier: Querier, timeoutMs: number): Promise<void> => {
-  await withTimeout(Promise.resolve().then(() => querier.flush()), timeoutMs)
+/** Wrap a Querier so that once timed-out, all future sent queries return `undefined`
+ *  and flush() resolves immediately. This prevents unbounded queue growth when the
+ *  terminal stops responding mid-probe. */
+const gatedQuerier = (base: Querier): { querier: Querier; abort: () => void } => {
+  let dead = false
+  const abort = (): void => {
+    dead = true
+  }
+  const querier: Querier = {
+    send: <T>(query: { match: (r: unknown) => r is T; request: string }): Promise<T | undefined> => {
+      if (dead) {
+        return Promise.resolve(undefined)
+      }
+      return base.send(query)
+    },
+    flush: (): Promise<void> => {
+      if (dead) {
+        return Promise.resolve()
+      }
+      return base.flush()
+    },
+  }
+  return { querier, abort }
 }
 
-const probeStep = async <T>(querier: Querier, query: ProbeQuery<T>, timeoutMs: number): Promise<T | undefined> => {
+const safeFlush = async (querier: Querier, timeoutMs: number): Promise<boolean> => {
+  return (await withTimeout(Promise.resolve().then(() => querier.flush()), timeoutMs)) !== PROBE_TIMEOUT
+}
+
+type ProbeStepResult<T> = { value: T | undefined; timedOut: boolean }
+
+const probeStep = async <T>(querier: Querier, query: ProbeQuery<T>, timeoutMs: number): Promise<ProbeStepResult<T>> => {
   const result = await withTimeout(Promise.resolve().then(() => querier.send(query)), timeoutMs)
+  const flushOk = await safeFlush(querier, timeoutMs)
 
-  await safeFlush(querier, timeoutMs)
+  const timedOut = result === PROBE_TIMEOUT || !flushOk
 
-  return result === PROBE_TIMEOUT ? undefined : result
+  return { value: timedOut ? undefined : result, timedOut }
 }
 
 export async function probeTerminalCapabilities(
-  querier: Querier,
+  baseQuerier: Querier,
   options: TerminalProbeOptions = {}
 ): Promise<TerminalProbeResult> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const result: TerminalProbeResult = {}
 
-  await safeFlush(querier, timeoutMs)
+  const { querier, abort } = gatedQuerier(baseQuerier)
+
+  const initialFlush = await safeFlush(querier, timeoutMs)
+
+  if (!initialFlush) {
+    abort()
+    return result
+  }
 
   const xtversion = await probeStep(querier, xtversionQuery, timeoutMs)
-  const xtversionName = extractXtversionName(xtversion)
+
+  if (xtversion.timedOut) {
+    abort()
+    return result
+  }
+
+  const xtversionName = extractXtversionName(xtversion.value)
 
   if (xtversionName !== undefined) {
     result.xtversionName = xtversionName
   }
 
-  await probeStep(querier, da2Query, timeoutMs)
+  const da2Result = await probeStep(querier, da2Query, timeoutMs)
+
+  if (da2Result.timedOut) {
+    abort()
+    return result
+  }
 
   const bracketedPaste = await probeStep(querier, decrqmQuery(2004), timeoutMs)
-  const pasteEnabled = extractBracketedPaste(bracketedPaste)
+
+  if (bracketedPaste.timedOut) {
+    abort()
+    return result
+  }
+
+  const pasteEnabled = extractBracketedPaste(bracketedPaste.value)
 
   if (pasteEnabled !== undefined) {
     result.bracketedPaste = pasteEnabled
   }
 
-  await probeStep(querier, decrqmQuery(1004), timeoutMs)
-  await probeStep(querier, decrqmQuery(2026), timeoutMs)
+  const focus1004 = await probeStep(querier, decrqmQuery(1004), timeoutMs)
+
+  if (focus1004.timedOut) {
+    abort()
+    return result
+  }
+
+  const sync2026 = await probeStep(querier, decrqmQuery(2026), timeoutMs)
+
+  if (sync2026.timedOut) {
+    abort()
+    return result
+  }
 
   const kittyKeyboard = await probeStep(querier, kittyKeyboardQuery, timeoutMs)
-  const kittyKeyboardFlags = extractKittyKeyboardFlags(kittyKeyboard)
+
+  if (kittyKeyboard.timedOut) {
+    abort()
+    return result
+  }
+
+  const kittyKeyboardFlags = extractKittyKeyboardFlags(kittyKeyboard.value)
 
   if (kittyKeyboardFlags !== undefined) {
     result.kittyKeyboardFlags = kittyKeyboardFlags
@@ -218,7 +287,13 @@ export async function probeTerminalCapabilities(
 
   if (options.allowOsc52Read) {
     const osc52Read = await probeStep(querier, osc52ReadQuery, timeoutMs)
-    const osc52Supported = extractOsc52Read(osc52Read)
+
+    if (osc52Read.timedOut) {
+      abort()
+      return result
+    }
+
+    const osc52Supported = extractOsc52Read(osc52Read.value)
 
     if (osc52Supported !== undefined) {
       result.osc52Read = true
