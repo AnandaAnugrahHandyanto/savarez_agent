@@ -2339,7 +2339,6 @@ class AIAgent:
                 config_context_length=_config_context_length,
                 provider=self.provider,
                 api_mode=self.api_mode,
-                custom_providers=_custom_providers,
             )
         self.compression_enabled = compression_enabled
 

@@ -234,40 +234,6 @@ def test_feasibility_check_passes_custom_providers(mock_get_client, mock_ctx_len
     )
 
 
-def test_context_compressor_passes_custom_providers_to_context_resolver():
-    custom_providers = [
-        {
-            "name": "my-gateway",
-            "base_url": "https://ais.example.com/v1",
-            "models": {
-                "qwen/deepseek-v4-pro": {"context_length": 1_000_000},
-            },
-        }
-    ]
-
-    with patch(
-        "agent.context_compressor.get_model_context_length", return_value=1_000_000
-    ) as mock_ctx_len:
-        compressor = ContextCompressor(
-            model="qwen/deepseek-v4-pro",
-            base_url="https://ais.example.com/v1",
-            api_key="sk-custom",
-            provider="custom:my-gateway",
-            custom_providers=custom_providers,
-            quiet_mode=True,
-        )
-
-    assert compressor.context_length == 1_000_000
-    mock_ctx_len.assert_called_once_with(
-        "qwen/deepseek-v4-pro",
-        base_url="https://ais.example.com/v1",
-        api_key="sk-custom",
-        config_context_length=None,
-        provider="custom:my-gateway",
-        custom_providers=custom_providers,
-    )
-
-
 @patch("agent.model_metadata.get_model_context_length", return_value=128_000)
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
 def test_feasibility_check_ignores_invalid_context_length(mock_get_client, mock_ctx_len):
