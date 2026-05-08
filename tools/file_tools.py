@@ -951,6 +951,15 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
     try:
         offset, limit = normalize_search_pagination(offset, limit)
 
+        # ── Read-scope guard ──────────────────────────────────────────
+        # Honor HERMES_READ_SAFE_ROOTS allowlist on the search root and
+        # filter out matches that fall outside it.  This blocks searches
+        # rooted at sensitive paths (e.g. ~, /etc) and stops content
+        # leakage from files outside the allowlist via search results.
+        block_error = get_read_block_error(path)
+        if block_error:
+            return json.dumps({"error": block_error})
+
         # Track searches to detect *consecutive* repeated search loops.
         # Include pagination args so users can page through truncated
         # results without tripping the repeated-search guard.
@@ -990,7 +999,21 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             pattern=pattern, path=path, target=target, file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context
         )
+        # Defense-in-depth: filter individual matches whose path falls
+        # outside the read allowlist.  Cheap hot-path check — only
+        # iterates when HERMES_READ_SAFE_ROOTS is set.
         if hasattr(result, 'matches'):
+            try:
+                from agent.file_safety import get_read_block_error as _scope_check
+                _filtered = []
+                for m in result.matches:
+                    m_path = getattr(m, 'path', None) or getattr(m, 'file', None)
+                    if m_path and _scope_check(str(m_path)):
+                        continue
+                    _filtered.append(m)
+                result.matches = _filtered
+            except Exception:
+                pass
             for m in result.matches:
                 if hasattr(m, 'content') and m.content:
                     m.content = redact_sensitive_text(m.content, code_file=True)

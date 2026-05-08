@@ -90,9 +90,56 @@ def is_write_denied(path: str) -> bool:
     return False
 
 
+def get_read_safe_roots() -> list[str]:
+    """Return resolved HERMES_READ_SAFE_ROOTS allowlist (colon-separated), or []."""
+    raw = os.getenv("HERMES_READ_SAFE_ROOTS", "")
+    if not raw:
+        return []
+    out: list[str] = []
+    for part in raw.split(":"):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(os.path.realpath(os.path.expanduser(part)))
+        except Exception:
+            continue
+    return out
+
+
+def get_read_allowed_files() -> set[str]:
+    """Return resolved HERMES_READ_ALLOWED_FILES (colon-separated explicit paths).
+
+    Use for individual files outside the safe-roots that must remain readable
+    (e.g. ~/.hermes/AGENTS.md, ~/.hermes/SOUL.md).
+    """
+    raw = os.getenv("HERMES_READ_ALLOWED_FILES", "")
+    if not raw:
+        return set()
+    out: set[str] = set()
+    for part in raw.split(":"):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.add(os.path.realpath(os.path.expanduser(part)))
+        except Exception:
+            continue
+    return out
+
+
 def get_read_block_error(path: str) -> Optional[str]:
-    """Return an error message when a read targets internal Hermes cache files."""
-    resolved = Path(path).expanduser().resolve()
+    """Return an error message when a read is denied.
+
+    Two layers:
+      1. Internal Hermes cache files (skills/.hub) — always blocked to
+         prevent prompt-injection via catalog/hub metadata.
+      2. HERMES_READ_SAFE_ROOTS allowlist (colon-separated). When set, any
+         read outside those roots (and outside HERMES_READ_ALLOWED_FILES)
+         is denied. Mirrors HERMES_WRITE_SAFE_ROOT for write-side scoping.
+    """
+    resolved_pathobj = Path(path).expanduser().resolve()
+    resolved = str(resolved_pathobj)
     hermes_home = _hermes_home_path().resolve()
     blocked_dirs = [
         hermes_home / "skills" / ".hub" / "index-cache",
@@ -100,7 +147,7 @@ def get_read_block_error(path: str) -> Optional[str]:
     ]
     for blocked in blocked_dirs:
         try:
-            resolved.relative_to(blocked)
+            resolved_pathobj.relative_to(blocked)
         except ValueError:
             continue
         return (
@@ -108,4 +155,19 @@ def get_read_block_error(path: str) -> Optional[str]:
             "and cannot be read directly to prevent prompt injection. "
             "Use the skills_list or skill_view tools instead."
         )
+
+    safe_roots = get_read_safe_roots()
+    if safe_roots:
+        allowed_files = get_read_allowed_files()
+        if resolved in allowed_files:
+            return None
+        for root in safe_roots:
+            if resolved == root or resolved.startswith(root + os.sep):
+                return None
+        return (
+            f"Access denied: {path} is outside the configured read allowlist "
+            f"(HERMES_READ_SAFE_ROOTS). Allowed roots: {', '.join(safe_roots)}. "
+            "Set HERMES_READ_ALLOWED_FILES to whitelist specific files."
+        )
+
     return None
