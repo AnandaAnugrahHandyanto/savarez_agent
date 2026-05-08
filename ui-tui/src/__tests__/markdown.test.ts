@@ -204,4 +204,12 @@ describe('Md wrapping', () => {
     expect(lines).toContain('  • nested bullet')
     expect(lines).toContain('  │ nested quote')
   })
+
+  it('preserves original inline-code edge spaces', () => {
+    const lines = renderPlain(
+      React.createElement(Box, { width: 24 }, React.createElement(Md, { t: DEFAULT_THEME, text: '` hi ` ok' }))
+    )
+
+    expect(lines.some(line => line.startsWith(' hi  ok'))).toBe(true)
+  })
 })

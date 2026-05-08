@@ -77,6 +77,27 @@ function truncate(text: string, columns: number, position: 'start' | 'middle' | 
   return sliceFit(text, 0, columns - 1) + ELLIPSIS
 }
 
+function trimSoftWrapBoundaries(text: string, maxWidth: number): string {
+  return text
+    .split('\n')
+    .map(line => {
+      const pieces = wrapAnsi(line, maxWidth, { trim: false, hard: true }).split('\n')
+
+      if (pieces.length === 1) {
+        return pieces[0]!
+      }
+
+      return pieces
+        .map((piece, index) => {
+          const withoutLeadingWrapSpace = index === 0 ? piece : piece.trimStart()
+
+          return index === pieces.length - 1 ? withoutLeadingWrapSpace : withoutLeadingWrapSpace.trimEnd()
+        })
+        .join('\n')
+    })
+    .join('\n')
+}
+
 function computeWrap(text: string, maxWidth: number, wrapType: Styles['textWrap']): string {
   if (wrapType === 'wrap') {
     return wrapAnsi(text, maxWidth, { trim: false, hard: true })
@@ -87,7 +108,7 @@ function computeWrap(text: string, maxWidth: number, wrapType: Styles['textWrap'
   }
 
   if (wrapType === 'wrap-trim') {
-    return wrapAnsi(text, maxWidth, { trim: true, hard: true })
+    return trimSoftWrapBoundaries(text, maxWidth)
   }
 
   if (wrapType!.startsWith('truncate')) {
