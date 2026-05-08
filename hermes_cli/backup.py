@@ -852,6 +852,12 @@ def create_pre_update_backup(
 
     stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
     out_path = backup_dir / f"{_PRE_UPDATE_PREFIX}{stamp}.zip"
+    if out_path.exists():
+        for i in range(1, 1000):
+            candidate = backup_dir / f"{_PRE_UPDATE_PREFIX}{stamp}-{i:03d}.zip"
+            if not candidate.exists():
+                out_path = candidate
+                break
 
     result = _write_full_zip_backup(out_path, hermes_root)
     if result is None:
