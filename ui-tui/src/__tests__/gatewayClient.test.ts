@@ -93,15 +93,29 @@ class FakeWebSocket {
 
 describe('GatewayClient websocket attach mode', () => {
   const originalWebSocket = globalThis.WebSocket
+  let originalGatewayUrl: string | undefined
+  let originalSidecarUrl: string | undefined
 
   beforeEach(() => {
+    originalGatewayUrl = process.env.HERMES_TUI_GATEWAY_URL
+    originalSidecarUrl = process.env.HERMES_TUI_SIDECAR_URL
     FakeWebSocket.reset()
     ;(globalThis as { WebSocket?: unknown }).WebSocket = FakeWebSocket as unknown as typeof WebSocket
   })
 
   afterEach(() => {
-    delete process.env.HERMES_TUI_GATEWAY_URL
-    delete process.env.HERMES_TUI_SIDECAR_URL
+    if (originalGatewayUrl === undefined) {
+      delete process.env.HERMES_TUI_GATEWAY_URL
+    } else {
+      process.env.HERMES_TUI_GATEWAY_URL = originalGatewayUrl
+    }
+
+    if (originalSidecarUrl === undefined) {
+      delete process.env.HERMES_TUI_SIDECAR_URL
+    } else {
+      process.env.HERMES_TUI_SIDECAR_URL = originalSidecarUrl
+    }
+
     FakeWebSocket.reset()
 
     if (originalWebSocket) {

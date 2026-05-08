@@ -384,7 +384,7 @@ export class GatewayClient extends EventEmitter {
       let settled = false
 
       this.ws = ws
-      this.wsConnectPromise = new Promise<void>((resolve, reject) => {
+      const connectPromise = new Promise<void>((resolve, reject) => {
         ws.addEventListener(
           'open',
           () => {
@@ -421,6 +421,15 @@ export class GatewayClient extends EventEmitter {
           { once: true }
         )
       })
+
+      // The connect promise is only awaited by RPCs that arrive while
+      // the socket is still connecting. If no request races the open
+      // (or a teardown drops the reference before anyone observes it),
+      // a connect-error / early-close rejection would surface as an
+      // unhandled promise rejection in Node. Attach a no-op handler to
+      // ensure the rejection is always observed.
+      connectPromise.catch(() => {})
+      this.wsConnectPromise = connectPromise
 
       ws.addEventListener('message', ev => this.handleWebSocketFrame(ev.data))
       ws.addEventListener('close', ev => {
