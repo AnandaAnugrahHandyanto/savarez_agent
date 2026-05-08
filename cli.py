@@ -3874,6 +3874,31 @@ class HermesCLI:
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model
+            if effective_model:
+                try:
+                    from hermes_cli.model_switch import DIRECT_ALIASES, _ensure_direct_aliases, resolve_alias
+                    from hermes_cli.providers import determine_api_mode
+
+                    alias_result = resolve_alias(effective_model, runtime.get("provider") or self.provider or "")
+                    if alias_result is not None:
+                        resolved_provider, resolved_model, resolved_alias = alias_result
+                        effective_model = resolved_model
+                        runtime = dict(runtime)
+                        runtime["provider"] = resolved_provider or runtime.get("provider")
+                        _ensure_direct_aliases()
+                        direct_alias = DIRECT_ALIASES.get(resolved_alias)
+                        if direct_alias is not None and getattr(direct_alias, "base_url", ""):
+                            runtime["base_url"] = direct_alias.base_url
+                            if not runtime.get("api_key"):
+                                runtime["api_key"] = "no-key-required"
+                        runtime["api_mode"] = determine_api_mode(runtime.get("provider") or "", runtime.get("base_url") or "")
+                        if model_override is None and runtime_override is None:
+                            self.model = effective_model
+                            self.provider = runtime.get("provider")
+                            self.base_url = runtime.get("base_url")
+                            self.api_mode = runtime.get("api_mode")
+                except Exception:
+                    pass
             self.agent = AIAgent(
                 model=effective_model,
                 api_key=runtime.get("api_key"),

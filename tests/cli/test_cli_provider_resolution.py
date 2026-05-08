@@ -172,6 +172,45 @@ def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
     assert shell.agent is not None
 
 
+def test_init_agent_resolves_direct_model_alias_before_agent_construction(monkeypatch):
+    cli = _import_cli()
+
+    from hermes_cli.model_switch import DIRECT_ALIASES, DirectAlias
+
+    DIRECT_ALIASES.clear()
+    DIRECT_ALIASES["stack-local"] = DirectAlias(
+        model="assistant-local",
+        provider="custom",
+        base_url="http://127.0.0.1:14000/v1",
+    )
+
+    captured = {}
+
+    class _DummyAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(cli, "AIAgent", _DummyAgent)
+
+    shell = cli.HermesCLI(
+        model="stack-local",
+        provider="custom",
+        base_url="http://wrong.example/v1",
+        api_key="",
+        compact=True,
+        max_turns=1,
+    )
+    shell._ensure_runtime_credentials = lambda: True
+
+    assert shell._init_agent() is True
+    assert captured["model"] == "assistant-local"
+    assert captured["provider"] == "custom"
+    assert captured["base_url"] == "http://127.0.0.1:14000/v1"
+    assert captured["api_key"] == "no-key-required"
+    assert shell.model == "assistant-local"
+    assert shell.base_url == "http://127.0.0.1:14000/v1"
+
+
 def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     cli = _import_cli()
 
