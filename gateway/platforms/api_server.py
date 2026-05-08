@@ -592,6 +592,9 @@ class APIServerAdapter(BasePlatformAdapter):
         self._model_name: str = self._resolve_model_name(
             extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")),
         )
+        self._runtime_mode: str = self._resolve_runtime_mode(
+            extra.get("runtime_mode", os.getenv("API_SERVER_RUNTIME_MODE", "server_agent")),
+        )
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -606,6 +609,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._llm_proxy_client: Optional[Any] = None  # Lazy-init OpenAI client for llm_proxy mode
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -641,6 +645,28 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             pass
         return "hermes-agent"
+
+    @staticmethod
+    def _resolve_runtime_mode(explicit: Any) -> str:
+        """Normalize API-server runtime mode.
+
+        ``server_agent`` preserves the historical behavior: the API server
+        creates a Hermes AIAgent and executes tools on the server host.
+        ``llm_proxy`` is a pure OpenAI-compatible provider mode: requests are
+        forwarded to the configured upstream LLM and any tool_calls are returned
+        to the HTTP client for local execution.
+        """
+        mode = str(explicit or "server_agent").strip().lower().replace("-", "_")
+        aliases = {
+            "agent": "server_agent",
+            "server": "server_agent",
+            "server_agent": "server_agent",
+            "proxy": "llm_proxy",
+            "llm": "llm_proxy",
+            "llm_proxy": "llm_proxy",
+            "model_proxy": "llm_proxy",
+        }
+        return aliases.get(mode, "server_agent")
 
     def _cors_headers_for_origin(self, origin: str) -> Optional[Dict[str, str]]:
         """Return CORS headers for an allowed browser origin."""
@@ -848,6 +874,163 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         return agent
 
+    def _jsonable_proxy_response(self, response: Any) -> Dict[str, Any]:
+        """Return a JSON-serializable OpenAI SDK response payload."""
+        if hasattr(response, "model_dump"):
+            return response.model_dump(mode="json", exclude_none=True)
+        if isinstance(response, dict):
+            return response
+        if hasattr(response, "to_dict_recursive"):
+            return response.to_dict_recursive()
+        return json.loads(json.dumps(response, default=lambda obj: getattr(obj, "__dict__", str(obj))))
+
+    def _llm_proxy_model_name(self, requested_model: Any) -> str:
+        """Use the gateway-configured upstream model for proxy requests.
+
+        The API server advertises ``self._model_name`` as its public model id;
+        callers should not be able to override the upstream provider/model by
+        sending a different ``model`` string in the OpenAI request body.
+        """
+        from gateway.run import _resolve_gateway_model
+
+        return _resolve_gateway_model()
+
+    def _build_llm_proxy_kwargs(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        """Build a conservative OpenAI chat-completions request for proxy mode."""
+        passthrough_keys = {
+            "messages",
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+            "temperature",
+            "top_p",
+            "frequency_penalty",
+            "presence_penalty",
+            "max_tokens",
+            "max_completion_tokens",
+            "stop",
+            "response_format",
+            "seed",
+            "user",
+            "metadata",
+            "stream_options",
+        }
+        kwargs = {key: body[key] for key in passthrough_keys if key in body}
+        kwargs["model"] = self._llm_proxy_model_name(body.get("model"))
+        return kwargs
+
+    def _create_llm_proxy_client(self):
+        """Create/cache an OpenAI-compatible client for llm_proxy mode."""
+        if self._llm_proxy_client is not None:
+            return self._llm_proxy_client
+
+        from openai import OpenAI
+        from gateway.run import _resolve_runtime_agent_kwargs
+
+        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        client_kwargs: Dict[str, Any] = {}
+        api_key = runtime_kwargs.get("api_key")
+        base_url = runtime_kwargs.get("base_url")
+        if api_key:
+            client_kwargs["api_key"] = api_key
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        self._llm_proxy_client = OpenAI(**client_kwargs)
+        return self._llm_proxy_client
+
+    async def _handle_llm_proxy_chat_completions(
+        self,
+        request: "web.Request",
+        body: Dict[str, Any],
+    ) -> "web.StreamResponse":
+        """Pure provider mode: return upstream tool_calls to the HTTP client.
+
+        This intentionally does not instantiate ``AIAgent``.  It is useful when
+        a local Hermes client points ``model.base_url`` at this API server and
+        wants workspace tools to execute on the client machine.
+        """
+        kwargs = self._build_llm_proxy_kwargs(body)
+        try:
+            client = self._create_llm_proxy_client()
+        except Exception as exc:
+            logger.warning("API server llm_proxy client setup failed: %s", exc)
+            return web.json_response(_openai_error("Upstream LLM proxy is not configured."), status=503)
+        if body.get("stream", False):
+            kwargs["stream"] = True
+            return await self._write_llm_proxy_stream(request, client, kwargs)
+
+        try:
+            response = await asyncio.to_thread(client.chat.completions.create, **kwargs)
+        except Exception as exc:
+            logger.warning("API server llm_proxy request failed: %s", exc)
+            return web.json_response(_openai_error("Upstream LLM proxy request failed."), status=502)
+        return web.json_response(self._jsonable_proxy_response(response))
+
+    async def _write_llm_proxy_stream(
+        self,
+        request: "web.Request",
+        client: Any,
+        kwargs: Dict[str, Any],
+    ) -> "web.StreamResponse":
+        """Forward an upstream OpenAI streaming response as SSE."""
+        chunks: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def _put(item: tuple[str, Optional[str]]) -> None:
+            loop.call_soon_threadsafe(chunks.put_nowait, item)
+
+        def _worker() -> None:
+            try:
+                stream = client.chat.completions.create(**kwargs)
+                for chunk in stream:
+                    if hasattr(chunk, "model_dump_json"):
+                        payload = chunk.model_dump_json(exclude_none=True)
+                    else:
+                        payload = json.dumps(self._jsonable_proxy_response(chunk), ensure_ascii=False)
+                    _put(("data", payload))
+                _put(("done", None))
+            except Exception as exc:
+                logger.warning("API server llm_proxy stream failed: %s", exc)
+                _put(("error", None))
+
+        worker = None
+        response = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+        await response.prepare(request)
+        worker = loop.run_in_executor(None, _worker)
+
+        try:
+            while True:
+                kind, payload = await chunks.get()
+                if kind == "data":
+                    await response.write(f"data: {payload}\n\n".encode("utf-8"))
+                elif kind == "done":
+                    await response.write(b"data: [DONE]\n\n")
+                    break
+                else:
+                    error_payload = json.dumps(_openai_error("Upstream LLM proxy stream failed."))
+                    await response.write(f"data: {error_payload}\n\n".encode("utf-8"))
+                    await response.write(b"data: [DONE]\n\n")
+                    break
+        finally:
+            if worker is not None:
+                try:
+                    await worker
+                except Exception:
+                    pass
+            try:
+                await response.write_eof()
+            except Exception:
+                pass
+        return response
+
     # ------------------------------------------------------------------
     # HTTP Handlers
     # ------------------------------------------------------------------
@@ -909,6 +1092,30 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
+        if self._runtime_mode == "llm_proxy":
+            runtime = {
+                "mode": "llm_proxy",
+                "tool_execution": "client",
+                "split_runtime": True,
+                "description": (
+                    "The API server forwards Chat Completions requests to the configured "
+                    "upstream LLM and returns raw tool_calls to the HTTP client, so tools "
+                    "execute on the client/local Hermes runtime. Remote Hermes skills and "
+                    "memory are not injected in this provider-proxy mode."
+                ),
+            }
+        else:
+            runtime = {
+                "mode": "server_agent",
+                "tool_execution": "server",
+                "split_runtime": False,
+                "description": (
+                    "The API server creates a server-side Hermes AIAgent; "
+                    "tools execute on the API-server host unless an explicit "
+                    "proxy/split-runtime mode is enabled."
+                ),
+            }
+
         return web.json_response({
             "object": "hermes.api_server.capabilities",
             "platform": "hermes-agent",
@@ -917,16 +1124,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "type": "bearer",
                 "required": bool(self._api_key),
             },
-            "runtime": {
-                "mode": "server_agent",
-                "tool_execution": "server",
-                "split_runtime": False,
-                "description": (
-                    "The API server creates a server-side Hermes AIAgent; "
-                    "tools execute on the API-server host unless a future "
-                    "explicit split-runtime mode is enabled."
-                ),
-            },
+            "runtime": runtime,
             "features": {
                 "chat_completions": True,
                 "chat_completions_streaming": True,
@@ -974,6 +1172,9 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         stream = body.get("stream", False)
+
+        if self._runtime_mode == "llm_proxy":
+            return await self._handle_llm_proxy_chat_completions(request, body)
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None

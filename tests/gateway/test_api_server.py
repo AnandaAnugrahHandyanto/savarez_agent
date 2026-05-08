@@ -20,14 +20,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
+from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
     _IdempotencyCache,
-    _CORS_HEADERS,
     _derive_chat_session_id,
     check_api_server_requirements,
     cors_middleware,
@@ -207,6 +206,7 @@ class TestAdapterInit:
         assert adapter._host == "127.0.0.1"
         assert adapter._port == 8642
         assert adapter._api_key == ""
+        assert adapter._runtime_mode == "server_agent"
         assert adapter.platform == Platform.API_SERVER
 
     def test_custom_config_from_extra(self):
@@ -217,24 +217,28 @@ class TestAdapterInit:
                 "port": 9999,
                 "key": "sk-test",
                 "cors_origins": ["http://localhost:3000"],
+                "runtime_mode": "llm_proxy",
             },
         )
         adapter = APIServerAdapter(config)
         assert adapter._host == "0.0.0.0"
         assert adapter._port == 9999
         assert adapter._api_key == "sk-test"
+        assert adapter._runtime_mode == "llm_proxy"
         assert adapter._cors_origins == ("http://localhost:3000",)
 
     def test_config_from_env(self, monkeypatch):
         monkeypatch.setenv("API_SERVER_HOST", "10.0.0.1")
         monkeypatch.setenv("API_SERVER_PORT", "7777")
         monkeypatch.setenv("API_SERVER_KEY", "sk-env")
+        monkeypatch.setenv("API_SERVER_RUNTIME_MODE", "proxy")
         monkeypatch.setenv("API_SERVER_CORS_ORIGINS", "http://localhost:3000, http://127.0.0.1:3000")
         config = PlatformConfig(enabled=True)
         adapter = APIServerAdapter(config)
         assert adapter._host == "10.0.0.1"
         assert adapter._port == 7777
         assert adapter._api_key == "sk-env"
+        assert adapter._runtime_mode == "llm_proxy"
         assert adapter._cors_origins == (
             "http://localhost:3000",
             "http://127.0.0.1:3000",
@@ -598,6 +602,20 @@ class TestCapabilitiesEndpoint:
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
 
     @pytest.mark.asyncio
+    async def test_capabilities_advertises_llm_proxy_mode(self):
+        adapter = _make_adapter()
+        adapter._runtime_mode = "llm_proxy"
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/capabilities")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["runtime"]["mode"] == "llm_proxy"
+            assert data["runtime"]["tool_execution"] == "client"
+            assert data["runtime"]["split_runtime"] is True
+            assert "Remote Hermes skills and memory are not injected" in data["runtime"]["description"]
+
+    @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):
         app = _create_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -649,6 +667,61 @@ class TestChatCompletionsEndpoint:
             assert resp.status == 400
 
     @pytest.mark.asyncio
+    async def test_llm_proxy_forwards_tools_without_creating_agent(self, adapter):
+        adapter._runtime_mode = "llm_proxy"
+        app = _create_app(adapter)
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.return_value = {
+            "id": "chatcmpl-proxy",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_pwd",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": "{\"command\": \"pwd\"}"},
+                    }],
+                },
+                "finish_reason": "tool_calls",
+            }],
+        }
+
+        with (
+            patch.object(adapter, "_create_llm_proxy_client", return_value=fake_client),
+            patch.object(adapter, "_create_agent") as create_agent,
+            patch("gateway.run._resolve_gateway_model", return_value="upstream-model"),
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "where am I?"}],
+                        "tools": [{
+                            "type": "function",
+                            "function": {
+                                "name": "terminal",
+                                "parameters": {"type": "object", "properties": {}},
+                            },
+                        }],
+                        "tool_choice": "auto",
+                    },
+                )
+
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "terminal"
+        create_agent.assert_not_called()
+        fake_client.chat.completions.create.assert_called_once()
+        kwargs = fake_client.chat.completions.create.call_args.kwargs
+        assert kwargs["model"] == "upstream-model"
+        assert kwargs["tools"][0]["function"]["name"] == "terminal"
+        assert kwargs["tool_choice"] == "auto"
+
+    @pytest.mark.asyncio
     async def test_stream_true_returns_sse(self, adapter):
         """stream=true returns SSE format with the full response."""
         app = _create_app(adapter)
@@ -664,7 +737,7 @@ class TestChatCompletionsEndpoint:
                     {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
                 )
 
-            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent) as mock_run:
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
                 resp = await cli.post(
                     "/v1/chat/completions",
                     json={
@@ -2594,8 +2667,7 @@ class TestConversationParameter:
                     "conversation": "test-conv",
                 })
                 assert resp1.status == 200
-                data1 = await resp1.json()
-                resp1_id = data1["id"]
+                await resp1.json()
 
                 # Second request — should chain
                 mock_run.return_value = (
