@@ -1604,11 +1604,15 @@ class AIAgent:
                     self.valid_tool_names.add(_tname)
                     _existing_tool_names.add(_tname)
 
-        # Skills config: nudge interval for skill creation reminders
+        # Skills config: nudge interval and skill-index rendering flags
         self._skill_nudge_interval = 10
+        self._skill_index_v2 = False
+        self._skill_index_token_budget = 2000
         try:
             skills_config = _agent_cfg.get("skills", {})
             self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
+            self._skill_index_v2 = bool(skills_config.get("index_v2", False))
+            self._skill_index_token_budget = int(skills_config.get("index_token_budget", 2000))
         except Exception:
             pass
 
@@ -4287,6 +4291,8 @@ class AIAgent:
             skills_prompt = build_skills_system_prompt(
                 available_tools=self.valid_tool_names,
                 available_toolsets=avail_toolsets,
+                index_v2=self._skill_index_v2,
+                index_token_budget=self._skill_index_token_budget,
             )
         else:
             skills_prompt = ""

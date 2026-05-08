@@ -623,6 +623,9 @@ def _skill_should_show(
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
+    *,
+    index_v2: bool = False,
+    index_token_budget: int = 2000,
 ) -> str:
     """Build a compact skill index for the system prompt."""
     inventory = load_inventory(
@@ -632,6 +635,8 @@ def build_skills_system_prompt(
     )
     if not inventory.entries:
         return ""
+    if index_v2:
+        return _render_skills_prompt_v2(inventory, token_budget=index_token_budget)
     return _render_skills_prompt_v1(inventory)
 
 
@@ -679,6 +684,64 @@ def _render_skills_prompt_v1(inventory: Inventory) -> str:
         "</available_skills>\n"
         "\n"
         "Only proceed without loading a skill if genuinely none are relevant to the task."
+    )
+
+
+_SKILLS_V2_PREAMBLE = (
+    "## Skills\n"
+    "\n"
+    "Tools available:\n"
+    "  - skill_view(name): load full skill content\n"
+    "  - skill_describe(category=..., names=[...]): get one-line descriptions\n"
+    "  - skill_manage: create / patch / write_file\n"
+    "\n"
+    "The list below shows every available skill organized by category. Skills "
+    "with descriptions are critical workflows you should consider on every task. "
+    "For other skills, the name is a hint — if any look relevant, call "
+    "skill_describe(category=\"<cat>\") to see one-line descriptions, then "
+    "skill_view(name) to load the full content.\n"
+    "\n"
+)
+
+
+def _render_skills_prompt_v2(inventory: Inventory, *, token_budget: int) -> str:
+    skills_by_category: dict[str, list[SkillEntry]] = {}
+    for entry in inventory.entries:
+        skills_by_category.setdefault(entry.category, []).append(entry)
+
+    critical_count = sum(1 for entry in inventory.entries if entry.priority == "critical")
+    if critical_count > 15:
+        logger.warning(
+            "skills.index_v2: %d skills marked priority=critical (>15). "
+            "Tier 1 budget gains erode quickly past this threshold.",
+            critical_count,
+        )
+
+    body_lines: list[str] = []
+    for category in sorted(skills_by_category.keys()):
+        cat_desc = inventory.category_descriptions.get(category, "")
+        body_lines.append(f"  {category}/  {cat_desc}".rstrip() if cat_desc else f"  {category}/")
+        critical_entries = sorted(
+            (entry for entry in skills_by_category[category] if entry.priority == "critical"),
+            key=lambda entry: entry.name,
+        )
+        normal_entries = sorted(
+            (entry for entry in skills_by_category[category] if entry.priority != "critical"),
+            key=lambda entry: entry.name,
+        )
+        for entry in critical_entries:
+            if entry.description:
+                body_lines.append(f"    - {entry.name}: {entry.description}")
+            else:
+                body_lines.append(f"    - {entry.name}")
+        if normal_entries:
+            body_lines.append("    " + ", ".join(entry.name for entry in normal_entries))
+
+    return (
+        _SKILLS_V2_PREAMBLE
+        + "<available_skills>\n"
+        + "\n".join(body_lines)
+        + "\n</available_skills>\n"
     )
 
 

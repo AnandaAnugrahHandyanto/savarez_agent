@@ -428,6 +428,56 @@ class TestBuildSkillsSystemPrompt:
         result = build_skills_system_prompt()
         assert "backend-skill" in result
 
+    def test_build_skills_system_prompt_v2_flag_changes_render(self, tmp_path, monkeypatch):
+        skills_dir = tmp_path / "skills"
+        (skills_dir / "cat" / "alpha").mkdir(parents=True)
+        (skills_dir / "cat" / "alpha" / "SKILL.md").write_text(
+            "---\nname: alpha\ndescription: A description of alpha\n---\nbody\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("agent.skill_inventory.get_skills_dir", lambda: skills_dir)
+        monkeypatch.setattr("agent.skill_inventory.get_all_skills_dirs", lambda: [skills_dir])
+        from agent.skill_inventory import clear_inventory_cache
+
+        clear_inventory_cache(clear_snapshot=True)
+        v1 = build_skills_system_prompt()
+        v2 = build_skills_system_prompt(index_v2=True)
+        assert "A description of alpha" in v1
+        assert "## Skills" in v2
+        assert "skill_describe" in v2
+
+    def test_v2_renders_critical_with_description_normal_without(self, tmp_path, monkeypatch):
+        skills_dir = tmp_path / "skills"
+
+        def make_skill(name, description, *, category="cat", priority=None):
+            skill_dir = skills_dir / category / name
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            frontmatter = ["---", f"name: {name}", f"description: {description}"]
+            if priority:
+                frontmatter.append(f"priority: {priority}")
+            frontmatter.append("---")
+            (skill_dir / "SKILL.md").write_text(
+                "\n".join(frontmatter) + "\nbody\n",
+                encoding="utf-8",
+            )
+
+        make_skill("alpha", "Alpha desc", category="cat-a", priority="critical")
+        make_skill("beta", "Beta desc", category="cat-a")
+        make_skill("gamma", "Gamma desc", category="cat-b")
+        monkeypatch.setattr("agent.skill_inventory.get_skills_dir", lambda: skills_dir)
+        monkeypatch.setattr("agent.skill_inventory.get_all_skills_dirs", lambda: [skills_dir])
+        from agent.skill_inventory import clear_inventory_cache
+
+        clear_inventory_cache(clear_snapshot=True)
+        out = build_skills_system_prompt(index_v2=True)
+
+        assert "alpha: Alpha desc" in out
+        assert "Beta desc" not in out
+        assert "Gamma desc" not in out
+        assert "beta" in out and "gamma" in out
+        assert "cat-a" in out and "cat-b" in out
+        assert "skill_describe" in out
+
 
 class TestBuildNousSubscriptionPrompt:
     def test_includes_active_subscription_features(self, monkeypatch):
@@ -1086,6 +1136,5 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 
 
