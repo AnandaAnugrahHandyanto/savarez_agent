@@ -96,6 +96,7 @@ hermes curator pause          # stop runs until resumed
 hermes curator resume
 hermes curator pin <skill>    # never auto-transition this skill
 hermes curator unpin <skill>
+hermes curator list-archived  # print archived skill names
 hermes curator restore <skill>  # move an archived skill back to active
 ```
 
@@ -222,10 +223,11 @@ Every curator run writes a timestamped directory under `~/.hermes/logs/curator/`
 If the curator archived something you still want:
 
 ```bash
+hermes curator list-archived
 hermes curator restore <skill-name>
 ```
 
-This moves the skill back from `~/.hermes/skills/.archive/` to the active tree and resets its state to `active`. The restore refuses if a bundled or hub-installed skill has since been installed under the same name (would shadow upstream).
+`list-archived` prints the directory names under `~/.hermes/skills/.archive/`; use one of those names with `restore`. This moves the skill back to the active tree and resets its state to `active`. The restore refuses if a bundled or hub-installed skill has since been installed under the same name (would shadow upstream).
 
 ## Disabling per environment
 
