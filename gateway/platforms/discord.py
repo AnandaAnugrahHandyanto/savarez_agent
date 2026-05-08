@@ -1618,6 +1618,24 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def rename_thread(self, thread_id: str, name: str) -> SendResult:
+        """Rename a Discord thread by ID."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            channel = self._client.get_channel(int(thread_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(thread_id))
+            if not channel:
+                return SendResult(success=False, error=f"Thread {thread_id} not found")
+
+            await channel.edit(name=(name or "").strip())
+            return SendResult(success=True, message_id=str(thread_id))
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("[%s] Failed to rename Discord thread %s: %s", self.name, thread_id, e, exc_info=True)
+            return SendResult(success=False, error=str(e))
+
     async def _send_file_attachment(
         self,
         chat_id: str,

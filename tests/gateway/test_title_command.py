@@ -4,6 +4,7 @@ Tests the _handle_title_command handler (set/show session titles)
 across all gateway messenger platforms.
 """
 
+import asyncio
 import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -16,13 +17,14 @@ from gateway.session import SessionSource
 
 
 def _make_event(text="/title", platform=Platform.TELEGRAM,
-                user_id="12345", chat_id="67890"):
+                user_id="12345", chat_id="67890", thread_id=None):
     """Build a MessageEvent for testing."""
     source = SessionSource(
         platform=platform,
         user_id=user_id,
         chat_id=chat_id,
         user_name="testuser",
+        thread_id=thread_id,
     )
     return MessageEvent(text=text, source=source)
 
@@ -70,6 +72,49 @@ class TestHandleTitleCommand:
         # Verify in DB
         assert db.get_session_title("test_session_123") == "My Research Project"
         db.close()
+
+    @pytest.mark.asyncio
+    async def test_discord_thread_title_renamed_when_setting_title(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "discord")
+
+        adapter = SimpleNamespace(rename_thread=AsyncMock())
+        runner = _make_runner(session_db=db)
+        runner.adapters = {Platform.DISCORD: adapter}
+        event = _make_event(
+            text="/title Project Thread",
+            platform=Platform.DISCORD,
+            chat_id="111",
+            thread_id="222",
+        )
+
+        result = await runner._handle_title_command(event)
+
+        assert "Project Thread" in result
+        adapter.rename_thread.assert_awaited_once_with("222", "Project Thread")
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_discord_auto_title_callback_uses_running_loop_without_legacy_loop_attr(self):
+        runner = _make_runner()
+        calls = []
+
+        def schedule(source, title, loop):
+            calls.append((source, title, loop))
+
+        runner._schedule_auto_title_thread_rename = schedule
+        event = _make_event(
+            platform=Platform.DISCORD,
+            chat_id="111",
+            thread_id="222",
+        )
+
+        callback = runner._discord_auto_title_callback(event.source)
+        assert callback is not None
+        callback("Generated Title")
+
+        assert calls == [(event.source, "Generated Title", asyncio.get_running_loop())]
 
     @pytest.mark.asyncio
     async def test_show_title_when_set(self, tmp_path):

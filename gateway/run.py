@@ -11497,6 +11497,65 @@ class GatewayRunner:
             response += f"\n\nLast Hermes message:\n{last_assistant}"
         return response
 
+    async def _rename_discord_thread_for_title(self, source: SessionSource, title: str) -> None:
+        """Best-effort Discord thread rename when a session title changes."""
+        if source.platform != Platform.DISCORD:
+            return
+        thread_id = str(source.thread_id or "").strip()
+        if not thread_id:
+            return
+        adapter = self.adapters.get(Platform.DISCORD)
+        if adapter is None or not hasattr(adapter, "rename_thread"):
+            return
+        try:
+            await adapter.rename_thread(thread_id, title)
+        except Exception:
+            logger.debug("Failed to sync Discord thread title for %s", thread_id, exc_info=True)
+
+    def _schedule_auto_title_thread_rename(
+        self,
+        source: SessionSource,
+        title: str,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        """Schedule a Discord thread rename from the auto-title background thread."""
+        if loop.is_closed():
+            logger.debug("Skipping auto-title Discord thread sync; gateway loop is closed")
+            return
+
+        coro = self._rename_discord_thread_for_title(source, title)
+        try:
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+        except RuntimeError:
+            coro.close()
+            logger.debug("Failed to schedule auto-title Discord thread sync", exc_info=True)
+            return
+
+        def _log_failure(done_future) -> None:
+            try:
+                done_future.result()
+            except Exception:
+                logger.debug("Auto-title Discord thread sync failed", exc_info=True)
+
+        future.add_done_callback(_log_failure)
+
+    def _discord_auto_title_callback(self, source: SessionSource):
+        """Return a thread-title callback for Discord auto-title generation."""
+        if source.platform != Platform.DISCORD or not source.thread_id:
+            return None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = getattr(self, "_gateway_loop", None)
+        if loop is None:
+            logger.debug("Skipping auto-title Discord thread sync; no gateway loop available")
+            return None
+        return lambda title, _loop=loop: self._schedule_auto_title_thread_rename(
+            source,
+            title,
+            _loop,
+        )
+
     async def _handle_title_command(self, event: MessageEvent) -> str:
         """Handle /title command — set or show the current session's title."""
         source = event.source
@@ -11533,6 +11592,7 @@ class GatewayRunner:
             # Set the title
             try:
                 if self._session_db.set_session_title(session_id, sanitized):
+                    await self._rename_discord_thread_for_title(source, sanitized)
                     return t("gateway.title.set_to", title=sanitized)
                 else:
                     return t("gateway.title.not_found")
@@ -15648,7 +15708,10 @@ class GatewayRunner:
                             "api_mode": getattr(agent, "api_mode", None),
                         } if agent else None,
                     }
-                    if self._is_telegram_topic_lane(source):
+                    title_callback = self._discord_auto_title_callback(source)
+                    if title_callback is not None:
+                        maybe_auto_title_kwargs["title_callback"] = title_callback
+                    elif self._is_telegram_topic_lane(source):
                         maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_telegram_topic_title_rename(
                             source,
                             effective_session_id,
