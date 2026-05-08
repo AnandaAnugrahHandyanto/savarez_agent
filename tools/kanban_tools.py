@@ -411,34 +411,48 @@ def _handle_comment(args: dict, **kw) -> str:
         return tool_error(f"kanban_comment: {e}")
 
 
-def _release_dedupe_key_from_create_args(args: dict) -> Optional[str]:
-    """Infer a conservative release-card idempotency key.
+def _gate_dedupe_key_from_create_args(args: dict) -> Optional[str]:
+    """Infer a conservative gate-card idempotency key.
 
-    Multi-agent Kanban workers often create release-manager cards from both
-    implementation and final QA/review gates. If neither supplies an explicit
-    idempotency_key, the board can fan out duplicate release workers that race
-    to open/merge the same PR/branch. Keep this guard narrow: release-manager
-    only, and only when the body/title exposes a PR number, branch, or issue.
+    Multi-agent Kanban workers can accidentally create overlapping QA and
+    release gates for the same implementation branch/issue. Keep this guard
+    narrow: only final gate roles (`qa-eng` and `release-manager`), and only
+    when the body/title exposes a PR number, branch, or issue. Review/security
+    cards are intentionally excluded because multiple specialist reviews may
+    be valid for one branch.
     """
     assignee = str(args.get("assignee") or "").strip()
-    if assignee != "release-manager":
+    role_prefix = {
+        "release-manager": "release",
+        "qa-eng": "qa",
+    }.get(assignee)
+    if not role_prefix:
         return None
     text = "\n".join(str(args.get(k) or "") for k in ("title", "body"))
-    # Prefer PR number when the release card is explicitly PR-scoped.
+    # Prefer PR number when the gate is explicitly PR-scoped.
     m = re.search(r"(?:PR|pull request)\s*#?(\d+)", text, re.IGNORECASE)
     if m:
-        return f"auto:release-pr-{m.group(1)}"
-    # Git branches are the next-best unique release artifact.
-    m = re.search(r"(?:Branch|Implementation branch/worktree)\s*:\s*([^\s`]+)", text, re.IGNORECASE)
+        return f"auto:{role_prefix}-pr-{m.group(1)}"
+    # Git branches are the next-best unique release/QA artifact.
+    m = re.search(r"(?:Branch|Implementation branch/worktree|branch/worktree)\s*:?\s*([^\s`]+)", text, re.IGNORECASE)
     if m:
         branch = m.group(1).strip().strip("`.,;)")
         if branch:
-            return f"auto:release-branch-{branch}"
-    # Fall back to issue number only for cards that are clearly release cards.
-    if re.search(r"release|merge|squash|close keyword", text, re.IGNORECASE):
-        m = re.search(r"(?:issue|fix(?:e[sd])?|close[sd]?)\s*#(\d+)", text, re.IGNORECASE)
-        if m:
-            return f"auto:release-issue-{m.group(1)}"
+            return f"auto:{role_prefix}-branch-{branch}"
+    if role_prefix == "release":
+        # Fall back to issue number only for cards that are clearly release cards.
+        if re.search(r"release|merge|squash|close keyword", text, re.IGNORECASE):
+            m = re.search(r"(?:issue|fix(?:e[sd])?|close[sd]?)\s*#(\d+)", text, re.IGNORECASE)
+            if m:
+                return f"auto:{role_prefix}-issue-{m.group(1)}"
+    else:
+        # QA is the user-visible validation owner; one QA gate should aggregate
+        # all assertions/evidence for a branch/issue instead of spawning parallel
+        # browser/E2E runs. Require clear QA-ish language before issue fallback.
+        if re.search(r"\bQA\b|quality|verify|validation|manual|E2E|regression", text, re.IGNORECASE):
+            m = re.search(r"(?:issue|fix(?:e[sd])?)\s*#(\d+)", text, re.IGNORECASE)
+            if m:
+                return f"auto:{role_prefix}-issue-{m.group(1)}"
     return None
 
 
@@ -466,7 +480,7 @@ def _handle_create(args: dict, **kw) -> str:
     triage = bool(args.get("triage"))
     idempotency_key = args.get("idempotency_key")
     if not idempotency_key:
-        idempotency_key = _release_dedupe_key_from_create_args(args)
+        idempotency_key = _gate_dedupe_key_from_create_args(args)
     max_runtime_seconds = args.get("max_runtime_seconds")
     skills = args.get("skills")
     if isinstance(skills, str):
