@@ -137,6 +137,25 @@ class TestPerCapabilityBackendSelection:
         assert web_tools._get_search_backend() == "tavily"
         assert web_tools._get_extract_backend() == "tavily"
 
+    def test_extract_backend_crawl4ai(self, monkeypatch):
+        """Crawl4AI can be selected as extract_backend."""
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
+            "backend": "firecrawl",
+            "extract_backend": "crawl4ai",
+        })
+        monkeypatch.setenv("CRAWL4AI_URL", "http://localhost:11235")
+        assert web_tools._get_extract_backend() == "crawl4ai"
+
+    def test_crawl4ai_fallback_when_no_other_keys(self, monkeypatch):
+        """Crawl4AI is used as fallback when no other backends are configured."""
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+        monkeypatch.setenv("CRAWL4AI_URL", "http://localhost:11235")
+        assert web_tools._get_backend() == "crawl4ai"
+
 
 # ---------------------------------------------------------------------------
 # Config key presence in DEFAULT_CONFIG

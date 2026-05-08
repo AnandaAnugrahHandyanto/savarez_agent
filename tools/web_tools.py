@@ -13,6 +13,7 @@ Available tools:
 - web_crawl_tool: Crawl websites with specific instructions
 
 Backend compatibility:
+- Crawl4AI: https://github.com/unclecode/crawl4ai (extract; self-hosted via CRAWL4AI_URL)
 - Exa: https://exa.ai (search, extract)
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
@@ -126,13 +127,13 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "crawl4ai"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
     # available backend. Firecrawl also counts as available when the managed
     # tool gateway is configured for Nous subscribers.
-    # Free-tier backends (searxng / brave-free / ddgs) trail the paid ones so
+    # Free-tier backends (searxng / brave-free / ddgs / crawl4ai) trail the paid ones so
     # existing paid setups are unaffected.
     backend_candidates = (
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
@@ -142,6 +143,7 @@ def _get_backend() -> str:
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
+        ("crawl4ai", _has_env("CRAWL4AI_URL")),
     )
     for backend, available in backend_candidates:
         if available:
@@ -204,6 +206,8 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("BRAVE_SEARCH_API_KEY")
     if backend == "ddgs":
         return _ddgs_package_importable()
+    if backend == "crawl4ai":
+        return _has_env("CRAWL4AI_URL")
     return False
 
 
@@ -291,6 +295,7 @@ def _web_requires_env() -> list[str]:
         "TAVILY_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
+        "CRAWL4AI_URL",
     ]
     if managed_nous_tools_enabled():
         requires.extend(
@@ -1393,13 +1398,17 @@ async def web_extract_tool(
                     "include_images": False,
                 })
                 results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
+            elif backend == "crawl4ai":
+                logger.info("Crawl4AI extract: %d URL(s)", len(safe_urls))
+                from tools.crawl4ai_backend import crawl4ai_extract_batch
+                results = crawl4ai_extract_batch(safe_urls, format=format or "markdown")
             elif backend in ("searxng", "brave-free", "ddgs"):
                 # These backends are search-only — they cannot extract URL content
                 _label = {"searxng": "SearXNG", "brave-free": "Brave Search (free tier)", "ddgs": "DuckDuckGo (ddgs)"}[backend]
                 return json.dumps({
                     "success": False,
                     "error": f"{_label} is a search-only backend and cannot extract URL content. "
-                             "Set web.extract_backend to firecrawl, tavily, exa, or parallel.",
+                             "Set web.extract_backend to firecrawl, tavily, exa, parallel, or crawl4ai.",
                 }, ensure_ascii=False)
             else:
                 # ── Firecrawl extraction ──
