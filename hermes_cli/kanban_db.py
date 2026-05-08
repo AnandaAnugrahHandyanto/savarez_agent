@@ -959,6 +959,33 @@ def init_db(
     return path
 
 
+def _add_column_if_missing(
+    conn: sqlite3.Connection,
+    *,
+    table: str,
+    column: str,
+    ddl: str,
+) -> None:
+    """Add ``column`` unless it already exists, tolerating init races.
+
+    Multiple gateway/dispatcher initializers can snapshot an old schema at the
+    same time. If another connection adds the column after our PRAGMA snapshot
+    but before our ALTER TABLE, SQLite raises ``duplicate column name``. Treat
+    that as success only after verifying the column now exists.
+    """
+    cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column in cols:
+        return
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+    except sqlite3.OperationalError as exc:
+        if "duplicate column name" not in str(exc).lower():
+            raise
+        cols_after = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols_after:
+            raise
+
+
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns that were introduced after v1 release to legacy DBs.
 
@@ -1030,8 +1057,15 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # NULL = fall through to the dispatcher-level ``kanban.failure_limit``
         # config, then ``DEFAULT_FAILURE_LIMIT``. Existing rows get NULL,
         # which is the correct default (they keep the global behaviour
-        # they were getting before the column existed).
-        conn.execute("ALTER TABLE tasks ADD COLUMN max_retries INTEGER")
+        # they were getting before the column existed). This add is duplicate-
+        # tolerant because gateway startup can race another initializer that
+        # adds the column after our entry-time PRAGMA snapshot.
+        _add_column_if_missing(
+            conn,
+            table="tasks",
+            column="max_retries",
+            ddl="max_retries INTEGER",
+        )
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).

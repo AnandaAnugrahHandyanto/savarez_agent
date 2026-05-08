@@ -914,3 +914,39 @@ def test_latest_summaries_batch_omits_tasks_without_summary(kanban_home):
         assert out == {t1: "alpha", t3: "charlie"}
         # Empty input → empty dict, no SQL syntax error from "IN ()".
         assert kb.latest_summaries(conn, []) == {}
+
+
+def test_migration_tolerates_duplicate_column_added_by_racing_connection(tmp_path):
+    """A second initializer may add a column after this migration snapshots
+    PRAGMA table_info() but before its ALTER TABLE executes.
+
+    The migration must treat SQLite's duplicate-column error as success when
+    a post-error schema check proves the requested column now exists.
+    """
+    db_path = tmp_path / "kanban.db"
+    conn = __import__("sqlite3").connect(db_path, isolation_level=None)
+    conn.row_factory = __import__("sqlite3").Row
+    conn.executescript(
+        kb.SCHEMA_SQL.replace("    max_retries          INTEGER\n", "")
+        .replace("    skills               TEXT,\n", "    skills               TEXT\n")
+    )
+
+    class RacingConnection:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+            self.injected = False
+
+        def execute(self, sql, *args, **kwargs):
+            if sql == "ALTER TABLE tasks ADD COLUMN max_retries INTEGER" and not self.injected:
+                self.injected = True
+                other = __import__("sqlite3").connect(db_path, isolation_level=None)
+                try:
+                    other.execute("ALTER TABLE tasks ADD COLUMN max_retries INTEGER")
+                finally:
+                    other.close()
+            return self.wrapped.execute(sql, *args, **kwargs)
+
+    kb._migrate_add_optional_columns(RacingConnection(conn))
+
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    assert "max_retries" in cols
