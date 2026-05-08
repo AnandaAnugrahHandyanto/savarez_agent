@@ -4873,7 +4873,14 @@ def _minimax_oauth_login(
         )
 
     now = datetime.now(timezone.utc)
-    expires_in_s = int(token_data["expired_in"])
+    raw_expired = int(token_data["expired_in"])
+    # MiniMax returns expired_in as a Unix-ms timestamp (not a seconds duration).
+    # Use the same defensive heuristic as _minimax_poll_token.
+    now_ms = int(now.timestamp() * 1000)
+    if raw_expired > now_ms // 2:
+        expires_in_s = max(1, (raw_expired / 1000.0) - now.timestamp())
+    else:
+        expires_in_s = max(1, raw_expired)
     expires_at = now.timestamp() + expires_in_s
 
     auth_state = {
@@ -4949,7 +4956,12 @@ def _refresh_minimax_oauth_state(
             relogin_required=True,
         )
     now_dt = datetime.now(timezone.utc)
-    expires_in_s = int(payload["expired_in"])
+    raw_expired = int(payload["expired_in"])
+    now_ms = int(now_dt.timestamp() * 1000)
+    if raw_expired > now_ms // 2:
+        expires_in_s = max(1, (raw_expired / 1000.0) - now_dt.timestamp())
+    else:
+        expires_in_s = max(1, raw_expired)
     new_state = dict(state)
     new_state.update({
         "access_token": payload["access_token"],
