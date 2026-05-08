@@ -143,6 +143,47 @@ def test_get_platform_tools_preserves_explicit_empty_selection():
     assert enabled.isdisjoint(configurable)
 
 
+def test_get_platform_tools_minimal_install_does_not_auto_recover_kanban():
+    """Minimal install defaults should not revive Kanban from hermes-cli's universe.
+
+    The minimal installer writes an explicit compact CLI toolset list. Kanban
+    is a non-configurable runtime-gated toolset whose tool names still live in
+    the full hermes-cli composite, so _get_platform_tools must not infer it as
+    enabled for minimal/minimalTUI installs unless the user explicitly lists it.
+    """
+    minimal_toolsets = [
+        "skills",
+        "file",
+        "terminal",
+        "todo",
+        "memory",
+        "session_search",
+        "clarify",
+        "web",
+    ]
+    config = {
+        "install_option": "minimal",
+        "platform_toolsets": {"cli": minimal_toolsets},
+    }
+
+    enabled = _get_platform_tools(config, "cli")
+
+    assert "kanban" not in enabled
+    assert "skills" in enabled
+
+
+def test_get_platform_tools_minimal_install_preserves_explicit_kanban_opt_in():
+    config = {
+        "install_option": "minimal",
+        "platform_toolsets": {"cli": ["skills", "kanban"]},
+    }
+
+    enabled = _get_platform_tools(config, "cli")
+
+    assert "kanban" in enabled
+    assert "skills" in enabled
+
+
 def test_apply_toolset_change_from_default_does_not_enable_default_off_toolsets():
     """Disabling one default toolset on a fresh config must not persist
     default-off toolsets as explicitly enabled.

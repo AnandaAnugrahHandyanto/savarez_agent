@@ -104,6 +104,48 @@ def _toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:
     return allowed is None or platform in allowed
 
 
+def _minimal_install_option_active(config: dict) -> bool:
+    """Return True for compact installer options that should stay lean."""
+    value = str(config.get("install_option") or "").strip().lower()
+    return value in {"minimal", "minimaltui", "minimal-tui", "minimal_tui", "standard"}
+
+
+def _should_auto_recover_nonconfigurable_toolset(
+    ts_key: str,
+    config: dict,
+    toolset_names: list[str],
+) -> bool:
+    """Decide whether a non-configurable toolset should be inferred.
+
+    Some non-configurable toolsets are platform plumbing and should come along
+    with the platform composite. Kanban is different: its worker tools are
+    runtime-gated and tied to the gateway/dispatcher flow, so compact installs
+    must not silently infer it from the broad hermes-cli tool universe. Explicit
+    `kanban` entries and dispatcher-spawned workers still opt in.
+    """
+    if ts_key != "kanban":
+        return True
+
+    if "kanban" in toolset_names:
+        return True
+
+    root_toolsets = config.get("toolsets") or []
+    if isinstance(root_toolsets, list) and "kanban" in {str(ts) for ts in root_toolsets}:
+        return True
+
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return True
+
+    kanban_cfg = config.get("kanban") or {}
+    if isinstance(kanban_cfg, dict) and kanban_cfg.get("dispatch_in_gateway") is False:
+        return False
+
+    if _minimal_install_option_active(config):
+        return False
+
+    return True
+
+
 def _get_effective_configurable_toolsets():
     """Return CONFIGURABLE_TOOLSETS + any plugin-provided toolsets.
 
@@ -1036,6 +1078,8 @@ def _get_platform_tools(
         if ts_key in skip:
             continue
         if ts_def.get("includes"):
+            continue
+        if not _should_auto_recover_nonconfigurable_toolset(ts_key, config, toolset_names):
             continue
         ts_tools = set(resolve_toolset(ts_key))
         if not ts_tools or not ts_tools.issubset(platform_tool_universe):

@@ -185,6 +185,8 @@ def test_setup_install_option_accepts_minimal_tui_alias(tmp_path) -> None:
     config_text = (Path(env["HERMES_HOME"]) / "config.yaml").read_text()
     assert "install_option: minimalTUI" in config_text
     assert "hermes-minimal" not in config_text
+    assert "- kanban" not in config_text
+    assert "dispatch_in_gateway: false" in config_text
     for toolset in ["skills", "file", "terminal", "todo", "memory", "session_search", "clarify", "web"]:
         assert f"- {toolset}" in config_text
 

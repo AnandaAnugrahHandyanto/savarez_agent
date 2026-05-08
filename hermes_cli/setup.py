@@ -2637,12 +2637,17 @@ def _apply_install_option_defaults(config: dict, requested_option: str) -> None:
         raise ValueError(f"Unknown install option: {requested_option}")
 
     config["install_option"] = requested_option
+    kanban_cfg = config.setdefault("kanban", {})
     if requested_option in {"minimal", "minimalTUI"}:
         config["toolsets"] = list(_MINIMAL_INSTALL_TOOLSETS)
         config.setdefault("platform_toolsets", {})["cli"] = list(_MINIMAL_INSTALL_TOOLSETS)
+        if isinstance(kanban_cfg, dict):
+            kanban_cfg["dispatch_in_gateway"] = False
     elif requested_option == "default":
         config["toolsets"] = ["hermes-cli"]
         config.setdefault("platform_toolsets", {})["cli"] = ["hermes-cli"]
+        if isinstance(kanban_cfg, dict):
+            kanban_cfg["dispatch_in_gateway"] = True
 
 
 def _offer_tool_configuration(
