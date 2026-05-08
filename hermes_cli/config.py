@@ -793,6 +793,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 30,
+            "warn_on_failure": False,  # cosmetic auto-title failures stay log-only unless explicitly enabled
             "extra_body": {},
         },
         # Triage specifier — flesh out a rough one-liner in the Kanban

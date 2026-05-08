@@ -882,6 +882,15 @@ auxiliary:
     api_key: ""
     timeout: 30
 
+  # Session title generation — cosmetic background work after the first reply
+  title_generation:
+    provider: "auto"
+    model: ""
+    base_url: ""
+    api_key: ""
+    timeout: 30
+    warn_on_failure: false   # Keep failures log-only; set true to show user-facing warnings
+
   # Kanban triage specifier — `hermes kanban specify <id>` (or the
   # dashboard's ✨ Specify button on Triage-column cards) uses this
   # slot to expand a one-liner into a concrete spec and promote the
