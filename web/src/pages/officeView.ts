@@ -35,6 +35,14 @@ export type OfficeSceneObject = {
   y: number;
 };
 
+export type OfficeSceneObjectView = {
+  glyph: string;
+  title: string;
+  toneClass: string;
+  ariaHidden: true;
+  interactive: false;
+};
+
 export function textField(row: Record<string, unknown>, key: string): string {
   const value = row[key];
   return typeof value === "string" && value.length > 0 ? value : "—";
@@ -99,7 +107,7 @@ export function buildOfficeMapNodes(state: OfficeState): OfficeMapNode[] {
       count: state.automations.length,
       health: sourceStatus("cron"),
       x: 24,
-      y: 72,
+      y: 67,
     },
     {
       id: "routing",
@@ -109,7 +117,7 @@ export function buildOfficeMapNodes(state: OfficeState): OfficeMapNode[] {
       count: state.topics.length + state.provenance.length,
       health: routingHealth,
       x: 70,
-      y: 72,
+      y: 67,
     },
   ];
 }
@@ -137,8 +145,8 @@ const SCENE_OBJECT_LIMIT = 6;
 const SCENE_SLOTS: Record<OfficeMapNode["id"], Array<[number, number]>> = {
   sessions: [[17, 22], [24, 22], [31, 22], [17, 34], [24, 34], [31, 34]],
   work: [[63, 21], [70, 21], [77, 21], [63, 34], [70, 34], [77, 34]],
-  automation: [[17, 64], [24, 64], [31, 64], [17, 77], [24, 77], [31, 77]],
-  routing: [[63, 64], [70, 64], [77, 64], [63, 77], [70, 77], [77, 77]],
+  automation: [[17, 58], [24, 58], [31, 58], [17, 68], [24, 68], [31, 68]],
+  routing: [[63, 58], [70, 58], [77, 58], [63, 68], [70, 68], [77, 68]],
 };
 
 const SCENE_ROOM_CONFIG: Record<OfficeMapNode["id"], { kind: OfficeSceneObject["kind"]; singular: string; plural: string; emptyLabel?: string; emptyDetail?: string }> = {
@@ -153,6 +161,31 @@ function roomRows(state: OfficeState, roomId: OfficeMapNode["id"]): Array<Record
   if (roomId === "work") return state.work_items;
   if (roomId === "automation") return state.automations;
   return [...state.topics, ...state.provenance];
+}
+
+function sceneObjectGlyph(kind: OfficeSceneObject["kind"]): string {
+  if (kind === "avatar") return "●";
+  if (kind === "desk") return "▤";
+  if (kind === "machine") return "▣";
+  if (kind === "mail") return "▥";
+  return "!";
+}
+
+function sceneObjectTone(health: OfficeSceneObject["health"]): string {
+  if (health === "ok") return "border-emerald-200/70 bg-emerald-300/25 text-emerald-50 shadow-emerald-950/40";
+  if (health === "partial") return "border-yellow-200/80 bg-yellow-300/25 text-yellow-50 shadow-yellow-950/40";
+  if (health === "error") return "border-red-200/80 bg-red-300/25 text-red-50 shadow-red-950/40";
+  return "border-sky-200/65 bg-sky-300/20 text-sky-50 shadow-sky-950/35";
+}
+
+export function buildOfficeSceneObjectView(object: OfficeSceneObject): OfficeSceneObjectView {
+  return {
+    glyph: sceneObjectGlyph(object.kind),
+    title: `${object.label} · ${object.detail}`,
+    toneClass: sceneObjectTone(object.health),
+    ariaHidden: true,
+    interactive: false,
+  };
 }
 
 export function buildOfficeSceneObjects(state: OfficeState, nodes: OfficeMapNode[]): OfficeSceneObject[] {

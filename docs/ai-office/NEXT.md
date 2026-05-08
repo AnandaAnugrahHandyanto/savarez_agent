@@ -1,6 +1,6 @@
 # Hermes AI Office — NEXT
 
-Last updated: 2026-05-09 01:30 KST
+Last updated: 2026-05-09 08:23 KST
 
 ## Start here after `/new`
 
@@ -64,21 +64,21 @@ When not to rely on `/goal` alone:
 
 ## Current next stage
 
-Stage 9-C dependency-free DeskRPG-like 2D office prototype is completed on top of Stage 9-B and the Stage 8 read-only dashboard. Stage 8-A/B/C, Stage 9-A, and Stage 9-B remain completed and verified.
+Stage 9-D visual polish is completed on top of Stage 9-C and the Stage 8 read-only dashboard. Stage 8-A/B/C and Stage 9-A/B/C remain completed and verified.
 
-Stage 9-C completed:
+Stage 9-D completed:
 
-- `web/src/pages/officeView.ts` adds `OfficeSceneObject` and `buildOfficeSceneObjects(state, nodes)` for safe, capped 2D office markers.
-- `web/src/pages/OfficePage.tsx` renders tile-like lobby/workbench/machine-room/mailroom panels with small CSS scene markers while preserving room buttons, SVG flows, and Safe inspector behavior.
-- `web/src/pages/OfficePage.test.ts` covers object caps, overflow markers, unrouted bucket display, bounded coordinates, object kinds, and raw-field avoidance.
+- `web/src/pages/officeView.ts` adds `OfficeSceneObjectView` and `buildOfficeSceneObjectView(object)` so marker glyph/title/tone/accessibility presentation is testable.
+- `web/src/pages/OfficePage.tsx` improves room-card contrast, marker hierarchy, focus rings, SVG/zone/legend z-index layering, and bottom legend spacing.
+- `web/src/pages/OfficePage.test.ts` covers non-interactive marker presentation and raw-field avoidance.
 - Still no PixiJS/Phaser, canvas engine, sprite assets, copied DeskRPG code/assets, new dependency, backend route/schema, or mutation controls.
 
-Verification for Stage 9-C:
+Verification for Stage 9-D:
 
 ```text
 cd /Users/lidises/dev/hermes-agent/web
 npm test -- --run OfficePage.test.ts
-# 1 test file passed, 6 tests passed
+# 1 test file passed, 7 tests passed
 
 ./node_modules/.bin/eslint src/pages/OfficePage.tsx src/pages/officeView.ts src/pages/OfficePage.test.ts
 # passed: 0 errors
@@ -89,13 +89,13 @@ npm run build
 cd /Users/lidises/dev/hermes-agent
 source .venv/bin/activate
 scripts/run_tests.sh tests/hermes_cli/test_office_redaction.py tests/hermes_cli/test_office_state_adapters.py tests/hermes_cli/test_office_api.py -q --tb=short
-# 18 passed in 1.05s
+# 18 passed in 1.07s
 
 git diff --check
 # passed
 
 Browser smoke: http://127.0.0.1:8765/office
-# Office map visible with DeskRPG-like 2D floor zones, object markers, flow legend, Safe inspector zone metadata, no fixture raw-field leaks, no console JS errors
+# Office map visible with stronger room-card contrast, non-interactive scene markers, readable bottom safety/flow legend, Safe inspector zone metadata, no fixture raw-field leaks, no console JS errors
 ```
 
 ## Immediate next action
@@ -103,8 +103,8 @@ Browser smoke: http://127.0.0.1:8765/office
 Immediate next action should remain a product/UX decision point, not a control-plane expansion:
 
 1. Stage 8-D hardening: add frontend fixtures for empty/error/loading/source-health states and consider lightweight visual regression/screenshot smoke for `/office`.
-2. Stage 9-D visual polish: improve contrast/spacing for small labels and object markers in the 2D office floor without changing DTOs or adding dependencies.
-3. Stage 9-C fixture expansion: add small-screen/responsive fixtures and partial/error/missing scene-object examples if needed.
+2. Stage 9-D follow-up fixtures: add small-screen/responsive fixtures and partial/error/missing scene-object examples if needed.
+3. Stage 9-E optional UX polish: only if desired, refine zone labels or add reduced-motion/a11y notes without changing DTOs or adding dependencies.
 4. Renderer research: only after separate dependency/licensing/security/accessibility review, decide whether Phaser/PixiJS is worth the bundle/maintenance cost.
 5. Do not add mutation controls, expose dashboard remotely, add Pixi/Phaser, copy DeskRPG assets/code, create/edit topic registry data, or create/modify Kanban/Cron state without separate approval.
 

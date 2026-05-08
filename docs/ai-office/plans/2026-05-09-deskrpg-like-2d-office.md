@@ -2,13 +2,13 @@
 
 > **For Hermes:** Use `writing-plans` for the execution plan, and use `subagent-driven-development` only after implementation is explicitly approved. This note is product/UX planning; it does not approve code changes, dependencies, service restarts, mutation controls, or asset reuse.
 
-**Goal:** Move Hermes AI Office toward a lightweight DeskRPG-inspired 2D office map while preserving the current read-only, local-first, safe-DTO dashboard boundary. Stage 9-C implemented the first dependency-free CSS/SVG prototype of this plan.
+**Goal:** Move Hermes AI Office toward a lightweight DeskRPG-inspired 2D office map while preserving the current read-only, local-first, safe-DTO dashboard boundary. Stage 9-C implemented the first dependency-free CSS/SVG prototype of this plan, and Stage 9-D polished its contrast, marker hierarchy, and legend spacing.
 
 **Architecture:** First create a dependency-free CSS/SVG “2D office prototype” on top of the existing `OfficeState -> officeView.ts -> OfficePage.tsx` path. Only after that prototype proves useful should the project revisit a true renderer layer such as Phaser/PixiJS via a separate dependency, security, license, and accessibility review.
 
 **Tech Stack:** Current Hermes web dashboard, React/TypeScript, Vitest, CSS/Tailwind-style utility classes, SVG/CSS only for the next prototype; no Phaser/PixiJS/canvas dependency in the next implementation slice.
 
-**Last updated:** 2026-05-09 01:30 KST
+**Last updated:** 2026-05-09 08:23 KST
 
 ---
 
@@ -361,3 +361,18 @@ Stage 9-C is complete only if:
    - Recommendation: hybrid: warm floor inside dark Hermes panel.
 5. Should this be committed as docs-only now?
    - Recommendation: yes; implementation should be a separate approved stage.
+
+
+---
+
+## 6. Stage 9-D follow-up status
+
+Stage 9-D completed the first visual-polish pass after the dependency-free DeskRPG-like prototype:
+
+- Room cards now use stronger backgrounds, borders, focus rings, and text contrast.
+- Decorative scene markers now have a testable presentation helper and remain `aria-hidden`/non-interactive.
+- SVG flow, marker, room-card, projection-label, and legend layers use explicit hierarchy to avoid accidental interaction or visual blocking.
+- Lower rooms/markers were moved upward and the floor section height was increased so the bottom safety/flow legend no longer blocks lower room labels/cards/markers.
+- No data boundary, dependency, renderer, backend route, or mutation-control expansion was introduced.
+
+Next recommended work remains hardening rather than engine adoption: empty/error/loading/source-health fixtures, small-screen/responsive smoke, and only then a separate renderer review if still desired.

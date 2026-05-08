@@ -4,6 +4,7 @@ import {
   buildOfficeAttentionItems,
   buildOfficeMapFlows,
   buildOfficeMapNodes,
+  buildOfficeSceneObjectView,
   buildOfficeSceneObjects,
   groupByText,
   visibleRows,
@@ -169,6 +170,26 @@ describe("OfficePage view helpers", () => {
     expect(objects.find((object) => object.roomId === "routing")?.label).toBe("unrouted bucket");
     expect(objects.every((object) => object.x >= 10 && object.x <= 90 && object.y >= 12 && object.y <= 88)).toBe(true);
     expect(objects.map((object) => `${object.label} ${object.detail}`).join(" ")).not.toMatch(/raw|transcript|body|script|secret/i);
+  });
+
+  it("builds non-interactive accessible marker presentation without raw details", () => {
+    const marker = buildOfficeSceneObjectView({
+      id: "work-desk-1",
+      roomId: "work",
+      kind: "desk",
+      label: "work desk 1",
+      detail: "workbench safe marker",
+      health: "partial",
+      x: 63,
+      y: 21,
+    });
+
+    expect(marker.glyph).toBe("▤");
+    expect(marker.title).toBe("work desk 1 · workbench safe marker");
+    expect(marker.ariaHidden).toBe(true);
+    expect(marker.interactive).toBe(false);
+    expect(marker.toneClass).toContain("yellow");
+    expect(marker.title).not.toMatch(/raw|prompt|transcript|body|script|secret/i);
   });
 
 });

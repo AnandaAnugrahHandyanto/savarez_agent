@@ -1,17 +1,71 @@
 # Hermes AI Office — STATUS
 
-Last updated: 2026-05-09 01:30 KST
+Last updated: 2026-05-09 08:23 KST
 
 ## Current phase
 
-Stage 9-C dependency-free DeskRPG-like 2D office prototype completed on top of Stage 9-B and the Stage 8 read-only dashboard. Stage 8-A/B/C, Stage 9-A office-map first slice, and Stage 9-B semantics/layout polish remain completed and verified.
+Stage 9-D visual polish completed on top of the Stage 9-C dependency-free DeskRPG-like 2D office prototype. Stage 8-A/B/C and Stage 9-A/B/C remain completed and verified.
 
-Next phase: keep the page read-only and localhost-first; recommended next work is Stage 8-D fixture/visual-regression expansion or a separately approved renderer dependency review if the project should move beyond CSS/SVG.
+Next phase: keep the page read-only and localhost-first; recommended next work is Stage 8-D fixture/visual-regression expansion or small-screen fixture coverage. A renderer dependency review remains separate and unapproved.
 
 Stage 6 slices were approved by the user, including proceeding through the recommended remaining slices. Stage 7 was approved with testing deferred until the end. Stage 8-A was approved as the next safe step by the user saying to proceed in order, and the user then requested items 1 through 3 to run automatically in sequence. The user also approved installing missing test/runtime extras as needed in earlier setup. No gateway restart, cron change, Kanban mutation, NAS/Obsidian write, service/config mutation, memory/skill update, pixel dependency, or mutation-control implementation has been performed. The local dashboard process was restarted only to smoke-test the newly built local frontend bundle.
 
 
 
+
+## Stage 9-D 2D office visual polish completed
+
+This slice tightened the Stage 9-C CSS/SVG office map without expanding the data boundary. It remains dependency-free, read-only, browser-local, and safe-DTO-only.
+
+Implemented files/changes:
+
+- `web/src/pages/officeView.ts`
+  - Added `OfficeSceneObjectView` and `buildOfficeSceneObjectView(object)` for a testable marker presentation model.
+  - Kept marker glyph/title/tone generation deterministic and derived only from generated safe marker labels/details.
+  - Moved lower room nodes and scene slots upward to avoid bottom legend overlap.
+- `web/src/pages/OfficePage.tsx`
+  - Improved room-card contrast, focus rings, marker hierarchy, SVG/zone/legend z-index layering, and label contrast.
+  - Kept scene markers decorative with `aria-hidden`, `pointer-events-none`, and room buttons as the only office-map interaction targets.
+  - Added `pointer-events-none` to the SVG flow layer defensively.
+- `web/src/pages/OfficePage.test.ts`
+  - Added fixture coverage for non-interactive marker presentation: glyph, safe title, tone, `ariaHidden`, `interactive: false`, and raw-field avoidance.
+
+Verification performed on Mac:
+
+```text
+cd /Users/lidises/dev/hermes-agent/web
+npm test -- --run OfficePage.test.ts
+# 1 test file passed, 7 tests passed
+
+./node_modules/.bin/eslint src/pages/OfficePage.tsx src/pages/officeView.ts src/pages/OfficePage.test.ts
+# passed: 0 errors
+
+npm run build
+# passed: tsc -b && vite build
+
+cd /Users/lidises/dev/hermes-agent
+source .venv/bin/activate
+scripts/run_tests.sh tests/hermes_cli/test_office_redaction.py tests/hermes_cli/test_office_state_adapters.py tests/hermes_cli/test_office_api.py -q --tb=short
+# 18 passed in 1.07s
+
+git diff --check
+# passed
+
+Browser smoke: http://127.0.0.1:8765/office
+# visible: Office map, stronger room-card contrast, non-interactive scene markers, readable bottom safety/flow legend
+# Sessions click updates Safe inspector with office-map safe metadata including zone
+# marker DOM: aria-hidden=true and pointer-events=none
+# console: no JS errors
+# visual inspection: pass after third polish pass; bottom legend no longer blocks lower room labels/cards/markers
+```
+
+Safety notes:
+
+- No PixiJS, Phaser, canvas engine, sprite assets, copied DeskRPG code/assets, or new dependency.
+- No mutation controls were added.
+- No backend API/schema change.
+- No Kanban/cron/topic registry/NAS/Obsidian writes.
+- Raw prompts, transcripts, task bodies, cron scripts, logs, auth, and secrets remain outside browser DTOs/tooltips/inspector rows.
 
 ## Stage 9-C dependency-free 2D office prototype completed
 

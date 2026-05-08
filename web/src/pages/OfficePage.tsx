@@ -22,6 +22,7 @@ import {
   buildOfficeAttentionItems,
   buildOfficeMapFlows,
   buildOfficeMapNodes,
+  buildOfficeSceneObjectView,
   buildOfficeSceneObjects,
   groupByText,
   numberField,
@@ -187,52 +188,39 @@ function MiniList({
 }
 
 function mapNodeTone(health: OfficeMapNode["health"]): string {
-  if (health === "ok") return "border-emerald-400/40 bg-emerald-950/20 text-emerald-200";
-  if (health === "partial") return "border-yellow-400/40 bg-yellow-950/20 text-yellow-200";
-  if (health === "error") return "border-red-400/40 bg-red-950/20 text-red-200";
-  return "border-sky-400/35 bg-sky-950/15 text-sky-200";
+  if (health === "ok") return "border-emerald-300/70 bg-emerald-950/70 text-emerald-50";
+  if (health === "partial") return "border-yellow-300/75 bg-yellow-950/70 text-yellow-50";
+  if (health === "error") return "border-red-300/80 bg-red-950/70 text-red-50";
+  return "border-sky-300/65 bg-sky-950/70 text-sky-50";
 }
 
 function mapFlowTone(health: OfficeMapFlow["health"]): string {
-  if (health === "ok") return "text-emerald-300/45";
-  if (health === "partial") return "text-yellow-300/55";
-  if (health === "error") return "text-red-300/60";
-  return "text-sky-300/45";
-}
-
-function mapSceneObjectTone(health: OfficeSceneObject["health"]): string {
-  if (health === "ok") return "border-emerald-300/50 bg-emerald-300/20 text-emerald-100";
-  if (health === "partial") return "border-yellow-300/55 bg-yellow-300/20 text-yellow-100";
-  if (health === "error") return "border-red-300/60 bg-red-300/20 text-red-100";
-  return "border-sky-300/45 bg-sky-300/15 text-sky-100";
-}
-
-function sceneObjectGlyph(kind: OfficeSceneObject["kind"]): string {
-  if (kind === "avatar") return "●";
-  if (kind === "desk") return "▤";
-  if (kind === "machine") return "▣";
-  if (kind === "mail") return "▥";
-  return "!";
+  if (health === "ok") return "text-emerald-200/45";
+  if (health === "partial") return "text-yellow-200/55";
+  if (health === "error") return "text-red-200/60";
+  return "text-sky-200/45";
 }
 
 function SceneObjectMarker({ object }: { object: OfficeSceneObject }) {
+  const view = buildOfficeSceneObjectView(object);
   return (
     <div
-      className={`pointer-events-none absolute flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center border text-[11px] font-semibold shadow-sm ${mapSceneObjectTone(object.health)}`}
+      className={`pointer-events-none absolute z-20 flex h-5 w-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center border text-[10px] font-bold shadow-md ring-1 ring-black/50 ${view.toneClass}`}
       style={{ left: `${object.x}%`, top: `${object.y}%` }}
-      title={`${object.label} · ${object.detail}`}
-      aria-hidden="true"
+      title={view.title}
+      aria-hidden={view.ariaHidden}
+      data-office-scene-marker="true"
     >
-      {sceneObjectGlyph(object.kind)}
+      {view.glyph}
     </div>
   );
 }
 
 const OFFICE_ZONE_PANELS: Array<{ id: OfficeMapNode["id"]; label: string; className: string; style: React.CSSProperties }> = [
-  { id: "sessions", label: "lobby", className: "border-emerald-300/15 bg-[repeating-linear-gradient(45deg,rgba(16,185,129,0.10)_0_6px,rgba(16,185,129,0.04)_6px_12px)]", style: { left: "10%", top: "14%", width: "34%", height: "30%" } },
-  { id: "work", label: "workbench", className: "border-yellow-300/15 bg-[repeating-linear-gradient(0deg,rgba(234,179,8,0.10)_0_5px,rgba(234,179,8,0.04)_5px_11px)]", style: { left: "56%", top: "14%", width: "34%", height: "30%" } },
-  { id: "automation", label: "machine room", className: "border-cyan-300/15 bg-[repeating-linear-gradient(90deg,rgba(34,211,238,0.10)_0_5px,rgba(34,211,238,0.04)_5px_11px)]", style: { left: "10%", top: "56%", width: "34%", height: "30%" } },
-  { id: "routing", label: "mailroom", className: "border-sky-300/15 bg-[repeating-linear-gradient(135deg,rgba(125,211,252,0.10)_0_6px,rgba(125,211,252,0.04)_6px_12px)]", style: { left: "56%", top: "56%", width: "34%", height: "30%" } },
+  { id: "sessions", label: "lobby", className: "border-emerald-200/25 bg-[repeating-linear-gradient(45deg,rgba(16,185,129,0.13)_0_6px,rgba(16,185,129,0.055)_6px_12px)]", style: { left: "10%", top: "14%", width: "34%", height: "30%" } },
+  { id: "work", label: "workbench", className: "border-yellow-200/25 bg-[repeating-linear-gradient(0deg,rgba(234,179,8,0.13)_0_5px,rgba(234,179,8,0.055)_5px_11px)]", style: { left: "56%", top: "14%", width: "34%", height: "30%" } },
+  { id: "automation", label: "machine room", className: "border-cyan-200/25 bg-[repeating-linear-gradient(90deg,rgba(34,211,238,0.13)_0_5px,rgba(34,211,238,0.055)_5px_11px)]", style: { left: "10%", top: "54%", width: "34%", height: "25%" } },
+  { id: "routing", label: "mailroom", className: "border-sky-200/25 bg-[repeating-linear-gradient(135deg,rgba(125,211,252,0.13)_0_6px,rgba(125,211,252,0.055)_6px_12px)]", style: { left: "56%", top: "54%", width: "34%", height: "25%" } },
 ];
 
 function OfficeMap({
@@ -257,8 +245,8 @@ function OfficeMap({
         </div>
       </CardHeader>
       <CardContent>
-        <div className="relative min-h-[500px] overflow-hidden border border-current/15 bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.14),transparent_34%),linear-gradient(135deg,rgba(255,255,255,0.04),rgba(0,0,0,0.16))] p-4 sm:min-h-[430px]">
-          <svg className="absolute inset-0 h-full w-full text-midground/20" role="img" aria-label="Read-only office floor connections" viewBox="0 0 100 100" preserveAspectRatio="none">
+        <div className="relative min-h-[560px] overflow-hidden border border-current/20 bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.16),transparent_34%),linear-gradient(135deg,rgba(255,255,255,0.055),rgba(0,0,0,0.20))] p-4 sm:min-h-[510px]">
+          <svg className="pointer-events-none absolute inset-0 z-10 h-full w-full text-midground/20" role="img" aria-label="Read-only office floor connections" viewBox="0 0 100 100" preserveAspectRatio="none">
             <defs>
               <marker id="office-map-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
                 <path d="M0 0 L8 4 L0 8 Z" fill="currentColor" />
@@ -277,17 +265,17 @@ function OfficeMap({
                   fill="none"
                   stroke="currentColor"
                   strokeDasharray={flow.health === "ok" ? "" : "2 2"}
-                  strokeWidth="0.9"
+                  strokeWidth="0.55"
                   markerEnd="url(#office-map-arrow)"
                   className={mapFlowTone(flow.health)}
                 />
               );
             })}
           </svg>
-          <div className="absolute left-4 top-4 text-[10px] uppercase tracking-[0.22em] text-midground/50">safe office projection</div>
+          <div className="absolute left-4 top-4 z-40 border border-current/10 bg-black/35 px-2 py-1 text-[10px] uppercase tracking-[0.22em] text-midground/80">safe office projection</div>
           {OFFICE_ZONE_PANELS.map((zone) => (
-            <div key={zone.id} className={`absolute border ${zone.className}`} style={zone.style} aria-hidden="true">
-              <div className="absolute bottom-2 right-2 text-[8px] uppercase tracking-[0.18em] text-midground/25">{zone.label}</div>
+            <div key={zone.id} className={`absolute z-0 border shadow-inner ${zone.className}`} style={zone.style} aria-hidden="true">
+              <div className="absolute bottom-2 right-2 border border-current/10 bg-black/35 px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-[0.18em] text-midground/70">{zone.label}</div>
             </div>
           ))}
           {sceneObjects.map((object) => (
@@ -299,19 +287,19 @@ function OfficeMap({
               type="button"
               onClick={() => onInspect(node)}
               aria-label={`${node.label} office map room, ${node.count} safe item count, ${node.health} health`}
-              className={`absolute w-[min(8.75rem,40vw)] -translate-x-1/2 -translate-y-1/2 border p-2 text-left shadow-lg backdrop-blur transition hover:scale-[1.02] hover:border-current/60 ${mapNodeTone(node.health)}`}
+              className={`absolute z-30 w-[min(9.25rem,42vw)] -translate-x-1/2 -translate-y-1/2 border p-2 text-left shadow-xl ring-1 ring-black/40 backdrop-blur-md transition hover:scale-[1.02] hover:border-current/70 focus:outline-none focus:ring-2 focus:ring-emerald-200/70 ${mapNodeTone(node.health)}`}
               style={{ left: `${node.x}%`, top: `${node.y}%` }}
             >
-              <div className="text-[9px] uppercase tracking-[0.18em] text-current/55">{node.zone}</div>
+              <div className="text-[9px] font-semibold uppercase tracking-[0.18em] text-current/70">{node.zone}</div>
               <div className="mt-1 flex items-center justify-between gap-3">
-                <span className="text-xs font-semibold uppercase tracking-[0.16em]">{node.label}</span>
-                <span className="text-2xl font-semibold">{node.count}</span>
+                <span className="text-[13px] font-bold uppercase tracking-[0.14em]">{node.label}</span>
+                <span className="text-2xl font-bold">{node.count}</span>
               </div>
-              <div className="mt-2 text-[11px] leading-4 text-current/75">{node.detail}</div>
-              <div className="mt-3 text-[10px] uppercase tracking-[0.16em] text-current/65">{node.health}</div>
+              <div className="mt-2 text-[11px] leading-4 text-current/85">{node.detail}</div>
+              <div className="mt-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-current/75">{node.health}</div>
             </button>
           ))}
-          <div className="absolute bottom-4 left-4 right-4 border border-current/10 bg-black/25 p-3 text-xs leading-5 text-midground/65">
+          <div className="absolute bottom-4 left-4 right-4 z-40 border border-current/15 bg-black/50 p-3 text-xs leading-5 text-midground/80 shadow-lg backdrop-blur-sm">
             <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-[10px] uppercase tracking-[0.16em]">
               {flows.map((flow) => (
                 <span key={`${flow.from}-${flow.to}`} className={mapFlowTone(flow.health)}>{flow.label} · {flow.health}</span>
