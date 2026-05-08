@@ -1,14 +1,10 @@
-"""Regression test for /model context-length display on provider-capped models.
+"""Regression tests for /model context-length display.
 
-Bug (April 2026): `/model gpt-5.5` on openai-codex (ChatGPT OAuth) showed
-"Context: 1,050,000 tokens" because the display code used the raw models.dev
-``ModelInfo.context_window`` (which reports the direct-OpenAI API value) instead
-of the provider-aware resolver. The agent was actually running at 272K — Codex
-OAuth's enforced cap — so the display was lying to the user.
-
-Fix: ``resolve_display_context_length()`` prefers
-``agent.model_metadata.get_model_context_length`` (which knows about Codex OAuth,
-Copilot, Nous, etc.) and falls back to models.dev only if that returns nothing.
+`resolve_display_context_length()` should report the provider-aware resolver value
+used by the running session. For ChatGPT/Codex OAuth this matters because the
+provider name describes the auth/transport path, while the selected slug may be
+a general GPT model (for example gpt-5.5) or a Codex-specialized model (for
+example gpt-5.3-codex).
 """
 from __future__ import annotations
 
@@ -23,12 +19,12 @@ class _FakeModelInfo:
 
 
 class TestResolveDisplayContextLength:
-    def test_codex_oauth_overrides_models_dev(self):
-        """gpt-5.5 on openai-codex must show Codex's 272K cap, not models.dev's 1.05M."""
-        fake_mi = _FakeModelInfo(1_050_000)  # what models.dev reports
+    def test_codex_oauth_gpt_display_uses_resolved_openai_context(self):
+        """gpt-5.5 on the Codex OAuth transport should display its GPT context."""
+        fake_mi = _FakeModelInfo(1_050_000)
         with patch(
             "agent.model_metadata.get_model_context_length",
-            return_value=272_000,  # what Codex OAuth actually enforces
+            return_value=1_050_000,
         ):
             ctx = resolve_display_context_length(
                 "gpt-5.5",
@@ -37,9 +33,23 @@ class TestResolveDisplayContextLength:
                 api_key="",
                 model_info=fake_mi,
             )
-        assert ctx == 272_000, (
-            "Codex OAuth's 272K cap must win over models.dev's 1.05M for gpt-5.5"
-        )
+        assert ctx == 1_050_000
+
+    def test_codex_specialized_display_uses_resolved_catalog_context(self):
+        """Codex-specialized slugs should display the Codex catalog context."""
+        fake_mi = _FakeModelInfo(400_000)
+        with patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=272_000,
+        ):
+            ctx = resolve_display_context_length(
+                "gpt-5.3-codex",
+                "openai-codex",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="",
+                model_info=fake_mi,
+            )
+        assert ctx == 272_000
 
     def test_falls_back_to_model_info_when_resolver_returns_none(self):
         fake_mi = _FakeModelInfo(1_048_576)

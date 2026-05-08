@@ -149,10 +149,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     "claude": 200000,
     # OpenAI — GPT-5 family (most have 400k; specific overrides first)
     # Source: https://developers.openai.com/api/docs/models
-    # GPT-5.5 (launched Apr 23 2026) is 1.05M on the direct OpenAI API and
-    # ChatGPT Codex OAuth caps it at 272K; both paths resolve via their own
-    # provider-aware branches (_resolve_codex_oauth_context_length + models.dev).
-    # This hardcoded value is only reached when every probe misses.
+    # GPT-5.5 (launched Apr 23 2026) is 1.05M on the direct OpenAI API.
+    # General GPT slugs on the ChatGPT/Codex OAuth transport resolve through
+    # this OpenAI model-metadata path; Codex-specialized slugs use Codex catalog
+    # metadata instead.
     "gpt-5.5": 1050000,
     "gpt-5.4-nano": 400000,           # 400k (not 1.05M like full 5.4)
     "gpt-5.4-mini": 400000,           # 400k (not 1.05M like full 5.4)
@@ -278,6 +278,19 @@ def _auth_headers(api_key: str = "") -> Dict[str, str]:
 
 def _is_openrouter_base_url(base_url: str) -> bool:
     return base_url_host_matches(base_url, "openrouter.ai")
+
+
+def _is_codex_oauth_base_url(base_url: str) -> bool:
+    """Return True for the ChatGPT/Codex OAuth backend URL."""
+    normalized = _normalize_base_url(base_url)
+    if not normalized or not base_url_host_matches(normalized, "chatgpt.com"):
+        return False
+    try:
+        parsed = urlparse(normalized if "://" in normalized else f"https://{normalized}")
+    except Exception:
+        return False
+    path = parsed.path.rstrip("/").lower()
+    return path == "/backend-api/codex" or path.startswith("/backend-api/codex/")
 
 
 def _is_custom_endpoint(base_url: str) -> bool:
@@ -1094,25 +1107,90 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
     return None
 
 
-# Known ChatGPT Codex OAuth context windows (observed via live
-# chatgpt.com/backend-api/codex/models probe, Apr 2026). These are the
-# `context_window` values, which are what Codex actually enforces — the
-# direct OpenAI API has larger limits for the same slugs, but Codex OAuth
-# caps lower (e.g. gpt-5.5 is 1.05M on the API, 272K on Codex).
+# Known ChatGPT Codex OAuth context windows for Codex-specialized slugs
+# (observed via live chatgpt.com/backend-api/codex/models probe, Apr 2026).
+# The same backend also lists general GPT slugs (for example gpt-5.5), but
+# those should resolve through the normal OpenAI model metadata path because
+# they are distinct from Codex-specialized models such as gpt-5.3-codex.
 #
 # Used as a fallback when the live probe fails (no token, network error).
 # Longest keys first so substring match picks the most specific entry.
 _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
+    "gpt-5.3-codex-spark": 128_000,
     "gpt-5.1-codex-max": 272_000,
     "gpt-5.1-codex-mini": 272_000,
     "gpt-5.3-codex": 272_000,
     "gpt-5.2-codex": 272_000,
-    "gpt-5.4-mini": 272_000,
-    "gpt-5.5": 272_000,
-    "gpt-5.4": 272_000,
-    "gpt-5.2": 272_000,
-    "gpt-5": 272_000,
+    "codex-auto-review": 272_000,
 }
+
+
+def _bare_model_slug(model: str) -> str:
+    """Return the provider/vendor-free model slug used for family checks."""
+    model_bare = _strip_provider_prefix(model or "").strip().lower()
+    if "/" in model_bare:
+        model_bare = model_bare.rsplit("/", 1)[1].strip()
+    return model_bare
+
+
+def _is_codex_specialized_model(model: str) -> bool:
+    """Return True for Codex-specific model slugs, not general GPT slugs."""
+    return "codex" in _bare_model_slug(model)
+
+
+def _codex_oauth_fallback_context_for_model(model: str) -> Optional[int]:
+    """Return the hardcoded Codex catalog fallback for a known Codex slug."""
+    model_lower = _bare_model_slug(model)
+    for slug, ctx in sorted(
+        _CODEX_OAUTH_CONTEXT_FALLBACK.items(), key=lambda x: len(x[0]), reverse=True
+    ):
+        if slug in model_lower:
+            return ctx
+    return None
+
+
+def _is_stale_codex_specialized_cache(model: str, cached: int) -> bool:
+    """Detect stale persisted context entries for Codex-specialized slugs."""
+    if cached >= 400_000:
+        return True
+    fallback_ctx = _codex_oauth_fallback_context_for_model(model)
+    # Older fallback tables could match a more general 272K Codex slug before a
+    # newer, more-specific lower-cap slug such as gpt-5.3-codex-spark (128K).
+    return fallback_ctx is not None and cached == 272_000 and cached > fallback_ctx
+
+
+def _resolve_openai_model_context_length(model: str) -> Optional[int]:
+    """Resolve the canonical OpenAI context length for a general GPT slug."""
+    try:
+        from agent.models_dev import lookup_models_dev_context
+        for candidate in dict.fromkeys([model, _bare_model_slug(model)]):
+            if not candidate:
+                continue
+            ctx = lookup_models_dev_context("openai", candidate)
+            if ctx:
+                return ctx
+    except Exception:
+        pass
+
+    model_lower = _bare_model_slug(model)
+    for default_model, length in sorted(
+        DEFAULT_CONTEXT_LENGTHS.items(), key=lambda x: len(x[0]), reverse=True
+    ):
+        if default_model in model_lower:
+            return length
+    return None
+
+
+def _codex_oauth_should_use_openai_model_metadata(model: str) -> bool:
+    """General GPT models on the Codex OAuth path use OpenAI model metadata.
+
+    `openai-codex` is the auth/transport provider. The live Codex catalog lists
+    both regular GPT slugs (gpt-5.5, gpt-5.4, etc.) and Codex-specialized slugs
+    (gpt-5.3-codex, codex-auto-review). Only the latter should use the Codex
+    catalog context values.
+    """
+    model_bare = _bare_model_slug(model)
+    return model_bare.startswith("gpt-") and not _is_codex_specialized_model(model_bare)
 
 
 _codex_oauth_context_cache: Dict[str, int] = {}
@@ -1121,11 +1199,11 @@ _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
 
 
 def _fetch_codex_oauth_context_lengths(access_token: str) -> Dict[str, int]:
-    """Probe the ChatGPT Codex /models endpoint for per-slug context windows.
+    """Probe the ChatGPT Codex /models endpoint for per-slug catalog windows.
 
-    Codex OAuth imposes its own context limits that differ from the direct
-    OpenAI API (e.g. gpt-5.5 is 1.05M on the API, 272K on Codex). The
-    `context_window` field in each model entry is the authoritative source.
+    The endpoint reports a `context_window` for every slug it exposes. Hermes
+    only treats that value as authoritative for Codex-specialized slugs; general
+    GPT slugs on the same auth transport resolve through OpenAI model metadata.
 
     Returns a ``{slug: context_window}`` dict. Empty on failure.
     """
@@ -1177,29 +1255,28 @@ def _resolve_codex_oauth_context_length(
     """Resolve a Codex OAuth model's real context window.
 
     Prefers a live probe of chatgpt.com/backend-api/codex/models (when we
-    have a bearer token), then falls back to ``_CODEX_OAUTH_CONTEXT_FALLBACK``.
+    have a bearer token), then falls back to known Codex catalog entries, then
+    to a conservative generic 272K fallback for future Codex-specialized slugs.
     """
-    model_bare = _strip_provider_prefix(model).strip()
+    model_bare = _bare_model_slug(model)
     if not model_bare:
+        return None
+    if _codex_oauth_should_use_openai_model_metadata(model_bare):
         return None
 
     if access_token:
         live = _fetch_codex_oauth_context_lengths(access_token)
-        if model_bare in live:
-            return live[model_bare]
-        # Case-insensitive match in case casing drifts
-        model_lower = model_bare.lower()
+        # Case-insensitive match in case casing drifts.
         for slug, ctx in live.items():
-            if slug.lower() == model_lower:
+            if slug.strip().lower() == model_bare:
                 return ctx
 
-    # Fallback: longest-key-first substring match over hardcoded defaults.
-    model_lower = model_bare.lower()
-    for slug, ctx in sorted(
-        _CODEX_OAUTH_CONTEXT_FALLBACK.items(), key=lambda x: len(x[0]), reverse=True
-    ):
-        if slug in model_lower:
-            return ctx
+    fallback_ctx = _codex_oauth_fallback_context_for_model(model_bare)
+    if fallback_ctx:
+        return fallback_ctx
+
+    if _is_codex_specialized_model(model_bare):
+        return 272_000
 
     return None
 
@@ -1249,6 +1326,7 @@ def get_model_context_length(
 
     Resolution order:
     0. Explicit config override (model.context_length or custom_providers per-model)
+    0b. General GPT slugs on the ChatGPT/Codex OAuth transport use OpenAI metadata
     1. Persistent cache (previously discovered via probing)
     1b. AWS Bedrock static table (must precede custom-endpoint probe)
     2. Active endpoint metadata (/models for explicit custom endpoints)
@@ -1281,10 +1359,27 @@ def get_model_context_length(
         except Exception:
             pass  # fall through to probing
 
+    provider = (provider or "").strip().lower()
+
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that
     # local servers actually know about.  Ollama "model:tag" colons are preserved.
     model = _strip_provider_prefix(model)
+
+    is_codex_oauth_transport = (
+        provider == "openai-codex" or _is_codex_oauth_base_url(base_url)
+    )
+
+    # ChatGPT/Codex OAuth is a transport/auth provider, not necessarily a Codex
+    # model family. Its catalog lists both general GPT slugs and Codex-specific
+    # slugs; resolve the general GPT slugs through the normal OpenAI model
+    # metadata path before consulting stale Codex-base-url cache entries.
+    if is_codex_oauth_transport and _codex_oauth_should_use_openai_model_metadata(model):
+        openai_ctx = _resolve_openai_model_context_length(model)
+        if openai_ctx:
+            if base_url and get_cached_context_length(model, base_url) != openai_ctx:
+                save_context_length(model, base_url, openai_ctx)
+            return openai_ctx
 
     # 1. Check persistent cache (model+provider)
     # LM Studio is excluded — its loaded context length is transient (the
@@ -1293,16 +1388,18 @@ def get_model_context_length(
     if base_url and provider != "lmstudio":
         cached = get_cached_context_length(model, base_url)
         if cached is not None:
-            # Invalidate stale Codex OAuth cache entries: pre-PR #14935 builds
-            # resolved gpt-5.x to the direct-API value (e.g. 1.05M) via
-            # models.dev and persisted it. Codex OAuth caps at 272K for every
-            # slug, so any cached Codex entry at or above 400K is a leftover
-            # from the old resolution path. Drop it and fall through to the
-            # live /models probe in step 5 below.
-            if provider == "openai-codex" and cached >= 400_000:
+            # Invalidate stale Codex-specialized cache entries: older builds
+            # could persist direct-API GPT-5 defaults for Codex slugs. General
+            # GPT slugs on the Codex OAuth transport return before this cache
+            # branch; only Codex-specialized slugs should reach this guard.
+            if (
+                is_codex_oauth_transport
+                and _is_codex_specialized_model(model)
+                and _is_stale_codex_specialized_cache(model, cached)
+            ):
                 logger.info(
-                    "Dropping stale Codex cache entry %s@%s -> %s (pre-fix value); "
-                    "re-resolving via live /models probe",
+                    "Dropping stale Codex-specialized cache entry %s@%s -> %s; "
+                    "re-resolving via Codex catalog/fallback",
                     model, base_url, f"{cached:,}",
                 )
                 _invalidate_cached_context_length(model, base_url)
@@ -1370,6 +1467,8 @@ def get_model_context_length(
     # (e.g. claude-opus-4.6 is 1M on Anthropic but 128K on GitHub Copilot).
     # If provider is generic (openrouter/custom/empty), try to infer from URL.
     effective_provider = provider
+    if is_codex_oauth_transport:
+        effective_provider = "openai-codex"
     if not effective_provider or effective_provider in ("openrouter", "custom"):
         if base_url:
             inferred = _infer_provider_from_url(base_url)
@@ -1394,9 +1493,9 @@ def get_model_context_length(
         if ctx:
             return ctx
     if effective_provider == "openai-codex":
-        # Codex OAuth enforces lower context limits than the direct OpenAI
-        # API for the same slug (e.g. gpt-5.5 is 1.05M on the API but 272K
-        # on Codex). Authoritative source is Codex's own /models endpoint.
+        # General GPT slugs on this transport returned earlier via OpenAI
+        # metadata. Slugs that reach this branch are Codex-specialized and
+        # should use the Codex backend catalog/fallback.
         codex_ctx = _resolve_codex_oauth_context_length(model, access_token=api_key or "")
         if codex_ctx:
             if base_url:

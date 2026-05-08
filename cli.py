@@ -5838,9 +5838,10 @@ class HermesCLI:
         _cprint(f"  ✓ Model switched: {result.new_model}")
         _cprint(f"    Provider: {provider_label}")
 
-        # Context: always resolve via the provider-aware chain so Codex OAuth,
-        # Copilot, and Nous-enforced caps win over the raw models.dev entry
-        # (e.g. gpt-5.5 is 1.05M on openai but 272K on Codex OAuth).
+        # Context: always resolve via the provider-aware chain so transport-
+        # specific models (Codex-specialized slugs, Copilot, Nous, etc.) and
+        # general GPT slugs on OAuth transports display the same value the
+        # running session uses.
         mi = result.model_info
         try:
             from hermes_cli.model_switch import resolve_display_context_length
@@ -6069,9 +6070,10 @@ class HermesCLI:
         _cprint(f"  ✓ Model switched: {result.new_model}")
         _cprint(f"    Provider: {provider_label}")
 
-        # Context: always resolve via the provider-aware chain so Codex OAuth,
-        # Copilot, and Nous-enforced caps win over the raw models.dev entry
-        # (e.g. gpt-5.5 is 1.05M on openai but 272K on Codex OAuth).
+        # Context: always resolve via the provider-aware chain so transport-
+        # specific models (Codex-specialized slugs, Copilot, Nous, etc.) and
+        # general GPT slugs on OAuth transports display the same value the
+        # running session uses.
         mi = result.model_info
         from hermes_cli.model_switch import resolve_display_context_length
         ctx = resolve_display_context_length(

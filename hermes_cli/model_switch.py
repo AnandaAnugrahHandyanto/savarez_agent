@@ -574,12 +574,12 @@ def resolve_display_context_length(
 ) -> Optional[int]:
     """Resolve the context length to show in /model output.
 
-    models.dev reports per-vendor context (e.g. gpt-5.5 = 1.05M on openai)
-    but provider-enforced limits can be lower (e.g. Codex OAuth caps the
-    same slug at 272k). The authoritative source is
-    ``agent.model_metadata.get_model_context_length`` which already knows
-    about Codex OAuth, Copilot, Nous, and falls back to models.dev for the
-    rest.
+    models.dev reports per-vendor context (e.g. gpt-5.5 = 1.05M on openai),
+    while some auth transports also expose provider-specific model catalogs.
+    The authoritative source is ``agent.model_metadata.get_model_context_length``
+    which classifies the actual model slug/provider pair: general GPT slugs on
+    ChatGPT/Codex OAuth use OpenAI metadata, Codex-specialized slugs use the
+    Codex catalog, and Copilot/Nous/custom providers keep their own overrides.
 
     When ``custom_providers`` is provided, per-model ``context_length``
     overrides from ``custom_providers[].models.<id>.context_length`` are
