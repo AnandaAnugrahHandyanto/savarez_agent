@@ -142,6 +142,27 @@ class ImageGenProvider(abc.ABC):
         should ignore unknown keys.
         """
 
+    def edit(
+        self,
+        prompt: str,
+        reference_images: List[str],
+        aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Edit or reference-generate from one or more input images.
+
+        Providers that support image references/masks should override this.
+        The default makes the contract explicit without forcing every existing
+        provider to implement edit support immediately.
+        """
+        return error_response(
+            error=f"Provider '{self.name}' does not support image editing/reference inputs",
+            error_type="unsupported_operation",
+            provider=self.name,
+            prompt=prompt,
+            aspect_ratio=resolve_aspect_ratio(aspect_ratio),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Helpers

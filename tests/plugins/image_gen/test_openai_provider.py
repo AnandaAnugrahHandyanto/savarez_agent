@@ -32,6 +32,7 @@ def _fake_response(*, b64=None, url=None, revised_prompt=None):
 @pytest.fixture(autouse=True)
 def _tmp_hermes_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
     yield tmp_path
 
 
@@ -241,3 +242,66 @@ class TestGenerate:
 
         assert result["success"] is True
         assert result["image"] == "https://example.com/img.png"
+
+
+# ── Edit/reference image ────────────────────────────────────────────────────
+
+
+class TestEdit:
+    def test_requires_reference_images(self, provider):
+        result = provider.edit("make it cute", [])
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+
+    def test_missing_reference_file(self, provider):
+        result = provider.edit("make it cute", ["/tmp/does-not-exist.png"])
+        assert result["success"] is False
+        assert result["error_type"] == "file_not_found"
+
+    def test_url_reference_rejected_for_mvp(self, provider):
+        result = provider.edit("make it cute", ["https://example.com/ref.png"])
+        assert result["success"] is False
+        assert result["error_type"] == "unsupported_input"
+
+    def test_b64_edit_saves_to_cache_and_sends_supported_params(self, provider, tmp_path):
+        ref = tmp_path / "ref.png"
+        ref.write_bytes(bytes.fromhex(_PNG_HEX))
+        fake_client = MagicMock()
+        fake_client.images.edit.return_value = _fake_response(b64=_b64_png())
+
+        with _patched_openai(fake_client):
+            result = provider.edit("keep the logo, make warmer", [str(ref)], aspect_ratio="square")
+
+        assert result["success"] is True
+        assert result["provider"] == "openai"
+        assert result["api"] == "OpenAI Images Edit API"
+        assert result["reference_count"] == 1
+        saved = Path(result["image"])
+        assert saved.exists()
+        assert saved.parent == tmp_path / "cache" / "images"
+
+        call_kwargs = fake_client.images.edit.call_args.kwargs
+        assert call_kwargs["model"] == "gpt-image-2"
+        assert call_kwargs["quality"] == "medium"
+        assert call_kwargs["size"] == "1024x1024"
+        assert "response_format" not in call_kwargs
+        assert "background" not in call_kwargs
+        assert "input_fidelity" not in call_kwargs
+        assert len(call_kwargs["image"]) == 1
+        assert call_kwargs["image"][0].closed
+
+    def test_mask_path_passed_when_present(self, provider, tmp_path):
+        ref = tmp_path / "ref.png"
+        mask = tmp_path / "mask.png"
+        ref.write_bytes(bytes.fromhex(_PNG_HEX))
+        mask.write_bytes(bytes.fromhex(_PNG_HEX))
+        fake_client = MagicMock()
+        fake_client.images.edit.return_value = _fake_response(b64=_b64_png())
+
+        with _patched_openai(fake_client):
+            result = provider.edit("edit masked area", [str(ref)], mask_image=str(mask))
+
+        assert result["success"] is True
+        call_kwargs = fake_client.images.edit.call_args.kwargs
+        assert "mask" in call_kwargs
+        assert call_kwargs["mask"].closed

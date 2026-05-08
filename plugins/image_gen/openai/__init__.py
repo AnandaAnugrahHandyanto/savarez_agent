@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import ExitStack
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_gen_provider import (
@@ -93,8 +95,16 @@ def _load_openai_config() -> Dict[str, Any]:
 
 
 def _resolve_model() -> Tuple[str, Dict[str, Any]]:
-    """Decide which tier to use and return ``(model_id, meta)``."""
-    env_override = os.environ.get("OPENAI_IMAGE_MODEL")
+    """Decide which tier to use and return ``(model_id, meta)``.
+
+    ``OPENAI_IMAGE_MODEL=gpt-image-2`` is accepted as an explicit request for
+    the underlying API model. Hermes still needs an internal quality-tier ID
+    for the ``quality`` parameter, so the bare API model maps to the default
+    medium tier while the actual request payload sends ``model=gpt-image-2``.
+    """
+    env_override = (os.environ.get("OPENAI_IMAGE_MODEL") or "").strip()
+    if env_override == API_MODEL:
+        return DEFAULT_MODEL, _MODELS[DEFAULT_MODEL]
     if env_override and env_override in _MODELS:
         return env_override, _MODELS[env_override]
 
@@ -280,6 +290,187 @@ class OpenAIImageGenProvider(ImageGenProvider):
             )
 
         extra: Dict[str, Any] = {"size": size, "quality": meta["quality"]}
+        if revised_prompt:
+            extra["revised_prompt"] = revised_prompt
+
+        return success_response(
+            image=image_ref,
+            model=tier_id,
+            prompt=prompt,
+            aspect_ratio=aspect,
+            provider="openai",
+            extra=extra,
+        )
+
+    def edit(
+        self,
+        prompt: str,
+        reference_images: List[str],
+        aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Edit/reference-generate with OpenAI ``images.edit``.
+
+        MVP scope is local image paths. Gateway-uploaded Telegram images arrive
+        as local files, which is the primary user workflow. URL/data-URL inputs
+        are rejected explicitly rather than silently ignored.
+        """
+        prompt = (prompt or "").strip()
+        aspect = resolve_aspect_ratio(aspect_ratio)
+
+        if not prompt:
+            return error_response(
+                error="Prompt is required and must be a non-empty string",
+                error_type="invalid_argument",
+                provider="openai",
+                aspect_ratio=aspect,
+            )
+        if not os.environ.get("OPENAI_API_KEY"):
+            return error_response(
+                error=(
+                    "OPENAI_API_KEY not set. Run `hermes tools` → Image "
+                    "Generation → OpenAI to configure, or `hermes setup` "
+                    "to add the key."
+                ),
+                error_type="auth_required",
+                provider="openai",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        refs = [str(p).strip() for p in (reference_images or []) if str(p).strip()]
+        if not refs:
+            return error_response(
+                error="At least one reference image path is required",
+                error_type="invalid_argument",
+                provider="openai",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        unsupported = [p for p in refs if p.startswith(("http://", "https://", "data:"))]
+        mask_image = kwargs.get("mask_image")
+        if isinstance(mask_image, str) and mask_image.strip().startswith(("http://", "https://", "data:")):
+            unsupported.append(mask_image.strip())
+        if unsupported:
+            return error_response(
+                error="OpenAI image_edit MVP currently supports local file paths only; URL/data-URL reference inputs are not yet supported",
+                error_type="unsupported_input",
+                provider="openai",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        paths = [Path(p).expanduser() for p in refs]
+        missing = [str(p) for p in paths if not p.is_file()]
+        if missing:
+            return error_response(
+                error=f"Reference image file not found: {missing[0]}",
+                error_type="file_not_found",
+                provider="openai",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        mask_path: Optional[Path] = None
+        if isinstance(mask_image, str) and mask_image.strip():
+            mask_path = Path(mask_image.strip()).expanduser()
+            if not mask_path.is_file():
+                return error_response(
+                    error=f"Mask image file not found: {mask_path}",
+                    error_type="file_not_found",
+                    provider="openai",
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
+
+        try:
+            import openai
+        except ImportError:
+            return error_response(
+                error="openai Python package not installed (pip install openai)",
+                error_type="missing_dependency",
+                provider="openai",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        tier_id, meta = _resolve_model()
+        size = _SIZES.get(aspect, _SIZES["square"])
+        payload: Dict[str, Any] = {
+            "model": API_MODEL,
+            "prompt": prompt,
+            "size": size,
+            "n": 1,
+            "quality": meta["quality"],
+        }
+
+        try:
+            client = openai.OpenAI()
+            with ExitStack() as stack:
+                payload["image"] = [stack.enter_context(path.open("rb")) for path in paths]
+                if mask_path is not None:
+                    payload["mask"] = stack.enter_context(mask_path.open("rb"))
+                response = client.images.edit(**payload)
+        except Exception as exc:
+            logger.debug("OpenAI image edit failed", exc_info=True)
+            return error_response(
+                error=f"OpenAI image edit failed: {exc}",
+                error_type="api_error",
+                provider="openai",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        data = getattr(response, "data", None) or []
+        if not data:
+            return error_response(
+                error="OpenAI returned no image data",
+                error_type="empty_response",
+                provider="openai",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+        first = data[0]
+        b64 = getattr(first, "b64_json", None)
+        url = getattr(first, "url", None)
+        revised_prompt = getattr(first, "revised_prompt", None)
+
+        if b64:
+            try:
+                saved_path = save_b64_image(b64, prefix=f"openai_edit_{tier_id}")
+            except Exception as exc:
+                return error_response(
+                    error=f"Could not save image to cache: {exc}",
+                    error_type="io_error",
+                    provider="openai",
+                    model=tier_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
+            image_ref = str(saved_path)
+        elif url:
+            image_ref = url
+        else:
+            return error_response(
+                error="OpenAI response contained neither b64_json nor URL",
+                error_type="empty_response",
+                provider="openai",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        extra: Dict[str, Any] = {
+            "size": size,
+            "quality": meta["quality"],
+            "api": "OpenAI Images Edit API",
+            "api_model": API_MODEL,
+            "fallback": False,
+            "reference_count": len(paths),
+        }
         if revised_prompt:
             extra["revised_prompt"] = revised_prompt
 
