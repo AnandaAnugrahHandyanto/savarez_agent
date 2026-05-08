@@ -146,12 +146,25 @@ def _build_gemini_contents(
             system_text_parts.append(_coerce_content_to_text(msg.get("content")))
             continue
 
-        # Tool result message — emit a user-role turn with functionResponse
+        # Tool result message — merge consecutive tool results into a single
+        # user-role turn. Code Assist requires the count of functionResponse
+        # parts in one turn to match the count of functionCall parts in the
+        # preceding assistant turn (parallel tool calls).
         if role == "tool" or role == "function":
-            contents.append({
-                "role": "user",
-                "parts": [_translate_tool_result_to_gemini(msg)],
-            })
+            fr_part = _translate_tool_result_to_gemini(msg)
+            if (
+                contents
+                and contents[-1].get("role") == "user"
+                and isinstance(contents[-1].get("parts"), list)
+                and contents[-1]["parts"]
+                and all(
+                    isinstance(p, dict) and "functionResponse" in p
+                    for p in contents[-1]["parts"]
+                )
+            ):
+                contents[-1]["parts"].append(fr_part)
+            else:
+                contents.append({"role": "user", "parts": [fr_part]})
             continue
 
         gemini_role = _ROLE_MAP_OPENAI_TO_GEMINI.get(role, "user")

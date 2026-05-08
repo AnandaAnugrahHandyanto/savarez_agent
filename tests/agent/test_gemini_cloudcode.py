@@ -635,6 +635,94 @@ class TestBuildGeminiRequest:
         assert fr_part["functionResponse"]["name"] == "get_weather"
         assert fr_part["functionResponse"]["response"] == {"temp": 72}
 
+    def test_parallel_tool_results_merged_into_single_turn(self):
+        """Code Assist requires the number of functionResponse parts in one
+        turn to match the number of functionCall parts in the preceding
+        assistant turn. When the assistant emits parallel tool_calls in a
+        single message, the corresponding tool result messages must be merged
+        into one user-role turn with N parts — not N separate turns.
+
+        Without merging, Code Assist returns HTTP 400 INVALID_ARGUMENT:
+        'Please ensure that the number of function response parts is equal to
+        the number of function call parts of the function call turn.'
+        """
+        from agent.gemini_cloudcode_adapter import build_gemini_request
+
+        req = build_gemini_request(messages=[
+            {"role": "user", "content": "summarize both files"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {
+                        "name": "read_file", "arguments": '{"path": "a.md"}',
+                    }},
+                    {"id": "c2", "type": "function", "function": {
+                        "name": "read_file", "arguments": '{"path": "b.md"}',
+                    }},
+                ],
+            },
+            {"role": "tool", "name": "read_file",
+             "tool_call_id": "c1", "content": "content of a"},
+            {"role": "tool", "name": "read_file",
+             "tool_call_id": "c2", "content": "content of b"},
+        ])
+
+        # Model turn carries 2 functionCall parts.
+        model_turn = req["contents"][1]
+        assert model_turn["role"] == "model"
+        fc_parts = [p for p in model_turn["parts"] if "functionCall" in p]
+        assert len(fc_parts) == 2
+
+        # The two tool results must collapse into ONE user turn with 2
+        # functionResponse parts (count must match the call count above).
+        last = req["contents"][-1]
+        assert last["role"] == "user"
+        fr_parts = [p for p in last["parts"] if "functionResponse" in p]
+        assert len(fr_parts) == 2
+        assert {p["functionResponse"]["name"] for p in fr_parts} == {"read_file"}
+        responses = [p["functionResponse"]["response"] for p in fr_parts]
+        assert {"output": "content of a"} in responses
+        assert {"output": "content of b"} in responses
+
+        # And there should be no extra user turn after the merge — count
+        # check: [user_question, model_call_turn, user_response_turn] = 3.
+        assert len(req["contents"]) == 3
+
+    def test_tool_result_not_merged_across_intervening_user_message(self):
+        """A real user-text turn between tool results breaks the merge: the
+        merge condition only applies when the immediately preceding turn is
+        already a functionResponse-only user turn.
+        """
+        from agent.gemini_cloudcode_adapter import build_gemini_request
+
+        req = build_gemini_request(messages=[
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "tool_calls": [{
+                "id": "c1", "type": "function",
+                "function": {"name": "fn1", "arguments": "{}"},
+            }]},
+            {"role": "tool", "name": "fn1",
+             "tool_call_id": "c1", "content": "r1"},
+            # Real user text — should NOT be merged into the response turn.
+            {"role": "user", "content": "and now this"},
+            {"role": "assistant", "tool_calls": [{
+                "id": "c2", "type": "function",
+                "function": {"name": "fn2", "arguments": "{}"},
+            }]},
+            {"role": "tool", "name": "fn2",
+             "tool_call_id": "c2", "content": "r2"},
+        ])
+
+        # Sequence: user_q, model_fc1, user_fr1, user_text, model_fc2, user_fr2
+        roles = [c["role"] for c in req["contents"]]
+        assert roles == ["user", "model", "user", "user", "model", "user"]
+
+        # The intervening user text turn carries text, not functionResponse.
+        text_turn = req["contents"][3]
+        assert any("text" in p for p in text_turn["parts"])
+        assert not any("functionResponse" in p for p in text_turn["parts"])
+
     def test_tools_translated_to_function_declarations(self):
         from agent.gemini_cloudcode_adapter import build_gemini_request
 
