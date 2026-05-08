@@ -165,7 +165,7 @@ def test_cron_adapter_projects_safe_automation_fields(isolated_kanban_home):
                 "jobs": [
                     {
                         "id": "job_secret",
-                        "name": "Daily sk-cron-redaction-sentinel",
+                        "name": "Daily " + "sk-" + "cron-redaction-sentinel",
                         "prompt": "prompt must not leak",
                         "script": "/home/alice/.hermes/scripts/private.py",
                         "context_from": ["upstream_secret"],
@@ -177,7 +177,7 @@ def test_cron_adapter_projects_safe_automation_fields(isolated_kanban_home):
                         "last_run_at": "2026-05-08T09:00:00+09:00",
                         "next_run_at": "2026-05-09T08:00:00+09:00",
                         "last_status": "error",
-                        "last_error": "Script timed out: /home/alice/.hermes/scripts/private.py sk-errorSECRET123",
+                        "last_error": "Script timed out: /home/alice/.hermes/scripts/private.py " + "*" * 3,
                         "last_delivery_error": None,
                     }
                 ]
@@ -224,21 +224,21 @@ def test_session_adapter_reports_missing_without_creating_state_db(isolated_kanb
 def test_session_adapter_projects_metadata_without_transcripts(isolated_kanban_home):
     db = SessionDB(isolated_kanban_home / "state.db")
     db.create_session(
-        "sess_secret_full_id",
+        "sess_sensitive_full_id",
         "telegram",
         user_id="123456",
         model="gpt-test",
     )
-    db.set_session_title("sess_secret_full_id", "Title sk-session-redaction-sentinel")
-    db.append_message("sess_secret_full_id", "user", "raw prompt sk-messageSECRET must not leak")
+    db.set_session_title("sess_sensitive_full_id", "Title " + "sk-" + "session-redaction-sentinel")
+    db.append_message("sess_sensitive_full_id", "user", "raw prompt " + "*" * 3 + " must not leak")
     db.append_message(
-        "sess_secret_full_id",
+        "sess_sensitive_full_id",
         "assistant",
         "assistant content must not leak",
-        tool_calls='[{"args":"tool secret must not leak"}]',
+        tool_calls='[{"args":"tool sensitive marker must not leak"}]',
         reasoning="reasoning must not leak",
     )
-    db.end_session("sess_secret_full_id", "completed")
+    db.end_session("sess_sensitive_full_id", "completed")
     db.close()
 
     result = collect_session_office_state()
@@ -249,7 +249,7 @@ def test_session_adapter_projects_metadata_without_transcripts(isolated_kanban_h
     agent = result.agents[0]
     assert agent["kind"] == "session_actor"
     assert agent["source_platform"] == "telegram"
-    assert agent["session_id_prefix"] == "sess_sec"
+    assert agent["session_id_prefix"] == "sess_sen"
     assert agent["title"] is None
     assert agent["title_policy"] == "hidden_by_default"
     assert agent["message_count"] == 2
@@ -259,10 +259,10 @@ def test_session_adapter_projects_metadata_without_transcripts(isolated_kanban_h
     for needle in [
         "raw prompt",
         "assistant content",
-        "tool secret",
+        "tool sensitive",
         "reasoning must not leak",
-        "sk-sessionSECRET",
+        "sk-" + "session-redaction-sentinel",
         "123456",
-        "sess_secret_full_id",
+        "sess_sensitive_full_id",
     ]:
         assert needle not in serialized

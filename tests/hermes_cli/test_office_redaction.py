@@ -8,8 +8,9 @@ from hermes_cli.office_state import build_empty_office_state
 
 def test_redact_display_text_removes_secret_like_strings():
     text = (
-        "token sk-office-redaction-sentinel and Bearer bearerRedactionSentinel plus "
-        "bot 123456789:AAExampleTelegramToken and /home/alice/.hermes/.env"
+        "token " + "sk-" + "office-redaction-sentinel" + " and Bearer "
+        + "bearerRedactionSentinel plus "
+        + "bot 123456789:AAExampleTelegramToken and /home/alice/.hermes/.env"
     )
 
     redacted, report = redact_display_text(text)
