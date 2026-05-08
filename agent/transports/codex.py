@@ -5,7 +5,25 @@ This transport owns format conversion and normalization — NOT client lifecycle
 streaming, or the _run_codex_stream() call path.
 """
 
+import hashlib
 from typing import Any, Dict, List, Optional
+
+
+_MAX_PROMPT_CACHE_KEY_LENGTH = 64
+_PROMPT_CACHE_KEY_HASH_LENGTH = 16
+
+
+def _prompt_cache_key_from_session_id(session_id: Any) -> str:
+    """Return a stable Responses prompt_cache_key within provider limits."""
+    cache_key = str(session_id or "").strip()
+    if len(cache_key) <= _MAX_PROMPT_CACHE_KEY_LENGTH:
+        return cache_key
+
+    digest = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()[
+        :_PROMPT_CACHE_KEY_HASH_LENGTH
+    ]
+    prefix_length = _MAX_PROMPT_CACHE_KEY_LENGTH - _PROMPT_CACHE_KEY_HASH_LENGTH - 1
+    return f"{cache_key[:prefix_length]}-{digest}"
 
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
@@ -101,7 +119,7 @@ class ResponsesApiTransport(ProviderTransport):
 
         session_id = params.get("session_id")
         if not is_github_responses and session_id:
-            kwargs["prompt_cache_key"] = session_id
+            kwargs["prompt_cache_key"] = _prompt_cache_key_from_session_id(session_id)
 
         if reasoning_enabled and is_xai_responses:
             from agent.model_metadata import grok_supports_reasoning_effort
