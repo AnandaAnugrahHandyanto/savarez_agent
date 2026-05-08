@@ -1,15 +1,42 @@
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@/components/NouiTypography";
 import { useI18n } from "@/i18n/context";
+import type { Locale } from "@/i18n/types";
+
+const CYCLE: Locale[] = ["en", "zh", "es", "ru", "fr", "de", "ko"];
+
+const FLAGS: Record<Locale, string> = {
+  en: "🇬🇧",
+  zh: "🇨🇳",
+  es: "🇪🇸",
+  ru: "🇷🇺",
+  fr: "🇫🇷",
+  de: "🇩🇪",
+  ko: "🇰🇷",
+};
+
+const LABELS: Record<Locale, string> = {
+  en: "EN",
+  zh: "中文",
+  es: "ES",
+  ru: "RU",
+  fr: "FR",
+  de: "DE",
+  ko: "한국어",
+};
 
 /**
- * Compact language toggle — shows a clickable flag that switches between
- * English and Chinese.  Persists choice to localStorage.
+ * Compact language toggle — cycles through English, Chinese, Spanish, Russian,
+ * French, German, and Korean. Persists choice to localStorage.
  */
 export function LanguageSwitcher() {
   const { locale, setLocale, t } = useI18n();
 
-  const toggle = () => setLocale(locale === "en" ? "zh" : "en");
+  const toggle = () => {
+    const idx = CYCLE.indexOf(locale);
+    const next = CYCLE[(idx + 1) % CYCLE.length];
+    setLocale(next);
+  };
 
   return (
     <Button
@@ -21,14 +48,14 @@ export function LanguageSwitcher() {
     >
       <span className="inline-flex items-center gap-1.5">
         <span className="text-base leading-none">
-          {locale === "en" ? "🇬🇧" : "🇨🇳"}
+          {FLAGS[locale]}
         </span>
 
         <Typography
           mondwest
           className="hidden sm:inline tracking-wide uppercase text-[0.65rem]"
         >
-          {locale === "en" ? "EN" : "中文"}
+          {LABELS[locale]}
         </Typography>
       </span>
     </Button>
