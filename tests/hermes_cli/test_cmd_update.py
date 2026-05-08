@@ -124,10 +124,11 @@ class TestCmdUpdateBranchFallback:
             if call.args and call.args[0][0] == "/usr/bin/npm"
         ]
 
-        # cmd_update runs npm commands in three locations:
+        # cmd_update refreshes Node dependencies for the Python package surfaces:
         #   1. repo root  — slash-command / TUI bridge deps
         #   2. ui-tui/    — Ink TUI deps
-        #   3. web/       — install + "npm run build" for the web frontend
+        # Web frontend builds are handled by dashboard-specific build helpers,
+        # not by the generic update dependency refresh step.
         full_flags = [
             "/usr/bin/npm",
             "ci",
@@ -139,8 +140,6 @@ class TestCmdUpdateBranchFallback:
         assert npm_calls == [
             (full_flags, PROJECT_ROOT),
             (full_flags, PROJECT_ROOT / "ui-tui"),
-            (["/usr/bin/npm", "ci", "--silent"], PROJECT_ROOT / "web"),
-            (["/usr/bin/npm", "run", "build"], PROJECT_ROOT / "web"),
         ]
 
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):

@@ -156,7 +156,13 @@ def test_t_missing_key_in_non_english_falls_back_to_english(tmp_path, monkeypatc
     (fake_locales / "zh.yaml").write_text("# intentionally empty\n", encoding="utf-8")
     monkeypatch.setattr(i18n, "_locales_dir", lambda: fake_locales)
     i18n.reset_language_cache()
-    assert i18n.t("foo", lang="zh") == "English Foo"
+    try:
+        assert i18n.t("foo", lang="zh") == "English Foo"
+    finally:
+        # The monkeypatch fixture restores _locales_dir after the test, but
+        # the catalog cache is module-global and can otherwise retain the
+        # fake catalog for unrelated full-suite tests in the same worker.
+        i18n.reset_language_cache()
 
 
 def test_t_unknown_language_uses_english():

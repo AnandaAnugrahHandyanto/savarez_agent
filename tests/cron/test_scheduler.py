@@ -264,6 +264,8 @@ class TestResolveDeliveryTarget:
 
     def test_bare_platform_falls_back_to_home_channel(self, monkeypatch):
         monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-2002")
+        monkeypatch.delenv("TELEGRAM_HOME_CHANNEL_THREAD_ID", raising=False)
+        monkeypatch.delenv("TELEGRAM_CHAT_ID_THREAD_ID", raising=False)
         job = {
             "deliver": "telegram",
             "origin": {
@@ -321,6 +323,8 @@ class TestResolveDeliveryTarget:
         passed through to ``split(',')`` verbatim.
         """
         monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-4004")
+        monkeypatch.delenv("TELEGRAM_HOME_CHANNEL_THREAD_ID", raising=False)
+        monkeypatch.delenv("TELEGRAM_CHAT_ID_THREAD_ID", raising=False)
         job = {
             "deliver": ["telegram"],
             "origin": None,
@@ -1131,6 +1135,8 @@ class TestRunJobSessionPersistence:
 
         (tmp_path / ".env").write_text("TELEGRAM_HOME_CHANNEL=-2002\n")
         monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
+        monkeypatch.delenv("TELEGRAM_HOME_CHANNEL_THREAD_ID", raising=False)
+        monkeypatch.delenv("TELEGRAM_CHAT_ID_THREAD_ID", raising=False)
         monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_PLATFORM", raising=False)
         monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID", raising=False)
         monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID", raising=False)

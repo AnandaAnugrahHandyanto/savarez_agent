@@ -289,8 +289,11 @@ class TestCheckFnExceptionHandling:
 
 
 class TestBuiltinDiscovery:
-    def test_matches_previous_manual_builtin_tool_set(self):
-        expected = {
+    def test_discovers_core_manual_builtin_tools_without_helpers(self):
+        # This is an invariant test, not a catalog snapshot: new self-registering
+        # tools may be added routinely, but discovery must still include the
+        # core built-ins and skip non-tool helper modules.
+        expected_core = {
             "tools.browser_cdp_tool",
             "tools.browser_dialog_tool",
             "tools.browser_tool",
@@ -322,9 +325,12 @@ class TestBuiltinDiscovery:
         }
 
         with patch("tools.registry.importlib.import_module"):
-            imported = discover_builtin_tools(Path(__file__).resolve().parents[2] / "tools")
+            imported = set(discover_builtin_tools(Path(__file__).resolve().parents[2] / "tools"))
 
-        assert set(imported) == expected
+        assert expected_core <= imported
+        assert "tools.image_edit_tool" in imported
+        assert "tools.registry" not in imported
+        assert "tools.mcp_tool" not in imported
 
     def test_imports_only_self_registering_modules(self, tmp_path):
         tools_dir = tmp_path / "tools"

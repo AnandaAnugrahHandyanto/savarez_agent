@@ -410,6 +410,10 @@ class TestWorkerSpawnEnv:
 def _cli(args: list[str], env_extra: dict | None = None) -> subprocess.CompletedProcess:
     """Run ``hermes kanban …`` with PYTHONPATH pinned to the worktree."""
     env = dict(os.environ)
+    # Parent sessions may set this for dispatcher/worker scoping; CLI board
+    # surface tests need the persisted current-board file to be the only
+    # selector unless a test explicitly passes HERMES_KANBAN_BOARD.
+    env.pop("HERMES_KANBAN_BOARD", None)
     env["PYTHONPATH"] = str(_WORKTREE)
     if env_extra:
         env.update(env_extra)

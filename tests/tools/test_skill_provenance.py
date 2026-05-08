@@ -7,8 +7,10 @@ import pytest
 
 def test_default_origin_is_foreground():
     from tools.skill_provenance import get_current_write_origin
-    # In a fresh ContextVar context, default kicks in.
-    ctx = contextvars.copy_context()
+    # In a genuinely fresh ContextVar context, default kicks in. Do not use
+    # copy_context() here: full-suite neighbors may intentionally bind an
+    # origin in the current context, and copy_context() would preserve it.
+    ctx = contextvars.Context()
     origin = ctx.run(get_current_write_origin)
     assert origin == "foreground"
 

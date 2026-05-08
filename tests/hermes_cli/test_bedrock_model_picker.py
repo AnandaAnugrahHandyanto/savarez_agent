@@ -276,7 +276,7 @@ class TestBedrockRegionRouting:
 
         with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
              patch("agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover), \
-             patch("botocore.session.get_session", return_value=mock_session):
+             patch("agent.bedrock_adapter._get_botocore_session", return_value=mock_session):
             providers = list_authenticated_providers(current_provider="bedrock")
 
         bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
@@ -310,7 +310,7 @@ class TestBedrockRegionRouting:
         mock_session = MagicMock()
         mock_session.get_config_variable.return_value = "eu-central-1"
 
-        with patch("botocore.session.get_session", return_value=mock_session):
+        with patch("agent.bedrock_adapter._get_botocore_session", return_value=mock_session):
             region = resolve_bedrock_region()
 
         assert region == "us-west-2", "env var should override botocore profile"
