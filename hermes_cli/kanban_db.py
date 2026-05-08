@@ -174,13 +174,46 @@ def boards_root() -> Path:
 
 
 def current_board_path() -> Path:
-    """Return the path to ``<root>/kanban/current``.
+    """Return the path to this profile's ``kanban/current`` pointer.
 
     One-line text file written by ``hermes kanban boards switch <slug>``
-    to persist the user's board selection across CLI invocations. Absent
-    by default (meaning: active board is ``default``).
+    to persist the user's board selection across CLI invocations for the
+    active profile only. Older Hermes releases wrote a global pointer under
+    ``<root>/kanban/current``; see :func:`legacy_current_board_path` for the
+    read-only compatibility path.
     """
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "kanban" / "current"
+
+
+def legacy_current_board_path() -> Path:
+    """Return the pre-profile-scoping global current-board pointer path."""
     return kanban_home() / "kanban" / "current"
+
+
+def get_profile_default_board() -> str:
+    """Return this profile's configured default board.
+
+    Reads ``kanban.default_board`` from the active profile's config. Missing,
+    malformed, or stale values fall back to ``default``. This is deliberately
+    separate from the mutable ``boards switch`` pointer: default board is the
+    profile's home lane; switching is an explicit operator choice.
+    """
+    return _get_configured_profile_default_board() or DEFAULT_BOARD
+
+
+def _get_configured_profile_default_board() -> Optional[str]:
+    """Return a valid configured profile default board, or ``None``."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        raw = (cfg.get("kanban", {}) if isinstance(cfg, dict) else {}).get("default_board")
+        normed = _normalize_board_slug(raw)
+        if normed and (normed == DEFAULT_BOARD or board_exists(normed)):
+            return normed
+    except Exception:
+        pass
+    return None
 
 
 def get_current_board() -> str:
@@ -209,6 +242,22 @@ def get_current_board() -> str:
     try:
         f = current_board_path()
         if f.exists():
+            val = f.read_text(encoding="utf-8").strip()
+            if val:
+                try:
+                    normed = _normalize_board_slug(val)
+                    if normed and board_exists(normed):
+                        return normed
+                except ValueError:
+                    pass
+    except OSError:
+        pass
+    configured = _get_configured_profile_default_board()
+    if configured:
+        return configured
+    try:
+        f = legacy_current_board_path()
+        if f.exists() and f != current_board_path():
             val = f.read_text(encoding="utf-8").strip()
             if val:
                 try:

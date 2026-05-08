@@ -1274,6 +1274,18 @@ DEFAULT_CONFIG = {
         # only if you run the dispatcher as a separate systemd unit or
         # don't want the gateway to spawn workers.
         "dispatch_in_gateway": True,
+        # This profile's home Kanban board. CLI/gateway default here unless
+        # an explicit HERMES_KANBAN_BOARD or `hermes kanban --board ...` is
+        # supplied. Keeping this profile-scoped prevents one bot's ambient
+        # board selection from spilling into another bot's work queue.
+        "default_board": "default",
+        # Optional allowlist of boards this profile's gateway dispatcher owns.
+        # When empty, the embedded dispatcher scans only `default_board`.
+        # Set to ["*"] to deliberately restore old all-board scanning.
+        "dispatch_boards": [],
+        # Optional allowlist for gateway kanban notifications. Defaults to
+        # `default_board`; set to ["*"] for old all-board notification fan-out.
+        "notify_boards": [],
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,

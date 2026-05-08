@@ -4073,6 +4073,78 @@ class GatewayRunner:
                     break
                 await asyncio.sleep(1)
 
+    @staticmethod
+    def _kanban_profile_default_board(kanban_cfg: dict) -> str:
+        """Return the default kanban board for this gateway profile.
+
+        Explicit config wins.  Otherwise infer the obvious profile→board
+        mapping so a profile gateway does not inherit the shared
+        ``kanban/current`` file as ambient global state.
+        """
+        explicit = str(
+            kanban_cfg.get("default_board")
+            or os.environ.get("HERMES_KANBAN_DEFAULT_BOARD")
+            or ""
+        ).strip()
+        if explicit:
+            return explicit
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            profile = (get_active_profile_name() or "default").strip().lower()
+        except Exception:
+            profile = os.environ.get("HERMES_PROFILE", "default").strip().lower()
+        aliases = {
+            "default": "hermes",
+            "nagatha": "hermes",
+            "hermes": "hermes",
+            "klasificados": "klasificados",
+            "nagaklas": "klasificados",
+            "nagovernor": "governor",
+            "governor": "governor",
+            "skippy": "skippy",
+        }
+        return aliases.get(profile, profile or "default")
+
+    @classmethod
+    def _kanban_scoped_board_slugs(cls, kanban_cfg: dict, key: str, kb_module: Any) -> list[str]:
+        """Resolve dispatcher/notifier board scope from config.
+
+        ``kanban.dispatch_boards`` / ``kanban.notify_boards`` may be a
+        list or comma-separated string.  ``["*"]`` preserves the old
+        all-boards behavior deliberately.  When unset, use the profile's
+        default board only.
+        """
+        env_key = f"HERMES_KANBAN_{key.upper()}"
+        raw = os.environ.get(env_key)
+        if raw is None:
+            raw = kanban_cfg.get(key)
+        if raw is None:
+            raw = [cls._kanban_profile_default_board(kanban_cfg)]
+        if isinstance(raw, str):
+            parts = [p.strip() for p in raw.split(",") if p.strip()]
+        elif isinstance(raw, (list, tuple, set)):
+            parts = [str(p).strip() for p in raw if str(p).strip()]
+        else:
+            parts = []
+        if not parts:
+            parts = [cls._kanban_profile_default_board(kanban_cfg)]
+        if "*" in parts:
+            try:
+                boards = kb_module.list_boards(include_archived=False)
+            except Exception:
+                boards = [kb_module.read_board_metadata(kb_module.DEFAULT_BOARD)]
+            return [b.get("slug") or kb_module.DEFAULT_BOARD for b in boards]
+        out: list[str] = []
+        for slug in parts:
+            try:
+                normed = kb_module._normalize_board_slug(slug) or kb_module.DEFAULT_BOARD
+            except Exception:
+                logger.warning("kanban: ignoring invalid board slug %r in %s", slug, key)
+                continue
+            if normed not in out:
+                out.append(normed)
+        return out or [kb_module.DEFAULT_BOARD]
+
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.
 
@@ -4098,6 +4170,14 @@ class GatewayRunner:
         except Exception:
             logger.warning("kanban notifier: kanban_db not importable; notifier disabled")
             return
+        try:
+            from hermes_cli.config import load_config as _load_config
+            cfg = _load_config()
+        except Exception:
+            cfg = {}
+        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        notify_boards = self._kanban_scoped_board_slugs(kanban_cfg, "notify_boards", _kb)
+        logger.info("kanban notifier: scoped to boards=%s", ",".join(notify_boards))
 
         TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out")
         # Terminal event kinds trigger automatic unsubscription — the task
@@ -4124,15 +4204,10 @@ class GatewayRunner:
             try:
                 def _collect():
                     deliveries: list[dict] = []
-                    # Enumerate every board on disk. Cheap: a few
-                    # directory stat calls per tick. Missing/empty
-                    # boards are silently skipped.
-                    try:
-                        boards = _kb.list_boards(include_archived=False)
-                    except Exception:
-                        boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
-                    for board_meta in boards:
-                        slug = board_meta.get("slug") or _kb.DEFAULT_BOARD
+                    # Poll only the boards this gateway profile owns (or
+                    # the explicit kanban.notify_boards list).  Use
+                    # notify_boards: ["*"] to preserve old all-board fan-out.
+                    for slug in notify_boards:
                         try:
                             conn = _kb.connect(board=slug)
                         except Exception:
@@ -4410,6 +4485,8 @@ class GatewayRunner:
             )
             failure_limit = _kb.DEFAULT_FAILURE_LIMIT
 
+        dispatch_boards = self._kanban_scoped_board_slugs(kanban_cfg, "dispatch_boards", _kb)
+
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -4455,19 +4532,9 @@ class GatewayRunner:
                         pass
 
         def _tick_once() -> "list[tuple[str, Optional[object]]]":
-            """Run one dispatch_once per board. Returns (slug, result) pairs.
-
-            Enumerating boards on every tick keeps the dispatcher honest
-            when users create a new board mid-run: no restart required,
-            the next tick picks it up automatically.
-            """
-            try:
-                boards = _kb.list_boards(include_archived=False)
-            except Exception:
-                boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            """Run one dispatch_once per configured/owned board."""
             out: list[tuple[str, "Optional[object]"]] = []
-            for b in boards:
-                slug = b.get("slug") or _kb.DEFAULT_BOARD
+            for slug in dispatch_boards:
                 out.append((slug, _tick_once_for_board(slug)))
             return out
 
@@ -4483,12 +4550,7 @@ class GatewayRunner:
             here keeps the stuck-warn fire only on real failures (broken
             PATH, missing venv, credential loss for a real Hermes profile).
             """
-            try:
-                boards = _kb.list_boards(include_archived=False)
-            except Exception:
-                boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
-            for b in boards:
-                slug = b.get("slug") or _kb.DEFAULT_BOARD
+            for slug in dispatch_boards:
                 conn = None
                 try:
                     conn = _kb.connect(board=slug)
@@ -4505,7 +4567,9 @@ class GatewayRunner:
             return False
 
         logger.info(
-            "kanban dispatcher: embedded in gateway (interval=%.1fs)", interval
+            "kanban dispatcher: embedded in gateway (interval=%.1fs, boards=%s)",
+            interval,
+            ",".join(dispatch_boards),
         )
         while self._running:
             try:

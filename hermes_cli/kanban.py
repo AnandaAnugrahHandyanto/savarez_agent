@@ -623,6 +623,40 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
 # Command dispatch
 # ---------------------------------------------------------------------------
 
+def _profile_default_board() -> str:
+    """Resolve this profile's default kanban board.
+
+    Profile config wins.  Otherwise infer common profile→board mappings
+    and fall back to the profile name.  The root/default profile maps to
+    ``hermes`` rather than the shared ``kanban/current`` ambient state.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        explicit = str(kanban_cfg.get("default_board") or "").strip()
+        if explicit:
+            return explicit
+    except Exception:
+        pass
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        profile = (get_active_profile_name() or "default").strip().lower()
+    except Exception:
+        profile = os.environ.get("HERMES_PROFILE", "default").strip().lower()
+    aliases = {
+        "default": "hermes",
+        "nagatha": "hermes",
+        "hermes": "hermes",
+        "klasificados": "klasificados",
+        "nagaklas": "klasificados",
+        "nagovernor": "governor",
+        "governor": "governor",
+        "skippy": "skippy",
+    }
+    return aliases.get(profile, profile or kb.DEFAULT_BOARD)
+
+
 def kanban_command(args: argparse.Namespace) -> int:
     """Entry point from ``hermes kanban …`` argparse dispatch.
 
@@ -666,7 +700,29 @@ def kanban_command(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
+        default_board = _profile_default_board()
+        mutating = action in {
+            "create", "assign", "reclaim", "reassign", "link", "unlink",
+            "claim", "comment", "complete", "edit", "block", "unblock",
+            "archive", "dispatch", "specify", "gc", "heartbeat",
+            "notify-subscribe", "notify-unsubscribe",
+        }
+        # Keep mutating verbs noisy about their board. Explicit cross-board
+        # writes are still allowed; the warning above makes the blast radius
+        # visible instead of relying on ambient state.
+        if mutating and normed != default_board:
+            print(
+                f"kanban: cross-board write: profile default is {default_board!r}, "
+                f"explicit --board is {normed!r}",
+                file=sys.stderr,
+            )
         os.environ["HERMES_KANBAN_BOARD"] = normed
+    elif action != "boards" and not os.environ.get("HERMES_KANBAN_BOARD"):
+        # Profile-local default beats shared kanban/current ambient state.
+        # `boards list/switch` remains global human convenience; normal
+        # task operations use the active profile's board unless --board is
+        # explicit.
+        os.environ["HERMES_KANBAN_BOARD"] = _profile_default_board()
 
     # Boards management doesn't touch the DB at all — dispatch early so
     # fresh installs that haven't initialized any DB can still use
@@ -727,6 +783,8 @@ def kanban_command(args: argparse.Namespace) -> int:
     if not handler:
         print(f"kanban: unknown action {action!r}", file=sys.stderr)
         return 2
+    if action in _MUTATING_ACTIONS:
+        _emit_board_scope_notice(args, explicit_board=bool(board_override))
     try:
         return int(handler(args) or 0)
     except (ValueError, RuntimeError) as exc:
@@ -750,6 +808,37 @@ def _profile_author() -> str:
     except Exception:
         return "user"
 
+
+_MUTATING_ACTIONS = {
+    "init", "create", "assign", "reclaim", "reassign", "link", "unlink",
+    "claim", "comment", "complete", "edit", "block", "unblock", "archive",
+    "dispatch", "daemon", "gc", "heartbeat", "notify-subscribe",
+    "notify-unsubscribe", "specify",
+}
+
+
+def _is_json_mode(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "json", False))
+
+
+def _emit_board_scope_notice(args: argparse.Namespace, *, explicit_board: bool) -> None:
+    """Show the target board for mutating CLI commands.
+
+    Human output only. JSON callers need parseable stdout/stderr, so they get
+    board identity via command payloads where supported, not this banner.
+    """
+    if _is_json_mode(args):
+        return
+    target = kb.get_current_board()
+    print(f"Target board: {target}")
+    default = kb.get_profile_default_board()
+    if target != default and not explicit_board:
+        print(
+            f"warning: target board {target!r} differs from this profile's "
+            f"default board {default!r}; use `--board {target}` to make "
+            "cross-board mutation explicit.",
+            file=sys.stderr,
+        )
 
 # ---------------------------------------------------------------------------
 # Boards management (hermes kanban boards …)
