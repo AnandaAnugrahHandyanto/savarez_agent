@@ -241,7 +241,9 @@ async def test_goal_set_starts_background_mission_without_replaying_goal_as_plai
     assert "Goal set" in response
     runner._enqueue_fifo.assert_not_called()
     runner._run_goal_background_mission.assert_awaited_once()
-    state_arg, source_arg = runner._run_goal_background_mission.await_args.args
+    await_args = runner._run_goal_background_mission.await_args
+    assert await_args is not None
+    state_arg, source_arg = await_args.args
     assert state_arg.goal == "ship the feature"
     assert source_arg.chat_id == "c1"
 
