@@ -105,3 +105,93 @@ class TestCronCommandLifecycle:
         assert len(jobs) == 1
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
+
+    def test_create_with_model_override(self, tmp_cron_dir, capsys):
+        cron_command(
+            Namespace(
+                cron_command="create",
+                schedule="every 1h",
+                prompt="Pinned routing",
+                name=None,
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                model="claude-opus-4-7",
+                provider="anthropic",
+                base_url=None,
+            )
+        )
+        jobs = list_jobs()
+        assert len(jobs) == 1
+        assert jobs[0]["model"] == "claude-opus-4-7"
+        assert jobs[0]["provider"] == "anthropic"
+        assert jobs[0]["base_url"] is None
+
+    def test_edit_can_set_and_clear_model_override(self, tmp_cron_dir, capsys):
+        job = create_job(prompt="Routing target", schedule="every 1h")
+
+        cron_command(
+            Namespace(
+                cron_command="edit",
+                job_id=job["id"],
+                schedule=None,
+                prompt=None,
+                name=None,
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                clear_skills=False,
+                model="claude-opus-4-7",
+                provider="anthropic",
+                base_url="https://api.anthropic.com",
+            )
+        )
+        updated = get_job(job["id"])
+        assert updated["model"] == "claude-opus-4-7"
+        assert updated["provider"] == "anthropic"
+        assert updated["base_url"] == "https://api.anthropic.com"
+
+        cron_command(
+            Namespace(
+                cron_command="edit",
+                job_id=job["id"],
+                schedule=None,
+                prompt=None,
+                name=None,
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                clear_skills=False,
+                model="",
+                provider="",
+                base_url="",
+            )
+        )
+        cleared = get_job(job["id"])
+        assert cleared["model"] is None
+        assert cleared["provider"] is None
+        assert cleared["base_url"] is None
+
+    def test_show_renders_routing_fields(self, tmp_cron_dir, capsys):
+        job = create_job(
+            prompt="Inspect me",
+            schedule="every 1h",
+            model="claude-opus-4-7",
+            provider="anthropic",
+        )
+        rc = cron_command(Namespace(cron_command="show", job_id=job["id"]))
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert job["id"] in out
+        assert "claude-opus-4-7" in out
+        assert "anthropic" in out
+        assert "Inspect me" in out
+
+    def test_show_unknown_job_returns_error(self, tmp_cron_dir, capsys):
+        rc = cron_command(Namespace(cron_command="show", job_id="bogus"))
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "not found" in out.lower()
