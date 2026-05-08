@@ -1215,3 +1215,65 @@ class TestAnthropicCompatImageConversion:
         }]
         result = _convert_openai_images_to_anthropic(messages)
         assert result[0]["content"][0]["source"]["media_type"] == "image/jpeg"
+
+class TestGetTaskTimeoutLocalEndpoint:
+    """Regression tests for local endpoint timeout auto-bump (issue #21566)."""
+
+    def test_default_timeout_when_no_base_url(self):
+        """Without base_url, default timeout is returned."""
+        from agent.auxiliary_client import _get_task_timeout, _DEFAULT_AUX_TIMEOUT
+        assert _get_task_timeout("session_search") == _DEFAULT_AUX_TIMEOUT
+
+    def test_default_timeout_when_remote_base_url(self, monkeypatch):
+        """Remote endpoints keep the default timeout."""
+        from agent.auxiliary_client import _get_task_timeout, _DEFAULT_AUX_TIMEOUT
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {},
+        )
+        assert _get_task_timeout("session_search", base_url="https://api.openai.com/v1") == _DEFAULT_AUX_TIMEOUT
+
+    def test_local_endpoint_bumps_timeout(self, monkeypatch):
+        """Local endpoints auto-bump timeout to _LOCAL_AUX_TIMEOUT."""
+        from agent.auxiliary_client import _get_task_timeout, _LOCAL_AUX_TIMEOUT
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {},
+        )
+        result = _get_task_timeout("session_search", base_url="http://localhost:8080/v1")
+        assert result == _LOCAL_AUX_TIMEOUT
+
+    def test_local_endpoint_private_ip_bumps_timeout(self, monkeypatch):
+        """Private IPs (RFC-1918) are detected as local."""
+        from agent.auxiliary_client import _get_task_timeout, _LOCAL_AUX_TIMEOUT
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {},
+        )
+        assert _get_task_timeout("session_search", base_url="http://10.0.0.1:8088/v1") == _LOCAL_AUX_TIMEOUT
+        assert _get_task_timeout("session_search", base_url="http://192.168.1.100:8000/v1") == _LOCAL_AUX_TIMEOUT
+
+    def test_explicit_config_timeout_not_overridden(self, monkeypatch):
+        """When user explicitly sets a timeout in config, local detection does not override it."""
+        from agent.auxiliary_client import _get_task_timeout
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"timeout": 120},
+        )
+        assert _get_task_timeout("session_search", base_url="http://localhost:8080/v1") == 120.0
+
+    def test_custom_default_not_overridden(self, monkeypatch):
+        """When caller provides a non-default timeout, local detection does not override."""
+        from agent.auxiliary_client import _get_task_timeout
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {},
+        )
+        result = _get_task_timeout("session_search", default=60.0, base_url="http://localhost:8080/v1")
+        assert result == 60.0
+
+    def test_empty_task_returns_default(self):
+        """Empty task name returns default without error."""
+        from agent.auxiliary_client import _get_task_timeout, _DEFAULT_AUX_TIMEOUT
+        assert _get_task_timeout("") == _DEFAULT_AUX_TIMEOUT
+        assert _get_task_timeout("", base_url="http://localhost:8080/v1") == _DEFAULT_AUX_TIMEOUT

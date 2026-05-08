@@ -2532,6 +2532,7 @@ def _resolve_task_provider_model(
 
 
 _DEFAULT_AUX_TIMEOUT = 30.0
+_LOCAL_AUX_TIMEOUT = 600.0  # Bumped timeout for local inference servers
 
 
 def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
@@ -2548,8 +2549,14 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     return task_config if isinstance(task_config, dict) else {}
 
 
-def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
-    """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*."""
+def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT,
+                      base_url: str = None) -> float:
+    """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*.
+
+    When *base_url* points to a local inference server and no explicit timeout
+    is configured for *task*, the timeout is automatically raised to
+    :data:`_LOCAL_AUX_TIMEOUT` to avoid retry storms on slow local models.
+    """
     if not task:
         return default
     task_config = _get_auxiliary_task_config(task)
@@ -2558,6 +2565,18 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
         try:
             return float(raw)
         except (ValueError, TypeError):
+            pass
+    # Auto-bump for local endpoints when using the implicit default
+    if default == _DEFAULT_AUX_TIMEOUT and base_url:
+        try:
+            from agent.model_metadata import is_local_endpoint
+            if is_local_endpoint(base_url):
+                logger.debug(
+                    "Local endpoint detected (%s) — auxiliary '%s' timeout raised from %.0fs to %.0fs",
+                    base_url, task, default, _LOCAL_AUX_TIMEOUT,
+                )
+                return _LOCAL_AUX_TIMEOUT
+        except ImportError:
             pass
     return default
 
@@ -2834,7 +2853,8 @@ def call_llm(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
-    effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
+    effective_timeout = timeout if timeout is not None else _get_task_timeout(
+        task, base_url=str(getattr(client, "base_url", resolved_base_url) or resolved_base_url or ""))
 
     # Log what we're about to do — makes auxiliary operations visible
     _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
@@ -3063,7 +3083,8 @@ async def async_call_llm(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
-    effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
+    effective_timeout = timeout if timeout is not None else _get_task_timeout(
+        task, base_url=str(getattr(client, "base_url", resolved_base_url) or resolved_base_url or ""))
 
     # Pass the client's actual base_url (not just resolved_base_url) so
     # endpoint-specific temperature overrides can distinguish
