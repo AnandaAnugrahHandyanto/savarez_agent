@@ -48,6 +48,32 @@ def _resolve_safe_cwd(cwd: str) -> str:
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 
 
+def _resolve_local_cwd(cwd: str | None) -> str:
+    """Return a safe working directory for local subprocesses.
+
+    Prefer the requested cwd when it exists. If it is missing, fall back to the
+    current process cwd when valid, otherwise HOME. This prevents stale session
+    cwd values from crashing local terminal/file tools before per-call workdir
+    overrides can take effect.
+    """
+    candidate = os.path.expanduser((cwd or "").strip())
+    if candidate:
+        try:
+            if os.path.isdir(candidate):
+                return candidate
+        except OSError:
+            pass
+
+    try:
+        here = os.getcwd()
+        if os.path.isdir(here):
+            return here
+    except OSError:
+        pass
+
+    return os.path.expanduser("~")
+
+
 def _build_provider_env_blocklist() -> frozenset:
     """Derive the blocklist from provider, tool, and gateway config."""
     blocked: set[str] = set()
@@ -341,9 +367,7 @@ class LocalEnvironment(BaseEnvironment):
     """
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
-        if cwd:
-            cwd = os.path.expanduser(cwd)
-        super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
+        super().__init__(cwd=_resolve_local_cwd(cwd), timeout=timeout, env=env)
         self.init_session()
 
     def get_temp_dir(self) -> str:
