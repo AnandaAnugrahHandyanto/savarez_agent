@@ -776,6 +776,7 @@ export function TextInput({
       let c = curRef.current
       let v = vRef.current
       const mod = isActionMod(k)
+      const bareCtrl = k.ctrl && !k.alt && !k.meta && k.super !== true && !k.shift
       const wordMod = mod || k.meta
       const actionHome = k.home || (!isMac && mod && inp === 'a') || isMacActionFallback(k, inp, 'a')
       const actionEnd = k.end || (mod && inp === 'e') || isMacActionFallback(k, inp, 'e')
@@ -829,6 +830,9 @@ export function TextInput({
         moveCursor(c, k.shift)
 
         return
+      } else if (bareCtrl && inp.toLowerCase() === 'f') {
+        clearSel()
+        c = nextPos(v, c)
       } else if (wordMod && inp === 'b') {
         clearSel()
         c = wordLeft(v, c)

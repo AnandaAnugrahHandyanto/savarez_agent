@@ -27,6 +27,10 @@ describe('shouldPassThroughToGlobalHandler', () => {
     expect(shouldPassThroughToGlobalHandler('b', key({ ctrl: true }))).toBe(true)
   })
 
+  it('does not pass through Ctrl+F with the default voice key', () => {
+    expect(shouldPassThroughToGlobalHandler('f', key({ ctrl: true }), DEFAULT_VOICE_RECORD_KEY)).toBe(false)
+  })
+
   it('does not swallow ordinary typing keys', () => {
     expect(shouldPassThroughToGlobalHandler('h', key(), parseVoiceRecordKey('ctrl+o'))).toBe(false)
     expect(shouldPassThroughToGlobalHandler('o', key(), parseVoiceRecordKey('ctrl+o'))).toBe(false)
