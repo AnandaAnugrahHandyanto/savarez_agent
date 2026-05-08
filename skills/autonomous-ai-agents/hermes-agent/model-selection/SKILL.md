@@ -31,11 +31,11 @@ Use `/model <name>` (session-scoped) when:
 
 | Situation | Action |
 |---|---|
-| User says "use Claude" / "use Sonnet" / "use better model" | `/model anthropic/claude-sonnet-4.6` |
-| User says "use Opus" / "use the smartest model" / "think harder about this" | `/model anthropic/claude-opus-4.6` |
+| User says "use Claude" / "use Sonnet" / "use better model" | `/model anthropic/claude-sonnet-4-6` |
+| User says "use Opus" / "use the smartest model" / "think harder about this" | `/model anthropic/claude-opus-4-6` |
 | User says "use MiniMax" / "go back to default" | `/model MiniMax-M2.7` |
-| You've gotten MiniMax wrong twice on the same problem | escalate: `/model anthropic/claude-sonnet-4.6`, retry |
-| You've gotten Sonnet wrong twice on the same hard problem | escalate further: `/model anthropic/claude-opus-4.6`, retry |
+| You've gotten MiniMax wrong twice on the same problem | escalate: `/model anthropic/claude-sonnet-4-6`, retry |
+| You've gotten Sonnet wrong twice on the same hard problem | escalate further: `/model anthropic/claude-opus-4-6`, retry |
 | Multi-step planning across an unfamiliar domain, where mistakes cost real time | escalate to Sonnet (or Opus) before starting |
 | User explicitly asks for a careful answer / important decision / nuanced judgment | escalate to Sonnet or Opus |
 
@@ -46,8 +46,8 @@ Don't escalate to Opus for routine chat, simple lookups, format conversions, or 
 | Model | Identifier | Auth | Context | Notes |
 |---|---|---|---|---|
 | MiniMax-M2.7 (default) | `MiniMax-M2.7` | base_url (paid per-token) | 200K tokens | Bulk-friendly, no Pro/Max quota touched |
-| Sonnet 4.6 (auto-fallback) | `anthropic/claude-sonnet-4.6` | Claude Pro/Max OAuth (`~/.claude/.credentials.json`) | 1M tokens | Best general balance; bills Pro/Max |
-| Opus 4.6 (manual only) | `anthropic/claude-opus-4.6` | same OAuth | 1M tokens | Smartest; Pro/Max quota burns fastest |
+| Sonnet 4.6 (auto-fallback) | `anthropic/claude-sonnet-4-6` | Claude Pro/Max OAuth (`~/.claude/.credentials.json`) | 1M tokens | Best general balance; bills Pro/Max |
+| Opus 4.6 (manual only) | `anthropic/claude-opus-4-6` | same OAuth | 1M tokens | Smartest; Pro/Max quota burns fastest |
 
 ## Switching mechanics
 
@@ -55,6 +55,8 @@ Don't escalate to Opus for routine chat, simple lookups, format conversions, or 
 - `/model <name> --global` — write to `~/.hermes/config.yaml`. **But:** the entrypoint re-applies `HERMES_ENFORCED_MODEL` on every restart, so `--global` only sticks until next container start. To make a permanent change, the user has to update the Railway env var.
 - `/model --provider anthropic` — auto-pick best Anthropic model. Useful if the user just wants a provider switch.
 - The `/model` command refuses to switch while an agent loop is running (see `gateway/run.py`). Wait until the current request finishes.
+
+**Always use the dashed form** for Anthropic identifiers (`claude-opus-4-6`, not `claude-opus-4.6`). The dotted form silently routes to an older variant — Anthropic's API treats `4.6` as a decimal that gets truncated to `4`, landing on `claude-opus-4-20250514` (Opus 4.0) instead of the intended `claude-opus-4-6` (Opus 4.6). Same applies to Sonnet.
 
 ## Mid-conversation switch — what to expect
 
