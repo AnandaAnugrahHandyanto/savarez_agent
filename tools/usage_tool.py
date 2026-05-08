@@ -42,6 +42,28 @@ def get_usage_tool(agent=None) -> str:
         "api_calls": api_calls,
     }
 
+    # Cost estimation
+    try:
+        from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+        cost_result = estimate_usage_cost(
+            agent.model,
+            CanonicalUsage(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read,
+                cache_write_tokens=cache_write,
+            ),
+            provider=agent.provider,
+            base_url=getattr(agent, "base_url", None),
+        )
+        if cost_result.amount_usd is not None:
+            data["cost"] = {
+                "amount_usd": cost_result.amount_usd,
+                "status": cost_result.status
+            }
+    except Exception:
+        pass
+
     # Context window info
     if hasattr(agent, "context_limit"):
         data["context"] = {

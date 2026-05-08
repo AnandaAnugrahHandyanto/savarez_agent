@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 import json
 import sys
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
-from hermes_cli.auth import resolve_provider
 from hermes_cli.colors import Colors, color
-from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_state import SessionDB
 
 def _format_token(n: int) -> str:
@@ -47,6 +43,25 @@ def cmd_usage(args):
         except Exception:
             pass
 
+    # Cost estimation
+    try:
+        cost_result = estimate_usage_cost(
+            model,
+            CanonicalUsage(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read,
+                cache_write_tokens=cache_write,
+            ),
+            provider=provider,
+            base_url=base_url,
+        )
+        cost_usd = cost_result.amount_usd
+        cost_status = cost_result.status
+    except Exception:
+        cost_usd = None
+        cost_status = "unknown"
+
     # Fetch account usage
     try:
         account_snapshot = fetch_account_usage(provider, base_url=base_url, api_key=api_key)
@@ -67,6 +82,12 @@ def cmd_usage(args):
             },
             "api_calls": api_calls,
         }
+        
+        if cost_usd is not None:
+            data["cost"] = {
+                "amount_usd": cost_usd,
+                "status": cost_status
+            }
         
         if account_snapshot:
             data["account"] = {
@@ -99,6 +120,9 @@ def cmd_usage(args):
     print(f"  Output:       {_format_token(output_tokens)}")
     print(f"  Total:        {color(_format_token(input_tokens + output_tokens + cache_read + cache_write), Colors.BOLD)}")
     print(f"  API Calls:    {api_calls}")
+    if cost_usd is not None:
+        prefix = "~" if cost_status == "estimated" else ""
+        print(f"  Cost:         {prefix}${cost_usd:.4f}")
 
     if account_snapshot:
         print()
