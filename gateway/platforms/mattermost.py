@@ -27,6 +27,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
 )
 
@@ -98,6 +99,17 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
+
+        # Configurable command prefix (e.g. "!" so "!sethome" becomes "/sethome").
+        # Mattermost intercepts "/" client-side, so gateway commands need a
+        # different prefix to reach the bot.
+        self._command_prefix: str = (
+            config.extra.get("command_prefix")
+            or os.getenv("MATTERMOST_COMMAND_PREFIX", "!")
+        )
+
+        # Track post IDs that should receive lifecycle reactions.
+        self._reacting_message_ids: set = set()
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -657,6 +669,10 @@ class MattermostAdapter(BasePlatformAdapter):
         # Determine message type.
         file_ids = post.get("file_ids") or []
         msg_type = MessageType.TEXT
+        # Rewrite configurable command prefix (e.g. "!") to "/" so the
+        # upstream command dispatcher recognises it as a COMMAND.
+        if self._command_prefix and message_text.startswith(self._command_prefix):
+            message_text = "/" + message_text[len(self._command_prefix):]
         if message_text.startswith("/"):
             msg_type = MessageType.COMMAND
 
@@ -733,6 +749,74 @@ class MattermostAdapter(BasePlatformAdapter):
             channel_prompt=_channel_prompt,
         )
 
+        self._reacting_message_ids.add(post_id)
         await self.handle_message(msg_event)
+
+    # ------------------------------------------------------------------
+    # Reaction support (processing lifecycle indicators)
+    # ------------------------------------------------------------------
+
+    def _reactions_enabled(self) -> bool:
+        """Check if message reactions are enabled via config/env."""
+        return os.getenv("MATTERMOST_REACTIONS", "true").lower() not in (
+            "false", "0", "no",
+        )
+
+    async def _add_reaction(self, post_id: str, emoji_name: str) -> bool:
+        """Add an emoji reaction to a Mattermost post. Returns True on success."""
+        if not self._session:
+            return False
+        try:
+            result = await self._api_post("reactions", {
+                "post_id": post_id,
+                "emoji_name": emoji_name,
+                "user_id": self._bot_user_id,
+            })
+            return bool(result)
+        except Exception as e:
+            logger.debug("[Mattermost] add_reaction failed (%s): %s", emoji_name, e)
+            return False
+
+    async def _remove_reaction(self, post_id: str, emoji_name: str) -> bool:
+        """Remove an emoji reaction from a Mattermost post. Returns True on success."""
+        if not self._session:
+            return False
+        url = (
+            f"{self._base_url}/api/v4/users/{self._bot_user_id}"
+            f"/posts/{post_id}/reactions/{emoji_name}"
+        )
+        try:
+            async with self._session.delete(
+                url, headers=self._headers(),
+            ) as resp:
+                return resp.status < 400
+        except Exception as e:
+            logger.debug("[Mattermost] remove_reaction failed (%s): %s", emoji_name, e)
+            return False
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Add 👀 when message processing begins."""
+        if not self._reactions_enabled():
+            return
+        post_id = getattr(event, "message_id", None)
+        if not post_id or post_id not in self._reacting_message_ids:
+            return
+        await self._add_reaction(post_id, "eyes")
+
+    async def on_processing_complete(
+        self, event: MessageEvent, outcome: ProcessingOutcome
+    ) -> None:
+        """Swap 👀 for ✅/❌ when processing finishes."""
+        if not self._reactions_enabled():
+            return
+        post_id = getattr(event, "message_id", None)
+        if not post_id or post_id not in self._reacting_message_ids:
+            return
+        self._reacting_message_ids.discard(post_id)
+        await self._remove_reaction(post_id, "eyes")
+        if outcome == ProcessingOutcome.SUCCESS:
+            await self._add_reaction(post_id, "white_check_mark")
+        elif outcome == ProcessingOutcome.FAILURE:
+            await self._add_reaction(post_id, "x")
 
 
