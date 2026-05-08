@@ -6,7 +6,7 @@ import sys
 import time
 from pathlib import Path
 
-import pytest
+import pytest  # type: ignore[unresolved-import]
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_DIR = REPO_ROOT / "plugins" / "memory" / "mempalace"
@@ -22,9 +22,10 @@ def _ensure_package(name: str, package_dir: Path) -> None:
         package_dir / "__init__.py",
         submodule_search_locations=[str(package_dir)],
     )
+    assert spec is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
-    if spec and spec.loader and (package_dir / "__init__.py").exists():
+    if spec.loader and (package_dir / "__init__.py").exists():
         spec.loader.exec_module(module)
 
 

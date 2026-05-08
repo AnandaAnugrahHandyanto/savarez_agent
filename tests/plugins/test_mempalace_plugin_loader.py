@@ -4,9 +4,10 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
-import pytest
+import pytest  # type: ignore[unresolved-import]
 
 _mempalace_installed = False
 try:
@@ -112,8 +113,8 @@ def test_dedup_uses_cheap_filters_before_sequence_matcher(plugin_module):
     from plugins.memory.mempalace import tools as tools_module
 
     provider = plugin_module.MemPalaceMemoryProvider()
-    original = tools_module.SequenceMatcher
-    tools_module.SequenceMatcher = lambda *args, **kwargs: (_ for _ in ()).throw(
+    original: Any = tools_module.SequenceMatcher
+    tools_module.SequenceMatcher = lambda *args, **kwargs: (_ for _ in ()).throw(  # type: ignore[assignment]
         AssertionError("SequenceMatcher should not run for unrelated content")
     )
     try:

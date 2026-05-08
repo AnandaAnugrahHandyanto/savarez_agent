@@ -29,6 +29,10 @@ class MemPalaceHooksMixin:
     _recent_messages: list[dict[str, Any]]
     _session_id: str
     _thread_factory: Callable[..., Any]
+    _format_search_result: Callable[..., Any]
+    _raw_search: Callable[..., Any]
+    _resolve_room: Callable[..., str]
+    _store_memory: Callable[..., str]
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Fire background search for the next turn."""

@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
+import pytest  # type: ignore[unresolved-import]
 import yaml
 
 _repo_root = str(Path(__file__).resolve().parents[2])

@@ -32,6 +32,10 @@ class MemPalaceToolsMixin:
     _tool_max_results: int
     _user_id: str
     _wing: str
+    _queue_item: Any
+    _resolve_room: Any
+    _runtime_context: Any
+    _store_memory: Any
 
     _CONVERSATION_MESSAGE_KINDS = {"user_message", "assistant_message"}
     _MEMORY_PRIORITY_KINDS = {
@@ -340,7 +344,8 @@ class MemPalaceToolsMixin:
     def _result_rank_key(
         self, item: dict[str, Any]
     ) -> tuple[int, int, float, float, str]:
-        meta = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        raw_meta = item.get("metadata")
+        meta: dict[str, Any] = raw_meta if isinstance(raw_meta, dict) else {}
         message_kind = str(meta.get("message_kind", "") or "")
         is_low_signal = self._is_low_signal_conversation(item)
         priority_bucket = 0 if message_kind in self._MEMORY_PRIORITY_KINDS else 1
@@ -360,7 +365,8 @@ class MemPalaceToolsMixin:
         )
 
     def _is_low_signal_conversation(self, item: dict[str, Any]) -> bool:
-        meta = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        raw_meta = item.get("metadata")
+        meta: dict[str, Any] = raw_meta if isinstance(raw_meta, dict) else {}
         message_kind = str(meta.get("message_kind", "") or "")
         if message_kind not in self._CONVERSATION_MESSAGE_KINDS:
             return False
@@ -389,7 +395,7 @@ class MemPalaceToolsMixin:
     def _looks_like_duplicate(self, left: str, right: str) -> bool:
         if left == right:
             return True
-        shorter, longer = sorted((left, right), key=len)
+        shorter, longer = sorted((left, right), key=len)  # type: ignore[assignment]
         if shorter and longer.startswith(shorter[: min(len(shorter), 120)]):
             if len(shorter) >= 40:
                 return True
