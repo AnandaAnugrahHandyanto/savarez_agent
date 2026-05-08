@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
@@ -784,7 +784,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["base_url"], "https://openrouter.ai/api/v1")
         self.assertEqual(creds["api_key"], "sk-or-test-key")
         self.assertEqual(creds["api_mode"], "chat_completions")
-        mock_resolve.assert_called_once_with(requested="openrouter")
+        mock_resolve.assert_called_once_with(requested="openrouter", target_model=ANY)
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_provider_resolution_uses_runtime_model_when_config_model_missing(self, mock_resolve):
@@ -804,7 +804,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["model"], "server-default-model")
         self.assertEqual(creds["provider"], "custom")
         self.assertEqual(creds["base_url"], "https://my-server.example/v1")
-        mock_resolve.assert_called_once_with(requested="custom:my-server")
+        mock_resolve.assert_called_once_with(requested="custom:my-server", target_model=ANY)
 
     def test_direct_endpoint_uses_configured_base_url_and_api_key(self):
         parent = _make_mock_parent(depth=0)
@@ -868,7 +868,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["provider"], "nous")
         self.assertEqual(creds["base_url"], "https://inference-api.nousresearch.com/v1")
         self.assertEqual(creds["api_key"], "nous-agent-key-xyz")
-        mock_resolve.assert_called_once_with(requested="nous")
+        mock_resolve.assert_called_once_with(requested="nous", target_model=ANY)
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_provider_resolution_failure_raises_valueerror(self, mock_resolve):
@@ -1640,11 +1640,12 @@ class TestDelegateHeartbeat(unittest.TestCase):
 
         # With idle threshold=5 + interval=0.05s, touches should cap
         # around 5. Bound loosely to avoid timing flakes.
+        from tools.delegate_tool import _HEARTBEAT_STALE_CYCLES_IDLE
         self.assertLess(
-            len(touch_calls), 9,
+            len(touch_calls), _HEARTBEAT_STALE_CYCLES_IDLE + 2,
             f"Idle stale detection did not fire: got {len(touch_calls)} "
             f"touches over 0.6s — expected heartbeat to stop after "
-            f"~5 stale cycles",
+            f"~{_HEARTBEAT_STALE_CYCLES_IDLE} stale cycles",
         )
 
 
