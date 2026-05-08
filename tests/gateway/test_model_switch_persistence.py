@@ -243,3 +243,52 @@ class TestIsIntentionalModelSwitch:
         }
 
         assert runner._is_intentional_model_switch(sk, "gpt-5.4") is False
+
+
+class TestClearProviderOpaqueHistoryForModelSwitch:
+    """Provider-private Responses state must not survive /model switches."""
+
+    def test_removes_encrypted_reasoning_state_but_keeps_visible_history(self):
+        runner = _make_runner()
+        sk = build_session_key(_make_source())
+        runner.session_store.load_transcript.return_value = [
+            {"role": "user", "content": "hi", "timestamp": 1.0},
+            {
+                "role": "assistant",
+                "content": "hello",
+                "timestamp": 2.0,
+                "codex_reasoning_items": [{"type": "reasoning", "encrypted_content": "secret"}],
+                "codex_message_items": [{"type": "message", "id": "msg_1"}],
+                "reasoning_details": [{"provider": "old"}],
+                "reasoning_content": "private chain",
+                "reasoning": "visible summary is safe",
+            },
+            {
+                "role": "tool",
+                "content": "tool result",
+                "tool_call_id": "call_1",
+            },
+        ]
+
+        changed = runner._clear_provider_opaque_history_for_model_switch(sk)
+
+        assert changed == 1
+        runner.session_store.rewrite_transcript.assert_called_once()
+        session_id, rewritten = runner.session_store.rewrite_transcript.call_args.args
+        assert session_id == "sess-1"
+        assert rewritten[0]["content"] == "hi"
+        assistant = rewritten[1]
+        assert assistant["content"] == "hello"
+        assert assistant["reasoning"] == "visible summary is safe"
+        assert "codex_reasoning_items" not in assistant
+        assert "codex_message_items" not in assistant
+        assert "reasoning_details" not in assistant
+        assert "reasoning_content" not in assistant
+        assert rewritten[2]["tool_call_id"] == "call_1"
+
+    def test_noops_when_session_missing(self):
+        runner = _make_runner()
+        changed = runner._clear_provider_opaque_history_for_model_switch("missing")
+        assert changed == 0
+        runner.session_store.load_transcript.assert_not_called()
+        runner.session_store.rewrite_transcript.assert_not_called()

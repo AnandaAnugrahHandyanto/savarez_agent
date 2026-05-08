@@ -7921,6 +7921,74 @@ class GatewayRunner:
             getattr(getattr(event, "source", None), "platform", None),
         )
 
+    def _clear_provider_opaque_history_for_model_switch(self, session_key: Optional[str]) -> int:
+        """Strip provider-specific opaque reasoning state after /model switches.
+
+        Responses-API providers can persist encrypted reasoning blobs in the
+        transcript.  Those blobs are only decryptable by the provider/model that
+        produced them.  If the user switches a live gateway session from one
+        provider to another (for example OpenAI Codex -> xAI Grok), replaying
+        the old blobs causes hard HTTP 400 failures before the new model can
+        answer.  Keep the visible conversation and tool history, but remove the
+        opaque provider-private continuation fields.
+        """
+        if not session_key:
+            return 0
+
+        session_store = getattr(self, "session_store", None)
+        if session_store is None:
+            return 0
+
+        try:
+            entry = getattr(session_store, "_entries", {}).get(session_key)
+            session_id = getattr(entry, "session_id", None)
+            if not session_id:
+                return 0
+
+            history = session_store.load_transcript(session_id)
+            if not history:
+                return 0
+
+            changed = 0
+            cleaned = []
+            opaque_keys = (
+                "codex_reasoning_items",
+                "codex_message_items",
+                "reasoning_details",
+                "reasoning_content",
+            )
+            for msg in history:
+                if not isinstance(msg, dict):
+                    cleaned.append(msg)
+                    continue
+                if msg.get("role") != "assistant":
+                    cleaned.append(msg)
+                    continue
+                new_msg = dict(msg)
+                removed = False
+                for key in opaque_keys:
+                    if key in new_msg:
+                        new_msg.pop(key, None)
+                        removed = True
+                if removed:
+                    changed += 1
+                cleaned.append(new_msg)
+
+            if changed:
+                session_store.rewrite_transcript(session_id, cleaned)
+                logger.info(
+                    "Cleared provider-opaque transcript state for model switch: session=%s messages=%d",
+                    session_key,
+                    changed,
+                )
+            return changed
+        except Exception as exc:
+            logger.debug(
+                "Failed to clear provider-opaque transcript state for model switch: %s",
+                exc,
+            )
+            return 0
+
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model for this session.
 
@@ -8063,6 +8131,9 @@ class GatewayRunner:
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
                         }
+                        stripped_opaque_messages = _self._clear_provider_opaque_history_for_model_switch(
+                            _session_key
+                        )
 
                         # Evict cached agent so the next turn creates a fresh
                         # agent from the override rather than relying on the
@@ -8103,6 +8174,10 @@ class GatewayRunner:
                                 lines.append(f"Cost: {mi.format_cost()}")
                             lines.append(f"Capabilities: {mi.format_capabilities()}")
                         lines.append("_(session only — use `/model <name> --global` to persist)_")
+                        if stripped_opaque_messages:
+                            lines.append(
+                                f"Cleared provider-private reasoning state from {stripped_opaque_messages} prior message(s)."
+                            )
                         return "\n".join(lines)
 
                     metadata = {"thread_id": source.thread_id} if source.thread_id else None
@@ -8203,6 +8278,9 @@ class GatewayRunner:
             "base_url": result.base_url,
             "api_mode": result.api_mode,
         }
+        stripped_opaque_messages = self._clear_provider_opaque_history_for_model_switch(
+            session_key
+        )
 
         # Evict cached agent so the next turn creates a fresh agent from the
         # override rather than relying on cache signature mismatch detection.
@@ -8278,6 +8356,11 @@ class GatewayRunner:
             lines.append("Saved to config.yaml (`--global`)")
         else:
             lines.append("_(session only -- add `--global` to persist)_")
+
+        if stripped_opaque_messages:
+            lines.append(
+                f"Cleared provider-private reasoning state from {stripped_opaque_messages} prior message(s)."
+            )
 
         return "\n".join(lines)
 
