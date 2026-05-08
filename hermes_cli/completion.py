@@ -147,7 +147,7 @@ def generate_zsh(parser: argparse.ArgumentParser) -> str:
     top_cmds_lines: list[str] = []
     for cmd in sorted(tree["subcommands"]):
         help_text = _clean(tree["subcommands"][cmd].get("help", ""))
-        top_cmds_lines.append(f"                '{cmd}:{help_text}'")
+        top_cmds_lines.append(f"        '{cmd}:{help_text}'")
     top_cmds_str = "\n".join(top_cmds_lines)
 
     sub_cases: list[str] = []
@@ -199,8 +199,10 @@ def generate_zsh(parser: argparse.ArgumentParser) -> str:
 
     return f"""#compdef hermes
 # Hermes Agent zsh completion
-# Add to ~/.zshrc:
-#   eval "$(hermes completion zsh)"
+# Save as one of:
+#   ~/.zfunc/_hermes
+#   $fpath[1]/_hermes
+# Then run: autoload -Uz compinit && compinit
 
 _hermes_profiles() {{
     local -a profiles
@@ -216,9 +218,12 @@ _hermes() {{
     typeset -A opt_args
 
     _arguments -C \\
-        '(-h --help){{-h,--help}}[Show help and exit]' \\
-        '(-V --version){{-V,--version}}[Show version and exit]' \\
-        '(-p --profile){{-p,--profile}}[Profile name]:profile:_hermes_profiles' \\
+        '(-h --help)-h[Show help and exit]' \\
+        '(-h --help)--help[Show help and exit]' \\
+        '(-V --version)-V[Show version and exit]' \\
+        '(-V --version)--version[Show version and exit]' \\
+        '(-p --profile)-p[Profile name]:profile:_hermes_profiles' \\
+        '(-p --profile)--profile[Profile name]:profile:_hermes_profiles' \\
         '1:command:->commands' \\
         '*::arg:->args'
 
@@ -237,10 +242,7 @@ _hermes() {{
             ;;
     esac
 }}
-
-_hermes "$@"
 """
-
 
 # ---------------------------------------------------------------------------
 # Fish

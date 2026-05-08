@@ -140,6 +140,24 @@ class TestGenerateZsh:
         # gateway has subcommands so a _cmds array must be generated
         assert "gateway_cmds" in out
 
+    def test_does_not_self_invoke_function(self):
+        out = generate_zsh(_make_parser())
+        assert '_hermes "$@"' not in out
+
+    def test_documents_zfunc_install_path(self):
+        out = generate_zsh(_make_parser())
+        assert "~/.zfunc/_hermes" in out
+
+    def test_includes_top_level_flags(self):
+        out = generate_zsh(_make_parser())
+        assert "--profile" in out
+        assert "--help" in out
+        assert "--version" in out
+
+    def test_top_level_commands_are_not_over_indented(self):
+        out = generate_zsh(_make_parser())
+        assert "\n        'chat:" in out
+
 
 # ---------------------------------------------------------------------------
 # 4. Fish output
