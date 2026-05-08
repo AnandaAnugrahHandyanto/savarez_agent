@@ -87,13 +87,18 @@ function trimSoftWrapBoundaries(text: string, maxWidth: number): string {
         return pieces[0]!
       }
 
-      return pieces
-        .map((piece, index) => {
-          const withoutLeadingWrapSpace = index === 0 ? piece : piece.trimStart()
+      for (let index = 0; index < pieces.length - 1; index++) {
+        const current = pieces[index]!
+        const next = pieces[index + 1]!
 
-          return index === pieces.length - 1 ? withoutLeadingWrapSpace : withoutLeadingWrapSpace.trimEnd()
-        })
-        .join('\n')
+        if (/\s$/.test(current)) {
+          pieces[index] = current.replace(/\s$/, '')
+        } else if (/^\s/.test(next)) {
+          pieces[index + 1] = next.replace(/^\s/, '')
+        }
+      }
+
+      return pieces.join('\n')
     })
     .join('\n')
 }
