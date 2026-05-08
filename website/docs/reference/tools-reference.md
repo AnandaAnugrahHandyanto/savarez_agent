@@ -6,9 +6,9 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 # Built-in Tools Reference
 
-This page documents all 68 built-in tools in the Hermes tool registry, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
+This page documents all 82 built-in tools in the Hermes tool registry, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
 
-**Quick counts:** 10 browser tools (core) + 2 browser-cdp tools, 4 file tools, 10 RL tools, 4 Home Assistant tools, 2 terminal tools, 2 web tools, 5 Feishu tools, 7 Spotify tools, 5 Yuanbao tools, 2 Discord tools, and 15 standalone tools across other toolsets.
+**Quick counts:** 10 browser tools (core) + 2 browser-cdp tools, 4 file tools, 10 RL tools, 4 Home Assistant tools, 14 Kaspa/Kasia tools, 2 terminal tools, 2 web tools, 5 Feishu tools, 7 Spotify tools, 5 Yuanbao tools, 2 Discord tools, and 15 standalone tools across other toolsets.
 
 :::tip MCP Tools
 In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with a server-name prefix (e.g., `github_create_issue` for the `github` MCP server). See [MCP Integration](/docs/user-guide/features/mcp) for configuration.
@@ -108,6 +108,34 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `image_generate` | Generate high-quality images from text prompts using FAL.ai. The underlying model is user-configured (default: FLUX 2 Klein 9B, sub-1s generation) and is not selectable by the agent. Returns a single image URL. Display it using… | FAL_KEY |
+
+## `kaspa` toolset
+
+Read-only Kaspa, KNS, and Kasia indexer lookups. These tools intentionally do not sign, broadcast, mutate wallet state, or talk directly to a raw `kaspad` RPC socket. Use them for discovery and status checks; future write/broadcast capabilities should live in a separate tool or explicitly gated flow.
+
+Backend split:
+
+- **Kaspa REST reads** default to `https://api.kaspa.org` and can be overridden with `KASPA_API_URL` or per-call `url`.
+- **Kasia indexer reads** default to `https://indexer.kasia.fyi` and can be overridden with `KASIA_INDEXER_URL` or per-call `url`.
+- **KNS reads** default to `https://api.knsdomains.org/mainnet` and can be overridden with `KNS_API_URL` or per-call `url`.
+- **Private nodes** are expected to be used for future node/RPC operations such as transaction construction, validation, or broadcast, not for explorer-style historical address queries unless a REST/indexer facade is added.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `kaspa_api_health` | Read-only check of the Kaspa REST `/info/health` endpoint. | — |
+| `kasia_indexer_health` | Read-only check of the Kasia indexer `/metrics` endpoint. | — |
+| `kaspa_address_balance` | Read-only balance lookup for a Kaspa address. | — |
+| `kaspa_address_name` | Read-only known-name lookup for a Kaspa address. | — |
+| `kaspa_address_utxo_count` | Read-only UTXO count lookup for a Kaspa address. | — |
+| `kns_domain_owner` | Read-only owner lookup for a KNS domain such as `example.kas`. | — |
+| `kns_primary_name` | Read-only primary KNS name lookup for a Kaspa address. | — |
+| `kns_search_assets` | Read-only KNS asset/domain search with optional `asset`, `owner`, pagination, sort, collection, and type filters. | — |
+| `kasia_indexer_handshakes_by_sender` | Read-only Kasia handshake lookup by sender address, with optional `limit` and `block_time`. | — |
+| `kasia_indexer_handshakes_by_receiver` | Read-only Kasia handshake lookup by receiver address, with optional `limit` and `block_time`. | — |
+| `kasia_indexer_payments_by_sender` | Read-only Kasia payment lookup by sender address, with optional `limit` and `block_time`. | — |
+| `kasia_indexer_payments_by_receiver` | Read-only Kasia payment lookup by receiver address, with optional `limit` and `block_time`. | — |
+| `kasia_indexer_contextual_messages_by_sender` | Read-only Kasia contextual-message lookup by sender address and alias, with optional `limit` and `block_time`. | — |
+| `kasia_indexer_self_stash_by_owner` | Read-only Kasia self-stash lookup by scope and owner, with optional `limit` and `block_time`. | — |
 
 ## `memory` toolset
 
