@@ -2,12 +2,13 @@
 
 import importlib
 import unittest
+from unittest.mock import patch
 
 from tools.registry import registry
 
 # Trigger tool discovery so feishu tools get registered
-importlib.import_module("tools.feishu_doc_tool")
-importlib.import_module("tools.feishu_drive_tool")
+feishu_doc_tool = importlib.import_module("tools.feishu_doc_tool")
+feishu_drive_tool = importlib.import_module("tools.feishu_drive_tool")
 
 
 class TestFeishuToolRegistration(unittest.TestCase):
@@ -56,6 +57,18 @@ class TestFeishuToolRegistration(unittest.TestCase):
             props = entry.schema["parameters"].get("properties", {})
             self.assertIn("file_token", props, f"{tool_name} missing file_token param")
             self.assertIn("file_type", props, f"{tool_name} missing file_type param")
+
+    def test_availability_checks_probe_without_importing_lark_sdk(self):
+        def fail_on_lark_import(name, *args, **kwargs):
+            if name == "lark_oapi" or name.startswith("lark_oapi."):
+                raise AssertionError("availability check must not import lark_oapi")
+            return real_import(name, *args, **kwargs)
+
+        real_import = __import__
+        with patch("importlib.util.find_spec", return_value=object()):
+            with patch("builtins.__import__", side_effect=fail_on_lark_import):
+                self.assertTrue(feishu_doc_tool._check_feishu())
+                self.assertTrue(feishu_drive_tool._check_feishu())
 
 
 if __name__ == "__main__":
