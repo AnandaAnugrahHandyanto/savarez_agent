@@ -3713,11 +3713,11 @@ def _default_spawn(
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
 
-    hermes_bin: list[str]
+    _which = shutil.which("hermes")
     if executable:
-        hermes_bin = [executable]
-    elif shutil.which("hermes"):
-        hermes_bin = [shutil.which("hermes")]  # type: ignore[list-item]
+        hermes_bin: list[str] = [executable]
+    elif _which:
+        hermes_bin = [_which]
     else:
         hermes_bin = [sys.executable, "-m", "hermes_cli.main"]
 
