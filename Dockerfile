@@ -65,12 +65,12 @@ RUN cd web && npm run build && \
 
 # ---------- Permissions ----------
 # Make install dir world-readable so any HERMES_UID can read it at runtime.
-# The venv needs to be traversable too.
 # node_modules trees additionally need to be writable by the hermes user
 # so the runtime `npm install` triggered by _tui_need_npm_install() in
-# hermes_cli/main.py succeeds (see #18800). /opt/hermes/web is build-time
-# only (HERMES_WEB_DIST points at hermes_cli/web_dist) and is intentionally
-# not chowned here.
+# hermes_cli/main.py succeeds (see #18800). The Python venv is chowned
+# after creation for the same non-root runtime/write-cache reason.
+# /opt/hermes/web is build-time only (HERMES_WEB_DIST points at
+# hermes_cli/web_dist) and is intentionally not chowned here.
 USER root
 RUN chmod -R a+rX /opt/hermes && \
     chown -R hermes:hermes /opt/hermes/ui-tui /opt/hermes/node_modules
@@ -79,7 +79,8 @@ RUN chmod -R a+rX /opt/hermes && \
 
 # ---------- Python virtualenv ----------
 RUN uv venv && \
-    uv pip install --no-cache-dir -e ".[all]"
+    uv pip install --no-cache-dir -e ".[all]" && \
+    chown -R hermes:hermes /opt/hermes/.venv
 
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
