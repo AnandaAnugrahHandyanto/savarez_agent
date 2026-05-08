@@ -156,6 +156,18 @@ def display_hermes_home() -> str:
     :func:`get_hermes_home` instead.
     """
     home = get_hermes_home()
+    # When HERMES_HOME equals the unix user's home directory — the layout
+    # the official Docker image creates with ``useradd -d /opt/data``
+    # followed by ``ENV HERMES_HOME=/opt/data`` — the ``~/`` shorthand has
+    # nothing left to shorten. ``home.relative_to(Path.home())`` returns
+    # ``Path('.')`` and the result becomes ``~/.``, which then concatenates
+    # into descriptions like ``Relative paths resolve under ~/./scripts/.``.
+    # Both humans and LLMs reading that string expand ``~`` against their
+    # own ``$HOME`` (its universal meaning) and end up looking for files
+    # in the wrong place. Return the absolute path instead so the rendered
+    # string is unambiguous regardless of the reader's environment.
+    if home == Path.home():
+        return str(home)
     try:
         return "~/" + str(home.relative_to(Path.home()))
     except ValueError:
