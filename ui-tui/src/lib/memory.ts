@@ -154,6 +154,20 @@ export async function performHeapDump(trigger: MemoryTrigger = 'manual'): Promis
     const diagPath = join(dir, `${base}.diagnostics.json`)
 
     await writeFile(diagPath, JSON.stringify(diagnostics, null, 2), { mode: 0o600 })
+
+    // Automatic heap dumps are opt-in: a single `.heapsnapshot` can be
+    // hundreds of megabytes to multiple gigabytes, and repeated auto-high /
+    // auto-critical triggers under a long-running native leak can fill the
+    // user's disk before they notice. The lightweight diagnostics JSON
+    // above is always written so memory alerts stay actionable; the heap
+    // snapshot itself is only written when the user explicitly opts in via
+    // HERMES_AUTO_HEAPDUMP=1. Manual dumps are unaffected.
+    const isAutomatic = trigger === 'auto-critical' || trigger === 'auto-high'
+
+    if (isAutomatic && process.env.HERMES_AUTO_HEAPDUMP !== '1') {
+      return { diagPath, success: true }
+    }
+
     await pipeline(getHeapSnapshot(), createWriteStream(heapPath, { mode: 0o600 }))
 
     return { diagPath, heapPath, success: true }
