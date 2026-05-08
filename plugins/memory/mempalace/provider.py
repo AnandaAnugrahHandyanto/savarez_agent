@@ -12,12 +12,12 @@ from agent.memory_provider import MemoryProvider
 # MemPalace imports are optional — guard at module level to allow
 # graceful degradation when mempalace is not installed.
 try:
-    from mempalace.knowledge_graph import KnowledgeGraph
-    from mempalace.palace import get_collection
+    from mempalace.knowledge_graph import KnowledgeGraph  # type: ignore[unresolved-import]
+    from mempalace.palace import get_collection  # type: ignore[unresolved-import]
 
     _MEMPALACE_AVAILABLE = True
 except ImportError:
-    KnowledgeGraph = None  # type: ignore[assignment,misc]
+    KnowledgeGraph = None
     get_collection = None  # type: ignore[assignment]
     _MEMPALACE_AVAILABLE = False
 
@@ -48,7 +48,7 @@ class MemPalaceMemoryProvider(MemPalaceHooksMixin, MemPalaceToolsMixin, MemoryPr
 
     def __init__(self):
         self._collection = None
-        self._kg: KnowledgeGraph | None = None
+        self._kg: Any | None = None
         self._queue: WriteQueue | None = None
         self._palace_path = ""
         self._wing = DEFAULT_WING
@@ -73,12 +73,7 @@ class MemPalaceMemoryProvider(MemPalaceHooksMixin, MemPalaceToolsMixin, MemoryPr
         return "mempalace"
 
     def is_available(self) -> bool:
-        try:
-            import mempalace  # noqa: F401
-
-            return True
-        except ImportError:
-            return False
+        return _MEMPALACE_AVAILABLE
 
     def get_config_schema(self) -> list[dict[str, Any]]:
         return [

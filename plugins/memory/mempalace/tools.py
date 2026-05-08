@@ -19,6 +19,20 @@ logger = logging.getLogger(__name__)
 class MemPalaceToolsMixin:
     """Tool schemas, handlers, and search/result helpers."""
 
+    _agent_id: str
+    _collection: Any
+    _collection_name: str
+    _config: Any
+    _kg: Any
+    _kg_enabled: bool
+    _n_results: int
+    _palace_path: str
+    _platform: str
+    _session_id: str
+    _tool_max_results: int
+    _user_id: str
+    _wing: str
+
     _CONVERSATION_MESSAGE_KINDS = {"user_message", "assistant_message"}
     _MEMORY_PRIORITY_KINDS = {
         "explicit_memory",
@@ -306,10 +320,10 @@ class MemPalaceToolsMixin:
 
         lines = ["[MemPalace Memory]", ""]
         for i, r in enumerate(results_list[:5], 1):
-            content = r.get("content", "")
+            content = str(r.get("content", "") or "")
             meta = r.get("metadata", {})
             role = meta.get("role", "") if isinstance(meta, dict) else ""
-            ts = meta.get("created_at", "") if isinstance(meta, dict) else ""
+            ts = str(meta.get("created_at", "") or "") if isinstance(meta, dict) else ""
 
             if content:
                 prefix = f"[{role}] " if role else ""

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from .events import (
     MESSAGE_KIND_BUILTIN_MEMORY_WRITE,
@@ -20,6 +20,15 @@ logger = logging.getLogger(__name__)
 
 class MemPalaceHooksMixin:
     """Lifecycle hooks and prefetch helpers mixed into the provider."""
+
+    _collection: Any
+    _lock: Any
+    _n_results: int
+    _prefetch_result: str
+    _prefetch_thread: Any
+    _recent_messages: list[dict[str, Any]]
+    _session_id: str
+    _thread_factory: Callable[..., Any]
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Fire background search for the next turn."""

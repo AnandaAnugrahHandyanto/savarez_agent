@@ -276,9 +276,30 @@ class TestStore:
             source_file="conversation",
             chunk_index=0,
         )
-        id1 = make_drawer_id(content="alpha", session_id="s1", **base)
-        id2 = make_drawer_id(content="beta", session_id="s1", **base)
-        id3 = make_drawer_id(content="alpha", session_id="s2", **base)
+        id1 = make_drawer_id(
+            wing=base["wing"],
+            room=base["room"],
+            source_file=base["source_file"],
+            chunk_index=base["chunk_index"],
+            content="alpha",
+            session_id="s1",
+        )
+        id2 = make_drawer_id(
+            wing=base["wing"],
+            room=base["room"],
+            source_file=base["source_file"],
+            chunk_index=base["chunk_index"],
+            content="beta",
+            session_id="s1",
+        )
+        id3 = make_drawer_id(
+            wing=base["wing"],
+            room=base["room"],
+            source_file=base["source_file"],
+            chunk_index=base["chunk_index"],
+            content="alpha",
+            session_id="s2",
+        )
         assert id1 != id2
         assert id1 != id3
 
