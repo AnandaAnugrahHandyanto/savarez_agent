@@ -2203,6 +2203,7 @@ class AIAgent:
             _custom_providers = _agent_cfg.get("custom_providers")
             if not isinstance(_custom_providers, list):
                 _custom_providers = []
+        self._custom_providers = _custom_providers
 
         # Store for reuse by _check_compression_model_feasibility (auxiliary
         # compression model context-length detection needs the same list).
@@ -2338,6 +2339,7 @@ class AIAgent:
                 config_context_length=_config_context_length,
                 provider=self.provider,
                 api_mode=self.api_mode,
+                custom_providers=_custom_providers,
             )
         self.compression_enabled = compression_enabled
 
@@ -3246,6 +3248,7 @@ class AIAgent:
                 base_url=aux_base_url,
                 api_key=aux_api_key,
                 config_context_length=getattr(self, "_aux_compression_context_length_config", None),
+                custom_providers=getattr(self, "_custom_providers", None),
                 # Each model must be resolved with its own provider so that
                 # provider-specific paths (e.g. Bedrock static table, OpenRouter API)
                 # are invoked for the correct client, not inherited from the main model.
