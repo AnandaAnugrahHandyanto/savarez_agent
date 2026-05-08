@@ -167,6 +167,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="NOVITA_BASE_URL",
     ),
+    "edenai": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        base_url_env_var="EDENAI_BASE_URL",
+    ),
     "xai": HermesOverlay(
         transport="codex_responses",
         base_url_override="https://api.x.ai/v1",
@@ -293,6 +298,11 @@ ALIASES: Dict[str, str] = {
     # opencode (models.dev ID for OpenCode Zen)
     "opencode-zen": "opencode",
     "zen": "opencode",
+
+    # edenai
+    "eden": "edenai",
+    "eden-ai": "edenai",
+    "eden_ai": "edenai",
 
     # opencode-go
     "go": "opencode-go",
