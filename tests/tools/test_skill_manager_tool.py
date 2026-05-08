@@ -148,6 +148,20 @@ class TestValidateFrontmatter:
         content = "---\n: invalid: yaml: {{{\n---\n\nBody.\n"
         assert "YAML frontmatter parse error" in _validate_frontmatter(content)
 
+    def test_priority_must_be_critical_or_normal(self):
+        content = "---\nname: test\ndescription: desc\npriority: legendary\n---\n\nBody.\n"
+        err = _validate_frontmatter(content)
+        assert err is not None
+        assert "priority" in err
+
+    def test_priority_critical_is_accepted(self):
+        content = "---\nname: test\ndescription: desc\npriority: critical\n---\n\nBody.\n"
+        assert _validate_frontmatter(content) is None
+
+    def test_priority_absent_is_accepted(self):
+        content = "---\nname: test\ndescription: desc\n---\n\nBody.\n"
+        assert _validate_frontmatter(content) is None
+
 
 # ---------------------------------------------------------------------------
 # _validate_file_path — path traversal prevention

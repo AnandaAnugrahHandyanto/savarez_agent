@@ -200,6 +200,14 @@ def _validate_frontmatter(content: str) -> Optional[str]:
         return "Frontmatter must include 'description' field."
     if len(str(parsed["description"])) > MAX_DESCRIPTION_LENGTH:
         return f"Description exceeds {MAX_DESCRIPTION_LENGTH} characters."
+    priority_raw = parsed.get("priority")
+    if priority_raw is not None:
+        priority = str(priority_raw).strip().lower()
+        if priority not in ("critical", "normal"):
+            return (
+                "Frontmatter 'priority' must be 'critical' or 'normal' "
+                f"(got {priority_raw!r})."
+            )
 
     body = content[end_match.end() + 3:].strip()
     if not body:
