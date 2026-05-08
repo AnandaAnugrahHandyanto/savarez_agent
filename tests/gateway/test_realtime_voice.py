@@ -108,6 +108,20 @@ async def test_append_discord_pcm_sends_base64_audio_append(session_factory, fak
 
 
 @pytest.mark.asyncio
+async def test_append_silence_sends_trailing_zero_pcm_for_vad(session_factory, fake_ws: FakeWebSocket):
+    session = session_factory()
+
+    await session.start()
+    await session.append_silence(duration_ms=40)
+    await session.stop()
+
+    append_event = fake_ws.sent[1]
+    assert append_event["type"] == "input_audio_buffer.append"
+    # 24 kHz mono PCM16 = 48 bytes/ms.
+    assert base64.b64decode(append_event["audio"]) == b"\x00" * (48 * 40)
+
+
+@pytest.mark.asyncio
 async def test_audio_delta_is_forwarded_to_sink(session_factory, fake_ws: FakeWebSocket):
     received: list[bytes] = []
     session = session_factory(audio_sink=received.append)

@@ -147,20 +147,51 @@ class RealtimeVoiceSession:
             await client_session.close()
 
     async def append_discord_pcm(self, user_id: int, pcm_48k_stereo: bytes) -> None:
+        pcm_24k_mono = discord_pcm_to_realtime_pcm(pcm_48k_stereo)
+        await self.append_realtime_pcm(
+            pcm_24k_mono,
+            user_id=user_id,
+            audit_extra={"discord_pcm_bytes": len(pcm_48k_stereo)},
+        )
+
+    async def append_realtime_pcm(
+        self,
+        pcm_24k_mono: bytes,
+        *,
+        user_id: int | None = None,
+        audit_extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Append already-converted 24 kHz mono PCM16 to the Realtime input buffer."""
         if self._ws is None:
             raise RuntimeError("Realtime voice session is not started")
-        pcm_24k_mono = discord_pcm_to_realtime_pcm(pcm_48k_stereo)
         if not pcm_24k_mono:
             return
-        self._audit("client.input_audio_buffer.append", {
-            "user_id": str(user_id),
-            "discord_pcm_bytes": len(pcm_48k_stereo),
+        audit_payload: dict[str, Any] = {
             "realtime_pcm_bytes": len(pcm_24k_mono),
-        })
+        }
+        if user_id is not None:
+            audit_payload["user_id"] = str(user_id)
+        if audit_extra:
+            audit_payload.update(audit_extra)
+        self._audit("client.input_audio_buffer.append", audit_payload)
         await self._send_json({
             "type": "input_audio_buffer.append",
             "audio": base64.b64encode(pcm_24k_mono).decode("ascii"),
         })
+
+    async def append_silence(self, duration_ms: int = 800) -> None:
+        """Append trailing silence so server VAD can close the user's turn.
+
+        Discord only sends voice packets while a user is actively speaking. If
+        we stop appending when Discord stops transmitting, OpenAI Realtime can
+        emit ``speech_started`` but never see enough silence to emit
+        ``speech_stopped`` / create a response. A short zero PCM tail gives the
+        server VAD an explicit end-of-turn signal without forcing manual commits.
+        """
+        bytes_per_ms = int(self.config.input_rate * 2 / 1000)  # mono PCM16
+        duration_ms = max(20, int(duration_ms))
+        frame = b"\x00" * (bytes_per_ms * duration_ms)
+        await self.append_realtime_pcm(frame, audit_extra={"silence_ms": duration_ms})
 
     async def _connect(self) -> _RealtimeWebSocket:
         url = f"wss://api.openai.com/v1/realtime?model={self.config.model}"

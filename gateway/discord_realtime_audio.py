@@ -9,8 +9,10 @@ from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
+discord: Any | None
 try:  # pragma: no cover - exercised through tests with a fake discord module.
-    import discord
+    import discord as _discord
+    discord = _discord
 except ImportError:  # pragma: no cover
     discord = None
 
@@ -91,6 +93,10 @@ class RealtimeDiscordAudioSource(_DiscordAudioSourceBase):
         self._buffer = bytearray()
         self._lock = threading.Lock()
         self._closed = False
+        self._queued_bytes_total = 0
+        self._push_count = 0
+        self._read_count = 0
+        self._audio_read_count = 0
 
     def is_opus(self) -> bool:
         return False
@@ -99,13 +105,33 @@ class RealtimeDiscordAudioSource(_DiscordAudioSourceBase):
         if self._closed:
             return b""
         with self._lock:
+            self._read_count += 1
             if len(self._buffer) >= DISCORD_PCM_FRAME_BYTES:
                 frame = bytes(self._buffer[:DISCORD_PCM_FRAME_BYTES])
                 del self._buffer[:DISCORD_PCM_FRAME_BYTES]
+                self._audio_read_count += 1
+                audio_reads = self._audio_read_count
+                remaining = len(self._buffer)
+                if audio_reads in {1, 5, 25, 100} or audio_reads % 500 == 0:
+                    logger.info(
+                        "Realtime Discord audio read frame: audio_reads=%d remaining_buffer_bytes=%d total_reads=%d",
+                        audio_reads,
+                        remaining,
+                        self._read_count,
+                    )
                 return frame
             if self._buffer:
                 frame = bytes(self._buffer)
                 self._buffer.clear()
+                self._audio_read_count += 1
+                audio_reads = self._audio_read_count
+                if audio_reads in {1, 5, 25, 100} or audio_reads % 500 == 0:
+                    logger.info(
+                        "Realtime Discord audio read partial frame: audio_reads=%d frame_bytes=%d total_reads=%d",
+                        audio_reads,
+                        len(frame),
+                        self._read_count,
+                    )
                 return frame.ljust(DISCORD_PCM_FRAME_BYTES, b"\x00")
         return b"\x00" * DISCORD_PCM_FRAME_BYTES
 
@@ -119,6 +145,20 @@ class RealtimeDiscordAudioSource(_DiscordAudioSourceBase):
         converted = realtime_pcm_to_discord_pcm(pcm)
         with self._lock:
             self._buffer.extend(converted)
+            self._queued_bytes_total += len(converted)
+            self._push_count += 1
+            push_count = self._push_count
+            buffered = len(self._buffer)
+            total = self._queued_bytes_total
+        if push_count in {1, 5, 25, 100} or push_count % 500 == 0:
+            logger.info(
+                "Realtime Discord audio queued: pushes=%d realtime_bytes=%d discord_bytes=%d buffered_bytes=%d total_queued_bytes=%d",
+                push_count,
+                len(pcm),
+                len(converted),
+                buffered,
+                total,
+            )
 
     def clear(self) -> None:
         with self._lock:

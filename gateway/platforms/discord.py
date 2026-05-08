@@ -596,6 +596,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
         self._realtime_voice_sessions: Dict[int, Any] = {}
         self._realtime_audio_sources: Dict[int, Any] = {}
+        self._realtime_silence_tasks: Dict[int, asyncio.Task] = {}
         self._realtime_context_factory: Optional[Callable] = None
         # Track threads where the bot has participated so follow-up messages
         # in those threads don't require @mention.  Persisted to disk so the
@@ -1967,6 +1968,10 @@ class DiscordAdapter(BasePlatformAdapter):
             if listen_task:
                 listen_task.cancel()
 
+            silence_task = getattr(self, "_realtime_silence_tasks", {}).pop(guild_id, None)
+            if silence_task:
+                silence_task.cancel()
+
             old_session = self._realtime_voice_sessions.pop(guild_id, None)
             if old_session:
                 await old_session.stop()
@@ -1978,7 +1983,20 @@ class DiscordAdapter(BasePlatformAdapter):
                 vc.stop()
 
             source = RealtimeDiscordAudioSource()
-            vc.play(source)
+
+            def _after_realtime_playback(error: Exception | None) -> None:
+                if error:
+                    logger.error("Realtime voice playback error: %s", error)
+                else:
+                    logger.info("Realtime voice playback source ended (guild=%s)", guild_id)
+
+            vc.play(source, after=_after_realtime_playback)
+            logger.info(
+                "Realtime voice playback source started (guild=%s channel=%s is_playing=%s)",
+                guild_id,
+                getattr(channel, "id", None),
+                vc.is_playing(),
+            )
 
             session = RealtimeVoiceSession(
                 config=realtime_context.config,
@@ -2009,6 +2027,28 @@ class DiscordAdapter(BasePlatformAdapter):
                     return
                 asyncio.create_task(session.append_discord_pcm(user_id, pcm))
 
+                previous = self._realtime_silence_tasks.pop(guild_id, None)
+                if previous:
+                    previous.cancel()
+
+                async def _append_trailing_silence(expected_session=session) -> None:
+                    try:
+                        # Discord's client VAD stops sending packets at end of
+                        # speech, so OpenAI's server VAD otherwise sees
+                        # speech_started but not enough silence to close the
+                        # turn. Wait briefly for more speech, then append a
+                        # short PCM zero tail as an explicit end marker.
+                        await asyncio.sleep(0.45)
+                        if self._realtime_voice_sessions.get(guild_id) is not expected_session:
+                            return
+                        await expected_session.append_silence(800)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.debug("Realtime trailing silence append failed: %s", exc)
+
+                self._realtime_silence_tasks[guild_id] = asyncio.create_task(_append_trailing_silence())
+
             receiver.set_realtime_callback(loop, _schedule_realtime_audio)
             self._realtime_voice_sessions[guild_id] = session
             self._realtime_audio_sources[guild_id] = source
@@ -2020,6 +2060,10 @@ class DiscordAdapter(BasePlatformAdapter):
         async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
             realtime_sessions = getattr(self, "_realtime_voice_sessions", {})
             realtime_sources = getattr(self, "_realtime_audio_sources", {})
+            realtime_silence_tasks = getattr(self, "_realtime_silence_tasks", {})
+            silence_task = realtime_silence_tasks.pop(guild_id, None)
+            if silence_task:
+                silence_task.cancel()
             session = realtime_sessions.pop(guild_id, None)
             if session:
                 await session.stop()

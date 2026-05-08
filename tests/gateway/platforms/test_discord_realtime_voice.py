@@ -40,6 +40,7 @@ def _make_adapter():
     adapter._voice_listen_tasks = {}
     adapter._realtime_voice_sessions = {}
     adapter._realtime_audio_sources = {}
+    adapter._realtime_silence_tasks = {}
     adapter._voice_input_callback = None
     adapter._on_voice_disconnect = None
     adapter._allowed_user_ids = set()
