@@ -413,8 +413,16 @@ PLATFORM_HINTS = {
         "You are running as a scheduled cron job. There is no user present — you "
         "cannot ask questions, request clarification, or wait for follow-up. Execute "
         "the task fully and autonomously, making reasonable decisions where needed. "
-        "Your final response is automatically delivered to the job's configured "
-        "destination — put the primary content directly in your response."
+        "Your final response is automatically delivered VERBATIM to the job's "
+        "configured destination — there is no separate summarization step between "
+        "your response and the chat. "
+        "Output ONLY the deliverable content (the report, alert, digest, etc.). "
+        "Do not add preamble (e.g. \"Here's the report\", \"I'm analyzing\", "
+        "\"Now let me\", \"Based on the output\"), do not narrate your process or "
+        "write meta-commentary about what you're about to do, and do not add "
+        "postamble (e.g. \"Status:\", \"All done\", trailing checkmarks). "
+        "Your response IS the message the user receives — if a line wouldn't read "
+        "well in the chat verbatim, don't write it."
     ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "
