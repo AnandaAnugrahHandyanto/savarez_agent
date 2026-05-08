@@ -21,6 +21,7 @@ from tools.skill_manager_tool import (
     _write_file,
     _remove_file,
     skill_manage,
+    _validate_frontmatter_name_matches,
     VALID_NAME_RE,
     ALLOWED_SUBDIRS,
     MAX_NAME_LENGTH,
@@ -38,7 +39,7 @@ def _skill_dir(tmp_path):
 
 VALID_SKILL_CONTENT = """\
 ---
-name: test-skill
+name: my-skill
 description: A test skill for unit testing.
 ---
 
@@ -49,7 +50,7 @@ Step 1: Do the thing.
 
 VALID_SKILL_CONTENT_2 = """\
 ---
-name: test-skill
+name: my-skill
 description: Updated description.
 ---
 
@@ -245,6 +246,31 @@ class TestCreateSkill:
         assert f"Invalid category '{outside}'" in result["error"]
         assert not (outside / "my-skill" / "SKILL.md").exists()
 
+    def test_create_rejects_frontmatter_name_mismatch(self, tmp_path):
+        """Frontmatter 'name' must match the directory name parameter (#21782)."""
+        content = """\
+---
+name: different-name
+description: A test skill.
+---
+
+# Test
+
+Step 1.
+"""
+        with _skill_dir(tmp_path):
+            result = _create_skill("my-skill", content)
+        assert result["success"] is False
+        assert "does not match" in result["error"]
+        assert "different-name" in result["error"]
+        assert "my-skill" in result["error"]
+
+    def test_create_accepts_matching_frontmatter_name(self, tmp_path):
+        """No error when frontmatter 'name' matches the directory name."""
+        with _skill_dir(tmp_path):
+            result = _create_skill("my-skill", VALID_SKILL_CONTENT)
+        assert result["success"] is True
+
 
 class TestEditSkill:
     def test_edit_existing_skill(self, tmp_path):
@@ -270,6 +296,27 @@ class TestEditSkill:
         content = (tmp_path / "my-skill" / "SKILL.md").read_text()
         assert "A test skill" in content
 
+    def test_edit_rejects_frontmatter_name_mismatch(self, tmp_path):
+        """Frontmatter 'name' must match the directory name on edit (#21782)."""
+        mismatched = """\
+---
+name: different-name
+description: Updated.
+---
+
+# Updated
+
+New content.
+"""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _edit_skill("my-skill", mismatched)
+        assert result["success"] is False
+        assert "does not match" in result["error"]
+        # Original content preserved
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        assert "A test skill" in content
+
 
 class TestPatchSkill:
     def test_patch_unique_match(self, tmp_path):
@@ -290,7 +337,7 @@ class TestPatchSkill:
     def test_patch_ambiguous_match_rejected(self, tmp_path):
         content = """\
 ---
-name: test-skill
+name: my-skill
 description: A test skill.
 ---
 
@@ -307,7 +354,7 @@ word word
     def test_patch_replace_all(self, tmp_path):
         content = """\
 ---
-name: test-skill
+name: my-skill
 description: A test skill.
 ---
 
@@ -481,7 +528,7 @@ class TestSkillManageDispatcher:
 
     def test_full_create_via_dispatcher(self, tmp_path):
         with _skill_dir(tmp_path):
-            raw = skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
+            raw = skill_manage(action="create", name="my-skill", content=VALID_SKILL_CONTENT)
         result = json.loads(raw)
         assert result["success"] is True
 

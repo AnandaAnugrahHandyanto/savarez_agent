@@ -208,6 +208,38 @@ def _validate_frontmatter(content: str) -> Optional[str]:
     return None
 
 
+def _parse_frontmatter_name(content: str) -> Optional[str]:
+    """Extract the 'name' field from YAML frontmatter, or None on parse failure."""
+    try:
+        end_match = re.search(r'\n---\s*\n', content[3:])
+        if not end_match:
+            return None
+        yaml_content = content[3:end_match.start() + 3]
+        parsed = yaml.safe_load(yaml_content)
+        if isinstance(parsed, dict):
+            return parsed.get("name")
+    except Exception:
+        pass
+    return None
+
+
+def _validate_frontmatter_name_matches(content: str, name: str) -> Optional[str]:
+    """Ensure frontmatter 'name' matches the directory name parameter.
+
+    Prevents skills whose ``skills_list`` display name diverges from the
+    directory name used by ``skill_view`` — a silent data-corruption bug
+    that makes skills undiscoverable.  See issue #21782.
+    """
+    fm_name = _parse_frontmatter_name(content)
+    if fm_name is not None and fm_name != name:
+        return (
+            f"Frontmatter 'name' ({fm_name!r}) does not match the "
+            f"skill directory name ({name!r}). These must be identical "
+            f"or the skill will be undiscoverable via skill_view()."
+        )
+    return None
+
+
 def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[str]:
     """Check that content doesn't exceed the character limit for agent writes.
 
@@ -351,6 +383,11 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
             "error": f"A skill named '{name}' already exists at {existing['path']}."
         }
 
+    # Ensure frontmatter name matches directory name (issue #21782)
+    err = _validate_frontmatter_name_matches(content, name)
+    if err:
+        return {"success": False, "error": err}
+
     # Create the skill directory
     skill_dir = _resolve_skill_dir(name, category)
     skill_dir.mkdir(parents=True, exist_ok=True)
@@ -396,6 +433,11 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
 
     if not _is_local_skill(existing["path"]):
         return {"success": False, "error": f"Skill '{name}' is in an external directory and cannot be modified. Copy it to your local skills directory first."}
+
+    # Ensure frontmatter name matches directory name (issue #21782)
+    err = _validate_frontmatter_name_matches(content, name)
+    if err:
+        return {"success": False, "error": err}
 
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
