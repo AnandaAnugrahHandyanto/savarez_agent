@@ -1267,6 +1267,20 @@ class SlackAdapter(BasePlatformAdapter):
         """Check if message reactions are enabled via config/env."""
         return os.getenv("SLACK_REACTIONS", "true").lower() not in ("false", "0", "no")
 
+    @staticmethod
+    def _resolve_reaction_emoji(env_suffix: str, default: str) -> str:
+        """Resolve a reaction emoji name from `SLACK_REACTION_<SUFFIX>`.
+
+        Default `eyes` for processing reads as a verdict ("I see what you said")
+        rather than a neutral progress signal. Operators can override per
+        reaction without code change. Pass the name without colons
+        (`writing_hand`, not `:writing_hand:`); leading/trailing colons are
+        stripped defensively. Empty values fall back to the default.
+        """
+        raw = os.getenv(f"SLACK_REACTION_{env_suffix.upper()}", default)
+        cleaned = raw.strip().strip(":").strip()
+        return cleaned or default
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction when message processing begins."""
         if not self._reactions_enabled():
@@ -1276,7 +1290,9 @@ class SlackAdapter(BasePlatformAdapter):
             return
         channel_id = getattr(event.source, "chat_id", None)
         if channel_id:
-            await self._add_reaction(channel_id, ts, "eyes")
+            await self._add_reaction(
+                channel_id, ts, self._resolve_reaction_emoji("processing", "eyes")
+            )
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction."""
@@ -1289,11 +1305,17 @@ class SlackAdapter(BasePlatformAdapter):
         channel_id = getattr(event.source, "chat_id", None)
         if not channel_id:
             return
-        await self._remove_reaction(channel_id, ts, "eyes")
+        await self._remove_reaction(
+            channel_id, ts, self._resolve_reaction_emoji("processing", "eyes")
+        )
         if outcome == ProcessingOutcome.SUCCESS:
-            await self._add_reaction(channel_id, ts, "white_check_mark")
+            await self._add_reaction(
+                channel_id, ts, self._resolve_reaction_emoji("success", "white_check_mark")
+            )
         elif outcome == ProcessingOutcome.FAILURE:
-            await self._add_reaction(channel_id, ts, "x")
+            await self._add_reaction(
+                channel_id, ts, self._resolve_reaction_emoji("failure", "x")
+            )
 
     # ----- User identity resolution -----
 
