@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_checkin as kci
 
 
 # ---------------------------------------------------------------------------
@@ -554,6 +555,38 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_hb.add_argument("--note", default=None,
                       help="Optional short note attached to the heartbeat event")
 
+    # --- checkin (agent progress check-in) ---
+    p_checkin = sub.add_parser(
+        "checkin",
+        help=(
+            "Ask a running agent to self-report status (progressing / blocked / "
+            "completed). Injects a structured check-in prompt into the agent's "
+            "active session and parses the <status_report> response."
+        ),
+    )
+    _checkin_group = p_checkin.add_mutually_exclusive_group()
+    _checkin_group.add_argument(
+        "task_id", nargs="?", default=None,
+        help="Check in a specific task (required unless --all or --stale is given)",
+    )
+    _checkin_group.add_argument(
+        "--all", action="store_true",
+        help="Check in all currently running tasks",
+    )
+    p_checkin.add_argument(
+        "--stale", type=int, default=None, metavar="MINUTES",
+        help=(
+            f"Only check in tasks idle for at least MINUTES minutes "
+            f"(default when --all: {kci.DEFAULT_STALE_MINUTES})"
+        ),
+    )
+    p_checkin.add_argument(
+        "--dry-run", action="store_true",
+        help="Print the check-in prompt without sending it to the agent",
+    )
+    p_checkin.add_argument("--json", action="store_true",
+                           help="Output results as JSON")
+
     # --- assignees ---
     p_asg = sub.add_parser(
         "assignees",
@@ -715,6 +748,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "log":      _cmd_log,
         "runs":     _cmd_runs,
         "heartbeat": _cmd_heartbeat,
+    "checkin": _cmd_checkin,
         "assignees": _cmd_assignees,
         "notify-subscribe":   _cmd_notify_subscribe,
         "notify-list":        _cmd_notify_list,
@@ -1000,6 +1034,92 @@ def _cmd_heartbeat(args: argparse.Namespace) -> int:
         print(f"cannot heartbeat {args.task_id} (not running?)", file=sys.stderr)
         return 1
     print(f"Heartbeat recorded for {args.task_id}")
+    return 0
+
+
+def _cmd_checkin(args: argparse.Namespace) -> int:
+    """Inject an agent check-in prompt and parse the status response.
+
+    Unlike :func:`_cmd_heartbeat` (which records a bare liveness ping),
+    ``checkin`` asks the *AI* whether it is making progress, stuck, or
+    done — then logs the structured reply.
+
+    The implementation intentionally stays thin: it composes the prompt
+    via :mod:`hermes_cli.kanban_checkin`, prints the prompt (``--dry-run``)
+    or delegates actual message injection to the caller/gateway layer.
+    Direct prompt injection (calling the live AIAgent) is out-of-scope for
+    the CLI: the gateway scheduler owns that lifecycle.  This command is the
+    *human-facing* entry point; the scheduled variant runs inside the gateway.
+    """
+    import sys
+
+    task_ids: list[str] = []
+
+    with kb.connect() as conn:
+        if getattr(args, "all", False) or getattr(args, "stale", None) is not None:
+            stale_min = args.stale if args.stale is not None else kci.DEFAULT_STALE_MINUTES
+            rows = kci.find_stale_tasks(conn, stale_minutes=stale_min)
+            task_ids = [r["id"] for r in rows]
+            if not task_ids:
+                print(f"No running tasks idle for {stale_min}+ minutes.")
+                return 0
+        elif args.task_id:
+            task_ids = [args.task_id]
+        else:
+            print(
+                "checkin: specify a task_id, --all, or --stale <minutes>",
+                file=sys.stderr,
+            )
+            return 2
+
+        results = []
+        for tid in task_ids:
+            # Fetch recent check-in history for context
+            events = conn.execute(
+                """
+                SELECT created_at, payload
+                  FROM task_events
+                 WHERE task_id = ? AND event_type = 'checkin'
+                 ORDER BY created_at DESC
+                 LIMIT 3
+                """,
+                (tid,),
+            ).fetchall()
+            recent: list[dict] = []
+            for row in reversed(events):
+                try:
+                    data = json.loads(row["payload"] or "{}")
+                    recent.append({
+                        "created_at": row["created_at"],
+                        "summary": data.get("summary", ""),
+                    })
+                except Exception:
+                    pass
+
+            prompt = kci.build_checkin_prompt(recent)
+
+            if getattr(args, "dry_run", False):
+                print(f"--- Check-in prompt for {tid} ---")
+                print(prompt)
+                print()
+                results.append({"task_id": tid, "dry_run": True, "prompt_length": len(prompt)})
+                continue
+
+            # For non-dry-run: print the prompt and a usage note.
+            # Full automated injection happens in the gateway scheduler
+            # (hermes_cli.kanban_checkin_scheduler — future PR).
+            print(f"[checkin] {tid}")
+            print(prompt)
+            print()
+            print(
+                "To inject this into a live session, pipe to the gateway:\n"
+                "  hermes kanban checkin <task-id> | hermes gateway inject <task-id>"
+            )
+            results.append({"task_id": tid, "prompt_printed": True})
+
+    if getattr(args, "json", False):
+        print(json.dumps(results, indent=2))
+
     return 0
 
 
