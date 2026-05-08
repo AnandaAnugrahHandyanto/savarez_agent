@@ -6,7 +6,7 @@ import sys
 import time
 from pathlib import Path
 
-import pytest  # type: ignore[unresolved-import]
+import pytest  # type: ignore[unresolved-import,import-not-found]
 
 pytest.importorskip("mempalace")
 

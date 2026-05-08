@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
-import pytest  # type: ignore[unresolved-import]
+import pytest  # type: ignore[unresolved-import,import-not-found]
 import yaml
 
 _repo_root = str(Path(__file__).resolve().parents[2])

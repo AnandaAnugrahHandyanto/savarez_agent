@@ -7,11 +7,11 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
-import pytest  # type: ignore[unresolved-import]
+import pytest  # type: ignore[unresolved-import,import-not-found]
 
 _mempalace_installed = False
 try:
-    import mempalace  # noqa: F401
+    import mempalace  # type: ignore[unresolved-import,import-not-found]  # noqa: F401
 
     _mempalace_installed = True
 except ImportError:

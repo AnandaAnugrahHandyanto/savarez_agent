@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from string import Formatter
-from typing import Any
+from typing import Any, cast
 
 DEFAULT_WING = "conversations"
 DEFAULT_N_RESULTS = 5
@@ -35,7 +35,7 @@ class MemPalaceConfig:
 
 def _coerce_positive_int(value: object, default: int) -> int:
     try:
-        parsed = int(value)  # type: ignore[arg-type]
+        parsed = int(cast(Any, value))
         return parsed if parsed > 0 else default
     except (TypeError, ValueError):
         return default
@@ -56,7 +56,7 @@ def _coerce_bool(value: object, default: bool) -> bool:
 def _plugin_section(full_config: object) -> dict[str, Any]:
     if not isinstance(full_config, dict):
         return {}
-    raw: dict[str, Any] = full_config
+    raw = cast(dict[str, Any], full_config)
     nested = raw.get("mempalace")
     if isinstance(nested, dict):
         return nested

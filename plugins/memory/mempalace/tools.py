@@ -396,7 +396,8 @@ class MemPalaceToolsMixin:
     def _looks_like_duplicate(self, left: str, right: str) -> bool:
         if left == right:
             return True
-        shorter, longer = sorted([left, right], key=len)
+        shorter = left if len(left) <= len(right) else right
+        longer = right if shorter is left else left
         if shorter and longer.startswith(shorter[: min(len(shorter), 120)]):
             if len(shorter) >= 40:
                 return True

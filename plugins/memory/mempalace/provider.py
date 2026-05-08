@@ -12,8 +12,8 @@ from agent.memory_provider import MemoryProvider
 # MemPalace imports are optional — guard at module level to allow
 # graceful degradation when mempalace is not installed.
 try:
-    from mempalace.knowledge_graph import KnowledgeGraph  # type: ignore[unresolved-import]
-    from mempalace.palace import get_collection  # type: ignore[unresolved-import]
+    from mempalace.knowledge_graph import KnowledgeGraph  # type: ignore[unresolved-import,import-not-found]
+    from mempalace.palace import get_collection  # type: ignore[unresolved-import,import-not-found]
 
     _MEMPALACE_AVAILABLE = True
 except ImportError:
