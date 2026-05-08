@@ -13868,6 +13868,15 @@ class GatewayRunner:
             # runtime budget settings bridged into env vars.
             _reload_runtime_env_preserving_config_authority()
 
+            # Invalidate cached auxiliary clients so new .env keys take effect.
+            # Without this, _client_cache retains clients created with old keys,
+            # causing persistent 401 errors after key rotation (#21013).
+            try:
+                from agent.auxiliary_client import shutdown_cached_clients
+                shutdown_cached_clients()
+            except Exception:
+                pass
+
             try:
                 model, runtime_kwargs = self._resolve_session_agent_runtime(
                     source=source,
