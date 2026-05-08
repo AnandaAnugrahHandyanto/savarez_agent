@@ -942,6 +942,26 @@ def init_db(
     return path
 
 
+def _safe_add_column(
+    conn: sqlite3.Connection, table: str, col_def: str
+) -> None:
+    """Add a column, silently ignoring 'duplicate column name' races.
+
+    Multiple processes can race on the same kanban.db at startup
+    (e.g. gateway restart + cron job tick).  The PRAGMA snapshot
+    taken at function entry can be stale by the time the ALTER TABLE
+    executes, so a guard like ``if col not in cols:`` isn't sufficient.
+    """
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
+    except sqlite3.OperationalError as e:
+        msg = str(e)
+        if "duplicate column name" in msg:
+            pass  # Another process got there first — harmless.
+        else:
+            raise
+
+
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns that were introduced after v1 release to legacy DBs.
 
@@ -949,11 +969,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
     if "tenant" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN tenant TEXT")
+        _safe_add_column(conn, "tasks", "tenant TEXT")
     if "result" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN result TEXT")
+        _safe_add_column(conn, "tasks", "result TEXT")
     if "idempotency_key" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN idempotency_key TEXT")
+        _safe_add_column(conn, "tasks", "idempotency_key TEXT")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency "
             "ON tasks(idempotency_key)"
@@ -972,47 +992,48 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # historical counter values when the legacy columns do exist.
     #
     # NOTE: ``cols`` reflects the schema at entry to this function and is
-    # not refreshed between ALTER TABLE calls.  Every guard below checks
-    # the *original* snapshot; this is intentional and safe as long as
-    # no step depends on a column added by a previous step in the same call.
+    # not refreshed between ALTER TABLE calls.  The PRAGMA-guard is kept as
+    # a fast-path to skip column-less rows that lack the legacy columns
+    # (``spawn_failures``, ``last_spawn_error``) — the ``_safe_add_column``
+    # wrapper below catches any residual race across processes.
     if "consecutive_failures" not in cols:
-        conn.execute(
-            "ALTER TABLE tasks ADD COLUMN consecutive_failures "
-            "INTEGER NOT NULL DEFAULT 0"
+        _safe_add_column(
+            conn, "tasks",
+            "consecutive_failures INTEGER NOT NULL DEFAULT 0",
         )
         if "spawn_failures" in cols:
             conn.execute(
                 "UPDATE tasks SET consecutive_failures = COALESCE(spawn_failures, 0)"
             )
     if "worker_pid" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN worker_pid INTEGER")
+        _safe_add_column(conn, "tasks", "worker_pid INTEGER")
     if "last_failure_error" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN last_failure_error TEXT")
+        _safe_add_column(conn, "tasks", "last_failure_error TEXT")
         if "last_spawn_error" in cols:
             conn.execute(
                 "UPDATE tasks SET last_failure_error = last_spawn_error"
             )
     if "max_runtime_seconds" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN max_runtime_seconds INTEGER")
+        _safe_add_column(conn, "tasks", "max_runtime_seconds INTEGER")
     if "last_heartbeat_at" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN last_heartbeat_at INTEGER")
+        _safe_add_column(conn, "tasks", "last_heartbeat_at INTEGER")
     if "current_run_id" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN current_run_id INTEGER")
+        _safe_add_column(conn, "tasks", "current_run_id INTEGER")
     if "workflow_template_id" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN workflow_template_id TEXT")
+        _safe_add_column(conn, "tasks", "workflow_template_id TEXT")
     if "current_step_key" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN current_step_key TEXT")
+        _safe_add_column(conn, "tasks", "current_step_key TEXT")
     if "skills" not in cols:
         # JSON array of skill names the dispatcher force-loads into the
         # worker (additive to the built-in `kanban-worker`). NULL is fine
         # for existing rows.
-        conn.execute("ALTER TABLE tasks ADD COLUMN skills TEXT")
+        _safe_add_column(conn, "tasks", "skills TEXT")
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
     ev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_events)")}
     if "run_id" not in ev_cols:
-        conn.execute("ALTER TABLE task_events ADD COLUMN run_id INTEGER")
+        _safe_add_column(conn, "task_events", "run_id INTEGER")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_events_run "
             "ON task_events(run_id, id)"
