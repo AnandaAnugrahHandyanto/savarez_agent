@@ -450,9 +450,17 @@ def _make_stream_chunk(
     finish_reason: Optional[str] = None,
     reasoning: str = "",
 ) -> _GeminiStreamChunk:
-    delta_kwargs: Dict[str, Any] = {"role": "assistant"}
-    if content:
-        delta_kwargs["content"] = content
+    # Always initialize the full set of OpenAI delta keys so consumers can
+    # safely read ``delta.content`` / ``delta.tool_calls`` / ``delta.reasoning``
+    # without AttributeError on chunks that carry only a subset (e.g. a chunk
+    # with just a functionCall and no text content).
+    delta_kwargs: Dict[str, Any] = {
+        "role": "assistant",
+        "content": content if content else None,
+        "tool_calls": None,
+        "reasoning": None,
+        "reasoning_content": None,
+    }
     if tool_call_delta is not None:
         delta_kwargs["tool_calls"] = [SimpleNamespace(
             index=tool_call_delta.get("index", 0),

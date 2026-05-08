@@ -850,6 +850,67 @@ class TestTranslateGeminiResponse:
         assert _map_gemini_finish_reason("RECITATION") == "content_filter"
 
 
+class TestMakeStreamChunk:
+    """``_make_stream_chunk`` must always initialize the full OpenAI delta
+    schema (``content`` / ``tool_calls`` / ``reasoning`` / ``reasoning_content``)
+    so consumers can read any of them without AttributeError, regardless of
+    which fields the upstream chunk happened to carry.
+    """
+
+    def test_chunk_with_only_tool_call_exposes_content_attribute(self):
+        """Regression: consumers do ``if delta and delta.content:`` — that
+        crashes with ``'types.SimpleNamespace' object has no attribute
+        'content'`` when the chunk is built from a Gemini event that carried
+        only a functionCall (no text part)."""
+        from agent.gemini_cloudcode_adapter import _make_stream_chunk
+
+        chunk = _make_stream_chunk(
+            model="m",
+            tool_call_delta={"name": "read_file", "arguments": '{"path":"a"}'},
+        )
+        delta = chunk.choices[0].delta
+        # All four optional keys must be addressable as attributes:
+        assert delta.content is None
+        assert delta.tool_calls is not None
+        assert delta.reasoning is None
+        assert delta.reasoning_content is None
+        # And the tool_call payload survives.
+        assert delta.tool_calls[0].function.name == "read_file"
+
+    def test_chunk_with_only_text_content_exposes_tool_calls_attribute(self):
+        from agent.gemini_cloudcode_adapter import _make_stream_chunk
+
+        chunk = _make_stream_chunk(model="m", content="hello")
+        delta = chunk.choices[0].delta
+        assert delta.content == "hello"
+        assert delta.tool_calls is None
+        assert delta.reasoning is None
+        assert delta.reasoning_content is None
+
+    def test_chunk_with_only_reasoning_exposes_other_attributes(self):
+        from agent.gemini_cloudcode_adapter import _make_stream_chunk
+
+        chunk = _make_stream_chunk(model="m", reasoning="thinking...")
+        delta = chunk.choices[0].delta
+        assert delta.content is None
+        assert delta.tool_calls is None
+        assert delta.reasoning == "thinking..."
+        assert delta.reasoning_content == "thinking..."
+
+    def test_empty_chunk_exposes_all_attributes_as_none(self):
+        """Terminal chunks (e.g. only a finish_reason) carry no payload but
+        must still expose every delta attribute as ``None``."""
+        from agent.gemini_cloudcode_adapter import _make_stream_chunk
+
+        chunk = _make_stream_chunk(model="m", finish_reason="stop")
+        delta = chunk.choices[0].delta
+        assert delta.content is None
+        assert delta.tool_calls is None
+        assert delta.reasoning is None
+        assert delta.reasoning_content is None
+        assert chunk.choices[0].finish_reason == "stop"
+
+
 class TestTranslateStreamEvent:
     def test_parallel_calls_to_same_tool_get_unique_indices(self):
         """Gemini may emit several functionCall parts with the same name in a
