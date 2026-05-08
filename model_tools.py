@@ -810,6 +810,8 @@ def handle_function_call(
         except Exception as _hook_err:
             logger.debug("transform_tool_result hook error: %s", _hook_err)
 
+        if not isinstance(result, str):
+            result = json.dumps(result, ensure_ascii=False)
         return result
 
     except Exception as e:
