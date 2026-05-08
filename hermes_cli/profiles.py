@@ -531,10 +531,17 @@ def create_profile(
             # Clone installed skills from the source profile. The dashboard's
             # "clone from default" flow is expected to preserve both bundled
             # and user-installed skills so the new profile immediately has the
-            # same agent capabilities as the source profile.
+            # same agent capabilities as the source profile. Preserve symlinks
+            # instead of dereferencing them so shared skill payloads stay
+            # shared when the source profile already deduped them.
             source_skills = source_dir / "skills"
             if source_skills.is_dir():
-                shutil.copytree(source_skills, profile_dir / "skills", dirs_exist_ok=True)
+                shutil.copytree(
+                    source_skills,
+                    profile_dir / "skills",
+                    dirs_exist_ok=True,
+                    symlinks=True,
+                )
 
             # Clone memory and other subdirectory files
             for relpath in _CLONE_SUBDIR_FILES:

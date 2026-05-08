@@ -197,6 +197,26 @@ class TestCreateProfile:
             / "SKILL.md"
         ).read_text() == "---\nname: installed-skill\n---\n"
 
+    def test_clone_config_preserves_skill_symlinks(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        shared_skill = tmp_path / "shared-gstack"
+        shared_skill.mkdir()
+        (shared_skill / "SKILL.md").write_text("---\nname: gstack\n---\n")
+        (shared_skill / "payload.bin").write_bytes(b"x" * 32)
+
+        source_skills = default_home / "skills"
+        source_skills.mkdir(parents=True, exist_ok=True)
+        source_link = source_skills / "gstack"
+        source_link.symlink_to(shared_skill, target_is_directory=True)
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        cloned_link = profile_dir / "skills" / "gstack"
+        assert cloned_link.is_symlink()
+        assert cloned_link.resolve() == shared_skill.resolve()
+        assert (cloned_link / "SKILL.md").read_text() == "---\nname: gstack\n---\n"
+
     def test_clone_all_copies_entire_tree(self, profile_env):
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
