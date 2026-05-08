@@ -1387,7 +1387,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 23,
+    "_config_version": 24,
 }
 
 # =============================================================================
@@ -3578,6 +3578,45 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         "  ✓ Seeded auxiliary.curator defaults in config.yaml: "
                         f"{', '.join(added_aux)}"
                     )
+
+    # ── Version 23 → 24: seed goals.judge_timeout_seconds + terminal.max_foreground_timeout_seconds ──
+    # Runtime merge already applies defaults, but users cannot see or edit these keys in
+    # config.yaml until they exist on disk (same pattern as curator migration above).
+    if current_ver < 24:
+        config = read_raw_config()
+        touched = False
+
+        goals_defaults = DEFAULT_CONFIG.get("goals") or {}
+        raw_goals = config.get("goals")
+        if not isinstance(raw_goals, dict):
+            raw_goals = {}
+        if "judge_timeout_seconds" not in raw_goals:
+            raw_goals["judge_timeout_seconds"] = copy.deepcopy(
+                goals_defaults.get("judge_timeout_seconds", 30)
+            )
+            config["goals"] = raw_goals
+            touched = True
+            results["config_added"].append("goals.judge_timeout_seconds")
+
+        term_defaults = DEFAULT_CONFIG.get("terminal") or {}
+        raw_term = config.get("terminal")
+        if not isinstance(raw_term, dict):
+            raw_term = {}
+        if "max_foreground_timeout_seconds" not in raw_term:
+            raw_term["max_foreground_timeout_seconds"] = copy.deepcopy(
+                term_defaults.get("max_foreground_timeout_seconds", 600)
+            )
+            config["terminal"] = raw_term
+            touched = True
+            results["config_added"].append("terminal.max_foreground_timeout_seconds")
+
+        if touched:
+            save_config(config)
+            if not quiet:
+                print(
+                    "  ✓ Seeded goals.judge_timeout_seconds and "
+                    "terminal.max_foreground_timeout_seconds in config.yaml"
+                )
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
