@@ -388,6 +388,7 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
 # via should_send_media_as_audio() so Telegram-specific rules stay in one place.
 _VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
 _IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
+_AUDIO_EXTS = frozenset({'.mp3', '.m4a', '.ogg', '.wav', '.flac', '.aac', '.opus'})
 
 
 def _send_media_via_adapter(
@@ -398,8 +399,11 @@ def _send_media_via_adapter(
     loop,
     job: dict,
     platform=None,
-) -> None:
+) -> bool:
     """Send extracted MEDIA files as native platform attachments via a live adapter.
+
+    Returns True when every attachment send succeeded, False when any attachment
+    failed or timed out.
 
     Routes each file to the appropriate adapter method (send_voice, send_image_file,
     send_video, send_document) based on file extension — mirroring the routing logic
@@ -409,6 +413,7 @@ def _send_media_via_adapter(
 
     from gateway.platforms.base import should_send_media_as_audio
 
+    all_ok = True
     for media_path, _is_voice in media_files:
         try:
             ext = Path(media_path).suffix.lower()
@@ -427,14 +432,94 @@ def _send_media_via_adapter(
                 result = future.result(timeout=30)
             except TimeoutError:
                 future.cancel()
+                all_ok = False
                 raise
             if result and not getattr(result, "success", True):
+                all_ok = False
                 logger.warning(
                     "Job '%s': media send failed for %s: %s",
                     job.get("id", "?"), media_path, getattr(result, "error", "unknown"),
                 )
         except Exception as e:
+            all_ok = False
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
+    return all_ok
+
+
+def _build_cron_mirror_text(cleaned_delivery_content: str, media_files: list[tuple[str, bool]]) -> str:
+    """Build the text mirrored back into a gateway session after cron delivery."""
+    text = (cleaned_delivery_content or "").strip()
+    if not media_files:
+        return text
+
+    if len(media_files) == 1:
+        media_path, is_voice = media_files[0]
+        ext = Path(media_path).suffix.lower()
+        if is_voice:
+            attachment_summary = "[Cron delivery sent voice attachment]"
+        elif ext in _IMAGE_EXTS:
+            attachment_summary = "[Cron delivery sent image attachment]"
+        elif ext in _VIDEO_EXTS:
+            attachment_summary = "[Cron delivery sent video attachment]"
+        elif ext in _AUDIO_EXTS:
+            attachment_summary = "[Cron delivery sent audio attachment]"
+        else:
+            attachment_summary = "[Cron delivery sent document attachment]"
+    else:
+        attachment_summary = f"[Cron delivery sent {len(media_files)} attachments]"
+
+    return f"{text}\n\n{attachment_summary}".strip() if text else attachment_summary
+
+
+def _origin_user_id_for_target(job: dict, platform_name: str, chat_id: str, thread_id: str | None) -> Optional[str]:
+    """Return the origin user_id when the delivery target matches the source chat."""
+    origin = _resolve_origin(job) or {}
+    if not origin:
+        return None
+    if str(origin.get("platform", "")).lower() != str(platform_name).lower():
+        return None
+    if str(origin.get("chat_id", "")) != str(chat_id):
+        return None
+    if str(origin.get("thread_id") or "") != str(thread_id or ""):
+        return None
+    user_id = str(origin.get("user_id") or "").strip()
+    return user_id or None
+
+
+def _maybe_mirror_cron_delivery(
+    job: dict,
+    platform_name: str,
+    chat_id: str,
+    thread_id: str | None,
+    cleaned_delivery_content: str,
+    media_files: list[tuple[str, bool]],
+) -> None:
+    """Mirror successful cron deliveries into the matching gateway session when possible."""
+    mirror_text = _build_cron_mirror_text(cleaned_delivery_content, media_files)
+    if not mirror_text:
+        return
+    try:
+        from gateway.mirror import mirror_to_session
+
+        source_label = f"cron:{job.get('name') or job.get('id', 'job')}"
+        user_id = _origin_user_id_for_target(job, platform_name, chat_id, thread_id)
+        mirrored = mirror_to_session(
+            platform_name,
+            chat_id,
+            mirror_text,
+            source_label=source_label,
+            thread_id=thread_id,
+            user_id=user_id,
+        )
+        if mirrored:
+            logger.info(
+                "Job '%s': mirrored delivery into %s:%s session",
+                job.get("id", "?"),
+                platform_name,
+                chat_id,
+            )
+    except Exception as exc:
+        logger.debug("Job '%s': cron delivery mirror failed: %s", job.get("id", "?"), exc)
 
 
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
@@ -463,9 +548,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
     # in config.yaml for clean output.
     wrap_response = True
+    mirror_deliveries_to_session = True
     try:
         user_cfg = load_config()
-        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
+        cron_cfg = user_cfg.get("cron", {}) if isinstance(user_cfg, dict) else {}
+        wrap_response = cron_cfg.get("wrap_response", True)
+        mirror_deliveries_to_session = cron_cfg.get("mirror_deliveries_to_session", True)
     except Exception:
         pass
 
@@ -561,8 +649,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         adapter_ok = False  # fall through to standalone path
 
                 # Send extracted media files as native attachments via the live adapter
+                media_delivery_succeeded = True
                 if adapter_ok and media_files:
-                    _send_media_via_adapter(
+                    media_delivery_succeeded = _send_media_via_adapter(
                         runtime_adapter,
                         chat_id,
                         media_files,
@@ -574,6 +663,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
+                    if mirror_deliveries_to_session:
+                        _maybe_mirror_cron_delivery(
+                            job,
+                            platform_name,
+                            chat_id,
+                            thread_id,
+                            cleaned_delivery_content,
+                            media_files if media_delivery_succeeded else [],
+                        )
                     delivered = True
             except Exception as e:
                 logger.warning(
@@ -608,6 +706,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 continue
 
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+            if mirror_deliveries_to_session:
+                _maybe_mirror_cron_delivery(
+                    job,
+                    platform_name,
+                    chat_id,
+                    thread_id,
+                    cleaned_delivery_content,
+                    media_files,
+                )
 
     if delivery_errors:
         return "; ".join(delivery_errors)

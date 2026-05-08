@@ -352,7 +352,7 @@ class TestResolveDeliveryTarget:
 
 
 class TestDeliverResultWrapping:
-    """Verify that cron deliveries are wrapped with header/footer and no longer mirrored."""
+    """Verify that cron deliveries are wrapped cleanly and mirrored into gateway sessions."""
 
     def test_delivery_wraps_content_with_header_and_footer(self):
         """Delivered content should include task name header and agent-invisible note."""
@@ -637,8 +637,8 @@ class TestDeliverResultWrapping:
         assert "MEDIA:" not in text_sent
         assert "Report" in text_sent
 
-    def test_no_mirror_to_session_call(self):
-        """Cron deliveries should NOT mirror into the gateway session."""
+    def test_mirror_to_session_called_after_successful_delivery(self):
+        """Successful cron deliveries should mirror back into the target gateway session."""
         from gateway.config import Platform
 
         pconfig = MagicMock()
@@ -648,7 +648,8 @@ class TestDeliverResultWrapping:
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
-             patch("gateway.mirror.mirror_to_session") as mirror_mock:
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False, "mirror_deliveries_to_session": True}}):
             job = {
                 "id": "test-job",
                 "deliver": "origin",
@@ -656,7 +657,80 @@ class TestDeliverResultWrapping:
             }
             _deliver_result(job, "Hello!")
 
-        mirror_mock.assert_not_called()
+        mirror_mock.assert_called_once_with(
+            "telegram",
+            "123",
+            "Hello!",
+            source_label="cron:test-job",
+            thread_id=None,
+            user_id=None,
+        )
+
+    def test_mirror_includes_attachment_summary_when_text_and_media_are_sent(self):
+        """Mirrored cron text should retain attachment context, not just the plain text body."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False, "mirror_deliveries_to_session": True}}):
+            job = {
+                "id": "img-job",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Report\nMEDIA:/tmp/chart.png")
+
+        mirror_text = mirror_mock.call_args.args[2]
+        assert "Report" in mirror_text
+        assert "image attachment" in mirror_text
+
+    def test_live_adapter_media_failures_do_not_claim_attachment_mirror_success(self):
+        """If a live adapter fails to send media, the mirrored text should not claim the attachment landed."""
+        from gateway.config import Platform
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            from concurrent.futures import Future
+            future = Future()
+            future.set_result(MagicMock(success=True))
+            coro.close()
+            return future
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock, \
+             patch("cron.scheduler._send_media_via_adapter", return_value=False), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False, "mirror_deliveries_to_session": True}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            job = {
+                "id": "img-live-job",
+                "deliver": "origin",
+                "origin": {"platform": "discord", "chat_id": "1234"},
+            }
+            _deliver_result(
+                job,
+                "Report\nMEDIA:/tmp/chart.png",
+                adapters={Platform.DISCORD: adapter},
+                loop=loop,
+            )
+
+        mirror_text = mirror_mock.call_args.args[2]
+        assert mirror_text == "Report"
 
     def test_origin_delivery_preserves_thread_id(self):
         """Origin delivery should forward thread_id to the send helper."""

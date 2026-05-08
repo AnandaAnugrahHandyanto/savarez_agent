@@ -1247,8 +1247,11 @@ DEFAULT_CONFIG = {
 
     "cron": {
         # Wrap delivered cron responses with a header (task name) and footer
-        # ("The agent cannot see this message").  Set to false for clean output.
+        # so recipients can tell the message came from a scheduled job.
         "wrap_response": True,
+        # Mirror successful cron deliveries back into the receiving gateway
+        # session so the next live turn can see what background work already ran.
+        "mirror_deliveries_to_session": True,
         # Maximum number of due jobs to run in parallel per tick.
         # null/0 = unbounded (limited only by thread count).
         # 1 = serial (pre-v0.9 behaviour).

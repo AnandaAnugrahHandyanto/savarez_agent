@@ -5,13 +5,15 @@ background session) across gateway messenger platforms.
 """
 
 import asyncio
+import json
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import gateway.mirror as mirror_mod
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import MessageEvent, SendResult
 from gateway.session import SessionSource
 
 
@@ -177,7 +179,7 @@ class TestRunBackgroundTask:
 
     @pytest.mark.asyncio
     async def test_no_credentials_sends_error(self):
-        """When provider credentials are missing, an error is sent."""
+        """When provider credentials are missing, an error is sent and mirrored."""
         runner = _make_runner()
         mock_adapter = AsyncMock()
         mock_adapter.send = AsyncMock()
@@ -190,17 +192,27 @@ class TestRunBackgroundTask:
             user_name="testuser",
         )
 
-        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": None}):
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": None}), \
+             patch("gateway.run.mirror_to_session", return_value=True) as mock_mirror:
             await runner._run_background_task("test prompt", source, "bg_test")
 
         # Should have sent an error message
         mock_adapter.send.assert_called_once()
         call_args = mock_adapter.send.call_args
-        assert "failed" in call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "").lower()
+        content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
+        assert "failed" in content.lower()
+        mock_mirror.assert_called_once_with(
+            "telegram",
+            "67890",
+            content,
+            source_label="background:bg_test",
+            thread_id=None,
+            user_id="12345",
+        )
 
     @pytest.mark.asyncio
     async def test_successful_task_sends_result(self):
-        """When the agent completes successfully, the result is sent."""
+        """When the agent completes successfully, the result is sent and mirrored."""
         runner = _make_runner()
         mock_adapter = AsyncMock()
         mock_adapter.send = AsyncMock()
@@ -218,7 +230,8 @@ class TestRunBackgroundTask:
         mock_result = {"final_response": "Hello from background!", "messages": []}
 
         with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
-             patch("run_agent.AIAgent") as MockAgent:
+             patch("run_agent.AIAgent") as MockAgent, \
+             patch("gateway.run.mirror_to_session", return_value=True) as mock_mirror:
             mock_agent_instance = MagicMock()
             mock_agent_instance.shutdown_memory_provider = MagicMock()
             mock_agent_instance.close = MagicMock()
@@ -233,6 +246,337 @@ class TestRunBackgroundTask:
         content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
         assert "Background task complete" in content
         assert "Hello from background!" in content
+        mock_mirror.assert_called_once_with(
+            "telegram",
+            "67890",
+            content,
+            source_label="background:bg_test",
+            thread_id=None,
+            user_id="12345",
+        )
+        mock_agent_instance.shutdown_memory_provider.assert_called_once()
+        mock_agent_instance.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_successful_task_real_mirror_writes_transcript(self, tmp_path):
+        """The real mirror path writes the background completion into the session transcript."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        index_file = sessions_dir / "sessions.json"
+        index_file.write_text(json.dumps({
+            "agent:main:telegram:dm": {
+                "session_id": "sess_abc",
+                "origin": {"platform": "telegram", "chat_id": "67890", "user_id": "12345"},
+                "updated_at": "2026-01-01T00:00:00",
+            }
+        }))
+
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], "Hello from background!"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "Hello from background!"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        mock_result = {"final_response": "Hello from background!", "messages": []}
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
+             patch("gateway.mirror._append_to_sqlite"), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.return_value = mock_result
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("say hello", source, "bg_test")
+
+        transcript = sessions_dir / "sess_abc.jsonl"
+        assert transcript.exists()
+        lines = transcript.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 1
+        message = json.loads(lines[0])
+        assert message["mirror"] is True
+        assert message["mirror_source"] == "background:bg_test"
+        assert "Hello from background!" in message["content"]
+
+    @pytest.mark.asyncio
+    async def test_mixed_text_and_media_task_mirrors_both(self):
+        """Mixed text+media completions mention the separately delivered media."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.send_image = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], "Hello from background!"))
+        mock_adapter.extract_images = MagicMock(return_value=([("https://example.com/cat.png", "cat")], "Hello from background!"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        mock_result = {"final_response": "text and image", "messages": []}
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("run_agent.AIAgent") as MockAgent, \
+             patch("gateway.run.mirror_to_session", return_value=True) as mock_mirror:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.return_value = mock_result
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("send both", source, "bg_test")
+
+        mock_adapter.send.assert_called_once()
+        sent_text = mock_adapter.send.call_args[1]["content"]
+        assert "Hello from background!" in sent_text
+        assert "Also delivered separately: 1 image" in sent_text
+        mock_adapter.send_image.assert_called_once()
+        mirror_text = mock_mirror.call_args[0][2]
+        assert "Also delivered separately: 1 image" in mirror_text
+        mock_agent_instance.shutdown_memory_provider.assert_called_once()
+        mock_agent_instance.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_media_only_task_mirrors_delivery_summary(self):
+        """Media-only completions are mirrored as a delivery summary."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.send_image = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], ""))
+        mock_adapter.extract_images = MagicMock(return_value=([("https://example.com/cat.png", "cat")], ""))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        mock_result = {"final_response": "image only", "messages": []}
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("run_agent.AIAgent") as MockAgent, \
+             patch("gateway.run.mirror_to_session", return_value=True) as mock_mirror:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.return_value = mock_result
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("send image", source, "bg_test")
+
+        mock_adapter.send.assert_not_called()
+        mock_adapter.send_image.assert_called_once()
+        mirror_text = mock_mirror.call_args[0][2]
+        assert "Delivered separately: 1 image" in mirror_text
+        mock_agent_instance.shutdown_memory_provider.assert_called_once()
+        mock_agent_instance.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_mixed_text_and_media_failure_mentions_failed_delivery(self):
+        """Mixed text+media completions mention failed attachment delivery accurately."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.send_image = AsyncMock(return_value=SendResult(success=False, error="upload failed"))
+        mock_adapter.extract_media = MagicMock(return_value=([], "Hello from background!"))
+        mock_adapter.extract_images = MagicMock(return_value=([("https://example.com/cat.png", "cat")], "Hello from background!"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        mock_result = {"final_response": "text and image", "messages": []}
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("run_agent.AIAgent") as MockAgent, \
+             patch("gateway.run.mirror_to_session", return_value=True) as mock_mirror:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.return_value = mock_result
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("send both", source, "bg_test")
+
+        sent_text = mock_adapter.send.call_args[1]["content"]
+        assert "Failed to send: 1 image" in sent_text
+        mirror_text = mock_mirror.call_args[0][2]
+        assert "Failed to send: 1 image" in mirror_text
+        mock_agent_instance.shutdown_memory_provider.assert_called_once()
+        mock_agent_instance.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_media_only_failed_delivery_sends_failure_summary(self):
+        """Media-only delivery failures send and mirror an explicit failure summary."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.send_image = AsyncMock(return_value=SendResult(success=False, error="upload failed"))
+        mock_adapter.extract_media = MagicMock(return_value=([], ""))
+        mock_adapter.extract_images = MagicMock(return_value=([("https://example.com/cat.png", "cat")], ""))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        mock_result = {"final_response": "image only", "messages": []}
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("run_agent.AIAgent") as MockAgent, \
+             patch("gateway.run.mirror_to_session", return_value=True) as mock_mirror:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.return_value = mock_result
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("send image", source, "bg_test")
+
+        mock_adapter.send.assert_called_once()
+        sent_text = mock_adapter.send.call_args[1]["content"]
+        assert "Failed to send: 1 image" in sent_text
+        mirror_text = mock_mirror.call_args[0][2]
+        assert "Failed to send: 1 image" in mirror_text
+        mock_agent_instance.shutdown_memory_provider.assert_called_once()
+        mock_agent_instance.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_attachment_delivery_failure_sends_failure_summary(self):
+        """Document delivery failures are reported and mirrored accurately."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.send_document = AsyncMock(return_value=SendResult(success=False, error="upload failed"))
+        mock_adapter.extract_media = MagicMock(return_value=([("/tmp/report.pdf", False)], ""))
+        mock_adapter.extract_images = MagicMock(return_value=([], ""))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        mock_result = {"final_response": "document only", "messages": []}
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("run_agent.AIAgent") as MockAgent, \
+             patch("gateway.run.mirror_to_session", return_value=True) as mock_mirror:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.return_value = mock_result
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("send document", source, "bg_test")
+
+        mock_adapter.send.assert_called_once()
+        sent_text = mock_adapter.send.call_args[1]["content"]
+        assert "Failed to send: 1 attachment" in sent_text
+        mock_adapter.send_document.assert_called_once()
+        mirror_text = mock_mirror.call_args[0][2]
+        assert "Failed to send: 1 attachment" in mirror_text
+        mock_agent_instance.shutdown_memory_provider.assert_called_once()
+        mock_agent_instance.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_text_delivery_failure_still_mirrors_outcome(self):
+        """Even if chat delivery fails, the background outcome is mirrored."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock(return_value=SendResult(success=False, error="chat blocked"))
+        mock_adapter.extract_media = MagicMock(return_value=([], "Hello from background!"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "Hello from background!"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        mock_result = {"final_response": "Hello from background!", "messages": []}
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("run_agent.AIAgent") as MockAgent, \
+             patch("gateway.run.mirror_to_session", return_value=True) as mock_mirror:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.return_value = mock_result
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("say hello", source, "bg_test")
+
+        mock_adapter.send.assert_called_once()
+        mirror_text = mock_mirror.call_args[0][2]
+        assert "Hello from background!" in mirror_text
+        assert "Chat delivery to telegram failed: chat blocked" in mirror_text
+        mock_agent_instance.shutdown_memory_provider.assert_called_once()
+        mock_agent_instance.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_returned_error_payload_is_reported_as_failure(self):
+        """Structured failed results render a failure header instead of success."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], "Error: boom"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "Error: boom"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        mock_result = {"failed": True, "error": "boom", "messages": []}
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("run_agent.AIAgent") as MockAgent, \
+             patch("gateway.run.mirror_to_session", return_value=True) as mock_mirror:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.return_value = mock_result
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("cause error", source, "bg_test")
+
+        sent_text = mock_adapter.send.call_args[1]["content"]
+        assert "❌ Background task bg_test failed" in sent_text
+        assert "Error: boom" in sent_text
+        mirror_text = mock_mirror.call_args[0][2]
+        assert "❌ Background task bg_test failed" in mirror_text
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
 
@@ -267,7 +611,7 @@ class TestRunBackgroundTask:
 
     @pytest.mark.asyncio
     async def test_exception_sends_error_message(self):
-        """When the agent raises an exception, an error message is sent."""
+        """When the agent raises an exception, an error message is sent and mirrored."""
         runner = _make_runner()
         mock_adapter = AsyncMock()
         mock_adapter.send = AsyncMock()
@@ -280,13 +624,22 @@ class TestRunBackgroundTask:
             user_name="testuser",
         )
 
-        with patch("gateway.run._resolve_runtime_agent_kwargs", side_effect=RuntimeError("boom")):
+        with patch("gateway.run._resolve_runtime_agent_kwargs", side_effect=RuntimeError("boom")), \
+             patch("gateway.run.mirror_to_session", return_value=True) as mock_mirror:
             await runner._run_background_task("test prompt", source, "bg_test")
 
         mock_adapter.send.assert_called_once()
         call_args = mock_adapter.send.call_args
         content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
         assert "failed" in content.lower()
+        mock_mirror.assert_called_once_with(
+            "telegram",
+            "67890",
+            content,
+            source_label="background:bg_test",
+            thread_id=None,
+            user_id="12345",
+        )
 
 
 # ---------------------------------------------------------------------------

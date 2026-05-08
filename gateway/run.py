@@ -554,6 +554,7 @@ from gateway.session import (
     is_shared_multi_user_session,
 )
 from gateway.delivery import DeliveryRouter
+from gateway.mirror import mirror_to_session
 from gateway.platforms.base import (
     BasePlatformAdapter,
     EphemeralReply,
@@ -9283,8 +9284,9 @@ class GatewayRunner:
         """Handle /background <prompt> — run a prompt in a separate background session.
 
         Spawns a new AIAgent in a background thread with its own session.
-        When it completes, sends the result back to the same chat without
-        modifying the active session's conversation history.
+        When it completes, sends the result back to the same chat and mirrors a
+        completion record into the active gateway transcript so the next live
+        turn has continuity.
         """
         prompt = event.get_command_args().strip()
         if not prompt:
@@ -9320,6 +9322,125 @@ class GatewayRunner:
             return
 
         _thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
+        _platform_label = getattr(source.platform, "value", source.platform)
+
+        def _mirror_background_result(message_text: str) -> None:
+            if not message_text:
+                return
+            try:
+                mirrored = mirror_to_session(
+                    _platform_label,
+                    source.chat_id,
+                    message_text,
+                    source_label=f"background:{task_id}",
+                    thread_id=source.thread_id,
+                    user_id=source.user_id,
+                )
+                if not mirrored:
+                    logger.warning(
+                        "Background task %s could not mirror into session for %s:%s",
+                        task_id,
+                        _platform_label,
+                        source.chat_id,
+                    )
+            except Exception as exc:
+                logger.debug("Background task %s mirror failed: %s", task_id, exc)
+
+        def _build_background_completion_text(
+            *,
+            preview: str,
+            text_content: str,
+            image_count: int,
+            attachment_count: int,
+            expected_image_count: int,
+            expected_attachment_count: int,
+            failed: bool = False,
+        ) -> str:
+            header_status = (
+                f'❌ Background task {task_id} failed\nPrompt: "{preview}"\n\n'
+                if failed
+                else f'✅ Background task complete\nPrompt: "{preview}"\n\n'
+            )
+
+            delivered_parts = []
+            if image_count:
+                delivered_parts.append(
+                    f"{image_count} image{'s' if image_count != 1 else ''}"
+                )
+            if attachment_count:
+                delivered_parts.append(
+                    f"{attachment_count} attachment{'s' if attachment_count != 1 else ''}"
+                )
+
+            failed_parts = []
+            failed_images = max(expected_image_count - image_count, 0)
+            failed_attachments = max(expected_attachment_count - attachment_count, 0)
+            if failed_images:
+                failed_parts.append(
+                    f"{failed_images} image{'s' if failed_images != 1 else ''}"
+                )
+            if failed_attachments:
+                failed_parts.append(
+                    f"{failed_attachments} attachment{'s' if failed_attachments != 1 else ''}"
+                )
+
+            delivery_notes = []
+            if delivered_parts:
+                prefix = "Also delivered separately" if text_content.strip() else "Delivered separately"
+                delivery_notes.append(f"{prefix}: {', '.join(delivered_parts)}")
+            if failed_parts:
+                delivery_notes.append(f"Failed to send: {', '.join(failed_parts)}")
+
+            if text_content.strip():
+                text = header_status + text_content
+                if not delivery_notes:
+                    return text
+                return text + "\n\n(" + "; ".join(delivery_notes) + ")"
+
+            if delivery_notes:
+                return header_status + "(" + "; ".join(delivery_notes) + ")"
+            return header_status + "(No response generated)"
+
+        def _send_result_succeeded(result: object) -> bool:
+            if result is None:
+                return True
+            if isinstance(result, dict):
+                if "success" in result:
+                    return bool(result.get("success"))
+                return not result.get("error")
+            success = getattr(result, "success", None)
+            if success is None:
+                return result is not False
+            return bool(success)
+
+        def _send_result_error(result: object) -> str:
+            if result is None:
+                return ""
+            if isinstance(result, dict):
+                return str(result.get("error") or "").strip()
+            return str(getattr(result, "error", "") or "").strip()
+
+        async def _send_text_with_mirror(message_text: str) -> None:
+            mirror_text = message_text
+            try:
+                send_result = await adapter.send(
+                    chat_id=source.chat_id,
+                    content=message_text,
+                    metadata=_thread_metadata,
+                )
+                if not _send_result_succeeded(send_result):
+                    error_detail = _send_result_error(send_result)
+                    suffix = (
+                        f"Chat delivery to {_platform_label} failed: {error_detail}"
+                        if error_detail
+                        else f"Chat delivery to {_platform_label} failed"
+                    )
+                    mirror_text = f"{message_text}\n\n({suffix})"
+            except Exception as exc:
+                mirror_text = (
+                    f"{message_text}\n\n(Chat delivery to {_platform_label} failed: {exc})"
+                )
+            _mirror_background_result(mirror_text)
 
         try:
             user_config = _load_gateway_config()
@@ -9328,11 +9449,8 @@ class GatewayRunner:
                 user_config=user_config,
             )
             if not runtime_kwargs.get("api_key"):
-                await adapter.send(
-                    source.chat_id,
-                    f"❌ Background task {task_id} failed: no provider credentials configured.",
-                    metadata=_thread_metadata,
-                )
+                error_text = f"❌ Background task {task_id} failed: no provider credentials configured."
+                await _send_text_with_mirror(error_text)
                 return
 
             platform_key = _platform_config_key(source.platform)
@@ -9389,68 +9507,80 @@ class GatewayRunner:
             result = await self._run_in_executor_with_context(run_sync)
 
             response = result.get("final_response", "") if result else ""
+            background_failed = bool(result and result.get("failed"))
             if not response and result and result.get("error"):
+                background_failed = True
                 response = f"Error: {result['error']}"
+
+            preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
 
             # Extract media files from the response
             if response:
                 media_files, response = adapter.extract_media(response)
                 images, text_content = adapter.extract_images(response)
+                expected_image_count = len(images or [])
+                expected_attachment_count = len(media_files or [])
 
-                preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
-                header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
-
-                if text_content:
-                    await adapter.send(
-                        chat_id=source.chat_id,
-                        content=header + text_content,
-                        metadata=_thread_metadata,
-                    )
-                elif not images and not media_files:
-                    await adapter.send(
-                        chat_id=source.chat_id,
-                        content=header + "(No response generated)",
-                        metadata=_thread_metadata,
-                    )
-
-                # Send extracted images
+                delivered_images = 0
                 for image_url, alt_text in (images or []):
                     try:
-                        await adapter.send_image(
+                        send_result = await adapter.send_image(
                             chat_id=source.chat_id,
                             image_url=image_url,
                             caption=alt_text,
                             metadata=_thread_metadata,
                         )
+                        if _send_result_succeeded(send_result):
+                            delivered_images += 1
                     except Exception:
                         pass
 
-                # Send media files
+                delivered_attachments = 0
                 for media_path, _is_voice in (media_files or []):
                     try:
-                        await adapter.send_document(
+                        send_result = await adapter.send_document(
                             chat_id=source.chat_id,
                             file_path=media_path,
                             metadata=_thread_metadata,
                         )
+                        if _send_result_succeeded(send_result):
+                            delivered_attachments += 1
                     except Exception:
                         pass
-            else:
-                preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
-                await adapter.send(
-                    chat_id=source.chat_id,
-                    content=f'✅ Background task complete\nPrompt: "{preview}"\n\n(No response generated)',
-                    metadata=_thread_metadata,
+
+                completion_text = _build_background_completion_text(
+                    preview=preview,
+                    text_content=text_content,
+                    image_count=delivered_images,
+                    attachment_count=delivered_attachments,
+                    expected_image_count=expected_image_count,
+                    expected_attachment_count=expected_attachment_count,
+                    failed=background_failed,
                 )
+
+                if text_content or (delivered_images + delivered_attachments) != (
+                    expected_image_count + expected_attachment_count
+                ) or (not images and not media_files):
+                    await _send_text_with_mirror(completion_text)
+                else:
+                    _mirror_background_result(completion_text)
+            else:
+                completion_text = _build_background_completion_text(
+                    preview=preview,
+                    text_content="",
+                    image_count=0,
+                    attachment_count=0,
+                    expected_image_count=0,
+                    expected_attachment_count=0,
+                    failed=background_failed,
+                )
+                await _send_text_with_mirror(completion_text)
 
         except Exception as e:
             logger.exception("Background task %s failed", task_id)
             try:
-                await adapter.send(
-                    chat_id=source.chat_id,
-                    content=f"❌ Background task {task_id} failed: {e}",
-                    metadata=_thread_metadata,
-                )
+                error_text = f"❌ Background task {task_id} failed: {e}"
+                await _send_text_with_mirror(error_text)
             except Exception:
                 pass
 
