@@ -127,6 +127,43 @@ def test_tenant_filter(client):
     assert total == 1
 
 
+def test_dashboard_select_filters_use_sdk_value_change_handler():
+    """Tenant/assignee filters must work with the dashboard SDK Select API.
+
+    The dashboard Select component is shadcn-like and calls
+    ``onValueChange(value)`` instead of native ``onChange(event)``. A native-only
+    handler leaves the tenant dropdown visually selectable but never updates the
+    filtered board query.
+    """
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "function selectChangeHandler(setter)" in js
+    assert "onValueChange: function (v)" in js
+    assert "onChange: function (e)" in js
+    assert "selectChangeHandler(props.setTenantFilter)" in js
+    assert "selectChangeHandler(props.setAssigneeFilter)" in js
+
+
+def test_dashboard_client_side_filtering_includes_tenant_filter():
+    """The rendered board must also filter by tenant.
+
+    The API request includes ``?tenant=...``, but the dashboard also filters the
+    locally cached board for search/assignee changes. Without checking
+    ``tenantFilter`` here, switching tenants can leave stale cards visible until a
+    full reload finishes.
+    """
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "if (tenantFilter && t.tenant !== tenantFilter) return false;" in js
+    assert "[boardData, tenantFilter, assigneeFilter, search]" in js
+
+
 # ---------------------------------------------------------------------------
 # GET /tasks/:id returns body + comments + events + links
 # ---------------------------------------------------------------------------
@@ -1545,3 +1582,104 @@ def test_board_exposes_diagnostics_list_and_summary(client):
     assert task_dict["warnings"] is not None
     assert task_dict["warnings"]["highest_severity"] == "error"
     assert task_dict["diagnostics"][0]["kind"] == "repeated_crashes"
+
+
+# ---------------------------------------------------------------------------
+# POST /tasks/:id/specify — triage specifier endpoint
+# ---------------------------------------------------------------------------
+
+
+def _patch_specifier_response(monkeypatch, *, content, model="test-model"):
+    """Helper: install a fake auxiliary client so the specifier endpoint
+    can run without hitting any real provider."""
+    from unittest.mock import MagicMock
+
+    resp = MagicMock()
+    resp.choices = [MagicMock()]
+    resp.choices[0].message.content = content
+    fake_client = MagicMock()
+    fake_client.chat.completions.create = MagicMock(return_value=resp)
+    monkeypatch.setattr(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        lambda *a, **kw: (fake_client, model),
+    )
+    return fake_client
+
+
+def test_specify_happy_path(client, monkeypatch):
+    import json as jsonlib
+
+    # Create a triage task.
+    t = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "one-liner", "triage": True},
+    ).json()["task"]
+    assert t["status"] == "triage"
+
+    _patch_specifier_response(
+        monkeypatch,
+        content=jsonlib.dumps(
+            {"title": "Polished", "body": "**Goal**\nDo the thing."}
+        ),
+    )
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t['id']}/specify",
+        json={"author": "ui-tester"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["task_id"] == t["id"]
+    assert body["new_title"] == "Polished"
+
+    # Task should have moved off the triage column.
+    detail = client.get(f"/api/plugins/kanban/tasks/{t['id']}").json()["task"]
+    assert detail["status"] in {"todo", "ready"}
+    assert detail["title"] == "Polished"
+    assert "**Goal**" in (detail["body"] or "")
+
+
+def test_specify_non_triage_returns_ok_false_not_http_error(client, monkeypatch):
+    """The endpoint intentionally returns ``{ok: false, reason: ...}`` for
+    "task not in triage" rather than a 4xx — the dashboard renders the
+    reason inline so the user can fix it without a page reload."""
+    # Create a normal (ready) task — not in triage.
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+
+    _patch_specifier_response(monkeypatch, content="unused")
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t['id']}/specify",
+        json={},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert "not in triage" in body["reason"]
+
+
+def test_specify_no_aux_client_surfaces_reason(client, monkeypatch):
+    t = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "rough", "triage": True},
+    ).json()["task"]
+
+    # Simulate "no auxiliary client configured".
+    monkeypatch.setattr(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        lambda *a, **kw: (None, ""),
+    )
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t['id']}/specify",
+        json={},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert "auxiliary client" in body["reason"]
+
+    # Task must stay in triage — nothing was touched.
+    detail = client.get(f"/api/plugins/kanban/tasks/{t['id']}").json()["task"]
+    assert detail["status"] == "triage"

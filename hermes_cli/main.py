@@ -230,6 +230,7 @@ except Exception:
     pass  # best-effort — don't crash if config isn't available yet
 
 import logging
+import threading
 import time as _time
 from datetime import datetime
 
@@ -6445,6 +6446,45 @@ def _load_installable_optional_extras() -> list[str]:
     return referenced
 
 
+def _run_install_with_heartbeat(
+    cmd: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    heartbeat_interval_seconds: int = 30,
+) -> None:
+    """Run dependency install command with periodic heartbeat output.
+
+    Some resolvers/build backends (especially when compiling Rust/C extensions)
+    can stay quiet for minutes. Emit a simple elapsed-time heartbeat so users
+    know ``hermes update`` is still progressing even if pip/uv itself is silent.
+    """
+    done = threading.Event()
+    start = _time.time()
+
+    def _heartbeat() -> None:
+        # Wait first, then print, so short installs don't emit noise.
+        while not done.wait(heartbeat_interval_seconds):
+            elapsed = int(_time.time() - start)
+            print(
+                f"  … still installing dependencies ({elapsed}s elapsed)"
+                " — compiling Rust/C extensions can take several minutes",
+                flush=True,
+            )
+
+    t = threading.Thread(target=_heartbeat, daemon=True)
+    t.start()
+    try:
+        subprocess.run(
+            cmd,
+            cwd=PROJECT_ROOT,
+            check=True,
+            env=env,
+        )
+    finally:
+        done.set()
+        t.join(timeout=0.2)
+
+
 def _install_python_dependencies_with_optional_fallback(
     install_cmd_prefix: list[str],
     *,
@@ -6461,12 +6501,13 @@ def _install_python_dependencies_with_optional_fallback(
     Collecting/Building/Installing step), so keeping it visible costs
     nothing on fast hardware and prevents the "hermes update hangs" reports
     on slow hardware.
+
+    We also add periodic heartbeat lines in case the resolver/build backend is
+    itself silent for long stretches.
     """
     try:
-        subprocess.run(
+        _run_install_with_heartbeat(
             install_cmd_prefix + ["install", "-e", ".[all]"],
-            cwd=PROJECT_ROOT,
-            check=True,
             env=env,
         )
         return
@@ -6475,10 +6516,8 @@ def _install_python_dependencies_with_optional_fallback(
             "  ⚠ Optional extras failed, reinstalling base dependencies and retrying extras individually..."
         )
 
-    subprocess.run(
+    _run_install_with_heartbeat(
         install_cmd_prefix + ["install", "-e", "."],
-        cwd=PROJECT_ROOT,
-        check=True,
         env=env,
     )
 
@@ -6486,10 +6525,8 @@ def _install_python_dependencies_with_optional_fallback(
     installed_extras: list[str] = []
     for extra in _load_installable_optional_extras():
         try:
-            subprocess.run(
+            _run_install_with_heartbeat(
                 install_cmd_prefix + ["install", "-e", f".[{extra}]"],
-                cwd=PROJECT_ROOT,
-                check=True,
                 env=env,
             )
             installed_extras.append(extra)
@@ -7735,6 +7772,23 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             # when the graceful path failed (unit missing
                             # SIGUSR1 wiring, drain exceeded the budget,
                             # restart-policy mismatch).
+                            #
+                            # Always `reset-failed` first.  If systemd's own
+                            # auto-restart attempts already parked the unit
+                            # in a failed state (transient CHDIR / OOM /
+                            # filesystem race after our drain + exit-75),
+                            # a plain `systemctl restart` can wedge against
+                            # the RestartSec backoff and leave the unit
+                            # dead.  Clearing the failed state first makes
+                            # the restart idempotent.  Mirrors the recovery
+                            # path in `hermes gateway restart`
+                            # (`systemd_restart()`) as of PR #20949.
+                            subprocess.run(
+                                scope_cmd + ["reset-failed", svc_name],
+                                capture_output=True,
+                                text=True,
+                                timeout=10,
+                            )
                             restart = subprocess.run(
                                 scope_cmd + ["restart", svc_name],
                                 capture_output=True,
@@ -7754,9 +7808,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 else:
                                     # Retry once — transient startup failures
                                     # (stale module cache, import race) often
-                                    # resolve on the second attempt.
+                                    # resolve on the second attempt.  Again
+                                    # clear any failed state first so the
+                                    # retry isn't blocked by the previous
+                                    # crash.
                                     print(
                                         f"  ⚠ {svc_name} died after restart, retrying..."
+                                    )
+                                    subprocess.run(
+                                        scope_cmd + ["reset-failed", svc_name],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=10,
                                     )
                                     subprocess.run(
                                         scope_cmd + ["restart", svc_name],
@@ -7772,10 +7835,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                         restarted_services.append(svc_name)
                                         print(f"  ✓ {svc_name} recovered on retry")
                                     else:
+                                        _scope_flag = "--user " if scope == "user" else ""
                                         print(
                                             f"  ✗ {svc_name} failed to stay running after restart.\n"
-                                            f"    Check logs: journalctl --user -u {svc_name} --since '2 min ago'\n"
-                                            f"    Restart manually: systemctl {'--user ' if scope == 'user' else ''}restart {svc_name}"
+                                            f"    Check logs: journalctl {_scope_flag}-u {svc_name} --since '2 min ago'\n"
+                                            f"    Recover manually:\n"
+                                            f"      systemctl {_scope_flag}reset-failed {svc_name}\n"
+                                            f"      systemctl {_scope_flag}restart {svc_name}"
                                         )
                             else:
                                 print(
