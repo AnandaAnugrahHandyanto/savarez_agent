@@ -2093,6 +2093,74 @@ class TestConcurrentToolExecution:
         assert {entry[0] for entry in completes} == {"c1", "c2"}
         assert {entry[3] for entry in completes} == {'{"id":1}', '{"id":2}'}
 
+    def test_sequential_write_file_checkpoint_reason_includes_path(self, agent):
+        tool_call = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"README.md","content":"hello"}',
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.get_working_dir_for_path = MagicMock(return_value="/work")
+        agent._checkpoint_mgr.ensure_checkpoint = MagicMock(return_value=True)
+
+        with patch("run_agent.handle_function_call", return_value='{"success": true}'):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        agent._checkpoint_mgr.ensure_checkpoint.assert_called_once_with(
+            "/work", "before write_file: README.md"
+        )
+
+    def test_concurrent_patch_checkpoint_reason_includes_path(self, agent):
+        tool_call = _mock_tool_call(
+            name="patch",
+            arguments='{"path":"src/app.tsx","old_string":"old","new_string":"new"}',
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.get_working_dir_for_path = MagicMock(return_value="/work")
+        agent._checkpoint_mgr.ensure_checkpoint = MagicMock(return_value=True)
+
+        with patch("run_agent.handle_function_call", return_value='{"success": true}'):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        agent._checkpoint_mgr.ensure_checkpoint.assert_called_once_with(
+            "/work", "before patch: src/app.tsx"
+        )
+
+    def test_v4a_patch_without_path_checkpoint_reason_uses_patch_target(self, agent):
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Update File: src/app.tsx\n"
+            "@@\n"
+            "-old\n"
+            "+new\n"
+            "*** Add File: src/other.ts\n"
+            "+hello\n"
+            "*** End Patch"
+        )
+        tool_call = _mock_tool_call(
+            name="patch",
+            arguments=json.dumps({"mode": "patch", "patch": patch_text}),
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.get_working_dir_for_path = MagicMock(return_value="/work")
+        agent._checkpoint_mgr.ensure_checkpoint = MagicMock(return_value=True)
+
+        with patch("run_agent.handle_function_call", return_value='{"success": true}'):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        agent._checkpoint_mgr.get_working_dir_for_path.assert_called_once_with("src/app.tsx")
+        agent._checkpoint_mgr.ensure_checkpoint.assert_called_once_with(
+            "/work", "before patch: src/app.tsx (+1 file)"
+        )
+
     def test_invoke_tool_handles_agent_level_tools(self, agent):
         """_invoke_tool should handle todo tool directly."""
         with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:

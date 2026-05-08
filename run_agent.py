@@ -361,6 +361,11 @@ _DESTRUCTIVE_PATTERNS = re.compile(
 )
 # Output redirects that overwrite files (> but not >>)
 _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
+_V4A_FILE_HEADER = re.compile(
+    r"^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+?)\s*$",
+    re.MULTILINE,
+)
+_CHECKPOINT_LABEL_PATH_MAX = 80
 
 
 def _is_destructive_command(cmd: str) -> bool:
@@ -372,6 +377,56 @@ def _is_destructive_command(cmd: str) -> bool:
     if _REDIRECT_OVERWRITE.search(cmd):
         return True
     return False
+
+
+def _compact_checkpoint_label_path(path: str) -> str:
+    """Return a short, single-line path fragment for checkpoint reasons."""
+    label = re.sub(r"[\r\n\t]+", " ", str(path)).strip()
+    if not label:
+        return ""
+    if len(label) <= _CHECKPOINT_LABEL_PATH_MAX:
+        return label
+    return "..." + label[-(_CHECKPOINT_LABEL_PATH_MAX - 3):]
+
+
+def _extract_v4a_patch_paths(patch_content: Any) -> list[str]:
+    """Extract touched file paths from V4A patch text without reading hunks."""
+    if not isinstance(patch_content, str) or not patch_content:
+        return []
+
+    paths: list[str] = []
+    seen: set[str] = set()
+    for match in _V4A_FILE_HEADER.finditer(patch_content):
+        path = match.group(1).strip()
+        if path and path not in seen:
+            paths.append(path)
+            seen.add(path)
+    return paths
+
+
+def _file_tool_checkpoint_target_and_reason(
+    function_name: str,
+    function_args: dict,
+) -> tuple[str, str] | None:
+    """Return the target path and short checkpoint reason for file mutations."""
+    if function_name not in ("write_file", "patch"):
+        return None
+
+    file_path = function_args.get("path")
+    if isinstance(file_path, str) and file_path.strip():
+        label_path = _compact_checkpoint_label_path(file_path)
+        return file_path, f"before {function_name}: {label_path}"
+
+    if function_name == "patch":
+        patch_paths = _extract_v4a_patch_paths(function_args.get("patch"))
+        if patch_paths:
+            label_path = _compact_checkpoint_label_path(patch_paths[0])
+            if len(patch_paths) > 1:
+                suffix = "file" if len(patch_paths) == 2 else "files"
+                label_path = f"{label_path} (+{len(patch_paths) - 1} {suffix})"
+            return patch_paths[0], f"before patch: {label_path}"
+
+    return None
 
 
 def _should_parallelize_tool_batch(tool_calls) -> bool:
@@ -9823,10 +9878,13 @@ class AIAgent:
             # Checkpoint for file-mutating tools
             if function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
                 try:
-                    file_path = function_args.get("path", "")
-                    if file_path:
+                    checkpoint_target = _file_tool_checkpoint_target_and_reason(
+                        function_name, function_args
+                    )
+                    if checkpoint_target:
+                        file_path, reason = checkpoint_target
                         work_dir = self._checkpoint_mgr.get_working_dir_for_path(file_path)
-                        self._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
+                        self._checkpoint_mgr.ensure_checkpoint(work_dir, reason)
                 except Exception:
                     pass
 
@@ -10261,12 +10319,13 @@ class AIAgent:
             # Checkpoint: snapshot working dir before file-mutating tools
             if not _execution_blocked and function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
                 try:
-                    file_path = function_args.get("path", "")
-                    if file_path:
+                    checkpoint_target = _file_tool_checkpoint_target_and_reason(
+                        function_name, function_args
+                    )
+                    if checkpoint_target:
+                        file_path, reason = checkpoint_target
                         work_dir = self._checkpoint_mgr.get_working_dir_for_path(file_path)
-                        self._checkpoint_mgr.ensure_checkpoint(
-                            work_dir, f"before {function_name}"
-                        )
+                        self._checkpoint_mgr.ensure_checkpoint(work_dir, reason)
                 except Exception:
                     pass  # never block tool execution
 
