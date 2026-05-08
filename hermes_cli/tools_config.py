@@ -291,6 +291,15 @@ TOOL_CATEGORIES = {
                 ],
             },
             {
+                "name": "TinyFish",
+                "badge": "free search + fetch",
+                "tag": "Agent-ready search and browser-rendered fetch; no crawl backend",
+                "web_backend": "tinyfish",
+                "env_vars": [
+                    {"key": "TINYFISH_API_KEY", "prompt": "TinyFish API key", "url": "https://agent.tinyfish.ai/api-keys"},
+                ],
+            },
+            {
                 "name": "Firecrawl Self-Hosted",
                 "badge": "free · self-hosted",
                 "tag": "Run your own Firecrawl instance (Docker)",
