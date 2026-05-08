@@ -39,13 +39,14 @@ def test_kanban_tools_hidden_without_env_var(monkeypatch, tmp_path):
 
 
 def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
-    """Worker sessions (HERMES_KANBAN_TASK set) must have all kanban tools."""
+    """Worker sessions (HERMES_KANBAN_TASK set) must have all worker-visible Kanban tools."""
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     import tools.kanban_tools  # ensure registered
+    import tools.kanban_workspace_runner  # ensure registered
     from tools.registry import registry
     from toolsets import resolve_toolset
 
@@ -55,7 +56,7 @@ def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     expected = {
         "kanban_show", "kanban_complete", "kanban_validate_created_cards",
         "kanban_block", "kanban_heartbeat", "kanban_comment",
-        "kanban_create", "kanban_link",
+        "kanban_create", "kanban_link", "kanban_run_workspace_command",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
