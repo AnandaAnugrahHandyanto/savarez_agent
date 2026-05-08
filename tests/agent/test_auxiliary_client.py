@@ -992,6 +992,82 @@ class TestCallLlmPaymentFallback:
         # Fallback client should have been used
         assert fallback_client.chat.completions.create.called
 
+
+    def test_vision_auto_429_triggers_fallback_even_after_provider_resolution(self):
+        """Vision auto-routing should still fallback after resolve_vision_provider_client picks a concrete backend."""
+        primary_client = MagicMock()
+        rate_err = self._make_429_rate_limit_error("HTTP 429: The usage limit has been reached")
+        primary_client.chat.completions.create.side_effect = rate_err
+
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="vision fallback response"))
+        ])
+
+        with patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", "zai/glm-5v", None, None, None)), \
+             patch("agent.auxiliary_client.resolve_vision_provider_client",
+                   return_value=("openrouter", primary_client, "zai/glm-5v")), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   return_value=(fallback_client, "fallback-vision-model", "nous")) as mock_fallback:
+            result = call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": [{"type": "text", "text": "what is in this image?"}]}],
+            )
+
+        assert result.choices[0].message.content == "vision fallback response"
+        mock_fallback.assert_called_once_with("openrouter", "vision", reason="rate limit")
+        assert fallback_client.chat.completions.create.called
+
+    def test_vision_explicit_provider_429_does_not_trigger_fallback(self):
+        """Explicit vision providers remain a hard constraint even after provider resolution picks the same backend."""
+        primary_client = MagicMock()
+        rate_err = self._make_429_rate_limit_error("HTTP 429: The usage limit has been reached")
+        primary_client.chat.completions.create.side_effect = rate_err
+
+        with patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("openrouter", "zai/glm-5v", None, None, None)), \
+             patch("agent.auxiliary_client.resolve_vision_provider_client",
+                   return_value=("openrouter", primary_client, "zai/glm-5v")), \
+             patch("agent.auxiliary_client._try_payment_fallback") as mock_fallback:
+            with pytest.raises(Exception, match="usage limit"):
+                call_llm(
+                    task="vision",
+                    messages=[{"role": "user", "content": [{"type": "text", "text": "what is in this image?"}]}],
+                )
+
+        mock_fallback.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_async_vision_auto_429_triggers_fallback_even_after_provider_resolution(self):
+        """Async vision auto-routing should fallback based on the original auto mode, not the resolved backend label."""
+        primary_client = MagicMock()
+        rate_err = self._make_429_rate_limit_error("HTTP 429: The usage limit has been reached")
+        primary_client.chat.completions.create = AsyncMock(side_effect=rate_err)
+
+        fallback_client = MagicMock()
+        async_fallback_client = MagicMock()
+        async_fallback_client.chat.completions.create = AsyncMock(return_value=MagicMock(choices=[
+            MagicMock(message=MagicMock(content="async vision fallback response"))
+        ]))
+
+        with patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", "zai/glm-5v", None, None, None)), \
+             patch("agent.auxiliary_client.resolve_vision_provider_client",
+                   return_value=("openrouter", primary_client, "zai/glm-5v")), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   return_value=(fallback_client, "fallback-vision-model", "nous")) as mock_fallback, \
+             patch("agent.auxiliary_client._to_async_client",
+                   return_value=(async_fallback_client, "fallback-vision-model")):
+            result = await async_call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": [{"type": "text", "text": "what is in this image?"}]}],
+            )
+
+        assert result.choices[0].message.content == "async vision fallback response"
+        mock_fallback.assert_called_once_with("openrouter", "vision", reason="rate limit")
+        assert async_fallback_client.chat.completions.create.await_count == 1
+
 # ---------------------------------------------------------------------------
 # Gate: _resolve_api_key_provider must skip anthropic when not configured
 # ---------------------------------------------------------------------------
