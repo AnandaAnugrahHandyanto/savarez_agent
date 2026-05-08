@@ -339,6 +339,16 @@ _PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8
 
+# Semantic search tools get priority in concurrent batches: results from these
+# tools are prepended to messages (in priority order) so LLMs see them first and
+# anchor on semantically-relevant results rather than faster keyword matches.
+# Lower number = higher priority.
+_SEMANTIC_SEARCH_PRIORITY: dict[str, int] = {
+    "mcp_codeindex_search_code": 0,
+    "codeindex_search": 0,
+    "search_code": 1,
+}
+
 # Guard so the OpenRouter metadata pre-warm thread is only spawned once per
 # process, not once per AIAgent instantiation.  Without this, long-running
 # gateway processes leak one OS thread per incoming message and eventually
@@ -10065,9 +10075,38 @@ class AIAgent:
                 total_dur = sum(r[3] for r in results if r is not None)
                 spinner.stop(f"⚡ {completed}/{num_tools} tools completed in {total_dur:.1f}s total")
 
+        # ── Reorder results: semantic search first ─────────────────────────
+        # When multiple tools run concurrently, results are naturally ordered by
+        # tool_call sequence — but LLMs anchor on the first results they see.
+        # Prioritize semantic search results so the LLM sees the most relevant
+        # content first, then falls back to keyword/grep results.
+        def _priority_key(item: tuple) -> tuple[int, int]:
+            """Return (priority_rank, original_index) for sorting.
+
+            Semantic search tools (priority 0-1) come before generic tools (inf).
+            Among tools with the same priority, preserve original order.
+            """
+            idx, (parsed_call, _) = item
+            _, name, _, _, _ = parsed_call
+            priority = _SEMANTIC_SEARCH_PRIORITY.get(name, float("inf"))
+            return (priority, idx)
+
+        # Pair results with their original indices and sort by priority
+        indexed_results = list(enumerate(zip(parsed_calls, results)))
+        sorted_indices = sorted(range(len(indexed_results)), key=lambda i: _priority_key(indexed_results[i]))
+        
+        # Log reordering if semantic search was present but not first
+        tool_names_original = [parsed_calls[i][1] for i in range(len(parsed_calls))]
+        has_semantic = any(name in _SEMANTIC_SEARCH_PRIORITY for name in tool_names_original)
+        if has_semantic and sorted_indices[0] != 0:
+            reordered_names = [tool_names_original[sorted_indices[i]] for i in range(len(sorted_indices))]
+            logger.info("Tool result reorder: semantic search promoted — original order: %s → new order: %s",
+                       tool_names_original, reordered_names)
+
         # ── Post-execution: display per-tool results ─────────────────────
-        for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
-            r = results[i]
+        for sorted_pos, original_idx in enumerate(sorted_indices):
+            tc, name, args, block_result, blocked_by_guardrail = parsed_calls[original_idx]
+            r = results[original_idx]
             blocked = False
             if r is None:
                 # Tool was cancelled (interrupt) or thread didn't return
@@ -10110,11 +10149,11 @@ class AIAgent:
                 self._safe_print(f"  {cute_msg}")
             elif not self.quiet_mode:
                 if self.verbose_logging:
-                    print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s")
+                    print(f"  ✅ Tool {sorted_pos+1} completed in {tool_duration:.2f}s")
                     print(self._wrap_verbose("Result: ", function_result))
                 else:
                     response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
-                    print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
+                    print(f"  ✅ Tool {sorted_pos+1} completed in {tool_duration:.2f}s - {response_preview}")
 
             self._current_tool = None
             self._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s)")
