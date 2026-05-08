@@ -5386,11 +5386,13 @@ class AIAgent:
                     for tc in msg.get("tool_calls") or []:
                         cid = AIAgent._get_tool_call_id_static(tc)
                         if cid in missing_results:
+                            tc_name = tc.get("function", {}).get("name", "unknown") if isinstance(tc, dict) else getattr(getattr(tc, "function", None), "name", "unknown")
                             patched.append({
                                 "role": "tool",
                                 "name": AIAgent._get_tool_call_name_static(tc),
                                 "content": "[Result unavailable — see context summary above]",
                                 "tool_call_id": cid,
+                                "name": tc_name,
                             })
             messages = patched
             logger.debug(
@@ -9394,6 +9396,7 @@ class AIAgent:
                                 "name": function_name if function_name != "?" else "",
                                 "tool_call_id": tool_call_id,
                                 "content": marker,
+                                "name": function_name,
                             },
                         )
                         insert_at += 1
@@ -9799,6 +9802,7 @@ class AIAgent:
                     "name": tc.function.name,
                     "content": f"[Tool execution cancelled — {tc.function.name} was skipped due to user interrupt]",
                     "tool_call_id": tc.id,
+                    "name": tc.function.name,
                 })
             return
 
@@ -10141,6 +10145,7 @@ class AIAgent:
                 "name": name,
                 "content": function_result,
                 "tool_call_id": tc.id,
+                "name": name,
             }
             messages.append(tool_msg)
 
@@ -10179,6 +10184,7 @@ class AIAgent:
                         "name": skipped_name,
                         "content": f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
                         "tool_call_id": skipped_tc.id,
+                        "name": skipped_name,
                     }
                     messages.append(skip_msg)
                 break
@@ -10529,7 +10535,8 @@ class AIAgent:
                 "role": "tool",
                 "name": function_name,
                 "content": function_result,
-                "tool_call_id": tool_call.id
+                "tool_call_id": tool_call.id,
+                "name": function_name,
             }
             messages.append(tool_msg)
 
@@ -10556,7 +10563,8 @@ class AIAgent:
                         "role": "tool",
                         "name": skipped_name,
                         "content": f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]",
-                        "tool_call_id": skipped_tc.id
+                        "tool_call_id": skipped_tc.id,
+                        "name": skipped_name,
                     }
                     messages.append(skip_msg)
                 break
@@ -13561,6 +13569,7 @@ class AIAgent:
                                 "name": tc.function.name,
                                 "tool_call_id": tc.id,
                                 "content": content,
+                                "name": tc.function.name,
                             })
                         continue
                     # Reset retry counter on successful tool call validation
@@ -13653,6 +13662,7 @@ class AIAgent:
                                     "name": tc.function.name,
                                     "tool_call_id": tc.id,
                                     "content": tool_result,
+                                    "name": tc.function.name,
                                 })
                             continue
                     
