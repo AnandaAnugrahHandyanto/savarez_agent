@@ -16,6 +16,11 @@ from email.utils import formatdate
 from typing import Dict, Optional
 
 from agent.redact import redact_sensitive_text
+# gateway/platforms/inkbox.py wraps every optional SDK/aiohttp import in
+# try/except at its own module top, so importing these names here is safe
+# even when the inkbox extra isn't installed — they're always defined,
+# and check_inkbox_requirements() is the runtime gate.
+from gateway.platforms.inkbox import check_inkbox_requirements, send_inkbox_direct
 
 logger = logging.getLogger(__name__)
 
@@ -1691,13 +1696,8 @@ async def _send_weixin(pconfig, chat_id, message, media_files=None):
 
 async def _send_inkbox(extra, chat_id, message):
     """Send via Inkbox (email/SMS) using the SDK directly — no aiohttp server."""
-    try:
-        from gateway.platforms.inkbox import check_inkbox_requirements, send_inkbox_direct
-        if not check_inkbox_requirements():
-            return {"error": "Inkbox requirements not met. Run: pip install inkbox aiohttp."}
-    except ImportError:
-        return {"error": "Inkbox adapter not available."}
-
+    if not check_inkbox_requirements():
+        return {"error": "Inkbox requirements not met. Run: pip install inkbox aiohttp."}
     try:
         return await send_inkbox_direct(extra=extra or {}, chat_id=chat_id, message=message)
     except Exception as e:

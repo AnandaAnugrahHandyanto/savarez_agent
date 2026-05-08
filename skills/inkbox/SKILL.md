@@ -1,14 +1,19 @@
 ---
-name: inkbox-python
-description: Use when writing Python code that imports from `inkbox`, uses `pip install inkbox`, or when adding email, phone, text/SMS, contacts, notes, contact rules, vault, or agent identity features using the Inkbox Python SDK.
+name: inkbox
+description: Use when working with Inkbox — email, phone, text/SMS, contacts, notes, contact rules, vault, identities. Covers the Python SDK (`pip install inkbox`) for live API access from code, and the CLI (`inkbox` / `@inkbox/cli`) for shell scripts and quick manual workflows. Default to the Python SDK; reach for the CLI when the task is a shell command or an ad-hoc check.
 user-invocable: false
 ---
 
-# Inkbox Python SDK
+# Inkbox
 
-API-first communication infrastructure for AI agents — email, phone, encrypted vault, and identities.
+API-first communication infrastructure for AI agents — email, phone, encrypted vault, and identities. Two surfaces are documented below:
 
-## Install & Init
+- **Python SDK** (sections below) — primary surface for live API access and automation from Python code.
+- **CLI** (last section) — `inkbox` binary on npm. Reach for it when you're writing a shell script or running ad-hoc commands in a terminal.
+
+The **same auth + capabilities** apply to both — they wrap the same REST API.
+
+## Install & Init (Python SDK)
 
 ```python
 pip install inkbox
@@ -44,11 +49,15 @@ PY
 
 The inbound routing marker already contains the resolved Contact fields; it is acceptable immediate context for conversational identity questions, but verify through the SDK when asked for live/current contact or channel facts.
 
+**Live voice visibility pitfall:** during `[inkbox:voice_call ...]` turns, the prompt-visible marker does not include precise audio latency, transcript timestamps, or any initial adapter greeting that may have happened before the visible transcript context. If the caller asks about latency, timestamps, or “the first thing you said,” answer only from the visible transcript unless you perform a post-call SDK/log inspection; explicitly say when you cannot see the underlying timing or earlier audio in the live turn. Do not infer unseen greetings or claim precise timing during the call.
+
 For Inkbox-routed Hermes runtime pitfalls — forcing SMS rather than email when messaging a contact, checking delivery/bounce status, and scheduling outbound calls — see `references/routed-session-operations.md`.
 
 **Third-party “text X” pitfall:** if the user explicitly asks for an SMS to a contact, prefer `identity.send_text(to="+E164", text=...)` after resolving the contact phone. Do not assume `send_message(target="inkbox:Contact", ...)` will text; contact targets can default to email when the adapter lacks recent SMS modality for that contact. Verify delivery in `identity.get_text_conversation(phone, ...)` before reporting success.
 
-**Voice-call caller identity pitfall:** if a voice turn arrives with `contact=unknown_in_inkbox`, the caller may still exist in the contact book. Use the marker's `call_id` to find the live call via `identity.list_calls(...)`, read `remote_phone_number`, then run `inkbox.contacts.lookup(phone=remote_phone_number)` before saying you do not know who the caller is. This is especially useful for natural questions like “what's my name?”, “do you know my number?”, or “can you look me up?”.
+**Voice-call caller identity pitfall:** if a voice turn arrives with `contact=unknown_in_inkbox`, the caller may still exist in the contact book. Use the marker's `call_id` to find the live call via `identity.list_calls(...)`, read `remote_phone_number`, then run `inkbox.contacts.lookup(phone=remote_phone_number)` before saying you do not know who the caller is or what their saved details are. This is especially useful for natural questions like “what's my name?”, “what's my email?”, “do you know my number?”, or “can you look me up?”. If latency makes a live lookup inappropriate, say that you do not see the detail in the visible live-call context and would need to look it up after the call; do not imply the caller has no saved contact record unless you actually checked.
+
+**Voice-call contact creation/update pitfall:** when an unknown voice caller asks to be saved as a contact (for example “my name is Dima; add my phone number”), do not guess or reuse a remembered phone number. Resolve the live call's `remote_phone_number` from the `call_id` first, then lookup/upsert the contact with that E.164 number. Keep the spoken response short; perform the SDK update immediately after a brief acknowledgement if latency matters. If the caller corrects an email spelling, update the contact record immediately and preserve the exact spelling they requested, even for Gmail addresses where dots are delivery-equivalent; contact records should reflect the user's preferred canonical form.
 
 ```python
 call_id = "59e84d61-..."
@@ -90,11 +99,7 @@ An identity must have a channel assigned before you can use mail/phone methods. 
 
 ## Agent Signup
 
-For the full agent self-signup flow (register, verify, check status, restrictions, and direct API examples), read the shared reference:
-
-> **See:** `skills/inkbox-agent-self-signup/SKILL.md`
-
-Python SDK methods: `Inkbox.signup(...)`, `Inkbox.verify_signup(api_key, ...)`, `Inkbox.resend_signup_verification(api_key)`, `Inkbox.get_signup_status(api_key)`.
+Public, no API key required: `Inkbox.signup(human_email, note_to_human, agent_handle=None, email_local_part=None)` returns a freshly-provisioned email address, organization, and a one-time API key. The 6-digit verification code from the email goes through `Inkbox.verify_signup(api_key, code)`. Resend the email with `Inkbox.resend_signup_verification(api_key)`; check claim status + restrictions with `Inkbox.get_signup_status(api_key)`. Until verified, the agent is rate-limited and recipient-restricted — verification unlocks full sending capabilities.
 
 ## Identities
 
@@ -208,9 +213,15 @@ for t in identity.list_transcripts(calls[0].id):
 
 When the identity is wired into Hermes via the Inkbox platform adapter, the gateway already runs the WebSocket that bridges call audio — same `/phone/media/ws` endpoint that handles inbound calls. On every connect the adapter writes the live URLs to an identity-state file so cron-spawned and other follow-up agents can find them without guessing.
 
+**Hosted/development env pitfall:** if `execute_code` lacks `INKBOX_API_KEY`, or a terminal call gets `HTTP 401: Unauthorized`, run the call from a shell that sources the Inkbox Hermes env file and pass the deployment base URL. Example wrapper: `set -a; source "$HERMES_HOME/.env" 2>/dev/null || source /home/ec2-user/.hermes-inkbox/.env; set +a; ...` then instantiate `Inkbox(api_key=os.environ["INKBOX_API_KEY"], base_url=os.environ.get("INKBOX_BASE_URL", "https://inkbox.ai"))`. In development identities, the default production base URL can make an otherwise valid key look unauthorized.
+
 **Read `ws_url` from the state file — do not hardcode the path or re-derive the URL.** The Inkbox-powered Hermes fork uses an isolated runtime home (typically `HERMES_HOME=~/.hermes-inkbox`), so the state file is **not** at `~/.hermes/`. Always go through `$HERMES_HOME`, which the launcher sets and which subprocess invocations (cron, terminal) inherit.
 
 **Always pass call-purpose context.** A fresh in-call agent session is spawned when the callee picks up — that session has zero memory of why the call was scheduled, so without explicit context it'll greet the user and have no idea what's going on. Bridge this gap by writing a small JSON file under `$HERMES_HOME/inkbox_call_contexts/<token>.json` and including `?context_token=<token>` on the `client_websocket_url`. The adapter reads the file on WS open, deletes it (single-use), and prepends `[outbound_call_context]…[/outbound_call_context]` to the in-call agent's first transcript.
+
+**Outbound-call source-channel pitfall:** call-purpose context can be stale, ambiguous, or wrong about the channel that triggered the call. If the callee asks “where did I tell you to call me?” or challenges “SMS vs email,” do not guess or simply accept their correction. During a live call, either say you need to verify or perform one quick SDK lookup of recent `identity.iter_emails()` and `identity.list_texts(...)`, then answer with the verified channel and evidence. This matters especially when the user is testing cross-channel continuity; incorrect channel claims break trust.
+
+**Terse repeat-call requests:** if the user says “again”, “call again”, or “call me” after an earlier call request and the callee is clear from the current session/user profile, place the call immediately without asking for clarification. Write fresh context that explicitly says this is a repeat call and tells the in-call agent to open with the caller's name and the reason (e.g. “Dima asked me to call again now”).
 
 Known-good recipe:
 
@@ -252,9 +263,9 @@ State file shape (written by the adapter on connect):
   "email_address": "inkbox-on-call-agent@inkboxmail.com",
   "phone_number": "+14137240502",
   "phone_number_id": "<uuid>",
-  "public_url": "https://<host>.ngrok-free.dev",
-  "webhook_url": "https://<host>.ngrok-free.dev/webhook",
-  "ws_url": "wss://<host>.ngrok-free.dev/phone/media/ws"
+  "public_url": "https://<tunnel>.inkboxwire.com",
+  "webhook_url": "https://<tunnel>.inkboxwire.com/webhook",
+  "ws_url": "wss://<tunnel>.inkboxwire.com/phone/media/ws"
 }
 ```
 
@@ -766,3 +777,340 @@ except InkboxAPIError as e:
 - To clear a nullable field (e.g. webhook URL), pass `field=None`
 - The `Inkbox` client **must** be used as a context manager (`with` statement) or `.close()` called manually
 - Mail/phone methods on `AgentIdentity` raise `InkboxError` if the relevant channel isn't assigned
+
+---
+
+# Inkbox CLI
+
+
+Command-line interface for the Inkbox API — identities, email, phone, text/SMS, encrypted vault, mailboxes, phone numbers, signing keys, and webhook utilities.
+
+## Auth & Runtime
+
+Set credentials via env vars or global flags:
+
+```bash
+export INKBOX_API_KEY="ApiKey_..."
+export INKBOX_VAULT_KEY="my-vault-key"   # only needed for vault decrypt/create flows
+```
+
+Global options:
+
+```text
+--api-key <key>      Inkbox API key (or set INKBOX_API_KEY)
+--vault-key <key>    Vault key for decrypt operations (or set INKBOX_VAULT_KEY)
+--base-url <url>     Override API base URL
+--json               Output as JSON instead of formatted tables
+```
+
+If `INKBOX_API_KEY` is missing and `--api-key` is not passed, the CLI exits with an error.
+
+Prefer `--json` when the result will be parsed or fed into another tool. Use the default table/record output when the user wants a quick human-readable summary.
+
+## Install & Local Repo Usage
+
+Published package:
+
+```bash
+npm install -g @inkbox/cli
+```
+
+Or run without a global install:
+
+```bash
+npx @inkbox/cli <command>
+```
+
+Requires Node.js >= 18.
+
+Inside this repository, prefer running the local source instead of assuming a global install:
+
+```bash
+npm --prefix cli run dev -- <command>
+```
+
+Examples:
+
+```bash
+npm --prefix cli run dev -- --json identity list
+npm --prefix cli run dev -- email list -i support-bot --limit 10
+```
+
+## High-Risk Operations
+
+These commands can send real traffic or mutate real resources. Confirm with the user before running them:
+
+- `signup create`
+- `email send`
+- `text send`
+- `phone call`
+- `identity delete`
+- `email delete`
+- `email delete-thread`
+- `vault delete`
+- `mailbox delete`
+- `mailbox update --filter-mode ...` (admin-only; flips allow/block semantics for that mailbox)
+- `number release`
+- `number update --filter-mode ...` (admin-only; same caveat as mailbox)
+- `signing-key create`
+
+`contacts delete`, `notes delete`, `mailbox rules delete`, `number rules delete` affect downstream filtering and access — confirm intent before running.
+
+Also confirm before creating or rotating secrets if the values were not explicitly provided by the user.
+
+## Agent Signup
+
+```bash
+inkbox signup create
+inkbox signup verify --code <code>
+inkbox signup resend-verification
+inkbox signup status
+```
+
+`signup create` is the only one that does not require an API key. The follow-up commands need the signup-issued API key passed back via `--api-key` or `INKBOX_API_KEY` — the CLI does not persist it automatically. Until verified, the agent is rate-limited and recipient-restricted; verification unlocks full sending.
+
+## Identities
+
+```bash
+inkbox identity list
+inkbox identity get <handle>
+inkbox identity create <handle>
+inkbox identity delete <handle>
+inkbox identity update <handle> --new-handle <handle>
+inkbox identity refresh <handle>
+```
+
+Notes:
+
+- Creating an identity creates the agent identity; mailbox creation is handled automatically by the backend flow described in the CLI docs.
+- `identity get` and `identity refresh` return mailbox and phone number assignments when present.
+- Most email, phone, and text commands require `-i, --identity <handle>`.
+
+### Identity-Scoped Secrets
+
+These require a vault key:
+
+```bash
+inkbox identity create-secret <handle> --name <name> --type <type> ...
+inkbox identity get-secret <handle> <secret-id>
+inkbox identity delete-secret <handle> <secret-id>
+inkbox identity revoke-access <handle> <secret-id>
+inkbox identity set-totp <handle> <secret-id> --uri <otpauth-uri>
+inkbox identity remove-totp <handle> <secret-id>
+inkbox identity totp-code <handle> <secret-id>
+```
+
+Secret types:
+
+```text
+login, api_key, ssh_key, key_pair, other
+```
+
+## Email
+
+All email commands are identity-scoped and require `-i <handle>`.
+
+```bash
+inkbox email send -i <handle> \
+  --to user@example.com \
+  --subject "Hello" \
+  --body-text "Hi"
+
+inkbox email list -i <handle> --limit 10
+inkbox email get <message-id> -i <handle>
+inkbox email search -i <handle> -q "invoice"
+inkbox email unread -i <handle> --limit 10
+inkbox email mark-read <ids...> -i <handle>
+inkbox email delete <message-id> -i <handle>
+inkbox email delete-thread <thread-id> -i <handle>
+inkbox email star <message-id> -i <handle>
+inkbox email unstar <message-id> -i <handle>
+inkbox email thread <thread-id> -i <handle>
+```
+
+Use `email search` only when the identity already has a mailbox assigned.
+
+Before sending, confirm recipients, subject, and body with the user.
+
+## Phone
+
+All phone commands are identity-scoped and require `-i <handle>`.
+
+```bash
+inkbox phone call -i <handle> --to +15167251294 --ws-url wss://example.com/ws
+inkbox phone calls -i <handle> --limit 10 --offset 0
+inkbox phone transcripts <call-id> -i <handle>
+inkbox phone search-transcripts -i <handle> -q "refund" --party remote
+```
+
+Before placing a call, confirm the destination number and websocket URL with the user.
+
+## Text Messages
+
+All text commands are identity-scoped and require `-i <handle>`.
+
+**Outbound SMS limits and gates (current):**
+
+- Allowed only from **local** numbers, not toll-free.
+- **15 sends per phone number per rolling 24h.**
+- A freshly provisioned local number needs **~10-15 min** for 10DLC carrier propagation. Inspect with `inkbox number get <id>`; sending is gated until `smsStatus` reads `ready` (otherwise `409 sender_sms_pending`).
+- Recipient must have texted **`START`** to any number in the org. Unknown → `403 recipient_not_opted_in`. `STOP` → `403 recipient_opted_out`.
+
+**Coming soon:** toll-free SMS sending, customer-managed 10DLC brands/campaigns (drastically higher per-number limits).
+
+```bash
+inkbox text send -i <handle> --to +15167251294 --text "Hello from Inkbox"
+inkbox text list -i <handle> --limit 20
+inkbox text get <text-id> -i <handle>
+inkbox text conversations -i <handle> --limit 20
+inkbox text conversation <remote-number> -i <handle> --limit 50
+inkbox text search -i <handle> -q "invoice"
+inkbox text mark-read <text-id> -i <handle>
+inkbox text mark-conversation-read <remote-number> -i <handle>
+```
+
+## Vault
+
+Vault decryption and secret creation require a vault key via `INKBOX_VAULT_KEY` or `--vault-key`.
+
+```bash
+inkbox vault init --vault-key <key>
+inkbox vault info
+inkbox vault secrets
+inkbox vault get <secret-id>
+inkbox vault create --name <name> --type <type> ...
+inkbox vault delete <secret-id>
+inkbox vault keys
+inkbox vault grant-access <secret-id> -i <handle>
+inkbox vault revoke-access <secret-id> -i <handle>
+inkbox vault access-list <secret-id>
+inkbox vault logins -i <handle>
+inkbox vault api-keys -i <handle>
+inkbox vault ssh-keys -i <handle>
+inkbox vault key-pairs -i <handle>
+```
+
+Secret type flags:
+
+```bash
+# login
+--password <pass> [--username <user>] [--email <email>] [--url <url>] [--totp-uri <uri>] [--notes <text>]
+
+# api_key
+--key <key> [--endpoint <url>] [--notes <text>]
+
+# key_pair
+--access-key <key> --secret-key <key> [--endpoint <url>] [--notes <text>]
+
+# ssh_key
+--private-key <key> [--public-key <key>] [--fingerprint <fp>] [--passphrase <pass>] [--notes <text>]
+
+# other
+--data <json> [--notes <text>]
+```
+
+## Admin-Only Mailboxes
+
+```bash
+inkbox mailbox list
+inkbox mailbox get <email-address>
+inkbox mailbox create -i <handle> [--display-name <name>] [--local-part <part>]
+inkbox mailbox update <email-address> [--display-name <name>] [--webhook-url <url>] [--filter-mode whitelist|blacklist]
+inkbox mailbox delete <email-address>
+```
+
+`mailbox list` / `get` / `update` rows now include `filterMode` and `agentIdentityId`. `--filter-mode` is admin-only; when the value actually changes, a note is printed to **stderr** telling you how many existing rules are now redundant under the new mode.
+
+### Mailbox Contact Rules (`inkbox mailbox rules …`)
+
+Per-mailbox allow/block rules (combined with the mailbox's `filterMode`).
+
+```bash
+inkbox mailbox rules list --mailbox <email> [--action allow|block] [--match-type exact_email|domain] [--limit <n>] [--offset <n>]
+inkbox mailbox rules list --all-mailboxes [--mailbox-id <id>] [--action …] [--match-type …]    # admin-only
+inkbox mailbox rules get <rule-id> --mailbox <email>
+inkbox mailbox rules create --mailbox <email> --action allow|block --match-type exact_email|domain --match-target <value> [--status active|paused]
+inkbox mailbox rules update <rule-id> --mailbox <email> [--action allow|block] [--status active|paused]   # admin-only
+inkbox mailbox rules delete <rule-id> --mailbox <email>                                                    # admin-only
+```
+
+## Admin-Only Phone Numbers
+
+```bash
+inkbox number list
+inkbox number get <id>
+inkbox number provision --handle <handle> [--type toll_free|local] [--state NY]
+inkbox number update <id> [--incoming-call-action auto_accept|auto_reject|webhook] [--filter-mode whitelist|blacklist] ...
+inkbox number release <number-id>
+```
+
+Use `--state` only when provisioning a local number. Phone-number rows also carry `filterMode` / `agentIdentityId`; `--filter-mode` is admin-only and prints a stderr note when the value changes.
+
+### Number Contact Rules (`inkbox number rules …`)
+
+Per-number allow/block rules (combined with the number's `filterMode`).
+
+```bash
+inkbox number rules list --number <id> [--action allow|block] [--match-type exact_number] [--limit <n>] [--offset <n>]
+inkbox number rules list --all-numbers [--phone-number-id <id>] [--action …] [--match-type …]   # admin-only
+inkbox number rules get <rule-id> --number <id>
+inkbox number rules create --number <id> --action allow|block --match-target <e164> [--match-type exact_number] [--status active|paused]
+inkbox number rules update <rule-id> --number <id> [--action allow|block] [--status active|paused]   # admin-only
+inkbox number rules delete <rule-id> --number <id>                                                    # admin-only
+```
+
+## Contacts
+
+Admin-only address book. All commands hit the admin endpoints; agents see contacts they've been granted access to.
+
+```bash
+inkbox contacts list [--q <query>] [--order name|recent] [--limit <n>] [--offset <n>]
+inkbox contacts get <contact-id>
+inkbox contacts create --json <payload>            # JSON matching CreateContactOptions
+inkbox contacts update <contact-id> --json <patch>  # JSON-merge-patch
+inkbox contacts delete <contact-id>
+inkbox contacts lookup (--email <email> | --email-contains <s> | --email-domain <d> | --phone <e164> | --phone-contains <s>)
+inkbox contacts import <file.vcf>                  # bulk vCard import (≤5 MiB, ≤1000 cards)
+inkbox contacts export <contact-id> [--out <file>] # vCard 4.0 to stdout or file
+
+# Per-contact access grants
+inkbox contacts access list <contact-id>
+inkbox contacts access grant <contact-id> (--identity <uuid> | --wildcard)   # admin + JWT only
+inkbox contacts access revoke <contact-id> <identity-id>
+```
+
+`contacts lookup` requires exactly one filter flag. For `create` / `update`, construct the payload carefully — fields include `preferredName`, `givenName`, `familyName`, `companyName`, `jobTitle`, `birthday`, `notes`, and lists `emails` / `phones` / `websites` / `dates` / `addresses` / `customFields` (each list item has `label` / `value`).
+
+## Notes
+
+Admin-only free-form notes with per-identity grants (no wildcard).
+
+```bash
+inkbox notes list [--q <query>] [--identity <uuid>] [--order recent|created] [--limit <n>] [--offset <n>]
+inkbox notes get <note-id>
+inkbox notes create --body <text> [--title <text>]
+inkbox notes update <note-id> [--title <text>] [--body <text>]   # pass --title "" to clear
+inkbox notes delete <note-id>
+
+# Per-note access grants
+inkbox notes access list <note-id>
+inkbox notes access grant <note-id> <identity-id>    # admin + JWT only
+inkbox notes access revoke <note-id> <identity-id>
+```
+
+## Whoami, Signing Keys, Webhooks
+
+```bash
+inkbox whoami
+inkbox signing-key create
+inkbox webhook verify --payload <payload> --secret <secret> -H "X-Header: value"
+```
+
+Use `whoami --json` when you need the authenticated caller shape exactly.
+
+## Practical Guidance
+
+- Prefer the local repo command `npm --prefix cli run dev -- ...` when working in this codebase.
+- Prefer `--json` for anything that needs stable parsing.
+- Use the identity handle, not mailbox address or phone number, for identity-scoped commands.
+- If a command fails because the identity lacks a mailbox or phone number, inspect it first with `inkbox identity get <handle>`.

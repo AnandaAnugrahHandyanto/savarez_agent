@@ -451,11 +451,10 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     Also works for external skill dirs configured via skills.external_dirs.
     """
     # Try the module-level SKILLS_DIR first (respects monkeypatching in tests),
-    # then fall back to bundled-with-the-fork + external dirs from config.
+    # then fall back to user-configured external dirs.
     dirs_to_check = [SKILLS_DIR]
     try:
-        from agent.skill_utils import _get_bundled_skills_dirs, get_external_skills_dirs
-        dirs_to_check.extend(_get_bundled_skills_dirs())
+        from agent.skill_utils import get_external_skills_dirs
         dirs_to_check.extend(get_external_skills_dirs())
     except Exception:
         pass
@@ -936,14 +935,13 @@ def skill_view(
             if bare:
                 local_category_name = f"{namespace}/{bare}"
 
-        from agent.skill_utils import _get_bundled_skills_dirs, get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs
 
         # Build list of all skill directories to search — local first, then
-        # bundled-with-the-fork, then user-configured external dirs.
+        # user-configured external dirs.
         all_dirs = []
         if SKILLS_DIR.exists():
             all_dirs.append(SKILLS_DIR)
-        all_dirs.extend(_get_bundled_skills_dirs())
         all_dirs.extend(get_external_skills_dirs())
 
         if not all_dirs:

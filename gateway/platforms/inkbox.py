@@ -65,6 +65,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import socket as _socket
 import time
 from contextlib import suppress
@@ -90,19 +91,15 @@ except ImportError:
     INKBOX_AVAILABLE = False
 
 try:
-    from gateway.platforms.inkbox_tunnel import (
-        H2_AVAILABLE as INKBOX_TUNNEL_H2_AVAILABLE,
-        InkboxTunnel,
-        TunnelControlPlaneError,
-        derive_tunnel_name,
+    from inkbox.tunnels.client import (
+        TunnelListener,
+        connect as inkbox_tunnel_connect,
     )
 
     INKBOX_TUNNEL_AVAILABLE = True
 except ImportError:
-    InkboxTunnel = None  # type: ignore[assignment]
-    TunnelControlPlaneError = Exception  # type: ignore[assignment]
-    derive_tunnel_name = None  # type: ignore[assignment]
-    INKBOX_TUNNEL_H2_AVAILABLE = False
+    TunnelListener = None  # type: ignore[assignment]
+    inkbox_tunnel_connect = None  # type: ignore[assignment]
     INKBOX_TUNNEL_AVAILABLE = False
 
 from gateway.config import Platform, PlatformConfig
@@ -162,13 +159,25 @@ def _is_hermes_admin_notice(content: str) -> bool:
     return any(s in head for s in _ADMIN_NOTICE_SUBSTRINGS)
 
 
+def _slugify_for_tunnel(handle: str) -> str:
+    """Convert an agent handle into a valid tunnel-name slug.
+
+    Tunnel names must be 3-63 lowercase letters/digits/hyphens — same rules
+    as a DNS label. Mirrors what the deleted ``inkbox_tunnel.derive_tunnel_name``
+    helper did, kept inline now that it's a one-liner.
+    """
+    slug = re.sub(r"[^a-z0-9-]+", "-", (handle or "").lower()).strip("-")
+    return slug[:63] if slug else "hermes-agent"
+
+
 def check_inkbox_requirements() -> bool:
     """Return True iff the Python ``inkbox`` SDK and aiohttp are importable.
 
-    The Inkbox tunnel client (``inkbox_tunnel.py``) needs ``h2`` too — but
-    that's only required when ``INKBOX_PUBLIC_URL`` is unset (i.e. when we
-    actually need to dial inkboxwire.com).  Operators behind their own
-    reverse proxy / hosted tunnel only need the SDK + aiohttp.
+    The SDK ships its own tunnel runtime under ``inkbox.tunnels.client`` —
+    no extra dependency beyond the inkbox extra is needed when running
+    against inkboxwire.com. Operators behind their own reverse proxy /
+    hosted tunnel can set ``INKBOX_PUBLIC_URL`` and skip the tunnel path
+    entirely.
     """
     return INKBOX_AVAILABLE and AIOHTTP_AVAILABLE
 
@@ -219,7 +228,6 @@ class InkboxAdapter(BasePlatformAdapter):
         self._runner: Optional[Any] = None
         self._site: Optional[Any] = None
         self._tunnel: Optional[Any] = None  # InkboxTunnel
-        self._tunnel_watchdog_task: Optional[asyncio.Task[None]] = None
         # contact_id → active call WebSocket. Used by send()/edit_message() to
         # push voice replies to the correct ongoing call.
         self._active_call_ws: Dict[str, Any] = {}
@@ -301,27 +309,10 @@ class InkboxAdapter(BasePlatformAdapter):
             self._release_platform_lock()
             return False
 
-        # Resolve the public URL: explicit override wins, else provision (or
-        # reuse) an Inkbox edge-mode tunnel.  The data plane is brought up
-        # AFTER the local aiohttp server binds — otherwise the tunnel client
-        # can dispatch inbound traffic to a port that nothing is listening on.
-        if self._public_url_override:
-            self._public_url = self._public_url_override.rstrip("/")
-            self._public_host = urlparse(self._public_url).netloc
-        elif INKBOX_TUNNEL_AVAILABLE and INKBOX_TUNNEL_H2_AVAILABLE:
-            if not await self._provision_inkbox_tunnel():
-                self._release_platform_lock()
-                return False
-        else:
-            logger.error(
-                "[Inkbox] No public URL configured. Set INKBOX_PUBLIC_URL or "
-                "install the inkbox extra: pip install 'hermes-agent[inkbox]'.",
-            )
-            self._release_platform_lock()
-            return False
-
-        # Start the aiohttp server first so inbound tunnel dispatch lands on a
-        # live socket and the upstream PATCH URLs are reachable.
+        # Start the local aiohttp server FIRST. The SDK's tunnel runtime opens
+        # its data-plane connection during ``tunnel_connect`` and starts
+        # forwarding immediately, so the local server has to be accepting
+        # before we hand inkboxwire.com a forward-to URL.
         try:
             self._app = web.Application()
             self._app.router.add_get("/health", self._handle_health)
@@ -337,24 +328,24 @@ class InkboxAdapter(BasePlatformAdapter):
             self._release_platform_lock()
             return False
 
-        # Now bring up the data plane (intake pool starts dispatching).
-        if self._tunnel is not None:
-            try:
-                ok = await self._tunnel.start()
-            except Exception:
-                logger.exception("[Inkbox] Tunnel data plane failed to start")
+        # Resolve the public URL: explicit override wins, else open an
+        # SDK-managed tunnel against inkboxwire.com.
+        if self._public_url_override:
+            self._public_url = self._public_url_override.rstrip("/")
+            self._public_host = urlparse(self._public_url).netloc
+        elif INKBOX_TUNNEL_AVAILABLE:
+            if not await self._provision_inkbox_tunnel():
                 await self._cleanup()
                 self._release_platform_lock()
                 return False
-            if not ok:
-                logger.error(
-                    "[Inkbox] Tunnel data plane failed to come up; "
-                    "check API key + connectivity to %s.",
-                    self._public_host,
-                )
-                await self._cleanup()
-                self._release_platform_lock()
-                return False
+        else:
+            logger.error(
+                "[Inkbox] No public URL configured. Set INKBOX_PUBLIC_URL or "
+                "install the inkbox extra: pip install 'hermes-agent[inkbox]'.",
+            )
+            await self._cleanup()
+            self._release_platform_lock()
+            return False
 
         # PATCH the identity's mailboxes + phone numbers to point at this server.
         try:
@@ -371,18 +362,6 @@ class InkboxAdapter(BasePlatformAdapter):
             self._identity_handle, self._public_url, self._host, self._port,
         )
 
-        # Belt-and-suspenders: the tunnel client's own ``_supervisor`` handles
-        # normal disconnect → reconnect cycles, but if the supervisor task
-        # itself dies (silent crash, deadlock, swallowed exception) the gateway
-        # process keeps running but no inbound traffic flows.  This watchdog
-        # detects that and rebuilds the tunnel from scratch.  Skipped when
-        # INKBOX_PUBLIC_URL is set (no tunnel client to watch).
-        if self._tunnel is not None:
-            self._tunnel_watchdog_task = asyncio.create_task(
-                self._tunnel_watchdog(),
-                name="inkbox-tunnel-watchdog",
-            )
-
         return True
 
     async def disconnect(self) -> None:
@@ -393,17 +372,6 @@ class InkboxAdapter(BasePlatformAdapter):
         logger.info("[Inkbox] Disconnected")
 
     async def _cleanup(self) -> None:
-        # Cancel the watchdog FIRST so it doesn't observe the half-torn-down
-        # tunnel mid-cleanup and try to "revive" it.
-        if (
-            self._tunnel_watchdog_task is not None
-            and not self._tunnel_watchdog_task.done()
-        ):
-            self._tunnel_watchdog_task.cancel()
-            with suppress(Exception):
-                await self._tunnel_watchdog_task
-        self._tunnel_watchdog_task = None
-
         # Close any live call WS so callers don't hang on a half-open socket.
         for ws in list(self._active_call_ws.values()):
             with suppress(Exception):
@@ -421,8 +389,9 @@ class InkboxAdapter(BasePlatformAdapter):
             self._runner = None
         self._app = None
         if self._tunnel is not None:
+            # ``listener.close`` is sync; offload so it doesn't block the loop.
             with suppress(Exception):
-                await self._tunnel.stop()
+                await asyncio.to_thread(self._tunnel.close)
             self._tunnel = None
         if self._inkbox is not None:
             with suppress(Exception):
@@ -434,52 +403,44 @@ class InkboxAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def _provision_inkbox_tunnel(self) -> bool:
-        """Construct the tunnel client and resolve its public URL via REST.
+        """Open an SDK-managed tunnel to inkboxwire.com.
 
-        The data-plane connection is NOT opened here — that's deferred to
-        ``self._tunnel.start()`` after the local aiohttp server is bound,
-        so inbound dispatch always lands on a live socket. State (tunnel
-        id + connect secret) is persisted under HERMES_HOME so subsequent
-        runs reuse the same tunnel.
+        The SDK's ``inkbox.tunnels.client.connect`` opens both the control
+        plane (REST registration) and the data plane (HTTP/2 stream pool to
+        the inkboxwire data-plane zone) in a single call, then returns a
+        ``TunnelListener`` whose runtime supervises the connection in its own
+        threads. State (tunnel id + connect secret) is persisted under
+        HERMES_HOME so subsequent runs reuse the same tunnel.
         """
-        try:
-            from hermes_cli.config import get_hermes_home
-            state_path = str(get_hermes_home() / "inkbox_tunnel_state.json")
-        except Exception:
-            state_path = os.path.expanduser(
-                "~/.hermes-inkbox/inkbox_tunnel_state.json",
-            )
+        from hermes_cli.config import get_hermes_home
 
-        tunnel_name = derive_tunnel_name(
-            identity_handle=self._identity_handle,
-            override=self._tunnel_name_override,
+        tunnel_name = self._tunnel_name_override or _slugify_for_tunnel(
+            self._identity_handle,
         )
+        forward_to = f"http://127.0.0.1:{self._port}"
+        state_dir = get_hermes_home()
 
         try:
-            self._tunnel = InkboxTunnel(
-                api_key=self._api_key,
-                base_url=self._base_url,
-                listen_host="127.0.0.1",
-                listen_port=self._port,
-                tunnel_name=tunnel_name,
-                identity_handle=self._identity_handle,
-                state_path=state_path,
+            # ``connect`` is sync (does an HTTPS round-trip + opens the data
+            # plane); offload to a thread so the gateway event loop isn't
+            # blocked. The returned listener owns its own supervisor threads.
+            self._tunnel = await asyncio.to_thread(
+                inkbox_tunnel_connect,
+                self._inkbox,
+                name=tunnel_name,
+                forward_to=forward_to,
+                state_dir=state_dir,
             )
-            await self._tunnel.ensure_tunnel()
-        except TunnelControlPlaneError as exc:
-            logger.error("[Inkbox] Tunnel control-plane error: %s", exc)
-            self._tunnel = None
-            return False
         except Exception:
-            logger.exception("[Inkbox] Failed to provision Inkbox tunnel")
+            logger.exception("[Inkbox] Failed to open SDK tunnel")
             self._tunnel = None
             return False
 
         self._public_url = self._tunnel.public_url.rstrip("/")
-        self._public_host = self._tunnel.public_host
+        self._public_host = self._tunnel.tunnel.public_host
         logger.info(
-            "[Inkbox] Tunnel provisioned: %s (id=%s) → 127.0.0.1:%d",
-            self._public_url, self._tunnel.tunnel_id, self._port,
+            "[Inkbox] Tunnel ready: %s → 127.0.0.1:%d",
+            self._public_url, self._port,
         )
         return True
 
@@ -526,6 +487,11 @@ class InkboxAdapter(BasePlatformAdapter):
         self._write_identity_state(identity, webhook_url, ws_url)
 
     def _write_identity_state(self, identity, webhook_url: str, ws_url: str) -> None:
+        # Atomic write (tmp + os.replace) so a concurrent reader — e.g.
+        # ``prompt_builder.build_inkbox_identity_hint`` running in another
+        # process at agent start — can never observe a half-written file.
+        # Matches the pattern used by feishu_comment_rules._save_pairing and
+        # the google_chat adapter's thread-count store.
         try:
             from hermes_cli.config import get_hermes_home
             state_path = get_hermes_home() / "inkbox_identity_state.json"
@@ -547,102 +513,12 @@ class InkboxAdapter(BasePlatformAdapter):
                 "webhook_url": webhook_url,
                 "ws_url": ws_url,
             }
-            state_path.write_text(json.dumps(state, indent=2) + "\n")
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = state_path.with_suffix(state_path.suffix + ".tmp")
+            tmp_path.write_text(json.dumps(state, indent=2) + "\n")
+            os.replace(tmp_path, state_path)
         except Exception as exc:
             logger.debug("[Inkbox] Failed to write identity state file: %s", exc)
-
-    # ------------------------------------------------------------------
-    # Tunnel watchdog
-    # ------------------------------------------------------------------
-
-    # Watchdog cadence + heartbeat-log throttle (seconds).  60s is short
-    # enough that a silent failure rarely costs more than one missed
-    # webhook retry by Inkbox; the 5-min log throttle keeps the periodic
-    # "tunnel healthy" line from drowning the rest of the gateway log.
-    _WATCHDOG_INTERVAL_SECONDS = 60
-    _WATCHDOG_HEARTBEAT_INTERVAL_SECONDS = 300
-
-    async def _tunnel_watchdog(self) -> None:
-        """Catch silent supervisor death and rebuild the tunnel.
-
-        The InkboxTunnel client has its own internal supervisor that
-        reconnects on TCP/h2 disconnect.  But if THAT task dies (silent
-        crash, swallowed exception during backoff sleep), nobody is
-        watching the watcher and the gateway goes mute.  This loop
-        periodically asserts the supervisor is still alive and rebuilds
-        the tunnel from scratch if it isn't.
-
-        On every heartbeat-interval pass while healthy, logs an INFO
-        line with ``connected_for`` so external monitors can grep
-        for staleness.  Recovery attempts back off if start() keeps
-        failing so we don't hammer the control plane during an outage.
-        """
-        last_heartbeat = 0.0
-        recovery_attempts = 0
-        recovery_backoff = (5.0, 15.0, 30.0, 60.0, 120.0, 300.0)
-        try:
-            while True:
-                await asyncio.sleep(self._WATCHDOG_INTERVAL_SECONDS)
-                tunnel = self._tunnel
-                if tunnel is None:
-                    return  # adapter shutting down — _cleanup ran
-
-                if tunnel.is_alive():
-                    recovery_attempts = 0
-                    now = time.monotonic()
-                    if now - last_heartbeat >= self._WATCHDOG_HEARTBEAT_INTERVAL_SECONDS:
-                        last_heartbeat = now
-                        connected_for = int(tunnel.connected_seconds)
-                        logger.info(
-                            "[Inkbox] tunnel healthy: host=%s connected_for=%ds",
-                            tunnel.public_host, connected_for,
-                        )
-                    continue
-
-                # Supervisor is gone — rebuild.
-                logger.error(
-                    "[Inkbox] Tunnel watchdog: supervisor task is dead "
-                    "(host=%s); attempting rebuild (attempt %d).",
-                    tunnel.public_host, recovery_attempts + 1,
-                )
-                ok = False
-                try:
-                    with suppress(Exception):
-                        await tunnel.stop()
-                    ok = await tunnel.start()
-                except Exception:
-                    logger.exception(
-                        "[Inkbox] Tunnel watchdog: rebuild raised",
-                    )
-                if ok:
-                    logger.info(
-                        "[Inkbox] Tunnel watchdog: tunnel re-established "
-                        "(host=%s).",
-                        tunnel.public_host,
-                    )
-                    last_heartbeat = 0.0
-                    recovery_attempts = 0
-                    continue
-
-                backoff = recovery_backoff[
-                    min(recovery_attempts, len(recovery_backoff) - 1)
-                ]
-                recovery_attempts += 1
-                logger.warning(
-                    "[Inkbox] Tunnel watchdog: rebuild failed; "
-                    "retrying in %.0fs (attempt %d).",
-                    backoff, recovery_attempts,
-                )
-                await asyncio.sleep(backoff)
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            # Don't let the watchdog itself crash silently — the whole
-            # point is that THIS task survives where ``_supervisor``
-            # might not.  Re-raise as a logged ERROR; if we somehow get
-            # here, the gateway should at least make it greppable.
-            logger.exception("[Inkbox] Tunnel watchdog crashed unexpectedly")
-            raise
 
     # ------------------------------------------------------------------
     # Outbound: send / edit / get_chat_info
@@ -1007,7 +883,7 @@ class InkboxAdapter(BasePlatformAdapter):
             # Auto-load the Inkbox SDK skill on the first turn of every new
             # session so the agent has the SDK reference (texts.list,
             # iter_emails, contacts.create, etc.) in conversation history.
-            auto_skill="inkbox-python",
+            auto_skill="inkbox",
         )
         await self._enqueue(event)
         return web.Response(status=200, text="ok")
@@ -1040,7 +916,7 @@ class InkboxAdapter(BasePlatformAdapter):
             source=source,
             raw_message=envelope,
             message_id=str(text_msg.get("id") or ""),
-            auto_skill="inkbox-python",
+            auto_skill="inkbox",
         )
         await self._enqueue(event)
         return web.Response(status=200, text="ok")
@@ -1290,7 +1166,7 @@ class InkboxAdapter(BasePlatformAdapter):
                 source=source,
                 raw_message={"synthetic": "outbound_call_opening"},
                 message_id=f"call:{call_id}:opening",
-                auto_skill="inkbox-python",
+                auto_skill="inkbox",
             )
             try:
                 await self._enqueue(event)
@@ -1365,7 +1241,7 @@ class InkboxAdapter(BasePlatformAdapter):
                         source=source,
                         raw_message=payload,
                         message_id=f"call:{call_id}:{payload.get('turn_id') or ''}",
-                        auto_skill="inkbox-python",
+                        auto_skill="inkbox",
                     )
                     await self._enqueue(event)
                 elif ev == "stop":
@@ -1430,7 +1306,7 @@ class InkboxAdapter(BasePlatformAdapter):
                     source=source,
                     raw_message={"synthetic": "call_ended"},
                     message_id=f"call:{call_id}:ended",
-                    auto_skill="inkbox-python",
+                    auto_skill="inkbox",
                 )
                 await self._enqueue(event)
                 logger.info(

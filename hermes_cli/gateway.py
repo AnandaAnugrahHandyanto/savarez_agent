@@ -3267,7 +3267,18 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
 
 # Per-platform config: each entry defines the env vars, setup instructions,
 # and prompts needed to configure a messaging platform.
+#
+# Inkbox is intentionally first — it is the recommended Hermes-on-Inkbox
+# onboarding path (email + SMS + voice + identity all behind one API key).
+# Its setup is fully bespoke (`_setup_inkbox` in hermes_cli/setup.py) so the
+# entry here is metadata-only: no `vars` / `setup_instructions` schema.
 _PLATFORMS = [
+    {
+        "key": "inkbox",
+        "label": "Inkbox (email + SMS + voice)",
+        "emoji": "📨📱📞",
+        "token_var": "INKBOX_API_KEY",
+    },
     {
         "key": "telegram",
         "label": "Telegram",
@@ -3605,42 +3616,6 @@ _PLATFORMS = [
              "help": "Optional — pre-authorize specific users. Leave empty to use DM pairing instead (recommended)."},
             {"name": "BLUEBUBBLES_HOME_CHANNEL", "prompt": "Home channel (phone number or iMessage ID for cron/notifications, or empty)", "password": False,
              "help": "Phone number or Apple ID to deliver cron results and notifications to."},
-        ],
-    },
-    {
-        "key": "inkbox",
-        "label": "Inkbox (email + SMS + voice)",
-        "emoji": "📨📱📞",
-        "token_var": "INKBOX_API_KEY",
-        "setup_instructions": [
-            "1. Sign in to https://console.inkbox.ai and create (or pick) an agent identity",
-            "   with both a mailbox and a phone number attached.",
-            "2. Generate an API key for that identity (Identities → … → API Keys).",
-            "3. Generate a webhook signing key at console.inkbox.ai/webhooks.",
-            "4. Hermes auto-creates an Inkbox tunnel (https://{name}.inkboxwire.com) on",
-            "   the first gateway start — no ngrok / reverse proxy needed.  The tunnel",
-            "   id + connect secret are saved under HERMES_HOME and reused on reboot.",
-            "5. The identity's mailbox + phone number webhook URLs are patched to the",
-            "   tunnel automatically; you do not need to configure them in the console.",
-        ],
-        "vars": [
-            {"name": "INKBOX_API_KEY", "prompt": "Inkbox API key (ApiKey_…)", "password": True,
-             "help": "API key generated for your agent identity in console.inkbox.ai."},
-            {"name": "INKBOX_IDENTITY", "prompt": "Inkbox identity handle (e.g. inkbox-on-call-agent)", "password": False,
-             "help": "The identity whose mailbox + phone number this gateway should own."},
-            {"name": "INKBOX_SIGNING_KEY", "prompt": "Webhook signing key (whsec_…)", "password": True,
-             "help": "Used to verify X-Inkbox-Signature on every inbound webhook."},
-            {"name": "INKBOX_TUNNEL_NAME", "prompt": "Tunnel subdomain (skip to derive from identity)", "password": False,
-             "help": "Optional — must be unique across Inkbox customers (3-63 lowercase letters/digits/hyphens). Defaults to a slug of the identity handle."},
-            {"name": "INKBOX_PUBLIC_URL", "prompt": "Override public HTTPS URL (skip to use the Inkbox tunnel)", "password": False,
-             "help": "Optional — set only when running behind your own reverse proxy or hosted tunnel."},
-            {"name": "INKBOX_LISTEN_PORT", "prompt": "Adapter listen port (default 8765)", "password": False,
-             "help": "Local TCP port for the adapter's webhook + call-WS server."},
-            {"name": "INKBOX_ALLOWED_USERS", "prompt": "Allowed contact UUIDs (comma-separated, or empty)", "password": False,
-             "is_allowlist": True,
-             "help": "Pre-authorized contact IDs. Leave empty to use DM pairing on first contact."},
-            {"name": "INKBOX_HOME_CHANNEL", "prompt": "Home contact UUID (for cron/notifications, or empty)", "password": False,
-             "help": "Contact ID where cron results land when no origin is available."},
         ],
     },
     {
@@ -4730,6 +4705,7 @@ def _builtin_setup_fn(key: str):
     """
     from hermes_cli import setup as _s
     return {
+        "inkbox": _s._setup_inkbox,
         "telegram": _s._setup_telegram,
         "discord": _s._setup_discord,
         "slack": _s._setup_slack,

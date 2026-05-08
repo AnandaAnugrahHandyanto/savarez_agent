@@ -544,7 +544,7 @@ PLATFORM_HINTS = {
         "not also send \"Calling you now.\" Pick one.\n"
         "  • For outbound voice calls, ALWAYS attach call-purpose context "
         "via the ``?context_token=`` URL mechanism documented in the "
-        "inkbox-python skill. The in-call agent has no memory of the "
+        "inkbox skill. The in-call agent has no memory of the "
         "originating SMS/email; without context it will sound like a "
         "stranger calling for no reason.\n"
         "  • Hermes runtime banners (\"⏳ Still working…\", \"⚡ Interrupting "
@@ -908,6 +908,15 @@ def build_inkbox_identity_hint() -> str:
     if not handle:
         return ""
 
+    # Defend against a stale state file disagreeing with INKBOX_IDENTITY.
+    # If they diverge (e.g. the wizard wrote .env but the gateway hasn't
+    # repopulated the JSON yet, or vice versa), we'd otherwise lie to the
+    # agent about which identity it owns. Empty hint > wrong hint.
+    import os as _os
+    env_handle = (_os.environ.get("INKBOX_IDENTITY") or "").strip()
+    if env_handle and env_handle != handle:
+        return ""
+
     parts = [f"You are bound to an Inkbox identity (handle: {handle})."]
     email = state.get("email_address")
     phone = state.get("phone_number")
@@ -958,7 +967,7 @@ def build_inkbox_identity_hint() -> str:
         "conversation suggests an ongoing relationship, offer to remember "
         "this person by creating a Contact via the SDK — don't silently "
         "guess at their identity from past sessions.\n\n"
-        "The full SDK reference is auto-loaded as the 'inkbox-python' skill "
+        "The full SDK reference is auto-loaded as the 'inkbox' skill "
         "at the start of every new Inkbox session — consult it for shapes "
         "and options before writing code."
     )
