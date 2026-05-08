@@ -3,7 +3,7 @@ import * as Ink from '@hermes/ink'
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
-import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
+import { readClipboardText, readPrimarySelectionText, writeClipboardText } from '../lib/clipboard.js'
 import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
 import {
   DEFAULT_VOICE_RECORD_KEY,
@@ -967,6 +967,23 @@ export function TextInput({
       }}
       onMouseDown={(e: MouseEventLite) => {
         if (!focus) {
+          return
+        }
+
+        // Middle-click mirrors native Linux terminal behavior: paste the
+        // PRIMARY selection (highlighted text), not the regular clipboard.
+        // If PRIMARY is unavailable or the platform is not Linux, fall back
+        // to the standard paste pipeline used by right-click / hotkeys.
+        if (e.button === 1) {
+          e.stopImmediatePropagation?.()
+          void readPrimarySelectionText().then(text => {
+            if (text) {
+              pastePlainText(text)
+            } else {
+              emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
+            }
+          })
+
           return
         }
 
