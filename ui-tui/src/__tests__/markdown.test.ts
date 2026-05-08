@@ -9,7 +9,10 @@ import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 const matches = (text: string) => [...text.matchAll(INLINE_RE)].map(m => m[0])
-const CSI_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g')
+const BEL = String.fromCharCode(7)
+const ESC = String.fromCharCode(27)
+const CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g')
+const OSC_RE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
 
 const renderPlain = (node: React.ReactNode) => {
   const stdout = new PassThrough()
@@ -36,7 +39,7 @@ const renderPlain = (node: React.ReactNode) => {
 
   return stripAnsi(output)
     .split('\n')
-    .map(line => line.replace(CSI_RE, '').trimEnd())
+    .map(line => line.replace(OSC_RE, '').replace(CSI_RE, '').trimEnd())
 }
 
 describe('INLINE_RE emphasis', () => {

@@ -317,7 +317,7 @@ function applyStylesToWrappedText(
     if (charIndex < originalPlain.length && originalPlain[charIndex] === '\n') {
       charIndex++
     } else if (trimEnabled && lineIdx < lines.length - 1 && /\s/.test(originalPlain[charIndex] ?? '')) {
-      // wrap-trim removes exactly one whitespace cell at each soft-wrap boundary.
+      // wrap-trim removes exactly one whitespace character at each soft-wrap boundary.
       // Keep the style map aligned without eating preserved indentation/spaces.
       charIndex++
     }
