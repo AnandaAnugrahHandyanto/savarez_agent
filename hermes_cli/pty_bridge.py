@@ -48,13 +48,21 @@ try:
 except ImportError:  # pragma: no cover - dev env without ptyprocess
     ptyprocess = None  # type: ignore[assignment]
 
+try:
+    from winpty import ptyprocess as winpty_ptyprocess  # type: ignore
+except ImportError:  # pragma: no cover - non-Windows or missing pywinpty
+    winpty_ptyprocess = None  # type: ignore[assignment]
+
 _POSIX_PTY_AVAILABLE = (
     ptyprocess is not None
     and fcntl is not None
     and termios is not None
     and not sys.platform.startswith("win")
 )
-_PTY_AVAILABLE = _POSIX_PTY_AVAILABLE
+_WINDOWS_PTY_AVAILABLE = (
+    winpty_ptyprocess is not None and sys.platform.startswith("win")
+)
+_PTY_AVAILABLE = _POSIX_PTY_AVAILABLE or _WINDOWS_PTY_AVAILABLE
 
 
 def _pty_unavailable_message() -> str:
@@ -235,6 +243,102 @@ class _PosixPtyBackend:
             pass
 
 
+class _WindowsPtyBackend:
+    """Windows implementation backed by pywinpty winpty.ptyprocess."""
+
+    def __init__(self, proc):
+        self._proc = proc
+        self._closed = False
+
+    @classmethod
+    def spawn(
+        cls,
+        argv: Sequence[str],
+        *,
+        cwd: Optional[str] = None,
+        env: Optional[dict] = None,
+        cols: int = 80,
+        rows: int = 24,
+    ) -> "_WindowsPtyBackend":
+        spawn_env = (os.environ.copy() if env is None else env.copy())
+        if not spawn_env.get("TERM"):
+            spawn_env["TERM"] = "xterm-256color"
+        proc = winpty_ptyprocess.PtyProcess.spawn(  # type: ignore[union-attr]
+            list(argv),
+            cwd=cwd,
+            env=spawn_env,
+            dimensions=(rows, cols),
+        )
+        return cls(proc)
+
+    @property
+    def pid(self) -> int:
+        return int(self._proc.pid)
+
+    def is_alive(self) -> bool:
+        if self._closed:
+            return False
+        try:
+            return bool(self._proc.isalive())
+        except Exception:
+            return False
+
+    def read(self, timeout: float = 0.2) -> Optional[bytes]:
+        if self._closed:
+            return None
+        try:
+            data = self._proc.read()
+        except EOFError:
+            return None
+        except OSError as exc:
+            if exc.errno in (errno.EIO, errno.EBADF, errno.EPIPE):
+                return None
+            raise
+        if data is None:
+            return None
+        if data == "" or data == b"":
+            return b""
+        if isinstance(data, bytes):
+            return data
+        return str(data).encode("utf-8")
+
+    def write(self, data: bytes) -> None:
+        if self._closed or not data:
+            return
+        if isinstance(data, bytes):
+            text = data.decode("utf-8", "replace")
+        else:
+            text = str(data)
+        try:
+            self._proc.write(text)
+        except OSError as exc:
+            if exc.errno in (errno.EIO, errno.EBADF, errno.EPIPE):
+                return
+            raise
+
+    def resize(self, cols: int, rows: int) -> None:
+        if self._closed:
+            return
+        try:
+            self._proc.setwinsize(max(1, rows), max(1, cols))
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._proc.close(force=True)
+            return
+        except Exception:
+            pass
+        try:
+            self._proc.terminate(force=True)
+        except Exception:
+            pass
+
+
 class PtyBridge:
     """Thin, byte-oriented facade over a platform-specific PTY backend.
 
@@ -273,14 +377,27 @@ class PtyBridge:
         if not _PTY_AVAILABLE:
             raise PtyUnavailableError(_pty_unavailable_message())
 
-        backend = _PosixPtyBackend.spawn(
-            argv,
-            cwd=cwd,
-            env=env,
-            cols=cols,
-            rows=rows,
-        )
-        return cls(backend)
+        if _POSIX_PTY_AVAILABLE:
+            backend = _PosixPtyBackend.spawn(
+                argv,
+                cwd=cwd,
+                env=env,
+                cols=cols,
+                rows=rows,
+            )
+            return cls(backend)
+
+        if _WINDOWS_PTY_AVAILABLE:
+            backend = _WindowsPtyBackend.spawn(
+                argv,
+                cwd=cwd,
+                env=env,
+                cols=cols,
+                rows=rows,
+            )
+            return cls(backend)
+
+        raise PtyUnavailableError("Pseudo-terminals are unavailable.")
 
     @property
     def pid(self) -> int:

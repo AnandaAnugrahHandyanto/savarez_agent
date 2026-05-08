@@ -210,3 +210,90 @@ class TestPtyBridgeUnavailable:
         assert "native Windows" in message
         assert "WSL" in message
         assert "dashboard" in message
+
+class TestWindowsPtyBackendAdapter:
+    def test_spawn_and_io_normalize_winpty_text_api(self, monkeypatch):
+        import types
+
+        import hermes_cli.pty_bridge as pty_bridge
+
+        created = []
+
+        class FakeWinptyProc:
+            def __init__(self):
+                self.pid = 4242
+                self.alive = True
+                self.writes = []
+                self.resizes = []
+                self.closed = []
+
+            def isalive(self):
+                return self.alive
+
+            def read(self):
+                return "héllo"
+
+            def write(self, data):
+                self.writes.append(data)
+
+            def setwinsize(self, rows, cols):
+                self.resizes.append((rows, cols))
+
+            def close(self, force=False):
+                self.closed.append(("close", force))
+                self.alive = False
+
+            def terminate(self, force=False):
+                self.closed.append(("terminate", force))
+                self.alive = False
+
+        class FakePtyProcess:
+            @staticmethod
+            def spawn(argv, cwd=None, env=None, dimensions=(24, 80), backend=None):
+                proc = FakeWinptyProc()
+                created.append(
+                    {
+                        "argv": argv,
+                        "cwd": cwd,
+                        "env": env,
+                        "dimensions": dimensions,
+                        "backend": backend,
+                        "proc": proc,
+                    }
+                )
+                return proc
+
+        monkeypatch.setattr(
+            pty_bridge,
+            "winpty_ptyprocess",
+            types.SimpleNamespace(PtyProcess=FakePtyProcess),
+            raising=False,
+        )
+
+        backend = pty_bridge._WindowsPtyBackend.spawn(
+            ["node", "entry.js"],
+            cwd="C:/hermes",
+            env={"A": "B"},
+            cols=100,
+            rows=40,
+        )
+
+        assert created[0]["argv"] == ["node", "entry.js"]
+        assert created[0]["cwd"] == "C:/hermes"
+        assert created[0]["env"]["A"] == "B"
+        assert created[0]["env"]["TERM"] == "xterm-256color"
+        assert created[0]["dimensions"] == (40, 100)
+        assert backend.pid == 4242
+        assert backend.is_alive() is True
+        assert backend.read() == "héllo".encode("utf-8")
+
+        backend.write("input".encode("utf-8"))
+        backend.resize(cols=120, rows=50)
+        backend.close()
+        backend.close()
+
+        proc = created[0]["proc"]
+        assert proc.writes == ["input"]
+        assert proc.resizes == [(50, 120)]
+        assert proc.closed
+        assert backend.is_alive() is False
