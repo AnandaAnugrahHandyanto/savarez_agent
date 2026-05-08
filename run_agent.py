@@ -42,6 +42,7 @@ import urllib.request
 import uuid
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
+from agent.i18n import t
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
 # that imports the SDK on first call/isinstance check. This preserves:
@@ -6564,9 +6565,9 @@ class AIAgent:
                     api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
                 )
                 self._emit_status(
-                    f"⚠️ No response from provider for {int(_elapsed)}s "
-                    f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
-                    f"Aborting call."
+                    t("status.no_response_nonstreaming",
+                      elapsed=int(_elapsed),
+                      model=api_kwargs.get("model", "unknown"))
                 )
                 try:
                     if self.api_mode == "anthropic_messages":
@@ -7329,9 +7330,10 @@ class AIAgent:
                             deltas_were_sent["yes"] = False
                             first_delta_fired["done"] = False
                             self._emit_status(
-                                f"⚠️ Connection dropped mid tool-call "
-                                f"({type(e).__name__}). Reconnecting… "
-                                f"(attempt {_stream_attempt + 2}/{_max_stream_retries + 1})"
+                                t("status.connection_dropped_toolcall",
+                                  error=type(e).__name__,
+                                  attempt=_stream_attempt + 2,
+                                  total=_max_stream_retries + 1)
                             )
                             self._touch_activity(
                                 f"stream retry {_stream_attempt + 2}/{_max_stream_retries + 1} "
@@ -7349,7 +7351,7 @@ class AIAgent:
                                 )
                             except Exception:
                                 pass
-                            self._emit_status("🔄 Reconnected — resuming…")
+                            self._emit_status(t("status.reconnected"))
                             continue
 
                         # SSE error events from proxies (e.g. OpenRouter sends
@@ -7395,9 +7397,10 @@ class AIAgent:
                                     e,
                                 )
                                 self._emit_status(
-                                    f"⚠️ Connection to provider dropped "
-                                    f"({type(e).__name__}). Reconnecting… "
-                                    f"(attempt {_stream_attempt + 2}/{_max_stream_retries + 1})"
+                                    t("status.connection_dropped",
+                                      error=type(e).__name__,
+                                      attempt=_stream_attempt + 2,
+                                      total=_max_stream_retries + 1)
                                 )
                                 self._touch_activity(
                                     f"stream retry {_stream_attempt + 2}/{_max_stream_retries + 1} "
@@ -7418,13 +7421,11 @@ class AIAgent:
                                     )
                                 except Exception:
                                     pass
-                                self._emit_status("🔄 Reconnected — resuming…")
+                                self._emit_status(t("status.reconnected"))
                                 continue
                             self._emit_status(
-                                "❌ Connection to provider failed after "
-                                f"{_max_stream_retries + 1} attempts. "
-                                "The provider may be experiencing issues — "
-                                "try again in a moment."
+                                t("status.connection_failed",
+                                  attempts=_max_stream_retries + 1)
                             )
                             logger.warning(
                                 "Streaming exhausted %s retries on transient error: %s",
@@ -7525,10 +7526,10 @@ class AIAgent:
                     api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
                 )
                 self._emit_status(
-                    f"⚠️ No response from provider for {int(_stale_elapsed)}s "
-                    f"(model: {api_kwargs.get('model', 'unknown')}, "
-                    f"context: ~{_est_ctx:,} tokens). "
-                    f"Reconnecting..."
+                    t("status.no_response_streaming",
+                      elapsed=int(_stale_elapsed),
+                      model=api_kwargs.get("model", "unknown"),
+                      context=f"{_est_ctx:,}")
                 )
                 try:
                     rc = request_client_holder.get("client")
@@ -7814,8 +7815,7 @@ class AIAgent:
                 )
 
             self._emit_status(
-                f"🔄 Primary model failed — switching to fallback: "
-                f"{fb_model} via {fb_provider}"
+                t("status.switching_fallback", model=fb_model, provider=fb_provider)
             )
             logging.info(
                 "Fallback activated: %s → %s (%s)",
@@ -10666,9 +10666,7 @@ class AIAgent:
             try:
                 if self._cleanup_dead_connections():
                     self._emit_status(
-                        "🔌 Detected stale connections from a previous provider "
-                        "issue — cleaned up automatically. Proceeding with fresh "
-                        "connection."
+                        t("status.stale_connections_cleaned")
                     )
             except Exception:
                 pass
@@ -10829,9 +10827,9 @@ class AIAgent:
                     f"{self.context_compressor.context_length:,}",
                 )
                 self._emit_status(
-                    f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
-                    f">= {self.context_compressor.threshold_tokens:,} threshold. "
-                    "This may take a moment."
+                    t("status.preflight_compression",
+                      tokens=f"{_preflight_tokens:,}",
+                      threshold=f"{self.context_compressor.threshold_tokens:,}")
                 )
                 # May need multiple passes for very large sessions with small
                 # context windows (each pass summarises the middle N turns).
@@ -11515,7 +11513,7 @@ class AIAgent:
                         # rate-limit symptom.  Switch to fallback immediately
                         # rather than retrying with extended backoff.
                         if self._fallback_index < len(self._fallback_chain):
-                            self._emit_status("⚠️ Empty/malformed response — switching to fallback...")
+                            self._emit_status(t("status.empty_response_fallback"))
                         if self._try_activate_fallback():
                             retry_count = 0
                             compression_attempts = 0
@@ -11585,13 +11583,13 @@ class AIAgent:
                         
                         if retry_count >= max_retries:
                             # Try fallback before giving up
-                            self._emit_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
+                            self._emit_status(t("status.max_retries_fallback", retries=max_retries))
                             if self._try_activate_fallback():
                                 retry_count = 0
                                 compression_attempts = 0
                                 primary_recovery_attempted = False
                                 continue
-                            self._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
+                            self._emit_status(t("status.max_retries_failed", retries=max_retries))
                             logging.error(f"{self.log_prefix}Invalid API response after {max_retries} retries.")
                             self._persist_session(messages, conversation_history)
                             return {
@@ -12522,8 +12520,9 @@ class AIAgent:
                             conversation_history = None
                             if len(messages) < original_len or old_ctx > _reduced_ctx:
                                 self._emit_status(
-                                    f"🗜️ Context reduced to {_reduced_ctx:,} tokens "
-                                    f"(was {old_ctx:,}), retrying..."
+                                    t("status.context_reduced",
+                                      new=f"{_reduced_ctx:,}",
+                                      old=f"{old_ctx:,}")
                                 )
                                 time.sleep(2)
                                 restart_with_compressed_messages = True
@@ -12550,7 +12549,7 @@ class AIAgent:
                             base_url=getattr(self, "base_url", None),
                         )
                         if not pool_may_recover:
-                            self._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                            self._emit_status(t("status.rate_limited_fallback"))
                             if self._try_activate_fallback(reason=classified.reason):
                                 retry_count = 0
                                 compression_attempts = 0
@@ -12642,7 +12641,7 @@ class AIAgent:
                                 "failed": True,
                                 "compression_exhausted": True,
                             }
-                        self._emit_status(f"⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
+                        self._emit_status(t("status.payload_too_large", current=compression_attempts, max=max_compression_attempts))
 
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
@@ -12655,7 +12654,7 @@ class AIAgent:
                         conversation_history = None
 
                         if len(messages) < original_len:
-                            self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                            self._emit_status(t("status.compressed_retrying", old=original_len, new=len(messages)))
                             time.sleep(2)  # Brief pause between compression retries
                             restart_with_compressed_messages = True
                             break
@@ -12799,7 +12798,7 @@ class AIAgent:
                                 "failed": True,
                                 "compression_exhausted": True,
                             }
-                        self._emit_status(f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...")
+                        self._emit_status(t("status.context_too_large", tokens=f"{approx_tokens:,}", current=compression_attempts, max=max_compression_attempts))
 
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
@@ -12813,7 +12812,7 @@ class AIAgent:
 
                         if len(messages) < original_len or new_ctx and new_ctx < old_ctx:
                             if len(messages) < original_len:
-                                self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                                self._emit_status(t("status.compressed_retrying", old=original_len, new=len(messages)))
                             time.sleep(2)  # Brief pause between compression retries
                             restart_with_compressed_messages = True
                             break
@@ -12878,7 +12877,7 @@ class AIAgent:
                     if is_client_error:
                         # Try fallback before aborting — a different provider
                         # may not have the same issue (rate limit, auth, etc.)
-                        self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
+                        self._emit_status(t("status.non_retryable_error_fallback", status=status_code))
                         if self._try_activate_fallback():
                             retry_count = 0
                             compression_attempts = 0
@@ -12889,8 +12888,9 @@ class AIAgent:
                                 api_kwargs, reason="non_retryable_client_error", error=api_error,
                             )
                         self._emit_status(
-                            f"❌ Non-retryable error (HTTP {status_code}): "
-                            f"{self._summarize_api_error(api_error)}"
+                            t("status.non_retryable_error",
+                              status=status_code,
+                              detail=self._summarize_api_error(api_error))
                         )
                         self._vprint(f"{self.log_prefix}❌ Non-retryable client error (HTTP {status_code}). Aborting.", force=True)
                         self._vprint(f"{self.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
@@ -12945,7 +12945,7 @@ class AIAgent:
                             retry_count = 0
                             continue
                         # Try fallback before giving up entirely
-                        self._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
+                        self._emit_status(t("status.max_retries_exhausted_fallback", retries=max_retries))
                         if self._try_activate_fallback():
                             retry_count = 0
                             compression_attempts = 0
@@ -12953,9 +12953,9 @@ class AIAgent:
                             continue
                         _final_summary = self._summarize_api_error(api_error)
                         if is_rate_limited:
-                            self._emit_status(f"❌ Rate limited after {max_retries} retries — {_final_summary}")
+                            self._emit_status(t("status.rate_limited_final", retries=max_retries, detail=_final_summary))
                         else:
-                            self._emit_status(f"❌ API failed after {max_retries} retries — {_final_summary}")
+                            self._emit_status(t("status.api_failed_final", retries=max_retries, detail=_final_summary))
                         self._vprint(f"{self.log_prefix}   💀 Final error: {_final_summary}", force=True)
 
                         # Detect SSE stream-drop pattern (e.g. "Network
@@ -13029,9 +13029,9 @@ class AIAgent:
                                     pass
                     wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                     if is_rate_limited:
-                        self._emit_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
+                        self._emit_status(t("status.rate_limited_waiting", wait=f"{wait_time:.1f}", attempt=retry_count + 1, max=max_retries))
                     else:
-                        self._emit_status(f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})...")
+                        self._emit_status(t("status.retrying", wait=f"{wait_time:.1f}", attempt=retry_count, max=max_retries))
                     logger.warning(
                         "Retrying API call in %ss (attempt %s/%s) %s error=%s",
                         wait_time,
@@ -13514,7 +13514,7 @@ class AIAgent:
                         _turn_exit_reason = "guardrail_halt"
                         final_response = self._toolguard_controlled_halt_response(decision)
                         self._emit_status(
-                            f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}"
+                            t("status.guardrail_halted", tool=decision.tool_name, code=decision.code)
                         )
                         messages.append({"role": "assistant", "content": final_response})
                         break
@@ -13619,8 +13619,7 @@ class AIAgent:
                                 len(_recovered),
                             )
                             self._emit_status(
-                                "↻ Stream interrupted — using delivered content "
-                                "as final response"
+                                t("status.stream_interrupted_using_content")
                             )
                             final_response = _recovered
                             self._response_was_previewed = True
@@ -13640,7 +13639,7 @@ class AIAgent:
                         if fallback and getattr(self, '_last_content_tools_all_housekeeping', False):
                             _turn_exit_reason = "fallback_prior_turn_content"
                             logger.info("Empty follow-up after tool calls — using prior turn content as final response")
-                            self._emit_status("↻ Empty response after tool calls — using earlier content as final answer")
+                            self._emit_status(t("status.empty_after_tools_using_prior"))
                             self._last_content_with_tools = None
                             self._last_content_tools_all_housekeeping = False
                             self._empty_content_retries = 0
@@ -13696,8 +13695,7 @@ class AIAgent:
                                 "to continue processing"
                             )
                             self._emit_status(
-                                "⚠️ Model returned empty after tool calls — "
-                                "nudging to continue"
+                                t("status.empty_after_tools_nudging")
                             )
                             # Append the empty assistant message first so the
                             # message sequence stays valid:
@@ -13740,8 +13738,8 @@ class AIAgent:
                                 self._thinking_prefill_retries,
                             )
                             self._emit_status(
-                                f"↻ Thinking-only response — prefilling to continue "
-                                f"({self._thinking_prefill_retries}/2)"
+                                t("status.thinking_only_prefilling",
+                                  current=self._thinking_prefill_retries)
                             )
                             interim_msg = self._build_assistant_message(
                                 assistant_message, "incomplete"
@@ -13776,8 +13774,8 @@ class AIAgent:
                                 self._empty_content_retries, self.model,
                             )
                             self._emit_status(
-                                f"⚠️ Empty response from model — retrying "
-                                f"({self._empty_content_retries}/3)"
+                                t("status.empty_response_retrying",
+                                  current=self._empty_content_retries)
                             )
                             continue
 
@@ -13795,14 +13793,13 @@ class AIAgent:
                                 self.provider,
                             )
                             self._emit_status(
-                                "⚠️ Model returning empty responses — "
-                                "switching to fallback provider..."
+                                t("status.empty_response_switching_fallback")
                             )
                             if self._try_activate_fallback():
                                 self._empty_content_retries = 0
                                 self._emit_status(
-                                    f"↻ Switched to fallback: {self.model} "
-                                    f"({self.provider})"
+                                    t("status.switched_to_fallback",
+                                      model=self.model, provider=self.provider)
                                 )
                                 logger.info(
                                     "Fallback activated after empty responses: "
