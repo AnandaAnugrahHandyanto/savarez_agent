@@ -251,6 +251,18 @@ class TestSendHomeAssistant:
         url = session.post.call_args[0][0]
         assert "hass.env.com" in url
 
+    def test_tool_env_var_fallback(self):
+        resp = _make_aiohttp_resp(200)
+        session_ctx, session = _make_aiohttp_session(resp)
+
+        with patch("aiohttp.ClientSession", return_value=session_ctx),              patch.dict(os.environ, {"HASS_URL": "", "HASS_TOKEN": "", "HASS_TOOL_URL": "https://hass.tool.com", "HASS_TOOL_TOKEN": "tool-tok"}, clear=False):
+            result = asyncio.run(_send_homeassistant("", {}, "notify_target", "hi"))
+
+        assert result["success"] is True
+        call_kwargs = session.post.call_args
+        assert call_kwargs[0][0] == "https://hass.tool.com/api/services/notify/notify"
+        assert call_kwargs[1]["headers"]["Authorization"] == "Bearer tool-tok"
+
 
 # ---------------------------------------------------------------------------
 # _send_dingtalk

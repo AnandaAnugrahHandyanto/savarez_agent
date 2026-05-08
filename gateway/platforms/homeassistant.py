@@ -8,8 +8,8 @@ persistent notifications.
 
 Requires:
 - aiohttp (already in messaging extras)
-- HASS_TOKEN env var (Long-Lived Access Token)
-- HASS_URL env var (default: http://homeassistant.local:8123)
+- HASS_PLATFORM_TOKEN env var (preferred websocket token, falls back to HASS_TOKEN)
+- HASS_PLATFORM_URL env var (preferred websocket URL, falls back to HASS_URL)
 """
 
 import asyncio
@@ -43,7 +43,7 @@ def check_ha_requirements() -> bool:
     """Check if Home Assistant dependencies are available and configured."""
     if not AIOHTTP_AVAILABLE:
         return False
-    if not os.getenv("HASS_TOKEN"):
+    if not (os.getenv("HASS_PLATFORM_TOKEN") or os.getenv("HASS_TOKEN")):
         return False
     return True
 
@@ -74,8 +74,16 @@ class HomeAssistantAdapter(BasePlatformAdapter):
 
         # Configuration from extra
         extra = config.extra or {}
-        token = config.token or os.getenv("HASS_TOKEN", "")
-        url = extra.get("url") or os.getenv("HASS_URL", "http://homeassistant.local:8123")
+        token = (
+            config.token
+            or os.getenv("HASS_PLATFORM_TOKEN")
+            or os.getenv("HASS_TOKEN", "")
+        )
+        url = (
+            extra.get("url")
+            or os.getenv("HASS_PLATFORM_URL")
+            or os.getenv("HASS_URL", "http://homeassistant.local:8123")
+        )
         self._hass_url: str = url.rstrip("/")
         self._hass_token: str = token
 
@@ -145,44 +153,49 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         self._session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30)
         )
-        self._ws = await self._session.ws_connect(ws_url, heartbeat=30, timeout=30)
+        try:
+            self._ws = await self._session.ws_connect(ws_url, heartbeat=30, timeout=30)
 
-        # Step 1: Receive auth_required
-        msg = await self._ws.receive_json()
-        if msg.get("type") != "auth_required":
-            logger.error("Expected auth_required, got: %s", msg.get("type"))
+            # Step 1: Receive auth_required
+            msg = await self._ws.receive_json()
+            if msg.get("type") != "auth_required":
+                logger.error("Expected auth_required, got: %s", msg.get("type"))
+                await self._cleanup_ws()
+                return False
+
+            # Step 2: Send auth
+            await self._ws.send_json({
+                "type": "auth",
+                "access_token": self._hass_token,
+            })
+
+            # Step 3: Wait for auth_ok
+            msg = await self._ws.receive_json()
+            if msg.get("type") != "auth_ok":
+                logger.error("Auth failed: %s", msg)
+                await self._cleanup_ws()
+                return False
+
+            # Step 4: Subscribe to state_changed events
+            sub_id = self._next_id()
+            await self._ws.send_json({
+                "id": sub_id,
+                "type": "subscribe_events",
+                "event_type": "state_changed",
+            })
+
+            # Verify subscription acknowledgement
+            msg = await self._ws.receive_json()
+            if not msg.get("success"):
+                logger.error("Failed to subscribe to events: %s", msg)
+                await self._cleanup_ws()
+                return False
+
+            return True
+
+        except Exception:
             await self._cleanup_ws()
-            return False
-
-        # Step 2: Send auth
-        await self._ws.send_json({
-            "type": "auth",
-            "access_token": self._hass_token,
-        })
-
-        # Step 3: Wait for auth_ok
-        msg = await self._ws.receive_json()
-        if msg.get("type") != "auth_ok":
-            logger.error("Auth failed: %s", msg)
-            await self._cleanup_ws()
-            return False
-
-        # Step 4: Subscribe to state_changed events
-        sub_id = self._next_id()
-        await self._ws.send_json({
-            "id": sub_id,
-            "type": "subscribe_events",
-            "event_type": "state_changed",
-        })
-
-        # Verify subscription acknowledgement
-        msg = await self._ws.receive_json()
-        if not msg.get("success"):
-            logger.error("Failed to subscribe to events: %s", msg)
-            await self._cleanup_ws()
-            return False
-
-        return True
+            raise
 
     async def _cleanup_ws(self) -> None:
         """Close WebSocket and session."""
