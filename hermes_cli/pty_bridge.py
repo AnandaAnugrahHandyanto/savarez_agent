@@ -1,27 +1,23 @@
-"""PTY bridge for `hermes dashboard` chat tab.
+"""PTY bridge for the Hermes dashboard chat tab.
 
 Wraps a child process behind a pseudo-terminal so its ANSI output can be
 streamed to a browser-side terminal emulator (xterm.js) and typed
 keystrokes can be fed back in.  The only caller today is the
-``/api/pty`` WebSocket endpoint in ``hermes_cli.web_server``.
+api/pty WebSocket endpoint in hermes_cli.web_server.
 
 Design constraints:
 
-* **POSIX-only.**  This module depends on ``fcntl``, ``termios``, and
-  ``ptyprocess``, none of which exist on native Windows Python.  Native
-  Windows ConPTY is a different API (Windows 10 build 17763+) and would
-  need a separate Windows implementation (``pywinpty``) — that's tracked
-  as a future enhancement.  On native Windows, importing this module
-  raises :class:`ImportError` and the dashboard's ``/chat`` tab shows a
-  WSL-recommended banner instead of crashing.  Every other feature in the
-  dashboard (sessions, jobs, metrics, config editor) works natively.
-* **Zero Node dependency on the server side.**  We use :mod:`ptyprocess`,
+* **Backend-isolated.**  The public PtyBridge API stays stable while
+  platform-specific PTY details live behind a backend seam.  The POSIX
+  backend is the only enabled backend today; Windows support can be added by
+  implementing the same byte-oriented contract.
+* **Zero Node dependency on the server side.**  We use ptyprocess,
   which is a pure-Python wrapper around the OS calls.  The browser talks
-  to the same ``hermes --tui`` binary it would launch from the CLI, so
+  to the same hermes --tui binary it would launch from the CLI, so
   every TUI feature (slash popover, model picker, tool rows, markdown,
   skin engine, clarify/sudo/approval prompts) ships automatically.
-* **Byte-safe I/O.**  Reads and writes go through the PTY master fd
-  directly — we avoid :class:`ptyprocess.PtyProcessUnicode` because
+* **Byte-safe I/O.**  Reads and writes go through a byte-oriented bridge
+  interface, avoiding Unicode wrappers because
   streaming ANSI is inherently byte-oriented and UTF-8 boundaries may land
   mid-read.
 """
@@ -35,7 +31,7 @@ import signal
 import struct
 import sys
 import time
-from typing import Optional, Sequence
+from typing import Optional, Protocol, Sequence
 
 try:
     import fcntl  # type: ignore[import-not-found]
@@ -52,12 +48,13 @@ try:
 except ImportError:  # pragma: no cover - dev env without ptyprocess
     ptyprocess = None  # type: ignore[assignment]
 
-_PTY_AVAILABLE = (
+_POSIX_PTY_AVAILABLE = (
     ptyprocess is not None
     and fcntl is not None
     and termios is not None
     and not sys.platform.startswith("win")
 )
+_PTY_AVAILABLE = _POSIX_PTY_AVAILABLE
 
 
 def _pty_unavailable_message() -> str:
@@ -96,33 +93,35 @@ class PtyUnavailableError(RuntimeError):
     """Raised when a PTY cannot be created on this platform.
 
     Today this means native Windows (no ConPTY bindings) or a dev
-    environment missing the ``ptyprocess`` dependency.  The dashboard
+    environment missing the ptyprocess dependency.  The dashboard
     surfaces the message to the user as a chat-tab banner.
     """
 
 
-class PtyBridge:
-    """Thin wrapper around ``ptyprocess.PtyProcess`` for byte streaming.
+class _PtyBackend(Protocol):
+    """Byte-oriented backend contract used by PtyBridge."""
 
-    Not thread-safe.  A single bridge is owned by the WebSocket handler
-    that spawned it; the reader runs in an executor thread while writes
-    happen on the event-loop thread.  Both sides are OK because the
-    kernel PTY is the actual synchronization point — we never call
-    :mod:`ptyprocess` methods concurrently, we only call ``os.read`` and
-    ``os.write`` on the master fd, which is safe.
-    """
+    @property
+    def pid(self) -> int: ...
+
+    def is_alive(self) -> bool: ...
+
+    def read(self, timeout: float = 0.2) -> Optional[bytes]: ...
+
+    def write(self, data: bytes) -> None: ...
+
+    def resize(self, cols: int, rows: int) -> None: ...
+
+    def close(self) -> None: ...
+
+
+class _PosixPtyBackend:
+    """POSIX implementation backed by ptyprocess plus raw fd I/O."""
 
     def __init__(self, proc: "ptyprocess.PtyProcess"):  # type: ignore[name-defined]
         self._proc = proc
         self._fd: int = proc.fd
         self._closed = False
-
-    # -- lifecycle --------------------------------------------------------
-
-    @classmethod
-    def is_available(cls) -> bool:
-        """True if a PTY can be spawned on this platform."""
-        return bool(_PTY_AVAILABLE)
 
     @classmethod
     def spawn(
@@ -133,18 +132,10 @@ class PtyBridge:
         env: Optional[dict] = None,
         cols: int = 80,
         rows: int = 24,
-    ) -> "PtyBridge":
-        """Spawn ``argv`` behind a new PTY and return a bridge.
-
-        Raises :class:`PtyUnavailableError` if the platform can't host a
-        PTY.  Raises :class:`FileNotFoundError` or :class:`OSError` for
-        ordinary exec failures (missing binary, bad cwd, etc.).
-        """
-        if not _PTY_AVAILABLE:
-            raise PtyUnavailableError(_pty_unavailable_message())
+    ) -> "_PosixPtyBackend":
         # PTY-hosted programs expect TERM to describe the terminal type.
         # CI often runs without TERM in the parent process, which makes
-        # simple terminal probes like `tput cols` fail before winsize reads.
+        # simple terminal probes like tput cols fail before winsize reads.
         # Preserve explicit caller overrides, but backfill a sensible default
         # when TERM is missing or blank.
         spawn_env = (os.environ.copy() if env is None else env.copy())
@@ -170,19 +161,8 @@ class PtyBridge:
         except Exception:
             return False
 
-    # -- I/O --------------------------------------------------------------
-
     def read(self, timeout: float = 0.2) -> Optional[bytes]:
-        """Read up to 64 KiB of raw bytes from the PTY master.
-
-        Returns:
-            * bytes — zero or more bytes of child output
-            * empty bytes (``b""``) — no data available within ``timeout``
-            * None — child has exited and the master fd is at EOF
-
-        Never blocks longer than ``timeout`` seconds.  Safe to call after
-        :meth:`close`; returns ``None`` in that case.
-        """
+        """Read up to 64 KiB of raw bytes from the PTY master."""
         if self._closed:
             return None
         try:
@@ -220,7 +200,7 @@ class PtyBridge:
             view = view[n:]
 
     def resize(self, cols: int, rows: int) -> None:
-        """Forward a terminal resize to the child via ``TIOCSWINSZ``."""
+        """Forward a terminal resize to the child via TIOCSWINSZ."""
         if self._closed:
             return
         # struct winsize: rows, cols, xpixel, ypixel (all unsigned short)
@@ -230,14 +210,8 @@ class PtyBridge:
         except OSError:
             pass
 
-    # -- teardown ---------------------------------------------------------
-
     def close(self) -> None:
-        """Terminate the child (SIGTERM → 0.5s grace → SIGKILL) and close fds.
-
-        Idempotent.  Reaping the child is important so we don't leak
-        zombies across the lifetime of the dashboard process.
-        """
+        """Terminate the child and close fds. Idempotent."""
         if self._closed:
             return
         self._closed = True
@@ -259,6 +233,90 @@ class PtyBridge:
             self._proc.close(force=True)
         except Exception:
             pass
+
+
+class PtyBridge:
+    """Thin, byte-oriented facade over a platform-specific PTY backend.
+
+    Not thread-safe.  A single bridge is owned by the WebSocket handler
+    that spawned it; the reader runs in an executor thread while writes
+    happen on the event-loop thread.  Backend implementations must preserve
+    the byte-oriented read/write contract used by /api/pty.
+    """
+
+    def __init__(self, backend: _PtyBackend):
+        self._backend = backend
+
+    # -- lifecycle --------------------------------------------------------
+
+    @classmethod
+    def is_available(cls) -> bool:
+        """True if a PTY can be spawned on this platform."""
+        return bool(_PTY_AVAILABLE)
+
+    @classmethod
+    def spawn(
+        cls,
+        argv: Sequence[str],
+        *,
+        cwd: Optional[str] = None,
+        env: Optional[dict] = None,
+        cols: int = 80,
+        rows: int = 24,
+    ) -> "PtyBridge":
+        """Spawn argv behind a new PTY and return a bridge.
+
+        Raises PtyUnavailableError if the platform cannot host a
+        PTY. Raises FileNotFoundError or OSError for ordinary exec failures
+        such as a missing binary or bad cwd.
+        """
+        if not _PTY_AVAILABLE:
+            raise PtyUnavailableError(_pty_unavailable_message())
+
+        backend = _PosixPtyBackend.spawn(
+            argv,
+            cwd=cwd,
+            env=env,
+            cols=cols,
+            rows=rows,
+        )
+        return cls(backend)
+
+    @property
+    def pid(self) -> int:
+        return self._backend.pid
+
+    def is_alive(self) -> bool:
+        return self._backend.is_alive()
+
+    # -- I/O --------------------------------------------------------------
+
+    def read(self, timeout: float = 0.2) -> Optional[bytes]:
+        """Read up to 64 KiB of raw bytes from the PTY master.
+
+        Returns:
+            * bytes — zero or more bytes of child output
+            * empty bytes (b empty) — no data available within timeout
+            * None — child has exited and the master fd is at EOF
+
+        Never blocks longer than timeout seconds. Safe to call after close;
+        returns None in that case.
+        """
+        return self._backend.read(timeout)
+
+    def write(self, data: bytes) -> None:
+        """Write raw bytes to the PTY master (i.e. the child's stdin)."""
+        self._backend.write(data)
+
+    def resize(self, cols: int, rows: int) -> None:
+        """Forward a terminal resize to the child."""
+        self._backend.resize(cols=cols, rows=rows)
+
+    # -- teardown ---------------------------------------------------------
+
+    def close(self) -> None:
+        """Terminate the child and close fds. Idempotent."""
+        self._backend.close()
 
     # Context-manager sugar — handy in tests and ad-hoc scripts.
     def __enter__(self) -> "PtyBridge":
