@@ -373,7 +373,19 @@ def _handle_comment(args: dict, **kw) -> str:
     body = args.get("body")
     if not body or not str(body).strip():
         return tool_error("body is required")
-    author = args.get("author") or os.environ.get("HERMES_PROFILE") or "worker"
+    # Enforce task ownership — comments get injected into other workers'
+    # system prompts as `**author** (timestamp): body`, so a worker
+    # forging a comment on another task can poison the future-worker
+    # context with arbitrary instructions. Mirror what complete, block,
+    # and heartbeat already enforce.
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    # Always derive author from the worker's own runtime identity. The
+    # previous code accepted args["author"] as an override which let a
+    # worker comment as any name (e.g. "hermes-system") and forge a
+    # system-style instruction in the context of the next worker.
+    author = os.environ.get("HERMES_PROFILE") or "worker"
     try:
         kb, conn = _connect()
         try:
@@ -655,13 +667,6 @@ KANBAN_COMMENT_SCHEMA = {
             "body": {
                 "type": "string",
                 "description": "Markdown-supported comment body.",
-            },
-            "author": {
-                "type": "string",
-                "description": (
-                    "Override author name. Defaults to the current "
-                    "profile (HERMES_PROFILE env)."
-                ),
             },
         },
         "required": ["task_id", "body"],
