@@ -450,6 +450,50 @@ class TestSecurityInvariantsAcrossModes(unittest.TestCase):
         self.assertIn("execute_code_available: False", result["output"])
         self.assertIn("delegate_task_available: False", result["output"])
 
+    def test_sandbox_cannot_import_hermes_internals_strict(self):
+        """Sandboxed code must not be able to import hermes-internal packages.
+
+        If the hermes-agent root were on PYTHONPATH, scripts could import
+        tools.approval to bypass the approval system or hermes_cli.auth to
+        read stored credentials.  Only the hermes_tools RPC stub (in tmpdir)
+        should be importable.
+        """
+        code = (
+            "import importlib\n"
+            "for mod in ('hermes_cli', 'hermes_cli.auth', 'agent', "
+            "'gateway', 'tools', 'tools.approval'):\n"
+            "    try:\n"
+            "        importlib.import_module(mod)\n"
+            "        print(f'IMPORTED:{mod}')\n"
+            "    except (ImportError, ModuleNotFoundError):\n"
+            "        print(f'BLOCKED:{mod}')\n"
+        )
+        result = self._run(code, mode="strict")
+        self.assertEqual(result["status"], "success")
+        for mod in ("hermes_cli", "hermes_cli.auth", "agent",
+                     "gateway", "tools", "tools.approval"):
+            self.assertNotIn(f"IMPORTED:{mod}", result["output"],
+                             f"Sandbox was able to import {mod}")
+
+    def test_sandbox_cannot_import_hermes_internals_project(self):
+        """CRITICAL: project mode does NOT expose hermes internals either."""
+        code = (
+            "import importlib\n"
+            "for mod in ('hermes_cli', 'hermes_cli.auth', 'agent', "
+            "'gateway', 'tools', 'tools.approval'):\n"
+            "    try:\n"
+            "        importlib.import_module(mod)\n"
+            "        print(f'IMPORTED:{mod}')\n"
+            "    except (ImportError, ModuleNotFoundError):\n"
+            "        print(f'BLOCKED:{mod}')\n"
+        )
+        result = self._run(code, mode="project")
+        self.assertEqual(result["status"], "success")
+        for mod in ("hermes_cli", "hermes_cli.auth", "agent",
+                     "gateway", "tools", "tools.approval"):
+            self.assertNotIn(f"IMPORTED:{mod}", result["output"],
+                             f"Sandbox was able to import {mod}")
+
 
 if __name__ == "__main__":
     unittest.main()

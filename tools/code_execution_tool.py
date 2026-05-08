@@ -1033,7 +1033,7 @@ def execute_code(
         # (terminal.env_passthrough) are passed through.
         _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
                               "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
-                              "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA",
+                              "XDG_", "VIRTUAL_ENV", "CONDA",
                               "HERMES_")
         _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
                               "PASSWD", "AUTH")
@@ -1055,13 +1055,13 @@ def execute_code(
                 child_env[k] = v
         child_env["HERMES_RPC_SOCKET"] = sock_path
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
-        # Ensure the hermes-agent root is importable in the sandbox so
-        # repo-root modules are available to child scripts.  We also prepend
-        # the staging tmpdir so ``from hermes_tools import ...`` resolves even
-        # when the subprocess CWD is not tmpdir (project mode).
-        _hermes_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # The hermes_tools.py stub module is in tmpdir, so tmpdir must be on
+        # PYTHONPATH.  The hermes-agent root is deliberately excluded: exposing
+        # it would let sandboxed scripts import internal modules (hermes_cli,
+        # agent, gateway, tools.approval) and bypass credential protection and
+        # the approval system.  See upstream security report.
         _existing_pp = child_env.get("PYTHONPATH", "")
-        _pp_parts = [tmpdir, _hermes_root]
+        _pp_parts = [tmpdir]
         if _existing_pp:
             _pp_parts.append(_existing_pp)
         child_env["PYTHONPATH"] = os.pathsep.join(_pp_parts)
