@@ -14,6 +14,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
+import sqlite3
 import subprocess
 import threading
 import time
@@ -3065,6 +3066,118 @@ def test_legacy_migration_both_columns_already_present(tmp_path):
     row_again = conn.execute("SELECT * FROM tasks WHERE id = 't2'").fetchone()
     assert row_again["consecutive_failures"] == 3
     assert row_again["last_failure_error"] == "new error"
+    conn.close()
+
+
+class _DuplicateColumnRaceConnection:
+    def __init__(self, conn, race_columns: set[tuple[str, str]]):
+        self._conn = conn
+        self._race_columns = set(race_columns)
+
+    def execute(self, sql, *args, **kwargs):
+        normalized = " ".join(str(sql).lower().split())
+        for table, column in list(self._race_columns):
+            prefix = f"alter table {table} add column {column}".lower()
+            if normalized.startswith(prefix):
+                self._race_columns.remove((table, column))
+                self._conn.execute(sql, *args, **kwargs)
+                raise sqlite3.OperationalError(f"duplicate column name: {column}")
+        return self._conn.execute(sql, *args, **kwargs)
+
+
+def test_optional_column_migration_tolerates_duplicate_column_race(tmp_path):
+    """A concurrent migrator may add a column after PRAGMA but before ALTER."""
+    db_path = tmp_path / "duplicate-column-race.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+
+    kb._migrate_add_optional_columns(
+        _DuplicateColumnRaceConnection(conn, {("tasks", "consecutive_failures")})
+    )
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
+    assert "consecutive_failures" in cols
+    conn.close()
+
+
+def test_idempotency_index_created_when_column_wins_race(tmp_path):
+    """Index creation must still run if another process adds the column."""
+    db_path = tmp_path / "idempotency-index-race.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+
+    kb._migrate_add_optional_columns(
+        _DuplicateColumnRaceConnection(conn, {("tasks", "idempotency_key")})
+    )
+
+    indexes = {r[1] for r in conn.execute("PRAGMA index_list(tasks)")}
+    assert "idx_tasks_idempotency" in indexes
+    conn.close()
+
+
+def test_event_run_index_created_when_column_wins_race(tmp_path):
+    """run_id's follow-up index must be ensured on duplicate-column races."""
+    db_path = tmp_path / "event-run-index-race.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+
+    kb._migrate_add_optional_columns(
+        _DuplicateColumnRaceConnection(conn, {("task_events", "run_id")})
+    )
+
+    indexes = {r[1] for r in conn.execute("PRAGMA index_list(task_events)")}
+    assert "idx_events_run" in indexes
     conn.close()
 
 
