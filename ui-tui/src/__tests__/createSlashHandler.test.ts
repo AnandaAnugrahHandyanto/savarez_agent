@@ -26,6 +26,15 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.sys).toHaveBeenCalledWith('ui redrawn')
   })
 
+  it('shows exit notice then exits locally for /quit', async () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/quit')).toBe(true)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('exiting hermes…')
+    await vi.waitFor(() => expect(ctx.session.die).toHaveBeenCalledTimes(1))
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
   it('routes /status to live session.status instead of slash worker', async () => {
     patchUiState({ sid: 'sid-abc' })
     const rpc = vi.fn(() => Promise.resolve({ output: 'Hermes TUI Status' }))
