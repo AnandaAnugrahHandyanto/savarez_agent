@@ -3012,7 +3012,11 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
 
 
 def _read_shared_nous_state() -> Optional[Dict[str, Any]]:
-    """Return the shared Nous OAuth state if present and well-formed."""
+    """Return the shared Nous OAuth state if present and well-formed.
+
+    Unreadable or malformed shared state is treated as unavailable so callers
+    can fall back to the normal device-code path.
+    """
     try:
         path = _nous_shared_store_path()
     except RuntimeError:
