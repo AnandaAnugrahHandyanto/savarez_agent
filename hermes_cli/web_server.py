@@ -915,6 +915,159 @@ def _get_control_plane_safety_preview_payload() -> Dict[str, Any]:
     }
 
 
+_CONTROL_PLANE_COCKPIT_ARTIFACTS = {
+    "gate_d": "gated_latest_run_status.md",
+    "github_watcher_no_agent": "github_watcher_v0_latest_poll_status.md",
+    "supabase_role_boundary": "supabase_obsidian_role_boundary_decision_record.md",
+    "obsidian_merge_review": "obsidian_merge_review_note_creation_result.md",
+}
+
+_CONTROL_PLANE_COCKPIT_SOURCE_REFS = {
+    "gate_d": "artifact://gated_latest_run_status",
+    "github_watcher_no_agent": "artifact://github_watcher_v0_latest_poll_status",
+    "supabase_role_boundary": "artifact://supabase_obsidian_role_boundary_decision_record",
+    "obsidian_merge_review": "artifact://obsidian_merge_review_note_creation_result",
+}
+
+
+def _control_plane_artifacts_dir() -> Path:
+    workdir = _control_plane_workdir()
+    direct = workdir / "artifacts"
+    if direct.exists():
+        return direct
+    nested = workdir / "hermes-control-plane" / "artifacts"
+    if nested.exists():
+        return nested
+    return direct
+
+
+def _safe_read_control_plane_artifact(name: str) -> str:
+    path = _control_plane_artifacts_dir() / name
+    try:
+        if path.stat().st_size > 128_000:
+            return ""
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def _cockpit_boundaries() -> Dict[str, bool]:
+    return {
+        "read_only": True,
+        "action_controls": False,
+        "mutation_controls": False,
+        "telegram_send_enabled": False,
+        "obsidian_authority_edit_enabled": False,
+        "supabase_schema_change_enabled": False,
+        "cron_change_enabled": False,
+    }
+
+
+def _cockpit_disabled() -> Dict[str, Any]:
+    return {
+        "enabled": False,
+        "reason": "control_plane_not_configured",
+        "safe_next_action": "verify control-plane artifact availability or keep observe",
+    }
+
+
+def _classify_cockpit_artifacts() -> Tuple[Dict[str, Dict[str, Any]], List[str]]:
+    texts = {
+        key: _safe_read_control_plane_artifact(filename)
+        for key, filename in _CONTROL_PLANE_COCKPIT_ARTIFACTS.items()
+    }
+    if not any(texts.values()):
+        return {}, list(_CONTROL_PLANE_COCKPIT_ARTIFACTS)
+
+    status_values = {
+        "gate_d": "pass" if "run_status: pass" in texts["gate_d"].lower() else "unknown",
+        "github_watcher_no_agent": "pass" if "status: pass" in texts["github_watcher_no_agent"].lower() else "unknown",
+        "supabase_role_boundary": "recorded" if texts["supabase_role_boundary"] else "missing",
+        "obsidian_merge_review": "complete" if "status: complete" in texts["obsidian_merge_review"].lower() else ("recorded" if texts["obsidian_merge_review"] else "missing"),
+    }
+    summaries = {
+        "gate_d": "Gate D Morning Brief runner artifact is present and read-only.",
+        "github_watcher_no_agent": "GitHub Watcher no-agent artifact is present and read-only.",
+        "supabase_role_boundary": "Supabase/Obsidian role-boundary decision record is present.",
+        "obsidian_merge_review": "Obsidian Merge Review note creation result is present.",
+    }
+    statuses = {
+        key: {
+            "status": value,
+            "safe_summary": summaries[key],
+            "artifact_refs": [f"artifact://{Path(_CONTROL_PLANE_COCKPIT_ARTIFACTS[key]).stem}"],
+        }
+        for key, value in status_values.items()
+    }
+    missing = [key for key, text in texts.items() if not text]
+    return statuses, missing
+
+
+def _get_control_plane_cockpit_summary() -> Dict[str, Any]:
+    statuses, missing = _classify_cockpit_artifacts()
+    if not statuses:
+        return _cockpit_disabled()
+
+    ready = all(
+        panel.get("status") in {"pass", "recorded", "complete"}
+        for panel in statuses.values()
+    )
+    return {
+        "enabled": True,
+        "counts": {
+            "panels": len(_CONTROL_PLANE_COCKPIT_ARTIFACTS),
+            "missing": len(missing),
+        },
+        "status": statuses,
+        "handoff_summary": "Gate D, GitHub Watcher no-agent, Supabase role boundary, and Obsidian Merge Review are exposed as server-side read-only status only.",
+        "safe_next_action": "frontend_api_client_contract_gate" if ready else "observe",
+        "source_refs": list(_CONTROL_PLANE_COCKPIT_SOURCE_REFS.values()),
+        "artifact_refs": [
+            f"artifact://{Path(name).stem}"
+            for name in _CONTROL_PLANE_COCKPIT_ARTIFACTS.values()
+        ],
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
+def _get_control_plane_cockpit_blockers() -> Dict[str, Any]:
+    statuses, missing = _classify_cockpit_artifacts()
+    if not statuses:
+        return _cockpit_disabled()
+
+    blockers = [
+        {
+            "id": f"{key}:artifact_missing",
+            "status": "blocked",
+            "title": key,
+            "detail": "artifact_missing",
+            "safe_next_action": "observe",
+            "artifact_refs": [f"artifact://{Path(_CONTROL_PLANE_COCKPIT_ARTIFACTS[key]).stem}"],
+        }
+        for key in missing
+    ]
+    blockers.extend(
+        {
+            "id": f"{key}:status_{panel.get('status', 'unknown')}",
+            "status": "observe",
+            "title": key,
+            "detail": f"status_{panel.get('status', 'unknown')}",
+            "safe_next_action": "observe",
+            "artifact_refs": panel.get("artifact_refs", []),
+        }
+        for key, panel in statuses.items()
+        if panel.get("status") not in {"pass", "recorded", "complete"}
+        and key not in missing
+    )
+    return {
+        "enabled": True,
+        "blockers": blockers,
+        "boundaries": _cockpit_boundaries(),
+        "safe_next_action": "frontend_api_client_contract_gate" if not blockers else "observe",
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
 def _first_dry_run_target_ref(delivery_events: Any) -> str:
     if not isinstance(delivery_events, list):
         return "telegram://dry-run/hera-198"
@@ -1017,6 +1170,16 @@ def get_control_plane_morning_brief_telegram_preview():
 @app.get("/api/control-plane/morning-brief-canary/safety-preview")
 def get_control_plane_morning_brief_safety_preview():
     return _get_control_plane_safety_preview_payload()
+
+
+@app.get("/api/control-plane/cockpit/summary")
+def get_control_plane_cockpit_summary():
+    return _get_control_plane_cockpit_summary()
+
+
+@app.get("/api/control-plane/cockpit/blockers")
+def get_control_plane_cockpit_blockers():
+    return _get_control_plane_cockpit_blockers()
 
 
 @app.get("/api/status")

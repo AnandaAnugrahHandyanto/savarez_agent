@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
-import { Database, MessageSquareText, RefreshCw, ShieldCheck } from "lucide-react";
+import { Database, Gauge, MessageSquareText, RefreshCw, ShieldCheck } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -10,6 +10,9 @@ import {
   type MorningBriefV0CanaryResponse,
   type MorningBriefTelegramPreviewResponse,
   type MorningBriefSafetyPreviewResponse,
+  type ControlPlaneCockpitBlockersResponse,
+  type ControlPlaneCockpitStatusPanel,
+  type ControlPlaneCockpitSummaryResponse,
 } from "@/lib/api";
 import { usePageHeader } from "@/contexts/usePageHeader";
 
@@ -39,6 +42,40 @@ function BoundaryBadge({ label, value }: { label: string; value?: boolean }) {
   );
 }
 
+function panelTone(panel?: ControlPlaneCockpitStatusPanel): "success" | "warning" | "secondary" | "destructive" {
+  const value = `${panel?.status ?? ""} ${panel?.state ?? ""} ${panel?.last_status ?? ""}`.toLowerCase();
+  if (value.includes("fail") || value.includes("error") || value.includes("blocked")) return "destructive";
+  if (value.includes("hold") || value.includes("observe")) return "warning";
+  if (value.includes("pass") || value.includes("ok") || value.includes("recorded") || value.includes("complete") || panel?.enabled) return "success";
+  return "secondary";
+}
+
+function CockpitPanelSummary({
+  label,
+  panel,
+}: {
+  label: string;
+  panel?: ControlPlaneCockpitStatusPanel;
+}) {
+  return (
+    <div className="rounded-md border border-current/15 p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="text-xs uppercase text-muted-foreground">{label}</p>
+        <Badge tone={panelTone(panel)} className="text-[10px]">
+          {panel?.status ?? panel?.state ?? panel?.last_status ?? "unknown"}
+        </Badge>
+      </div>
+      <p className="normal-case text-sm text-muted-foreground">
+        {panel?.safe_summary ?? "No cockpit summary loaded yet."}
+      </p>
+      <dl className="mt-2 grid gap-1 text-xs text-muted-foreground">
+        <div><dt className="inline uppercase">last</dt>: <dd className="inline">{panel?.last_run_at ?? "-"}</dd></div>
+        <div><dt className="inline uppercase">next</dt>: <dd className="inline">{panel?.next_run_at ?? "-"}</dd></div>
+      </dl>
+    </div>
+  );
+}
+
 export default function ControlPlanePage() {
   const [data, setData] = useState<MorningBriefCanaryResponse | null>(null);
   const [v0Canary, setV0Canary] = useState<MorningBriefV0CanaryResponse | null>(null);
@@ -46,6 +83,10 @@ export default function ControlPlanePage() {
     useState<MorningBriefTelegramPreviewResponse | null>(null);
   const [safetyPreview, setSafetyPreview] =
     useState<MorningBriefSafetyPreviewResponse | null>(null);
+  const [cockpitSummary, setCockpitSummary] =
+    useState<ControlPlaneCockpitSummaryResponse | null>(null);
+  const [cockpitBlockers, setCockpitBlockers] =
+    useState<ControlPlaneCockpitBlockersResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { setAfterTitle, setEnd } = usePageHeader();
@@ -55,6 +96,8 @@ export default function ControlPlanePage() {
     setError(null);
     setTelegramPreview(null);
     setSafetyPreview(null);
+    setCockpitSummary(null);
+    setCockpitBlockers(null);
     setV0Canary(null);
 
     try {
@@ -98,13 +141,38 @@ export default function ControlPlanePage() {
         reason: "safety_preview_unavailable",
         message: "Safety preview unavailable; keep publish/send blocked until verified.",
       });
+    }
+
+    try {
+      const [summary, blockers] = await Promise.all([
+        api.getControlPlaneCockpitSummary(),
+        api.getControlPlaneCockpitBlockers(),
+      ]);
+      setCockpitSummary(summary);
+      setCockpitBlockers(blockers);
+    } catch {
+      setCockpitSummary({
+        enabled: false,
+        reason: "control_plane_cockpit_unavailable",
+        handoff_summary: "Control Plane Cockpit read failed; keep current observe posture.",
+        safe_next_action: "verify backend route status before relying on cockpit summary",
+      });
+      setCockpitBlockers({
+        enabled: false,
+        reason: "control_plane_cockpit_unavailable",
+        blockers: [],
+        safe_next_action: "verify backend route status before relying on cockpit blockers",
+      });
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void refresh();
+    const timer = window.setTimeout(() => {
+      void refresh();
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [refresh]);
 
   useLayoutEffect(() => {
@@ -136,6 +204,9 @@ export default function ControlPlanePage() {
 
   const run = data?.run;
   const boundaries = data?.boundaries ?? {};
+  const cockpitStatus = cockpitSummary?.status ?? {};
+  const cockpitBlockerCount = cockpitBlockers?.blockers?.length ?? 0;
+  const cockpitBoundaryFlags = cockpitBlockers?.boundaries ?? {};
 
   return (
     <div className="flex flex-col gap-4 normal-case">
@@ -165,6 +236,62 @@ export default function ControlPlanePage() {
             <BoundaryBadge label="obsidian authority" value={boundaries.obsidian_authority_edit_enabled} />
             <BoundaryBadge label="cron" value={boundaries.cron_change_enabled} />
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="py-3 px-4">
+          <CardTitle className="flex items-center gap-2 text-sm uppercase">
+            <Gauge className="h-4 w-4" />
+            Control Plane Cockpit
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 p-4 text-sm">
+          {cockpitSummary && !cockpitSummary.enabled && (
+            <div className="rounded-md border border-warning/30 bg-warning/10 p-3">
+              <p className="text-sm font-semibold uppercase text-warning">Cockpit disabled</p>
+              <p className="text-sm text-muted-foreground">
+                {cockpitSummary.reason ?? "control_plane_not_configured"}
+              </p>
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2 uppercase">
+            <Badge tone={cockpitSummary?.enabled === false ? "secondary" : "success"} className="text-[10px]">
+              {cockpitSummary?.enabled === false ? "safe disabled" : "read-only"}
+            </Badge>
+            <Badge tone={cockpitBlockerCount > 0 ? "warning" : "success"} className="text-[10px]">
+              blockers: {cockpitBlockerCount}
+            </Badge>
+            <Badge tone={cockpitBoundaryFlags.action_controls ? "destructive" : "success"} className="text-[10px]">
+              actions: {cockpitBoundaryFlags.action_controls ? "enabled" : "off"}
+            </Badge>
+            <Badge tone={cockpitBoundaryFlags.mutation_controls ? "destructive" : "success"} className="text-[10px]">
+              mutations: {cockpitBoundaryFlags.mutation_controls ? "enabled" : "off"}
+            </Badge>
+          </div>
+          <div className="grid gap-3 xl:grid-cols-4">
+            <CockpitPanelSummary label="Gate D" panel={cockpitStatus.gate_d} />
+            <CockpitPanelSummary label="GitHub Watcher" panel={cockpitStatus.github_watcher_no_agent} />
+            <CockpitPanelSummary label="Supabase Boundary" panel={cockpitStatus.supabase_role_boundary} />
+            <CockpitPanelSummary label="Obsidian Merge Review" panel={cockpitStatus.obsidian_merge_review} />
+          </div>
+          <dl className="grid gap-2 md:grid-cols-2">
+            <div>
+              <dt className="text-xs uppercase text-muted-foreground">handoff summary</dt>
+              <dd className="normal-case text-muted-foreground">
+                {cockpitSummary?.handoff_summary ?? "No cockpit summary loaded yet."}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs uppercase text-muted-foreground">safe next step</dt>
+              <dd className="normal-case text-muted-foreground">
+                {cockpitSummary?.safe_next_action ?? cockpitBlockers?.safe_next_action ?? "Keep observe until verified."}
+              </dd>
+            </div>
+          </dl>
+          <p className="text-xs text-muted-foreground normal-case">
+            Visible read-only cockpit: backend/API readback only; no action controls, no browser-side Supabase access, no public endpoint.
+          </p>
         </CardContent>
       </Card>
 

@@ -432,6 +432,108 @@ class TestWebServerEndpoints:
         assert "postgresql://" not in dumped
         assert "eyj" not in dumped
 
+    def test_control_plane_cockpit_routes_require_session_token_and_are_not_public(self):
+        import hermes_cli.web_server as web_server
+
+        assert "/api/control-plane/cockpit/summary" not in web_server._PUBLIC_API_PATHS
+        assert "/api/control-plane/cockpit/blockers" not in web_server._PUBLIC_API_PATHS
+
+        for path in [
+            "/api/control-plane/cockpit/summary",
+            "/api/control-plane/cockpit/blockers",
+        ]:
+            resp = self.client.get(
+                path,
+                headers={web_server._SESSION_HEADER_NAME: "invalid-token"},
+            )
+            assert resp.status_code == 401
+
+    def test_control_plane_cockpit_returns_safe_disabled_state_when_artifacts_missing(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_CONTROL_PLANE_WORKDIR", str(tmp_path))
+
+        for path in [
+            "/api/control-plane/cockpit/summary",
+            "/api/control-plane/cockpit/blockers",
+        ]:
+            resp = self.client.get(path)
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["enabled"] is False
+            assert data["reason"] == "control_plane_not_configured"
+
+    def test_control_plane_cockpit_summary_returns_browser_safe_status(self, monkeypatch, tmp_path):
+        import json
+
+        artifacts = tmp_path / "artifacts"
+        artifacts.mkdir()
+        (artifacts / "gated_latest_run_status.md").write_text(
+            "run_status: pass\nroutine_id: morning_brief_v0_daily_candidate\ngatec3_verification_result: pass\n",
+            encoding="utf-8",
+        )
+        (artifacts / "github_watcher_v0_latest_poll_status.md").write_text(
+            "status: pass\nerrors: 0\nGitHub mutation: not performed\nraw payload archive: not stored\n",
+            encoding="utf-8",
+        )
+        (artifacts / "supabase_obsidian_role_boundary_decision_record.md").write_text(
+            "Supabase is a supporting control-plane DB; Obsidian remains canonical authority\n",
+            encoding="utf-8",
+        )
+        (artifacts / "obsidian_merge_review_note_creation_result.md").write_text(
+            "Status: complete\nObsidian authority edit: not performed\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_CONTROL_PLANE_WORKDIR", str(tmp_path))
+
+        resp = self.client.get("/api/control-plane/cockpit/summary")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled"] is True
+        assert data["status"]["gate_d"]["status"] == "pass"
+        assert data["status"]["github_watcher_no_agent"]["status"] == "pass"
+        assert data["status"]["supabase_role_boundary"]["status"] == "recorded"
+        assert data["status"]["obsidian_merge_review"]["status"] == "complete"
+        assert data["safe_next_action"] in {"observe", "frontend_api_client_contract_gate"}
+        assert set(data["source_refs"]) == {
+            "artifact://gated_latest_run_status",
+            "artifact://github_watcher_v0_latest_poll_status",
+            "artifact://supabase_obsidian_role_boundary_decision_record",
+            "artifact://obsidian_merge_review_note_creation_result",
+        }
+        dumped = json.dumps(data).lower()
+        for forbidden in [
+            "postgresql" + "://",
+            "service" + "_role",
+            "ey" + "j",
+            "target" + "_ref",
+            "provider" + "_message" + "_ref",
+            "raw payload archive: not stored",
+        ]:
+            assert forbidden not in dumped
+
+    def test_control_plane_cockpit_blockers_returns_no_action_controls(self, monkeypatch, tmp_path):
+        artifacts = tmp_path / "artifacts"
+        artifacts.mkdir()
+        (artifacts / "gated_latest_run_status.md").write_text("run_status: pass\n", encoding="utf-8")
+        (artifacts / "github_watcher_v0_latest_poll_status.md").write_text("status: pass\nerrors: 0\n", encoding="utf-8")
+        (artifacts / "supabase_obsidian_role_boundary_decision_record.md").write_text("supporting control-plane DB\n", encoding="utf-8")
+        (artifacts / "obsidian_merge_review_note_creation_result.md").write_text("Status: complete\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_CONTROL_PLANE_WORKDIR", str(tmp_path))
+
+        resp = self.client.get("/api/control-plane/cockpit/blockers")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled"] is True
+        assert data["blockers"] == []
+        assert data["boundaries"] == {
+            "read_only": True,
+            "action_controls": False,
+            "mutation_controls": False,
+            "telegram_send_enabled": False,
+            "obsidian_authority_edit_enabled": False,
+            "supabase_schema_change_enabled": False,
+            "cron_change_enabled": False,
+        }
+
     def test_control_plane_telegram_preview_requires_session_token(self):
         import hermes_cli.web_server as web_server
 

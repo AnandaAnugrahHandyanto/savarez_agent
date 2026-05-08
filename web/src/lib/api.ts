@@ -75,6 +75,10 @@ export const api = {
     fetchJSON<MorningBriefSafetyPreviewResponse>(
       "/api/control-plane/morning-brief-canary/safety-preview",
     ),
+  getControlPlaneCockpitSummary: () =>
+    fetchJSON<ControlPlaneCockpitSummaryResponse>("/api/control-plane/cockpit/summary"),
+  getControlPlaneCockpitBlockers: () =>
+    fetchJSON<ControlPlaneCockpitBlockersResponse>("/api/control-plane/cockpit/blockers"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -801,6 +805,67 @@ export interface MorningBriefSafetyPreviewResponse {
   boundaries?: MorningBriefCanaryResponse["boundaries"] & {
     webui_mutation_enabled?: boolean;
   };
+}
+
+export interface ControlPlaneCockpitDisabledState {
+  enabled: false;
+  reason: "control_plane_not_configured" | string;
+  message?: string;
+}
+
+export interface ControlPlaneCockpitStatusPanel {
+  status?: string;
+  state?: string;
+  enabled?: boolean;
+  last_status?: string | null;
+  last_run_at?: string | null;
+  next_run_at?: string | null;
+  safe_summary?: string | null;
+  artifact_refs?: string[];
+}
+
+export interface ControlPlaneCockpitSummaryResponse {
+  enabled?: boolean;
+  reason?: string;
+  counts?: Record<string, number>;
+  status?: Record<
+    "gate_d" | "github_watcher_no_agent" | "supabase_role_boundary" | "obsidian_merge_review" | string,
+    ControlPlaneCockpitStatusPanel
+  >;
+  handoff_summary?: string;
+  safe_next_action?: string;
+  source_refs?: string[];
+  artifact_refs?: string[];
+  updated_at?: string;
+}
+
+export interface ControlPlaneCockpitBoundaryFlags {
+  read_only?: boolean;
+  server_side_only?: boolean;
+  session_token_protected?: boolean;
+  public_api_path?: false;
+  browser_side_supabase_secret?: false;
+  direct_browser_to_supabase?: false;
+  action_controls?: false;
+  mutation_controls?: false;
+}
+
+export interface ControlPlaneCockpitBlocker {
+  id: string;
+  status: "blocked" | "hold" | "observe" | "pass" | string;
+  title?: string;
+  detail?: string;
+  safe_next_action?: string;
+  artifact_refs?: string[];
+}
+
+export interface ControlPlaneCockpitBlockersResponse {
+  enabled?: boolean;
+  reason?: string;
+  blockers?: ControlPlaneCockpitBlocker[];
+  boundaries?: ControlPlaneCockpitBoundaryFlags;
+  safe_next_action?: string;
+  updated_at?: string;
 }
 
 // ── Model info types ──────────────────────────────────────────────────

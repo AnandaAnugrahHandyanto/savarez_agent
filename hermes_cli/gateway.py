@@ -1798,11 +1798,19 @@ def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:
         if Path(entry).exists():
             candidates.append(entry)
 
+    def _path_key(path: str) -> str:
+        # WSL can surface the same Windows directory with and without a
+        # trailing slash (for example PowerShell/v1.0 vs PowerShell/v1.0/).
+        # Treat those as the same entry so the gateway service does not keep
+        # rewriting its own systemd unit on every boot.
+        return path.rstrip("/") or path
+
     result: list[str] = []
-    seen = set(path_entries)
+    seen = {_path_key(entry) for entry in path_entries if entry}
     for entry in candidates:
-        if entry and entry not in seen:
-            seen.add(entry)
+        key = _path_key(entry) if entry else ""
+        if entry and key not in seen:
+            seen.add(key)
             result.append(entry)
     return result
 
