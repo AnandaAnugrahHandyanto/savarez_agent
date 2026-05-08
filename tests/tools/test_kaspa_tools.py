@@ -57,13 +57,25 @@ def test_toolset_resolves_kaspa_tools():
         "kasia_indexer_payments_by_receiver",
         "kasia_indexer_payments_by_sender",
         "kasia_indexer_self_stash_by_owner",
+        "kaspa_address_balance",
+        "kaspa_address_name",
+        "kaspa_address_utxo_count",
         "kaspa_api_health",
+        "kns_domain_owner",
+        "kns_primary_name",
+        "kns_search_assets",
     ]
 
 
 def test_tools_are_not_in_core_tools():
     assert "kaspa_api_health" not in _HERMES_CORE_TOOLS
     assert "kasia_indexer_health" not in _HERMES_CORE_TOOLS
+    assert "kaspa_address_balance" not in _HERMES_CORE_TOOLS
+    assert "kaspa_address_name" not in _HERMES_CORE_TOOLS
+    assert "kaspa_address_utxo_count" not in _HERMES_CORE_TOOLS
+    assert "kns_search_assets" not in _HERMES_CORE_TOOLS
+    assert "kns_domain_owner" not in _HERMES_CORE_TOOLS
+    assert "kns_primary_name" not in _HERMES_CORE_TOOLS
 
 
 def test_default_url_behavior_with_env_cleared(monkeypatch):
@@ -311,3 +323,137 @@ def test_kasia_indexer_self_stash_by_owner_uses_scope_and_owner(monkeypatch):
     assert result["ok"] is True
     assert result["items"] == {"stash": []}
     assert seen["url"] == "http://indexer.example/self-stash/by-owner?scope=00&owner=kaspa%3Aqowner"
+
+
+def test_kaspa_address_balance_fetches_balance(monkeypatch):
+    seen = {}
+
+    def fake_urlopen(req, timeout):
+        seen["url"] = req.full_url
+        seen["timeout"] = timeout
+        return FakeResponse(200, b'{"address":"kaspa:qabc","balance":12345}')
+
+    monkeypatch.setattr(kaspa_tools.request, "urlopen", fake_urlopen)
+
+    result = _json(kaspa_tools.kaspa_address_balance({
+        "url": "https://api.example",
+        "address": "kaspa:qabc",
+        "timeout_seconds": 6,
+    }))
+
+    assert result == {
+        "ok": True,
+        "url": "https://api.example",
+        "endpoint": "https://api.example/addresses/kaspa%3Aqabc/balance",
+        "status_code": 200,
+        "balance": {"address": "kaspa:qabc", "balance": 12345},
+    }
+    assert seen == {"url": result["endpoint"], "timeout": 6}
+
+
+def test_kaspa_address_utxo_count_fetches_count(monkeypatch):
+    def fake_urlopen(req, timeout):
+        assert req.full_url == "https://api.example/addresses/kaspa%3Aqabc/utxos/count"
+        return FakeResponse(200, b'{"count":7}')
+
+    monkeypatch.setattr(kaspa_tools.request, "urlopen", fake_urlopen)
+
+    result = _json(kaspa_tools.kaspa_address_utxo_count({
+        "url": "https://api.example",
+        "address": "kaspa:qabc",
+    }))
+
+    assert result["ok"] is True
+    assert result["utxo_count"] == {"count": 7}
+
+
+def test_kaspa_address_name_returns_name_payload(monkeypatch):
+    def fake_urlopen(req, timeout):
+        assert req.full_url == "https://api.example/addresses/kaspa%3Aqabc/name"
+        return FakeResponse(200, b'{"name":"Example"}')
+
+    monkeypatch.setattr(kaspa_tools.request, "urlopen", fake_urlopen)
+
+    result = _json(kaspa_tools.kaspa_address_name({
+        "url": "https://api.example",
+        "address": "kaspa:qabc",
+    }))
+
+    assert result["ok"] is True
+    assert result["name"] == {"name": "Example"}
+
+
+def test_kaspa_address_tools_reject_missing_address():
+    result = _json(kaspa_tools.kaspa_address_balance({"url": "https://api.example"}))
+
+    assert result["ok"] is False
+    assert "address is required" in result["error"]
+
+
+def test_kns_search_assets_encodes_filters(monkeypatch):
+    seen = {}
+
+    def fake_urlopen(req, timeout):
+        seen["url"] = req.full_url
+        seen["timeout"] = timeout
+        return FakeResponse(200, b'{"success":true,"data":{"assets":[]}}')
+
+    monkeypatch.setattr(kaspa_tools.request, "urlopen", fake_urlopen)
+
+    result = _json(kaspa_tools.kns_search_assets({
+        "url": "https://kns.example/mainnet",
+        "asset": "insta.kas",
+        "owner": "kaspa:qowner",
+        "page": 2,
+        "page_size": 50,
+        "sort_order": "ASC",
+        "timeout_seconds": 4,
+    }))
+
+    assert result == {
+        "ok": True,
+        "url": "https://kns.example/mainnet",
+        "endpoint": "https://kns.example/mainnet/api/v1/assets?owner=kaspa%3Aqowner&page=2&asset=insta.kas&sortOrder=ASC&pageSize=50",
+        "status_code": 200,
+        "assets": {"success": True, "data": {"assets": []}},
+    }
+    assert seen == {"url": result["endpoint"], "timeout": 4}
+
+
+def test_kns_domain_owner_quotes_domain(monkeypatch):
+    def fake_urlopen(req, timeout):
+        assert req.full_url == "https://kns.example/mainnet/api/v1/hello.kas/owner"
+        return FakeResponse(200, b'{"success":true,"data":{"owner":"kaspa:qowner"}}')
+
+    monkeypatch.setattr(kaspa_tools.request, "urlopen", fake_urlopen)
+
+    result = _json(kaspa_tools.kns_domain_owner({
+        "url": "https://kns.example/mainnet",
+        "domain": "hello.kas",
+    }))
+
+    assert result["ok"] is True
+    assert result["owner"] == {"success": True, "data": {"owner": "kaspa:qowner"}}
+
+
+def test_kns_primary_name_quotes_address(monkeypatch):
+    def fake_urlopen(req, timeout):
+        assert req.full_url == "https://kns.example/mainnet/api/v1/primary-name/kaspa%3Aqowner"
+        return FakeResponse(200, b'{"success":true,"data":{"domain":{"fullName":"hello.kas"}}}')
+
+    monkeypatch.setattr(kaspa_tools.request, "urlopen", fake_urlopen)
+
+    result = _json(kaspa_tools.kns_primary_name({
+        "url": "https://kns.example/mainnet",
+        "address": "kaspa:qowner",
+    }))
+
+    assert result["ok"] is True
+    assert result["primary_name"] == {"success": True, "data": {"domain": {"fullName": "hello.kas"}}}
+
+
+def test_kns_domain_owner_rejects_missing_domain():
+    result = _json(kaspa_tools.kns_domain_owner({"url": "https://kns.example/mainnet"}))
+
+    assert result["ok"] is False
+    assert "domain is required" in result["error"]
