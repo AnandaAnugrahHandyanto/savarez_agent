@@ -444,6 +444,12 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (isExplicitAction(key, ch, 'd')) {
+      // On non-macOS Ctrl+D is both the platform exit chord and readline
+      // delete-char. Let the focused composer own it while it has text.
+      if (!isMac && key.ctrl && (cState.input || cState.inputBuf.length)) {
+        return
+      }
+
       return actions.die()
     }
 
