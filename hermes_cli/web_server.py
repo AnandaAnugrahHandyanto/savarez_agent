@@ -22,6 +22,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -520,6 +521,30 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
     return False, None
 
 
+def _runtime_status_recently_running(
+    runtime: dict | None,
+    *,
+    max_age_seconds: float = 180.0,
+) -> bool:
+    """Return True when gateway_state.json is a fresh running heartbeat."""
+    if not isinstance(runtime, dict) or runtime.get("gateway_state") != "running":
+        return False
+
+    updated_at = runtime.get("updated_at")
+    if not isinstance(updated_at, str) or not updated_at.strip():
+        return False
+
+    try:
+        stamp = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    age = time.time() - stamp.timestamp()
+    return age <= max_age_seconds
+
+
 @app.get("/api/status")
 async def get_status():
     current_ver, latest_ver = check_config_version()
@@ -561,8 +586,16 @@ async def get_status():
     # Prefer the detailed health endpoint response (has full state) when the
     # local runtime status file is absent or stale (cross-container).
     runtime = read_runtime_status()
-    if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
+    if (
+        runtime is None
+        and remote_health_body
+        and remote_health_body.get("gateway_state")
+    ):
         runtime = remote_health_body
+    if not gateway_running and _runtime_status_recently_running(runtime):
+        gateway_running = True
+        if isinstance(runtime, dict):
+            gateway_pid = runtime.get("pid")
 
     if runtime:
         gateway_state = runtime.get("gateway_state")

@@ -1494,6 +1494,40 @@ class TestStatusRemoteGateway:
         assert data["gateway_running"] is False
         assert data["gateway_health_url"] is None
 
+    def test_status_fresh_runtime_running_without_lock(self, monkeypatch):
+        """Fresh gateway_state.json can prove liveness when lock is not shared."""
+        import gateway.config as gateway_config
+        import hermes_cli.web_server as ws
+
+        now = "2026-05-08T12:00:00+00:00"
+        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(
+            ws,
+            "read_runtime_status",
+            lambda: {
+                "gateway_state": "running",
+                "updated_at": now,
+                "pid": 7,
+                "platforms": {"weixin": {"state": "connected"}},
+            },
+        )
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
+        monkeypatch.setattr(ws.time, "time", lambda: 1778241600.0)
+        monkeypatch.setattr(
+            gateway_config,
+            "load_gateway_config",
+            lambda: (_ for _ in ()).throw(RuntimeError("no gateway config")),
+        )
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is True
+        assert data["gateway_pid"] == 7
+        assert data["gateway_state"] == "running"
+        assert data["gateway_platforms"] == {"weixin": {"state": "connected"}}
+
     def test_status_remote_running_null_pid(self, monkeypatch):
         """Remote gateway running but PID not in response — pid should be None."""
         import hermes_cli.web_server as ws
