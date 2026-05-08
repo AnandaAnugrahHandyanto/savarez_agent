@@ -48,6 +48,7 @@ from hermes_cli.config import (
     redact_key,
 )
 from gateway.status import get_running_pid, read_runtime_status
+from hermes_cli.office_state import build_office_state
 
 try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -518,6 +519,14 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
         except Exception:
             continue
     return False, None
+
+
+@app.get("/api/office/state")
+async def get_office_state(mode: str = "localhost"):
+    """Return the redacted read-only AI OfficeState projection."""
+    if mode != "localhost":
+        raise HTTPException(status_code=400, detail="Unsupported office display mode")
+    return build_office_state(display_mode=mode).to_dict()
 
 
 @app.get("/api/status")

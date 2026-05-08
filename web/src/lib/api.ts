@@ -63,6 +63,7 @@ async function getSessionToken(): Promise<string> {
 
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getOfficeState: () => fetchJSON<OfficeState>("/api/office/state"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -379,6 +380,44 @@ export interface StatusResponse {
   latest_config_version: number;
   release_date: string;
   version: string;
+}
+
+export type OfficeSourceStatus = "ok" | "partial" | "missing" | "unavailable" | "error";
+
+export interface OfficeDataSource {
+  id: string;
+  status: OfficeSourceStatus;
+  checked_at: string;
+  item_count?: number;
+  warning_count?: number;
+  error_summary?: string | null;
+}
+
+export interface OfficeState {
+  schema_version: number;
+  generated_at: string;
+  mode: "read_only";
+  display_mode: string;
+  capabilities: {
+    read_only: boolean;
+    mutations_enabled: boolean;
+    remote_mode: string;
+  };
+  data_sources: OfficeDataSource[];
+  summary: Record<string, number | null | string>;
+  rooms: Array<Record<string, unknown>>;
+  agents: Array<Record<string, unknown>>;
+  work_items: Array<Record<string, unknown>>;
+  automations: Array<Record<string, unknown>>;
+  topics: Array<Record<string, unknown>>;
+  events: Array<Record<string, unknown>>;
+  provenance: Array<Record<string, unknown>>;
+  redactions: {
+    policy_version: number;
+    redacted_field_count: number;
+    omitted_sections: string[];
+    warnings: string[];
+  };
 }
 
 export interface SessionInfo {
