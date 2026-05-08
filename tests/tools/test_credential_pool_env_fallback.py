@@ -109,7 +109,7 @@ class TestCredentialPoolSeedsFromDotEnv:
     def test_dotenv_wins_over_os_environ_for_pool_seed(self, isolated_hermes_home, monkeypatch):
         """Credential pool seeding treats ~/.hermes/.env as authoritative."""
         losing_dotenv_value = "dotenv-sentinel-loses"
-        _write_env_file(isolated_hermes_home, DEEPSEEK_API_KEY=losing_dotenv_value)
+        _write_env_file(isolated_hermes_home, **{"DEEPSEEK_API_KEY": losing_dotenv_value})
         monkeypatch.setenv("DEEPSEEK_API_KEY", "env-sentinel-wins")
 
         from agent.credential_pool import _seed_from_env
