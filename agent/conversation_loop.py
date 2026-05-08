@@ -4072,10 +4072,25 @@ def run_conversation(
                             re.IGNORECASE,
                         )
                     )
+                    # Detect parser-split reasoning (issue #21811): when
+                    # the upstream parser splits thinking into a separate
+                    # ``reasoning_content`` / ``reasoning`` channel, the
+                    # content field is empty AND has no <think> tag (the
+                    # parser already stripped it). Without this guard the
+                    # nudge fires even though the model produced complete
+                    # reasoning — the response just arrived in another
+                    # channel. Affects Ollama qwen3.x, DeepSeek-R1,
+                    # Moonshot, Novita, and any provider with a separate
+                    # reasoning field. Routes to the prefill path below
+                    # (which already handles structured reasoning).
+                    _has_separate_reasoning_channel = _ra()._has_separate_reasoning(
+                        assistant_message
+                    )
                     if (
                         _prior_was_tool
                         and not getattr(agent, "_post_tool_empty_retried", False)
                         and not _has_inline_thinking  # thinking model still working — let prefill handle
+                        and not _has_separate_reasoning_channel  # #21811: parser-split reasoning
                     ):
                         agent._post_tool_empty_retried = True
                         # Clear stale narration so it doesn't resurface
