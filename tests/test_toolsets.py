@@ -105,8 +105,14 @@ class TestResolveToolset:
         tools = resolve_toolset("*")
         assert len(tools) > 10
 
-    def test_minimal_toolset_is_compact_but_useful(self):
-        tools = resolve_toolset("hermes-minimal")
+    def test_minimal_install_reuses_existing_toolset_definitions(self):
+        assert "hermes-minimal" not in TOOLSETS
+        assert "web-search" not in TOOLSETS
+
+        tools = resolve_multiple_toolsets([
+            "skills", "file", "terminal", "todo", "memory",
+            "session_search", "clarify", "web",
+        ])
         assert set(tools) == {
             "skills_list", "skill_view", "skill_manage",
             "read_file", "write_file", "patch", "search_files",
@@ -126,9 +132,6 @@ class TestResolveToolset:
             "execute_code",
         }
         assert excluded.isdisjoint(tools)
-
-    def test_web_search_toolset_is_public_alias_for_web_research_tools(self):
-        assert set(resolve_toolset("web-search")) == {"web_search", "web_extract"}
 
 
 class TestResolveMultipleToolsets:

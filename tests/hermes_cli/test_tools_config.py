@@ -12,9 +12,12 @@ from hermes_cli.tools_config import (
     _reconfigure_provider,
     _get_platform_tools,
     _platform_toolset_summary,
+    _print_tools_list,
     _reconfigure_tool,
     _save_platform_tools,
+    _toolset_allowed_for_platform,
     _toolset_has_keys,
+    _toolset_install_hint,
     _format_toolset_runtime_detail,
     _get_toolset_runtime_status,
     CONFIGURABLE_TOOLSETS,
@@ -840,7 +843,6 @@ def test_discord_toolsets_in_default_off():
 def test_discord_toolsets_not_available_on_other_platforms():
     """Platform-scoping: discord / discord_admin should not appear on CLI,
     Telegram, etc. — not even as an opt-in."""
-    from hermes_cli.tools_config import _toolset_allowed_for_platform
     for plat in ["cli", "telegram", "slack", "whatsapp", "signal"]:
         assert not _toolset_allowed_for_platform("discord", plat), (
             f"`discord` toolset leaked onto {plat}"
@@ -851,6 +853,27 @@ def test_discord_toolsets_not_available_on_other_platforms():
     assert _toolset_allowed_for_platform("discord", "discord")
     assert _toolset_allowed_for_platform("discord_admin", "discord")
 
+
+def test_yuanbao_toolset_only_available_on_yuanbao_platform():
+    """Yuanbao is a platform/session-specific toolset, not a CLI option."""
+    for plat in ["cli", "telegram", "discord", "slack", "whatsapp", "signal"]:
+        assert not _toolset_allowed_for_platform("yuanbao", plat), (
+            f"`yuanbao` toolset leaked onto {plat}"
+        )
+    assert _toolset_allowed_for_platform("yuanbao", "yuanbao")
+
+
+def test_core_toolsets_do_not_advertise_install_feature_hints():
+    """file/terminal are base toolsets, not optional install-feature bundles."""
+    assert _toolset_install_hint("file") is None
+    assert _toolset_install_hint("terminal") is None
+    assert _toolset_install_hint("web") == "web-search"
+
+
+def test_tools_list_filters_yuanbao_from_cli(capsys):
+    _print_tools_list({"web"}, {}, platform="cli")
+    out = capsys.readouterr().out
+    assert "yuanbao" not in out
 
 def test_discord_toolsets_user_enabled_are_honored():
     """When the user opts in via `hermes tools`, the toolset appears."""

@@ -2595,6 +2595,18 @@ def setup_tools(config: dict, first_install: bool = False):
     tools_command(first_install=first_install, config=config)
 
 
+_MINIMAL_INSTALL_TOOLSETS = [
+    "skills",
+    "file",
+    "terminal",
+    "todo",
+    "memory",
+    "session_search",
+    "clarify",
+    "web",
+]
+
+
 def _normalize_install_option(requested_option: str | None) -> str | None:
     """Return the canonical install option name used in config.yaml."""
     if not requested_option:
@@ -2626,8 +2638,8 @@ def _apply_install_option_defaults(config: dict, requested_option: str) -> None:
 
     config["install_option"] = requested_option
     if requested_option in {"minimal", "minimalTUI"}:
-        config["toolsets"] = ["hermes-minimal"]
-        config.setdefault("platform_toolsets", {})["cli"] = ["hermes-minimal"]
+        config["toolsets"] = list(_MINIMAL_INSTALL_TOOLSETS)
+        config.setdefault("platform_toolsets", {})["cli"] = list(_MINIMAL_INSTALL_TOOLSETS)
     elif requested_option == "default":
         config["toolsets"] = ["hermes-cli"]
         config.setdefault("platform_toolsets", {})["cli"] = ["hermes-cli"]
@@ -3168,7 +3180,11 @@ def run_setup_wizard(args):
         else:
             print_header("Minimal Setup")
             print_info("Configuring the provider and model required for classic CLI chat.")
-        print_info("The compact Hermes toolset is enabled by default; tool configuration is optional.")
+        print_info(
+            "Compact defaults enable the existing skills, file, terminal, todo, "
+            "memory, session_search, clarify, and web toolsets; tool configuration "
+            "is optional."
+        )
         setup_model_provider(config, quick=True)
         save_config(config)
         _offer_tool_configuration(config, first_install=True, default=False)

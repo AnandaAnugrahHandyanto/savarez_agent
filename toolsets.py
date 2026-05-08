@@ -26,22 +26,6 @@ Usage:
 from typing import List, Dict, Any, Set, Optional
 
 
-# Bare-minimum tool list for a fresh minimal install.  These tools have no
-# heavyweight runtime dependencies and keep the default schema small while still
-# giving the agent useful local-file, shell, memory, recall, and web-research
-# capabilities.
-_HERMES_MINIMAL_TOOLS = [
-    # Skills
-    "skills_list", "skill_view", "skill_manage",
-    # File manipulation
-    "read_file", "write_file", "patch", "search_files",
-    # Terminal + process management
-    "terminal", "process",
-    # Planning, memory, and recall
-    "todo", "memory", "session_search", "clarify",
-    # Web search/extraction
-    "web_search", "web_extract",
-]
 
 # Shared legacy/full tool list for CLI and all messaging platform toolsets.
 # Edit this once to update all platforms simultaneously.
@@ -93,12 +77,6 @@ TOOLSETS = {
         "description": "Web research and content extraction tools",
         "tools": ["web_search", "web_extract"],
         "includes": []  # No other toolsets included
-    },
-
-    "web-search": {
-        "description": "Alias for web research/search extraction tools; distinct from dashboard web server dependencies",
-        "tools": ["web_search", "web_extract"],
-        "includes": []
     },
     
     "search": {
@@ -376,12 +354,6 @@ TOOLSETS = {
         "includes": []
     },
     
-    "hermes-minimal": {
-        "description": "Bare minimum Hermes toolset: skills and minimal interaction helpers only",
-        "tools": _HERMES_MINIMAL_TOOLS,
-        "includes": []
-    },
-
     "hermes-cli": {
         "description": "Full interactive CLI toolset - all default tools plus cronjob management",
         "tools": _HERMES_CORE_TOOLS,

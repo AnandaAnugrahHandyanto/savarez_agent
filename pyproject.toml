@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-minimal = []
+minimal = ["hermes-agent[cli]"]
 standard = ["hermes-agent[cron]", "hermes-agent[cli]", "hermes-agent[pty]", "hermes-agent[mcp]", "hermes-agent[honcho]", "hermes-agent[acp]"]
 web-search = ["exa-py>=2.9.0,<3", "firecrawl-py>=4.16.0,<5", "parallel-web>=0.4.2,<1"]
 browser = ["websockets>=13.0,<16"]

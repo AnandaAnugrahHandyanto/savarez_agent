@@ -91,6 +91,7 @@ _DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "di
 _TOOLSET_PLATFORM_RESTRICTIONS: Dict[str, Set[str]] = {
     "discord": {"discord"},
     "discord_admin": {"discord"},
+    "yuanbao": {"yuanbao"},
 }
 
 
@@ -197,8 +198,6 @@ _TOOLSET_INSTALL_FEATURE_HINTS = {
     "image_gen": "image-gen",
     "tts": "tts",
     "cronjob": "cron",
-    "terminal": "terminal",
-    "file": "file",
 }
 
 
@@ -2714,6 +2713,7 @@ def tools_disable_enable_command(args):
     successful = [
         t for t in targets
         if t not in unknown_toolsets
+        and t not in restricted_targets
         and t not in unavailable_toolsets
         and (":" not in t or t.split(":")[0] not in failed_servers)
     ]

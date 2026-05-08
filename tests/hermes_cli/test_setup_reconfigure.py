@@ -265,7 +265,10 @@ class TestInstallOptionToolSetup:
             mocks["model"].assert_called_once_with(config, quick=True)
             mocks["tools"].assert_called_once_with(config, first_install=True)
             assert config["install_option"] == "minimal"
-            assert config["platform_toolsets"]["cli"] == ["hermes-minimal"]
+            assert config["platform_toolsets"]["cli"] == [
+                "skills", "file", "terminal", "todo", "memory",
+                "session_search", "clarify", "web",
+            ]
             assert any(
                 "Configure CLI tools now" in call.args[0]
                 for call in mocks["yes_no"].call_args_list
@@ -300,7 +303,10 @@ class TestInstallOptionToolSetup:
             mocks["model"].assert_not_called()
             tools_mock.assert_called_once_with(config)
             assert config["install_option"] == "minimal"
-            assert config["platform_toolsets"]["cli"] == ["hermes-minimal"]
+            assert config["platform_toolsets"]["cli"] == [
+                "skills", "file", "terminal", "todo", "memory",
+                "session_search", "clarify", "web",
+            ]
 
     def test_standard_quick_setup_offers_tool_configuration(self, fresh_install):
         config = {"install_option": "standard"}

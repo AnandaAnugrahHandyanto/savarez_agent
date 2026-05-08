@@ -59,7 +59,8 @@ def test_pyproject_defines_install_option_and_feature_extras() -> None:
     ]:
         assert name in extras
 
-    assert extras["minimal"] == []
+    assert extras["minimal"] == ["hermes-agent[cli]"]
+    assert any(dep.startswith("simple-term-menu") for dep in extras["cli"])
     assert any(dep.startswith("exa-py") for dep in extras["web-search"])
     assert any(dep.startswith("firecrawl-py") for dep in extras["web-search"])
     assert any(dep.startswith("parallel-web") for dep in extras["web-search"])
@@ -91,10 +92,11 @@ def test_install_script_defaults_to_default_full_and_custom_minimal_extras() -> 
 
 def test_install_script_public_features_and_hidden_web_alias() -> None:
     text = INSTALL_SH.read_text()
-    assert "Valid features: browser, tts, voice, dashboard, tui, gateway, web-search, image-gen, cron, file, terminal, all" in text
+    assert "Valid features: browser, tts, voice, dashboard, tui, gateway, web-search, image-gen, cron, all" in text
     assert "--with web is deprecated; using --with dashboard instead" in text
-    assert "web-search, image-gen, cron, file, terminal, all" in text
+    assert "web-search, image-gen, cron, all" in text
     assert "browser, tts, voice, dashboard, tui, gateway," in text
+    assert "file, terminal" not in text
     assert "web feature" not in text.lower()
 
 
@@ -182,7 +184,9 @@ def test_setup_install_option_accepts_minimal_tui_alias(tmp_path) -> None:
     assert result.returncode == 0, output
     config_text = (Path(env["HERMES_HOME"]) / "config.yaml").read_text()
     assert "install_option: minimalTUI" in config_text
-    assert "hermes-minimal" in config_text
+    assert "hermes-minimal" not in config_text
+    for toolset in ["skills", "file", "terminal", "todo", "memory", "session_search", "clarify", "web"]:
+        assert f"- {toolset}" in config_text
 
 
 def test_install_option_flag_can_be_combined_with_named_hermes_profile(tmp_path) -> None:

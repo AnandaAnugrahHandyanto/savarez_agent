@@ -9,7 +9,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-05-01T13:54:47.953664655Z"
+exclude-newer = "2026-05-01T22:57:05.227576989Z"
 exclude-newer-span = "P7D"
 
 [[package]]
@@ -2094,6 +2094,9 @@ messaging = [
     { name = "slack-bolt" },
     { name = "slack-sdk" },
 ]
+minimal = [
+    { name = "simple-term-menu" },
+]
 mistral = [
     { name = "mistralai" },
 ]
@@ -2168,6 +2171,9 @@ termux-all = [
     { name = "slack-sdk" },
     { name = "uvicorn", extra = ["standard"] },
 ]
+termux-minimal = [
+    { name = "simple-term-menu" },
+]
 tts = [
     { name = "edge-tts" },
 ]
@@ -2232,6 +2238,7 @@ requires-dist = [
     { name = "hermes-agent", extras = ["bedrock"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["browser"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["cli"], marker = "extra == 'all'" },
+    { name = "hermes-agent", extras = ["cli"], marker = "extra == 'minimal'" },
     { name = "hermes-agent", extras = ["cli"], marker = "extra == 'standard'" },
     { name = "hermes-agent", extras = ["cli"], marker = "extra == 'termux'" },
     { name = "hermes-agent", extras = ["cron"], marker = "extra == 'all'" },

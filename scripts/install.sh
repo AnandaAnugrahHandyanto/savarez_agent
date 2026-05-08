@@ -161,7 +161,7 @@ while [[ $# -gt 0 ]]; do
         --with)
             if [ -z "${2:-}" ]; then
                 echo "Missing value for --with"
-                echo "Valid features: browser, tts, voice, dashboard, tui, gateway, web-search, image-gen, cron, file, terminal, all"
+                echo "Valid features: browser, tts, voice, dashboard, tui, gateway, web-search, image-gen, cron, all"
                 exit 1
             fi
             IFS=',' read -ra _features <<< "$2"
@@ -169,7 +169,7 @@ while [[ $# -gt 0 ]]; do
                 _feature="${_feature//[[:space:]]/}"
                 [ -z "$_feature" ] && continue
                 case "$_feature" in
-                    browser|tts|voice|dashboard|tui|gateway|web-search|image-gen|cron|file|terminal|all)
+                    browser|tts|voice|dashboard|tui|gateway|web-search|image-gen|cron|all)
                         WITH_FEATURES+=("$_feature")
                         ;;
                     web)
@@ -178,7 +178,7 @@ while [[ $# -gt 0 ]]; do
                         ;;
                     *)
                         echo "Unknown --with feature: $_feature"
-                        echo "Valid features: browser, tts, voice, dashboard, tui, gateway, web-search, image-gen, cron, file, terminal, all"
+                        echo "Valid features: browser, tts, voice, dashboard, tui, gateway, web-search, image-gen, cron, all"
                         exit 1
                         ;;
                 esac
@@ -201,7 +201,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --full         Backward-compatible alias for --install-option default"
             echo "  --with LIST    Add optional features to a custom/minimal install (comma-separated):"
             echo "                 browser, tts, voice, dashboard, tui, gateway,"
-            echo "                 web-search, image-gen, cron, file, terminal, all"
+            echo "                 web-search, image-gen, cron, all"
             echo "  --dir PATH     Installation directory"
             echo "                   default (non-root):  ~/.hermes/hermes-agent"
             echo "                   default (root, Linux): /usr/local/lib/hermes-agent"
@@ -314,12 +314,12 @@ option_includes_feature() {
             ;;
         minimalTUI)
             case "$feature" in
-                web-search|file|terminal|tui) return 0 ;;
+                web-search|tui) return 0 ;;
             esac
             ;;
         minimal)
             case "$feature" in
-                web-search|file|terminal) return 0 ;;
+                web-search) return 0 ;;
             esac
             ;;
     esac
