@@ -1,7 +1,7 @@
 ---
 name: model-selection
-description: "Guide for picking which AI model Hermes should use. Default + automatic fallback are configured in environment/config; this skill is for cases where the user explicitly asks for a different model, or when a task warrants a deliberate switch (e.g. escalation to Opus)."
-version: 1.0.0
+description: "Guide for picking which AI model Hermes should use. Default + automatic fallback are configured in environment/config; this skill is for cases where the user explicitly asks for a different model, or when a task warrants a deliberate switch (e.g. escalation to Sonnet for quality, or to Opus for hard reasoning)."
+version: 1.1.0
 author: Gordon Rouse
 license: MIT
 metadata:
@@ -13,9 +13,11 @@ metadata:
 
 ## Default behavior — no skill action needed
 
-On every container start, the entrypoint enforces `model.default = anthropic/claude-sonnet-4.6` (set via `HERMES_ENFORCED_MODEL` Railway env var).
+On every container start, the entrypoint enforces `model.default = MiniMax-M2.7` (set via `HERMES_ENFORCED_MODEL` Railway env var). MiniMax is paid per-token via the configured base URL — bulk-friendly, doesn't touch Pro/Max quota.
 
-`fallback_providers` in `~/.hermes/config.yaml` is configured to fall back to MiniMax-M2.7 (OpenRouter) automatically if the primary provider fails — rate limit hit, OAuth expired, 5xx error, connection timeout. The fallback is **silent**: no user-visible message, just keeps answering. Switch happens inside `agent/run_agent.py`'s fallback loop.
+`fallback_providers` in `~/.hermes/config.yaml` is configured to fall back to **Sonnet 4.6 (Anthropic OAuth)** automatically if MiniMax fails — rate limit hit, 5xx error, connection timeout. The fallback is **silent**: no user-visible message, just keeps answering. Switch happens inside `agent/run_agent.py`'s fallback loop.
+
+`auxiliary.compression.{provider,model}` is pinned to `gemini` / `gemini-3-flash` (using `GEMINI_API_KEY`). Compaction uses Gemini's large context window, so summarization is robust regardless of which main model is active — even after a fallback to a smaller-context model, compaction still succeeds.
 
 Don't invoke this skill for routine work. The default + auto-fallback handles it.
 
@@ -25,22 +27,23 @@ Use `/model <name>` (session-scoped) when:
 
 | Situation | Action |
 |---|---|
-| User says "use Claude" / "use Sonnet" | already default — confirm and continue |
+| User says "use Claude" / "use Sonnet" / "use better model" | `/model anthropic/claude-sonnet-4.6` |
 | User says "use Opus" / "use the smartest model" / "think harder about this" | `/model anthropic/claude-opus-4.6` |
-| User says "use MiniMax" / "stop using Anthropic" / "save my Pro/Max quota" | `/model MiniMax-M2.7` |
-| You've gotten Sonnet wrong twice on the same hard problem | escalate: `/model anthropic/claude-opus-4.6`, retry |
-| Multi-step planning across an unfamiliar domain, where mistakes cost real time | escalate to Opus before starting |
-| Bulk processing (many similar tasks, e.g. processing a long list) | step down to MiniMax to preserve Pro/Max quota |
+| User says "use MiniMax" / "go back to default" | `/model MiniMax-M2.7` |
+| You've gotten MiniMax wrong twice on the same problem | escalate: `/model anthropic/claude-sonnet-4.6`, retry |
+| You've gotten Sonnet wrong twice on the same hard problem | escalate further: `/model anthropic/claude-opus-4.6`, retry |
+| Multi-step planning across an unfamiliar domain, where mistakes cost real time | escalate to Sonnet (or Opus) before starting |
+| User explicitly asks for a careful answer / important decision / nuanced judgment | escalate to Sonnet or Opus |
 
-Don't escalate to Opus for routine chat, simple lookups, format conversions, or tasks Sonnet handled correctly. Opus burns Pro/Max quota faster — use it deliberately.
+Don't escalate to Opus for routine chat, simple lookups, format conversions, or tasks Sonnet/MiniMax handled correctly. Opus burns Pro/Max quota the fastest — use it deliberately.
 
 ## Model identifiers
 
 | Model | Identifier | Auth | Context | Notes |
 |---|---|---|---|---|
-| Sonnet 4.6 (default) | `anthropic/claude-sonnet-4.6` | Claude Pro/Max OAuth (`~/.claude/.credentials.json`) | 1M tokens | Best general balance |
-| Opus 4.6 | `anthropic/claude-opus-4.6` | same OAuth | 1M tokens | Smartest; quota burns faster |
-| MiniMax-M2.7 | `MiniMax-M2.7` | OpenRouter (`OPENROUTER_API_KEY`) | 1M tokens | Paid per-token; resilient floor |
+| MiniMax-M2.7 (default) | `MiniMax-M2.7` | base_url (paid per-token) | 200K tokens | Bulk-friendly, no Pro/Max quota touched |
+| Sonnet 4.6 (auto-fallback) | `anthropic/claude-sonnet-4.6` | Claude Pro/Max OAuth (`~/.claude/.credentials.json`) | 1M tokens | Best general balance; bills Pro/Max |
+| Opus 4.6 (manual only) | `anthropic/claude-opus-4.6` | same OAuth | 1M tokens | Smartest; Pro/Max quota burns fastest |
 
 ## Switching mechanics
 
@@ -51,10 +54,10 @@ Don't escalate to Opus for routine chat, simple lookups, format conversions, or 
 
 ## Mid-conversation switch — what to expect
 
-Switching to a model with a **smaller context window** (currently moot — all three are 1M, but if a smaller-context model is added later) triggers `agent/context_compressor.py` on the next request. It summarizes middle turns to fit the new window, preserving system prompt + first 3 turns + last ~20 messages. Older middle detail becomes lossy.
+Switching from a large-context model (Sonnet/Opus, 1M) down to MiniMax (200K) only triggers compression if the conversation has actually grown past ~170K tokens. For everyday chat, that's never. When it does fire, the compressor uses **Gemini 3 Flash** to summarize middle turns, preserving system prompt + first 3 turns + last ~20 messages. Older middle detail gets a lossy summary, not deletion.
 
-Switching **upward** in context is free.
+Switching **upward** in context is free — no compression needed.
 
 ## When a fallback fires
 
-You won't see it directly — the agent loop swallows the failure and retries with the next provider in `fallback_providers`. If you suspect Anthropic is down or rate-limited, check `/opt/data/logs/agent.log` for `fallback_activated` lines. Don't apologize to the user about a fallback that worked; only surface it if the *fallback also failed* and the request errored visibly.
+You won't see it directly — the agent loop swallows the failure and retries with Sonnet. If you suspect MiniMax is down or rate-limited, check `/opt/data/logs/agent.log` for `fallback_activated` lines. Don't apologize to the user about a fallback that worked; only surface it if the *fallback also failed* and the request errored visibly.

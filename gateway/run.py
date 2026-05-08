@@ -12081,20 +12081,22 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if runner.exit_code is not None:
         raise SystemExit(runner.exit_code)
 
-    # When a signal (SIGTERM/SIGINT) caused the shutdown and it wasn't a
-    # planned restart (/restart, /update, SIGUSR1), exit non-zero so
-    # systemd's Restart=on-failure revives the process.  This covers:
-    #   - hermes update killing the gateway mid-work
-    #   - External kill commands
-    #   - WSL2/container runtime sending unexpected signals
-    # systemctl stop is safe: systemd tracks "stop requested" state
-    # independently of exit code, so Restart= never fires for it.
+    # SIGTERM/SIGINT-driven shutdowns exit cleanly. On Railway, the
+    # platform's restart policy revives the container regardless of exit
+    # code, so non-zero exits serve no purpose here — they only cause
+    # spurious "Deploy Crashed!" notifications on every env-var change,
+    # dashboard redeploy, self-restart, and self-rebuild. Real crashes
+    # (uncaught exceptions, OOM, segfault) still produce non-zero exits
+    # via Python's normal error path; this branch only governs *clean*
+    # signal-driven shutdowns. (For systemd-hosted Hermes installs that
+    # rely on Restart=on-failure semantics, a future env var could
+    # restore exit-1 behavior — but Railway is the only deployment
+    # target here today.)
     if _signal_initiated_shutdown and not runner._restart_requested:
         logger.info(
-            "Exiting with code 1 (signal-initiated shutdown without restart "
-            "request) so systemd Restart=on-failure can revive the gateway."
+            "Exiting cleanly (signal-initiated shutdown). Railway restart "
+            "policy will revive the container if needed."
         )
-        return False  # → sys.exit(1) in the caller
 
     return True
 
