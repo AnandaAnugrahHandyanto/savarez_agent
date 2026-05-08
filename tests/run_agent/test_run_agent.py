@@ -52,6 +52,63 @@ def test_is_destructive_command_treats_install_as_mutating():
     assert run_agent._is_destructive_command("install template.env .env") is True
 
 
+def test_codex_checkpoint_reason_extracts_direct_prompt(tmp_path):
+    cmd = "codex exec --sandbox workspace-write 'Implement checkpoint label handling'"
+
+    with patch(
+        "run_agent.subprocess.run",
+        return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+    ):
+        reason = run_agent._codex_terminal_checkpoint_reason(cmd, str(tmp_path))
+
+    assert (
+        reason
+        == "clean worktree before codex ***implement checkpoint label handling*** plan implementation"
+    )
+
+
+def test_codex_checkpoint_reason_prefers_wrapper_prompt_file(tmp_path):
+    prompt_file = tmp_path / ".hermes" / "codex-prompts" / "slice.txt"
+    prompt_file.parent.mkdir(parents=True)
+    prompt_file.write_text(
+        "# Task\n\n- Checkpoint-label plan implementation for rollback labels.\n",
+        encoding="utf-8",
+    )
+    cmd = (
+        "python - <<'PY'\n"
+        "from pathlib import Path\n"
+        "import subprocess\n"
+        "prompt = Path('.hermes/codex-prompts/slice.txt').read_text()\n"
+        "subprocess.run(['codex', 'exec', '--sandbox', 'workspace-write', prompt])\n"
+        "PY"
+    )
+
+    with patch(
+        "run_agent.subprocess.run",
+        return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+    ):
+        reason = run_agent._codex_terminal_checkpoint_reason(cmd, str(tmp_path))
+
+    assert (
+        reason
+        == "clean worktree before codex ***checkpoint-label plan implementation for rollback labels*** plan implementation"
+    )
+    assert ".hermes/codex-prompts/slice.txt" not in reason
+
+
+def test_codex_checkpoint_reason_falls_back_without_prompt(tmp_path):
+    with patch(
+        "run_agent.subprocess.run",
+        return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+    ):
+        reason = run_agent._codex_terminal_checkpoint_reason(
+            "codex exec --sandbox workspace-write",
+            str(tmp_path),
+        )
+
+    assert reason == "clean worktree before codex task"
+
+
 @pytest.fixture()
 def agent():
     """Minimal AIAgent with mocked OpenAI client and tool loading."""
@@ -2275,6 +2332,76 @@ class TestConcurrentToolExecution:
         assert "src/other.ts" not in reason
         assert "old" not in reason
         assert "new" not in reason
+
+    def test_sequential_terminal_codex_checkpoint_reason_describes_task(self, agent, tmp_path):
+        command = "codex exec --sandbox workspace-write 'Implement rollback checkpoint labels'"
+        tool_call = _mock_tool_call(
+            name="terminal",
+            arguments=json.dumps({"command": command, "workdir": str(tmp_path)}),
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.ensure_checkpoint = MagicMock(return_value=True)
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success": true}'),
+            patch(
+                "run_agent.subprocess.run",
+                return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+            ),
+        ):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        agent._checkpoint_mgr.ensure_checkpoint.assert_called_once_with(
+            str(tmp_path),
+            "clean worktree before codex ***implement rollback checkpoint labels*** plan implementation",
+        )
+        reason = agent._checkpoint_mgr.ensure_checkpoint.call_args.args[1]
+        assert command not in reason
+
+    def test_concurrent_terminal_codex_checkpoint_reason_reads_prompt_file(self, agent, tmp_path):
+        prompt_file = tmp_path / ".hermes" / "codex-prompts" / "slice.txt"
+        prompt_file.parent.mkdir(parents=True)
+        prompt_file.write_text(
+            "Checkpoint-label plan implementation\n\nUse semantic rollback labels.",
+            encoding="utf-8",
+        )
+        command = (
+            "python - <<'PY'\n"
+            "from pathlib import Path\n"
+            "import subprocess\n"
+            "prompt = Path('.hermes/codex-prompts/slice.txt').read_text()\n"
+            "subprocess.run(['codex', 'exec', '--sandbox', 'workspace-write', prompt])\n"
+            "PY"
+        )
+        tool_call = _mock_tool_call(
+            name="terminal",
+            arguments=json.dumps({"command": command, "workdir": str(tmp_path)}),
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.ensure_checkpoint = MagicMock(return_value=True)
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success": true}'),
+            patch(
+                "run_agent.subprocess.run",
+                return_value=SimpleNamespace(returncode=0, stdout=" M run_agent.py\n", stderr=""),
+            ),
+        ):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        agent._checkpoint_mgr.ensure_checkpoint.assert_called_once_with(
+            str(tmp_path),
+            "dirty worktree (1 changed) before codex ***checkpoint-label*** plan implementation",
+        )
+        reason = agent._checkpoint_mgr.ensure_checkpoint.call_args.args[1]
+        assert ".hermes/codex-prompts/slice.txt" not in reason
+        assert command not in reason
 
     def test_invoke_tool_handles_agent_level_tools(self, agent):
         """_invoke_tool should handle todo tool directly."""
