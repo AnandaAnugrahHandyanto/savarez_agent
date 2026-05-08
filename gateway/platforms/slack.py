@@ -283,8 +283,22 @@ class SlackAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
 
+    # Singleton instance tracking (mirrors YuanbaoAdapter pattern)
+    _active_instance: Optional["SlackAdapter"] = None
+
+    @classmethod
+    def get_active(cls) -> Optional["SlackAdapter"]:
+        """Return the currently-connected SlackAdapter instance (singleton)."""
+        return cls._active_instance
+
+    @classmethod
+    def set_active(cls, adapter: Optional["SlackAdapter"]) -> None:
+        """Set the currently-active SlackAdapter instance."""
+        cls._active_instance = adapter
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SLACK)
+        SlackAdapter.set_active(self)
         self._app: Optional[Any] = None
         self._handler: Optional[Any] = None
         self._bot_user_id: Optional[str] = None
@@ -651,6 +665,7 @@ class SlackAdapter(BasePlatformAdapter):
             self._socket_mode_task = asyncio.create_task(self._handler.start_async())
 
             self._running = True
+            SlackAdapter.set_active(self)
             logger.info(
                 "[Slack] Socket Mode connected (%d workspace(s))",
                 len(self._team_clients),
@@ -672,6 +687,7 @@ class SlackAdapter(BasePlatformAdapter):
             except Exception as e:  # pragma: no cover - defensive logging
                 logger.warning("[Slack] Error while closing Socket Mode handler: %s", e, exc_info=True)
         self._running = False
+        SlackAdapter.set_active(None)
 
         self._release_platform_lock()
 
@@ -2909,3 +2925,57 @@ class SlackAdapter(BasePlatformAdapter):
         if s:
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
+
+
+# --- Module-level helpers (singleton accessor + direct sender) ---
+
+def get_active_adapter() -> Optional["SlackAdapter"]:
+    """Return the currently-active SlackAdapter instance (singleton)."""
+    return SlackAdapter.get_active()
+
+
+async def send_slack_direct(
+    adapter: "SlackAdapter",
+    chat_id: str,
+    message: str,
+    media_files: Optional[List[Tuple[str, bool]]] = None,
+) -> Dict[str, Any]:
+    """Send a Slack message with optional file attachments via the running adapter.
+
+    media_files: List of (file_path, is_voice) tuples, same as other platform senders.
+    """
+    if not adapter._app:
+        return {"error": "Slack adapter not connected"}
+
+    try:
+        # Strip MEDIA: prefix from message before sending text
+        import re
+        text_parts = []
+        media_paths = []
+        if message:
+            # Remove MEDIA:... patterns for text part
+            cleaned = re.sub(r'MEDIA:[^\s]+', '', message).strip()
+            if cleaned:
+                text_parts.append(cleaned)
+        if media_files:
+            for path, is_voice in media_files:
+                media_paths.append(path)
+
+        # Send text if any
+        text_result = None
+        if text_parts:
+            text_result = await adapter.send(chat_id, "\n".join(text_parts))
+
+        # Send files if any — check each result to avoid silently swallowing early errors
+        if media_paths:
+            for path in media_paths:
+                file_result = await adapter._upload_file(chat_id, path)
+                if file_result and hasattr(file_result, 'success') and not file_result.success:
+                    return {"error": getattr(file_result, 'error', str(file_result))}
+
+        if text_result and hasattr(text_result, 'success') and not text_result.success:
+            return {"error": getattr(text_result, 'error', str(text_result))}
+
+        return {"ok": True, "text_result": text_result, "file_result": file_result}
+    except Exception as e:
+        return {"error": str(e)}

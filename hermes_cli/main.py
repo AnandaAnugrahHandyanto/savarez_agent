@@ -83,6 +83,30 @@ def _require_tty(command_name: str) -> None:
         sys.exit(1)
 
 
+def _reattach_stdin_to_tty_for_chat(args) -> None:
+    """Recover interactive chat when launched from a piped installer.
+
+    Install scripts often run as ``curl ... | sh``. If they launch Hermes
+    directly afterward, fd 0 still points at the script pipe instead of the
+    user's terminal, and prompt_toolkit cannot attach to it. Single-query mode
+    can legitimately run without a TTY, so only repair interactive chat.
+    """
+    if getattr(args, "query", None) or sys.stdin.isatty():
+        return
+    try:
+        tty_fd = os.open("/dev/tty", os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.dup2(tty_fd, 0)
+    finally:
+        os.close(tty_fd)
+    try:
+        sys.stdin = os.fdopen(0, "r", buffering=1)
+    except OSError:
+        pass
+
+
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -1195,6 +1219,7 @@ def _launch_tui(
 def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1"
+    _reattach_stdin_to_tty_for_chat(args)
 
     # Resolve --continue into --resume with the latest session or by name
     continue_val = getattr(args, "continue_last", None)

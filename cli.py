@@ -24,6 +24,7 @@ import base64
 import atexit
 import errno
 import tempfile
+import termios
 import time
 import uuid
 import textwrap
@@ -11673,6 +11674,14 @@ class HermesCLI:
             _run_cleanup()
             self._print_exit_summary()
             return
+        if not sys.stdin.isatty():
+            print(
+                "Error: stdin is not an interactive terminal.\n"
+                "Exit the installer or script, then run 'hermes' directly in a normal terminal."
+            )
+            _run_cleanup()
+            self._print_exit_summary()
+            return
 
         # Run the application with patch_stdout for proper output handling
         try:
@@ -11687,16 +11696,21 @@ class HermesCLI:
                 app.run()
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
             pass
-        except (KeyError, OSError) as _stdin_err:
+        except (KeyError, OSError, termios.error) as _stdin_err:
             # Catch selector registration failures from broken stdin (#6393)
             # and I/O errors from broken stdout during interrupt (#13710).
-            if isinstance(_stdin_err, OSError) and getattr(_stdin_err, "errno", None) == errno.EIO:
+            _stdin_errno = getattr(_stdin_err, "errno", None)
+            if isinstance(_stdin_err, termios.error) and _stdin_err.args:
+                _stdin_errno = _stdin_err.args[0]
+            if isinstance(_stdin_err, OSError) and _stdin_errno == errno.EIO:
                 pass  # suppress broken-stdout I/O errors on interrupt (#13710)
-            elif "is not registered" in str(_stdin_err) or "Bad file descriptor" in str(_stdin_err):
+            elif (
+                isinstance(_stdin_err, (OSError, termios.error))
+                and _stdin_errno in (errno.EINVAL, errno.EPERM)
+            ) or "is not registered" in str(_stdin_err) or "Bad file descriptor" in str(_stdin_err):
                 print(
                     f"\nError: stdin is not usable ({_stdin_err}).\n"
-                    "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"
-                    "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
+                    "Exit the installer or script, then run 'hermes' directly in a normal terminal."
                 )
             else:
                 raise

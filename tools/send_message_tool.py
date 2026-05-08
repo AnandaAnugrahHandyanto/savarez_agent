@@ -588,6 +588,21 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Slack: file attachment support via running gateway adapter ---
+    if platform == Platform.SLACK and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_slack(
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else None,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
@@ -1727,6 +1742,29 @@ async def _send_yuanbao(chat_id, message, media_files=None):
         return await send_yuanbao_direct(adapter, chat_id, message, media_files=media_files)
     except Exception as e:
         return _error(f"Yuanbao send failed: {e}")
+
+
+async def _send_slack(chat_id, message, media_files=None):
+    """Send via Slack using the running gateway adapter's SlackAdapter instance.
+
+    media_files: List of (file_path, is_voice) tuples.
+    """
+    try:
+        from gateway.platforms.slack import get_active_adapter, send_slack_direct
+    except ImportError:
+        return _error("Slack adapter module not available.")
+
+    adapter = get_active_adapter()
+    if adapter is None:
+        return _error(
+            "Slack adapter is not running. "
+            "Start the gateway with slack platform enabled first."
+        )
+
+    try:
+        return await send_slack_direct(adapter, chat_id, message, media_files=media_files)
+    except Exception as e:
+        return _error(f"Slack send failed: {e}")
 
 
 # --- Registry ---
