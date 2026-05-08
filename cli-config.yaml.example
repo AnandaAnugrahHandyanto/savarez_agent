@@ -495,6 +495,41 @@ skills:
   # that points the model at skill_describe.
   index_token_budget: 2000
 
+  # Phase 2 opt-in: replace the time-based creation nudge with signal-based
+  # triggers. When enabled, the time counter above becomes a fallback that
+  # fires only after this many tool iterations without any signal.
+  nudge_signals:
+    enabled: false
+    # S1: trigger when the same (tool, arg-signature) appears N+ times in a turn.
+    repeated_pattern_threshold: 3
+    # S2: window for "novel CLI" detection.
+    novel_cli_window_days: 30
+    # S2: CLIs that should not count as novel.
+    common_cli_suppressions:
+      - git
+      - python
+      - python3
+      - node
+      - npm
+      - pnpm
+      - uv
+      - pytest
+      - rg
+      - sed
+      - cat
+      - ls
+      - mkdir
+    # S3: user-message phrases that fire an explicit "remember this" signal.
+    user_phrases:
+      - "next time"
+      - "remember"
+      - "from now on"
+      - "记一下"
+      - "下次"
+      - "以后"
+    # S4: a successful call after this many same-error failures fires a signal.
+    error_repeat_threshold: 2
+
   # External skill directories — share skills across tools/agents without
   # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
   # and resolved to an absolute path.  External dirs are read-only: skill
