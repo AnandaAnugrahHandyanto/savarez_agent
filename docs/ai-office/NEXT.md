@@ -66,6 +66,11 @@ When not to rely on `/goal` alone:
 
 Stage 7 — Review/polish, broad tests, local dashboard smoke, and full-suite test-debt cleanup after Stage 6 read-only MVP: completed. Full Python suite is green under `scripts/run_tests.sh`.
 
+Mac handoff/setup docs were added so the fork branch can be reused on macOS while keeping runtime state machine-local:
+
+- `docs/ai-office/MAC_START_HERE.md`
+- `docs/ai-office/mac-env.template`
+
 Completed cleanup batches now include: web lint errors, ACP import errors, optional dependency/snapshot-style failures, changed call-signature/expectation failures, update-test isolation flake, Bedrock/provider expectations, unsupported-parameter retry phrasing, skill provenance/credential small-tail items, Google Chat platform/config expectations, DingTalk card lifecycle optional-SDK handling, cron scheduler/script/MCP init expectations, CLI model/provider/Kanban expectations, run_agent concurrent interrupt stubs, gateway Discord/Feishu/cache tail items, MCP EventBridge mtime detection, i18n cache isolation, and curator atomic-write temp cleanup.
 
 Latest full Python suite result:

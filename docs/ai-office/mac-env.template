@@ -1,0 +1,30 @@
+# Mac-local Hermes environment template for AI Office dashboard
+# Copy to ~/.hermes/.env on the Mac and fill only the values needed on that Mac.
+# Do not commit real secrets. Do not store real secrets on NAS/Obsidian.
+
+# ---- Model/API providers: uncomment only what Mac uses ----
+# OPENAI_API_KEY=
+# ANTHROPIC_API_KEY=
+# OPENROUTER_API_KEY=
+# BRAVE_API_KEY=
+
+# ---- Optional image generation/provider config ----
+# OPENAI_IMAGE_MODEL=gpt-image-2
+
+# ---- Mac-local Obsidian/NAS ledger paths ----
+# Use Mac paths, not WSL paths like /mnt/c/... or /mnt/nas/...
+# OBSIDIAN_VAULT_PATH=/Users/<mac-user>/Library/Mobile Documents/iCloud~md~obsidian/Documents/<VaultName>
+# OBSIDIAN_VAULT_PATH=/Users/<mac-user>/Library/CloudStorage/OneDrive-*/문서/Obsidian Vault
+# HERMES_LEDGER_PATH=/Volumes/Hermes
+# HERMES_SHARED_MEMORY_PATH=/Volumes/Hermes/Context/Shared Memory
+# HERMES_LOCAL_MEMORY_CACHE_PATH=/Users/<mac-user>/.hermes/memories
+
+# ---- Optional legacy/reference paths ----
+# HERMES_LEGACY_ONEDRIVE_VAULT_PATH=
+
+# ---- Dashboard defaults, optional ----
+# HERMES_DASHBOARD_TUI=0
+
+# ---- Safety notes ----
+# Keep gateway tokens, OAuth files, auth.json, and service-specific secrets local on the Mac.
+# Do not copy WSL ~/.hermes/.env wholesale unless every path and secret is reviewed.
