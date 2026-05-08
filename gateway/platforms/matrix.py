@@ -391,6 +391,11 @@ class MatrixAdapter(BasePlatformAdapter):
         self._reaction_redaction_delay_seconds = 5.0
         self._reaction_redaction_tasks: Set[asyncio.Task] = set()
 
+        # Presence state tracking: map actual activity to Matrix presence.
+        # online = actively processing, unavailable = idle/connected, offline = disconnected.
+        self._presence_active_count: int = 0
+        self._presence_current_state: str = "offline"
+
         # Proxy support — resolve once at init, reuse for all HTTP traffic.
         self._proxy_url: str | None = resolve_proxy_url(platform_env_var="MATRIX_PROXY")
         if self._proxy_url:
@@ -864,6 +869,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # Start the sync loop.
         self._sync_task = asyncio.create_task(self._sync_loop())
         self._mark_connected()
+        await self.set_presence("online")
         return True
 
     async def disconnect(self) -> None:
@@ -893,6 +899,12 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.debug("Matrix: could not close crypto DB on disconnect: %s", exc)
 
         if self._client:
+            try:
+                self._presence_active_count = 0
+                self._presence_current_state = "offline"
+                await self.set_presence("offline")
+            except Exception:
+                pass
             try:
                 await self._client.api.session.close()
             except Exception:
@@ -2005,43 +2017,47 @@ class MatrixAdapter(BasePlatformAdapter):
         task.add_done_callback(self._reaction_redaction_tasks.discard)
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add eyes reaction when the agent starts processing a message."""
-        if not self._reactions_enabled:
-            return
-        msg_id = event.message_id
-        room_id = event.source.chat_id
-        if msg_id and room_id:
-            reaction_event_id = await self._send_reaction(room_id, msg_id, "\U0001f440")
-            if reaction_event_id:
-                self._pending_reactions[(room_id, msg_id)] = reaction_event_id
+        """Add eyes reaction and set presence to unavailable when actively working."""
+        if self._reactions_enabled:
+            msg_id = event.message_id
+            room_id = event.source.chat_id
+            if msg_id and room_id:
+                reaction_event_id = await self._send_reaction(room_id, msg_id, "\U0001f440")
+                if reaction_event_id:
+                    self._pending_reactions[(room_id, msg_id)] = reaction_event_id
+        # Track active processing count and transition presence.
+        self._presence_active_count += 1
+        if self._presence_active_count == 1 and self._presence_current_state != "unavailable":
+            await self.set_presence("unavailable", status_msg="working on Hermes")
 
     async def on_processing_complete(
         self,
         event: MessageEvent,
         outcome: ProcessingOutcome,
     ) -> None:
-        """Replace eyes with checkmark (success) or cross (failure)."""
-        if not self._reactions_enabled:
-            return
-        msg_id = event.message_id
-        room_id = event.source.chat_id
-        if not msg_id or not room_id:
-            return
-        if outcome == ProcessingOutcome.CANCELLED:
-            return
-        reaction_key = (room_id, msg_id)
-        if reaction_key in self._pending_reactions:
-            eyes_event_id = self._pending_reactions.pop(reaction_key)
-            self._schedule_reaction_redaction(
-                room_id,
-                eyes_event_id,
-                "processing complete",
-            )
-        await self._send_reaction(
-            room_id,
-            msg_id,
-            "\u2705" if outcome == ProcessingOutcome.SUCCESS else "\u274c",
-        )
+        """Replace eyes with checkmark (success) or cross (failure), and transition presence back to idle."""
+        if self._reactions_enabled:
+            msg_id = event.message_id
+            room_id = event.source.chat_id
+            if msg_id and room_id:
+                if outcome != ProcessingOutcome.CANCELLED:
+                    reaction_key = (room_id, msg_id)
+                    if reaction_key in self._pending_reactions:
+                        eyes_event_id = self._pending_reactions.pop(reaction_key)
+                        self._schedule_reaction_redaction(
+                            room_id,
+                            eyes_event_id,
+                            "processing complete",
+                        )
+                    await self._send_reaction(
+                        room_id,
+                        msg_id,
+                        "\u2705" if outcome == ProcessingOutcome.SUCCESS else "\u274c",
+                    )
+        # Track active processing count and transition presence.
+        self._presence_active_count = max(0, self._presence_active_count - 1)
+        if self._presence_active_count == 0 and self._presence_current_state != "online":
+            await self.set_presence("online")
 
     async def _on_reaction(self, event: Any) -> None:
         """Handle incoming reaction events."""
