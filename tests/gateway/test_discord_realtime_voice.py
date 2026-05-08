@@ -39,6 +39,12 @@ def test_queue_pcm_audio_source_returns_20ms_frames_and_pads_short_reads():
     assert source.is_opus() is False
 
 
+def test_queue_pcm_audio_source_ends_when_idle_instead_of_speaking_silence():
+    source = QueuePCMAudioSource(queue.Queue())
+
+    assert source.read() == b""
+
+
 def test_gpt_realtime_2_uses_ga_session_shape():
     bridge = OpenAIRealtimeDiscordBridge(
         api_key="test",
@@ -114,5 +120,16 @@ def test_start_discord_playback_uses_real_discord_audio_source():
     bridge = OpenAIRealtimeDiscordBridge(api_key="test", voice_client=voice_client)
 
     bridge._start_discord_playback()
+
+    assert voice_client.played_source is not None
+
+
+def test_enqueue_output_lazily_starts_discord_playback():
+    voice_client = _FakeVoiceClient()
+    bridge = OpenAIRealtimeDiscordBridge(api_key="test", voice_client=voice_client)
+
+    assert voice_client.played_source is None
+
+    bridge._enqueue_output(b"\x01" * DISCORD_FRAME_BYTES)
 
     assert voice_client.played_source is not None

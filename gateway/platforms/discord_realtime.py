@@ -97,7 +97,10 @@ class QueuePCMAudioSource:
                 self._closed = True
                 break
             self._buffer.extend(chunk)
-        if not self._buffer and self._closed:
+        if not self._buffer:
+            # No model audio is available. Returning an empty frame tells
+            # discord.py playback to end instead of broadcasting padded silence
+            # forever and showing the bot as constantly speaking.
             return b""
         if len(self._buffer) < DISCORD_FRAME_BYTES:
             self._buffer.extend(b"\x00" * (DISCORD_FRAME_BYTES - len(self._buffer)))
@@ -171,9 +174,13 @@ class OpenAIRealtimeDiscordBridge:
         self._output_q: "queue.Queue[Optional[bytes]]" = queue.Queue(maxsize=400)
         self._stop = threading.Event()
         self._send_lock = threading.Lock()
+        self._playback_lock = threading.Lock()
         self._ws: Any = None
         self._rx_thread: Optional[threading.Thread] = None
         self._tx_thread: Optional[threading.Thread] = None
+        self._playback_active = False
+        self._logged_first_input = False
+        self._logged_first_output = False
         self.input_bytes = 0
         self.output_bytes = 0
         self.last_input_at: Optional[float] = None
@@ -195,7 +202,6 @@ class OpenAIRealtimeDiscordBridge:
         self._tx_thread = threading.Thread(target=self._send_loop, name="discord-openai-realtime-tx", daemon=True)
         self._rx_thread.start()
         self._tx_thread.start()
-        self._start_discord_playback()
 
     def _uses_ga_api(self) -> bool:
         # New GA-only models such as gpt-realtime-2 reject the legacy
@@ -274,6 +280,9 @@ class OpenAIRealtimeDiscordBridge:
             self._input_q.put_nowait(converted)
             self.input_bytes += len(converted)
             self.last_input_at = time.time()
+            if not self._logged_first_input:
+                self._logged_first_input = True
+                logger.info("OpenAI Realtime received first Discord PCM input (%d bytes)", len(converted))
         except queue.Full:
             # Prefer dropping old audio over building latency.
             try:
@@ -298,12 +307,35 @@ class OpenAIRealtimeDiscordBridge:
         source = _make_discord_audio_source(self._output_q)
 
         def _after(error):
+            with self._playback_lock:
+                self._playback_active = False
             if error:
                 logger.warning("Realtime Discord playback ended with error: %s", error)
 
         if self.voice_client.is_playing():
             self.voice_client.stop()
         self.voice_client.play(source, after=_after)
+        self._playback_active = True
+
+    def _ensure_discord_playback(self) -> None:
+        """Start Discord playback only when actual model audio is queued.
+
+        Keeping a PCM source permanently attached makes Discord show the bot as
+        speaking while it is only sending padded silence. Start lazily on first
+        audio instead; the source ends after the queued audio drains, and future
+        deltas restart playback.
+        """
+        with self._playback_lock:
+            if self._playback_active:
+                return
+            try:
+                if self.voice_client and self.voice_client.is_playing():
+                    self._playback_active = True
+                    return
+                self._start_discord_playback()
+            except Exception as exc:
+                self.last_error = str(exc)
+                logger.warning("Realtime Discord playback failed to start: %s", exc)
 
     def _send_loop(self) -> None:
         while not self._stop.is_set():
@@ -355,6 +387,9 @@ class OpenAIRealtimeDiscordBridge:
                     self._enqueue_output(pcm48)
                     self.output_bytes += len(pcm48)
                     self.last_output_at = time.time()
+                    if not self._logged_first_output:
+                        self._logged_first_output = True
+                        logger.info("OpenAI Realtime produced first Discord PCM output (%d bytes)", len(pcm48))
             elif ftype == "input_audio_buffer.speech_started":
                 # Barge-in: stop any queued/spoken model audio as soon as the user speaks.
                 self._clear_output_queue()
@@ -365,10 +400,12 @@ class OpenAIRealtimeDiscordBridge:
     def _enqueue_output(self, pcm: bytes) -> None:
         try:
             self._output_q.put_nowait(pcm)
+            self._ensure_discord_playback()
         except queue.Full:
             self._clear_output_queue()
             try:
                 self._output_q.put_nowait(pcm)
+                self._ensure_discord_playback()
             except queue.Full:
                 pass
 
