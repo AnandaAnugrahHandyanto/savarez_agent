@@ -263,65 +263,94 @@ class TestExtractMedia:
         assert media == []
         assert cleaned == "Just text."
 
-    def test_single_media_tag(self):
-        content = "MEDIA:/path/to/audio.ogg"
+    def test_single_media_tag(self, tmp_path):
+        media_file = tmp_path / "audio.ogg"
+        media_file.write_bytes(b"audio")
+        content = f"MEDIA:{media_file}"
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert len(media) == 1
-        assert media[0][0] == "/path/to/audio.ogg"
+        assert media[0][0] == str(media_file)
         assert media[0][1] is False  # no voice tag
 
-    def test_media_with_voice_directive(self):
-        content = "[[audio_as_voice]]\nMEDIA:/path/to/voice.ogg"
+    def test_media_with_voice_directive(self, tmp_path):
+        media_file = tmp_path / "voice.ogg"
+        media_file.write_bytes(b"voice")
+        content = f"[[audio_as_voice]]\nMEDIA:{media_file}"
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert len(media) == 1
-        assert media[0][0] == "/path/to/voice.ogg"
+        assert media[0][0] == str(media_file)
         assert media[0][1] is True  # voice tag present
 
-    def test_multiple_media_tags(self):
-        content = "MEDIA:/a.ogg\nMEDIA:/b.ogg"
+    def test_multiple_media_tags(self, tmp_path):
+        media_a = tmp_path / "a.ogg"
+        media_b = tmp_path / "b.ogg"
+        media_a.write_bytes(b"a")
+        media_b.write_bytes(b"b")
+        content = f"MEDIA:{media_a}\nMEDIA:{media_b}"
         media, _ = BasePlatformAdapter.extract_media(content)
         assert len(media) == 2
 
-    def test_voice_directive_removed_from_content(self):
-        content = "[[audio_as_voice]]\nSome text\nMEDIA:/voice.ogg"
+    def test_voice_directive_removed_from_content(self, tmp_path):
+        media_file = tmp_path / "voice.ogg"
+        media_file.write_bytes(b"voice")
+        content = f"[[audio_as_voice]]\nSome text\nMEDIA:{media_file}"
         _, cleaned = BasePlatformAdapter.extract_media(content)
         assert "[[audio_as_voice]]" not in cleaned
         assert "MEDIA:" not in cleaned
         assert "Some text" in cleaned
 
-    def test_media_with_text_before(self):
-        content = "Here is your audio:\nMEDIA:/output.ogg"
+    def test_media_with_text_before(self, tmp_path):
+        media_file = tmp_path / "output.ogg"
+        media_file.write_bytes(b"audio")
+        content = f"Here is your audio:\nMEDIA:{media_file}"
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert len(media) == 1
         assert "Here is your audio" in cleaned
 
-    def test_cleaned_content_trims_excess_newlines(self):
-        content = "Before\n\nMEDIA:/audio.ogg\n\n\n\nAfter"
+    def test_cleaned_content_trims_excess_newlines(self, tmp_path):
+        media_file = tmp_path / "audio.ogg"
+        media_file.write_bytes(b"audio")
+        content = f"Before\n\nMEDIA:{media_file}\n\n\n\nAfter"
         _, cleaned = BasePlatformAdapter.extract_media(content)
         assert "\n\n\n" not in cleaned
 
-    def test_media_tag_allows_optional_whitespace_after_colon(self):
-        content = "MEDIA: /path/to/audio.ogg"
+    def test_media_tag_allows_optional_whitespace_after_colon(self, tmp_path):
+        media_file = tmp_path / "audio.ogg"
+        media_file.write_bytes(b"audio")
+        content = f"MEDIA: {media_file}"
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert media == [("/path/to/audio.ogg", False)]
+        assert media == [(str(media_file), False)]
         assert cleaned == ""
 
-    def test_media_tag_strips_wrapping_quotes_and_backticks(self):
-        content = "MEDIA: `/path/to/file.png`\nMEDIA:\"/path/to/file2.png\"\nMEDIA:'/path/to/file3.png'"
+    def test_media_tag_strips_wrapping_quotes_and_backticks(self, tmp_path):
+        file1 = tmp_path / "file.png"
+        file2 = tmp_path / "file2.png"
+        file3 = tmp_path / "file3.png"
+        for p, payload in ((file1, b"1"), (file2, b"2"), (file3, b"3")):
+            p.write_bytes(payload)
+        content = f"MEDIA: `{file1}`\nMEDIA:\"{file2}\"\nMEDIA:'{file3}'"
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert media == [
-            ("/path/to/file.png", False),
-            ("/path/to/file2.png", False),
-            ("/path/to/file3.png", False),
+            (str(file1), False),
+            (str(file2), False),
+            (str(file3), False),
         ]
         assert cleaned == ""
 
-    def test_media_tag_supports_quoted_paths_with_spaces(self):
-        content = "Here\nMEDIA: '/tmp/my image.png'\nAfter"
+    def test_media_tag_supports_quoted_paths_with_spaces(self, tmp_path):
+        media_file = tmp_path / "my image.png"
+        media_file.write_bytes(b"img")
+        content = f"Here\nMEDIA: '{media_file}'\nAfter"
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert media == [("/tmp/my image.png", False)]
+        assert media == [(str(media_file), False)]
         assert "Here" in cleaned
         assert "After" in cleaned
+
+    def test_media_tag_example_without_real_file_is_left_as_text(self):
+        content = "Use `MEDIA:/absolute/path` in a normal reply when sharing a file."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert cleaned == content
 
 
 # ---------------------------------------------------------------------------

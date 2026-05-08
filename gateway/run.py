@@ -10976,8 +10976,13 @@ class GatewayRunner:
                         if "MEDIA:" in content:
                             for match in re.finditer(r'MEDIA:(\S+)', content):
                                 path = match.group(1).strip().rstrip('",}')
-                                if path and path not in _history_media_paths:
-                                    media_tags.append(f"MEDIA:{path}")
+                                expanded = os.path.expanduser(path) if path else ""
+                                if (
+                                    expanded
+                                    and os.path.isfile(expanded)
+                                    and expanded not in _history_media_paths
+                                ):
+                                    media_tags.append(f"MEDIA:{expanded}")
                             if "[[audio_as_voice]]" in content:
                                 has_voice_directive = True
                 

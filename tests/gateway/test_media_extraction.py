@@ -7,8 +7,14 @@ This prevents voice messages from accumulating and being sent multiple
 times per reply. (Regression test for #160)
 """
 
+import os
 import pytest
 import re
+
+
+@pytest.fixture(autouse=True)
+def _accept_fake_media(monkeypatch):
+    monkeypatch.setattr(os.path, "isfile", lambda p: True)
 
 
 def extract_media_tags_fixed(result_messages, history_len):
@@ -35,8 +41,9 @@ def extract_media_tags_fixed(result_messages, history_len):
             if "MEDIA:" in content:
                 for match in re.finditer(r'MEDIA:(\S+)', content):
                     path = match.group(1).strip().rstrip('",}')
-                    if path:
-                        media_tags.append(f"MEDIA:{path}")
+                    expanded = os.path.expanduser(path) if path else ""
+                    if expanded and os.path.isfile(expanded):
+                        media_tags.append(f"MEDIA:{expanded}")
                 if "[[audio_as_voice]]" in content:
                     has_voice_directive = True
     
@@ -178,6 +185,16 @@ class TestMediaExtraction:
         seen = set()
         unique = [t for t in tags if t not in seen and not seen.add(t)]
         assert len(unique) == 2  # After dedup: same.ogg and different.ogg
+
+    def test_literal_media_examples_in_tool_output_are_ignored(self, monkeypatch):
+        monkeypatch.setattr(os.path, "isfile", lambda p: False)
+        messages = [
+            {"role": "tool", "content": "Use `MEDIA:/absolute/path` in a normal reply when sharing a file."},
+            {"role": "assistant", "content": "Done!"},
+        ]
+        tags, voice_directive = extract_media_tags_fixed(messages, 0)
+        assert tags == []
+        assert voice_directive is False
 
 
 if __name__ == "__main__":
