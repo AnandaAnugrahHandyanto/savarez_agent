@@ -1,15 +1,69 @@
 # Hermes AI Office — STATUS
 
-Last updated: 2026-05-09 00:17 KST
+Last updated: 2026-05-09 00:34 KST
 
 ## Current phase
 
-Stage 9-A CSS/SVG office-map first slice completed on top of the Stage 8 read-only dashboard. Stage 8-A final density polish, Stage 8-B topic/provenance read-only depth, and Stage 8-C frontend tests/fixtures remain completed and verified.
+Stage 9-B CSS/SVG office-map semantics/layout polish completed on top of Stage 9-A and the Stage 8 read-only dashboard. Stage 8-A final density polish, Stage 8-B topic/provenance read-only depth, Stage 8-C frontend tests/fixtures, and Stage 9-A office-map first slice remain completed and verified.
 
-Next phase: keep the page read-only and localhost-first; recommended next work is either Stage 9-B richer office-map semantics/layout polish, Stage 8-D fixture expansion/visual regression, or a separate pixel/renderer research stage after dependency/licensing/security review.
+Next phase: keep the page read-only and localhost-first; recommended next work is Stage 8-D fixture expansion/visual regression or a separately approved pixel/renderer research stage after dependency/licensing/security review.
 
 Stage 6 slices were approved by the user, including proceeding through the recommended remaining slices. Stage 7 was approved with testing deferred until the end. Stage 8-A was approved as the next safe step by the user saying to proceed in order, and the user then requested items 1 through 3 to run automatically in sequence. The user also approved installing missing test/runtime extras as needed in earlier setup. No gateway restart, cron change, Kanban mutation, NAS/Obsidian write, service/config mutation, memory/skill update, pixel dependency, or mutation-control implementation has been performed. The local dashboard process was restarted only to smoke-test the newly built local frontend bundle.
 
+
+
+## Stage 9-B office-map semantics/layout polish completed
+
+The user approved continuing after Stage 9-A. This slice kept the same safety boundary: dependency-free CSS/SVG, frontend-only projection, read-only UI, and safe `OfficeState` metadata only.
+
+Implemented files/changes:
+
+- `web/src/pages/officeView.ts`
+  - Added `OfficeMapFlow` and `buildOfficeMapFlows()` to derive safe flow hints: sessions → work → automation → routing.
+  - Added a `zone` label to each `OfficeMapNode`: entry, workbench, machine, routing.
+  - Flow health degrades from endpoint health without reading raw body/transcript/script fields.
+- `web/src/pages/OfficePage.tsx`
+  - Replaced static connector hints with SVG flow paths derived from safe node coordinates.
+  - Added bottom flow legend showing safe flow labels and health: intake to work, work to automation, automation to routing.
+  - Added visible room zone labels and a more responsive node width/min-height layout.
+  - Safe inspector now includes the room zone plus safe count/health/detail only.
+- `web/src/pages/OfficePage.test.ts`
+  - Added a Stage 9-B fixture covering partial/error/missing source-health combinations, flow degradation, safe zone labels, and bounded node coordinates.
+
+Verification performed on Mac:
+
+```text
+cd /Users/lidises/dev/hermes-agent/web
+npm test -- --run OfficePage.test.ts
+# 1 test file passed, 5 tests passed
+
+./node_modules/.bin/eslint src/pages/OfficePage.tsx src/pages/officeView.ts src/pages/OfficePage.test.ts
+# passed: 0 errors
+
+npm run build
+# passed: tsc -b && vite build
+
+cd /Users/lidises/dev/hermes-agent
+source .venv/bin/activate
+scripts/run_tests.sh tests/hermes_cli/test_office_redaction.py tests/hermes_cli/test_office_state_adapters.py tests/hermes_cli/test_office_api.py -q --tb=short
+# 18 passed in 0.99s
+
+git diff --check
+# passed
+
+Browser smoke: http://127.0.0.1:8765/office
+# visible: OFFICE MAP, entry/workbench/machine/routing zone labels, flow legend, safe SVG flow lines
+# node click updates Safe inspector with office-map safe metadata including zone
+# console: no JS errors
+```
+
+Safety notes:
+
+- No PixiJS, Phaser, canvas engine, sprite assets, or new dependency.
+- No mutation controls were added.
+- No backend API/schema change.
+- No Kanban/cron/topic registry/NAS/Obsidian writes.
+- Raw prompts, transcripts, task bodies, cron scripts, logs, auth, and secrets remain outside browser DTOs/tooltips/inspector rows.
 
 ## Stage 9-A CSS/SVG office-map first slice completed
 

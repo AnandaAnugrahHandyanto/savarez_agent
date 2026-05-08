@@ -10,10 +10,18 @@ export type OfficeMapNode = {
   id: "sessions" | "work" | "automation" | "routing";
   label: string;
   detail: string;
+  zone: "entry" | "workbench" | "machine" | "routing";
   count: number;
   health: "ok" | "partial" | "missing" | "error";
   x: number;
   y: number;
+};
+
+export type OfficeMapFlow = {
+  from: OfficeMapNode["id"];
+  to: OfficeMapNode["id"];
+  label: string;
+  health: OfficeMapNode["health"];
 };
 
 export function textField(row: Record<string, unknown>, key: string): string {
@@ -56,6 +64,7 @@ export function buildOfficeMapNodes(state: OfficeState): OfficeMapNode[] {
       id: "sessions",
       label: "Sessions",
       detail: "recent safe session metadata",
+      zone: "entry",
       count: state.agents.length,
       health: sourceStatus("sessions"),
       x: 24,
@@ -65,6 +74,7 @@ export function buildOfficeMapNodes(state: OfficeState): OfficeMapNode[] {
       id: "work",
       label: "Work",
       detail: "Kanban/task cards without bodies",
+      zone: "workbench",
       count: state.work_items.length,
       health: sourceStatus("kanban"),
       x: 70,
@@ -74,6 +84,7 @@ export function buildOfficeMapNodes(state: OfficeState): OfficeMapNode[] {
       id: "automation",
       label: "Automation",
       detail: "cron jobs as read-only machines",
+      zone: "machine",
       count: state.automations.length,
       health: sourceStatus("cron"),
       x: 24,
@@ -83,12 +94,31 @@ export function buildOfficeMapNodes(state: OfficeState): OfficeMapNode[] {
       id: "routing",
       label: "Routing",
       detail: "topic/provenance projection",
+      zone: "routing",
       count: state.topics.length + state.provenance.length,
       health: routingHealth,
       x: 70,
       y: 72,
     },
   ];
+}
+
+export function buildOfficeMapFlows(nodes: OfficeMapNode[]): OfficeMapFlow[] {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const flowDefs: Array<Omit<OfficeMapFlow, "health">> = [
+    { from: "sessions", to: "work", label: "intake to work" },
+    { from: "work", to: "automation", label: "work to automation" },
+    { from: "automation", to: "routing", label: "automation to routing" },
+  ];
+  const severity: Record<OfficeMapNode["health"], number> = { ok: 0, missing: 1, partial: 2, error: 3 };
+  const healthBySeverity: OfficeMapNode["health"][] = ["ok", "missing", "partial", "error"];
+
+  return flowDefs.map((flow) => {
+    const from = byId.get(flow.from);
+    const to = byId.get(flow.to);
+    const score = Math.max(severity[from?.health ?? "missing"], severity[to?.health ?? "missing"]);
+    return { ...flow, health: healthBySeverity[score] };
+  });
 }
 
 export function buildOfficeAttentionItems(state: OfficeState): AttentionItem[] {

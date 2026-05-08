@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildOfficeAttentionItems,
+  buildOfficeMapFlows,
   buildOfficeMapNodes,
   groupByText,
   visibleRows,
@@ -107,6 +108,34 @@ describe("OfficePage view helpers", () => {
     expect(nodes.find((node) => node.id === "automation")?.count).toBe(1);
     expect(nodes.find((node) => node.id === "routing")?.health).toBe("missing");
     expect(nodes.map((node) => `${node.label} ${node.detail}`).join(" ")).not.toContain("raw");
+  });
+
+
+  it("builds safe office-map flow hints with degraded endpoint health", () => {
+    const nodes = buildOfficeMapNodes(
+      officeFixture({
+        data_sources: [
+          { id: "sessions", status: "ok", checked_at: "2026-05-08T00:00:00Z", item_count: 1 },
+          { id: "kanban", status: "partial", checked_at: "2026-05-08T00:00:00Z", item_count: 1 },
+          { id: "cron", status: "error", checked_at: "2026-05-08T00:00:00Z", item_count: 1 },
+          { id: "topics", status: "missing", checked_at: "2026-05-08T00:00:00Z", item_count: 0 },
+        ],
+        agents: [{ id: "session-1", source_platform: "cli", status: "active", transcript: "raw transcript must not matter" }],
+        work_items: [{ id: "task-1", title: "Safe task", status: "blocked", body: "raw task body must not matter" }],
+        automations: [{ id: "job-1", name: "Cron job job-1", state: "scheduled", script: "raw script must not matter" }],
+      }),
+    );
+    const flows = buildOfficeMapFlows(nodes);
+
+    expect(flows.map((flow) => `${flow.from}->${flow.to}`)).toEqual([
+      "sessions->work",
+      "work->automation",
+      "automation->routing",
+    ]);
+    expect(flows.map((flow) => flow.health)).toEqual(["partial", "error", "error"]);
+    expect(flows.map((flow) => flow.label).join(" ")).not.toContain("raw");
+    expect(nodes.map((node) => node.zone)).toEqual(["entry", "workbench", "machine", "routing"]);
+    expect(nodes.every((node) => node.x >= 12 && node.x <= 88 && node.y >= 16 && node.y <= 84)).toBe(true);
   });
 
 });
