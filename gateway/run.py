@@ -3436,6 +3436,7 @@ class GatewayRunner:
         # When false, users run `hermes kanban daemon` externally or
         # simply don't use kanban; this loop becomes a no-op.
         asyncio.create_task(self._kanban_dispatcher_watcher())
+        asyncio.create_task(self._kanban_checkin_watcher())
 
         # Start background reconnection watcher for platforms that failed at startup
         if self._failed_platforms:
@@ -4096,10 +4097,170 @@ class GatewayRunner:
                 await asyncio.sleep(min(1.0, interval - slept))
                 slept += 1.0
 
+    async def _kanban_checkin_watcher(self) -> None:
+        """Gateway-embedded kanban agent check-in scheduler.
+
+        Periodically injects a structured check-in prompt into every
+        in-progress Kanban task that has been idle longer than
+        ``checkin_idle_minutes`` (default: 30). The agent is asked to
+        self-report whether it is progressing, blocked, or done —
+        complementing the existing process-liveness heartbeat with
+        AI-intelligence supervision.
+
+        Config knobs (all under the ``kanban`` top-level key in config.yaml):
+
+            checkin_in_gateway: true          # master switch (default: false)
+            checkin_interval_minutes: 30      # how often to scan for idle tasks
+            checkin_idle_minutes: 30          # task must be idle this long to be eligible
+
+        Environment overrides:
+
+            HERMES_KANBAN_CHECKIN_IN_GATEWAY  false/0/no/off → disable
+            HERMES_CHECKIN_STALE_MINUTES      override idle threshold
+
+        Disabled by default (``checkin_in_gateway: false``) so existing
+        installs are unaffected. Users opt in by setting
+        ``checkin_in_gateway: true`` in their config.yaml.
+
+        Shutdown: same pattern as ``_kanban_dispatcher_watcher`` — the
+        loop checks ``self._running`` between ticks; in-flight prompt
+        injection finishes naturally.
+        """
+        # --- config loading ---
+        env_override = os.environ.get("HERMES_KANBAN_CHECKIN_IN_GATEWAY", "").strip().lower()
+        if env_override in ("0", "false", "no", "off"):
+            logger.info("kanban checkin scheduler: disabled via env")
+            return
+
+        try:
+            from hermes_cli.config import load_config as _load_config
+        except Exception:
+            logger.warning("kanban checkin scheduler: config loader unavailable; disabled")
+            return
+
+        try:
+            cfg = _load_config()
+        except Exception as exc:
+            logger.warning("kanban checkin scheduler: cannot load config (%s); disabled", exc)
+            return
+
+        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+
+        if not kanban_cfg.get("checkin_in_gateway", False):
+            # Opt-in feature; do not log unless debug — avoids noise on installs
+            # that haven't set the flag.
+            logger.debug("kanban checkin scheduler: disabled (checkin_in_gateway not set)")
+            return
+
+        try:
+            from hermes_cli import kanban_checkin as _kci
+        except ImportError:
+            logger.warning(
+                "kanban checkin scheduler: kanban_checkin module not importable; "
+                "install hermes >= 0.13 or ensure kanban_checkin.py is present"
+            )
+            return
+
+        try:
+            from hermes_cli import kanban_db as _kb
+        except Exception:
+            logger.warning("kanban checkin scheduler: kanban_db unavailable; disabled")
+            return
+
+        # Read interval config — how often we scan for stale tasks.
+        interval_minutes = float(
+            os.environ.get("HERMES_CHECKIN_STALE_MINUTES")
+            or kanban_cfg.get("checkin_interval_minutes", 30)
+            or 30
+        )
+        idle_minutes = float(
+            os.environ.get("HERMES_CHECKIN_STALE_MINUTES")
+            or kanban_cfg.get("checkin_idle_minutes", 30)
+            or 30
+        )
+        interval_s = interval_minutes * 60.0
+        if interval_s < 60.0:
+            interval_s = 60.0  # floor at 1 minute — tighter is a footgun
+
+        logger.info(
+            "kanban checkin scheduler: started (interval=%dm idle_threshold=%dm)",
+            int(interval_minutes), int(idle_minutes),
+        )
+
+        # Initial delay — let the gateway finish wiring before we touch tasks.
+        await asyncio.sleep(10)
+
+        while self._running:
+            try:
+                await asyncio.to_thread(self._run_checkin_scan, _kb, _kci, idle_minutes)
+            except asyncio.CancelledError:
+                logger.debug("kanban checkin scheduler: cancelled")
+                raise
+            except Exception:
+                logger.exception("kanban checkin scheduler: unexpected error in scan")
+
+            # Sleep in 1s slices for snappy shutdown.
+            slept = 0.0
+            while slept < interval_s and self._running:
+                await asyncio.sleep(min(1.0, interval_s - slept))
+                slept += 1.0
+
+    def _run_checkin_scan(self, _kb, _kci, idle_minutes: float) -> None:
+        """One checkin scan pass — called in a worker thread via asyncio.to_thread.
+
+        Finds all in-progress tasks idle longer than *idle_minutes*, builds
+        the check-in prompt for each, logs a ``checkin`` event with
+        ``status="prompt_built"``, and updates ``last_heartbeat_at`` so the
+        next scan doesn't repeat for the same task.
+
+        Actual prompt injection into a live agent session requires a
+        ``PluginContext.inject_message`` call bound to the task's active
+        session. That wiring is intentionally deferred: this method records
+        the prompt and marks the task, giving external supervisors (e.g.
+        Minions, CLI ``hermes kanban checkin``) a stable hook.  Full
+        session-injection support will be added in a subsequent PR once
+        the session-to-task linkage API is stable.
+        """
+        with _kb.connect() as conn:
+            stale = _kci.find_stale_tasks(conn, stale_minutes=idle_minutes)
+        if not stale:
+            logger.debug("kanban checkin scheduler: no stale tasks found")
+            return
+        logger.info("kanban checkin scheduler: %d stale task(s) eligible for check-in", len(stale))
+        for task_row in stale:
+            tid = task_row["id"]
+            try:
+                with _kb.connect() as conn:
+                    recent = conn.execute(
+                        "SELECT created_at, payload FROM task_events "
+                        "WHERE task_id = ? AND event_type = 'checkin' "
+                        "ORDER BY created_at DESC LIMIT 3",
+                        (tid,),
+                    ).fetchall()
+                history = []
+                for row in reversed(recent):
+                    try:
+                        import json as _json
+                        data = _json.loads(row["payload"] or "{}")
+                        history.append({"created_at": row["created_at"], "summary": data.get("summary", "")})
+                    except Exception:
+                        pass
+                prompt = _kci.build_checkin_prompt(history)
+                result = _kci.CheckinResult(
+                    task_id=tid,
+                    status="prompt_built",
+                    summary=f"Automated check-in scheduled (idle >{idle_minutes:.0f}m).",
+                )
+                with _kb.connect() as conn:
+                    _kci.record_checkin(conn, tid, result)
+                logger.info("kanban checkin scheduler: check-in recorded for task %s", tid)
+            except Exception:
+                logger.exception("kanban checkin scheduler: error processing task %s", tid)
+
     async def _platform_reconnect_watcher(self) -> None:
         """Background task that periodically retries connecting failed platforms.
 
-        Uses exponential backoff: 30s → 60s → 120s → 240s → 300s (cap).
+        Uses exponential backoff: 30s -> 60s -> 120s -> 240s -> 300s (cap).
         Stops retrying a platform after 20 failed attempts or if the error
         is non-retryable (e.g. bad auth token).
         """
