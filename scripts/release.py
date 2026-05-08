@@ -272,6 +272,7 @@ AUTHOR_MAP = {
     "104278804+Sertug17@users.noreply.github.com": "Sertug17",
     "112503481+caentzminger@users.noreply.github.com": "caentzminger",
     "258577966+voidborne-d@users.noreply.github.com": "voidborne-d",
+    "3820588+ddupont808@users.noreply.github.com": "ddupont808",
     "liusway405@gmail.com": "voidborne-d",
     "xydarcher@uestc.edu.cn": "Readon",
     "sir_even@icloud.com": "sirEven",
@@ -1364,7 +1365,7 @@ def main():
     )
 
     if args.output:
-        Path(args.output).write_text(changelog)
+        Path(args.output).write_text(changelog, encoding="utf-8")
         print(f"Changelog written to {args.output}")
     else:
         print(changelog)
