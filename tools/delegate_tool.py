@@ -1717,6 +1717,24 @@ def delegate_task(
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
 
+    # Normalize tasks: some models (e.g. Qwen, open-weight) emit the tasks
+    # array as a JSON-encoded string instead of a native list.  The generic
+    # coerce_tool_args in model_tools.py handles the common case, but when
+    # the string contains complex nested escaping, json.loads() may fail
+    # there.  Catch it here with a second attempt before giving up.
+    if isinstance(tasks, str):
+        try:
+            parsed = json.loads(tasks)
+        except (ValueError, TypeError):
+            parsed = None
+        if isinstance(parsed, list):
+            tasks = parsed
+        else:
+            return tool_error(
+                f"'tasks' must be a JSON array, got a string that could "
+                f"not be parsed as a list.  First 200 chars: {tasks[:200]}"
+            )
+
     # Operator-controlled kill switch — lets the TUI freeze new fan-out
     # when a runaway tree is detected, without interrupting already-running
     # children.  Cleared via the matching `delegation.pause` RPC.
