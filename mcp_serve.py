@@ -140,12 +140,12 @@ def _coerce_optional_str(value) -> Optional[str]:
     return str(value)
 
 
-def _require_str(value, field: str) -> tuple[Optional[str], Optional[str]]:
+def _require_str(value, field: str) -> tuple[str, Optional[str]]:
     if isinstance(value, (list, dict)):
-        return None, f"{field} must be a string"
+        return "", f"{field} must be a string"
     coerced = "" if value is None else str(value)
     if not coerced:
-        return None, f"{field} is required"
+        return "", f"{field} is required"
     return coerced, None
 
 
