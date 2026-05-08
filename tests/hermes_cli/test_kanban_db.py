@@ -81,6 +81,55 @@ def test_workspace_kind_validation(kanban_home):
 
 
 # ---------------------------------------------------------------------------
+# Governance routing headers
+# ---------------------------------------------------------------------------
+
+def test_task_is_dispatchable_requires_allowed_approval_and_worker_execution():
+    body = (
+        "Tenant: ops\n"
+        "Approval: execute-safe\n"
+        "Execution: worker\n"
+        "\n"
+        "Do safe work."
+    )
+    assert kb.task_is_dispatchable(body, "ops") is True
+
+
+def test_task_is_dispatchable_blocks_approval_required_even_for_worker():
+    body = "Approval: approval-required\nExecution: worker\n\nNeeds restart."
+    assert kb.task_is_dispatchable(body, "ops") is False
+
+
+def test_task_is_dispatchable_blocks_self_and_hold_execution():
+    assert kb.task_is_dispatchable("Approval: execute-safe\nExecution: self\n", "ops") is False
+    assert kb.task_is_dispatchable("Approval: execute-safe\nExecution: hold\n", "ops") is False
+
+
+def test_task_is_dispatchable_assigned_execution_must_match_assignee():
+    body = "Approval: execute-safe\nExecution: assigned:ops\n"
+    assert kb.task_is_dispatchable(body, "ops") is True
+    assert kb.task_is_dispatchable(body, "codex-worker") is False
+
+
+def test_recompute_ready_leaves_non_dispatchable_child_in_todo(kanban_home):
+    body = "Approval: approval-required\nExecution: worker\n\nNeeds Cameron approval."
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", body=body, assignee="ops", parents=[parent])
+        kb.complete_task(conn, parent, result="ok")
+        assert kb.get_task(conn, child).status == "todo"
+
+
+def test_claim_rejects_non_dispatchable_ready_task_defensively(kanban_home):
+    body = "Approval: blocked\nExecution: worker\n\nBlocked."
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="blocked but ready", body=body, assignee="ops")
+        assert kb.get_task(conn, tid).status == "ready"
+        assert kb.claim_task(conn, tid, claimer="host:worker") is None
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+# ---------------------------------------------------------------------------
 # Links + dependency resolution
 # ---------------------------------------------------------------------------
 
