@@ -1077,6 +1077,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         return [npm, "start"], tui_dir
 
     if _tui_build_needed(tui_dir):
+        entry_exists = (tui_dir / "dist" / "entry.js").exists()
         result = subprocess.run(
             [npm, "run", "build"],
             cwd=str(tui_dir),
@@ -1086,10 +1087,23 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if result.returncode != 0:
             combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
             preview = "\n".join(combined.splitlines()[-30:])
-            print("TUI build failed.")
-            if preview:
-                print(preview)
-            sys.exit(1)
+            # If a pre-existing dist/entry.js exists (e.g. after git pull
+            # updated source mtimes but the build environment is unavailable
+            # in a WebSocket/PTY context), fall back to the stale build
+            # rather than calling sys.exit(1) which silently kills the PTY
+            # session with [session ended] (issue #21801).
+            if entry_exists:
+                import warnings
+                warnings.warn(
+                    f"TUI rebuild failed — falling back to existing dist/entry.js. "
+                    f"Run 'npm run build' in ui-tui/ to update.\n{preview}",
+                    stacklevel=2,
+                )
+            else:
+                print("TUI build failed.")
+                if preview:
+                    print(preview)
+                sys.exit(1)
 
     root = _find_bundled_tui(tui_dir)
     if not root:
