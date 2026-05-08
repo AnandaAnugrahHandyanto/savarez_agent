@@ -164,6 +164,39 @@ class TestBaseInterruptSuppression:
 
         assert any(s["content"] == "Valid response" for s in adapter.sent)
 
+    @pytest.mark.asyncio
+    async def test_finalizing_response_not_suppressed_with_pending_interrupt(self):
+        """A completed response in final delivery must not be suppressed just
+        because a late follow-up has queued the next turn."""
+        adapter = StubAdapter()
+        response = "Completed response"
+
+        async def fake_handler(event):
+            return response
+
+        adapter.set_message_handler(fake_handler)
+        event = _make_event()
+        session_key = build_session_key(event.source)
+
+        interrupt_event = asyncio.Event()
+        interrupt_event.set()
+        adapter._active_sessions[session_key] = interrupt_event
+        adapter._pending_messages[session_key] = _make_event(text="late follow-up")
+
+        class Runner:
+            def __init__(self):
+                self._finalizing_sessions = {session_key}
+
+            async def busy_handler(self, _event, _session_key):
+                return True
+
+        adapter.set_busy_session_handler(Runner().busy_handler)
+
+        await adapter._process_message_background(event, session_key)
+        await adapter.cancel_background_tasks()
+
+        assert any(s["content"] == response for s in adapter.sent)
+
 
 # Test 2: run.py — partial streamed output must not suppress final send
 # ===================================================================

@@ -26,6 +26,7 @@ class _FakeAdapter:
         self._pending_messages = {}
         self._active_sessions = {}
         self.interrupted_sessions = []
+        self._send_with_retry = AsyncMock()
 
     async def send(self, chat_id, text, **kwargs):
         pass
@@ -47,6 +48,8 @@ def _make_runner():
     runner._running_agents_ts = {}
     runner._session_run_generation = {}
     runner._pending_messages = {}
+    runner._finalizing_sessions = set()
+    runner._busy_ack_ts = {}
     runner._pending_approvals = {}
     runner._voice_mode = {}
     runner._background_tasks = set()
@@ -475,6 +478,49 @@ async def test_stop_clears_pending_messages():
     # Pending messages must be cleared
     assert session_key not in runner._pending_messages
     adapter.get_pending_message.assert_called_once_with(session_key)
+
+
+# ------------------------------------------------------------------
+# Test 6d: Finalizing sessions queue follow-ups instead of interrupting
+# ------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_followup_during_finalizing_is_queued_without_interrupt():
+    """Once the agent has finished and the gateway is only finalizing delivery,
+    a late follow-up must queue behind that completed turn instead of
+    interrupting it and suppressing the reply (#21611)."""
+    runner = _make_runner()
+    event = _make_event(text="is the file ready yet?")
+    session_key = build_session_key(event.source)
+
+    fake_agent = MagicMock()
+    runner._running_agents[session_key] = fake_agent
+    runner._finalizing_sessions.add(session_key)
+
+    result = await runner._handle_active_session_busy_message(event, session_key)
+
+    assert result is True
+    assert runner.adapters[Platform.TELEGRAM]._pending_messages[session_key] is event
+    fake_agent.interrupt.assert_not_called()
+
+
+# ------------------------------------------------------------------
+# Test 6e: Normal active sessions still interrupt when not finalizing
+# ------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_followup_interrupts_when_session_not_finalizing():
+    """The finalizing-session exception must not change normal interrupt mode."""
+    runner = _make_runner()
+    event = _make_event(text="please switch tasks")
+    session_key = build_session_key(event.source)
+
+    fake_agent = MagicMock()
+    runner._running_agents[session_key] = fake_agent
+
+    result = await runner._handle_active_session_busy_message(event, session_key)
+
+    assert result is True
+    assert runner.adapters[Platform.TELEGRAM]._pending_messages[session_key] is event
+    fake_agent.interrupt.assert_called_once_with("please switch tasks")
 
 
 # ------------------------------------------------------------------

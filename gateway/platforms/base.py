@@ -2836,12 +2836,18 @@ class BasePlatformAdapter(ABC):
                 and interrupt_event.is_set()
                 and session_key in self._pending_messages
             ):
-                logger.info(
-                    "[%s] Suppressing stale response for interrupted session %s",
-                    self.name,
-                    session_key,
+                _runner = getattr(getattr(self, "_busy_session_handler", None), "__self__", None)
+                _finalizing = bool(
+                    _runner is not None
+                    and session_key in getattr(_runner, "_finalizing_sessions", set())
                 )
-                response = None
+                if not _finalizing:
+                    logger.info(
+                        "[%s] Suppressing stale response for interrupted session %s",
+                        self.name,
+                        session_key,
+                    )
+                    response = None
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:

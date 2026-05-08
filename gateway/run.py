@@ -1113,6 +1113,7 @@ class GatewayRunner:
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
+        self._finalizing_sessions: set[str] = set()
         # Overflow buffer for explicit /queue commands.  The adapter-level
         # _pending_messages dict is a single slot per session (designed for
         # "next-turn" follow-ups where repeated sends collapse into one
@@ -2348,11 +2349,15 @@ class GatewayRunner:
 
         running_agent = self._running_agents.get(session_key)
 
+        if session_key in self._finalizing_sessions:
+            effective_mode = "queue"
+        else:
+            effective_mode = self._busy_input_mode
+
         # Steer mode: inject mid-run via running_agent.steer() instead of
         # queueing + interrupting.  If the agent isn't running yet
         # (sentinel) or lacks steer(), or the payload is empty, fall back
         # to queue semantics so nothing is lost.
-        effective_mode = self._busy_input_mode
         steered = False
         if effective_mode == "steer":
             steer_text = (event.text or "").strip()
@@ -5446,6 +5451,13 @@ class GatewayRunner:
                 return None
 
             running_agent = self._running_agents.get(_quick_key)
+            if _quick_key in self._finalizing_sessions:
+                logger.debug(
+                    "PRIORITY follow-up for session %s arrived during final delivery — queueing without interrupt",
+                    _quick_key,
+                )
+                self._queue_or_replace_pending_event(_quick_key, event)
+                return None
             if running_agent is _AGENT_PENDING_SENTINEL:
                 # Agent is being set up but not ready yet.
                 if event.get_command() == "stop":
@@ -6752,6 +6764,8 @@ class GatewayRunner:
                 event_message_id=event.message_id,
                 channel_prompt=event.channel_prompt,
             )
+            if session_key:
+                self._finalizing_sessions.add(session_key)
 
             # Stop persistent typing indicator now that the agent is done
             try:
@@ -7155,6 +7169,8 @@ class GatewayRunner:
                 "Try again or use /reset to start a fresh session."
             )
         finally:
+            if session_key:
+                self._finalizing_sessions.discard(session_key)
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
 
@@ -14755,7 +14771,6 @@ class GatewayRunner:
                 elif pending_event:
                     pending = pending_event.text or _build_media_placeholder(pending_event)
                     logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
-
             # Leftover /steer: if a steer arrived after the last tool batch
             # (e.g. during the final API call), the agent couldn't inject it
             # and returned it in result["pending_steer"]. Deliver it as the
