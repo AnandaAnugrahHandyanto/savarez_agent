@@ -323,8 +323,14 @@ class ResponseStore:
         # gracefully on NFS/SMB/FUSE-mounted HERMES_HOME (same filesystem
         # issue addressed for state.db/kanban.db — see
         # hermes_state._WAL_INCOMPAT_MARKERS).
-        from hermes_state import apply_wal_with_fallback
-        apply_wal_with_fallback(self._conn, db_label="response_store.db")
+        try:
+            from hermes_state import apply_wal_with_fallback
+            apply_wal_with_fallback(self._conn, db_label="response_store.db")
+        except Exception:
+            try:
+                self._conn.execute("PRAGMA journal_mode=WAL")
+            except Exception:
+                pass
         self._conn.execute(
             """CREATE TABLE IF NOT EXISTS responses (
                 response_id TEXT PRIMARY KEY,
