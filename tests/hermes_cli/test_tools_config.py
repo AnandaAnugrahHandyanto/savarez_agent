@@ -855,7 +855,16 @@ def test_get_platform_tools_recovers_non_configurable_toolsets_from_composite():
 
     with mock_patch("hermes_cli.tools_config.PLATFORMS", {**PLATFORMS, **test_platforms}):
         with mock_patch("toolsets.TOOLSETS", fake_toolsets):
-            enabled = _get_platform_tools({}, "_test_platform")
+            from tools.registry import registry
+            original_registry_tools = registry.get_tool_names_for_toolset
+
+            def fake_registry_tools(toolset_name):
+                if toolset_name == "web":
+                    return ["web_search_plus"]
+                return original_registry_tools(toolset_name)
+
+            with mock_patch.object(registry, "get_tool_names_for_toolset", fake_registry_tools):
+                enabled = _get_platform_tools({}, "_test_platform")
 
     assert "_test_platform_tool" in enabled
     assert "web" in enabled

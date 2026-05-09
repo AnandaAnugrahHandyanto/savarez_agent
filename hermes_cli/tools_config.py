@@ -1055,12 +1055,35 @@ def _get_platform_tools(
         for ts_name in toolset_names:
             all_tool_names.update(resolve_toolset(ts_name))
 
+        def _static_toolset_tools(ts_key: str, seen: Optional[Set[str]] = None) -> Set[str]:
+            """Resolve built-in TOOLSETS only, ignoring registry plugin add-ons.
+
+            Plugin discovery can append tools to an existing configurable
+            toolset (for example `web_search_plus` under `web`). Those add-ons
+            should not make the platform's default composite look like it no
+            longer contains the core `web` toolset.
+            """
+            seen = seen or set()
+            if ts_key in seen:
+                return set()
+            seen.add(ts_key)
+            ts_def = TOOLSETS.get(ts_key)
+            if not isinstance(ts_def, dict):
+                return set()
+            tools = set(ts_def.get("tools") or [])
+            for included in ts_def.get("includes") or []:
+                tools.update(_static_toolset_tools(str(included), seen))
+            return tools
+
         enabled_toolsets = set()
         for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
             if not _toolset_allowed_for_platform(ts_key, platform):
                 continue
             ts_tools = set(resolve_toolset(ts_key))
-            if ts_tools and ts_tools.issubset(all_tool_names):
+            static_tools = _static_toolset_tools(ts_key)
+            if (ts_tools and ts_tools.issubset(all_tool_names)) or (
+                static_tools and static_tools.issubset(all_tool_names)
+            ):
                 enabled_toolsets.add(ts_key)
 
         default_off = set(_DEFAULT_OFF_TOOLSETS)

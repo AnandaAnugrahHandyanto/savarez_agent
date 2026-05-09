@@ -222,6 +222,13 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     runner._capture_gateway_honcho_if_configured = lambda *a, **kw: None
     runner._emit_gateway_run_progress = AsyncMock()
 
+    async def _bypass_destructive_slash_confirm(**kwargs):
+        # These e2e tests cover slash-command routing and session lifecycle;
+        # confirmation UX is covered by dedicated slash-confirm tests.
+        return await kwargs["execute"]()
+
+    runner._maybe_confirm_destructive_slash = _bypass_destructive_slash_confirm
+
     runner.pairing_store = MagicMock()
     runner.pairing_store._is_rate_limited = MagicMock(return_value=False)
     runner.pairing_store.generate_code = MagicMock(return_value="ABC123")

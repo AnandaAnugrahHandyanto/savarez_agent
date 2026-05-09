@@ -282,6 +282,14 @@ def grok_supports_reasoning_effort(model: str) -> bool:
     return any(name.startswith(prefix) for prefix in _GROK_EFFORT_CAPABLE_PREFIXES)
 
 
+# Provider-specific hard fallbacks for cases where the provider's models.dev
+# row is unavailable or a test has replaced the shared registry cache. Keep
+# these ahead of provider-unaware OpenRouter metadata: the same bare model slug
+# can have different windows on aggregator vs direct-provider routes.
+PROVIDER_CONTEXT_LENGTH_DEFAULTS = {
+    ("tencent-tokenhub", "hy3-preview"): 256000,
+}
+
 _CONTEXT_LENGTH_KEYS = (
     "context_length",
     "context_window",
@@ -1466,6 +1474,12 @@ def get_model_context_length(
         ctx = lookup_models_dev_context(effective_provider, model)
         if ctx:
             return ctx
+
+        provider_default = PROVIDER_CONTEXT_LENGTH_DEFAULTS.get(
+            (effective_provider, model.lower())
+        )
+        if provider_default:
+            return provider_default
 
     # 6. OpenRouter live API metadata (provider-unaware fallback)
     metadata = fetch_model_metadata()

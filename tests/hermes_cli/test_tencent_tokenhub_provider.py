@@ -319,6 +319,18 @@ class TestTencentTokenhubContextLength:
         assert isinstance(ctx, int)
         assert ctx >= 4096, f"hy3-preview context length looks unset/wrong: {ctx}"
 
+    def test_provider_default_beats_openrouter_fallback_when_models_dev_missing(self, monkeypatch):
+        """Direct TokenHub should not inherit OpenRouter's hy3-preview window."""
+        monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+        monkeypatch.setattr(
+            "agent.model_metadata.fetch_model_metadata",
+            lambda: {"hy3-preview": {"context_length": 262144}},
+        )
+
+        from agent.model_metadata import get_model_context_length
+        ctx = get_model_context_length("hy3-preview", provider="tencent-tokenhub")
+        assert ctx == 256000
+
 
 # =============================================================================
 # providers.py (unified provider module)
