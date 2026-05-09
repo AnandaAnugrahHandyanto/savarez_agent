@@ -369,6 +369,9 @@ class IRCAdapter(BasePlatformAdapter):
         if not self._writer:
             return SendResult(success=False, error="Not connected")
 
+        logger.debug("IRC: send() called with chat_id=%s, content_len=%d, content_preview=%s", 
+                    chat_id, len(content), content[:100])
+
         has_newlines = "\n" in content
 
         if self._multiline_cap and has_newlines:
@@ -439,6 +442,7 @@ class IRCAdapter(BasePlatformAdapter):
         """Send a raw IRC line."""
         if self._writer:
             try:
+                logger.debug("IRC: SENDING: %s", line)
                 self._writer.write((line + "\r\n").encode("utf-8"))
             except Exception as exc:
                 logger.warning("IRC: failed to send line: %s", exc)
@@ -602,10 +606,31 @@ class IRCAdapter(BasePlatformAdapter):
                 self._send_line("QUIT")
                 return
 
+        # Handle NICK command from server (server confirming nickname change)
+        if cmd == "NICK":
+            # params[0] is the new nickname
+            if params and params[0]:
+                new_nick = params[0]
+                old_nick = self._actual_nick
+                self._actual_nick = new_nick
+                if new_nick.lower() != old_nick.lower():
+                    logger.info("IRC: Server changed our nick from %s to %s", old_nick, new_nick)
+            return
+
         # Handle registration confirmation
         if cmd == "001":
             self._registered = True
-            logger.info("IRC: registered with server")
+            # Update actual_nick to the server-accepted nickname (params[0])
+            logger.info("IRC: Received 001 registration: params=%s, first_param=%s", params, params[0] if params else "None")
+            if params and params[0]:
+                self._actual_nick = params[0]
+                logger.info("IRC: Updated _actual_nick to %s (configured as %s)", self._actual_nick, self._nick)
+                if self._actual_nick.lower() != self._nick.lower():
+                    logger.info("IRC: server accepted different nick than configured: %s (was configured as %s)",
+                                self._actual_nick, self._nick)
+            else:
+                logger.warning("IRC: 001 received but params[0] is empty or missing")
+            logger.info("IRC: registered with server as %s", self._actual_nick)
             # Fallback: if CAP negotiation didn't complete, resolve it now
             if not self._cap_negotiated:
                 self._cap_negotiated = True
@@ -747,8 +772,10 @@ class IRCAdapter(BasePlatformAdapter):
                 if nick_part and nick_pattern.match(nick_part)
             ]
 
-            if self._nick.lower() not in mentioned_nicks:
-                logger.debug("IRC: Filtered channel message (we were not mentioned): %s", text[:100])
+            if self._actual_nick.lower() not in mentioned_nicks:
+                logger.warning("IRC: Filtered channel message (we were not mentioned): %s", text[:100])
+                logger.warning("IRC: _actual_nick=%s (lower=%s), mentioned_nicks=%s", 
+                           self._actual_nick, self._actual_nick.lower(), mentioned_nicks)
                 return
 
             # Check for command after mention block: /[a-zA-Z_][a-zA-Z0-9_-]+

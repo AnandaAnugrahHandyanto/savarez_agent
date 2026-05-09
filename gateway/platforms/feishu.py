@@ -1476,6 +1476,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _on_message_event(self, data: Any) -> None:
         """Normalize Feishu inbound events into MessageEvent."""
+        logger.info("[Feishu] _on_message_event called with data: %s", type(data).__name__)
         if self._loop is None:
             logger.warning("[Feishu] Dropping inbound message before adapter loop is ready")
             return
@@ -1495,12 +1496,13 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.debug("[Feishu] Dropping malformed inbound event: missing message or sender_id")
             return
 
+        # Debug log: show sender type for all messages
+        sender_type = getattr(sender, "sender_type", "")
+        logger.debug("[Feishu] Inbound message from sender_type=%s, sender_id=%s", sender_type, sender_id)
+
         message_id = getattr(message, "message_id", None)
         if not message_id or self._is_duplicate(message_id):
             logger.debug("[Feishu] Dropping duplicate/missing message_id: %s", message_id)
-            return
-        if getattr(sender, "sender_type", "") == "bot":
-            logger.debug("[Feishu] Dropping bot-originated event: %s", message_id)
             return
 
         chat_type = getattr(message, "chat_type", "p2p")
