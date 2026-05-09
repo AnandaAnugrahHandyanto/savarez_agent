@@ -8,10 +8,10 @@ import { SUPPORTED_LOCALES, type Locale } from "@/i18n/types";
  */
 export function LanguageSwitcher() {
   const { locale, setLocale, t } = useI18n();
-  const options: Record<Locale, { displayName: string; flag: string }> = {
-    en: { displayName: "English", flag: "🇬🇧" },
-    zh: { displayName: "中文", flag: "🇨🇳" },
-    "pt-BR": { displayName: "Português (Brasil)", flag: "🇧🇷" },
+  const options: Record<Locale, { displayName: string; shortName: string; flag: string }> = {
+    en: { displayName: "English", shortName: "EN", flag: "🇬🇧" },
+    zh: { displayName: "中文", shortName: "中文", flag: "🇨🇳" },
+    "pt-BR": { displayName: "Português (Brasil)", shortName: "PT-BR", flag: "🇧🇷" },
   };
 
   const currentIndex = SUPPORTED_LOCALES.indexOf(locale);
@@ -39,7 +39,7 @@ export function LanguageSwitcher() {
           mondwest
           className="hidden sm:inline tracking-wide whitespace-nowrap text-[0.65rem]"
         >
-          {current.displayName}
+          {current.shortName}
         </Typography>
       </span>
     </Button>
