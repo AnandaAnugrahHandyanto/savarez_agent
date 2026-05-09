@@ -13,7 +13,7 @@ import re
 import ssl
 import time
 from email.utils import formatdate
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from agent.redact import redact_sensitive_text
 
@@ -55,6 +55,34 @@ _GENERIC_SECRET_ASSIGN_RE = re.compile(
     r"\b(access_token|api[_-]?key|auth[_-]?token|signature|sig)\s*=\s*([^\s,;]+)",
     re.IGNORECASE,
 )
+_THUMBNAIL_DIRECTIVE_RE = re.compile(
+    r'''\[\[thumbnail:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|[^\]\n]+?)\s*\]\]''',
+    re.IGNORECASE,
+)
+
+
+def _extract_media_thumbnail_directive(message: str) -> Tuple[Optional[str], str]:
+    """Extract a ``[[thumbnail:/path/to/thumb.jpg]]`` directive from a message.
+
+    The directive is intended for Telegram ``sendDocument.thumbnail`` and is
+    stripped from user-visible text before normal MEDIA tag extraction. Only one
+    thumbnail is exposed at this high level; if several directives are present,
+    the first one wins and all directives are removed from the visible message.
+    """
+    thumbnail_path: Optional[str] = None
+
+    def _replace(match: re.Match) -> str:
+        nonlocal thumbnail_path
+        raw_path = match.group("path").strip()
+        if len(raw_path) >= 2 and raw_path[0] == raw_path[-1] and raw_path[0] in "`\"'":
+            raw_path = raw_path[1:-1].strip()
+        if thumbnail_path is None and raw_path:
+            thumbnail_path = os.path.expanduser(raw_path)
+        return ""
+
+    cleaned = _THUMBNAIL_DIRECTIVE_RE.sub(_replace, message)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return thumbnail_path, cleaned
 
 
 def _sanitize_error_text(text) -> str:
@@ -137,7 +165,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "message": {
                 "type": "string",
-                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment."
+                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment. For Telegram documents, add [[thumbnail:/tmp/preview.jpg]] before a MEDIA:/tmp/report.pdf tag to pass a custom sendDocument thumbnail."
             }
         },
         "required": []
@@ -247,8 +275,9 @@ def _handle_send(args):
     # instead of send_photo so the original bytes survive (e.g. info-graph
     # JPGs where Telegram's sendPhoto recompresses to 1280px).
     force_document_attachments = "[[as_document]]" in message
+    thumbnail_path, message_for_media = _extract_media_thumbnail_directive(message)
 
-    media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
+    media_files, cleaned_message = BasePlatformAdapter.extract_media(message_for_media)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
@@ -275,15 +304,20 @@ def _handle_send(args):
 
     try:
         from model_tools import _run_async
+        send_kwargs = {
+            "thread_id": thread_id,
+            "media_files": media_files,
+            "force_document": force_document_attachments,
+        }
+        if thumbnail_path:
+            send_kwargs["thumbnail_path"] = thumbnail_path
         result = _run_async(
             _send_to_platform(
                 platform,
                 pconfig,
                 chat_id,
                 cleaned_message,
-                thread_id=thread_id,
-                media_files=media_files,
-                force_document=force_document_attachments,
+                **send_kwargs,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -432,6 +466,7 @@ async def _send_via_adapter(
     thread_id=None,
     media_files=None,
     force_document=False,
+    thumbnail_path=None,
 ):
     """Send a message via a live gateway adapter, with a standalone fallback
     for out-of-process callers (e.g. cron running separately from the gateway).
@@ -484,6 +519,7 @@ async def _send_via_adapter(
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document,
+                thumbnail_path=thumbnail_path,
             )
         except asyncio.CancelledError:
             raise
@@ -511,7 +547,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, thumbnail_path=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -581,14 +617,19 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
+            send_telegram_kwargs = {
+                "media_files": media_files if is_last else [],
+                "thread_id": thread_id,
+                "disable_link_previews": disable_link_previews,
+                "force_document": force_document,
+            }
+            if thumbnail_path and is_last:
+                send_telegram_kwargs["thumbnail_path"] = thumbnail_path
             result = await _send_telegram(
                 pconfig.token,
                 chat_id,
                 chunk,
-                media_files=media_files if is_last else [],
-                thread_id=thread_id,
-                disable_link_previews=disable_link_previews,
-                force_document=force_document,
+                **send_telegram_kwargs,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -737,6 +778,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document,
+                thumbnail_path=thumbnail_path,
             )
 
         if isinstance(result, dict) and result.get("error"):
@@ -750,7 +792,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     return last_result
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, thumbnail_path=None):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -870,9 +912,25 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                             chat_id=int_chat_id, audio=f, **thread_kwargs
                         )
                     else:
-                        last_msg = await bot.send_document(
-                            chat_id=int_chat_id, document=f, **thread_kwargs
-                        )
+                        document_kwargs = {
+                            "chat_id": int_chat_id,
+                            "document": f,
+                            **thread_kwargs,
+                        }
+                        if thumbnail_path:
+                            if os.path.exists(thumbnail_path):
+                                with open(thumbnail_path, "rb") as thumb_f:
+                                    last_msg = await bot.send_document(
+                                        **document_kwargs,
+                                        thumbnail=thumb_f,
+                                    )
+                            else:
+                                warning = f"Thumbnail file not found, sending document without thumbnail: {thumbnail_path}"
+                                logger.warning(warning)
+                                warnings.append(warning)
+                                last_msg = await bot.send_document(**document_kwargs)
+                        else:
+                            last_msg = await bot.send_document(**document_kwargs)
             except Exception as e:
                 warning = _sanitize_error_text(f"Failed to send media {media_path}: {e}")
                 logger.error(warning)

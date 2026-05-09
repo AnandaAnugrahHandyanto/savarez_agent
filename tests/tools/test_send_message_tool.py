@@ -23,6 +23,7 @@ def _reset_signal_scheduler():
 from gateway.config import Platform
 from tools.send_message_tool import (
     _derive_forum_thread_name,
+    _extract_media_thumbnail_directive,
     _parse_target_ref,
     _send_discord,
     _send_matrix_via_adapter,
@@ -215,6 +216,46 @@ class TestSendMessageTool:
             user_id="user-123",
         )
 
+    def test_thumbnail_directive_is_passed_to_platform_and_stripped(self):
+        config, telegram_cfg = _make_config()
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": "Here [[thumbnail:/tmp/preview.jpg]]\nMEDIA:/tmp/report.pdf",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_cfg,
+            "12345",
+            "Here",
+            thread_id=None,
+            media_files=[("/tmp/report.pdf", False)],
+            force_document=False,
+            thumbnail_path="/tmp/preview.jpg",
+        )
+
+    def test_extract_media_thumbnail_directive_supports_quoted_paths(self):
+        thumbnail_path, cleaned = _extract_media_thumbnail_directive(
+            'Intro [[thumbnail:"/tmp/report preview.jpg"]]\nMEDIA:/tmp/report.pdf'
+        )
+
+        assert thumbnail_path == "/tmp/report preview.jpg"
+        assert "[[thumbnail" not in cleaned
+        assert "Intro" in cleaned
+        assert "MEDIA:/tmp/report.pdf" in cleaned
+
     def test_top_level_send_failure_redacts_query_token(self):
         config, _telegram_cfg = _make_config()
         leaked = "very-secret-query-token-123456"
@@ -349,6 +390,37 @@ class TestSendTelegramMediaDelivery:
         assert "error" in result
         assert "No deliverable text or media remained" in result["error"]
         bot.send_message.assert_not_awaited()
+
+    def test_sends_document_thumbnail_for_pdf_media(self, tmp_path, monkeypatch):
+        pdf_path = tmp_path / "report.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4\n")
+        thumb_path = tmp_path / "preview.jpg"
+        thumb_path.write_bytes(b"\xff\xd8\xff" + b"\x00" * 32)
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+        bot.send_photo = AsyncMock()
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock(return_value=SimpleNamespace(message_id=9))
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram(
+                "token",
+                "12345",
+                "",
+                media_files=[(str(pdf_path), False)],
+                thumbnail_path=str(thumb_path),
+            )
+        )
+
+        assert result["success"] is True
+        bot.send_document.assert_awaited_once()
+        call_kwargs = bot.send_document.await_args.kwargs
+        assert call_kwargs["document"].name == str(pdf_path)
+        assert call_kwargs["thumbnail"].name == str(thumb_path)
 
 
 # ---------------------------------------------------------------------------
@@ -2123,17 +2195,18 @@ class TestSendViaAdapterStandaloneFallback:
 
     @pytest.mark.asyncio
     async def test_standalone_sender_fn_kwargs_forwarded(self, monkeypatch):
-        """thread_id, media_files, and force_document all reach the hook."""
+        """thread_id, media_files, force_document, and thumbnail_path all reach the hook."""
         from tools.send_message_tool import _send_via_adapter
         from gateway.platform_registry import platform_registry
 
         recorded = {}
 
         async def fake_send(pconfig, chat_id, message, *, thread_id=None,
-                            media_files=None, force_document=False):
+                            media_files=None, force_document=False, thumbnail_path=None):
             recorded["thread_id"] = thread_id
             recorded["media_files"] = media_files
             recorded["force_document"] = force_document
+            recorded["thumbnail_path"] = thumbnail_path
             return {"success": True, "message_id": "x"}
 
         platform_registry.register(self._make_entry(fake_send))
@@ -2148,6 +2221,7 @@ class TestSendViaAdapterStandaloneFallback:
                 thread_id="thread-7",
                 media_files=["/tmp/a.png"],
                 force_document=True,
+                thumbnail_path="/tmp/thumb.jpg",
             )
         finally:
             platform_registry.unregister("fakeplatform")
@@ -2155,6 +2229,7 @@ class TestSendViaAdapterStandaloneFallback:
         assert recorded["thread_id"] == "thread-7"
         assert recorded["media_files"] == ["/tmp/a.png"]
         assert recorded["force_document"] is True
+        assert recorded["thumbnail_path"] == "/tmp/thumb.jpg"
 
     @pytest.mark.asyncio
     async def test_standalone_sender_fn_absent_returns_helpful_error(self, monkeypatch):
