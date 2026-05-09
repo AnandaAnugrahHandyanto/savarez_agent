@@ -30,6 +30,7 @@ import asyncio
 import hmac
 import json
 import logging
+import os
 import sqlite3
 import time
 from dataclasses import asdict
@@ -124,11 +125,23 @@ BOARD_COLUMNS: list[str] = [
 ]
 
 
-def _task_dict(task: kanban_db.Task) -> dict[str, Any]:
+_CARD_SUMMARY_PREVIEW_CHARS = 200
+
+
+def _task_dict(
+    task: kanban_db.Task,
+    *,
+    latest_summary: Optional[str] = None,
+) -> dict[str, Any]:
     d = asdict(task)
     # Add derived age metrics so the UI can colour stale cards without
     # computing deltas client-side.
     d["age"] = kanban_db.task_age(task)
+    # Surface the latest non-null run summary so dashboards don't show
+    # blank cards/drawers for tasks where the worker handed off via
+    # ``task_runs.summary`` (the kanban-worker pattern) instead of
+    # ``tasks.result``. ``None`` when no run has produced a summary yet.
+    d["latest_summary"] = latest_summary
     # Keep body short on list endpoints; full body comes from /tasks/:id.
     return d
 
@@ -381,8 +394,18 @@ def get_board(
         if include_archived:
             columns["archived"] = []
 
+        # Batch-fetch the latest non-null run summary per task in one
+        # window-function query (avoids N+1 ``latest_summary`` calls
+        # for boards with hundreds of tasks). Truncated to a card-size
+        # preview here — the full text is available via /tasks/:id.
+        summary_map = kanban_db.latest_summaries(conn, [t.id for t in tasks])
+
         for t in tasks:
-            d = _task_dict(t)
+            full = summary_map.get(t.id)
+            preview = (
+                full[:_CARD_SUMMARY_PREVIEW_CHARS] if full else None
+            )
+            d = _task_dict(t, latest_summary=preview)
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
@@ -440,7 +463,11 @@ def get_task(task_id: str, board: Optional[str] = Query(None)):
         task = kanban_db.get_task(conn, task_id)
         if task is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-        task_d = _task_dict(task)
+        # Drawer/detail view returns the FULL summary (no truncation) so
+        # operators can read the complete worker handoff without making
+        # a second round-trip. Cards on /board carry a 200-char preview.
+        full_summary = kanban_db.latest_summary(conn, task_id)
+        task_d = _task_dict(task, latest_summary=full_summary)
         # Attach diagnostics so the drawer's Diagnostics section can
         # render recovery actions without a second round-trip.
         diags = _compute_task_diagnostics(conn, task_ids=[task_id])
@@ -662,6 +689,22 @@ def _set_status_direct(
         ).fetchone()
         if prev is None:
             return False
+
+        # Guard: don't allow promoting to 'ready' unless all parents are done.
+        # Prevents the dispatcher from spawning a child whose upstream work
+        # hasn't completed (e.g. T4 dispatched while T3 is still blocked).
+        if new_status == "ready":
+            parent_statuses = conn.execute(
+                "SELECT t.status FROM tasks t "
+                "JOIN task_links l ON l.parent_id = t.id "
+                "WHERE l.child_id = ?",
+                (task_id,),
+            ).fetchall()
+            if parent_statuses and not all(
+                p["status"] == "done" for p in parent_statuses
+            ):
+                return False
+
         was_running = prev["status"] == "running"
 
         cur = conn.execute(
@@ -967,6 +1010,61 @@ def reclaim_task_endpoint(
         return {"ok": True, "task_id": task_id}
     finally:
         conn.close()
+
+
+class SpecifyBody(BaseModel):
+    """Optional author override. Nothing else is configurable from the
+    dashboard — model + prompt come from ``auxiliary.triage_specifier``
+    in config.yaml, same as the CLI."""
+
+    author: Optional[str] = None
+
+
+@router.post("/tasks/{task_id}/specify")
+def specify_task_endpoint(
+    task_id: str,
+    payload: SpecifyBody,
+    board: Optional[str] = Query(None),
+):
+    """Flesh out a triage-column task via the auxiliary LLM and promote
+    it to ``todo``. Maps 1:1 to ``hermes kanban specify <task_id>``.
+
+    Returns the outcome shape used by the CLI: ``{ok, task_id, reason,
+    new_title}``. A non-OK outcome is NOT an HTTP error — the UI renders
+    the reason inline (e.g. "no auxiliary client configured") so the
+    operator knows what to fix, and retries without a page reload.
+
+    This endpoint runs in FastAPI's threadpool (sync ``def``) because
+    the underlying LLM call can take tens of seconds to minutes on
+    reasoning models, which would block the event loop if we used
+    ``async def`` without an explicit ``run_in_executor``.
+    """
+    board = _resolve_board(board)
+    # Pin the board for the duration of this call so the specifier module
+    # (which calls ``kb.connect()`` with no args) hits the right DB.
+    prev_env = os.environ.get("HERMES_KANBAN_BOARD")
+    try:
+        os.environ["HERMES_KANBAN_BOARD"] = board or kanban_db.DEFAULT_BOARD
+        # Import lazily so a missing auxiliary client at import time
+        # doesn't break plugin load.
+        from hermes_cli import kanban_specify  # noqa: WPS433 (intentional)
+
+        outcome = kanban_specify.specify_task(
+            task_id,
+            author=(payload.author or None),
+        )
+    finally:
+        if prev_env is None:
+            os.environ.pop("HERMES_KANBAN_BOARD", None)
+        else:
+            os.environ["HERMES_KANBAN_BOARD"] = prev_env
+
+    return {
+        "ok": bool(outcome.ok),
+        "task_id": outcome.task_id,
+        "reason": outcome.reason,
+        "new_title": outcome.new_title,
+    }
 
 
 class ReassignBody(BaseModel):
@@ -1478,6 +1576,13 @@ async def stream_events(ws: WebSocket):
                 await ws.send_json({"events": events, "cursor": cursor})
             await asyncio.sleep(_EVENT_POLL_SECONDS)
     except WebSocketDisconnect:
+        return
+    except asyncio.CancelledError:
+        # Normal shutdown path: dashboard process exit (Ctrl-C) cancels the
+        # websocket task while it is sleeping in the poll loop.
+        # CancelledError is a BaseException in 3.8+ so the bare Exception
+        # handler below would not catch it; without this clause Uvicorn
+        # surfaces the cancellation as an application traceback. Quiet it.
         return
     except Exception as exc:  # defensive: never crash the dashboard worker
         log.warning("Kanban event stream error: %s", exc)

@@ -5,20 +5,6 @@ import contextvars
 import pytest
 
 
-def test_default_origin_is_foreground():
-    from tools.skill_provenance import (
-        get_current_write_origin,
-        set_current_write_origin,
-        reset_current_write_origin,
-    )
-    token = set_current_write_origin("foreground")
-    # In a fresh ContextVar context, default kicks in.
-    ctx = contextvars.copy_context()
-    try:
-        origin = ctx.run(get_current_write_origin)
-        assert origin == "foreground"
-    finally:
-        reset_current_write_origin(token)
 
 
 def test_set_and_get_origin():

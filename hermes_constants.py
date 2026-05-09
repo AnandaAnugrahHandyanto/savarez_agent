@@ -5,8 +5,6 @@ without risk of circular imports.
 """
 
 import os
-import platform
-from builtins import open as _builtin_open
 from pathlib import Path
 
 
@@ -227,54 +225,18 @@ _wsl_detected: bool | None = None
 def is_wsl() -> bool:
     """Return True when running inside WSL (Windows Subsystem for Linux).
 
-    Uses WSL-specific kernel markers (not a bare substring match on
-    ``/proc/version``, which false-positived some Linux CI kernels).
-    Result is cached for the process lifetime. Import-safe — no heavy deps.
+    Checks ``/proc/version`` for the ``microsoft`` marker that both WSL1
+    and WSL2 inject.  Result is cached for the process lifetime.
+    Import-safe — no heavy deps.
     """
     global _wsl_detected
     if _wsl_detected is not None:
         return _wsl_detected
     try:
-        if os.path.exists("/proc/sys/fs/binfmt_misc/WSLInterop"):
-            _wsl_detected = True
-            return True
-    except OSError:
-        pass
-
-    release = ""
-    try:
-        release = platform.uname().release.lower()
+        with open("/proc/version", "r", encoding="utf-8") as f:
+            _wsl_detected = "microsoft" in f.read().lower()
     except Exception:
-        pass
-
-    proc_ver = ""
-    try:
-        with _builtin_open("/proc/version", "r") as f:
-            proc_ver = f.read().lower()
-    except Exception:
-        proc_ver = ""
-
-    compact_nv = proc_ver.replace(" ", "").replace("\n", "")
-
-    # WSL2 publishes Microsoft-built kernels via uts release and/or proc_version.
-    if "-microsoft-standard" in release:
-        _wsl_detected = True
-        return True
-
-    if "microsoft-standard-wsl" in compact_nv or "microsoft-standard-" in compact_nv:
-        _wsl_detected = True
-        return True
-
-    # Legacy WSL1 kernels used a ``...-Microsoft`` release token.
-    try:
-        token = proc_ver.split()[2] if proc_ver.startswith("linux version ") else ""
-    except IndexError:
-        token = ""
-    if token and "-microsoft" in token and "generic" not in token:
-        _wsl_detected = True
-        return True
-
-    _wsl_detected = False
+        _wsl_detected = False
     return _wsl_detected
 
 
@@ -298,7 +260,7 @@ def is_container() -> bool:
         _container_detected = True
         return True
     try:
-        with open("/proc/1/cgroup", "r") as f:
+        with open("/proc/1/cgroup", "r", encoding="utf-8") as f:
             cgroup = f.read()
             if "docker" in cgroup or "podman" in cgroup or "/lxc/" in cgroup:
                 _container_detected = True

@@ -127,6 +127,43 @@ def test_tenant_filter(client):
     assert total == 1
 
 
+def test_dashboard_select_filters_use_sdk_value_change_handler():
+    """Tenant/assignee filters must work with the dashboard SDK Select API.
+
+    The dashboard Select component is shadcn-like and calls
+    ``onValueChange(value)`` instead of native ``onChange(event)``. A native-only
+    handler leaves the tenant dropdown visually selectable but never updates the
+    filtered board query.
+    """
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "function selectChangeHandler(setter)" in js
+    assert "onValueChange: function (v)" in js
+    assert "onChange: function (e)" in js
+    assert "selectChangeHandler(props.setTenantFilter)" in js
+    assert "selectChangeHandler(props.setAssigneeFilter)" in js
+
+
+def test_dashboard_client_side_filtering_includes_tenant_filter():
+    """The rendered board must also filter by tenant.
+
+    The API request includes ``?tenant=...``, but the dashboard also filters the
+    locally cached board for search/assignee changes. Without checking
+    ``tenantFilter`` here, switching tenants can leave stale cards visible until a
+    full reload finishes.
+    """
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "if (tenantFilter && t.tenant !== tenantFilter) return false;" in js
+    assert "[boardData, tenantFilter, assigneeFilter, search]" in js
+
+
 # ---------------------------------------------------------------------------
 # GET /tasks/:id returns body + comments + events + links
 # ---------------------------------------------------------------------------
@@ -203,7 +240,10 @@ def test_patch_block_then_unblock(client):
 
 def test_patch_drag_drop_move_todo_to_ready(client):
     """Direct status write: the drag-drop path for statuses without a
-    dedicated verb (e.g. manually promoting todo -> ready)."""
+    dedicated verb (e.g. manually promoting todo -> ready).
+
+    Promoting a child whose parent is not done is rejected (409).
+    Promoting a child whose parent IS done is accepted (200)."""
     parent = client.post("/api/plugins/kanban/tasks", json={"title": "p"}).json()["task"]
     child = client.post(
         "/api/plugins/kanban/tasks",
@@ -211,12 +251,23 @@ def test_patch_drag_drop_move_todo_to_ready(client):
     ).json()["task"]
     assert child["status"] == "todo"
 
+    # Rejected: parent not done yet.
     r = client.patch(
         f"/api/plugins/kanban/tasks/{child['id']}",
         json={"status": "ready"},
     )
+    assert r.status_code == 409
+
+    # Complete the parent.
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}",
+        json={"status": "done"},
+    )
     assert r.status_code == 200
-    assert r.json()["task"]["status"] == "ready"
+
+    # Now child auto-promoted by recompute_ready — already ready.
+    child_after = client.get(f"/api/plugins/kanban/tasks/{child['id']}").json()["task"]
+    assert child_after["status"] == "ready"
 
 
 def test_patch_reassign(client):
@@ -433,13 +484,17 @@ def test_board_progress_rollup(client):
         "/api/plugins/kanban/tasks",
         json={"title": "b", "parents": [parent["id"]]},
     ).json()["task"]
-    # Children start as "todo" because the parent isn't done yet; promote
-    # them to "ready" so complete_task will accept the transition.
+    # Children start as "todo" because the parent isn't done yet.  Set the
+    # parent to done so children auto-promote to ready via recompute_ready.
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}",
+        json={"status": "done"},
+    )
+    assert r.status_code == 200
+    # Verify children are now ready.
     for cid in (child_a["id"], child_b["id"]):
-        r = client.patch(
-            f"/api/plugins/kanban/tasks/{cid}", json={"status": "ready"},
-        )
-        assert r.status_code == 200
+        t = client.get(f"/api/plugins/kanban/tasks/{cid}").json()["task"]
+        assert t["status"] == "ready", f"{cid} should be ready after parent done"
 
     # 0/2 done.
     r = client.get("/api/plugins/kanban/board")
@@ -535,6 +590,67 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
         assert ws is not None  # handshake succeeded
 
 
+def test_ws_events_swallows_cancellation_on_shutdown(tmp_path, monkeypatch):
+    """``asyncio.CancelledError`` while sleeping in the poll loop is the
+    normal uvicorn-shutdown path (``BaseException``, so the bare
+    ``except Exception:`` does NOT catch it). Without the explicit
+    clause the cancellation surfaces as an application traceback.
+
+    Regression test for #20790 (fix in #20938). Drives the coroutine
+    directly (rather than through FastAPI TestClient) so we can observe
+    the cancellation outcome deterministically.
+    """
+    import asyncio
+    import types
+    import sys as _sys
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    # Short-circuit the token check — this test is about the cancellation
+    # path, not auth.
+    import plugins.kanban.dashboard.plugin_api as pa
+    monkeypatch.setattr(pa, "_check_ws_token", lambda t: True)
+
+    class _FakeWS:
+        def __init__(self):
+            self.query_params = {"token": "x", "since": "0"}
+            self.accepted = False
+            self.closed = False
+
+        async def accept(self):
+            self.accepted = True
+
+        async def send_json(self, data):
+            pass
+
+        async def close(self, code=None):
+            self.closed = True
+
+    async def _run():
+        ws = _FakeWS()
+        task = asyncio.create_task(pa.stream_events(ws))
+        # Give the handler a tick to accept + start polling.
+        await asyncio.sleep(0.05)
+        assert ws.accepted is True
+        task.cancel()
+        # stream_events should swallow CancelledError and return cleanly.
+        # If it doesn't, this await re-raises the CancelledError.
+        result = await task
+        return result, ws
+
+    result, ws = asyncio.run(_run())
+    assert result is None, (
+        f"stream_events should return cleanly after cancellation, got {result!r}"
+    )
+    # The bug symptom was a traceback; we don't assert on stderr because
+    # capturing asyncio's internal "exception was never retrieved" logging
+    # is flaky. The assertion that matters is: no CancelledError escaped.
+
+
 # ---------------------------------------------------------------------------
 # Bulk actions
 # ---------------------------------------------------------------------------
@@ -602,6 +718,32 @@ def test_dashboard_done_actions_prompt_for_completion_summary():
     assert "result: summary" in bundle
     assert "body: JSON.stringify(patch)" in bundle
     assert "body: JSON.stringify(finalPatch)" in bundle
+
+
+def test_dashboard_dependency_selects_use_value_change_handler():
+    """Regression for the dependency selects in the task drawer: the
+    add-parent / add-child dropdowns must wire through the shared
+    selectChangeHandler helper so their value actually lands on the
+    underlying React state. Salvaged from #20019 @LeonSGP43.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    parent_select = (
+        'value: newParent,\n'
+        '          className: "h-7 text-xs flex-1",\n'
+        '        }, selectChangeHandler(setNewParent))'
+    )
+    child_select = (
+        'value: newChild,\n'
+        '          className: "h-7 text-xs flex-1",\n'
+        '        }, selectChangeHandler(setNewChild))'
+    )
+
+    assert parent_select in bundle
+    assert child_select in bundle
 
 
 def test_bulk_archive(client):
@@ -1440,3 +1582,104 @@ def test_board_exposes_diagnostics_list_and_summary(client):
     assert task_dict["warnings"] is not None
     assert task_dict["warnings"]["highest_severity"] == "error"
     assert task_dict["diagnostics"][0]["kind"] == "repeated_crashes"
+
+
+# ---------------------------------------------------------------------------
+# POST /tasks/:id/specify — triage specifier endpoint
+# ---------------------------------------------------------------------------
+
+
+def _patch_specifier_response(monkeypatch, *, content, model="test-model"):
+    """Helper: install a fake auxiliary client so the specifier endpoint
+    can run without hitting any real provider."""
+    from unittest.mock import MagicMock
+
+    resp = MagicMock()
+    resp.choices = [MagicMock()]
+    resp.choices[0].message.content = content
+    fake_client = MagicMock()
+    fake_client.chat.completions.create = MagicMock(return_value=resp)
+    monkeypatch.setattr(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        lambda *a, **kw: (fake_client, model),
+    )
+    return fake_client
+
+
+def test_specify_happy_path(client, monkeypatch):
+    import json as jsonlib
+
+    # Create a triage task.
+    t = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "one-liner", "triage": True},
+    ).json()["task"]
+    assert t["status"] == "triage"
+
+    _patch_specifier_response(
+        monkeypatch,
+        content=jsonlib.dumps(
+            {"title": "Polished", "body": "**Goal**\nDo the thing."}
+        ),
+    )
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t['id']}/specify",
+        json={"author": "ui-tester"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["task_id"] == t["id"]
+    assert body["new_title"] == "Polished"
+
+    # Task should have moved off the triage column.
+    detail = client.get(f"/api/plugins/kanban/tasks/{t['id']}").json()["task"]
+    assert detail["status"] in {"todo", "ready"}
+    assert detail["title"] == "Polished"
+    assert "**Goal**" in (detail["body"] or "")
+
+
+def test_specify_non_triage_returns_ok_false_not_http_error(client, monkeypatch):
+    """The endpoint intentionally returns ``{ok: false, reason: ...}`` for
+    "task not in triage" rather than a 4xx — the dashboard renders the
+    reason inline so the user can fix it without a page reload."""
+    # Create a normal (ready) task — not in triage.
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+
+    _patch_specifier_response(monkeypatch, content="unused")
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t['id']}/specify",
+        json={},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert "not in triage" in body["reason"]
+
+
+def test_specify_no_aux_client_surfaces_reason(client, monkeypatch):
+    t = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "rough", "triage": True},
+    ).json()["task"]
+
+    # Simulate "no auxiliary client configured".
+    monkeypatch.setattr(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        lambda *a, **kw: (None, ""),
+    )
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t['id']}/specify",
+        json={},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert "auxiliary client" in body["reason"]
+
+    # Task must stay in triage — nothing was touched.
+    detail = client.get(f"/api/plugins/kanban/tasks/{t['id']}").json()["task"]
+    assert detail["status"] == "triage"
