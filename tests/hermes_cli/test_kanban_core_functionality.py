@@ -3030,6 +3030,18 @@ def test_legacy_migration_both_columns_already_present(tmp_path):
     assert "last_failure_error" in cols_after
     assert "spawn_failures" in cols_after  # legacy preserved
 
+    # Simulate a race where the PRAGMA snapshot is stale but another process
+    # already added the column before our ALTER TABLE.  The duplicate-column
+    # OperationalError must be swallowed as a no-op, not crash gateway startup.
+    stale_cols = set(cols_after) - {"consecutive_failures"}
+    assert kb._add_column_if_missing(
+        conn,
+        "tasks",
+        stale_cols,
+        "consecutive_failures",
+        "consecutive_failures INTEGER NOT NULL DEFAULT 0",
+    ) is False
+
     # Idempotent second run must not modify values or raise.
     kb._migrate_add_optional_columns(conn)
     row_again = conn.execute("SELECT * FROM tasks WHERE id = 't2'").fetchone()
