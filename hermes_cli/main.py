@@ -6516,22 +6516,13 @@ def _install_python_dependencies_with_optional_fallback(
 ) -> None:
     """Install base deps plus as many optional extras as the environment supports.
 
-    We intentionally do NOT pass ``--quiet`` to pip. On platforms without
-    prebuilt wheels for some extras (Termux/Android aarch64, older musl
-    distros, fresh Raspberry Pi) pip has to compile C/Rust extensions from
-    source, which can take several minutes with zero network activity.
-    Without progress output the call looks like a hang and users Ctrl+C it.
-    Pip's default output is proportional to actual work (one line per
-    Collecting/Building/Installing step), so keeping it visible costs
-    nothing on fast hardware and prevents the "hermes update hangs" reports
-    on slow hardware.
-
-    We also add periodic heartbeat lines in case the resolver/build backend is
-    itself silent for long stretches.
+    Uses ``--quiet`` to reduce resolver noise while still printing periodic
+    heartbeat lines from ``_run_install_with_heartbeat`` so slow native builds
+    do not look frozen.
     """
     try:
         _run_install_with_heartbeat(
-            install_cmd_prefix + ["install", "-e", ".[all]"],
+            install_cmd_prefix + ["install", "-e", ".[all]", "--quiet"],
             env=env,
         )
         return
@@ -6541,7 +6532,7 @@ def _install_python_dependencies_with_optional_fallback(
         )
 
     _run_install_with_heartbeat(
-        install_cmd_prefix + ["install", "-e", "."],
+        install_cmd_prefix + ["install", "-e", ".", "--quiet"],
         env=env,
     )
 
@@ -6550,7 +6541,7 @@ def _install_python_dependencies_with_optional_fallback(
     for extra in _load_installable_optional_extras():
         try:
             _run_install_with_heartbeat(
-                install_cmd_prefix + ["install", "-e", f".[{extra}]"],
+                install_cmd_prefix + ["install", "-e", f".[{extra}]", "--quiet"],
                 env=env,
             )
             installed_extras.append(extra)
@@ -7073,6 +7064,11 @@ def cmd_update(args):
         _finalize_update_output(_update_io_state)
 
 
+def _cmd_update_interactive_tty() -> bool:
+    """Return True when update can safely prompt on stdin/stdout."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
@@ -7205,7 +7201,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         prompt_for_restore = (
             auto_stash_ref is not None
             and not assume_yes
-            and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
+            and (gateway_mode or _cmd_update_interactive_tty())
         )
 
         # Check if there are updates
@@ -7487,7 +7483,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     .strip()
                     .lower()
                 )
-            elif not (sys.stdin.isatty() and sys.stdout.isatty()):
+            elif not _cmd_update_interactive_tty():
                 print("  ℹ Non-interactive session — applying safe config migrations.")
                 response = "auto"
             else:
