@@ -782,6 +782,7 @@ def test_thread_safety_concurrent_select(tmp_path, monkeypatch):
     from agent.credential_pool import load_pool
 
     pool = load_pool("openrouter")
+    monkeypatch.setattr(pool, "_persist", lambda: None)
     results = []
     errors = []
 
