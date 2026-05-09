@@ -437,7 +437,12 @@ async def _wait_for_callback() -> tuple[str, str | None]:
             that ``build_oauth_auth`` was skipped — the asserting form below
             was a silent bug when running Python with ``-O``/``-OO``.
     """
-    if _oauth_port is None:
+    # Prefer per-thread TLS port (set by _configure_callback_port) so
+    # concurrent OAuth flows each use their own port and don't stomp on each
+    # other. Fall back to the module-level scalar for backward compat with
+    # callers that set _oauth_port directly.
+    _port = getattr(_oauth_tls, "port", None) or _oauth_port
+    if _port is None:
         raise RuntimeError(
             "OAuth callback port not set — build_oauth_auth must be called "
             "before _wait_for_oauth_callback"
@@ -449,7 +454,7 @@ async def _wait_for_callback() -> tuple[str, str | None]:
 
     # Start a temporary server on the known port
     try:
-        server = HTTPServer(("127.0.0.1", _oauth_port), handler_cls)
+        server = HTTPServer(("127.0.0.1", _port), handler_cls)
     except OSError:
         # Port already in use — the server from build_oauth_auth is running.
         # Fall back to polling the server started by build_oauth_auth.
