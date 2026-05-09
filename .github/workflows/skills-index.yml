@@ -1,9 +1,6 @@
 name: Build Skills Index
 
 on:
-  schedule:
-    # Run twice daily: 6 AM and 6 PM UTC
-    - cron: '0 6,18 * * *'
   workflow_dispatch:  # Manual trigger
   push:
     branches: [main]
@@ -50,8 +47,8 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
-    # Only deploy on schedule or manual trigger (not on every push to the script)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Only deploy on manual trigger (not on every push to the script)
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
