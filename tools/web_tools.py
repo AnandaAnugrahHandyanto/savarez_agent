@@ -126,7 +126,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "tinyfish"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -139,6 +139,7 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
+        ("tinyfish", _is_tinyfish_available()),
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
@@ -198,6 +199,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "tinyfish":
+        return _is_tinyfish_available()
     if backend == "searxng":
         return _has_env("SEARXNG_URL")
     if backend == "brave-free":
@@ -220,6 +223,148 @@ def _ddgs_package_importable() -> bool:
         return True
     except ImportError:
         return False
+
+
+def _get_tinyfish_entry(tool_name: str):
+    """Return a TinyFish MCP registry entry, or None when unavailable."""
+    return registry.get_entry(tool_name)
+
+
+def _is_tinyfish_entry_available(tool_name: str) -> bool:
+    """Return True when a TinyFish MCP tool is registered and live."""
+    entry = _get_tinyfish_entry(tool_name)
+    if entry is None:
+        return False
+    if entry.check_fn is None:
+        return True
+    try:
+        return bool(entry.check_fn())
+    except Exception:
+        return False
+
+
+def _is_tinyfish_available() -> bool:
+    """Return True when TinyFish MCP search + fetch tools are registered."""
+    return (
+        _is_tinyfish_entry_available("mcp_tinyfish_search")
+        and _is_tinyfish_entry_available("mcp_tinyfish_fetch_content")
+    )
+
+
+def _parse_tinyfish_result(raw: str) -> Dict[str, Any]:
+    """Parse the JSON envelope returned by TinyFish MCP tool handlers."""
+    outer = json.loads(raw)
+    if "error" in outer:
+        raise ValueError(str(outer["error"]))
+
+    structured = outer.get("structuredContent")
+    payload = outer.get("result")
+
+    if isinstance(payload, dict):
+        return payload
+    if isinstance(payload, list):
+        return {"results": payload}
+    if isinstance(payload, str):
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            return parsed
+        if isinstance(parsed, list):
+            return {"results": parsed}
+
+    if isinstance(structured, dict):
+        return structured
+    if isinstance(structured, list):
+        return {"results": structured}
+
+    raise ValueError("TinyFish MCP returned an unexpected payload")
+
+
+def _tinyfish_search(query: str, limit: int) -> Dict[str, Any]:
+    """Run TinyFish MCP search and normalize to Hermes web_search shape."""
+    entry = _get_tinyfish_entry("mcp_tinyfish_search")
+    if entry is None:
+        raise ValueError("TinyFish MCP search tool is not connected")
+
+    payload = _parse_tinyfish_result(entry.handler({"query": query}))
+    web_results = []
+    for idx, item in enumerate(payload.get("results", [])[:limit], start=1):
+        web_results.append({
+            "title": item.get("title", ""),
+            "url": item.get("url", ""),
+            "description": item.get("snippet", ""),
+            "position": item.get("position", idx),
+        })
+
+    return {
+        "success": True,
+        "data": {
+            "web": web_results,
+        },
+    }
+
+
+def _tinyfish_extract(urls: List[str], format: Optional[str]) -> List[Dict[str, Any]]:
+    """Run TinyFish MCP fetch and normalize to Hermes web_extract shape."""
+    entry = _get_tinyfish_entry("mcp_tinyfish_fetch_content")
+    if entry is None:
+        raise ValueError("TinyFish MCP fetch tool is not connected")
+
+    output_format = format if format in {"markdown", "html", "json"} else "markdown"
+    args = {
+        "urls": urls,
+        "format": output_format,
+        "include_html_head": False,
+        "links": False,
+        "image_links": False,
+    }
+    payload = _parse_tinyfish_result(entry.handler(args))
+
+    results: List[Dict[str, Any]] = []
+    for item in payload.get("results", []):
+        final_url = item.get("final_url") or item.get("url", "")
+        blocked = check_website_access(final_url) if final_url else None
+        if blocked:
+            results.append({
+                "url": final_url,
+                "title": item.get("title", ""),
+                "content": "",
+                "raw_content": "",
+                "error": blocked["message"],
+                "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
+            })
+            continue
+
+        text = item.get("text")
+        if isinstance(text, (dict, list)):
+            text = json.dumps(text, ensure_ascii=False)
+        results.append({
+            "url": final_url,
+            "title": item.get("title", ""),
+            "content": text or "",
+            "raw_content": text or "",
+            "metadata": {
+                "description": item.get("description"),
+                "author": item.get("author"),
+                "published_date": item.get("published_date"),
+                "language": item.get("language"),
+                "sourceURL": final_url,
+            },
+        })
+
+    for item in payload.get("errors", []):
+        error_url = item.get("url") or item.get("final_url") or ""
+        results.append({
+            "url": error_url,
+            "title": item.get("title", ""),
+            "content": "",
+            "raw_content": "",
+            "error": item.get("error") or item.get("message") or "TinyFish fetch failed",
+        })
+
+    return results
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
@@ -1213,6 +1358,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _debug.save()
             return result_json
 
+        if backend == "tinyfish":
+            response_data = _tinyfish_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         if backend == "searxng":
             from tools.web_providers.searxng import SearXNGSearchProvider
             response_data = SearXNGSearchProvider().search(query, limit)
@@ -1386,6 +1540,23 @@ async def web_extract_tool(
                 results = await _parallel_extract(safe_urls)
             elif backend == "exa":
                 results = _exa_extract(safe_urls)
+            elif backend == "tinyfish":
+                allowed_urls: List[str] = []
+                tinyfish_blocked: List[Dict[str, Any]] = []
+                for url in safe_urls:
+                    blocked = check_website_access(url)
+                    if blocked:
+                        tinyfish_blocked.append({
+                            "url": url,
+                            "title": "",
+                            "content": "",
+                            "raw_content": "",
+                            "error": blocked["message"],
+                            "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
+                        })
+                    else:
+                        allowed_urls.append(url)
+                results = tinyfish_blocked + (_tinyfish_extract(allowed_urls, format) if allowed_urls else [])
             elif backend == "tavily":
                 logger.info("Tavily extract: %d URL(s)", len(safe_urls))
                 raw = _tavily_request("extract", {
@@ -1399,7 +1570,7 @@ async def web_extract_tool(
                 return json.dumps({
                     "success": False,
                     "error": f"{_label} is a search-only backend and cannot extract URL content. "
-                             "Set web.extract_backend to firecrawl, tavily, exa, or parallel.",
+                             "Set web.extract_backend to firecrawl, tavily, exa, tinyfish, or parallel.",
                 }, ensure_ascii=False)
             else:
                 # ── Firecrawl extraction ──
@@ -2080,11 +2251,11 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"):
+    if configured in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "tinyfish"):
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
+        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "tinyfish")
     )
 
 

@@ -351,6 +351,7 @@ def test_browser_navigate_allows_when_shared_file_missing(monkeypatch, tmp_path)
 async def test_web_extract_short_circuits_blocked_url(monkeypatch):
     from tools import web_tools
 
+    monkeypatch.setattr(web_tools, "_get_extract_backend", lambda: "firecrawl")
     # Allow test URLs past SSRF check so website policy is what gets tested
     monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
     monkeypatch.setattr(
@@ -399,6 +400,7 @@ def test_check_website_access_fails_open_on_malformed_config(tmp_path, monkeypat
 async def test_web_extract_blocks_redirected_final_url(monkeypatch):
     from tools import web_tools
 
+    monkeypatch.setattr(web_tools, "_get_extract_backend", lambda: "firecrawl")
     # Allow test URLs past SSRF check so website policy is what gets tested
     monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
 
