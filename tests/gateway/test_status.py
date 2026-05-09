@@ -287,6 +287,31 @@ class TestGatewayRuntimeStatus:
         assert payload["pid"] == os.getpid(), "PID should be overwritten, not preserved via setdefault"
         assert payload["start_time"] != 1000.0, "start_time should be overwritten on restart"
 
+    def test_write_runtime_status_refreshes_argv_each_write(self, tmp_path, monkeypatch):
+        """Regression: merged state must not keep argv from an older install (Issue #22560)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        stale_argv = ["/opt/homebrew/bin/hermes", "gateway", "run"]
+        current_argv = ["/fake/venv/bin/python", "-m", "hermes_cli.main", "gateway", "run", "--replace"]
+        monkeypatch.setattr(status.sys, "argv", current_argv)
+
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "pid": 99999,
+            "argv": stale_argv,
+            "start_time": 1000.0,
+            "kind": "hermes-gateway",
+            "gateway_state": "running",
+            "platforms": {},
+            "updated_at": "2025-01-01T00:00:00Z",
+        }))
+
+        status.write_runtime_status(gateway_state="running")
+
+        payload = status.read_runtime_status()
+        assert payload["argv"] == current_argv
+        assert payload["argv"] != stale_argv
+
     def test_write_runtime_status_records_platform_failure(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 

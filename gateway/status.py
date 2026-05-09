@@ -484,8 +484,14 @@ def write_runtime_status(
     payload = _read_json_file(path) or _build_runtime_status_record()
     payload.setdefault("platforms", {})
     payload.setdefault("kind", _GATEWAY_KIND)
-    payload["pid"] = os.getpid()
-    payload["start_time"] = _get_process_start_time(os.getpid())
+    # Always refresh process identity fields from the running interpreter. Older
+    # gateway_state.json often survived restarts via merge without updating argv
+    # (Issue #22560 — stale brew shim paths after switching to python -m).
+    pid_meta = _build_pid_record()
+    payload["pid"] = pid_meta["pid"]
+    payload["argv"] = pid_meta["argv"]
+    payload["start_time"] = pid_meta["start_time"]
+    payload["kind"] = pid_meta["kind"]
     payload["updated_at"] = _utc_now_iso()
 
     if gateway_state is not _UNSET:
