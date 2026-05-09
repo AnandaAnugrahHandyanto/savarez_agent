@@ -99,6 +99,25 @@ def _check_local_runtime() -> tuple[bool, str | None]:
         return False, str(exc)
 
 
+def _check_cloud_client() -> tuple[bool, str | None]:
+    """Return whether the ``hindsight_client`` cloud SDK imports cleanly.
+
+    The Docker image and ``pyproject.toml`` do not declare ``hindsight-client``
+    as a hard dependency. When ``memory.provider`` is flipped to ``hindsight``
+    on a stock install the cloud / local_external code paths used to call
+    ``from hindsight_client import Hindsight`` lazily inside ``_get_client``,
+    which crashed the gateway with ``ModuleNotFoundError`` and triggered an
+    infinite Docker restart loop (see #18875). Detecting the missing client
+    in ``is_available()`` lets ``MemoryManager`` decline to register the
+    provider so the agent boots with the built-in memory backend instead.
+    """
+    try:
+        importlib.import_module("hindsight_client")
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
+
+
 # ---------------------------------------------------------------------------
 # Hindsight API capability probe — mirrors hindsight-integrations/openclaw.
 # ---------------------------------------------------------------------------
@@ -597,14 +616,19 @@ class HindsightMemoryProvider(MemoryProvider):
                 available, _ = _check_local_runtime()
                 return available
             if mode == "local_external":
-                return True
+                # local_external talks to a self-hosted Hindsight API via the
+                # cloud SDK — without ``hindsight_client`` the lazy import in
+                # ``_get_client`` crashes the gateway. See #18875.
+                return _check_cloud_client()[0]
             has_key = bool(
                 cfg.get("apiKey")
                 or cfg.get("api_key")
                 or os.environ.get("HINDSIGHT_API_KEY", "")
             )
             has_url = bool(cfg.get("api_url") or os.environ.get("HINDSIGHT_API_URL", ""))
-            return has_key or has_url
+            if not (has_key or has_url):
+                return False
+            return _check_cloud_client()[0]
         except Exception:
             return False
 

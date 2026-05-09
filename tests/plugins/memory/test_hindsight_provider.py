@@ -1381,6 +1381,10 @@ class TestAvailability:
             lambda: tmp_path / "nonexistent",
         )
         monkeypatch.setenv("HINDSIGHT_API_KEY", "test-key")
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.importlib.import_module",
+            lambda name: object(),
+        )
         p = HindsightMemoryProvider()
         assert p.is_available()
 
@@ -1415,6 +1419,10 @@ class TestAvailability:
         monkeypatch.setattr(
             "plugins.memory.hindsight.get_hermes_home",
             lambda: tmp_path,
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.importlib.import_module",
+            lambda name: object(),
         )
 
         p = HindsightMemoryProvider()
@@ -1460,6 +1468,70 @@ class TestAvailability:
         p = HindsightMemoryProvider()
         p.initialize(session_id="test-session", hermes_home=str(tmp_path), platform="cli")
         assert p._mode == "disabled"
+
+    def test_cloud_unavailable_when_client_import_fails(self, tmp_path, monkeypatch):
+        """Regression test for #18875.
+
+        Cloud mode without ``hindsight_client`` installed used to slip past
+        ``is_available()`` (which only checked api_key/api_url), then crash the
+        gateway with ``ModuleNotFoundError`` deep inside ``_get_client``.
+        ``is_available()`` must probe the SDK import so ``MemoryManager``
+        declines to register the provider.
+        """
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home",
+            lambda: tmp_path / "nonexistent",
+        )
+        monkeypatch.setenv("HINDSIGHT_API_KEY", "test-key")
+
+        def _raise(_name):
+            raise ModuleNotFoundError("No module named 'hindsight_client'")
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.importlib.import_module",
+            _raise,
+        )
+        p = HindsightMemoryProvider()
+        assert not p.is_available()
+
+    def test_local_external_unavailable_when_client_import_fails(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression test for #18875 — local_external also uses the cloud SDK."""
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({
+            "mode": "local_external",
+            "api_url": "http://localhost:8080",
+        }))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home",
+            lambda: tmp_path,
+        )
+
+        def _raise(_name):
+            raise ModuleNotFoundError("No module named 'hindsight_client'")
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.importlib.import_module",
+            _raise,
+        )
+        p = HindsightMemoryProvider()
+        assert not p.is_available()
+
+    def test_cloud_available_when_client_imports_cleanly(self, tmp_path, monkeypatch):
+        """Cloud mode with api key + importable client is still available."""
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home",
+            lambda: tmp_path / "nonexistent",
+        )
+        monkeypatch.setenv("HINDSIGHT_API_KEY", "test-key")
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.importlib.import_module",
+            lambda name: object(),
+        )
+        p = HindsightMemoryProvider()
+        assert p.is_available()
 
 
 class TestSharedEventLoopLifecycle:
