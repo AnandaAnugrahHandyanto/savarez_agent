@@ -1418,6 +1418,19 @@ def _record_output_history(text: str) -> None:
         _record_output_history_entry(line)
 
 
+def _safe_pt_print(line: str) -> None:
+    """Print via prompt_toolkit ANSI renderer, or plain ``print`` if that fails.
+
+    Subprocesses with redirected stdout (e.g. Kanban workers on Windows) have
+    no Win32 console buffer; ``print_formatted_text`` / ``Win32Output`` raises
+    ``NoConsoleScreenBufferError``.  Falling back keeps non-interactive runs alive.
+    """
+    try:
+        _pt_print(_PT_ANSI(line))
+    except Exception:
+        print(line, flush=True)
+
+
 def _replay_output_history() -> None:
     """Repaint recent output above the prompt after a full screen clear."""
     global _OUTPUT_HISTORY_REPLAYING
@@ -1436,7 +1449,7 @@ def _replay_output_history() -> None:
             else:
                 lines = [entry]
             for line in lines:
-                _pt_print(_PT_ANSI(str(line)))
+                _safe_pt_print(str(line))
     except Exception:
         pass
     finally:
@@ -1464,7 +1477,7 @@ def _cprint(text: str):
     try:
         from prompt_toolkit.application import get_app_or_none, run_in_terminal
     except Exception:
-        _pt_print(_PT_ANSI(text))
+        _safe_pt_print(text)
         return
 
     app = None
@@ -1477,7 +1490,7 @@ def _cprint(text: str):
     # direct prompt_toolkit print is safe and matches existing behavior
     # (spinner frames, streamed tokens, tool activity prefixes, …).
     if app is None or not getattr(app, "_is_running", False):
-        _pt_print(_PT_ANSI(text))
+        _safe_pt_print(text)
         return
 
     try:
@@ -1485,7 +1498,7 @@ def _cprint(text: str):
     except Exception:
         loop = None
     if loop is None:
-        _pt_print(_PT_ANSI(text))
+        _safe_pt_print(text)
         return
 
     import asyncio as _asyncio
@@ -1501,19 +1514,19 @@ def _cprint(text: str):
         current_loop = None
     # Same thread as the app's loop → safe to print directly.
     if current_loop is loop and loop.is_running():
-        _pt_print(_PT_ANSI(text))
+        _safe_pt_print(text)
         return
 
     # Cross-thread emission: ask the app's event loop to schedule a
-    # ``run_in_terminal`` that wraps ``_pt_print``.  This hides the
+    # ``run_in_terminal`` that wraps ``_safe_pt_print``.  This hides the
     # prompt, prints, and redraws.  Fire-and-forget — if scheduling
     # fails we fall back to a direct print so the line isn't lost.
     def _schedule():
         try:
-            run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            run_in_terminal(lambda: _safe_pt_print(text))
         except Exception:
             try:
-                _pt_print(_PT_ANSI(text))
+                _safe_pt_print(text)
             except Exception:
                 pass
 
@@ -1521,7 +1534,7 @@ def _cprint(text: str):
         loop.call_soon_threadsafe(_schedule)
     except Exception:
         try:
-            _pt_print(_PT_ANSI(text))
+            _safe_pt_print(text)
         except Exception:
             pass
 
