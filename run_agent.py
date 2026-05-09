@@ -1879,6 +1879,10 @@ class AIAgent:
         self._memory_nudge_interval = 10
         self._turns_since_memory = 0
         self._iters_since_skill = 0
+        # Flag: have we already seeded the nudge counters from conversation
+        # history?  Stays False until the first run_conversation call that
+        # receives a non-empty history (gateway pattern).
+        self._nudge_counters_hydrated = False
         if not skip_memory:
             try:
                 mem_config = _agent_cfg.get("memory", {})
@@ -11091,6 +11095,27 @@ class AIAgent:
         # NOTE: _turns_since_memory and _iters_since_skill are NOT reset here.
         # They are initialized in __init__ and must persist across run_conversation
         # calls so that nudge logic accumulates correctly in CLI mode.
+        #
+        # GATEWAY FIX (#22357): The gateway creates a fresh AIAgent per inbound
+        # message, so __init__ always starts the counters at 0.  On the first
+        # call we seed both counters from the number of prior user turns in
+        # conversation_history so that the nudge interval fires at the right
+        # cadence instead of being starved indefinitely.
+        if not self._nudge_counters_hydrated and conversation_history:
+            _prior_user_turns = sum(
+                1 for _m in conversation_history
+                if isinstance(_m, dict) and _m.get("role") == "user"
+            )
+            if _prior_user_turns > 0:
+                if self._memory_nudge_interval > 0:
+                    self._turns_since_memory = _prior_user_turns % self._memory_nudge_interval
+                if self._skill_nudge_interval > 0:
+                    self._iters_since_skill = _prior_user_turns % self._skill_nudge_interval
+            self._nudge_counters_hydrated = True
+        elif not self._nudge_counters_hydrated:
+            # No history yet (first turn in a brand-new session): mark as done
+            # so we don't re-seed on a later turn where history has grown.
+            self._nudge_counters_hydrated = True
         self.iteration_budget = IterationBudget(self.max_iterations)
 
         # Log conversation turn start for debugging/observability
