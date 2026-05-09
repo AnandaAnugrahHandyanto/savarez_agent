@@ -7,6 +7,7 @@ without risk of circular imports.
 import os
 from pathlib import Path
 
+_builtin_open = open
 
 _profile_fallback_warned: bool = False
 
@@ -233,7 +234,7 @@ def is_wsl() -> bool:
     if _wsl_detected is not None:
         return _wsl_detected
     try:
-        with open("/proc/version", "r", encoding="utf-8") as f:
+        with _builtin_open("/proc/version", "r", encoding="utf-8") as f:
             _wsl_detected = "microsoft" in f.read().lower()
     except Exception:
         _wsl_detected = False

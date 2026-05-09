@@ -1285,6 +1285,8 @@ def get_model_context_length(
     # "model-name") so cache lookups and server queries use the bare ID that
     # local servers actually know about.  Ollama "model:tag" colons are preserved.
     model = _strip_provider_prefix(model)
+    if model.lower() == "hy3-preview":
+        return 256000
 
     # 1. Check persistent cache (model+provider)
     # LM Studio is excluded — its loaded context length is transient (the
@@ -1408,6 +1410,10 @@ def get_model_context_length(
         ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if ctx is not None:
             return ctx
+    # Tencent TokenHub currently enforces 256K for hy3-preview. models.dev may
+    # publish a rounded 262144 value; prefer the provider's documented limit.
+    if effective_provider == "tencent-tokenhub" and model.lower() == "hy3-preview":
+        return 256000
     if effective_provider:
         from agent.models_dev import lookup_models_dev_context
         ctx = lookup_models_dev_context(effective_provider, model)
