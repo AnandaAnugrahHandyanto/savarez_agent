@@ -1,0 +1,13 @@
+month,channel,leads,booked_jobs,revenue,marketing_spend,avg_response_minutes,notes
+2026-01,Organic search,42,18,37800,0,68,Sample/anonymized values
+2026-01,Paid search,33,11,28600,2400,54,Sample/anonymized values
+2026-01,Referral/repeat,24,17,33150,0,34,Sample/anonymized values
+2026-01,Social/local posts,12,3,5400,250,120,Sample/anonymized values
+2026-02,Organic search,47,20,43000,0,61,Sample/anonymized values
+2026-02,Paid search,38,13,32500,2700,49,Sample/anonymized values
+2026-02,Referral/repeat,27,19,37050,0,31,Sample/anonymized values
+2026-02,Social/local posts,15,4,7600,300,105,Sample/anonymized values
+2026-03,Organic search,55,23,52900,0,45,Sample/anonymized values
+2026-03,Paid search,41,14,36400,3100,46,Sample/anonymized values
+2026-03,Referral/repeat,30,21,42000,0,27,Sample/anonymized values
+2026-03,Social/local posts,18,5,9000,350,96,Sample/anonymized values
