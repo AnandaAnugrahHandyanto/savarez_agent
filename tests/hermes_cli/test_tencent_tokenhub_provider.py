@@ -306,9 +306,13 @@ class TestTencentTokenhubURLMapping:
 class TestTencentTokenhubContextLength:
     """hy3-preview context length is registered."""
 
-    def test_hy3_preview_context_length(self):
-        from agent.model_metadata import get_model_context_length
-        ctx = get_model_context_length("hy3-preview")
+    def test_hy3_preview_context_length(self, monkeypatch):
+        # OpenRouter model metadata (when cached) resolves before fuzzy
+        # DEFAULT_CONTEXT_LENGTHS; CI often has hy3-preview at 262144 there.
+        from agent import model_metadata as mm
+
+        monkeypatch.setattr(mm, "fetch_model_metadata", lambda: {})
+        ctx = mm.get_model_context_length("hy3-preview")
         assert ctx == 256000
 
 

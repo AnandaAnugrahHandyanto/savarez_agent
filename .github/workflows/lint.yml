@@ -121,8 +121,12 @@ jobs:
           path: .lint-reports/
           retention-days: 14
 
+      # Fork PRs: GITHUB_TOKEN on pull_request lacks permission to comment on the
+      # upstream repo → Octokit 403 "Resource not accessible by integration".
+      # Step summary + artifacts already carry the diff; commenting is best-effort.
       - name: Post / update PR comment
         if: github.event_name == 'pull_request'
+        continue-on-error: true
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
           script: |
