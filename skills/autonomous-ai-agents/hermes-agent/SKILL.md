@@ -766,6 +766,10 @@ Types: `fix:`, `feat:`, `refactor:`, `docs:`, `chore:`
 
 The daily cost report (`scripts/cost_report.py`) sends balance + spend + request metrics to Telegram. Request tracking uses a local JSONL log appended by a gateway hook — OpenRouter's analytics API requires a management key most users don't have. See `references/gateway-request-tracking.md` for the full pattern (hook location, JSONL schema, sliding-window algorithm, data sources considered).
 
+### Source Watcher Broken-Code Gate
+
+`scripts/source_watcher.py` gates every commit before push by running `ruff check --select F821 --no-fix` only on staged Python files; current Ruff still reports parser failures (`invalid-syntax`) under this command, while `E999` is no longer selectable in Ruff 0.15+. This catches undefined names (`F821`, e.g. `NameError` from an out-of-scope variable) and syntax errors without broad style rules that could create false positives. If ruff fails, the watcher skips commit+push, leaves the changes in place, appends full details plus the staged diff to `/opt/data/logs/watcher-blocked.log`, and sends a Telegram alert to `$TELEGRAM_HOME_CHANNEL`; temporarily bypass only with `HERMES_WATCHER_SKIP_LINT=1`.
+
 ### Key Rules
 
 - **Never break prompt caching** — don't change context, tools, or system prompt mid-conversation

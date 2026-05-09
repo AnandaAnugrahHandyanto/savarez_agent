@@ -30,6 +30,7 @@ Ported from GordonClaw's source_watcher.py with path adjustments.
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -47,6 +48,13 @@ WATCHER_CEILING_SEC = int(os.environ.get("SOURCE_WATCHER_CEILING_SEC", "600"))
 WATCHER_PUSH_RETRIES = int(os.environ.get("SOURCE_WATCHER_PUSH_RETRIES", "3"))
 
 COMMIT_SUBJECT_FILE_LIMIT = 6
+BLOCKED_LOG_PATH = os.environ.get(
+    "HERMES_WATCHER_BLOCKED_LOG", "/opt/data/logs/watcher-blocked.log"
+)
+SKIP_LINT = os.environ.get("HERMES_WATCHER_SKIP_LINT", "").lower() in (
+    "1", "true", "yes", "on"
+)
+
 
 # Telegram notification config — used to alert the operator when a push
 # touches code that requires a restart (Bucket 2) or rebuild (Bucket 3).
@@ -104,6 +112,133 @@ def make_commit_message(files: list[str]) -> str:
         subject = f"auto: {ts} — {head} (+{more} more)"
     body = "\n".join(files)
     return f"{subject}\n\nFiles:\n{body}\n"
+
+def staged_python_files() -> list[str]:
+    """Return staged Python files that would be included in the commit."""
+    try:
+        result = git(
+            "diff",
+            "--cached",
+            "--name-only",
+            "--diff-filter=ACMR",
+            "--",
+            "*.py",
+        )
+    except subprocess.CalledProcessError as err:
+        log(f"git diff --cached failed: {err.stderr.strip()}")
+        return []
+    return [line for line in result.stdout.splitlines() if line.strip()]
+
+
+def _ruff_command() -> list[str] | None:
+    """Find a usable ruff command across system and Hermes venv interpreters."""
+    candidates = [
+        [sys.executable, "-m", "ruff"],
+        ["/opt/hermes/.venv/bin/python", "-m", "ruff"],
+        ["/opt/data/repo/.venv/bin/python", "-m", "ruff"],
+    ]
+    exe = shutil.which("ruff")
+    if exe:
+        candidates.append([exe])
+
+    for cmd in candidates:
+        if cmd[0].startswith("/") and not os.path.exists(cmd[0]):
+            continue
+        probe = subprocess.run(
+            [*cmd, "--version"],
+            capture_output=True,
+            text=True,
+        )
+        if probe.returncode == 0:
+            return cmd
+    return None
+
+
+def _safe_diff_for_log() -> str:
+    try:
+        return git("diff", "--cached", check=False).stdout
+    except Exception as err:
+        return f"<failed to capture staged diff: {err}>"
+
+
+def append_blocked_lint_log(files: list[str], ruff_output: str, diff: str) -> None:
+    """Append full lint failure context for a skipped watcher commit."""
+    try:
+        os.makedirs(os.path.dirname(BLOCKED_LOG_PATH), exist_ok=True)
+        ts = datetime.now(tz=timezone.utc).isoformat()
+        with open(BLOCKED_LOG_PATH, "a", encoding="utf-8") as fh:
+            fh.write("=" * 80 + "\n")
+            fh.write(f"timestamp: {ts}\n")
+            fh.write("files:\n")
+            for path in files:
+                fh.write(f"  - {path}\n")
+            fh.write("\nruff output:\n")
+            fh.write(ruff_output.rstrip() + "\n")
+            fh.write("\ndiff that would have been committed:\n")
+            fh.write(diff.rstrip() + "\n")
+    except Exception as err:
+        log(f"failed to append blocked lint log: {err}")
+
+
+def format_lint_blocked_notification(files: list[str], ruff_output: str) -> str:
+    listed = files[:8]
+    file_lines = "\n  ".join(f"<code>{f}</code>" for f in listed)
+    if len(files) > len(listed):
+        file_lines += f"\n  <i>(+{len(files) - len(listed)} more)</i>"
+    summary = "ruff F821/syntax gate failed; commit was skipped"
+    for line in ruff_output.splitlines():
+        if line.strip() and ("F821" in line or "E999" in line):
+            summary = line.strip()[:180]
+            break
+    return (
+        "🚫 <b>Watcher blocked a broken-code commit</b>\n"
+        f"{summary}\n\n"
+        f"Files:\n  {file_lines}\n\n"
+        f"Full details: <code>{BLOCKED_LOG_PATH}</code>"
+    )
+
+
+def lint_staged_python_files() -> bool:
+    """Gate commits on ruff F821; ruff parser errors still catch syntax failures."""
+    files = staged_python_files()
+    if not files:
+        return True
+    if SKIP_LINT:
+        log(
+            "HERMES_WATCHER_SKIP_LINT is set; skipping ruff F821 gate "
+            f"for {len(files)} Python file(s)"
+        )
+        return True
+
+    ruff = _ruff_command()
+    if not ruff:
+        output = "ruff is not installed or not available to source_watcher"
+        diff = _safe_diff_for_log()
+        append_blocked_lint_log(files, output, diff)
+        notify_telegram(format_lint_blocked_notification(files, output))
+        log("REFUSING to commit — ruff is unavailable")
+        return False
+
+    # Ruff 0.15 removed E999 as a selectable rule. Syntax failures are still
+    # emitted as parser errors ("invalid-syntax") even with only F821 selected.
+    cmd = [*ruff, "check", "--select", "F821", "--no-fix", *files]
+    result = subprocess.run(
+        cmd,
+        cwd=SRC_DIR,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        log(f"ruff F821 gate passed for {len(files)} Python file(s)")
+        return True
+
+    output = (result.stdout or "") + (result.stderr or "")
+    diff = _safe_diff_for_log()
+    append_blocked_lint_log(files, output, diff)
+    notify_telegram(format_lint_blocked_notification(files, output))
+    log("REFUSING to commit — ruff F821 gate failed")
+    return False
+
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +423,9 @@ def commit_and_push() -> bool:
         git("add", "-A")
     except subprocess.CalledProcessError as err:
         log(f"git add failed: {err.stderr.strip()}")
+        return False
+
+    if not lint_staged_python_files():
         return False
 
     msg = make_commit_message(files)
