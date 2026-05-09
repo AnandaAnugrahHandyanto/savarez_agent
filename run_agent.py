@@ -3372,6 +3372,11 @@ class AIAgent:
 
     def _is_ollama_glm_backend(self) -> bool:
         """Detect the narrow backend family affected by Ollama/GLM stop misreports."""
+        # Explicit "custom" or "litellm" provider means the user pointed Hermes
+        # at their own proxy (LiteLLM, OpenAI-compatible gateway, etc.) — not raw
+        # Ollama.  Skip the workaround to avoid false positives on private IPs.
+        if self.provider in ("custom", "litellm"):
+            return False
         model_lower = (self.model or "").lower()
         provider_lower = (self.provider or "").lower()
         if "glm" not in model_lower and provider_lower != "zai":
