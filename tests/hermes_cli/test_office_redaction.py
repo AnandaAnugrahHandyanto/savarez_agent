@@ -10,7 +10,8 @@ def test_redact_display_text_removes_secret_like_strings():
     text = (
         "token " + "sk-" + "office-redaction-sentinel" + " and Bearer "
         + "bearerRedactionSentinel plus "
-        + "bot 123456789:AAExampleTelegramToken and /home/alice/.hermes/.env"
+        + "bot 123456789:AAExampleTelegramToken and /home/alice/.hermes/.env "
+        + "plus /Users/alice/.hermes/auth.json"
     )
 
     redacted, report = redact_display_text(text)
@@ -20,6 +21,7 @@ def test_redact_display_text_removes_secret_like_strings():
     assert "Bearer " + "bearerRedactionSentinel" not in redacted
     assert "123456789:AAExampleTelegramToken" not in redacted
     assert ".env" not in redacted
+    assert "/Users/alice" not in redacted
     assert report.redacted_field_count >= 4
     assert report.policy_version == REDACTION_POLICY_VERSION
 

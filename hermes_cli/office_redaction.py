@@ -26,7 +26,7 @@ _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Profile-local credential/config file references.
     re.compile(r"(?:(?:/[^\s]+)+/)?(?:\.env|auth\.json)\b"),
     # Common Hermes/OS paths that should not become browser display strings.
-    re.compile(r"/(?:home|mnt|tmp|var)/(?:[^\s'\"<>]+)")
+    re.compile(r"/(?:home|Users|mnt|tmp|var)/(?:[^\s'\"<>]+)")
 )
 
 

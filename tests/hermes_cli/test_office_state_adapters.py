@@ -78,17 +78,18 @@ def test_kanban_adapter_projects_safe_room_task_and_event_fields(isolated_kanban
     assert result.rooms[0]["kind"] == "kanban_board"
     assert result.rooms[0]["counts"]["blocked"] == 1
 
-    child_item = next(item for item in result.work_items if item["source_id"] == child)
+    child_item = next(item for item in result.work_items if item["status"] == "blocked")
     assert child_item["kind"] == "kanban_task"
     assert child_item["status"] == "blocked"
     assert child_item["priority"] == 5
-    assert child_item["assignee"] == "worker"
+    assert child_item["title"] == "Kanban task"
+    assert child_item["assignee"] is None
     assert child_item["dependency_counts"] == {"parents": 1, "children": 0}
     assert child_item["provenance"] == {"status": "unknown", "missing_reason": "kanban_task_has_no_source_columns"}
 
+    assert str(child) not in json.dumps(child_item, ensure_ascii=False)
     assert "sk-" + "office-redaction-sentinel" not in child_item["title"]
     assert "/home/alice" not in child_item["title"]
-    assert result.redactions.redacted_field_count >= 1
 
     assert result.events
     assert all("payload" not in event for event in result.events)
@@ -102,6 +103,13 @@ def test_kanban_adapter_projects_safe_room_task_and_event_fields(isolated_kanban
         "workspace_path",
         "latest_summary",
         "result",
+        "source_id",
+        "task_id",
+        "run_id",
+        "Deploy sk-office-redaction-sentinel",
+        "worker",
+        str(child),
+        str(parent),
         "/home/alice/private/repo",
     ]
     for needle in forbidden:
@@ -194,7 +202,7 @@ def test_cron_adapter_projects_safe_automation_fields(isolated_kanban_home):
     assert result.source.item_count == 1
     automation = result.automations[0]
     assert automation["kind"] == "cron_job"
-    assert automation["source_id"] == "job_secret"
+    assert "source_id" not in automation
     assert automation["enabled"] is True
     assert automation["state"] == "scheduled"
     assert automation["last_status"] == "error"
@@ -213,10 +221,10 @@ def test_cron_adapter_projects_safe_automation_fields(isolated_kanban_home):
             "confidence": "derived",
         }
     ]
-    assert automation["name"] == "Cron job job_secr"
+    assert automation["name"] == "Cron job"
     assert automation["last_error_summary"] == "last_error_recorded"
 
-    forbidden = ["prompt must not leak", "script", "context_from", "private.py", "raw output must not leak", "-1003775710032"]
+    forbidden = ["prompt must not leak", "script", "context_from", "private.py", "raw output must not leak", "-1003775710032", "job_secret"]
     for needle in forbidden:
         assert needle not in serialized
 
@@ -346,9 +354,9 @@ def test_cron_adapter_projects_delivery_topics_and_provenance_without_chat_ids(i
     ]
     assert result.provenance == [
         {
-            "id": "prov:cron:job_topic:delivered_to:telegram:hidden:ref-bfe1f52327",
+            "id": "prov:cron:0:delivered_to:telegram:hidden:ref-bfe1f52327",
             "subject_kind": "cron_job",
-            "subject_id": "cron:job_topic",
+            "subject_id": "cron:0",
             "relation": "delivered_to",
             "source": "cron_delivery",
             "target_ref": "topic:telegram:hidden:ref-bfe1f52327",
@@ -357,6 +365,7 @@ def test_cron_adapter_projects_delivery_topics_and_provenance_without_chat_ids(i
     ]
     assert result.automations[0]["delivery_targets"][0]["topic_ref"] == "topic:telegram:hidden:ref-bfe1f52327"
     assert "-1003775710032" not in serialized
+    assert "job_topic" not in serialized
 
 
 def test_build_office_state_merges_topic_registry_and_cron_provenance(isolated_kanban_home):
@@ -444,11 +453,11 @@ def test_session_adapter_projects_metadata_without_transcripts(isolated_kanban_h
     agent = result.agents[0]
     assert agent["kind"] == "session_actor"
     assert agent["source_platform"] == "telegram"
-    assert agent["session_id_prefix"] == "sess_sen"
+    assert "session_id_prefix" not in agent
     assert agent["title"] is None
     assert agent["title_policy"] == "hidden_by_default"
     assert agent["message_count"] == 2
-    assert agent["model"] == "gpt-test"
+    assert "model" not in agent
     assert agent["status"] == "ended"
 
     for needle in [
@@ -459,5 +468,7 @@ def test_session_adapter_projects_metadata_without_transcripts(isolated_kanban_h
         "sk-" + "session-redaction-sentinel",
         "123456",
         "sess_sensitive_full_id",
+        "sess_sen",
+        "gpt-test",
     ]:
         assert needle not in serialized

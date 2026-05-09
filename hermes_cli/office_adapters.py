@@ -119,18 +119,17 @@ def _kanban_work_item(
     board_slug: str,
     task: Any,
     conn: sqlite3.Connection,
-    report: RedactionReport,
+    index: int,
 ) -> dict[str, object]:
     item: dict[str, object] = {
-        "id": f"kanban:{board_slug}:{task.id}",
+        "id": f"kanban:{board_slug}:item:{index}",
         "kind": "kanban_task",
         "source": "kanban",
-        "source_id": task.id,
         "room_id": f"kanban:{board_slug}",
         "board_id": board_slug,
-        "title": _safe_display(task.title, report),
+        "title": "Kanban task",
         "status": task.status,
-        "assignee": _safe_display(task.assignee, report) if task.assignee else None,
+        "assignee": None,
         "priority": task.priority,
         "created_at": task.created_at,
         "started_at": task.started_at,
@@ -169,16 +168,12 @@ def _kanban_events(board_slug: str, conn: sqlite3.Connection) -> list[dict[str, 
     rows = list(reversed(rows))
     return [
         {
-            "id": f"kanban:{board_slug}:event:{row['id']}",
+            "id": f"kanban:{board_slug}:event:{index}",
             "source": "kanban",
-            "source_id": int(row["id"]),
-            "board_id": board_slug,
-            "task_id": row["task_id"],
-            "run_id": row["run_id"],
             "kind": row["kind"],
             "created_at": row["created_at"],
         }
-        for row in rows
+        for index, row in enumerate(rows)
     ]
 
 
@@ -233,7 +228,6 @@ def collect_kanban_office_state() -> OfficeAdapterResult:
                         "id": f"kanban:{slug}",
                         "kind": "kanban_board",
                         "source": "kanban",
-                        "source_id": slug,
                         "display_name": display_name,
                         "counts": counts,
                         "warnings": [],
@@ -249,7 +243,7 @@ def collect_kanban_office_state() -> OfficeAdapterResult:
                             board_slug=slug,
                             task=task,
                             conn=conn,
-                            report=redactions,
+                            index=len(work_items),
                         )
                     )
                 events.extend(_kanban_events(slug, conn))
@@ -406,7 +400,8 @@ def _cron_delivery_provenance(automations: list[dict[str, object]]) -> list[dict
     records: list[dict[str, object]] = []
     seen: set[str] = set()
     for automation in automations:
-        source_id = str(automation.get("source_id") or "unknown")
+        automation_id = str(automation.get("id") or "cron:unknown")
+        automation_ref = automation_id.removeprefix("cron:")
         targets = automation.get("delivery_targets")
         if not isinstance(targets, list):
             continue
@@ -417,7 +412,7 @@ def _cron_delivery_provenance(automations: list[dict[str, object]]) -> list[dict
             if not isinstance(topic_ref, str) or not topic_ref:
                 continue
             suffix = topic_ref.removeprefix("topic:")
-            record_id = f"prov:cron:{source_id}:delivered_to:{suffix}"
+            record_id = f"prov:cron:{automation_ref}:delivered_to:{suffix}"
             if record_id in seen:
                 continue
             seen.add(record_id)
@@ -425,7 +420,7 @@ def _cron_delivery_provenance(automations: list[dict[str, object]]) -> list[dict
                 {
                     "id": record_id,
                     "subject_kind": "cron_job",
-                    "subject_id": f"cron:{source_id}",
+                    "subject_id": automation_id,
                     "relation": "delivered_to",
                     "source": "cron_delivery",
                     "target_ref": topic_ref,
@@ -442,15 +437,14 @@ def _output_artifact_count(output_dir: Path, job_id: str) -> int:
     return sum(1 for child in job_dir.iterdir() if child.is_file() and not child.name.startswith("."))
 
 
-def _cron_display_name(job_id: str) -> str:
+def _cron_display_name() -> str:
     """Return a prompt-safe cron display label.
 
-    Cron ``name`` can be auto-derived from prompt/script content at creation
-    time, so the Office DTO must not expose it as browser metadata. Keep a
-    stable generic label while preserving the real id separately as source_id.
+    Cron ``name`` and ids can be auto-derived from prompt/script content at
+    creation time, so the Office DTO must not expose them as browser metadata.
     """
 
-    return f"Cron job {job_id[:8]}" if job_id else "Cron job"
+    return "Cron job"
 
 
 def _cron_error_marker(value: object, marker: str) -> str | None:
@@ -461,7 +455,7 @@ def _cron_error_marker(value: object, marker: str) -> str | None:
     return None
 
 
-def _cron_automation(job: dict[str, Any], output_dir: Path, report: RedactionReport) -> dict[str, object]:
+def _cron_automation(job: dict[str, Any], output_dir: Path, index: int) -> dict[str, object]:
     job_id = str(job.get("id") or "unknown")
     last_error = job.get("last_error")
     last_delivery_error = job.get("last_delivery_error")
@@ -473,11 +467,10 @@ def _cron_automation(job: dict[str, Any], output_dir: Path, report: RedactionRep
     if job.get("last_status") == "error" or safe_last_error or safe_delivery_error:
         badges.append("needs_attention")
     return {
-        "id": f"cron:{job_id}",
+        "id": f"cron:{index}",
         "kind": "cron_job",
         "source": "cron",
-        "source_id": job_id,
-        "name": _cron_display_name(job_id),
+        "name": _cron_display_name(),
         "enabled": bool(job.get("enabled", True)),
         "state": str(job.get("state") or "unknown"),
         "schedule": _schedule_projection(job),
@@ -505,8 +498,8 @@ def collect_cron_office_state() -> OfficeAdapterResult:
     try:
         jobs = _read_cron_jobs_file(jobs_file)
         automations = [
-            _cron_automation(job, output_dir, redactions)
-            for job in jobs[:_MAX_CRON_JOBS]
+            _cron_automation(job, output_dir, index)
+            for index, job in enumerate(jobs[:_MAX_CRON_JOBS])
         ]
     except Exception as exc:
         return OfficeAdapterResult(
@@ -634,15 +627,11 @@ def _session_db_path() -> Path:
     return get_hermes_home() / "state.db"
 
 
-def _session_actor(row: sqlite3.Row, report: RedactionReport) -> dict[str, object]:
-    session_id = str(row["id"])
-    model = _safe_display(row["model"], report) if row["model"] else None
+def _session_actor(row: sqlite3.Row, index: int) -> dict[str, object]:
     return {
-        "id": f"session:{session_id[:8]}",
+        "id": f"session:{index}",
         "kind": "session_actor",
         "source": "sessions",
-        "source_id": session_id[:8],
-        "session_id_prefix": session_id[:8],
         "source_platform": row["source"] or "unknown",
         "status": "active" if row["ended_at"] is None else "ended",
         "started_at": row["started_at"],
@@ -652,7 +641,6 @@ def _session_actor(row: sqlite3.Row, report: RedactionReport) -> dict[str, objec
         "message_count": int(row["message_count"] or 0),
         "tool_call_count": int(row["tool_call_count"] or 0),
         "api_call_count": int(row["api_call_count"] or 0),
-        "model": model,
         "title": None,
         "title_policy": "hidden_by_default",
         "topic": {"status": "unknown", "missing_reason": "session_topic_not_normalized"},
@@ -675,7 +663,7 @@ def collect_session_office_state() -> OfficeAdapterResult:
         try:
             rows = conn.execute(
                 """
-                SELECT s.id, s.source, s.model, s.started_at, s.ended_at,
+                SELECT s.id, s.source, s.started_at, s.ended_at,
                        s.end_reason, s.message_count, s.tool_call_count,
                        s.api_call_count,
                        COALESCE(MAX(m.timestamp), s.started_at) AS last_active_at
@@ -689,7 +677,7 @@ def collect_session_office_state() -> OfficeAdapterResult:
             ).fetchall()
         finally:
             conn.close()
-        agents = [_session_actor(row, redactions) for row in rows]
+        agents = [_session_actor(row, index) for index, row in enumerate(rows)]
     except Exception as exc:
         return OfficeAdapterResult(
             source=OfficeDataSource(
