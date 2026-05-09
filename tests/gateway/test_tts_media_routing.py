@@ -7,7 +7,7 @@ only renders as a voice bubble when explicitly flagged) and via
 ``GatewayRunner._deliver_media_from_response``.
 """
 
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -33,6 +33,26 @@ class _MediaRoutingAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id):
         return {"id": chat_id, "type": "dm"}
+
+
+def _stub_runner_for_media_delivery():
+    """``_deliver_media_from_response`` is an instance method; tests need ``self``
+    exposing the same threading helpers as ``GatewayRunner``."""
+    runner = SimpleNamespace()
+    runner._thread_metadata_for_source = MethodType(
+        GatewayRunner._thread_metadata_for_source, runner
+    )
+    runner._reply_anchor_for_event = GatewayRunner._reply_anchor_for_event
+    return runner
+
+
+def _streaming_event_metadata(thread_id: str):
+    """Metadata ``_deliver_media_from_response`` attaches for Telegram DM topics."""
+    return {
+        "thread_id": thread_id,
+        "telegram_dm_topic_reply_fallback": True,
+        "telegram_reply_to_message_id": "msg-1",
+    }
 
 
 def _event(thread_id=None):
@@ -121,7 +141,7 @@ async def test_streaming_delivery_routes_telegram_flac_media_tag_to_document_sen
     )
 
     await GatewayRunner._deliver_media_from_response(
-        object(),
+        _stub_runner_for_media_delivery(),
         "MEDIA:/tmp/speech.flac",
         event,
         adapter,
@@ -130,7 +150,7 @@ async def test_streaming_delivery_routes_telegram_flac_media_tag_to_document_sen
     adapter.send_document.assert_awaited_once_with(
         chat_id="chat-1",
         file_path="/tmp/speech.flac",
-        metadata={"thread_id": "topic-1"},
+        metadata=_streaming_event_metadata("topic-1"),
     )
     adapter.send_voice.assert_not_awaited()
 
@@ -150,7 +170,7 @@ async def test_streaming_delivery_routes_non_voice_telegram_ogg_media_tag_to_doc
     )
 
     await GatewayRunner._deliver_media_from_response(
-        object(),
+        _stub_runner_for_media_delivery(),
         "MEDIA:/tmp/speech.ogg",
         event,
         adapter,
@@ -159,7 +179,7 @@ async def test_streaming_delivery_routes_non_voice_telegram_ogg_media_tag_to_doc
     adapter.send_document.assert_awaited_once_with(
         chat_id="chat-1",
         file_path="/tmp/speech.ogg",
-        metadata={"thread_id": "topic-1"},
+        metadata=_streaming_event_metadata("topic-1"),
     )
     adapter.send_voice.assert_not_awaited()
 
@@ -181,7 +201,7 @@ async def test_streaming_delivery_routes_telegram_mp3_media_tag_to_voice_sender(
     )
 
     await GatewayRunner._deliver_media_from_response(
-        object(),
+        _stub_runner_for_media_delivery(),
         "MEDIA:/tmp/speech.mp3",
         event,
         adapter,
@@ -190,6 +210,6 @@ async def test_streaming_delivery_routes_telegram_mp3_media_tag_to_voice_sender(
     adapter.send_voice.assert_awaited_once_with(
         chat_id="chat-1",
         audio_path="/tmp/speech.mp3",
-        metadata={"thread_id": "topic-1"},
+        metadata=_streaming_event_metadata("topic-1"),
     )
     adapter.send_document.assert_not_awaited()

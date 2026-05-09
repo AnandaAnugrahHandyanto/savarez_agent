@@ -130,7 +130,9 @@ class TestBasePlatformTopicSessions:
             {
                 "chat_id": "-1001",
                 "content": "ack",
-                "reply_to": "1",
+                # Telegram forum/supergroup topics: threading via metadata only;
+                # ``_reply_anchor_for_event`` omits reply_to for non-DM + thread_id.
+                "reply_to": None,
                 "metadata": {"thread_id": "17585"},
             }
         ]
