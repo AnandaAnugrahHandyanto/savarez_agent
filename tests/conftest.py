@@ -183,6 +183,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_DEV",
     "HERMES_CONTAINER",
     "HERMES_EPHEMERAL_SYSTEM_PROMPT",
+    "HERMES_LANGUAGE",
     "HERMES_TIMEZONE",
     "HERMES_REDACT_SECRETS",
     "HERMES_BACKGROUND_NOTIFICATIONS",
@@ -339,6 +340,13 @@ def _reset_module_state():
     skipped silently — production import later creates fresh empty state.
     """
     # --- logging — quiet/one-shot paths mutate process-global logger state ---
+    try:
+        from agent import i18n as _i18n_mod
+
+        _i18n_mod.reset_language_cache()
+    except Exception:
+        pass
+
     logging.disable(logging.NOTSET)
     for _logger_name in ("tools", "run_agent", "trajectory_compressor", "cron", "hermes_cli"):
         _logger = logging.getLogger(_logger_name)

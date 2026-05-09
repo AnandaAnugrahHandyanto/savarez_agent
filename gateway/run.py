@@ -303,6 +303,10 @@ _ensure_ssl_certs()
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from hermes_cli.profile_env_bootstrap import apply_profile_env_override
+
+apply_profile_env_override()
+
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, is_truthy_value
@@ -572,6 +576,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     _reply_anchor_for_event,
+    _thread_metadata_for_source,
     merge_pending_message_event,
 )
 from gateway.restart import (
@@ -9320,7 +9325,9 @@ class GatewayRunner:
             _, cleaned = adapter.extract_images(response)
             local_files, _ = adapter.extract_local_files(cleaned)
 
-            _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+            _thread_meta = _thread_metadata_for_source(
+                event.source, _reply_anchor_for_event(event)
+            )
 
             from gateway.platforms.base import should_send_media_as_audio
 
