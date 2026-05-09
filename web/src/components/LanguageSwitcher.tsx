@@ -6,7 +6,7 @@ import type { Locale } from "@/i18n/types";
 const LOCALE_CONFIG: Record<Locale, { flag: string; short: string }> = {
   en: { flag: "🇬🇧", short: "EN" },
   zh: { flag: "🇨🇳", short: "中文" },
-  "pt-BR": { flag: "🇧🇷", short: "PT" },
+  "pt-BR": { flag: "🇧🇷", short: "PT-BR" },
 };
 
 const LOCALE_ORDER: Locale[] = ["en", "zh", "pt-BR"];

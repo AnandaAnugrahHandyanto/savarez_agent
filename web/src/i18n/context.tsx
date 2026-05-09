@@ -6,15 +6,25 @@ import { ptBR } from "./pt-BR";
 
 const TRANSLATIONS: Record<Locale, Translations> = { en, zh, "pt-BR": ptBR };
 const STORAGE_KEY = "hermes-locale";
+const LOCALE_ALIASES: Record<string, Locale> = {
+  pt: "pt-BR",
+  "pt-br": "pt-BR",
+};
 
 function isLocale(value: string): value is Locale {
   return value === "en" || value === "zh" || value === "pt-BR";
 }
 
+function normalizeLocale(value: string | null): Locale | null {
+  if (!value) return null;
+  if (isLocale(value)) return value;
+  return LOCALE_ALIASES[value.toLowerCase()] ?? null;
+}
+
 function getInitialLocale(): Locale {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored && isLocale(stored)) return stored;
+    const stored = normalizeLocale(localStorage.getItem(STORAGE_KEY));
+    if (stored) return stored;
   } catch {
     // SSR or privacy mode
   }
