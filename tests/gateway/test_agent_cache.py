@@ -956,6 +956,50 @@ class TestAgentCacheSpilloverLive:
             except Exception:
                 pass
 
+    def test_concurrent_inserts_settle_at_cap(self, monkeypatch):
+        """Many threads inserting in parallel end with len(cache) == CAP."""
+        from gateway import run as gw_run
+
+        CAP = 16
+        monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", CAP)
+        # Avoid auxiliary-provider auto-detect churn in AIAgent __init__ under
+        # high concurrency; without this, xdist Linux workers can spend most of
+        # the 30s join window in repeated provider warning paths.
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+        runner = self._runner()
+
+        N_THREADS = 6
+        # Keep enough pressure to trigger repeated evictions while avoiding
+        # pathological startup latency from constructing hundreds of real
+        # AIAgent instances concurrently on slower CI workers.
+        PER_THREAD = 10  # 6 * 10 = 60 inserts into a 16-slot cache
+
+        def worker(tid: int):
+            for j in range(PER_THREAD):
+                a = self._real_agent()
+                key = f"t{tid}-s{j}"
+                with runner._agent_cache_lock:
+                    runner._agent_cache[key] = (a, "sig")
+                    runner._enforce_agent_cache_cap()
+
+        threads = [
+            threading.Thread(target=worker, args=(t,), daemon=True)
+            for t in range(N_THREADS)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+            assert not t.is_alive(), "Worker thread hung — possible deadlock?"
+
+        # Let daemon cleanup threads settle.
+        import time as _t
+        _t.sleep(0.5)
+
+        assert len(runner._agent_cache) == CAP, (
+            f"Expected exactly {CAP} entries after concurrent inserts, "
+            f"got {len(runner._agent_cache)}."
+        )
 
     def test_evicted_session_next_turn_gets_fresh_agent(self, monkeypatch):
         """After eviction, the same session_key can insert a fresh agent.
@@ -1344,3 +1388,4 @@ class TestCachedAgentInactivityReset:
             f"Watchdog would see {idle_secs:.0f}s idle, expected ~{STUCK_FOR}s. "
             "Inactivity timeout could not fire for a stuck interrupted turn."
         )
+

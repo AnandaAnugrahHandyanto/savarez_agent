@@ -12,6 +12,7 @@ import os
 import queue
 import subprocess
 import sys
+import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock, PropertyMock, mock_open
 
@@ -35,6 +36,8 @@ from hermes_cli.clipboard import (
     _windows_has_image,
     _convert_to_png,
 )
+import hermes_constants
+
 from cli import _should_auto_attach_clipboard_image_on_paste
 
 FAKE_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
@@ -203,55 +206,49 @@ class TestMacosOsascript:
 
 # ── WSL detection ────────────────────────────────────────────────────────
 
-class TestIsWsl:
-    def setup_method(self):
-        # _is_wsl is hermes_constants.is_wsl; reset the function's own module
-        # globals so this stays stable even if hermes_constants was imported
-        # through a different module object earlier in a large xdist run.
-        import hermes_constants
-        hermes_constants._wsl_detected = None
-        _is_wsl.__globals__["_wsl_detected"] = None
 
-    def teardown_method(self):
-        # Reset again after the test so we don't leak a cached value
-        # (True/False) into whichever test the xdist worker runs next.
-        import hermes_constants
+class TestIsWsl(unittest.TestCase):
+    """hermes_constants.is_wsl caches /proc/version; reset between tests for xdist."""
+
+    _globals = hermes_constants.is_wsl.__globals__
+
+    def setUp(self):
         hermes_constants._wsl_detected = None
-        _is_wsl.__globals__["_wsl_detected"] = None
+
+    def tearDown(self):
+        hermes_constants._wsl_detected = None
 
     def test_wsl2_detected(self):
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
-        with patch.dict(_is_wsl.__globals__, {"open": mock_open(read_data=content)}):
-            assert _is_wsl() is True
+        with patch.dict(self._globals, {"open": mock_open(read_data=content)}):
+            hermes_constants._wsl_detected = None
+            self.assertTrue(hermes_constants.is_wsl())
 
     def test_wsl1_detected(self):
         content = "Linux version 4.4.0-microsoft-standard"
-        with patch.dict(_is_wsl.__globals__, {"open": mock_open(read_data=content)}):
-            assert _is_wsl() is True
+        with patch.dict(self._globals, {"open": mock_open(read_data=content)}):
+            hermes_constants._wsl_detected = None
+            self.assertTrue(hermes_constants.is_wsl())
 
     def test_regular_linux(self):
-        # GHA hosted runners are Azure VMs whose real /proc/version often
-        # contains "microsoft". Patching builtins.open with mock_open is
-        # supposed to intercept hermes_constants.is_wsl's `open` call,
-        # but if another test on the same xdist worker already cached
-        # _wsl_detected=True, the mock never runs because the function
-        # short-circuits on the cache. setup_method resets, so we just
-        # need to be sure the patched `open` is actually reached.
         content = "Linux version 6.14.0-37-generic (buildd@lcy02-amd64-049)"
-        with patch.dict(_is_wsl.__globals__, {"open": mock_open(read_data=content)}):
-            assert _is_wsl() is False
+        with patch.dict(self._globals, {"open": mock_open(read_data=content)}):
+            hermes_constants._wsl_detected = None
+            self.assertFalse(hermes_constants.is_wsl())
 
     def test_proc_version_missing(self):
-        with patch.dict(_is_wsl.__globals__, {"open": MagicMock(side_effect=FileNotFoundError)}):
-            assert _is_wsl() is False
+        with patch.dict(self._globals, {"open": MagicMock(side_effect=FileNotFoundError)}):
+            hermes_constants._wsl_detected = None
+            self.assertFalse(hermes_constants.is_wsl())
 
     def test_result_is_cached(self):
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
         opener = mock_open(read_data=content)
-        with patch.dict(_is_wsl.__globals__, {"open": opener}):
-            assert _is_wsl() is True
-            assert _is_wsl() is True
-            opener.assert_called_once()  # only read once
+        with patch.dict(self._globals, {"open": opener}):
+            hermes_constants._wsl_detected = None
+            self.assertTrue(hermes_constants.is_wsl())
+            self.assertTrue(hermes_constants.is_wsl())
+            opener.assert_called_once()
 
 
 # ── WSL (powershell.exe) ────────────────────────────────────────────────
@@ -880,7 +877,7 @@ class TestPreprocessImagesWithVision:
     def test_single_image_with_text(self, cli, tmp_path):
         img = self._make_image(tmp_path)
         with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
-            result = cli._preprocess_images_with_vision("Describe this", [img])
+            result = cli._preprocess_images_with_vision("Describe this", [img], announce=False)
 
         assert isinstance(result, str)
         assert "A test image with colored pixels." in result
@@ -891,7 +888,7 @@ class TestPreprocessImagesWithVision:
     def test_multiple_images(self, cli, tmp_path):
         imgs = [self._make_image(tmp_path, f"img{i}.png") for i in range(3)]
         with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
-            result = cli._preprocess_images_with_vision("Compare", imgs)
+            result = cli._preprocess_images_with_vision("Compare", imgs, announce=False)
 
         assert isinstance(result, str)
         assert "Compare" in result
@@ -902,14 +899,14 @@ class TestPreprocessImagesWithVision:
     def test_empty_text_gets_default_question(self, cli, tmp_path):
         img = self._make_image(tmp_path)
         with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
-            result = cli._preprocess_images_with_vision("", [img])
+            result = cli._preprocess_images_with_vision("", [img], announce=False)
         assert isinstance(result, str)
         assert "A test image with colored pixels." in result
 
     def test_missing_image_skipped(self, cli, tmp_path):
         missing = tmp_path / "gone.png"
         with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
-            result = cli._preprocess_images_with_vision("test", [missing])
+            result = cli._preprocess_images_with_vision("test", [missing], announce=False)
         # No images analyzed, falls back to default
         assert result == "test"
 
@@ -917,7 +914,7 @@ class TestPreprocessImagesWithVision:
         real = self._make_image(tmp_path, "real.png")
         missing = tmp_path / "gone.png"
         with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
-            result = cli._preprocess_images_with_vision("test", [real, missing])
+            result = cli._preprocess_images_with_vision("test", [real, missing], announce=False)
         assert str(real) in result
         assert str(missing) not in result
         assert "test" in result
@@ -925,7 +922,7 @@ class TestPreprocessImagesWithVision:
     def test_vision_failure_includes_path(self, cli, tmp_path):
         img = self._make_image(tmp_path)
         with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_failure()):
-            result = cli._preprocess_images_with_vision("check this", [img])
+            result = cli._preprocess_images_with_vision("check this", [img], announce=False)
         assert isinstance(result, str)
         assert str(img) in result  # path still included for retry
         assert "check this" in result
@@ -935,7 +932,7 @@ class TestPreprocessImagesWithVision:
         async def _explode(**kwargs):
             raise RuntimeError("API down")
         with patch("tools.vision_tools.vision_analyze_tool", side_effect=_explode):
-            result = cli._preprocess_images_with_vision("check this", [img])
+            result = cli._preprocess_images_with_vision("check this", [img], announce=False)
         assert isinstance(result, str)
         assert str(img) in result  # path still included for retry
 

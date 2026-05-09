@@ -344,6 +344,8 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "human_delay": "display",
     "dashboard": "display",
     "code_execution": "agent",
+    # Merge into agent: only cache_ttl lives under prompt_caching; avoid lone
+    # single-field "model" tab confusion.
     "prompt_caching": "agent",
     "goals": "agent",
     # Only `telegram.reactions` currently lives under telegram — fold it in

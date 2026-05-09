@@ -126,6 +126,9 @@ class TestBasePlatformTopicSessions:
         event = _make_event("-1001", "17585")
         await adapter._process_message_background(event, build_session_key(event.source))
 
+        # Telegram forum/supergroup topics route by thread metadata — reply_to is
+        # intentionally omitted so sends land in the topic lane (see
+        # ``_reply_anchor_for_event`` in gateway/platforms/base.py).
         assert adapter.sent == [
             {
                 "chat_id": "-1001",

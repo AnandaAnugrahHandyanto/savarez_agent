@@ -11,6 +11,7 @@ No LLM, no real platform connections.
 
 import asyncio
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -23,6 +24,21 @@ from gateway.platforms.base import MessageEvent, SendResult
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 E2E_MESSAGE_SETTLE_DELAY = 0.3
+
+
+@pytest.fixture(autouse=True)
+def _e2e_disable_plugin_invoke_hook(monkeypatch):
+    """Keep gateway e2e independent of optional workspace plugins.
+
+    CI installs ``.[all,dev]``; discovered plugins may register
+    ``pre_gateway_dispatch`` hooks that rewrite or short-circuit slash
+    commands so ``/new`` never reaches ``_handle_reset_command`` while a
+    reply is still sent (e.g. redirected to ``/help``).
+    """
+    import hermes_cli.plugins as plugins_mod
+
+    monkeypatch.setattr(plugins_mod, "invoke_hook", lambda *args, **kwargs: [])
+
 
 # Platform library mocks
 
@@ -166,6 +182,7 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
 
     Skips __init__ to avoid filesystem/network side effects.
     """
+    from gateway.hooks import HookRegistry
     from gateway.run import GatewayRunner
 
     if session_entry is None:
@@ -177,7 +194,10 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     )
     runner.adapters = {}
     runner._voice_mode = {}
-    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    # Empty HookRegistry (no discover_and_load): emit_collect returns [] deterministically
+    # on all asyncio/Python versions. AsyncMock emit_collect has misbehaved on CI/Linux
+    # for command:new hook handling vs SimpleNamespace.
+    runner.hooks = HookRegistry()
 
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = session_entry
@@ -215,6 +235,9 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     runner._show_reasoning = False
 
     runner._is_user_authorized = lambda _source: True
+    # Gateway gates /new and /undo behind approvals.destructive_slash_confirm (reads
+    # config via _read_user_config). E2E must execute destructive handlers immediately.
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": False}}
     runner._set_session_env = lambda _context: None
     runner._handle_message_with_agent = AsyncMock(return_value="agent-handled-default")
     runner._should_send_voice_reply = lambda *_a, **_kw: False
@@ -262,7 +285,28 @@ async def send_and_capture(adapter, text: str, platform: Platform, **event_kwarg
     event = make_event(platform, text, **event_kwargs)
     adapter.send.reset_mock()
     await adapter.handle_message(event)
-    await asyncio.sleep(0.3)
+    # ``handle_message`` returns after spawning ``_process_message_background``
+    # for normal turns — side effects (e.g. ``session_store.reset_session``)
+    # happen inside that task. On fast machines the owner task can finish and
+    # be removed from ``_session_tasks`` before we read it, so we also wait
+    # until ``send`` has been observed (or time out).
+    session_key = build_session_key(
+        event.source,
+        group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
+        thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
+    )
+    deadline = time.monotonic() + 35.0
+    while time.monotonic() < deadline:
+        task = getattr(adapter, "_session_tasks", {}).get(session_key)
+        if task is not None and hasattr(task, "done") and not task.done():
+            try:
+                await asyncio.wait_for(task, timeout=120.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError, RuntimeError):
+                await asyncio.sleep(0.05)
+            continue
+        if adapter.send.called:
+            return adapter.send
+        await asyncio.sleep(0.02)
     return adapter.send
 
 

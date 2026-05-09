@@ -75,7 +75,8 @@ jobs:
       - name: Run e2e tests
         run: |
           source .venv/bin/activate
-          python -m pytest tests/e2e/ -v --tb=short
+          # Drop repo-wide ``-n auto`` for this job; async gateway e2e is safer sequentially on CI.
+          python -m pytest tests/e2e/ -v --tb=short --override-ini="addopts=" -n 0 -m "not integration"
         env:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""

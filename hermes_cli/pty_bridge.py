@@ -111,13 +111,12 @@ class PtyBridge:
                     "(or pip install -e '.[pty]')."
                 )
             raise PtyUnavailableError("Pseudo-terminals are unavailable.")
-        # PTY-hosted programs expect TERM to describe the terminal type.
-        # CI often runs without TERM in the parent process, which makes
-        # simple terminal probes like `tput cols` fail before winsize reads.
-        # Preserve explicit caller overrides, but backfill a sensible default
-        # when TERM is missing or blank.
-        spawn_env = (os.environ.copy() if env is None else env.copy())
-        if not spawn_env.get("TERM"):
+        # Let caller-supplied env fully override inheritance; if they pass
+        # None we inherit the server's env (same semantics as subprocess).
+        spawn_env = os.environ.copy() if env is None else dict(env)
+        # PTY-hosted programs expect TERM; CI often omits it — backfill when blank.
+        if not (spawn_env.get("TERM") or "").strip():
+            spawn_env = dict(spawn_env)
             spawn_env["TERM"] = "xterm-256color"
         proc = ptyprocess.PtyProcess.spawn(  # type: ignore[union-attr]
             list(argv),

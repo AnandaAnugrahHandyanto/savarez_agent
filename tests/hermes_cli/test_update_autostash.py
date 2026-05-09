@@ -8,6 +8,12 @@ from hermes_cli import config as hermes_config
 from hermes_cli import main as hermes_main
 
 
+def _cmd_endswith(cmd: list, *suffix: str) -> bool:
+    """Match git/uv commands that may include Windows ``git -c ...`` prefixes."""
+    suf = list(suffix)
+    return len(cmd) >= len(suf) and list(cmd[-len(suf) :]) == suf
+
+
 def test_stash_local_changes_if_needed_returns_none_when_tree_clean(monkeypatch, tmp_path):
     calls = []
 
@@ -317,21 +323,21 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
-        if cmd == ["git", "fetch", "origin"]:
+        if _cmd_endswith(cmd, "fetch", "origin"):
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+        if _cmd_endswith(cmd, "rev-parse", "--abbrev-ref", "HEAD"):
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+        if _cmd_endswith(cmd, "rev-list", "HEAD..origin/main", "--count"):
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+        if _cmd_endswith(cmd, "pull", "--ff-only", "origin", "main"):
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]"]:
+        if len(cmd) >= 4 and cmd[-4:] == ["pip", "install", "-e", ".[all]"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", "."]:
+        if len(cmd) >= 4 and cmd[-4:] == ["pip", "install", "-e", "."]:
             return SimpleNamespace(returncode=0)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]"]:
+        if len(cmd) >= 4 and cmd[-4:] == ["pip", "install", "-e", ".[matrix]"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]"]:
+        if len(cmd) >= 4 and cmd[-4:] == ["pip", "install", "-e", ".[mcp]"]:
             return SimpleNamespace(returncode=0)
         # Catch-all must include stdout/stderr so consumers that parse
         # output (e.g. the dashboard-restart `ps -A` scan added in the
@@ -343,11 +349,11 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
     hermes_main.cmd_update(SimpleNamespace())
 
     install_cmds = [c for c in recorded if "pip" in c and "install" in c]
-    assert install_cmds == [
-        ["/usr/bin/uv", "pip", "install", "-e", ".[all]"],
-        ["/usr/bin/uv", "pip", "install", "-e", "."],
-        ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]"],
-        ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]"],
+    assert [c[-4:] for c in install_cmds] == [
+        ["pip", "install", "-e", ".[all]"],
+        ["pip", "install", "-e", "."],
+        ["pip", "install", "-e", ".[matrix]"],
+        ["pip", "install", "-e", ".[mcp]"],
     ]
 
     out = capsys.readouterr().out
@@ -365,13 +371,13 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
-        if cmd == ["git", "fetch", "origin"]:
+        if _cmd_endswith(cmd, "fetch", "origin"):
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+        if _cmd_endswith(cmd, "rev-parse", "--abbrev-ref", "HEAD"):
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+        if _cmd_endswith(cmd, "rev-list", "HEAD..origin/main", "--count"):
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+        if _cmd_endswith(cmd, "pull", "--ff-only", "origin", "main"):
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 

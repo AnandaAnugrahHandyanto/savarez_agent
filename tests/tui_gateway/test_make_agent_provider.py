@@ -52,6 +52,7 @@ def test_make_agent_passes_resolved_provider():
         # imported by an earlier test.  Assert the stable part of the call.
         mock_resolve.assert_called_once()
         assert mock_resolve.call_args.kwargs.get("requested") is None
+        assert mock_resolve.call_args.kwargs.get("target_model") == "claude-opus-4-6"
 
         call_kwargs = mock_agent.call_args
         assert call_kwargs.kwargs["provider"] == "anthropic"

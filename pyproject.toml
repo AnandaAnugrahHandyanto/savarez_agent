@@ -74,6 +74,14 @@ pty = [
 ]
 honcho = ["honcho-ai>=2.0.1,<3"]
 mcp = ["mcp>=1.2.0,<2"]
+web3-mcp = [
+  "hermes-agent[mcp]",
+  "web3>=6.11.0,<7",
+  "solana>=0.30.0,<0.37",
+  "httpx>=0.28.0,<1",
+  # Align with daytona (hermes-agent[all]) — requires websockets>=15,<16
+  "websockets>=13.0,<16",
+]
 homeassistant = ["aiohttp>=3.9.0,<4"]
 sms = ["aiohttp>=3.9.0,<4"]
 # Computer use — macOS background desktop control via cua-driver (MCP stdio).
