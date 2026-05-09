@@ -8,6 +8,7 @@ import contextvars
 import json
 import logging
 import os
+from importlib import metadata as importlib_metadata
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -79,7 +80,10 @@ logger = logging.getLogger(__name__)
 try:
     from hermes_cli import __version__ as HERMES_VERSION
 except Exception:
-    HERMES_VERSION = "0.0.0"
+    try:
+        HERMES_VERSION = importlib_metadata.version("hermes-agent")
+    except importlib_metadata.PackageNotFoundError:
+        HERMES_VERSION = "0.0.0"
 
 # Thread pool for running AIAgent (synchronous) in parallel.
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
