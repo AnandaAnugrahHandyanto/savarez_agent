@@ -529,6 +529,15 @@ skills:
   #   - /home/shared/team-skills
 
 # =============================================================================
+# Cron scheduler (optional; also see ~/.hermes/cron/jobs.json)
+# =============================================================================
+# cron:
+#   # Per-job inactivity limit in seconds (0 = unlimited). Env HERMES_CRON_TIMEOUT wins.
+#   idle_timeout: 1800
+#   # Stream heartbeat interval for sparse chunks (seconds, 0 = off).
+#   heartbeat_interval: 30
+
+# =============================================================================
 # Agent Behavior
 # =============================================================================
 agent:
@@ -553,6 +562,10 @@ agent:
   # 0 = no drain, interrupt immediately.
   # restart_drain_timeout: 60
 
+  # During provider streaming, refresh the inactivity timer every N seconds
+  # when no chunks arrive (sparse SSE / server-side buffering). 0 = off.
+  # Env HERMES_STREAM_HEARTBEAT_INTERVAL overrides when set.
+  # stream_heartbeat_interval: 30
   # Max app-level retry attempts for API errors (connection drops, provider
   # timeouts, 5xx, etc.) before the agent surfaces the failure. Lower this
   # to 1 if you use fallback providers and want fast failover on flaky

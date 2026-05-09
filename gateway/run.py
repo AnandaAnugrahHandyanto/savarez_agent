@@ -470,6 +470,24 @@ if _config_path.exists():
                 os.environ["HERMES_AGENT_NOTIFY_INTERVAL"] = str(_agent_cfg["gateway_notify_interval"])
             if "restart_drain_timeout" in _agent_cfg:
                 os.environ["HERMES_RESTART_DRAIN_TIMEOUT"] = str(_agent_cfg["restart_drain_timeout"])
+            if (
+                "stream_heartbeat_interval" in _agent_cfg
+                and "HERMES_STREAM_HEARTBEAT_INTERVAL" not in os.environ
+            ):
+                os.environ["HERMES_STREAM_HEARTBEAT_INTERVAL"] = str(
+                    _agent_cfg["stream_heartbeat_interval"]
+                )
+        _cron_boot = _cfg.get("cron", {})
+        if isinstance(_cron_boot, dict):
+            if (
+                "heartbeat_interval" in _cron_boot
+                and "HERMES_STREAM_HEARTBEAT_INTERVAL" not in os.environ
+            ):
+                os.environ["HERMES_STREAM_HEARTBEAT_INTERVAL"] = str(
+                    _cron_boot["heartbeat_interval"]
+                )
+            if "idle_timeout" in _cron_boot and "HERMES_CRON_TIMEOUT" not in os.environ:
+                os.environ["HERMES_CRON_TIMEOUT"] = str(_cron_boot["idle_timeout"])
             if "gateway_auto_continue_freshness" in _agent_cfg:
                 os.environ["HERMES_AUTO_CONTINUE_FRESHNESS"] = str(
                     _agent_cfg["gateway_auto_continue_freshness"]
