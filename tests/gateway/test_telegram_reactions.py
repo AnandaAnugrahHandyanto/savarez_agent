@@ -90,7 +90,8 @@ def test_reactions_disabled_with_no(monkeypatch):
 # ── reaction chat types ──────────────────────────────────────────────
 
 
-def test_reaction_chat_types_can_be_configured_via_extra():
+def test_reaction_chat_types_can_be_configured_via_extra(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_REACTION_CHAT_TYPES", raising=False)
     adapter = _make_adapter(reaction_chat_types=["dm", "group"])
 
     assert adapter._telegram_reaction_chat_types() == {"dm", "group"}
@@ -172,6 +173,7 @@ async def test_set_reaction_handles_api_error_gracefully(monkeypatch):
 async def test_on_processing_start_accepts_private_alias_in_event_chat_type(monkeypatch):
     """Processing start should normalize legacy/private chat_type aliases on events."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    monkeypatch.delenv("TELEGRAM_REACTION_CHAT_TYPES", raising=False)
     adapter = _make_adapter(reaction_chat_types=["dm"])
 
     await adapter.on_processing_start(_make_event(chat_type="private"))
@@ -187,6 +189,7 @@ async def test_on_processing_start_accepts_private_alias_in_event_chat_type(monk
 async def test_on_processing_start_treats_group_threads_as_forum_for_reaction_filtering(monkeypatch):
     """Threaded group events should match the forum reaction chat type."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    monkeypatch.delenv("TELEGRAM_REACTION_CHAT_TYPES", raising=False)
     adapter = _make_adapter(reaction_chat_types=["forum"])
 
     await adapter.on_processing_start(_make_event(chat_type="group", thread_id="99"))
@@ -202,6 +205,7 @@ async def test_on_processing_start_treats_group_threads_as_forum_for_reaction_fi
 async def test_on_processing_start_respects_configured_chat_types(monkeypatch):
     """Processing start should follow configured reaction chat types."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    monkeypatch.delenv("TELEGRAM_REACTION_CHAT_TYPES", raising=False)
     adapter = _make_adapter(reaction_chat_types=["dm"])
 
     await adapter.on_processing_start(_make_event(chat_type="dm"))
@@ -216,6 +220,7 @@ async def test_on_processing_start_respects_configured_chat_types(monkeypatch):
 async def test_on_processing_start_skips_group_when_not_in_configured_chat_types(monkeypatch):
     """Processing start should skip chats excluded by reaction_chat_types."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    monkeypatch.delenv("TELEGRAM_REACTION_CHAT_TYPES", raising=False)
     adapter = _make_adapter(reaction_chat_types=["dm"])
 
     await adapter.on_processing_start(_make_event(chat_type="group"))
