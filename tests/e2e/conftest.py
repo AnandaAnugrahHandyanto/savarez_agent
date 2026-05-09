@@ -182,6 +182,7 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
 
     Skips __init__ to avoid filesystem/network side effects.
     """
+    from gateway.hooks import HookRegistry
     from gateway.run import GatewayRunner
 
     if session_entry is None:
@@ -193,11 +194,10 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     )
     runner.adapters = {}
     runner._voice_mode = {}
-    runner.hooks = SimpleNamespace(
-        emit=AsyncMock(),
-        emit_collect=AsyncMock(return_value=[]),
-        loaded_hooks=False,
-    )
+    # Empty HookRegistry (no discover_and_load): emit_collect returns [] deterministically
+    # on all asyncio/Python versions. AsyncMock emit_collect has misbehaved on CI/Linux
+    # for command:new hook handling vs SimpleNamespace.
+    runner.hooks = HookRegistry()
 
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = session_entry
@@ -294,8 +294,6 @@ async def send_and_capture(adapter, text: str, platform: Platform, **event_kwarg
     )
     deadline = time.monotonic() + 35.0
     while time.monotonic() < deadline:
-        if adapter.send.called:
-            return adapter.send
         task = getattr(adapter, "_session_tasks", {}).get(session_key)
         if task is not None and hasattr(task, "done") and not task.done():
             try:
@@ -303,6 +301,8 @@ async def send_and_capture(adapter, text: str, platform: Platform, **event_kwarg
             except (asyncio.TimeoutError, asyncio.CancelledError, RuntimeError):
                 await asyncio.sleep(0.05)
             continue
+        if adapter.send.called:
+            return adapter.send
         await asyncio.sleep(0.02)
     return adapter.send
 
