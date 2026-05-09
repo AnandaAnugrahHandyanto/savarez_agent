@@ -1901,6 +1901,7 @@ class BasePlatformAdapter(ABC):
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        thumbnail_path: Optional[str] = None,
         **kwargs,
     ) -> SendResult:
         """

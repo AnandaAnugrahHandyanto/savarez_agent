@@ -10,6 +10,7 @@ Uses python-telegram-bot library for:
 import asyncio
 import json
 import logging
+from contextlib import ExitStack
 import os
 import tempfile
 import html as _html
@@ -2642,15 +2643,24 @@ class TelegramAdapter(BasePlatformAdapter):
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        thumbnail_path: Optional[str] = None,
         **kwargs,
     ) -> SendResult:
-        """Send a document/file natively as a Telegram file attachment."""
+        """Send a document/file natively as a Telegram file attachment.
+
+        ``thumbnail_path`` maps to Telegram Bot API ``sendDocument.thumbnail``.
+        Telegram requires an uploaded JPEG thumbnail (not a reused file_id),
+        small enough for Bot API limits; clients may still choose whether to
+        render it for a given file type.
+        """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
         try:
             if not os.path.exists(file_path):
                 return SendResult(success=False, error=self._missing_media_path_error("File", file_path))
+            if thumbnail_path and not os.path.exists(thumbnail_path):
+                return SendResult(success=False, error=self._missing_media_path_error("Thumbnail", thumbnail_path))
 
             display_name = file_name or os.path.basename(file_path)
             _thread = self._metadata_thread_id(metadata)
@@ -2662,26 +2672,39 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_message_id=reply_to_id,
             )
 
-            with open(file_path, "rb") as f:
+            with ExitStack() as stack:
+                f = stack.enter_context(open(file_path, "rb"))
+                thumbnail_file = None
+                if thumbnail_path:
+                    thumbnail_file = stack.enter_context(open(thumbnail_path, "rb"))
+                send_kwargs = {
+                    "chat_id": int(chat_id),
+                    "document": f,
+                    "filename": display_name,
+                    "caption": caption[:1024] if caption else None,
+                    "reply_to_message_id": reply_to_id,
+                    **thread_kwargs,
+                }
+                if thumbnail_file is not None:
+                    send_kwargs["thumbnail"] = thumbnail_file
+
+                def _reset_media() -> None:
+                    f.seek(0)
+                    if thumbnail_file is not None:
+                        thumbnail_file.seek(0)
+
                 msg = await self._send_with_dm_topic_reply_anchor_retry(
                     self._bot.send_document,
-                    {
-                        "chat_id": int(chat_id),
-                        "document": f,
-                        "filename": display_name,
-                        "caption": caption[:1024] if caption else None,
-                        "reply_to_message_id": reply_to_id,
-                        **thread_kwargs,
-                    },
+                    send_kwargs,
                     metadata,
                     reply_to_id,
                     "document",
-                    reset_media=lambda: f.seek(0),
+                    reset_media=_reset_media,
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             print(f"[{self.name}] Failed to send document: {e}")
-            return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
+            return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata, thumbnail_path=thumbnail_path)
 
     async def send_video(
         self,

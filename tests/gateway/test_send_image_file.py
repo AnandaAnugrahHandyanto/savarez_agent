@@ -167,6 +167,31 @@ class TestTelegramSendImageFile:
         call_kwargs = adapter._bot.send_photo.call_args.kwargs
         assert call_kwargs["message_thread_id"] == 789
 
+    def test_send_document_forwards_thumbnail_path(self, adapter, tmp_path):
+        """send_document should pass a Telegram Bot API thumbnail file when provided."""
+        pdf = tmp_path / "report.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        thumb = tmp_path / "preview.jpg"
+        thumb.write_bytes(b"\xff\xd8\xff" + b"\x00" * 32)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 44
+        adapter._bot.send_document = AsyncMock(return_value=mock_msg)
+
+        result = _run(
+            adapter.send_document(
+                chat_id="12345",
+                file_path=str(pdf),
+                thumbnail_path=str(thumb),
+            )
+        )
+
+        assert result.success
+        assert result.message_id == "44"
+        call_kwargs = adapter._bot.send_document.call_args.kwargs
+        assert call_kwargs["document"].name == str(pdf)
+        assert call_kwargs["thumbnail"].name == str(thumb)
+
 
 # ---------------------------------------------------------------------------
 # Discord send_image_file tests
