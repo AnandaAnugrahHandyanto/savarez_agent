@@ -13,7 +13,11 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import _web_ui_build_needed, _build_web_ui
+from hermes_cli.main import (
+    _build_web_ui,
+    _run_npm_install_deterministic,
+    _web_ui_build_needed,
+)
 
 
 def _touch(path: Path, offset: float = 0.0) -> None:
@@ -96,6 +100,48 @@ class TestWebUIBuildNeeded:
         assert _web_ui_build_needed(web_dir) is False
 
 
+class TestDeterministicNpmInstall:
+
+    def test_include_dev_adds_flag_to_npm_ci(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").touch()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return __import__("subprocess").CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with patch("hermes_cli.main.subprocess.run", side_effect=fake_run):
+            result = _run_npm_install_deterministic(
+                "/usr/bin/npm",
+                web_dir,
+                extra_args=("--silent",),
+                include_dev=True,
+            )
+
+        assert result.returncode == 0
+        assert calls == [["/usr/bin/npm", "ci", "--include=dev", "--silent"]]
+
+    def test_include_dev_adds_flag_to_npm_install_fallback(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return __import__("subprocess").CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with patch("hermes_cli.main.subprocess.run", side_effect=fake_run):
+            result = _run_npm_install_deterministic(
+                "/usr/bin/npm",
+                web_dir,
+                extra_args=("--silent",),
+                include_dev=True,
+            )
+
+        assert result.returncode == 0
+        assert calls == [["/usr/bin/npm", "install", "--include=dev", "--silent"]]
+
+
 class TestBuildWebUISkipsWhenFresh:
 
     def test_skips_npm_when_dist_is_fresh(self, tmp_path):
@@ -112,10 +158,18 @@ class TestBuildWebUISkipsWhenFresh:
     def test_runs_npm_when_dist_missing(self, tmp_path):
         web_dir, _ = _make_web_dir(tmp_path)
 
-        mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout=b"", stderr=b"")
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return __import__("subprocess").CompletedProcess(cmd, 0, stdout="", stderr="")
+
         with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-             patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run:
+             patch("hermes_cli.main.subprocess.run", side_effect=fake_run):
             result = _build_web_ui(web_dir)
 
         assert result is True
-        assert mock_run.call_count == 2  # npm install + npm run build
+        assert calls == [
+            ["/usr/bin/npm", "install", "--include=dev", "--silent"],
+            ["/usr/bin/npm", "run", "build"],
+        ]
