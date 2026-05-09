@@ -2660,6 +2660,13 @@ def resolve_provider_client(
             custom_key_env = custom_entry.get("key_env", "").strip()
             if not custom_key and custom_key_env:
                 custom_key = os.getenv(custom_key_env, "").strip()
+            # Fall back to credential pool for custom providers (auth.json
+            # stores keys under "custom:<name>" in the credential_pool).
+            if not custom_key:
+                _pool_id = f"custom:{custom_entry.get('name', provider)}"
+                _cp_present, _cp_entry = _select_pool_entry(_pool_id)
+                if _cp_present and _cp_entry:
+                    custom_key = _pool_runtime_api_key(_cp_entry)
             custom_key = custom_key or "no-key-required"
             # An explicit per-task api_mode override (from _resolve_task_provider_model)
             # wins; otherwise fall back to what the provider entry declared.
