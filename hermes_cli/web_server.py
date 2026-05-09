@@ -692,7 +692,7 @@ def _tail_lines(path: Path, n: int) -> List[str]:
     if not path.exists():
         return []
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = path.read_text(errors="replace")
     except OSError:
         return []
     lines = text.splitlines()
@@ -1457,7 +1457,7 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
     {
         "id": "minimax-oauth",
         "name": "MiniMax (OAuth)",
-        "flow": "pkce",
+        "flow": "device_code",
         "cli_command": "hermes auth add minimax-oauth",
         "docs_url": "https://www.minimax.io",
         "status_fn": None,  # dispatched via auth.get_minimax_oauth_auth_status
@@ -1899,7 +1899,116 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
             "poll_interval": int(s.get("interval") or 5),
         }
 
+
+    if provider_id == "minimax-oauth":
+        from hermes_cli.auth import (
+            _minimax_pkce_pair, _minimax_request_user_code,
+            PROVIDER_REGISTRY, MINIMAX_OAUTH_SCOPE,
+        )
+        import httpx
+        pconfig = PROVIDER_REGISTRY["minimax-oauth"]
+        portal_base_url = pconfig.portal_base_url
+        inference_base_url = pconfig.inference_base_url
+        client_id = pconfig.client_id
+        verifier, challenge, state = _minimax_pkce_pair()
+        def _do_minimax_code_request():
+            with httpx.Client(timeout=httpx.Timeout(15.0),
+                              headers={"Accept": "application/json"},
+                              follow_redirects=True) as client:
+                return _minimax_request_user_code(
+                    client, portal_base_url=portal_base_url,
+                    client_id=client_id,
+                    code_challenge=challenge, state=state,
+                )
+        code_data = await asyncio.get_event_loop().run_in_executor(None, _do_minimax_code_request)
+        sid, sess = _new_oauth_session("minimax-oauth", "device_code")
+        sess["user_code"] = str(code_data["user_code"])
+        sess["verification_url"] = str(code_data["verification_uri"])
+        sess["code_verifier"] = verifier
+        sess["portal_base_url"] = portal_base_url
+        sess["inference_base_url"] = inference_base_url
+        sess["client_id"] = client_id
+        sess["expired_in"] = int(code_data["expired_in"])
+        sess["interval_ms"] = code_data.get("interval")
+        sess["expires_at"] = time.time() + 900
+        threading.Thread(
+            target=_minimax_poller, args=(sid,), daemon=True,
+            name=f"oauth-minimax-{sid[:6]}",
+        ).start()
+        return {
+            "session_id": sid,
+            "flow": "device_code",
+            "user_code": sess["user_code"],
+            "verification_url": sess["verification_url"],
+            "expires_in": 900,
+            "poll_interval": max(2, int((code_data.get("interval") or 2000) / 1000)),
+        }
+
     raise HTTPException(status_code=400, detail=f"Provider {provider_id} does not support device-code flow")
+
+
+def _minimax_poller(session_id: str) -> None:
+    """Background poller that drives a MiniMax device-code flow to completion."""
+    from hermes_cli.auth import (
+        _minimax_poll_token, _minimax_save_auth_state,
+        PROVIDER_REGISTRY, MINIMAX_OAUTH_SCOPE,
+    )
+    from datetime import datetime, timezone
+    import httpx
+    with _oauth_sessions_lock:
+        sess = _oauth_sessions.get(session_id)
+    if not sess:
+        return
+    portal_base_url = sess["portal_base_url"]
+    inference_base_url = sess["inference_base_url"]
+    client_id = sess["client_id"]
+    user_code = sess["user_code"]
+    code_verifier = sess["code_verifier"]
+    expired_in = sess["expired_in"]
+    interval_ms = sess.get("interval_ms")
+    try:
+        with httpx.Client(timeout=httpx.Timeout(15.0),
+                          headers={"Accept": "application/json"},
+                          follow_redirects=True) as client:
+            token_data = _minimax_poll_token(
+                client, portal_base_url=portal_base_url,
+                client_id=client_id,
+                user_code=user_code, code_verifier=code_verifier,
+                expired_in=expired_in, interval_ms=interval_ms,
+            )
+        now = datetime.now(timezone.utc)
+        raw_expires_in = int(token_data["expired_in"])
+        now_ms = int(now.timestamp() * 1000)
+        if raw_expires_in > now_ms // 2:
+            expires_at = raw_expires_in / 1000.0
+            expires_in_s = max(0, int(expires_at - now.timestamp()))
+        else:
+            expires_in_s = raw_expires_in
+            expires_at = now.timestamp() + expires_in_s
+        auth_state = {
+            "provider": "minimax-oauth",
+            "region": "global",
+            "portal_base_url": portal_base_url,
+            "inference_base_url": inference_base_url,
+            "client_id": client_id,
+            "scope": MINIMAX_OAUTH_SCOPE,
+            "token_type": token_data.get("token_type", "Bearer"),
+            "access_token": token_data["access_token"],
+            "refresh_token": token_data["refresh_token"],
+            "resource_url": token_data.get("resource_url"),
+            "obtained_at": now.isoformat(),
+            "expires_at": datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat(),
+            "expires_in": expires_in_s,
+        }
+        _minimax_save_auth_state(auth_state)
+        with _oauth_sessions_lock:
+            sess["status"] = "approved"
+        _log.info("oauth/device: minimax-oauth login completed (session=%s)", session_id)
+    except Exception as e:
+        _log.warning("minimax-oauth device-code poll failed (session=%s): %s", session_id, e)
+        with _oauth_sessions_lock:
+            sess["status"] = "error"
+            sess["error_message"] = str(e)
 
 
 def _nous_poller(session_id: str) -> None:
@@ -2979,20 +3088,7 @@ async def get_models_analytics(days: int = 30):
 import re
 import asyncio
 
-# PTY bridge is POSIX-only (depends on fcntl/termios/ptyprocess).  On native
-# Windows the import raises; catch and leave PtyBridge=None so the rest of
-# the dashboard (sessions, jobs, metrics, config editor) still loads and the
-# /api/pty endpoint cleanly refuses with a WSL-suggested message.
-try:
-    from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
-    _PTY_BRIDGE_AVAILABLE = True
-except ImportError as _pty_import_err:  # pragma: no cover - Windows-only path
-    PtyBridge = None  # type: ignore[assignment]
-    _PTY_BRIDGE_AVAILABLE = False
-
-    class PtyUnavailableError(RuntimeError):  # type: ignore[no-redef]
-        """Stub on platforms where pty_bridge can't be imported."""
-        pass
+from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
 
 _RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
 _PTY_READ_CHUNK_TIMEOUT = 0.2
@@ -3125,18 +3221,6 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     await ws.accept()
-
-    # On native Windows, the POSIX PTY bridge can't be imported.  Tell the
-    # client and close cleanly rather than pretending the feature works.
-    if not _PTY_BRIDGE_AVAILABLE:
-        await ws.send_text(
-            "\r\n\x1b[31mChat unavailable: the embedded terminal requires a "
-            "POSIX PTY, which native Windows Python doesn't provide.\x1b[0m\r\n"
-            "\x1b[33mInstall Hermes inside WSL2 to use the dashboard's /chat "
-            "tab — the rest of the dashboard works here.\x1b[0m\r\n"
-        )
-        await ws.close(code=1011)
-        return
 
     # --- spawn PTY ------------------------------------------------------
     resume = ws.query_params.get("resume") or None
