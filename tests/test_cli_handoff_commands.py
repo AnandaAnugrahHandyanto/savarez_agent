@@ -28,6 +28,16 @@ def test_handoff_commands_are_registered():
     assert resolve_command("handoff_new").name == "handoff-new"
 
 
+def test_internal_underscore_aliases_do_not_duplicate_cli_help():
+    from hermes_cli.commands import COMMANDS_BY_CATEGORY
+
+    session_commands = COMMANDS_BY_CATEGORY["Session"]
+    assert "/handoff-new" in session_commands
+    assert "/handoff_new" not in session_commands
+    assert "/handoff-save" in session_commands
+    assert "/handoff_save" not in session_commands
+
+
 def test_handoff_commands_are_gateway_available_after_handler_added():
     assert "handoff" in GATEWAY_KNOWN_COMMANDS
     assert "handoff-save" in GATEWAY_KNOWN_COMMANDS

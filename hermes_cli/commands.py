@@ -242,12 +242,19 @@ def _build_description(cmd: CommandDef) -> str:
     return cmd.description
 
 
+def _is_internal_alias(cmd: CommandDef, alias: str) -> bool:
+    """Return True for aliases kept for platform compatibility, not help display."""
+    return alias.replace("-", "_") == cmd.name.replace("-", "_") and alias != cmd.name
+
+
 # Backwards-compatible flat dict: "/command" -> description
 COMMANDS: dict[str, str] = {}
 for _cmd in COMMAND_REGISTRY:
     if not _cmd.gateway_only:
         COMMANDS[f"/{_cmd.name}"] = _build_description(_cmd)
         for _alias in _cmd.aliases:
+            if _is_internal_alias(_cmd, _alias):
+                continue
             COMMANDS[f"/{_alias}"] = f"{_cmd.description} (alias for /{_cmd.name})"
 
 # Backwards-compatible categorized dict
@@ -257,6 +264,8 @@ for _cmd in COMMAND_REGISTRY:
         _cat = COMMANDS_BY_CATEGORY.setdefault(_cmd.category, {})
         _cat[f"/{_cmd.name}"] = COMMANDS[f"/{_cmd.name}"]
         for _alias in _cmd.aliases:
+            if _is_internal_alias(_cmd, _alias):
+                continue
             _cat[f"/{_alias}"] = COMMANDS[f"/{_alias}"]
 
 
@@ -426,7 +435,7 @@ def gateway_help_lines() -> list[str]:
         alias_parts: list[str] = []
         for a in cmd.aliases:
             # Skip internal aliases like reload_mcp (underscore variant)
-            if a.replace("-", "_") == cmd.name.replace("-", "_") and a != cmd.name:
+            if _is_internal_alias(cmd, a):
                 continue
             alias_parts.append(f"`/{a}`")
         alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
