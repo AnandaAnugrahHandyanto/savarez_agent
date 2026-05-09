@@ -568,14 +568,24 @@ class HermesACPAgent(acp.Agent):
                 )
                 seen_ids.add(choice_id)
 
-            current_model_id = self._encode_model_choice(normalized_provider, model)
+            # If the current model already contains a provider prefix (e.g. "manbu:xxx"),
+            # decode it so we don't double-encode it as "deepseek:manbu:xxx".
+            _model_str = str(model or "")
+            _colon_pos = _model_str.find(":")
+            if _colon_pos > 0:
+                _model_name_for_current = _model_str[_colon_pos + 1:].strip()
+                _provider_for_current = _model_str[:_colon_pos].strip()
+            else:
+                _model_name_for_current = _model_str
+                _provider_for_current = normalized_provider
+            current_model_id = self._encode_model_choice(_provider_for_current, _model_name_for_current)
             if current_model_id and current_model_id not in seen_ids:
                 available_models.insert(
                     0,
                     ModelInfo(
                         model_id=current_model_id,
-                        name=model,
-                        description=f"Provider: {provider_name} • current",
+                        name=_model_name_for_current,
+                        description=f"Provider: {_provider_for_current} • current",
                     ),
                 )
 
@@ -598,7 +608,7 @@ class HermesACPAgent(acp.Agent):
                         available_models.append(ModelInfo(
                             model_id=choice_id,
                             name=alias_model,
-                            description=f"Provider: {alias_provider} • /{alias_name}",
+                            description=f"Provider: {alias_provider} · /{alias_name}",
                         ))
                         seen_ids.add(choice_id)
             except Exception:
