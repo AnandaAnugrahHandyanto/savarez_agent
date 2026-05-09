@@ -3552,6 +3552,7 @@ def dispatch_once(
             pass
 
     result = DispatchResult()
+    policy = kp.load_policy(_normalize_board_slug(board) or get_current_board())
     result.reclaimed = release_stale_claims(conn)
     result.crashed = detect_crashed_workers(conn)
     # detect_crashed_workers stashes protocol-violation auto-blocks on
@@ -3571,11 +3572,25 @@ def dispatch_once(
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
     spawned = 0
+    active_policy_limited = False
+    if policy.max_active_issue_pipelines is not None:
+        active_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM tasks WHERE status = 'running' AND assignee IN ("
+            "'backend-eng','frontend-eng','fullstack-eng','data-eng','devops-eng',"
+            "'reviewer','qa-eng','security-eng','release-manager')"
+        ).fetchone()["n"]
+        active_policy_limited = int(active_count) >= policy.max_active_issue_pipelines
     for row in ready_rows:
         if max_spawn is not None and spawned >= max_spawn:
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
+            continue
+        if active_policy_limited and row["assignee"] in {
+            "backend-eng", "frontend-eng", "fullstack-eng", "data-eng", "devops-eng",
+            "reviewer", "qa-eng", "security-eng", "release-manager",
+        }:
+            result.skipped_nonspawnable.append(row["id"])
             continue
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails

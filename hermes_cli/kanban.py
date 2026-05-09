@@ -25,6 +25,7 @@ from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_policy as kp
+from hermes_cli import kanban_cleanup as kc
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +200,19 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_policy_show.add_argument("--json", action="store_true")
     p_policy_validate = policy_sub.add_parser("validate", help="Validate the configured board policy")
     p_policy_validate.add_argument("--json", action="store_true")
+
+    p_inventory = sub.add_parser("inventory", help="Show board worktrees, workspaces, processes, and policy")
+    p_inventory.add_argument("--json", action="store_true")
+
+    p_cleanup = sub.add_parser("cleanup", help="Conservatively remove safe inactive board artifacts")
+    p_cleanup.add_argument("--dry-run", action="store_true", default=False)
+    p_cleanup.add_argument("--json", action="store_true")
+
+    p_teardown = sub.add_parser("teardown", help="Explicit destructive board teardown")
+    p_teardown.add_argument("--remove-all-worktrees", action="store_true")
+    p_teardown.add_argument("--delete-board", action="store_true")
+    p_teardown.add_argument("--yes", action="store_true")
+    p_teardown.add_argument("--json", action="store_true")
 
     # --- init ---
     sub.add_parser("init", help="Create kanban.db if missing (idempotent)")
@@ -756,6 +770,9 @@ def kanban_command(args: argparse.Namespace) -> int:
         "context":  _cmd_context,
         "specify":  _cmd_specify,
         "gc":       _cmd_gc,
+        "inventory": _cmd_inventory,
+        "cleanup": _cmd_cleanup,
+        "teardown": _cmd_teardown,
     }
     handler = handlers.get(action)
     if not handler:
@@ -815,6 +832,41 @@ def _cmd_policy(args: argparse.Namespace) -> int:
         print(f"kanban policy: unknown action {action!r}", file=sys.stderr)
         return 2
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Board inventory / cleanup / teardown
+# ---------------------------------------------------------------------------
+
+def _print_json_or_summary(data: dict[str, Any], *, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(data, indent=2, sort_keys=True))
+        return
+    for key, value in data.items():
+        print(f"{key}: {value}")
+
+
+def _cmd_inventory(args: argparse.Namespace) -> int:
+    data = kc.inventory_board(kb.get_current_board())
+    _print_json_or_summary(data, as_json=getattr(args, "json", False))
+    return 0
+
+
+def _cmd_cleanup(args: argparse.Namespace) -> int:
+    data = kc.cleanup_board(kb.get_current_board(), dry_run=getattr(args, "dry_run", False))
+    _print_json_or_summary(data, as_json=getattr(args, "json", False))
+    return 0
+
+
+def _cmd_teardown(args: argparse.Namespace) -> int:
+    data = kc.teardown_board(
+        kb.get_current_board(),
+        remove_all_worktrees=getattr(args, "remove_all_worktrees", False),
+        delete_board=getattr(args, "delete_board", False),
+        yes=getattr(args, "yes", False),
+    )
+    _print_json_or_summary(data, as_json=getattr(args, "json", False))
+    return 0 if data.get("verified") or data.get("refused") else 1
 
 
 # ---------------------------------------------------------------------------
