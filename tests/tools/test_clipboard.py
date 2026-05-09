@@ -206,12 +206,14 @@ class TestMacosOsascript:
 
 
 class TestIsWsl(unittest.TestCase):
-    """Unit tests for ``hermes_constants.is_wsl`` (imported as clipboard._is_wsl).
+    """Unit tests for ``hermes_constants.is_wsl`` (same object as ``clipboard._is_wsl``).
 
-    ``is_wsl`` caches ``_wsl_detected`` on the module; pytest-only fixtures on a
-    plain class have proven flaky in CI (cache leaked → wrong booleans / mock
-    never called). ``unittest.TestCase`` ``setUp``/``tearDown`` run reliably
-    under pytest-xdist.
+    Patch **must** target ``hermes_constants._linux_proc_version_text`` via the
+    string form ``patch("hermes_constants._linux_proc_version_text")``. On CI
+    (Linux), ``patch.object(the_module, ...)`` has intermittently failed to
+    affect ``LOAD_GLOBAL`` inside ``is_wsl``, so real ``/proc/version`` was
+    read (no ``microsoft`` → False). Calling ``hermes_constants.is_wsl()``
+    avoids any alias/import-path ambiguity.
     """
 
     def setUp(self):
@@ -228,49 +230,37 @@ class TestIsWsl(unittest.TestCase):
         import hermes_constants
 
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
-        with patch.object(
-            hermes_constants,
-            "_linux_proc_version_text",
-            return_value=content.lower(),
-        ):
-            assert _is_wsl() is True
+        with patch("hermes_constants._linux_proc_version_text", return_value=content.lower()):
+            assert hermes_constants.is_wsl() is True
 
     def test_wsl1_detected(self):
         import hermes_constants
 
         content = "Linux version 4.4.0-microsoft-standard"
-        with patch.object(
-            hermes_constants,
-            "_linux_proc_version_text",
-            return_value=content.lower(),
-        ):
-            assert _is_wsl() is True
+        with patch("hermes_constants._linux_proc_version_text", return_value=content.lower()):
+            assert hermes_constants.is_wsl() is True
 
     def test_regular_linux(self):
         import hermes_constants
 
         content = "Linux version 6.14.0-37-generic (buildd@lcy02-amd64-049)"
-        with patch.object(
-            hermes_constants,
-            "_linux_proc_version_text",
-            return_value=content.lower(),
-        ):
-            assert _is_wsl() is False
+        with patch("hermes_constants._linux_proc_version_text", return_value=content.lower()):
+            assert hermes_constants.is_wsl() is False
 
     def test_proc_version_missing(self):
         import hermes_constants
 
-        with patch.object(hermes_constants, "_linux_proc_version_text", return_value=None):
-            assert _is_wsl() is False
+        with patch("hermes_constants._linux_proc_version_text", return_value=None):
+            assert hermes_constants.is_wsl() is False
 
     def test_result_is_cached(self):
         import hermes_constants
 
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
         m = MagicMock(return_value=content.lower())
-        with patch.object(hermes_constants, "_linux_proc_version_text", m):
-            assert _is_wsl() is True
-            assert _is_wsl() is True
+        with patch("hermes_constants._linux_proc_version_text", new=m):
+            assert hermes_constants.is_wsl() is True
+            assert hermes_constants.is_wsl() is True
             m.assert_called_once()
 
 
