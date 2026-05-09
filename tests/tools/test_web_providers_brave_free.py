@@ -147,6 +147,86 @@ class TestBraveFreeProviderSearch:
         assert result["success"] is True
         assert result["data"]["web"] == []
 
+    def test_non_dict_web_value_returns_empty_not_crash(self, monkeypatch):
+        """A 200 body shaped like ``{"web": <non-dict>}`` must not AttributeError.
+
+        Regression for ``(data.get("web") or {}).get("results", [])`` —
+        if ``data["web"]`` is a non-dict truthy value (e.g. an error
+        envelope coerced to a string by a permissive proxy, or an HTML
+        snippet a tolerant JSON decoder reduced to a literal), the legacy
+        code raised ``AttributeError`` and aborted the tool with no
+        graceful failure. The provider must instead surface an empty
+        result set so the caller can fall back.
+        """
+        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
+        from tools.web_providers.brave_free import BraveFreeSearchProvider
+
+        for malformed in ({"web": "rate-limited"}, {"web": 0xdead}, {"web": ["a", "b"]}):
+            with patch("httpx.get", return_value=self._mock_resp(malformed)):
+                result = BraveFreeSearchProvider().search("q", limit=5)
+            assert result["success"] is True, f"crashed on {malformed!r}: {result}"
+            assert result["data"]["web"] == [], f"non-empty for {malformed!r}: {result}"
+
+    def test_non_dict_results_items_are_skipped(self, monkeypatch):
+        """``data["web"]["results"]`` items that aren't dicts must be skipped, not crash.
+
+        Same defensive concern as
+        ``test_non_dict_web_value_returns_empty_not_crash`` but one level
+        down: if Brave (or a proxy) returns a list mixing dict and
+        non-dict items, the per-item ``r.get(...)`` calls crash. The
+        provider should drop the bad items and keep the good ones.
+        """
+        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
+        from tools.web_providers.brave_free import BraveFreeSearchProvider
+
+        body = {
+            "web": {
+                "results": [
+                    {"title": "Real", "url": "https://real.example.com", "description": "ok"},
+                    "https://stringified-url.example.com",  # non-dict, must be skipped
+                    None,                                    # non-dict, must be skipped
+                    {"title": "Also real", "url": "https://other.example.com", "description": "ok"},
+                ]
+            }
+        }
+        with patch("httpx.get", return_value=self._mock_resp(body)):
+            result = BraveFreeSearchProvider().search("q", limit=5)
+
+        assert result["success"] is True
+        web = result["data"]["web"]
+        assert len(web) == 2
+        assert [r["title"] for r in web] == ["Real", "Also real"]
+        # Position must reflect post-filter index, not original list index.
+        assert web[0]["position"] == 1
+        assert web[1]["position"] == 2
+
+    def test_non_list_results_value_returns_empty(self, monkeypatch):
+        """``data["web"]["results"]`` that isn't a list must produce an empty
+        result set instead of raising ``TypeError`` on the slice.
+        """
+        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
+        from tools.web_providers.brave_free import BraveFreeSearchProvider
+
+        with patch("httpx.get", return_value=self._mock_resp({"web": {"results": "not-a-list"}})):
+            result = BraveFreeSearchProvider().search("q", limit=5)
+
+        assert result["success"] is True
+        assert result["data"]["web"] == []
+
+    def test_top_level_non_dict_response_returns_empty(self, monkeypatch):
+        """A ``resp.json()`` that returns something that isn't a dict at all
+        (e.g. ``[]`` or ``"string"``) must not AttributeError on
+        ``data.get(...)``.
+        """
+        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
+        from tools.web_providers.brave_free import BraveFreeSearchProvider
+
+        for malformed in ([], "plain-string", 42, None):
+            with patch("httpx.get", return_value=self._mock_resp(malformed)):
+                result = BraveFreeSearchProvider().search("q", limit=5)
+            assert result["success"] is True, f"crashed on {malformed!r}: {result}"
+            assert result["data"]["web"] == [], f"non-empty for {malformed!r}: {result}"
+
     def test_http_error_returns_failure(self, monkeypatch):
         import httpx
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
