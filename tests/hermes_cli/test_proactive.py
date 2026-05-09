@@ -20,6 +20,9 @@ def test_build_reflection_prompt_is_safe_and_silent_by_default():
     assert "Do not send emails, posts, DMs, calendar invites" in prompt
     assert "Ask before" in prompt
     assert "high confidence" in prompt
+    assert "Silence is the correct answer unless the best candidate clears the bar" in prompt
+    assert "No generic summaries, status theater" in prompt
+    assert "Would Charles plausibly reply" in prompt
 
 
 def test_install_creates_idempotent_cron_job(monkeypatch):
