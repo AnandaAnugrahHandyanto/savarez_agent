@@ -8,11 +8,11 @@ api/pty WebSocket endpoint in hermes_cli.web_server.
 Design constraints:
 
 * **Backend-isolated.**  The public PtyBridge API stays stable while
-  platform-specific PTY details live behind a backend seam.  The POSIX
-  backend is the only enabled backend today; Windows support can be added by
-  implementing the same byte-oriented contract.
-* **Zero Node dependency on the server side.**  We use ptyprocess,
-  which is a pure-Python wrapper around the OS calls.  The browser talks
+  platform-specific PTY details live behind a backend seam.  POSIX uses
+  ptyprocess plus Unix PTY modules; native Windows uses pywinpty/winpty
+  when the optional PTY extra is installed.
+* **Zero Node dependency on the server side.**  We use Python PTY
+  bindings on the server side.  The browser talks
   to the same hermes --tui binary it would launch from the CLI, so
   every TUI feature (slash popover, model picker, tool rows, markdown,
   skin engine, clarify/sudo/approval prompts) ships automatically.
@@ -26,10 +26,12 @@ from __future__ import annotations
 
 import errno
 import os
+import queue
 import select
 import signal
 import struct
 import sys
+import threading
 import time
 from typing import Optional, Protocol, Sequence
 
@@ -70,8 +72,9 @@ def _pty_unavailable_message() -> str:
     if sys.platform.startswith("win"):
         return (
             "Pseudo-terminals are unavailable on native Windows for the "
-            "dashboard chat/TUI path. Run Hermes Agent inside WSL to use "
-            "the dashboard chat tab."
+            "dashboard chat/TUI path because pywinpty/winpty is missing. "
+            "Install the PTY extra with: pip install -e '.[pty]', or run "
+            "Hermes Agent inside WSL for POSIX PTY support."
         )
 
     missing_modules = [
@@ -100,9 +103,8 @@ __all__ = ["PtyBridge", "PtyUnavailableError"]
 class PtyUnavailableError(RuntimeError):
     """Raised when a PTY cannot be created on this platform.
 
-    Today this means native Windows (no ConPTY bindings) or a dev
-    environment missing the ptyprocess dependency.  The dashboard
-    surfaces the message to the user as a chat-tab banner.
+    The dashboard surfaces the message to the user as a chat-tab banner
+    when no supported PTY backend is available for the current platform.
     """
 
 
@@ -244,11 +246,23 @@ class _PosixPtyBackend:
 
 
 class _WindowsPtyBackend:
-    """Windows implementation backed by pywinpty winpty.ptyprocess."""
+    """Windows implementation backed by pywinpty winpty.ptyprocess.
+
+    pywinpty exposes a blocking read API.  Keep that blocking call isolated
+    to a per-bridge daemon reader thread so PtyBridge.read(timeout) can
+    preserve the facade's timeout contract for the WebSocket executor path.
+    """
 
     def __init__(self, proc):
         self._proc = proc
         self._closed = False
+        self._read_queue: queue.Queue[Optional[bytes]] = queue.Queue()
+        self._reader_thread = threading.Thread(
+            target=self._reader_loop,
+            name=f"HermesWinptyReader-{int(proc.pid)}",
+            daemon=True,
+        )
+        self._reader_thread.start()
 
     @classmethod
     def spawn(
@@ -271,6 +285,34 @@ class _WindowsPtyBackend:
         )
         return cls(proc)
 
+    @staticmethod
+    def _normalize_read(data) -> Optional[bytes]:
+        if data is None:
+            return None
+        if data == "" or data == b"":
+            return b""
+        if isinstance(data, bytes):
+            return data
+        return str(data).encode("utf-8")
+
+    def _reader_loop(self) -> None:
+        while True:
+            try:
+                item = self._normalize_read(self._proc.read())
+            except EOFError:
+                item = None
+            except OSError as exc:
+                if exc.errno not in (errno.EIO, errno.EBADF, errno.EPIPE):
+                    item = None
+                else:
+                    item = None
+            except Exception:
+                item = None
+
+            self._read_queue.put(item)
+            if item is None:
+                return
+
     @property
     def pid(self) -> int:
         return int(self._proc.pid)
@@ -284,23 +326,12 @@ class _WindowsPtyBackend:
             return False
 
     def read(self, timeout: float = 0.2) -> Optional[bytes]:
-        if self._closed:
+        if self._closed and self._read_queue.empty():
             return None
         try:
-            data = self._proc.read()
-        except EOFError:
-            return None
-        except OSError as exc:
-            if exc.errno in (errno.EIO, errno.EBADF, errno.EPIPE):
-                return None
-            raise
-        if data is None:
-            return None
-        if data == "" or data == b"":
+            return self._read_queue.get(timeout=max(0.0, timeout))
+        except queue.Empty:
             return b""
-        if isinstance(data, bytes):
-            return data
-        return str(data).encode("utf-8")
 
     def write(self, data: bytes) -> None:
         if self._closed or not data:
@@ -337,6 +368,7 @@ class _WindowsPtyBackend:
             self._proc.terminate(force=True)
         except Exception:
             pass
+        self._reader_thread.join(timeout=1.0)
 
 
 class PtyBridge:
@@ -412,12 +444,13 @@ class PtyBridge:
         """Read up to 64 KiB of raw bytes from the PTY master.
 
         Returns:
-            * bytes — zero or more bytes of child output
-            * empty bytes (b empty) — no data available within timeout
-            * None — child has exited and the master fd is at EOF
+            * bytes — one or more bytes of child output
+            * b"" — no data available within timeout
+            * None — child has exited and the PTY is at EOF
 
-        Never blocks longer than timeout seconds. Safe to call after close;
-        returns None in that case.
+        Backend implementations keep blocking platform reads out of this
+        facade path so callers can poll with a bounded timeout. Safe to call
+        after close; returns None once buffered output is drained.
         """
         return self._backend.read(timeout)
 

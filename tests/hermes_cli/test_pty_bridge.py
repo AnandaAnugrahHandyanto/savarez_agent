@@ -7,18 +7,22 @@ printf) to verify it behaves like a PTY you can read/write/resize/close.
 from __future__ import annotations
 
 import os
+import queue
 import sys
 import time
+from importlib.util import find_spec
 
 import pytest
-
-pytest.importorskip("ptyprocess", reason="ptyprocess not installed")
 
 from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
 
 
 skip_on_windows = pytest.mark.skipif(
-    sys.platform.startswith("win"), reason="PTY bridge is POSIX-only"
+    sys.platform.startswith("win"), reason="POSIX PTY tests require non-Windows"
+)
+skip_without_posix_pty = pytest.mark.skipif(
+    sys.platform.startswith("win") or find_spec("ptyprocess") is None,
+    reason="POSIX PTY tests require ptyprocess on non-Windows",
 )
 
 
@@ -36,7 +40,7 @@ def _read_until(bridge: PtyBridge, needle: bytes, timeout: float = 5.0) -> bytes
     return bytes(buf)
 
 
-@skip_on_windows
+@skip_without_posix_pty
 class TestPtyBridgeSpawn:
     def test_is_available_on_posix(self):
         assert PtyBridge.is_available() is True
@@ -53,7 +57,7 @@ class TestPtyBridgeSpawn:
             PtyBridge.spawn([str(tmp_path / "definitely-not-a-real-binary")])
 
 
-@skip_on_windows
+@skip_without_posix_pty
 class TestPtyBridgeIO:
     def test_reads_child_stdout(self):
         bridge = PtyBridge.spawn(["/bin/sh", "-c", "printf hermes-ok"])
@@ -93,7 +97,7 @@ class TestPtyBridgeIO:
             bridge.close()
 
 
-@skip_on_windows
+@skip_without_posix_pty
 class TestPtyBridgeResize:
     def test_resize_updates_child_winsize(self):
         # Query the TTY ioctl directly instead of using tput, which requires
@@ -120,7 +124,7 @@ class TestPtyBridgeResize:
             bridge.close()
 
 
-@skip_on_windows
+@skip_without_posix_pty
 class TestPtyBridgeClose:
     def test_close_is_idempotent(self):
         bridge = PtyBridge.spawn(["/bin/sh", "-c", "sleep 30"])
@@ -145,7 +149,7 @@ class TestPtyBridgeClose:
         assert reaped, f"pid {pid} still running after close()"
 
 
-@skip_on_windows
+@skip_without_posix_pty
 class TestPtyBridgeEnv:
     def test_cwd_is_respected(self, tmp_path):
         bridge = PtyBridge.spawn(
@@ -226,12 +230,17 @@ class TestWindowsPtyBackendAdapter:
                 self.writes = []
                 self.resizes = []
                 self.closed = []
+                self.read_items = queue.Queue()
+                self.read_items.put("héllo")
 
             def isalive(self):
                 return self.alive
 
             def read(self):
-                return "héllo"
+                item = self.read_items.get()
+                if isinstance(item, BaseException):
+                    raise item
+                return item
 
             def write(self, data):
                 self.writes.append(data)
@@ -242,10 +251,12 @@ class TestWindowsPtyBackendAdapter:
             def close(self, force=False):
                 self.closed.append(("close", force))
                 self.alive = False
+                self.read_items.put(EOFError())
 
             def terminate(self, force=False):
                 self.closed.append(("terminate", force))
                 self.alive = False
+                self.read_items.put(EOFError())
 
         class FakePtyProcess:
             @staticmethod
@@ -278,22 +289,59 @@ class TestWindowsPtyBackendAdapter:
             rows=40,
         )
 
-        assert created[0]["argv"] == ["node", "entry.js"]
-        assert created[0]["cwd"] == "C:/hermes"
-        assert created[0]["env"]["A"] == "B"
-        assert created[0]["env"]["TERM"] == "xterm-256color"
-        assert created[0]["dimensions"] == (40, 100)
-        assert backend.pid == 4242
-        assert backend.is_alive() is True
-        assert backend.read() == "héllo".encode("utf-8")
+        try:
+            assert created[0]["argv"] == ["node", "entry.js"]
+            assert created[0]["cwd"] == "C:/hermes"
+            assert created[0]["env"]["A"] == "B"
+            assert created[0]["env"]["TERM"] == "xterm-256color"
+            assert created[0]["dimensions"] == (40, 100)
+            assert backend.pid == 4242
+            assert backend.is_alive() is True
+            assert backend.read(timeout=1.0) == "héllo".encode("utf-8")
+            assert backend.read(timeout=0.01) == b""
 
-        backend.write("input".encode("utf-8"))
-        backend.resize(cols=120, rows=50)
-        backend.close()
-        backend.close()
+            backend.write("input".encode("utf-8"))
+            backend.resize(cols=120, rows=50)
+        finally:
+            backend.close()
+            backend.close()
 
         proc = created[0]["proc"]
         assert proc.writes == ["input"]
         assert proc.resizes == [(50, 120)]
         assert proc.closed
         assert backend.is_alive() is False
+
+    def test_read_timeout_does_not_call_blocking_winpty_read_on_caller(self):
+        import hermes_cli.pty_bridge as pty_bridge
+
+        class BlockingFakeWinptyProc:
+            pid = 4343
+
+            def __init__(self):
+                self.alive = True
+                self.read_items = queue.Queue()
+
+            def isalive(self):
+                return self.alive
+
+            def read(self):
+                item = self.read_items.get()
+                if isinstance(item, BaseException):
+                    raise item
+                return item
+
+            def close(self, force=False):
+                self.alive = False
+                self.read_items.put(EOFError())
+
+            def terminate(self, force=False):
+                self.close(force=force)
+
+        backend = pty_bridge._WindowsPtyBackend(BlockingFakeWinptyProc())
+        try:
+            start = time.monotonic()
+            assert backend.read(timeout=0.01) == b""
+            assert time.monotonic() - start < 0.5
+        finally:
+            backend.close()

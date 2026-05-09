@@ -1943,11 +1943,12 @@ class TestDashboardPluginManifestExtensions:
 
 class TestNativeWindowsPtyImportFallback:
     def test_web_server_imports_when_unix_pty_modules_are_missing(self, monkeypatch):
-        """Dashboard import should not fail just because PTY support is unavailable.
+        """Dashboard import should not fail without Unix PTY modules.
 
         Native Windows lacks Unix-only modules such as fcntl/termios. The dashboard
-        should still import and expose non-PTY routes, while the PTY bridge reports
-        itself unavailable.
+        should still import and expose non-PTY routes. If a Windows backend is
+        available, the bridge may legitimately remain available; otherwise it
+        should report graceful unavailability at spawn time.
         """
         import builtins
         import importlib
@@ -1969,9 +1970,9 @@ class TestNativeWindowsPtyImportFallback:
             ws = importlib.import_module("hermes_cli.web_server")
 
             assert ws.app is not None
-            assert ws.PtyBridge.is_available() is False
-            with pytest.raises(ws.PtyUnavailableError):
-                ws.PtyBridge.spawn(["hermes"])
+            if not ws.PtyBridge.is_available():
+                with pytest.raises(ws.PtyUnavailableError):
+                    ws.PtyBridge.spawn(["hermes"])
         finally:
             sys.modules.pop("hermes_cli.web_server", None)
             sys.modules.pop("hermes_cli.pty_bridge", None)
