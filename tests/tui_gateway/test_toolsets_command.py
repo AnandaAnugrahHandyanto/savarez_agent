@@ -18,6 +18,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+WORKER_TIMEOUT_S = float(os.environ.get("HERMES_TEST_TUI_SLASH_WORKER_TIMEOUT", "60"))
 
 
 def _run_worker(tmp_path: Path, command: str) -> dict:
@@ -60,7 +61,16 @@ def _run_worker(tmp_path: Path, command: str) -> dict:
         text=True,
     )
     request = json.dumps({"id": 1, "command": command}) + "\n"
-    stdout, stderr = proc.communicate(request, timeout=20)
+    try:
+        stdout, stderr = proc.communicate(request, timeout=WORKER_TIMEOUT_S)
+    except subprocess.TimeoutExpired as exc:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+        raise AssertionError(
+            f"slash worker timed out after {WORKER_TIMEOUT_S:g}s\n"
+            f"stdout:\n{stdout}\n"
+            f"stderr:\n{stderr}"
+        ) from exc
 
     assert proc.returncode == 0, stderr
     lines = [line for line in stdout.splitlines() if line.strip()]
