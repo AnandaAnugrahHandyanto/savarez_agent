@@ -609,7 +609,6 @@ def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser
     assert "agent-browser is not installed (expected in the tested Termux path)" in out
     assert "npm install -g agent-browser && agent-browser install" in out
 
-
 def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
@@ -839,3 +838,73 @@ class TestGitHubTokenCheck:
 
         assert "gh auth" in str(call_log) or any(c[0] == "gh" for c in call_log), f"gh not called: {call_log}"
         assert "GitHub authenticated via gh CLI" in out or "token configured" in out
+
+
+def test_doctor_uses_uv_sync_repair_hint_for_missing_required_packages(monkeypatch, tmp_path, capsys):
+    project_root = tmp_path / "project"
+    hermes_home = tmp_path / ".hermes"
+    project_root.mkdir()
+    hermes_home.mkdir()
+    (project_root / "pyproject.toml").write_text("[project]\nname='hermes-agent'\n")
+
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+    monkeypatch.setattr(doctor_mod, "_check_gateway_service_linger", lambda issues: None)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *args, **kwargs: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    real_import = __import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "openai":
+            raise ImportError("missing openai")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+
+    doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = capsys.readouterr().out
+    assert "uv sync --locked --extra all" in out
+    assert "Install OpenAI SDK: uv pip install openai" not in out
+
+
+def test_doctor_uses_termux_repair_hint_for_missing_required_packages(monkeypatch, tmp_path, capsys):
+    project_root = tmp_path / "project"
+    hermes_home = tmp_path / ".hermes"
+    project_root.mkdir()
+    hermes_home.mkdir()
+    (project_root / "pyproject.toml").write_text("[project]\nname='hermes-agent'\n")
+
+    monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
+    monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+    monkeypatch.setattr(doctor_mod, "_check_gateway_service_linger", lambda issues: None)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *args, **kwargs: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    real_import = __import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "openai":
+            raise ImportError("missing openai")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+
+    doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = capsys.readouterr().out
+    assert "python -m pip install -e '.[termux]' -c constraints-termux.txt" in out
+    assert "uv sync --locked --extra all" not in out

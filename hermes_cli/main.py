@@ -5886,8 +5886,8 @@ def _update_via_zip(args):
                     extracted = candidate
                     break
 
-        # Copy updated files over existing installation, preserving venv/node_modules/.git
-        preserve = {"venv", "node_modules", ".git", ".env"}
+        # Copy updated files over existing installation, preserving envs/node_modules/.git
+        preserve = {".venv", "venv", "node_modules", ".git", ".env"}
         update_count = 0
         for item in os.listdir(extracted):
             if item in preserve:
@@ -5918,38 +5918,11 @@ def _update_via_zip(args):
             f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
         )
 
-    # Reinstall Python dependencies. Prefer .[all], but if one optional extra
-    # breaks on this machine, keep base deps and reinstall the remaining extras
-    # individually so update does not silently strip working capabilities.
+    # Re-sync Python dependencies. Prefer the curated [all] extra, but if one
+    # optional extra breaks on this machine, keep base deps and retry the
+    # remaining curated extras cumulatively so update does not strip capabilities.
     print("→ Updating Python dependencies...")
-
-    pip_cmd = [sys.executable, "-m", "pip"]
-    uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
-    if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-        if _is_termux_env(uv_env):
-            uv_env.pop("PYTHONPATH", None)
-            uv_env.pop("PYTHONHOME", None)
-        _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
-    else:
-        # Use sys.executable to explicitly call the venv's pip module,
-        # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
-        # Some environments lose pip inside the venv; bootstrap it back with
-        # ensurepip before trying the editable install.
-        try:
-            subprocess.run(
-                pip_cmd + ["--version"],
-                cwd=PROJECT_ROOT,
-                check=True,
-                capture_output=True,
-            )
-        except subprocess.CalledProcessError:
-            subprocess.run(
-                [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                cwd=PROJECT_ROOT,
-                check=True,
-            )
-        _install_python_dependencies_with_optional_fallback(pip_cmd)
+    _sync_project_dependencies_for_update()
 
     _update_node_dependencies()
     _build_web_ui(PROJECT_ROOT / "web")
@@ -6469,6 +6442,15 @@ def _load_installable_optional_extras() -> list[str]:
 
     return referenced
 
+def _preferred_project_env_dir() -> Path:
+    """Return the project env directory Hermes-owned sync flows should target."""
+    dot_venv = PROJECT_ROOT / ".venv"
+    legacy_venv = PROJECT_ROOT / "venv"
+    if dot_venv.is_dir():
+        return dot_venv
+    if legacy_venv.is_dir():
+        return legacy_venv
+    return dot_venv
 
 def _run_install_with_heartbeat(
     cmd: list[str],
@@ -6509,58 +6491,70 @@ def _run_install_with_heartbeat(
         t.join(timeout=0.2)
 
 
-def _install_python_dependencies_with_optional_fallback(
-    install_cmd_prefix: list[str],
+def _run_uv_sync(
+    extras: list[str],
     *,
-    env: dict[str, str] | None = None,
+    inexact: bool,
+    locked: bool,
+    env_dir: Path,
 ) -> None:
-    """Install base deps plus as many optional extras as the environment supports.
-
-    We intentionally do NOT pass ``--quiet`` to pip. On platforms without
-    prebuilt wheels for some extras (Termux/Android aarch64, older musl
-    distros, fresh Raspberry Pi) pip has to compile C/Rust extensions from
-    source, which can take several minutes with zero network activity.
-    Without progress output the call looks like a hang and users Ctrl+C it.
-    Pip's default output is proportional to actual work (one line per
-    Collecting/Building/Installing step), so keeping it visible costs
-    nothing on fast hardware and prevents the "hermes update hangs" reports
-    on slow hardware.
-
-    We also add periodic heartbeat lines in case the resolver/build backend is
-    itself silent for long stretches.
-    """
-    try:
-        _run_install_with_heartbeat(
-            install_cmd_prefix + ["install", "-e", ".[all]"],
-            env=env,
+    """Run ``uv sync`` against the selected project environment."""
+    uv_bin = shutil.which("uv") or _ensure_uv_for_termux()
+    if not uv_bin:
+        raise RuntimeError(
+            "uv is required for Hermes source-install updates. "
+            "Reinstall uv, then rerun `hermes update` or `uv sync --locked --extra all`."
         )
+
+    cmd = [uv_bin, "sync"]
+    if locked:
+        cmd.append("--locked")
+    if inexact:
+        cmd.append("--inexact")
+    for extra in extras:
+        cmd.extend(["--extra", extra])
+    cmd.append("--quiet")
+
+    sync_env = {
+        **os.environ,
+        "UV_PROJECT_ENVIRONMENT": str(env_dir),
+    }
+    _run_install_with_heartbeat(cmd, env=sync_env)
+
+
+def _sync_python_dependencies_with_optional_fallback(
+    *,
+    env_dir: Path | None = None,
+    inexact: bool,
+    locked: bool,
+) -> None:
+    """Sync base deps plus as many curated optional extras as the env supports."""
+    selected_env_dir = (env_dir or _preferred_project_env_dir()).resolve()
+    try:
+        _run_uv_sync(["all"], inexact=inexact, locked=locked, env_dir=selected_env_dir)
         return
     except subprocess.CalledProcessError:
         print(
-            "  ⚠ Optional extras failed, reinstalling base dependencies and retrying extras individually..."
+            "  ⚠ Optional extras failed, syncing base dependencies and retrying "
+            "curated extras cumulatively..."
         )
 
-    _run_install_with_heartbeat(
-        install_cmd_prefix + ["install", "-e", "."],
-        env=env,
-    )
+    _run_uv_sync([], inexact=inexact, locked=locked, env_dir=selected_env_dir)
 
     failed_extras: list[str] = []
     installed_extras: list[str] = []
+    selected_extras: list[str] = []
     for extra in _load_installable_optional_extras():
         try:
-            _run_install_with_heartbeat(
-                install_cmd_prefix + ["install", "-e", f".[{extra}]"],
-                env=env,
-            )
+            candidate = [*selected_extras, extra]
+            _run_uv_sync(candidate, inexact=inexact, locked=locked, env_dir=selected_env_dir)
+            selected_extras = candidate
             installed_extras.append(extra)
         except subprocess.CalledProcessError:
             failed_extras.append(extra)
 
     if installed_extras:
-        print(
-            f"  ✓ Reinstalled optional extras individually: {', '.join(installed_extras)}"
-        )
+        print(f"  ✓ Re-synced optional extras cumulatively: {', '.join(installed_extras)}")
     if failed_extras:
         print(
             f"  ⚠ Skipped optional extras that still failed: {', '.join(failed_extras)}"
@@ -6573,14 +6567,23 @@ def _is_termux_env(env: dict[str, str] | None = None) -> bool:
     return "com.termux" in prefix or prefix.startswith("/data/data/com.termux/")
 
 
-def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
-    """Best-effort uv bootstrap on Termux for faster update installs."""
+def _ensure_uv_for_termux() -> str | None:
+    """Best-effort uv bootstrap on Termux for source-install updates."""
     uv_bin = shutil.which("uv")
     if uv_bin or not _is_termux_env():
         return uv_bin
+
+    install_env = {**os.environ}
+    install_env.pop("PYTHONPATH", None)
+    install_env.pop("PYTHONHOME", None)
     try:
-        print("  → Termux detected: trying to install uv for faster dependency updates...")
-        subprocess.run(pip_cmd + ["install", "uv"], cwd=PROJECT_ROOT, check=False)
+        print("  → Termux detected: trying to install uv for dependency sync...")
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "uv"],
+            cwd=PROJECT_ROOT,
+            check=False,
+            env=install_env,
+        )
     except Exception:
         pass
     return shutil.which("uv")
@@ -7044,6 +7047,21 @@ def _run_pre_update_backup(args) -> None:
     print()
 
 
+def _sync_project_dependencies_for_update() -> None:
+    """Sync Hermes project dependencies for an update, or exit with guidance."""
+    env_dir = _preferred_project_env_dir()
+    try:
+        _sync_python_dependencies_with_optional_fallback(
+            env_dir=env_dir,
+            inexact=True,
+            locked=True,
+        )
+    except RuntimeError as exc:
+        print(f"✗ {exc}")
+        print("  Install or restore uv: https://docs.astral.sh/uv/getting-started/installation/")
+        sys.exit(1)
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -7322,40 +7340,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if is_fork and branch == "main":
             _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
-        # Reinstall Python dependencies. Prefer .[all], but if one optional extra
-        # breaks on this machine, keep base deps and reinstall the remaining extras
-        # individually so update does not silently strip working capabilities.
+        # Re-sync Python dependencies. Prefer the curated [all] extra, but if one
+        # optional extra breaks on this machine, keep base deps and retry the
+        # remaining curated extras cumulatively so update does not strip capabilities.
         print("→ Updating Python dependencies...")
-        pip_cmd = [sys.executable, "-m", "pip"]
-        uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
-        if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-            if _is_termux_env(uv_env):
-                uv_env.pop("PYTHONPATH", None)
-                uv_env.pop("PYTHONHOME", None)
-            _install_python_dependencies_with_optional_fallback(
-                [uv_bin, "pip"], env=uv_env
-            )
-        else:
-            # Use sys.executable to explicitly call the venv's pip module,
-            # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
-            # Some environments lose pip inside the venv; bootstrap it back with
-            # ensurepip before trying the editable install.
-            pip_cmd = [sys.executable, "-m", "pip"]
-            try:
-                subprocess.run(
-                    pip_cmd + ["--version"],
-                    cwd=PROJECT_ROOT,
-                    check=True,
-                    capture_output=True,
-                )
-            except subprocess.CalledProcessError:
-                subprocess.run(
-                    [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                    cwd=PROJECT_ROOT,
-                    check=True,
-                )
-            _install_python_dependencies_with_optional_fallback(pip_cmd)
+        _sync_project_dependencies_for_update()
 
         _update_node_dependencies()
         _build_web_ui(PROJECT_ROOT / "web")
@@ -8794,8 +8783,7 @@ def cmd_dashboard(args):
         print(
             f"Re-install the package into this interpreter so metadata updates apply:\n"
             f"  cd {PROJECT_ROOT}\n"
-            f"  {sys.executable} -m pip install -e .\n"
-            "If `pip` is missing in this venv, use:  uv pip install -e ."
+            "  uv sync --locked --extra web"
         )
         print(f"Import error: {e}")
         sys.exit(1)

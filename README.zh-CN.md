@@ -147,18 +147,16 @@ hermes claw migrate --overwrite  # 覆盖已有冲突
 ```bash
 git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
-./setup-hermes.sh     # 安装 uv、创建 venv、安装 .[all]、创建符号链接 ~/.local/bin/hermes
-./hermes              # 自动检测 venv，无需先 source
+./setup-hermes.sh     # 安装 uv、创建 .venv、同步 .[all]、创建符号链接 ~/.local/bin/hermes
+./hermes              # 自动检测 .venv，无需先 source
 ```
 
 手动安装（等效于上述命令）：
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv venv --python 3.11
-source venv/bin/activate
-uv pip install -e ".[all,dev]"
-python -m pytest tests/ -q
+uv sync --locked --extra all --extra dev
+scripts/run_tests.sh
 ```
 
 > **RL 训练（可选）：** 如需参与 RL/Tinker-Atropos 集成开发：

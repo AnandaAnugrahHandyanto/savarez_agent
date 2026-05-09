@@ -763,64 +763,50 @@ function Install-Repository {
 
 function Install-Venv {
     if ($NoVenv) {
-        Write-Info "Skipping virtual environment (-NoVenv)"
+        # -NoVenv skips the explicit `uv venv` pre-creation step. uv sync in
+        # Install-Dependencies will still create .venv automatically if it does
+        # not exist, so the project environment ends up at .venv either way.
+        Write-Info "Skipping explicit project environment pre-creation (-NoVenv)"
         return
     }
     
-    Write-Info "Creating virtual environment with Python $PythonVersion..."
+    Write-Info "Creating project environment with Python $PythonVersion..."
     
     Push-Location $InstallDir
     
-    if (Test-Path "venv") {
-        Write-Info "Virtual environment already exists, recreating..."
-        Remove-Item -Recurse -Force "venv"
+    if (Test-Path ".venv") {
+        Write-Info "Project environment already exists, recreating..."
+        Remove-Item -Recurse -Force ".venv"
     }
     
-    # uv creates the venv and pins the Python version in one step
-    & $UvCmd venv venv --python $PythonVersion
+    # uv creates the project env and pins the Python version in one step
+    & $UvCmd venv .venv --python $PythonVersion
     
     Pop-Location
     
-    Write-Success "Virtual environment ready (Python $PythonVersion)"
+    Write-Success "Project environment ready (Python $PythonVersion)"
 }
 
 function Install-Dependencies {
     Write-Info "Installing dependencies..."
     
     Push-Location $InstallDir
-    
-    if (-not $NoVenv) {
-        # Tell uv to install into our venv (no activation needed)
-        $env:VIRTUAL_ENV = "$InstallDir\venv"
-    }
-    
-    # Install main package.  Tiered fallback so a single flaky git+https dep
-    # (atroposlib / tinker in the [rl] extra) doesn't silently drop
-    # dashboard/MCP/cron/messaging extras.  Each tier's stdout/stderr is
-    # preserved — no Out-Null swallowing — so the user can see what failed.
-    #
-    # Tier 1: [all] — everything, including RL git+https deps (best case).
-    # Tier 2: [core-extras] synthesised locally — all PyPI-only extras we
-    #         ship (web, mcp, cron, cli, voice, messaging, slack, dev, acp,
-    #         pty, homeassistant, sms, tts-premium, honcho, google, mistral,
-    #         bedrock, dingtalk, feishu, modal, daytona, vercel).  Drops [rl]
-    #         and [matrix] (linux-only) which are the usual failure culprits.
-    # Tier 3: [web,mcp,cron,cli,messaging,dev] — the minimum we strongly
-    #         believe a user expects `hermes dashboard` / slash commands /
-    #         cron / messaging platforms to work out of the box.
-    # Tier 4: bare `.` — last-resort so at least the core CLI launches.
+
+    $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\.venv"
+
+    # Sync the main project with the curated extra set first, then fall back to
+    # base deps. Preserve uv output so users can see which resolver/build step
+    # failed instead of staring at a silent install.
     $installTiers = @(
-        @{ Name = "all (with RL/matrix extras)"; Spec = ".[all]" },
-        @{ Name = "PyPI-only extras (no git deps)"; Spec = ".[web,mcp,cron,cli,voice,messaging,slack,dev,acp,pty,homeassistant,sms,tts-premium,honcho,google,mistral,bedrock,dingtalk,feishu,modal,daytona,vercel]" },
-        @{ Name = "dashboard + core platforms"; Spec = ".[web,mcp,cron,cli,messaging,dev]" },
-        @{ Name = "core only (no extras)"; Spec = "." }
+        @{ Name = "all"; Args = @("sync", "--locked", "--extra", "all") },
+        @{ Name = "base"; Args = @("sync", "--locked") }
     )
     $installed = $false
     foreach ($tier in $installTiers) {
         Write-Info "Trying tier: $($tier.Name) ..."
-        & $UvCmd pip install -e $tier.Spec
+        & $UvCmd @($tier.Args)
         if ($LASTEXITCODE -eq 0) {
-            Write-Success "Main package installed ($($tier.Name))"
+            Write-Success "Project dependencies synced ($($tier.Name))"
             $script:InstalledTier = $tier.Name
             $installed = $true
             break
@@ -828,14 +814,13 @@ function Install-Dependencies {
         Write-Warn "Tier '$($tier.Name)' failed (exit $LASTEXITCODE). Trying next tier..."
     }
     if (-not $installed) {
-        throw "Failed to install hermes-agent package even with no extras. Inspect the uv pip install output above."
+        throw "Project dependency sync failed. Inspect the uv sync output above."
     }
 
     # Verify the dashboard deps specifically — they're the most common thing
     # users hit and lazy-import errors from `hermes dashboard` are confusing.
-    # If tier 1 failed (the common case), [web] was still picked up by tiers
-    # 2-3; only tier 4 leaves you without it.
-    $pythonExe = if (-not $NoVenv) { "$InstallDir\venv\Scripts\python.exe" } else { (& $UvCmd python find $PythonVersion) }
+    # If full sync failed, the base fallback leaves you without [web].
+    $pythonExe = "$InstallDir\.venv\Scripts\python.exe"
     if (Test-Path $pythonExe) {
         $webOk = $false
         try {
@@ -844,12 +829,12 @@ function Install-Dependencies {
         } catch { }
         if (-not $webOk) {
             Write-Warn "fastapi/uvicorn not importable — `hermes dashboard` will not work."
-            Write-Info "Attempting targeted install of [web] extra as last resort..."
-            & $UvCmd pip install -e ".[web]"
+            Write-Info "Attempting targeted sync of [web] extra as last resort..."
+            & $UvCmd sync --locked --extra web
             if ($LASTEXITCODE -eq 0) {
                 Write-Success "[web] extra installed; `hermes dashboard` should now work."
             } else {
-                Write-Warn "Could not install [web] extra. Run manually: uv pip install --python `"$pythonExe`" `"fastapi>=0.104,<1`" `"uvicorn[standard]>=0.24,<1`""
+                Write-Warn "Could not install [web] extra. Run manually: uv sync --locked --extra web"
             }
         }
     }
@@ -876,14 +861,10 @@ function Install-Dependencies {
 function Set-PathVariable {
     Write-Info "Setting up hermes command..."
     
-    if ($NoVenv) {
-        $hermesBin = "$InstallDir"
-    } else {
-        $hermesBin = "$InstallDir\venv\Scripts"
-    }
+    $hermesBin = "$InstallDir\.venv\Scripts"
     
-    # Add the venv Scripts dir to user PATH so hermes is globally available
-    # On Windows, the hermes.exe in venv\Scripts\ has the venv Python baked in
+    # Add the project env Scripts dir to user PATH so hermes is globally available.
+    # On Windows, the hermes.exe in .venv\Scripts\ has the env Python baked in.
     $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
     
     if ($currentPath -notlike "*$hermesBin*") {
@@ -992,7 +973,7 @@ Delete the contents (or this file) to use the default personality.
     
     # Seed bundled skills into ~/.hermes/skills/ (manifest-based, one-time per skill)
     Write-Info "Syncing bundled skills to ~/.hermes/skills/ ..."
-    $pythonExe = "$InstallDir\venv\Scripts\python.exe"
+    $pythonExe = "$InstallDir\.venv\Scripts\python.exe"
     if (Test-Path $pythonExe) {
         try {
             & $pythonExe "$InstallDir\tools\skills_sync.py" 2>$null
@@ -1165,8 +1146,8 @@ function Install-PlatformSdks {
     # Ensure messaging-platform SDKs matching tokens the user added to
     # ~/.hermes/.env are importable.  Two problems this solves:
     #
-    # 1. The tiered `uv pip install` cascade above can fall through to a
-    #    lower tier when the first fails (common when RL git deps choke),
+    # 1. The `uv sync --extra all` flow above can fall back to base deps
+    #    when the first sync fails (common when optional deps choke),
     #    which silently skips some messaging SDKs from [messaging].
     # 2. `uv` creates the venv without pip.  If a messaging SDK ends up
     #    missing, the user can't `pip install python-telegram-bot` to
@@ -1177,12 +1158,7 @@ function Install-PlatformSdks {
     # run one targeted `pip install` as last-chance recovery.  Keeps fresh
     # Windows installs from hitting silent "python-telegram-bot not installed"
     # at runtime.
-    if ($NoVenv) {
-        Write-Info "Skipping platform-SDK verification (-NoVenv: no venv to bootstrap)"
-        return
-    }
-
-    $pythonExe = "$InstallDir\venv\Scripts\python.exe"
+    $pythonExe = "$InstallDir\.venv\Scripts\python.exe"
     if (-not (Test-Path $pythonExe)) {
         Write-Warn "Skipping platform-SDK verification: $pythonExe not found"
         return
@@ -1282,9 +1258,9 @@ function Invoke-SetupWizard {
     
     Push-Location $InstallDir
     
-    # Run hermes setup using the venv Python directly (no activation needed)
-    if (-not $NoVenv) {
-        & ".\venv\Scripts\python.exe" -m hermes_cli.main setup
+    # Run hermes setup using the project env Python directly (no activation needed)
+    if (Test-Path ".\.venv\Scripts\python.exe") {
+        & ".\.venv\Scripts\python.exe" -m hermes_cli.main setup
     } else {
         python -m hermes_cli.main setup
     }
@@ -1305,7 +1281,7 @@ function Start-GatewayIfConfigured {
 
     if (-not $hasMessaging) { return }
 
-    $hermesCmd = "$InstallDir\venv\Scripts\hermes.exe"
+    $hermesCmd = "$InstallDir\.venv\Scripts\hermes.exe"
     if (-not (Test-Path $hermesCmd)) {
         $hermesCmd = "hermes"
     }
