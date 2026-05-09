@@ -39,11 +39,13 @@ import { PluginSlot } from "@/plugins";
 function buildWsUrl(
   token: string,
   resume: string | null,
+  newChat: string | null,
   channel: string,
 ): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   const qs = new URLSearchParams({ token, channel });
   if (resume) qs.set("resume", resume);
+  if (newChat) qs.set("new", newChat);
   return `${proto}//${window.location.host}/api/pty?${qs.toString()}`;
 }
 
@@ -153,9 +155,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // param changes do NOT remount the component. Resume-in-chat from the
   // Sessions page relies on `/chat?resume=<id>` changing at runtime, so we must
   // treat the current resume target as part of the PTY identity and rebuild the
-  // terminal session when it changes.
+  // terminal session when it changes. Explicit `/chat?new=1` must also rebuild
+  // and propagate to the backend so it bypasses Dashboard auto-resume.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  const newChatParam = searchParams.get("new");
+  const channel = useMemo(() => generateChannelId(), [resumeParam, newChatParam]);
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -552,7 +556,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     });
 
     // WebSocket
-    const url = buildWsUrl(token, resumeParam, channel);
+    const url = buildWsUrl(token, resumeParam, newChatParam, channel);
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
@@ -657,7 +661,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam]);
+  }, [channel, resumeParam, newChatParam]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
