@@ -1,5 +1,6 @@
 """Tests for agent.skill_utils.get_external_skills_dirs cache mtime invalidation."""
 import os
+from pathlib import Path
 
 import pytest
 import yaml
@@ -15,7 +16,10 @@ def cleared_cache():
 
 
 def _write_config(path, dirs):
-    path.write_text(yaml.dump({"skills": {"external_dirs": [str(d) for d in dirs]}}))
+    path.write_text(
+        yaml.dump({"skills": {"external_dirs": [str(d) for d in dirs]}}),
+        encoding="utf-8",
+    )
 
 
 class TestExternalDirsCache:
@@ -30,7 +34,15 @@ class TestExternalDirsCache:
         _write_config(config, [ext])
         monkeypatch.setattr(skill_utils, "get_config_path", lambda: config)
         monkeypatch.setattr(skill_utils, "get_skills_dir", lambda: tmp_path / "local")
+
+        # Prime the cache.
         first = skill_utils.get_external_skills_dirs()
+
+        # If the second call hits the cache, yaml_load must NOT be invoked again.
+        def _explode(_content):
+            raise AssertionError("yaml_load should not be called on cache hit")
+
+        monkeypatch.setattr(skill_utils, "yaml_load", _explode)
         second = skill_utils.get_external_skills_dirs()
         assert first == [ext]
         assert second == [ext]
@@ -43,9 +55,10 @@ class TestExternalDirsCache:
         monkeypatch.setattr(skill_utils, "get_config_path", lambda: config)
         monkeypatch.setattr(skill_utils, "get_skills_dir", lambda: tmp_path / "local")
         first = skill_utils.get_external_skills_dirs()
-        first.append("poisoned")
+        poison = Path("/tmp/poisoned")
+        first.append(poison)
         second = skill_utils.get_external_skills_dirs()
-        assert "poisoned" not in second
+        assert poison not in second
         assert second == [ext]
 
     def test_cache_invalidates_when_mtime_changes(self, tmp_path, monkeypatch, cleared_cache):
