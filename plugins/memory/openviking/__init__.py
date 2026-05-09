@@ -65,7 +65,7 @@ def _atexit_commit_sessions():
     _last_active_provider = None
     try:
         provider.on_session_end([])
-    except Exception:
+    except (Exception, KeyboardInterrupt):
         pass  # best-effort at shutdown time
 
 

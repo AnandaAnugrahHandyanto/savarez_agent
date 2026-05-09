@@ -529,7 +529,7 @@ class MemoryManager:
         for provider in reversed(self._providers):
             try:
                 provider.shutdown()
-            except Exception as e:
+            except (Exception, KeyboardInterrupt) as e:
                 logger.warning(
                     "Memory provider '%s' shutdown failed: %s",
                     provider.name, e,

@@ -5046,11 +5046,11 @@ class AIAgent:
         if self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])
-            except Exception:
+            except (Exception, KeyboardInterrupt):
                 pass
             try:
                 self._memory_manager.shutdown_all()
-            except Exception:
+            except (Exception, KeyboardInterrupt):
                 pass
         # Notify context engine of session end (flush DAG, close DBs, etc.)
         if hasattr(self, "context_compressor") and self.context_compressor:
@@ -5059,7 +5059,7 @@ class AIAgent:
                     self.session_id or "",
                     messages or [],
                 )
-            except Exception:
+            except (Exception, KeyboardInterrupt):
                 pass
 
     def commit_memory_session(self, messages: list = None) -> None:
@@ -5071,7 +5071,7 @@ class AIAgent:
             return
         try:
             self._memory_manager.on_session_end(messages or [])
-        except Exception:
+        except (Exception, KeyboardInterrupt):
             pass
 
     def _sync_external_memory_for_turn(
@@ -5156,7 +5156,7 @@ class AIAgent:
                     # Fall back to full close on children; they're per-turn.
                     try:
                         child.close()
-                    except Exception:
+                    except (Exception, KeyboardInterrupt):
                         pass
         except Exception:
             pass
@@ -5189,19 +5189,19 @@ class AIAgent:
         try:
             from tools.process_registry import process_registry
             process_registry.kill_all(task_id=task_id)
-        except Exception:
+        except (Exception, KeyboardInterrupt):
             pass
 
         # 2. Clean terminal sandbox environments
         try:
             cleanup_vm(task_id)
-        except Exception:
+        except (Exception, KeyboardInterrupt):
             pass
 
         # 3. Clean browser daemon sessions
         try:
             cleanup_browser(task_id)
-        except Exception:
+        except (Exception, KeyboardInterrupt):
             pass
 
         # 4. Close active child agents
@@ -5212,9 +5212,9 @@ class AIAgent:
             for child in children:
                 try:
                     child.close()
-                except Exception:
+                except (Exception, KeyboardInterrupt):
                     pass
-        except Exception:
+        except (Exception, KeyboardInterrupt):
             pass
 
         # 5. Close the OpenAI/httpx client
@@ -5223,7 +5223,7 @@ class AIAgent:
             if client is not None:
                 self._close_openai_client(client, reason="agent_close", shared=True)
                 self.client = None
-        except Exception:
+        except (Exception, KeyboardInterrupt):
             pass
 
     def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:

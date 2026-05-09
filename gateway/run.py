@@ -2783,7 +2783,7 @@ class GatewayRunner:
                     session_id=getattr(agent, "session_id", None),
                     platform="gateway",
                 )
-            except Exception:
+            except (Exception, KeyboardInterrupt):
                 pass
             self._cleanup_agent_resources(agent)
 
@@ -2808,7 +2808,7 @@ class GatewayRunner:
                     agent.shutdown_memory_provider(session_messages)
                 else:
                     agent.shutdown_memory_provider()
-        except Exception:
+        except (Exception, KeyboardInterrupt):
             pass
         # Close tool resources (terminal sandboxes, browser daemons,
         # background processes, httpx clients) to prevent zombie
@@ -2816,7 +2816,7 @@ class GatewayRunner:
         try:
             if hasattr(agent, "close"):
                 agent.close()
-        except Exception:
+        except (Exception, KeyboardInterrupt):
             pass
         # Auxiliary async clients (session_search/web/vision/etc.) live in a
         # process-global cache and are created inside worker threads. Clean up
@@ -15721,7 +15721,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         try:
             from gateway.status import consume_takeover_marker_for_self
             planned_takeover = consume_takeover_marker_for_self()
-        except Exception as e:
+        except (Exception, KeyboardInterrupt) as e:
             logger.debug("Takeover marker check failed: %s", e)
 
         # Planned stop check: service managers and `hermes gateway stop`
@@ -15735,7 +15735,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             try:
                 from gateway.status import consume_planned_stop_marker_for_self
                 planned_stop = consume_planned_stop_marker_for_self()
-            except Exception as e:
+            except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Planned stop marker check failed: %s", e)
 
         if planned_takeover:
@@ -15770,7 +15770,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 )
             else:
                 logger.info("Shutdown diagnostic — no other hermes processes found")
-        except Exception:
+        except (Exception, KeyboardInterrupt):
             pass
         asyncio.create_task(runner.stop())
 

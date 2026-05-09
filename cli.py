@@ -695,16 +695,16 @@ def _run_cleanup():
 
     try:
         _cleanup_all_terminals()
-    except Exception:
+    except (Exception, KeyboardInterrupt):
         pass
     try:
         _cleanup_all_browsers()
-    except Exception:
+    except (Exception, KeyboardInterrupt):
         pass
     try:
         from tools.mcp_tool import shutdown_mcp_servers
         shutdown_mcp_servers()
-    except Exception:
+    except (Exception, KeyboardInterrupt):
         pass
     # Close cached auxiliary LLM clients (sync + async) so that
     # AsyncHttpxClientWrapper.__del__ doesn't fire on a closed event loop
@@ -712,14 +712,14 @@ def _run_cleanup():
     try:
         from agent.auxiliary_client import shutdown_cached_clients
         shutdown_cached_clients()
-    except Exception:
+    except (Exception, KeyboardInterrupt):
         pass
     # Shut down memory provider (on_session_end + shutdown_all) at actual
     # session boundary — NOT per-turn inside run_conversation().
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
         _invoke_hook("on_session_finalize", session_id=_active_agent_ref.session_id if _active_agent_ref else None, platform="cli")
-    except Exception:
+    except (Exception, KeyboardInterrupt):
         pass
     try:
         if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
@@ -734,7 +734,7 @@ def _run_cleanup():
                 _active_agent_ref.shutdown_memory_provider(_session_msgs)
             else:
                 _active_agent_ref.shutdown_memory_provider()
-    except Exception:
+    except (Exception, KeyboardInterrupt):
         pass
 
 
@@ -12560,20 +12560,20 @@ class HermesCLI:
             if self.agent and getattr(self, '_agent_running', False):
                 try:
                     self.agent.interrupt()
-                except Exception:
+                except (Exception, KeyboardInterrupt):
                     pass
             # Shut down voice recorder (release persistent audio stream)
             if hasattr(self, '_voice_recorder') and self._voice_recorder:
                 try:
                     self._voice_recorder.shutdown()
-                except Exception:
+                except (Exception, KeyboardInterrupt):
                     pass
                 self._voice_recorder = None
             # Clean up old temp voice recordings
             try:
                 from tools.voice_mode import cleanup_temp_recordings
                 cleanup_temp_recordings()
-            except Exception:
+            except (Exception, KeyboardInterrupt):
                 pass
             # Unregister callbacks to avoid dangling references
             set_sudo_password_callback(None)
@@ -12600,7 +12600,7 @@ class HermesCLI:
                         model=getattr(self.agent, 'model', None),
                         platform=getattr(self.agent, 'platform', None) or "cli",
                     )
-                except Exception:
+                except (Exception, KeyboardInterrupt):
                     pass
             _run_cleanup()
             self._print_exit_summary()

@@ -3169,7 +3169,7 @@ def shutdown_cached_clients() -> None:
                 close_fn = getattr(client, "close", None)
                 if close_fn and not inspect.iscoroutinefunction(close_fn):
                     close_fn()
-            except Exception:
+            except (Exception, KeyboardInterrupt):
                 pass
         _client_cache.clear()
 

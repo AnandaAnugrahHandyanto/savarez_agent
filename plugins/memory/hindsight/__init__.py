@@ -993,7 +993,7 @@ class HindsightMemoryProvider(MemoryProvider):
             return
         try:
             self.shutdown()
-        except Exception as exc:
+        except (Exception, KeyboardInterrupt) as exc:
             logger.debug("Hindsight atexit shutdown failed: %s", exc)
 
     def _run_hindsight_operation(self, operation):
@@ -1695,7 +1695,10 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._retain_queue.put(_WRITER_SENTINEL)
             except Exception:
                 pass
-            writer.join(timeout=10.0)
+            try:
+                writer.join(timeout=10.0)
+            except (Exception, KeyboardInterrupt):
+                pass
             if writer.is_alive():
                 logger.warning(
                     "Hindsight writer did not stop within 10s; "
@@ -1703,7 +1706,10 @@ class HindsightMemoryProvider(MemoryProvider):
                     self._retain_queue.qsize(),
                 )
         if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=5.0)
+            try:
+                self._prefetch_thread.join(timeout=5.0)
+            except (Exception, KeyboardInterrupt):
+                pass
         if self._client is not None:
             try:
                 if self._mode == "local_embedded":

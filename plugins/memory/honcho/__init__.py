@@ -1310,12 +1310,15 @@ class HonchoMemoryProvider(MemoryProvider):
     def shutdown(self) -> None:
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
-                t.join(timeout=5.0)
+                try:
+                    t.join(timeout=5.0)
+                except (Exception, KeyboardInterrupt):
+                    pass
         # Flush any remaining messages
         if self._manager:
             try:
                 self._manager.flush_all()
-            except Exception:
+            except (Exception, KeyboardInterrupt):
                 pass
 
 
