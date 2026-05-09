@@ -1,8 +1,9 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
+import { handleSearchInput, useIndexedFuzzyList } from '../lib/searchableList.js'
 import type { Theme } from '../theme.js'
 
 import { OverlayHint, useOverlayKeys, windowItems, windowOffset } from './overlayControls.js'
@@ -10,6 +11,12 @@ import { OverlayHint, useOverlayKeys, windowItems, windowOffset } from './overla
 const VISIBLE = 12
 const MIN_WIDTH = 40
 const MAX_WIDTH = 90
+const LABEL_SEARCH_KEYS = ['label'] as const
+
+interface IndexedLabel {
+  index: number
+  label: string
+}
 
 export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
   const [skillsByCat, setSkillsByCat] = useState<Record<string, string[]>>({})
@@ -21,6 +28,9 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
   const [installing, setInstalling] = useState(false)
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(true)
+  const [catQuery, setCatQuery] = useState('')
+  const [skillQuery, setSkillQuery] = useState('')
+  const [searchStage, setSearchStage] = useState<null | 'category' | 'skill'>(null)
 
   const { stdout } = useStdout()
   const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
@@ -38,9 +48,39 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
       })
   }, [gw])
 
-  const cats = Object.keys(skillsByCat).sort()
-  const skills = selectedCat ? (skillsByCat[selectedCat] ?? []) : []
+  const cats = useMemo(() => Object.keys(skillsByCat).sort(), [skillsByCat])
+  const skills = useMemo(() => (selectedCat ? (skillsByCat[selectedCat] ?? []) : []), [selectedCat, skillsByCat])
   const skillName = skills[skillIdx] ?? ''
+
+  const catEntries = useMemo<IndexedLabel[]>(
+    () => cats.map((label, index) => ({ index, label: `${label} · ${skillsByCat[label]?.length ?? 0} skills` })),
+    [cats, skillsByCat]
+  )
+
+  const skillEntries = useMemo<IndexedLabel[]>(
+    () => skills.map((label, index) => ({ index, label })),
+    [skills]
+  )
+
+  const searchActive = searchStage === stage
+
+  const { filtered: filteredCats, selectedPosition: catPos } = useIndexedFuzzyList(
+    catEntries,
+    catQuery,
+    LABEL_SEARCH_KEYS,
+    catIdx,
+    setCatIdx,
+    stage === 'category'
+  )
+
+  const { filtered: filteredSkills, selectedPosition: skillPos } = useIndexedFuzzyList(
+    skillEntries,
+    skillQuery,
+    LABEL_SEARCH_KEYS,
+    skillIdx,
+    setSkillIdx,
+    stage === 'skill'
+  )
 
   const back = () => {
     if (stage === 'actions') {
@@ -54,6 +94,8 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
     if (stage === 'skill') {
       setStage('category')
       setSkillIdx(0)
+      setSkillQuery('')
+      setSearchStage(null)
 
       return
     }
@@ -61,7 +103,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
     onClose()
   }
 
-  useOverlayKeys({ disabled: installing, onBack: back, onClose })
+  useOverlayKeys({ disabled: installing || searchActive, onBack: back, onClose })
 
   const inspect = (name: string) => {
     setInfo(null)
@@ -96,31 +138,44 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
         return
       }
 
-      if (ch.toLowerCase() === 'x' && skillName) {
+      if (ch?.toLowerCase() === 'x' && skillName) {
         install(skillName)
 
         return
       }
 
-      if (ch.toLowerCase() === 'i' && skillName) {
+      if (ch?.toLowerCase() === 'i' && skillName) {
         inspect(skillName)
       }
 
       return
     }
 
-    const count = stage === 'category' ? cats.length : skills.length
-    const sel = stage === 'category' ? catIdx : skillIdx
+    if (stage === 'category' || stage === 'skill') {
+      const setQuery = stage === 'category' ? setCatQuery : setSkillQuery
+
+      if (handleSearchInput(ch, key, {
+        active: searchActive,
+        setActive: active => setSearchStage(active ? stage : null),
+        setQuery
+      })) {
+        return
+      }
+    }
+
+    const entries = stage === 'category' ? filteredCats : filteredSkills
+    const count = entries.length
+    const sel = stage === 'category' ? catPos : skillPos
     const setSel = stage === 'category' ? setCatIdx : setSkillIdx
 
     if (key.upArrow && sel > 0) {
-      setSel(v => v - 1)
+      setSel(entries[sel - 1]!.index)
 
       return
     }
 
     if (key.downArrow && sel < count - 1) {
-      setSel(v => v + 1)
+      setSel(entries[sel + 1]!.index)
 
       return
     }
@@ -129,12 +184,14 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
       if (stage === 'category') {
         const cat = cats[catIdx]
 
-        if (!cat) {
+        if (!cat || !filteredCats.length) {
           return
         }
 
         setSelectedCat(cat)
         setSkillIdx(0)
+        setSkillQuery('')
+        setSearchStage(null)
         setStage('skill')
 
         return
@@ -142,7 +199,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
 
       const name = skills[skillIdx]
 
-      if (name) {
+      if (name && filteredSkills.length) {
         setStage('actions')
         inspect(name)
       }
@@ -154,24 +211,31 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
 
     if (!Number.isNaN(n) && n >= 1 && n <= Math.min(10, count)) {
       const next = windowOffset(count, sel, VISIBLE) + n - 1
+      const entry = entries[next]
+
+      if (!entry) {
+        return
+      }
 
       if (stage === 'category') {
-        const cat = cats[next]
+        const cat = cats[entry.index]
 
         if (cat) {
           setSelectedCat(cat)
-          setCatIdx(next)
+          setCatIdx(entry.index)
           setSkillIdx(0)
+          setSkillQuery('')
+          setSearchStage(null)
           setStage('skill')
         }
 
         return
       }
 
-      const name = skills[next]
+      const name = skills[entry.index]
 
       if (name) {
-        setSkillIdx(next)
+        setSkillIdx(entry.index)
         setStage('actions')
         inspect(name)
       }
@@ -201,8 +265,11 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
   }
 
   if (stage === 'category') {
-    const rows = cats.map(c => `${c} · ${skillsByCat[c]?.length ?? 0} skills`)
-    const { items, offset } = windowItems(rows, catIdx, VISIBLE)
+    const { items, offset } = windowItems(filteredCats, catPos, VISIBLE)
+
+    const searchLabel = catQuery || searchActive
+      ? `Search: ${catQuery}${searchActive ? '▎' : ''} (${filteredCats.length}/${cats.length})`
+      : 'Search: / to filter categories'
 
     return (
       <Box flexDirection="column" width={width}>
@@ -211,33 +278,41 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
         </Text>
 
         <Text color={t.color.muted}>select a category</Text>
+        <Text color={searchActive ? t.color.accent : t.color.muted}>{searchLabel}</Text>
         {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
+        {!filteredCats.length && catQuery ? <Text color={t.color.muted}>no categories match "{catQuery}"</Text> : null}
 
-        {items.map((row, i) => {
-          const idx = offset + i
+        {items.map((entry, i) => {
+          const idx = entry.index
 
           return (
             <Text
               bold={catIdx === idx}
               color={catIdx === idx ? t.color.accent : t.color.muted}
               inverse={catIdx === idx}
-              key={row}
+              key={entry.label}
               wrap="truncate-end"
             >
               {catIdx === idx ? '▸ ' : '  '}
-              {i + 1}. {row}
+              {offset + i + 1}. {entry.label}
             </Text>
           )
         })}
 
-        {offset + VISIBLE < rows.length && <Text color={t.color.muted}> ↓ {rows.length - offset - VISIBLE} more</Text>}
-        <OverlayHint t={t}>↑/↓ select · Enter open · 1-9,0 quick · Esc/q cancel</OverlayHint>
+        {offset + VISIBLE < filteredCats.length && (
+          <Text color={t.color.muted}> ↓ {filteredCats.length - offset - VISIBLE} more</Text>
+        )}
+        <OverlayHint t={t}>↑/↓ select · Enter open · / search · 1-9,0 quick · Esc/q cancel</OverlayHint>
       </Box>
     )
   }
 
   if (stage === 'skill') {
-    const { items, offset } = windowItems(skills, skillIdx, VISIBLE)
+    const { items, offset } = windowItems(filteredSkills, skillPos, VISIBLE)
+
+    const searchLabel = skillQuery || searchActive
+      ? `Search: ${skillQuery}${searchActive ? '▎' : ''} (${filteredSkills.length}/${skills.length})`
+      : 'Search: / to filter skills'
 
     return (
       <Box flexDirection="column" width={width}>
@@ -246,31 +321,35 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
         </Text>
 
         <Text color={t.color.muted}>{skills.length} skill(s)</Text>
+        <Text color={searchActive ? t.color.accent : t.color.muted}>{searchLabel}</Text>
         {!skills.length ? <Text color={t.color.muted}>no skills in this category</Text> : null}
+        {skills.length && !filteredSkills.length && skillQuery ? (
+          <Text color={t.color.muted}>no skills match "{skillQuery}"</Text>
+        ) : null}
         {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
 
-        {items.map((row, i) => {
-          const idx = offset + i
+        {items.map((entry, i) => {
+          const idx = entry.index
 
           return (
             <Text
               bold={skillIdx === idx}
               color={skillIdx === idx ? t.color.accent : t.color.muted}
               inverse={skillIdx === idx}
-              key={row}
+              key={entry.label}
               wrap="truncate-end"
             >
               {skillIdx === idx ? '▸ ' : '  '}
-              {i + 1}. {row}
+              {offset + i + 1}. {entry.label}
             </Text>
           )
         })}
 
-        {offset + VISIBLE < skills.length && (
-          <Text color={t.color.muted}> ↓ {skills.length - offset - VISIBLE} more</Text>
+        {offset + VISIBLE < filteredSkills.length && (
+          <Text color={t.color.muted}> ↓ {filteredSkills.length - offset - VISIBLE} more</Text>
         )}
         <OverlayHint t={t}>
-          {skills.length ? '↑/↓ select · Enter open · 1-9,0 quick · Esc back · q close' : 'Esc back · q close'}
+          {skills.length ? '↑/↓ select · Enter open · / search · 1-9,0 quick · Esc back · q close' : 'Esc back · q close'}
         </OverlayHint>
       </Box>
     )

@@ -2437,9 +2437,15 @@ def _prompt_provider_choice(choices, *, default=0):
     if the user cancels.
     """
     try:
-        from hermes_cli.setup import _curses_prompt_choice
+        from hermes_cli.curses_ui import curses_radiolist
 
-        idx = _curses_prompt_choice("Select provider:", choices, default)
+        idx = curses_radiolist(
+            "Select provider:",
+            choices,
+            selected=default,
+            cancel_returns=-1,
+            searchable=True,
+        )
         if idx >= 0:
             print()
             return idx
