@@ -535,15 +535,31 @@ def _redact_event_text(text: str) -> str:
 def _delegation_runtime_resolution(status: str, exit_reason: Optional[str]) -> str:
     normalized_status = str(status or "unknown").lower()
     normalized_exit = str(exit_reason or "").lower()
+    explicit_timeout = normalized_status in {"timeout", "timed_out"} or normalized_exit in {
+        "timeout",
+        "timed_out",
+        "timed out",
+    }
+    if explicit_timeout:
+        return "delegation_timeout"
     if normalized_status in {"completed", "success", "succeeded"}:
         return "delegation_completed"
     if normalized_status in {"failed", "error"} or normalized_exit == "error":
         return "delegation_failed"
-    if normalized_status in {"timeout", "timed_out"} or "timeout" in normalized_exit:
-        return "delegation_timeout"
     if normalized_status in {"interrupted", "cancelled", "canceled"}:
         return "delegation_interrupted"
     return f"delegation_{normalized_status}"
+
+
+_DELEGATION_RUNTIME_FAILURE_RESOLUTIONS = frozenset(
+    {"delegation_failed", "delegation_timeout", "delegation_interrupted"}
+)
+
+
+def _delegation_runtime_failure_kind(resolution: str) -> str:
+    if resolution in _DELEGATION_RUNTIME_FAILURE_RESOLUTIONS:
+        return resolution
+    return "none"
 
 
 def _write_delegation_runtime_event(
@@ -578,7 +594,7 @@ def _write_delegation_runtime_event(
             "status": status,
             "accepted": accepted,
             "role": role or "delegate",
-            "failure_kind": "delegation_failed" if resolution == "delegation_failed" else "none",
+            "failure_kind": _delegation_runtime_failure_kind(resolution),
             "resolution": resolution,
         }
         if session_id:

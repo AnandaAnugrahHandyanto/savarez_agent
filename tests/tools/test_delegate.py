@@ -25,6 +25,8 @@ from tools.delegate_tool import (
     DelegateEvent,
     _get_max_concurrent_children,
     _LEGACY_EVENT_MAP,
+    _delegation_runtime_failure_kind,
+    _delegation_runtime_resolution,
     MAX_DEPTH,
     check_delegate_requirements,
     delegate_task,
@@ -125,6 +127,59 @@ class TestDelegationRuntimeTelemetry(unittest.TestCase):
             self.assertIn("[REDACTED]", event["error"])
             self.assertNotIn("redactme123", payload)
             self.assertNotIn("redactedtoken456", payload)
+
+    def test_runtime_resolution_timeout_is_explicit_not_substring(self):
+        self.assertEqual(
+            _delegation_runtime_resolution("completed", "timeout"),
+            "delegation_timeout",
+        )
+        self.assertEqual(
+            _delegation_runtime_resolution("completed", "no timeout"),
+            "delegation_completed",
+        )
+        self.assertEqual(
+            _delegation_runtime_resolution("failed", "timed out"),
+            "delegation_timeout",
+        )
+        self.assertEqual(
+            _delegation_runtime_resolution("failed", None),
+            "delegation_failed",
+        )
+        self.assertEqual(
+            _delegation_runtime_resolution("", None),
+            "delegation_unknown",
+        )
+
+    def test_runtime_failure_kind_marks_terminal_failures(self):
+        self.assertEqual(_delegation_runtime_failure_kind("delegation_failed"), "delegation_failed")
+        self.assertEqual(_delegation_runtime_failure_kind("delegation_timeout"), "delegation_timeout")
+        self.assertEqual(_delegation_runtime_failure_kind("delegation_interrupted"), "delegation_interrupted")
+        self.assertEqual(_delegation_runtime_failure_kind("delegation_completed"), "none")
+
+    def test_runtime_event_failure_kind_matches_resolution(self):
+        cases = [
+            ("completed", "completed", "delegation_completed", "none"),
+            ("failed", "error", "delegation_failed", "delegation_failed"),
+            ("failed", "timeout", "delegation_timeout", "delegation_timeout"),
+            ("interrupted", "interrupted", "delegation_interrupted", "delegation_interrupted"),
+            ("queued", None, "delegation_queued", "none"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            with patch.dict(os.environ, {"HERMES_HOME": str(home)}, clear=False):
+                for status, exit_reason, expected_resolution, expected_failure_kind in cases:
+                    with self.subTest(status=status, exit_reason=exit_reason):
+                        _write_delegation_event(
+                            status=status,
+                            provider="openrouter",
+                            model="test/model",
+                            accepted=False,
+                            duration_seconds=1,
+                            exit_reason=exit_reason,
+                        )
+                        event = self._read_events(home, "provider-failover-events.jsonl")[-1]
+                        self.assertEqual(event["resolution"], expected_resolution)
+                        self.assertEqual(event["failure_kind"], expected_failure_kind)
 
 
 class TestDelegateRequirements(unittest.TestCase):
