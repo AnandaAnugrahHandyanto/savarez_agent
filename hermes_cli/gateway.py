@@ -394,13 +394,30 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                             pass
                     current_cmd = ""
         else:
-            result = subprocess.run(
-                ["ps", "-A", "eww", "-o", "pid=,command="],
-                capture_output=True,
-                text=True,
-                timeout=10,
+            # Prefer a portable POSIX shape, and avoid Linux-specific ``eww``.
+            # macOS/BSD ps handles ``aux`` consistently but can silently return
+            # empty output for GNU-style flag mixtures; Linux keeps the
+            # structured ``pid=,command=`` form and falls back to ``aux`` for
+            # distros whose ps does not accept ``ww``.
+            ps_commands = (
+                [["ps", "aux"]]
+                if is_macos()
+                else [
+                    ["ps", "-A", "ww", "-o", "pid=,command="],
+                    ["ps", "aux"],
+                ]
             )
-            if result.returncode != 0:
+            result = None
+            for ps_command in ps_commands:
+                result = subprocess.run(
+                    ps_command,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode == 0 and (result.stdout or "").strip():
+                    break
+            else:
                 return []
             for line in result.stdout.split("\n"):
                 stripped = line.strip()

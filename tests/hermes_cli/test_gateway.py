@@ -342,10 +342,13 @@ def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeyp
 def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkeypatch):
     monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
     monkeypatch.setattr(gateway, "is_windows", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
 
     def fake_run(cmd, **kwargs):
-        if cmd[:4] == ["ps", "-A", "eww", "-o"]:
+        if cmd[:4] == ["ps", "-A", "ww", "-o"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="ps failed")
+        if cmd == ["ps", "aux"]:
             return SimpleNamespace(returncode=1, stdout="", stderr="ps failed")
         if cmd[:3] == ["ps", "-o", "ppid="]:
             # _get_ancestor_pids() walks up the tree; return "no parent" so
@@ -356,6 +359,67 @@ def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkey
     monkeypatch.setattr(gateway.subprocess, "run", fake_run)
 
     assert gateway.find_gateway_pids() == [321]
+
+
+def test_scan_gateway_pids_uses_ps_aux_on_macos(monkeypatch):
+    calls = []
+    monkeypatch.setattr(gateway, "is_windows", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: True)
+    monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
+    monkeypatch.setattr(gateway, "get_hermes_home", lambda: SimpleNamespace(resolve=lambda: "/tmp/hermes"))
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd == ["ps", "aux"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "USER PID %CPU %MEM VSZ RSS TTY STAT STARTED TIME COMMAND\n"
+                    "me 456 0.0 0.1 1 2 ?? S 12:00 0:00 "
+                    "python -m hermes_cli.main gateway run\n"
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    assert gateway.find_gateway_pids() == [456]
+    assert calls == [["ps", "aux"]]
+
+
+def test_scan_gateway_pids_falls_back_to_ps_aux_when_posix_ps_empty(monkeypatch):
+    calls = []
+    monkeypatch.setattr(gateway, "is_windows", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
+    monkeypatch.setattr(gateway, "get_hermes_home", lambda: SimpleNamespace(resolve=lambda: "/tmp/hermes"))
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:4] == ["ps", "-A", "ww", "-o"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == ["ps", "aux"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "USER PID %CPU %MEM VSZ RSS TTY STAT STARTED TIME COMMAND\n"
+                    "me 789 0.0 0.1 1 2 ? S 12:00 0:00 "
+                    "python -m hermes_cli.main gateway run\n"
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    assert gateway.find_gateway_pids() == [789]
+    assert calls == [
+        ["ps", "-A", "ww", "-o", "pid=,command="],
+        ["ps", "aux"],
+    ]
 
 
 # ---------------------------------------------------------------------------
