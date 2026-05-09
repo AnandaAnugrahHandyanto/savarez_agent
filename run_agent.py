@@ -37,6 +37,7 @@ import concurrent.futures
 import contextvars
 import copy
 import hashlib
+import importlib.util
 import json
 import logging
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ import os
 import random
 import re
 import ssl
+import subprocess
 import sys
 import tempfile
 import time
@@ -145,8 +147,7 @@ from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
-    HERMES_AGENT_HELP_GUIDANCE,
-    KANBAN_GUIDANCE,
+    HERMES_AGENT_HELP_GUIDANCE, KANBAN_GUIDANCE, ROUTING_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -160,7 +161,7 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, build_hasos_runtime_guidance, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
@@ -270,6 +271,273 @@ def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
         pass
 
     return proxy
+
+
+_HASOS_CLOSEOUT_EXPLICIT_TASK_MARKERS = (
+    "hasos", "標準", "standard", "standards", "wiki", "template", "模板",
+    "standards-invocation-map", "release-security-gate", "fixed-paste",
+    "canonical", "source ledger", "closeout", "完成報告", "商用品質",
+    "commercial-quality",
+)
+
+_HASOS_CLOSEOUT_HIGH_RISK_TASK_MARKERS = (
+    "app store", "appstore", "testflight", "release", "upload", "submission",
+    "上架", "送審", "隱私", "privacy", "privacy policy", "privacy manifest",
+    "marketing url", "support url", "contact url",
+)
+
+_HASOS_CLOSEOUT_PERMISSION_MARKERS = ("permission", "permissions", "權限")
+_HASOS_CLOSEOUT_FILESYSTEM_PERMISSION_CONTEXT_MARKERS = (
+    "file permission", "file permissions", "filesystem permission", "filesystem permissions",
+    "directory permission", "directory permissions", "folder permission", "folder permissions",
+    "cache permission", "cache permissions", "local cache", "/tmp", "~/", "chmod", "chown", "acl",
+    "posix", "unix permission", "unix permissions", "檔案權限", "文件權限",
+    "資料夾權限", "快取權限", "本機快取",
+)
+
+_HASOS_CLOSEOUT_APP_PERMISSION_TASK_MARKERS = (
+    "app permission", "app permissions", "privacy permission", "permission prompt",
+    "camera permission", "microphone permission", "contacts permission",
+    "photo permission", "photos permission", "location permission", "notification permission",
+    "app 權限", "相機權限", "麥克風權限", "聯絡人權限", "通訊錄權限",
+    "照片權限", "相簿權限", "定位權限", "通知權限", "權限提示", "權限說明",
+)
+
+_HASOS_CLOSEOUT_FINAL_RESPONSE_TASK_MARKERS = (
+    "hasos", "standards wiki", "wiki", "template", "app store", "appstore",
+    "testflight", "release", "upload", "submission", "上架", "送審",
+    "隱私", "privacy", "privacy policy", "privacy manifest", "permission prompt",
+    "權限提示", "完成報告",
+)
+
+_HASOS_COMPLETION_CLAIM_MARKERS = (
+    "完成", "已完成", "已落地", "已實作", "已更新", "已修正", "pass",
+    "passed", "done", "implemented", "verified", "驗證通過", "可驗收",
+)
+
+_HASOS_CLOSEOUT_EVIDENCE_MARKERS = (
+    "證據", "evidence", "驗證", "verification", "測試", "pytest", "pass",
+    "passed", "diff_check", "secret_scan", "backup", "artifact", "檔案",
+)
+
+_HASOS_CLOSEOUT_LIMITATION_MARKERS = (
+    "限制", "邊界", "不能宣稱", "不能做", "未能驗證", "limitation",
+    "boundary", "unverified", "not claim", "not completed",
+)
+
+
+_HASOS_CLOSEOUT_SECRET_RE = re.compile(
+    r"(?is)(sk-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9_]{10,}|xox[baprs]-[A-Za-z0-9-]{10,}|"
+    r"AIza[0-9A-Za-z_-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----|"
+    r"(?:api[_-]?key|token|secret|password|passwd|client[_-]?secret)\s*[:=]\s*['\"]?[^\s'\"]{8,})"
+)
+_HASOS_POLICY_ENGINE_CACHE: tuple[Path | None, Any | None] = (None, None)
+
+
+def _hasos_load_policy_engine_for_closeout() -> Any | None:
+    global _HASOS_POLICY_ENGINE_CACHE
+    path = get_hermes_home() / "scripts" / "hasos_policy_engine.py"
+    cached_path, cached_module = _HASOS_POLICY_ENGINE_CACHE
+    if cached_path == path:
+        return cached_module
+    module: Any | None = None
+    try:
+        if path.exists():
+            spec = importlib.util.spec_from_file_location("hasos_policy_engine_for_closeout", path)
+            if spec is not None and spec.loader is not None:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+    except Exception:
+        module = None
+    _HASOS_POLICY_ENGINE_CACHE = (path, module)
+    return module
+
+
+def _hasos_redact_closeout_text(text: str) -> str:
+    """Best-effort display redaction before closeout metadata/response replay."""
+    raw = text or ""
+    module = _hasos_load_policy_engine_for_closeout()
+    try:
+        sanitize_text = getattr(module, "sanitize_text", None) if module is not None else None
+        if callable(sanitize_text):
+            raw = sanitize_text(raw)
+        else:
+            redact = getattr(module, "redact", None) if module is not None else None
+            if callable(redact):
+                redacted = redact(raw)
+                if isinstance(redacted, str):
+                    raw = redacted
+    except Exception:
+        pass
+    return _HASOS_CLOSEOUT_SECRET_RE.sub("[REDACTED]", raw)
+
+
+def _hasos_marker_matches(text: str, marker: str) -> bool:
+    lowered_marker = marker.lower()
+    if re.fullmatch(r"[a-z0-9_ -]+", lowered_marker):
+        pattern = r"(?<![a-z0-9_])" + re.escape(lowered_marker) + r"(?![a-z0-9_])"
+        return re.search(pattern, text) is not None
+    return lowered_marker in text
+
+
+def _hasos_text_has_any(text: str, markers: tuple[str, ...]) -> bool:
+    lowered = (text or "").lower()
+    return any(_hasos_marker_matches(lowered, marker) for marker in markers)
+
+
+def _hasos_closeout_gate_enabled() -> bool:
+    return os.environ.get("HERMES_HASOS_CLOSEOUT_GATE", "1").strip().lower() not in {
+        "0", "false", "no", "off", "disabled",
+    }
+
+
+def _hasos_closeout_gate_needed(user_message: Any, final_response: str) -> bool:
+    if not _hasos_closeout_gate_enabled():
+        return False
+    if not isinstance(user_message, str):
+        return False
+    # Scope detection must be based on the user's task, not on the model's
+    # final-response wording.  Otherwise generic assistant phrases such as
+    # "Done" or "passed" can combine with ordinary user text like "file
+    # permission error" and falsely rewrite non-HASOS answers.
+    user_text = user_message or ""
+    has_permission_marker = _hasos_text_has_any(user_text, _HASOS_CLOSEOUT_PERMISSION_MARKERS)
+    has_app_permission_marker = _hasos_text_has_any(user_text, _HASOS_CLOSEOUT_APP_PERMISSION_TASK_MARKERS)
+    filesystem_permission_context = _hasos_text_has_any(
+        user_text,
+        _HASOS_CLOSEOUT_FILESYSTEM_PERMISSION_CONTEXT_MARKERS,
+    )
+    return (
+        _hasos_text_has_any(user_text, _HASOS_CLOSEOUT_EXPLICIT_TASK_MARKERS)
+        or _hasos_text_has_any(user_text, _HASOS_CLOSEOUT_HIGH_RISK_TASK_MARKERS)
+        or has_app_permission_marker
+        or (has_permission_marker and not filesystem_permission_context)
+        or (
+            _hasos_response_claims_completion(final_response)
+            and (
+                _hasos_text_has_any(final_response, _HASOS_CLOSEOUT_EXPLICIT_TASK_MARKERS)
+                or _hasos_text_has_any(final_response, _HASOS_CLOSEOUT_HIGH_RISK_TASK_MARKERS)
+                or _hasos_text_has_any(final_response, _HASOS_CLOSEOUT_FINAL_RESPONSE_TASK_MARKERS)
+            )
+        )
+    )
+
+
+def _hasos_response_claims_completion(final_response: str) -> bool:
+    return _hasos_text_has_any(final_response, _HASOS_COMPLETION_CLAIM_MARKERS)
+
+
+def _hasos_response_has_closeout_evidence(final_response: str) -> bool:
+    text = final_response or ""
+    return (
+        _hasos_text_has_any(text, _HASOS_CLOSEOUT_EVIDENCE_MARKERS)
+        and _hasos_text_has_any(text, _HASOS_CLOSEOUT_LIMITATION_MARKERS)
+    )
+
+
+def _run_hasos_template_quality_gate(timeout_seconds: int = 12) -> dict:
+    """Run the local read-only HASOS template quality gate when installed.
+
+    This gate is deliberately local/read-only.  It never prints credentials and
+    returns a compact metadata dict suitable for the conversation result.
+    """
+    script = get_hermes_home() / "scripts" / "canonical_template_audit.py"
+    if not script.is_file():
+        return {
+            "status": "skipped",
+            "passed": None,
+            "reason": "canonical_template_audit.py not installed",
+            "script": str(script),
+        }
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(script)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "failed",
+            "passed": False,
+            "reason": f"quality gate timed out after {timeout_seconds}s",
+            "script": str(script),
+        }
+    except OSError as exc:
+        return {
+            "status": "failed",
+            "passed": False,
+            "reason": f"quality gate could not run: {exc}",
+            "script": str(script),
+        }
+
+    stdout = (proc.stdout or "").strip()
+    stderr = (proc.stderr or "").strip()
+    try:
+        payload = json.loads(stdout) if stdout else {}
+    except json.JSONDecodeError:
+        payload = {}
+
+    summary = payload.get("summary") if isinstance(payload, dict) else None
+    passed = bool(
+        proc.returncode == 0
+        and isinstance(summary, dict)
+        and summary.get("passed") is True
+    )
+    return {
+        "status": "passed" if passed else "failed",
+        "passed": passed,
+        "exit_code": proc.returncode,
+        "taskID": payload.get("taskID") if isinstance(payload, dict) else None,
+        "template_count_found": payload.get("template_count_found") if isinstance(payload, dict) else None,
+        "runtime_guidance_chars": payload.get("runtime_guidance_chars") if isinstance(payload, dict) else None,
+        "failures": payload.get("failures", []) if isinstance(payload, dict) else [],
+        "warnings": payload.get("warnings", []) if isinstance(payload, dict) else [],
+        "stderr_preview": _hasos_redact_closeout_text(stderr)[:300] if stderr else "",
+        "script": str(script),
+    }
+
+
+def apply_hasos_closeout_gate(user_message: Any, final_response: str) -> tuple[str, dict | None, bool]:
+    """Apply HASOS closeout protection to high-risk standard/wiki/template tasks.
+
+    Returns ``(possibly_rewritten_response, metadata, blocked)``.  The gate is
+    intentionally narrow: ordinary low-risk chats are untouched.  For triggered
+    tasks, it runs the read-only canonical-template quality gate and blocks
+    completion claims when the gate fails or when the response lacks closeout
+    evidence/limitations required by HASOS.
+    """
+    if not _hasos_closeout_gate_needed(user_message, final_response):
+        return final_response, None, False
+
+    metadata = _run_hasos_template_quality_gate()
+    claims_completion = _hasos_response_claims_completion(final_response)
+    has_closeout = _hasos_response_has_closeout_evidence(final_response)
+    metadata["claims_completion"] = claims_completion
+    metadata["has_closeout_evidence"] = has_closeout
+
+    gate_failed = metadata.get("passed") is False
+    missing_closeout = claims_completion and not has_closeout
+    if not (gate_failed or missing_closeout):
+        return final_response, metadata, False
+
+    reasons = []
+    if gate_failed:
+        reasons.append("read-only canonical template quality gate did not pass")
+    if missing_closeout:
+        reasons.append("completion claim lacks required evidence + limitation closeout")
+    reason_text = "; ".join(reasons)
+    corrective = (
+        "⚠️ HASOS closeout gate 已阻止完成宣稱。\n"
+        f"原因：{reason_text}。\n"
+        "此回覆不得視為已完成；需補齊 artifact、source/evidence、verification、"
+        "limitations/未能驗證項目與 wiki/skill update decision，並讓 gate 通過後才能宣稱完成。"
+    )
+    original = _hasos_redact_closeout_text((final_response or "").strip())
+    rewritten = corrective if not original else corrective + "\n\n---\n原始回覆（已去敏）：\n" + original
+    return rewritten, metadata, True
 
 
 def _install_safe_stdio() -> None:
@@ -5335,7 +5603,7 @@ class AIAgent:
         #   2. User / gateway system prompt (if provided)
         #   3. Persistent memory (frozen snapshot)
         #   4. Skills guidance (if skills tools are loaded)
-        #   5. Context files (AGENTS.md, .cursorrules — SOUL.md excluded here when used as identity)
+        #   5. Project context files (.hermes/HERMES prelude, AGENTS chain, Claude/Cursor fallbacks — SOUL.md excluded here when used as identity)
         #   6. Current date & time (frozen at build time)
         #   7. Platform-specific formatting hint
 
@@ -5382,6 +5650,17 @@ class AIAgent:
         nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
         if nous_subscription_prompt:
             prompt_parts.append(nous_subscription_prompt)
+        hasos_runtime_guidance = build_hasos_runtime_guidance()
+        if hasos_runtime_guidance:
+            # Runtime-ready standards slice: intentionally compact, local, and
+            # testable. This is stronger than context-file discovery but still
+            # reported as guidance unless paired with event/scorecard hooks.
+            prompt_parts.append(hasos_runtime_guidance)
+        else:
+            # Fallback routing reminders for installations without the compact
+            # local HASOS slice. Avoid duplicating the same rules when HASOS is
+            # present because system-prompt weight matters.
+            prompt_parts.append(ROUTING_GUIDANCE)
         # Tool-use enforcement: tells the model to actually call tools instead
         # of describing intended actions.  Controlled by config.yaml
         # agent.tool_use_enforcement:
@@ -9916,6 +10195,75 @@ class AIAgent:
             parent_agent=self,
         )
 
+    @staticmethod
+    def _parse_hasos_release_gate_approval(messages: Optional[list]) -> Optional[dict]:
+        """Parse a user-authored HASOS Level-4C approval template.
+
+        Security boundary: this deliberately reads only the most recent user
+        message in the runtime conversation, never tool arguments or assistant
+        text. A bare "A"/"Approved" is not enough; the user must provide the
+        fixed template fields so the source gate receives auditable evidence.
+        """
+        if not messages:
+            return None
+        latest_user = ""
+        for msg in reversed(messages):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                content = msg.get("content")
+                if isinstance(content, str):
+                    latest_user = content.strip()
+                break
+        if not latest_user or "HASOS_RELEASE_GATE_APPROVED" not in latest_user:
+            return None
+
+        fields: dict[str, str] = {}
+        for line in latest_user.splitlines():
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            key = key.strip().lower().replace("-", "_")
+            value = value.strip()
+            if key and value:
+                fields[key] = value
+
+        required_text = ["runbook_id", "runbook_version", "owner", "target"]
+        if any(not fields.get(k) for k in required_text):
+            return None
+        if not (fields.get("evidence_path") or fields.get("evidence_id") or fields.get("evidence_id_or_path")):
+            return None
+
+        def truthy(key: str) -> bool:
+            return fields.get(key, "").lower() in {"true", "yes", "1", "passed", "核准", "已通過"}
+
+        if not (truthy("stop_rules_checked") and truthy("redaction_checked") and truthy("release_security_gate_passed")):
+            return None
+
+        policy = {
+            "policy_authorized": True,
+            "runbook_id": fields["runbook_id"],
+            "runbook_version": fields["runbook_version"],
+            "owner": fields["owner"],
+            "target": fields["target"],
+            "stop_rules_checked": True,
+            "redaction_checked": True,
+            "release_security_gate_passed": True,
+            "approval_source": "latest_user_hasos_release_gate_template",
+        }
+        if fields.get("evidence_path"):
+            policy["evidence_path"] = fields["evidence_path"]
+        elif fields.get("evidence_id"):
+            policy["evidence_id"] = fields["evidence_id"]
+        else:
+            policy["evidence_id"] = fields["evidence_id_or_path"]
+        return policy
+
+    def _hasos_runtime_policy_for_tool(self, function_name: str, function_args: dict, messages: Optional[list]) -> Optional[dict]:
+        # Only attach the template-derived evidence to side-effect tool calls;
+        # the policy engine still decides whether the call is actually Level 4C.
+        if function_name not in {"terminal", "execute_code", "cronjob", "send_message", "browser_click", "browser_type"}:
+            return None
+        return self._parse_hasos_release_gate_approval(messages)
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None,
                      pre_tool_block_checked: bool = False) -> str:
@@ -10001,6 +10349,7 @@ class AIAgent:
                 session_id=self.session_id or "",
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                 skip_pre_tool_call_hook=True,
+                runtime_policy_context=self._hasos_runtime_policy_for_tool(function_name, function_args, messages),
             )
 
     @staticmethod
@@ -10712,6 +11061,7 @@ class AIAgent:
                         session_id=self.session_id or "",
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                         skip_pre_tool_call_hook=True,
+                        runtime_policy_context=self._hasos_runtime_policy_for_tool(function_name, function_args, messages),
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
@@ -10732,6 +11082,7 @@ class AIAgent:
                         session_id=self.session_id or "",
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                         skip_pre_tool_call_hook=True,
+                        runtime_policy_context=self._hasos_runtime_policy_for_tool(function_name, function_args, messages),
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -14620,6 +14971,26 @@ class AIAgent:
         # Determine if conversation completed successfully
         completed = final_response is not None and api_call_count < self.max_iterations
 
+        hasos_closeout_gate = None
+        if final_response is not None and not interrupted:
+            gated_response, hasos_closeout_gate, hasos_gate_blocked = apply_hasos_closeout_gate(
+                original_user_message,
+                final_response,
+            )
+            if gated_response != final_response:
+                final_response = gated_response
+                completed = False
+                _turn_exit_reason = f"hasos_closeout_gate_blocked({_turn_exit_reason})"
+                # Keep the stored transcript aligned with what is returned to
+                # the caller.  Update only the most recent plain assistant
+                # message; tool-call messages must remain unchanged.
+                for _msg in reversed(messages):
+                    if isinstance(_msg, dict) and _msg.get("role") == "assistant" and not _msg.get("tool_calls"):
+                        _msg["content"] = final_response
+                        break
+            elif hasos_closeout_gate is not None:
+                _turn_exit_reason = f"hasos_closeout_gate_passed({_turn_exit_reason})"
+
         # Save trajectory if enabled.  ``user_message`` may be a multimodal
         # list of parts; the trajectory format wants a plain string.
         self._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed)
@@ -14764,6 +15135,8 @@ class AIAgent:
         }
         if self._tool_guardrail_halt_decision is not None:
             result["guardrail"] = self._tool_guardrail_halt_decision.to_metadata()
+        if hasos_closeout_gate is not None:
+            result["hasos_closeout_gate"] = hasos_closeout_gate
         # If a /steer landed after the final assistant turn (no more tool
         # batches to drain into), hand it back to the caller so it can be
         # delivered as the next user turn instead of being silently lost.

@@ -23,12 +23,15 @@ from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms import api_server as api_server_mod
 from gateway.platforms.api_server import (
     APIServerAdapter,
+    CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS,
     ResponseStore,
     _IdempotencyCache,
     _CORS_HEADERS,
     _derive_chat_session_id,
+    _sse_queue_poll_timeout,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -47,6 +50,22 @@ class TestCheckRequirements:
     @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", False)
     def test_returns_false_without_aiohttp(self):
         assert check_api_server_requirements() is False
+
+
+class TestSSEQueuePollTimeout:
+    def test_defaults_to_half_second_cap(self):
+        assert CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS > 0.5
+        assert _sse_queue_poll_timeout() == 0.5
+
+    def test_tracks_short_keepalive_for_chat_and_responses_loops(self, monkeypatch):
+        monkeypatch.setattr(api_server_mod, "CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS", 0.02)
+
+        assert _sse_queue_poll_timeout() == 0.02
+
+    def test_never_busy_spins_below_minimum(self, monkeypatch):
+        monkeypatch.setattr(api_server_mod, "CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS", 0.001)
+
+        assert _sse_queue_poll_timeout() == 0.01
 
 
 # ---------------------------------------------------------------------------
