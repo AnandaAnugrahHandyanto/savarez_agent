@@ -1875,6 +1875,7 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
+    max_concurrent_children: Optional[int] = None,
     role: Optional[str] = None,
     parent_agent=None,
 ) -> str:
@@ -1951,6 +1952,10 @@ def delegate_task(
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
+    if max_concurrent_children is not None:
+        # Per-call override clamped to a sane window so a malformed model
+        # output cannot request unbounded concurrency.
+        max_children = max(1, min(int(max_concurrent_children), 10))
     if tasks and isinstance(tasks, list):
         if len(tasks) > max_children:
             return tool_error(
@@ -2568,6 +2573,18 @@ DELEGATE_TASK_SCHEMA = {
                     "Only used when acp_command is set."
                 ),
             },
+            "max_concurrent_children": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10,
+                "description": (
+                    "Per-call override of delegation.max_concurrent_children. "
+                    "Clamped to 1..10 to prevent unbounded concurrency from "
+                    "a malformed request. Useful when a specific batch needs "
+                    "more parallelism than the global default without "
+                    "changing config."
+                ),
+            },
         },
         "required": [],
     },
@@ -2589,6 +2606,7 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
+        max_concurrent_children=args.get("max_concurrent_children"),
         role=args.get("role"),
         parent_agent=kw.get("parent_agent"),
     ),
