@@ -1392,6 +1392,10 @@ class FeishuAdapter(BasePlatformAdapter):
         self._sent_message_ids_to_chat: Dict[str, str] = {}  # message_id → chat_id (for reaction routing)
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
+        # Per-chat cache of chat_mode ("p2p" / "group" / "topic") used for
+        # auto-thread routing. Populated lazily via chats.get; separate from
+        # _chat_info_cache because that one stores the wrong field as "type".
+        self._chat_mode_cache: Dict[str, str] = {}
         self._message_text_cache: Dict[str, Optional[str]] = {}
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
@@ -4250,6 +4254,30 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Failed to send file %s: %s", file_path, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
+    async def _get_chat_mode(self, chat_id: str) -> str:
+        """Return Feishu chat_mode ("p2p" / "group" / "topic" / "").
+
+        Cached per-chat. Used by auto-thread routing in group sends.
+        Returns "" on lookup failure so callers can fall back safely.
+        """
+        cached = self._chat_mode_cache.get(chat_id)
+        if cached is not None:
+            return cached
+        if not self._client:
+            return ""
+        try:
+            request = self._build_get_chat_request(chat_id)
+            response = await asyncio.to_thread(self._client.im.v1.chat.get, request)
+            if not response or getattr(response, "success", lambda: False)() is False:
+                return ""
+            data = getattr(response, "data", None)
+            mode = str(getattr(data, "chat_mode", "") or "").strip().lower()
+            self._chat_mode_cache[chat_id] = mode
+            return mode
+        except Exception:
+            logger.warning("[Feishu] Failed to get chat_mode for %s", chat_id, exc_info=True)
+            return ""
+
     async def _send_raw_message(
         self,
         *,
@@ -4263,6 +4291,23 @@ class FeishuAdapter(BasePlatformAdapter):
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
         reply_in_thread = bool((metadata or {}).get("thread_id"))
+        # In group chats, default to threaded replies so the bot's response
+        # forms a topic instead of flooding the main feed. Opt out via
+        # `feishu.reply_in_thread: false` in config. Only applies when we
+        # have a parent message to reply to — Feishu's API can't create a
+        # topic from a top-level send. DMs (chat_type=dm) are unaffected.
+        if (
+            not reply_in_thread
+            and effective_reply_to
+            and bool(self.config.extra.get("reply_in_thread", True))
+        ):
+            chat_mode = await self._get_chat_mode(chat_id)
+            # Per Feishu docs, chat_mode is the canonical chat-classification
+            # field: "p2p" (DM), "group" (regular group), "topic" (topic
+            # group). Auto-threading only makes sense for "group" — DMs don't
+            # need it and topic groups already enforce a topic structure.
+            if chat_mode == "group":
+                reply_in_thread = True
         if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload,
