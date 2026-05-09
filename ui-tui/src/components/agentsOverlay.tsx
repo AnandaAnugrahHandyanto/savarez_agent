@@ -14,6 +14,7 @@ import { useTurnSelector } from '../app/turnStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterruptResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
+import { handleSearchInput, useIndexedFuzzyList } from '../lib/searchableList.js'
 import {
   buildSubagentTree,
   descendantIds,
@@ -39,8 +40,21 @@ type SortMode = 'depth-first' | 'duration-desc' | 'status' | 'tools-desc'
 type FilterMode = 'all' | 'failed' | 'leaf' | 'running'
 type Status = SubagentProgress['status']
 
+interface AgentRowEntry {
+  goal: string
+  id: string
+  index: number
+  model: string
+  node: SubagentNode
+  notes: string
+  status: Status
+  summary: string
+  tools: string
+}
+
 const SORT_ORDER: readonly SortMode[] = ['depth-first', 'tools-desc', 'duration-desc', 'status']
 const FILTER_ORDER: readonly FilterMode[] = ['all', 'running', 'failed', 'leaf']
+const AGENT_ROW_SEARCH_KEYS = ['goal', 'id', 'model', 'notes', 'status', 'summary', 'tools'] as const
 
 const SORT_LABEL: Record<SortMode, string> = {
   'depth-first': 'spawn order',
@@ -709,6 +723,8 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   const [cursor, setCursor] = useState(0)
   const [flash, setFlash] = useState<string>('')
   const [now, setNow] = useState(() => Date.now())
+  const [searchActive, setSearchActive] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
   // cc-style view switching: list = full-width row picker, detail = full-width
   // scrollable pane.  Two panes side-by-side in Ink fought Yoga flex.
   const [mode, setMode] = useState<'detail' | 'list'>('list')
@@ -731,13 +747,36 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   const widths = useMemo(() => widthByDepth(tree), [tree])
   const spark = useMemo(() => sparkline(widths), [widths])
   const peak = useMemo(() => peakHotness(tree), [tree])
-  const rows = useMemo(() => prepareRows(tree, sort, filter), [tree, sort, filter])
+  const baseRows = useMemo(() => prepareRows(tree, sort, filter), [tree, sort, filter])
 
-  const selected = rows[cursor] ?? null
+  const rowEntries = useMemo<AgentRowEntry[]>(() => baseRows.map((node, index) => ({
+    goal: node.item.goal,
+    id: node.item.id,
+    index,
+    model: node.item.model ?? '',
+    node,
+    notes: node.item.notes.join(' '),
+    status: node.item.status,
+    summary: node.item.summary ?? '',
+    tools: node.item.tools.join(' ')
+  })), [baseRows])
+
+  const { filtered: filteredRowEntries, selectedPosition: cursorPos } = useIndexedFuzzyList(
+    rowEntries,
+    searchQuery,
+    AGENT_ROW_SEARCH_KEYS,
+    cursor,
+    setCursor,
+    mode === 'list'
+  )
+
+  const rows = useMemo(() => filteredRowEntries.map(entry => entry.node), [filteredRowEntries])
+
+  const selected = rows[cursorPos] ?? null
 
   const cols = stdout?.columns ?? 80
   const rowsH = Math.max(8, (stdout?.rows ?? 24) - 10)
-  const listWindowStart = Math.max(0, cursor - Math.floor(rowsH / 2))
+  const listWindowStart = Math.max(0, cursorPos - Math.floor(rowsH / 2))
 
   // ── Effects ────────────────────────────────────────────────────────
 
@@ -784,10 +823,10 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   }, [gw])
 
   useEffect(() => {
-    if (cursor >= rows.length) {
-      setCursor(Math.max(0, rows.length - 1))
+    if (cursor >= rowEntries.length) {
+      setCursor(Math.max(0, rowEntries.length - 1))
     }
-  }, [cursor, rows.length])
+  }, [cursor, rowEntries.length])
 
   // ── Actions ────────────────────────────────────────────────────────
 
@@ -853,6 +892,14 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   const scrollDetail = (dy: number) => detailScrollRef.current?.scrollBy(dy)
 
   useInput((ch, key) => {
+    if (mode === 'list' && handleSearchInput(ch, key, {
+      active: searchActive,
+      setActive: setSearchActive,
+      setQuery: setSearchQuery
+    })) {
+      return
+    }
+
     if (ch === 'q') {
       return closeWithCleanup()
     }
@@ -928,19 +975,25 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
     }
 
     if (key.upArrow || ch === 'k' || key.wheelUp) {
-      return setCursor(c => Math.max(0, c - 1))
+      const entry = filteredRowEntries[Math.max(0, cursorPos - 1)]
+
+      return entry ? setCursor(entry.index) : undefined
     }
 
     if (key.downArrow || ch === 'j' || key.wheelDown) {
-      return setCursor(c => Math.min(Math.max(0, rows.length - 1), c + 1))
+      const entry = filteredRowEntries[Math.min(Math.max(0, rows.length - 1), cursorPos + 1)]
+
+      return entry ? setCursor(entry.index) : undefined
     }
 
     if (ch === 'g') {
-      return setCursor(0)
+      return filteredRowEntries[0] ? setCursor(filteredRowEntries[0].index) : undefined
     }
 
     if (ch === 'G') {
-      return setCursor(Math.max(0, rows.length - 1))
+      const entry = filteredRowEntries.at(-1)
+
+      return entry ? setCursor(entry.index) : undefined
     }
 
     if (ch === 's') {
@@ -1006,18 +1059,22 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
         </Text>
       </Box>
 
-      {rows.length === 0 ? (
+      {baseRows.length === 0 ? (
         <Box flexDirection="column" flexGrow={1}>
           <Text color={t.color.muted}>No subagents this turn. Trigger delegate_task to populate the tree.</Text>
         </Box>
+      ) : rows.length === 0 ? (
+        <Box flexDirection="column" flexGrow={1}>
+          <Text color={t.color.muted}>No subagents match "{searchQuery}".</Text>
+        </Box>
       ) : mode === 'list' ? (
         <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
-          <GanttStrip cols={cols} cursor={cursor} flatNodes={rows} maxRows={6} now={now} t={t} />
+          <GanttStrip cols={cols} cursor={cursorPos} flatNodes={rows} maxRows={6} now={now} t={t} />
 
           <Box flexDirection="column" flexGrow={0} flexShrink={0} overflow="hidden">
             {rows.slice(listWindowStart, listWindowStart + rowsH).map((node, i) => (
               <ListRow
-                active={listWindowStart + i === cursor}
+                active={listWindowStart + i === cursorPos}
                 index={listWindowStart + i}
                 key={node.item.id}
                 node={node}
@@ -1032,7 +1089,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
         <Box flexDirection="row" flexGrow={1} flexShrink={1} minHeight={0}>
           <ScrollBox flexDirection="column" flexGrow={1} flexShrink={1} ref={detailScrollRef}>
             <Box flexDirection="column" paddingBottom={4} paddingRight={1}>
-              {selected ? <Detail id={formatRowId(cursor).trim()} node={selected} t={t} /> : null}
+              {selected ? <Detail id={formatRowId(cursorPos).trim()} node={selected} t={t} /> : null}
             </Box>
           </ScrollBox>
 
@@ -1049,6 +1106,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
           <Text color={t.color.muted}>
             ↑↓/jk move · g/G top/bottom · Enter/→ open detail{controlsHint} · s sort:{SORT_LABEL[sort]} · f filter:
             {FILTER_LABEL[filter]}
+            {searchQuery || searchActive ? ` · search:${searchQuery}${searchActive ? '▎' : ''} (${rows.length}/${baseRows.length})` : ' · / search'}
             {history.length > 0 ? ` · [ / ] history ${historyIndex}/${history.length}` : ''}
             {' · q close'}
           </Text>

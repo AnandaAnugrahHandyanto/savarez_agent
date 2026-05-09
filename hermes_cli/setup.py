@@ -225,10 +225,23 @@ def _sanitize_pasted_input(value: str) -> str:
     return _BRACKETED_PASTE_PATTERN.sub("", value)
 
 
-def _curses_prompt_choice(question: str, choices: list, default: int = 0, description: str | None = None) -> int:
+def _curses_prompt_choice(
+    question: str,
+    choices: list,
+    default: int = 0,
+    description: str | None = None,
+    searchable: bool = False,
+) -> int:
     """Single-select menu using curses. Delegates to curses_radiolist."""
     from hermes_cli.curses_ui import curses_radiolist
-    return curses_radiolist(question, choices, selected=default, cancel_returns=-1, description=description)
+    return curses_radiolist(
+        question,
+        choices,
+        selected=default,
+        cancel_returns=-1,
+        description=description,
+        searchable=searchable,
+    )
 
 
 

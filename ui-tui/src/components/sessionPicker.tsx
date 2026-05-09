@@ -1,9 +1,10 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SessionDeleteResponse, SessionListItem, SessionListResponse } from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+import { handleSearchInput, useIndexedFuzzyList } from '../lib/searchableList.js'
 import type { Theme } from '../theme.js'
 
 import { OverlayHint, useOverlayKeys, windowOffset } from './overlayControls.js'
@@ -11,6 +12,15 @@ import { OverlayHint, useOverlayKeys, windowOffset } from './overlayControls.js'
 const VISIBLE = 15
 const MIN_WIDTH = 60
 const MAX_WIDTH = 120
+const SESSION_SEARCH_KEYS = ['id', 'preview', 'source', 'title'] as const
+
+interface SessionEntry {
+  id: string
+  index: number
+  preview: string
+  source: string
+  title: string
+}
 
 const age = (ts: number) => {
   const d = (Date.now() / 1000 - ts) / 86400
@@ -35,11 +45,13 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
   // a second `d`/`D` to confirm deletion.  Any other key cancels the prompt.
   const [confirmDelete, setConfirmDelete] = useState<null | number>(null)
   const [deleting, setDeleting] = useState(false)
+  const [searchActive, setSearchActive] = useState(false)
+  const [query, setQuery] = useState('')
 
   const { stdout } = useStdout()
   const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
 
-  useOverlayKeys({ onClose: onCancel })
+  useOverlayKeys({ disabled: searchActive, onClose: onCancel })
 
   useEffect(() => {
     gw.request<SessionListResponse>('session.list', { limit: 200 })
@@ -62,6 +74,22 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
         setLoading(false)
       })
   }, [gw])
+
+  const entries = useMemo<SessionEntry[]>(() => items.map((s, index) => ({
+    id: s.id,
+    index,
+    preview: s.preview || '',
+    source: s.source || '',
+    title: s.title || ''
+  })), [items])
+
+  const { filtered, selectedPosition: selPos } = useIndexedFuzzyList(
+    entries,
+    query,
+    SESSION_SEARCH_KEYS,
+    sel,
+    setSel
+  )
 
   const performDelete = (index: number) => {
     const target = items[index]
@@ -114,15 +142,25 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
       return
     }
 
-    if (key.upArrow && sel > 0) {
-      setSel(s => s - 1)
+    if (handleSearchInput(ch, key, {
+      active: searchActive,
+      setActive: setSearchActive,
+      setQuery: setQuery
+    })) {
+      setConfirmDelete(null)
+
+      return
     }
 
-    if (key.downArrow && sel < items.length - 1) {
-      setSel(s => s + 1)
+    if (key.upArrow && filtered.length && selPos > 0) {
+      setSel(filtered[selPos - 1]!.index)
     }
 
-    if (key.return && items[sel]) {
+    if (key.downArrow && filtered.length && selPos < filtered.length - 1) {
+      setSel(filtered[selPos + 1]!.index)
+    }
+
+    if (key.return && items[sel] && filtered.length) {
       onSelect(items[sel]!.id)
 
       return
@@ -136,8 +174,13 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
 
     const n = parseInt(ch)
 
-    if (n >= 1 && n <= Math.min(9, items.length)) {
-      onSelect(items[n - 1]!.id)
+    if (n >= 1 && n <= Math.min(9, filtered.length)) {
+      const offset = windowOffset(filtered.length, selPos, VISIBLE)
+      const entry = filtered[offset + n - 1]
+
+      if (entry) {
+        onSelect(entry.id)
+      }
     }
   })
 
@@ -163,7 +206,11 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
     )
   }
 
-  const offset = windowOffset(items.length, sel, VISIBLE)
+  const offset = windowOffset(filtered.length, selPos, VISIBLE)
+
+  const searchLabel = query || searchActive
+    ? `Search: ${query}${searchActive ? '▎' : ''} (${filtered.length}/${items.length})`
+    : 'Search: / to filter sessions'
 
   return (
     <Box flexDirection="column" width={width}>
@@ -171,10 +218,14 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
         Resume Session
       </Text>
 
+      <Text color={searchActive ? t.color.accent : t.color.muted}>{searchLabel}</Text>
       {offset > 0 && <Text color={t.color.muted}>  ↑ {offset} more</Text>}
 
-      {items.slice(offset, offset + VISIBLE).map((s, vi) => {
-        const i = offset + vi
+      {!filtered.length && query ? <Text color={t.color.muted}>no sessions match "{query}"</Text> : null}
+
+      {filtered.slice(offset, offset + VISIBLE).map((entry, vi) => {
+        const i = entry.index
+        const s = items[i]!
         const selected = sel === i
         const pendingDelete = confirmDelete === i
 
@@ -186,7 +237,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
 
             <Box width={30}>
               <Text bold={selected} color={selected ? t.color.accent : t.color.muted} inverse={selected}>
-                {String(i + 1).padStart(2)}. [{s.id}]
+                {String(offset + vi + 1).padStart(2)}. [{s.id}]
               </Text>
             </Box>
 
@@ -208,12 +259,12 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
         )
       })}
 
-      {offset + VISIBLE < items.length && <Text color={t.color.muted}>  ↓ {items.length - offset - VISIBLE} more</Text>}
+      {offset + VISIBLE < filtered.length && <Text color={t.color.muted}>  ↓ {filtered.length - offset - VISIBLE} more</Text>}
       {err && <Text color={t.color.label}>error: {err}</Text>}
       {deleting ? (
         <OverlayHint t={t}>deleting…</OverlayHint>
       ) : (
-        <OverlayHint t={t}>↑/↓ select · Enter resume · 1-9 quick · d delete · Esc/q cancel</OverlayHint>
+        <OverlayHint t={t}>↑/↓ select · Enter resume · / search · 1-9 quick · d delete · Esc/q cancel</OverlayHint>
       )}
     </Box>
   )

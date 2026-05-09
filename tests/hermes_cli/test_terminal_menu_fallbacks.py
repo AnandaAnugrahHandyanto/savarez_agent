@@ -12,14 +12,10 @@ class _BrokenTerminalMenu:
         raise subprocess.CalledProcessError(2, ["tput", "clear"])
 
 
-def test_prompt_model_selection_falls_back_on_terminalmenu_runtime_error(monkeypatch):
+def test_prompt_model_selection_uses_numbered_fallback_without_tty(monkeypatch):
     from hermes_cli.auth import _prompt_model_selection
 
-    monkeypatch.setitem(
-        sys.modules,
-        "simple_term_menu",
-        types.SimpleNamespace(TerminalMenu=_BrokenTerminalMenu),
-    )
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
     responses = iter(["2"])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(responses))
 
