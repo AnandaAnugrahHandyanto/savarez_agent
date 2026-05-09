@@ -157,6 +157,22 @@ class TestBuildAnthropicClient:
 
 
 class TestReadClaudeCodeCredentials:
+    @pytest.fixture(autouse=True)
+    def _no_keychain(self, monkeypatch):
+        """Suppress macOS Keychain lookup so file-path tests are isolated.
+
+        read_claude_code_credentials() checks the Keychain first on Darwin.
+        On a developer machine that has run `claude login`, the Keychain entry
+        is populated with a real token, making every test that does NOT set up
+        a credentials file assert None incorrectly.  Neutralise that path for
+        all tests in this class; a dedicated TestReadClaudeCodeCredentialsFromKeychain
+        class exercises the Keychain branch with controlled mocks.
+        """
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
+
     def test_reads_valid_credentials(self, tmp_path, monkeypatch):
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
@@ -203,6 +219,59 @@ class TestReadClaudeCodeCredentials:
         assert read_claude_code_credentials() is None
 
 
+class TestReadClaudeCodeCredentialsFromKeychain:
+    """Verify that a populated Keychain entry takes priority over the JSON file."""
+
+    def test_keychain_creds_take_priority_over_file(self, tmp_path, monkeypatch):
+        """When Keychain returns credentials, the JSON file is never consulted."""
+        kc_token = {
+            "accessToken": "sk-ant-oat01-keychain",
+            "refreshToken": "kc-refresh",
+            "expiresAt": int(time.time() * 1000) + 3600_000,
+            "source": "macos_keychain",
+        }
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: kc_token,
+        )
+        # Even if a JSON file with different data exists, Keychain wins.
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        cred_file.parent.mkdir(parents=True)
+        cred_file.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "sk-ant-oat01-from-file",
+                "refreshToken": "file-refresh",
+                "expiresAt": int(time.time() * 1000) + 3600_000,
+            }
+        }))
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        creds = read_claude_code_credentials()
+        assert creds is not None
+        assert creds["accessToken"] == "sk-ant-oat01-keychain"
+        assert creds["source"] == "macos_keychain"
+
+    def test_falls_back_to_file_when_keychain_empty(self, tmp_path, monkeypatch):
+        """When Keychain returns None, the JSON file is used."""
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        cred_file.parent.mkdir(parents=True)
+        cred_file.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "sk-ant-oat01-file-token",
+                "refreshToken": "file-refresh",
+                "expiresAt": int(time.time() * 1000) + 3600_000,
+            }
+        }))
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        creds = read_claude_code_credentials()
+        assert creds is not None
+        assert creds["accessToken"] == "sk-ant-oat01-file-token"
+        assert creds["source"] == "claude_code_credentials_file"
+
+
 class TestIsClaudeCodeTokenValid:
     def test_valid_token(self):
         creds = {"accessToken": "tok", "expiresAt": int(time.time() * 1000) + 3600_000}
@@ -218,6 +287,14 @@ class TestIsClaudeCodeTokenValid:
 
 
 class TestResolveAnthropicToken:
+    @pytest.fixture(autouse=True)
+    def _no_keychain(self, monkeypatch):
+        """Suppress macOS Keychain lookup for all token-resolution tests."""
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
+
     def test_prefers_oauth_token_over_api_key(self, monkeypatch, tmp_path):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-mykey")
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-mytoken")
@@ -426,6 +503,20 @@ class TestResolveWithRefresh:
 
 
 class TestRunOauthSetupToken:
+    @pytest.fixture(autouse=True)
+    def _no_keychain(self, monkeypatch):
+        """Suppress macOS Keychain lookup so subprocess mocking is unambiguous.
+
+        _read_claude_code_credentials_from_keychain() uses subprocess.run
+        internally.  When tests patch subprocess.run globally, the Keychain
+        lookup receives the mock too and json.loads fails on the MagicMock
+        stdout.  Neutralise the Keychain path so only the file source matters.
+        """
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
+
     def test_raises_when_claude_not_installed(self, monkeypatch):
         monkeypatch.setattr("shutil.which", lambda _: None)
         with pytest.raises(FileNotFoundError, match="claude.*CLI.*not installed"):
