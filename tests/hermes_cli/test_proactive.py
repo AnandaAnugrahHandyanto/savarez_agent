@@ -17,9 +17,13 @@ def test_build_reflection_prompt_is_safe_and_silent_by_default():
     assert "up to 12" in prompt
     assert "[SILENT]" in prompt
     assert "at most one proactive message" in prompt
-    assert "Do not send emails, posts, DMs, calendar invites" in prompt
+    assert "NEVER send anything outside Hermes/the configured delivery system" in prompt
+    assert "Drafting internally is allowed" in prompt
     assert "Ask before" in prompt
     assert "high confidence" in prompt
+    assert "personal assistant" in prompt
+    assert "Proactive modes" in prompt
+    assert "meeting notes" in prompt
     assert "Silence is the correct answer unless the best candidate clears the bar" in prompt
     assert "No generic summaries, status theater" in prompt
     assert "Would Charles plausibly reply" in prompt
