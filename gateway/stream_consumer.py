@@ -132,6 +132,13 @@ class GatewayStreamConsumer:
         self._adapter_requires_finalize: bool = (
             getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
         )
+        # Some adapters (Feishu CardKit) intentionally keep one editable card
+        # across tool/segment boundaries so semantic progress, tool progress,
+        # and the final answer land in the same card.  Legacy edit transports
+        # still reset on segment breaks to create separate bubbles.
+        self._preserve_target_across_segments: bool = (
+            getattr(adapter, "PRESERVE_STREAM_TARGET_ACROSS_SEGMENTS", False) is True
+        )
 
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
@@ -371,7 +378,7 @@ class GatewayStreamConsumer:
                         if got_done:
                             self._final_response_sent = self._already_sent
                             return
-                        if got_segment_break:
+                        if got_segment_break and not self._preserve_target_across_segments:
                             self._message_id = None
                             self._fallback_final_send = False
                             self._fallback_prefix = ""
@@ -412,7 +419,7 @@ class GatewayStreamConsumer:
                     # path below so we don't finalize here for it.
                     current_update_visible = await self._send_or_edit(
                         display_text,
-                        finalize=got_segment_break,
+                        finalize=got_segment_break and not self._preserve_target_across_segments,
                     )
                     self._last_edit_time = time.monotonic()
 
@@ -487,7 +494,13 @@ class GatewayStreamConsumer:
                         and self._message_id != "__no_edit__"
                     ):
                         await self._flush_segment_tail_on_edit_failure()
-                    self._reset_segment_state(preserve_no_edit=True)
+                    if not self._preserve_target_across_segments:
+                        self._reset_segment_state(preserve_no_edit=True)
+                    else:
+                        self._accumulated = ""
+                        self._last_sent_text = ""
+                        self._fallback_final_send = False
+                        self._fallback_prefix = ""
 
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop
 

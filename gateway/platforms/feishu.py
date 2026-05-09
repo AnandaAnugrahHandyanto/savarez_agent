@@ -1368,6 +1368,10 @@ class FeishuAdapter(BasePlatformAdapter):
     # the generic stream consumer may skip the final edit when the body text
     # already looks visible, leaving real Feishu cards stuck at “生成中”.
     REQUIRES_EDIT_FINALIZE = True
+    # Feishu CardKit uses one card as a task transcript: semantic progress,
+    # tool progress, and the final answer must survive tool/segment boundaries
+    # and be finalized only at the end of the assistant response.
+    PRESERVE_STREAM_TARGET_ACROSS_SEGMENTS = True
     # Threshold for detecting Feishu client-side message splits.
     # When a chunk is near the ~4096-char practical limit, a continuation
     # is almost certain.

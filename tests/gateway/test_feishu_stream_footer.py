@@ -742,6 +742,89 @@ async def test_stream_commentary_preserves_card_for_later_final_edit():
 
 
 @pytest.mark.asyncio
+async def test_stream_commentary_survives_segment_break_and_finalizes_same_card():
+    adapter = AsyncMock()
+    adapter.MAX_MESSAGE_LENGTH = 8000
+    adapter.SUPPORTS_MESSAGE_EDITING = True
+    adapter.REQUIRES_EDIT_FINALIZE = True
+    adapter.PRESERVE_STREAM_TARGET_ACROSS_SEGMENTS = True
+    adapter.append_execution_progress.return_value = SendResult(success=True, message_id="card_progress")
+    adapter.edit_message.return_value = SendResult(success=True, message_id="card_progress")
+    adapter.send.return_value = SendResult(success=True, message_id="separate_msg")
+
+    consumer = GatewayStreamConsumer(
+        adapter=adapter,
+        chat_id="chat_id",
+        config=StreamConsumerConfig(edit_interval=999, buffer_threshold=999, cursor=""),
+        metadata={"model": "provider/model-x"},
+    )
+
+    consumer.on_commentary("先汇报计划，随后执行工具")
+    consumer.on_delta(None)  # Tool/segment boundary must not orphan the CardKit progress card.
+    consumer.on_delta("最终答复")
+    consumer.finish()
+    await consumer.run()
+
+    adapter.append_execution_progress.assert_awaited_once_with(
+        "chat_id",
+        "先汇报计划，随后执行工具",
+        metadata={"model": "provider/model-x"},
+    )
+    adapter.send.assert_not_awaited()
+    assert adapter.edit_message.await_count == 2
+    assert all(call.kwargs["message_id"] == "card_progress" for call in adapter.edit_message.await_args_list)
+    assert adapter.edit_message.await_args_list[-1].kwargs == {
+        "chat_id": "chat_id",
+        "message_id": "card_progress",
+        "content": "最终答复",
+        "finalize": True,
+    }
+    assert consumer.final_response_sent is True
+
+
+@pytest.mark.asyncio
+async def test_stream_delta_segment_break_does_not_finalize_preserved_card_early():
+    adapter = AsyncMock()
+    adapter.MAX_MESSAGE_LENGTH = 8000
+    adapter.SUPPORTS_MESSAGE_EDITING = True
+    adapter.REQUIRES_EDIT_FINALIZE = True
+    adapter.PRESERVE_STREAM_TARGET_ACROSS_SEGMENTS = True
+    adapter.send.return_value = SendResult(success=True, message_id="card_stream")
+    adapter.edit_message.return_value = SendResult(success=True, message_id="card_stream")
+
+    consumer = GatewayStreamConsumer(
+        adapter=adapter,
+        chat_id="chat_id",
+        config=StreamConsumerConfig(edit_interval=999, buffer_threshold=999, cursor=""),
+        metadata={"model": "provider/model-x"},
+    )
+
+    consumer.on_delta("前半部分")
+    consumer.on_delta(None)  # Tool/segment boundary: keep card open.
+    consumer.on_delta("最终答复")
+    consumer.finish()
+    await consumer.run()
+
+    assert adapter.send.await_count == 1
+    assert adapter.send.await_args.kwargs["metadata"] == {
+        "model": "provider/model-x",
+        "_hermes_stream_preview": True,
+    }
+    assert adapter.edit_message.await_count == 2
+    first_edit = adapter.edit_message.await_args_list[0]
+    final_edit = adapter.edit_message.await_args_list[-1]
+    assert first_edit.kwargs["message_id"] == "card_stream"
+    assert first_edit.kwargs["finalize"] is False
+    assert final_edit.kwargs == {
+        "chat_id": "chat_id",
+        "message_id": "card_stream",
+        "content": "最终答复",
+        "finalize": True,
+    }
+    assert consumer.final_response_sent is True
+
+
+@pytest.mark.asyncio
 async def test_feishu_append_execution_progress_uses_same_card_without_tool_noise():
     adapter = FeishuAdapter.__new__(FeishuAdapter)
     adapter._render_mode = "card"
