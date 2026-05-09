@@ -375,6 +375,10 @@ class TelegramAdapter(BasePlatformAdapter):
         self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
+        # Interactive skill picker state per short token. Telegram callback_data
+        # is capped at 64 bytes, so callbacks carry a token + index instead of
+        # the full skill slug.
+        self._skill_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
@@ -2614,6 +2618,210 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_slash_confirm failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    _SKILL_PICKER_PAGE_SIZE = 8
+
+    @staticmethod
+    def _skill_picker_button_label(item: Dict[str, Any]) -> str:
+        name = str(item.get("name") or item.get("command") or "skill").lstrip("/")
+        if len(name) > 34:
+            name = name[:31] + "..."
+        return name
+
+    def _build_skill_picker_keyboard(self, token: str, matches: list, page: int) -> tuple:
+        page_size = self._SKILL_PICKER_PAGE_SIZE
+        total = len(matches)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+        start = page * page_size
+        end = min(start + page_size, total)
+
+        buttons = []
+        for offset, item in enumerate(matches[start:end]):
+            abs_idx = start + offset
+            buttons.append(
+                InlineKeyboardButton(
+                    self._skill_picker_button_label(item),
+                    callback_data=f"sk:{token}:{abs_idx}",
+                )
+            )
+        rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+
+        if total_pages > 1:
+            nav = []
+            if page > 0:
+                nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"sp:{token}:{page - 1}"))
+            nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data=f"sn:{token}"))
+            if page < total_pages - 1:
+                nav.append(InlineKeyboardButton("Next ▶", callback_data=f"sp:{token}:{page + 1}"))
+            rows.append(nav)
+
+        rows.append([InlineKeyboardButton("✗ Cancel", callback_data=f"sx:{token}")])
+        page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else f" ({total})"
+        return InlineKeyboardMarkup(rows), page_info
+
+    async def send_skill_picker(
+        self,
+        chat_id: str,
+        matches: list,
+        query: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Telegram inline-keyboard picker for installed skills."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        token = uuid.uuid4().hex[:10]
+        matches = list(matches or [])
+        keyboard, page_info = self._build_skill_picker_keyboard(token, matches, 0)
+        query_label = f" for `{query}`" if query else ""
+        text = (
+            f"🧰 *Skill picker*{page_info}\n\n"
+            f"Select a skill{query_label}.\n"
+            f"Tip: hidden skills can also be typed directly, e.g. `/youtube_content`."
+        )
+        try:
+            thread_id = metadata.get("thread_id") if metadata else None
+            msg = await self._bot.send_message(
+                chat_id=int(chat_id),
+                text=text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+                message_thread_id=self._message_thread_id_for_send(str(thread_id)) if thread_id else None,
+                **self._link_preview_kwargs(),
+            )
+            self._skill_picker_state[token] = {
+                "matches": matches,
+                "query": query,
+                "chat_id": str(chat_id),
+                "thread_id": str(thread_id) if thread_id else None,
+                "message_id": getattr(msg, "message_id", None),
+            }
+            return SendResult(success=True, message_id=str(getattr(msg, "message_id", "")))
+        except Exception as e:
+            logger.warning("[%s] send_skill_picker failed: %s", self.name, e)
+            self._skill_picker_state.pop(token, None)
+            return SendResult(success=False, error=str(e))
+
+    def _callback_source_from_query(self, query) -> Any:
+        message = getattr(query, "message", None)
+        chat = getattr(message, "chat", None)
+        user = getattr(query, "from_user", None)
+        raw_type = str(getattr(chat, "type", "private") or "private").lower()
+        if raw_type == "private":
+            chat_type = "dm"
+        elif raw_type == "supergroup":
+            chat_type = "forum" if getattr(message, "message_thread_id", None) is not None else "group"
+        elif raw_type == "group":
+            chat_type = "group"
+        else:
+            chat_type = raw_type
+        thread_id = getattr(message, "message_thread_id", None)
+        return self.build_source(
+            chat_id=str(getattr(chat, "id", "") or getattr(message, "chat_id", "")),
+            chat_name=getattr(chat, "title", None) or getattr(chat, "full_name", None),
+            chat_type=chat_type,
+            user_id=str(getattr(user, "id", "")) if user else None,
+            user_name=getattr(user, "full_name", None) or getattr(user, "first_name", None),
+            thread_id=str(thread_id) if thread_id is not None else None,
+        )
+
+    async def _handle_skill_picker_callback(self, query, data: str) -> None:
+        parts = data.split(":", 2)
+        if len(parts) < 2:
+            await query.answer(text="Invalid skill picker data.")
+            return
+        action = parts[0]
+        token = parts[1]
+        state = self._skill_picker_state.get(token)
+        if not state:
+            await query.answer(text="Skill picker expired — use /skill again.")
+            return
+
+        query_message = getattr(query, "message", None)
+        query_chat = getattr(query_message, "chat", None)
+        caller_id = str(getattr(getattr(query, "from_user", None), "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=str(getattr(query_chat, "id", "") or state.get("chat_id") or ""),
+            chat_type=str(getattr(query_chat, "type", "") or ""),
+            thread_id=state.get("thread_id"),
+            user_name=getattr(getattr(query, "from_user", None), "first_name", None),
+        ):
+            await query.answer(text="⛔ You are not authorized to use this picker.")
+            return
+
+        if action == "sn":
+            await query.answer()
+            return
+        if action == "sx":
+            self._skill_picker_state.pop(token, None)
+            try:
+                await query.edit_message_text(text="Skill selection cancelled.", reply_markup=None)
+            except Exception:
+                pass
+            await query.answer(text="Cancelled")
+            return
+        if action == "sp":
+            try:
+                page = int(parts[2])
+            except (IndexError, ValueError):
+                await query.answer(text="Invalid page.")
+                return
+            keyboard, page_info = self._build_skill_picker_keyboard(token, state.get("matches", []), page)
+            query_label = f" for `{state.get('query')}`" if state.get("query") else ""
+            await query.edit_message_text(
+                text=(
+                    f"🧰 *Skill picker*{page_info}\n\n"
+                    f"Select a skill{query_label}.\n"
+                    f"Tip: hidden skills can also be typed directly, e.g. `/youtube_content`."
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+            )
+            await query.answer()
+            return
+        if action != "sk":
+            await query.answer()
+            return
+
+        try:
+            idx = int(parts[2])
+        except (IndexError, ValueError):
+            await query.answer(text="Invalid selection.")
+            return
+        matches = state.get("matches", [])
+        if idx < 0 or idx >= len(matches):
+            await query.answer(text="Invalid selection.")
+            return
+        item = matches[idx]
+        cmd = str(item.get("command") or "").strip()
+        if not cmd.startswith("/"):
+            await query.answer(text="Invalid skill command.")
+            return
+
+        self._skill_picker_state.pop(token, None)
+        name = str(item.get("name") or cmd.lstrip("/"))
+        try:
+            await query.edit_message_text(
+                text=f"🧰 Loading *{name}*…",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=None,
+            )
+        except Exception:
+            pass
+        await query.answer(text=f"Loading {name}")
+
+        if not self._message_handler:
+            return
+        source = self._callback_source_from_query(query)
+        event = MessageEvent(
+            text=cmd,
+            message_type=MessageType.COMMAND,
+            source=source,
+            raw_message=getattr(query, "message", None),
+            message_id=str(getattr(getattr(query, "message", None), "message_id", "")),
+        )
+        await self.handle_message(event)
+
     async def send_model_picker(
         self,
         chat_id: str,
@@ -3019,6 +3227,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             except Exception:
                 pass
+            return
+
+        # --- Skill picker callbacks ---
+        if data.startswith(("sk:", "sp:", "sx:", "sn:")):
+            await self._handle_skill_picker_callback(query, data)
             return
 
         # --- Model picker callbacks ---

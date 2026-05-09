@@ -162,6 +162,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("skills", "Search, install, inspect, or manage skills",
                "Tools & Skills", cli_only=True,
                subcommands=("search", "browse", "inspect", "install")),
+    CommandDef("skill", "Search installed skills and pick one to load",
+               "Tools & Skills", gateway_only=True, args_hint="[query]"),
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
                cli_only=True, args_hint="[subcommand]",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
@@ -333,6 +335,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "profile",
         "queue",
         "restart",
+        "skill",
         "status",
         "steer",
         "stop",
@@ -414,6 +417,28 @@ def _requires_argument(args_hint: str) -> bool:
     return args_hint.strip().startswith("<")
 
 
+# Telegram normally hides required-argument commands because selecting one from
+# the native menu sends only ``/command``. A tiny allowlist keeps high-leverage
+# workflows discoverable while their handlers provide useful guidance when
+# invoked without args.
+_TELEGRAM_REQUIRED_ARG_MENU_ALLOWLIST: frozenset[str] = frozenset({"qopen"})
+
+# Skills that Joohyun/Mina intentionally want in the Telegram native slash menu
+# even when the 100-command Bot API cap hides later alphabetical skills.
+_TELEGRAM_PINNED_SKILL_SLUGS: tuple[str, ...] = (
+    "grill-with-docs",
+    "grill-me",
+    "zoom-out",
+    "triage",
+    "improve-codebase-architecture",
+    "tdd",
+    "to-issues",
+    "to-prd",
+    "prototype",
+    "write-a-skill",
+)
+
+
 def gateway_help_lines() -> list[str]:
     """Generate gateway help text lines from the registry."""
     overrides = _resolve_config_gates()
@@ -482,7 +507,7 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
-        if _requires_argument(cmd.args_hint):
+        if _requires_argument(cmd.args_hint) and cmd.name not in _TELEGRAM_REQUIRED_ARG_MENU_ALLOWLIST:
             continue
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
@@ -676,6 +701,18 @@ def _collect_gateway_skill_entries(
             skill_triples.append((name, desc, cmd_key))
     except Exception:
         pass
+
+    # Joohyun/Mina pinned Telegram skills should survive the 100-command menu
+    # cap even when later alphabetical skills (notably zoom-out) would be
+    # trimmed. Keep normal alphabetical order for everything else.
+    if platform == "telegram":
+        pinned_rank = {slug: idx for idx, slug in enumerate(_TELEGRAM_PINNED_SKILL_SLUGS)}
+        skill_triples.sort(
+            key=lambda entry: (
+                pinned_rank.get(entry[2].lstrip("/"), len(pinned_rank)),
+                entry[0],
+            )
+        )
 
     # Clamp names; cmd_key is passed through as extra payload so it survives
     # any clamp-induced renames.

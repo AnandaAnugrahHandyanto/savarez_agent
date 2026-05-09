@@ -242,11 +242,12 @@ class TestTelegramBotCommands:
                 tg_name = cmd.name.replace("-", "_")
                 assert tg_name not in names
 
-    def test_excludes_commands_with_required_args(self):
+    def test_excludes_commands_with_required_args_except_curated_telegram_shortcuts(self):
         names = {name for name, _ in telegram_bot_commands()}
         assert "background" not in names
         assert "queue" not in names
         assert "steer" not in names
+        assert "qopen" in names
         assert "background" in GATEWAY_KNOWN_COMMANDS
 
 
@@ -967,6 +968,56 @@ class TestTelegramMenuCommands:
 
         menu_names = {name for name, _ in menu}
         assert "lcm" in menu_names
+
+    def test_pinned_telegram_skills_survive_menu_cap(self, tmp_path, monkeypatch):
+        """Curated Joohyun/Mina skill shortcuts should appear before alphabetic overflow."""
+        from unittest.mock import patch
+
+        local_dir = tmp_path / "skills"
+        local_dir.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        pinned_slugs = [
+            "grill-with-docs",
+            "grill-me",
+            "zoom-out",
+            "triage",
+            "improve-codebase-architecture",
+            "tdd",
+            "to-issues",
+            "to-prd",
+            "prototype",
+            "write-a-skill",
+        ]
+        fake_cmds = {
+            "/aaa-alpha": {
+                "name": "aaa-alpha",
+                "description": "Alphabetically first but not pinned",
+                "skill_md_path": f"{local_dir}/aaa-alpha/SKILL.md",
+                "skill_dir": f"{local_dir}/aaa-alpha",
+            }
+        }
+        for slug in pinned_slugs:
+            fake_cmds[f"/{slug}"] = {
+                "name": slug,
+                "description": f"Pinned {slug}",
+                "skill_md_path": f"{local_dir}/{slug}/SKILL.md",
+                "skill_dir": f"{local_dir}/{slug}",
+            }
+
+        core_count = len(telegram_bot_commands())
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+        ):
+            menu, hidden = telegram_menu_commands(max_commands=core_count + len(pinned_slugs))
+
+        menu_names = {name for name, _ in menu}
+        expected = {slug.replace("-", "_") for slug in pinned_slugs}
+        assert expected.issubset(menu_names)
+        assert "aaa_alpha" not in menu_names
+        assert hidden == 1
 
     def test_excludes_telegram_disabled_skills(self, tmp_path, monkeypatch):
         """Skills disabled for telegram should not appear in the menu."""

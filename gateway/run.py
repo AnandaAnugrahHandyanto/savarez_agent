@@ -6116,6 +6116,8 @@ class GatewayRunner:
                     return await self._handle_help_command(event)
                 if _cmd_def_inner.name == "commands":
                     return await self._handle_commands_command(event)
+                if _cmd_def_inner.name == "skill":
+                    return await self._handle_skill_picker_command(event)
                 if _cmd_def_inner.name == "profile":
                     return await self._handle_profile_command(event)
                 if _cmd_def_inner.name == "update":
@@ -6351,6 +6353,9 @@ class GatewayRunner:
 
         if canonical == "commands":
             return await self._handle_commands_command(event)
+
+        if canonical == "skill":
+            return await self._handle_skill_picker_command(event)
         
         if canonical == "profile":
             return await self._handle_profile_command(event)
@@ -8750,6 +8755,77 @@ class GatewayRunner:
             "\n".join(lines),
             getattr(getattr(event, "source", None), "platform", None),
         )
+
+    def _skill_picker_matches(self, query: str, platform_name: str | None = None, limit: int = 40) -> list[dict[str, str]]:
+        """Return installed skill slash commands matching a user query."""
+        from agent.skill_commands import get_skill_commands
+
+        query = (query or "").strip().lower().replace("_", "-")
+        terms = [t for t in re.split(r"\s+", query) if t]
+        disabled: set[str] = set()
+        if platform_name:
+            try:
+                from agent.skill_utils import get_disabled_skill_names
+                disabled = set(get_disabled_skill_names(platform=platform_name))
+            except Exception:
+                disabled = set()
+
+        ranked: list[tuple[int, str, dict[str, str]]] = []
+        for cmd_key, info in get_skill_commands().items():
+            name = str((info or {}).get("name") or cmd_key.lstrip("/"))
+            if name in disabled:
+                continue
+            desc = str((info or {}).get("description") or "")
+            slug = cmd_key.lstrip("/")
+            searchable = f"{slug} {name} {desc}".lower().replace("_", "-")
+            if not terms:
+                score = 50
+            elif all(term in searchable for term in terms):
+                score = 100
+                if slug == query or name.lower() == query:
+                    score = 0
+                elif slug.startswith(query) or name.lower().startswith(query):
+                    score = 10
+                elif query in slug or query in name.lower():
+                    score = 20
+            else:
+                continue
+            ranked.append((score, slug, {"command": cmd_key, "name": name, "description": desc}))
+
+        ranked.sort(key=lambda item: (item[0], item[1]))
+        return [item for _, _, item in ranked[:limit]]
+
+    async def _handle_skill_picker_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /skill [query] — searchable gateway picker for installed skills."""
+        source = event.source
+        query = event.get_command_args().strip()
+        platform_name = source.platform.value if getattr(source, "platform", None) else None
+        matches = self._skill_picker_matches(query, platform_name=platform_name)
+        if not matches:
+            return (
+                f"No installed skills matched `{query}`.\n"
+                "Try `/commands` for the paginated list, or `/reload_skills` if you just installed one."
+            )
+
+        adapter = self.adapters.get(source.platform) if source else None
+        metadata = {"thread_id": source.thread_id} if getattr(source, "thread_id", None) else None
+        send_picker = getattr(adapter, "send_skill_picker", None)
+        if callable(send_picker):
+            result = send_picker(source.chat_id, matches, query=query, metadata=metadata)
+            if inspect.isawaitable(result):
+                result = await result
+            if getattr(result, "success", False):
+                return None
+            logger.warning("Skill picker send failed: %s", getattr(result, "error", "unknown"))
+
+        lines = [f"🧰 Skill matches for `{query or 'all'}`:"]
+        for item in matches[:12]:
+            desc = item.get("description") or ""
+            desc_part = f" — {desc}" if desc else ""
+            lines.append(f"- `{item['command'].replace('-', '_')}`{desc_part}")
+        if len(matches) > 12:
+            lines.append(f"…and {len(matches) - 12} more. Narrow with `/skill <query>`.")
+        return "\n".join(lines)
 
     async def _handle_commands_command(self, event: MessageEvent) -> str:
         """Handle /commands [page] - paginated list of all commands and skills."""
