@@ -1,47 +1,55 @@
-"""Proactive Communication Loop — Hermes initiates when it has something worth saying.
+"""Proactive Communication Loop — Hermes reaches out when it sees something the user can't.
 
-This module implements the synthesis-and-initiative pass that lets Hermes send
-the user an unprompted message when it detects something genuinely worth surfacing.
+The goal is magic.
+
+Not notifications. Not task completion alerts. Not a nightly summary.
+Those exist already — every task runner and reminder app does that.
+
+This is different: Hermes traverses a weighted knowledge graph built from the
+user's entire conversation history and surfaces connections that no human could
+hold in their head. The user worked on something six weeks ago. Today's work
+echoes it in a way they can't see — because they can't hold six weeks of context
+simultaneously. Hermes can. It reaches out unprompted.
+
+"Hey — just noticed something. Your work on X and what you were building three
+weeks ago with Y are solving the same problem. The approach you found then applies
+here directly."
+
+That's the experience. That's what makes the agent feel alive.
 
 Background
 ----------
-Requested by @charlesmcdowell (2.2K views, May 8 2026). Teknium replied:
-"This is a good idea 🤔"
+Requested by @charlesmcdowell (2.2K views, May 8 2026). Teknium: "This is a good idea 🤔"
 
-The name matters: this is the **Proactive Communication Loop** — not a "nightly summary"
-or "scheduled report". The communication is:
+Architecture
+------------
+BartokGraph is NOT optional for this feature. It IS the feature.
 
-  - Proactive: initiated by the agent, not the user
-  - Communicative: a natural message, not a data dump
-  - Looping: runs on a schedule, synthesizes and decides each time
+Without BartokGraph connections, the loop stays silent. Deliberately.
+This is not a notification system. The bar is: "would this genuinely surprise
+the user in a way that changes how they think about their work right now?"
+If the answer isn't clearly yes, nothing is sent.
 
-Two synthesis modes
--------------------
+Three connection types that trigger a message:
 
-**Recency-only** (always available):
-  Reviews the last N hours of conversation history. Good for: completed task
-  notifications, unresolved threads that now have answers, inline "tell me when X"
-  instructions the user gave earlier.
+  TEMPORAL_BRIDGE   — same concept, separated by weeks.
+    "You solved this before. You've forgotten. Here it is again."
 
-**BartokGraph-augmented** (when BartokGraph plugin is installed):
-  Traverses a local knowledge graph built from the user's files and conversation
-  history. Detects cross-temporal and cross-domain connections the user cannot
-  see themselves — because they can't hold months of context in their head.
+  CROSS_DOMAIN      — structurally identical problem in different contexts.
+    "Your trading bot work and your soil monitoring share the same math."
 
-  Three new message types only BartokGraph enables:
-    TEMPORAL_BRIDGE   — "You worked on this exact problem 3 weeks ago."
-    CROSS_DOMAIN      — "Your X work and your Y work share the same structure."
-    PERSON_KNOWLEDGE  — "Sarah mentioned X. You asked about Y. These converge."
+  PERSON_KNOWLEDGE  — something a person in your life said that connects to now.
+    "Sarah mentioned the Kenya project last week. It connects to what you're
+    building today in a way neither of you saw."
 
 Design invariants
 -----------------
+- NEVER sends without a BartokGraph connection. Silence is the default.
+- NEVER sends more than max_per_day messages (default: 1).
+- NEVER mentions BartokGraph, the graph, or the mechanism. Lead with the insight.
 - NEVER modifies session state, memory, or system prompt.
-- NEVER sends more than max_per_day messages per user.
-- ALWAYS prefers silence: threshold defaults to conservative (0.75).
-- Falls back to no-send on any error (fail-open, err toward quiet).
-- Uses cheap/fast local model for synthesis judge when available.
+- Fails silent on any error — prefer quiet over noise.
 - Fully opt-in: proactive_communication.enabled defaults to False.
-- BartokGraph is optional: if not installed, falls back to recency-only.
 """
 
 from __future__ import annotations
@@ -51,7 +59,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
+from typing import Any, Dict, List, Optional, Protocol, Tuple, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -62,16 +70,17 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_THRESHOLD = "conservative"
 DEFAULT_MAX_PER_DAY = 1
-DEFAULT_HISTORY_WINDOW_HOURS = 16
+DEFAULT_HISTORY_WINDOW_HOURS = 72   # look back 3 days for topic extraction
 DEFAULT_SYNTHESIS_BUDGET_TOKENS = 2000
 _HISTORY_SNIPPET_CHARS = 8000
+_JUDGE_TIMEOUT = 30.0
 
-# Threshold scores. Only messages scoring above these are sent.
-# Calibrated conservatively — users prefer silence over noise.
+# Threshold scores for the graph-connection quality gate.
+# Only connections scoring above these are surfaced.
 THRESHOLD_SCORES: Dict[str, float] = {
-    "conservative": 0.75,  # Default. High bar. Better to stay quiet.
-    "balanced": 0.55,      # Moderate. Useful insights + completed tasks.
-    "eager": 0.35,         # Low bar. For users who want maximum initiative.
+    "conservative": 0.75,  # Default. High bar. Silence is fine.
+    "balanced": 0.55,      # Moderate. Solid connections get through.
+    "eager": 0.35,         # Low bar. More magic, some noise.
 }
 
 
@@ -82,51 +91,41 @@ THRESHOLD_SCORES: Dict[str, float] = {
 
 @dataclass
 class SynthesisResult:
-    """Outcome of one Proactive Communication Loop synthesis pass.
-
-    ``should_send`` is the gate. Callers check this before dispatching.
-    ``connection_type`` indicates which BartokGraph insight triggered the
-    message (or "none" for recency-only synthesis).
-    """
+    """Outcome of one Proactive Communication Loop synthesis pass."""
 
     should_send: bool
     message: Optional[str]
-    reasoning: str             # written to audit log — why send or not
-    novelty_score: float       # 0–1: how new vs what was already said
-    relevance_score: float     # 0–1: how useful to recent work
+    reasoning: str             # written to audit log
+    novelty_score: float       # 0–1: how surprising this connection is
+    relevance_score: float     # 0–1: how useful to current work
     combined_score: float      # weighted combination for threshold check
-    connection_type: str = "none"  # none | temporal_bridge | cross_domain | person_knowledge
+    connection_type: str = "none"  # temporal_bridge | cross_domain | person_knowledge | none
     candidates: List[str] = field(default_factory=list)
     synthesis_ms: int = 0
 
 
 @dataclass
 class BartokGraphConnection:
-    """A connection detected between today's work and past knowledge.
+    """A connection the knowledge graph found between now and the past.
 
-    These are the 'how did it know that?' moments — non-obvious links
-    across time and domain that the user cannot see on their own.
+    These are the moments that make the agent feel alive —
+    non-obvious links across time and domain the user cannot see themselves.
     """
 
     node_a_content: str    # today's concept
-    node_b_content: str    # past concept (from BartokGraph)
+    node_b_content: str    # past concept
     connection_type: str   # temporal_bridge | cross_domain | person_knowledge
     strength: float        # 0–1 semantic overlap
-    days_apart: int        # how long since node_b was last active
-    explanation: str       # human-readable bridge explanation
+    days_apart: int        # how long since node_b was active
+    explanation: str       # human-readable bridge
 
 
 @dataclass
 class BartokGraphContext:
-    """Graph-augmented context gathered for one synthesis pass.
-
-    When available, this is added to the synthesis prompt as a
-    BARTOKGRAPH CONNECTIONS section — giving the judge model access to
-    cross-temporal knowledge it couldn't otherwise see.
-    """
+    """Graph-augmented context for one synthesis pass."""
 
     connections: List[BartokGraphConnection]
-    provider_name: str  # which BartokGraph backend was used
+    provider_name: str
     traversal_ms: int = 0
 
 
@@ -137,17 +136,7 @@ class BartokGraphContext:
 
 @runtime_checkable
 class ProactiveThreshold(Protocol):
-    """Custom threshold implementation.
-
-    Third-party plugins can register a custom threshold::
-
-        from hermes_cli.proactive_communication_loop import register_threshold
-
-        @register_threshold("my_threshold")
-        class MyThreshold:
-            def should_send(self, result: SynthesisResult) -> bool:
-                return result.combined_score > 0.6 and result.novelty_score > 0.5
-    """
+    """Custom threshold — register via @register_threshold("name")."""
 
     def should_send(self, result: SynthesisResult) -> bool: ...
 
@@ -157,11 +146,9 @@ _registered_thresholds: Dict[str, ProactiveThreshold] = {}
 
 def register_threshold(name: str):
     """Decorator to register a custom threshold by name."""
-
     def _decorator(cls):
         _registered_thresholds[name] = cls()
         return cls
-
     return _decorator
 
 
@@ -171,9 +158,12 @@ def register_threshold(name: str):
 
 
 class ProactiveCommunicationLoop:
-    """Synthesis-and-initiative engine for the Proactive Communication Loop.
+    """The engine that makes Hermes feel alive.
 
-    Typical usage (from gateway cron)::
+    Traverses the user's knowledge graph, finds connections they can't see,
+    and reaches out unprompted when it finds something genuinely surprising.
+
+    Usage (from gateway cron)::
 
         loop = ProactiveCommunicationLoop(session_db=db, config=cfg)
         result = await loop.run_synthesis(session_id)
@@ -181,28 +171,24 @@ class ProactiveCommunicationLoop:
             await deliver_message(result.message)
             await loop.record_sent(session_id, result)
 
-    BartokGraph augmentation is automatic when the plugin is installed.
-    Falls back gracefully to recency-only synthesis if unavailable.
+    Returns a no-send result silently if BartokGraph is unavailable or finds
+    no connections worth surfacing. Never raises.
     """
 
-    def __init__(
-        self,
-        session_db: Any,  # SessionDB from run_agent.py
-        config: Any,      # HermesConfig
-    ) -> None:
+    def __init__(self, session_db: Any, config: Any) -> None:
         self._db = session_db
         self._cfg = config
         self._bartokgraph: Optional[Any] = self._try_load_bartokgraph()
 
     def _try_load_bartokgraph(self) -> Optional[Any]:
-        """Attempt to load BartokGraph adapter. Never raises."""
+        """Load BartokGraph adapter. Never raises."""
         if not self._cfg.get("proactive_communication.bartokgraph.enabled", True):
             return None
         try:
             from hermes_cli.bartokgraph_adapter import BartokGraphAdapter
             return BartokGraphAdapter(config=self._cfg)
         except ImportError:
-            logger.debug("PCL: BartokGraph plugin not installed — using recency-only synthesis")
+            logger.debug("PCL: BartokGraph not installed — loop will stay silent")
             return None
 
     # ------------------------------------------------------------------
@@ -214,30 +200,22 @@ class ProactiveCommunicationLoop:
         session_id: str,
         history_window_hours: int = DEFAULT_HISTORY_WINDOW_HOURS,
     ) -> SynthesisResult:
-        """Run one synthesis pass for ``session_id``.
-
-        Returns SynthesisResult. Never raises — on any error, returns a
-        no-send result with reasoning logged.
-        """
+        """Run one synthesis pass. Never raises."""
         try:
             return await self._run_synthesis_inner(session_id, history_window_hours)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("PCL: synthesis failed for %s: %s", session_id, exc)
+            logger.warning("PCL: synthesis error for %s: %s", session_id, exc)
             return SynthesisResult(
-                should_send=False,
-                message=None,
+                should_send=False, message=None,
                 reasoning=f"synthesis error: {exc}",
-                novelty_score=0.0,
-                relevance_score=0.0,
-                combined_score=0.0,
+                novelty_score=0.0, relevance_score=0.0, combined_score=0.0,
             )
 
     async def record_sent(self, session_id: str, result: SynthesisResult) -> None:
-        """Record that a proactive message was sent (for dedup/rate-limiting)."""
+        """Record that a proactive message was sent."""
         try:
-            summary = (result.message or "")[:200]
             self._db.record_proactive_sent(session_id, {
-                "summary": summary,
+                "summary": (result.message or "")[:200],
                 "connection_type": result.connection_type,
                 "score": result.combined_score,
                 "ts": int(time.time()),
@@ -256,54 +234,61 @@ class ProactiveCommunicationLoop:
     ) -> SynthesisResult:
         t0 = time.monotonic()
 
-        # 1. Load recent history
+        # 1. BartokGraph is required. Without it, stay silent.
+        if not self._bartokgraph:
+            return SynthesisResult(
+                should_send=False, message=None,
+                reasoning="BartokGraph not available — loop requires graph connections to send",
+                novelty_score=0.0, relevance_score=0.0, combined_score=0.0,
+            )
+
+        # 2. Rate limit
+        if self._over_daily_limit(session_id):
+            return SynthesisResult(
+                should_send=False, message=None,
+                reasoning="daily message limit reached",
+                novelty_score=0.0, relevance_score=0.0, combined_score=0.0,
+            )
+
+        # 3. Load history for topic extraction
         history = self._load_recent_history(session_id, history_window_hours)
         if not history:
             return SynthesisResult(
-                should_send=False,
-                message=None,
-                reasoning="no conversation history in synthesis window",
-                novelty_score=0.0,
-                relevance_score=0.0,
-                combined_score=0.0,
+                should_send=False, message=None,
+                reasoning="no conversation history to extract topics from",
+                novelty_score=0.0, relevance_score=0.0, combined_score=0.0,
             )
 
-        # 2. Check rate limit
-        if self._over_daily_limit(session_id):
-            return SynthesisResult(
-                should_send=False,
-                message=None,
-                reasoning="daily message limit reached",
-                novelty_score=0.0,
-                relevance_score=0.0,
-                combined_score=0.0,
-            )
-
-        # 3. BartokGraph traversal (optional — graceful degradation if unavailable)
+        # 4. Traverse the knowledge graph
         graph_ctx: Optional[BartokGraphContext] = None
-        if self._bartokgraph:
-            try:
-                active_topics = await self._extract_topics_from_history(history)
-                graph_ctx = await self._bartokgraph.get_connections(
-                    active_topics=active_topics,
-                    top_k=10,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("PCL: BartokGraph traversal failed: %s — continuing without graph", exc)
+        try:
+            active_topics = await self._extract_topics_from_history(history)
+            graph_ctx = await self._bartokgraph.get_connections(
+                active_topics=active_topics,
+                top_k=10,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("PCL: graph traversal failed: %s", exc)
 
-        # 4. Build prompt and call judge
+        # 5. No connections = stay silent. This is the heart of the design.
+        if not graph_ctx or not graph_ctx.connections:
+            return SynthesisResult(
+                should_send=False, message=None,
+                reasoning="graph traversal found no connections worth surfacing",
+                novelty_score=0.0, relevance_score=0.0, combined_score=0.0,
+            )
+
+        # 6. Ask the judge model: is any of this worth saying?
         already_sent = self._load_sent_summaries(session_id)
         prompt = _build_synthesis_prompt(history, already_sent, graph_ctx)
         raw = await self._call_synthesis_model(prompt)
         parsed = _parse_synthesis_response(raw)
 
-        # 5. Score and threshold check
+        # 7. Score and threshold gate
         novelty = _clamp_unit_interval(parsed.get("novelty", 0.0))
         relevance = _clamp_unit_interval(parsed.get("relevance", 0.0))
         combined = 0.6 * novelty + 0.4 * relevance
-        threshold_name = self._cfg.get(
-            "proactive_communication.threshold", DEFAULT_THRESHOLD
-        )
+        threshold_name = self._cfg.get("proactive_communication.threshold", DEFAULT_THRESHOLD)
         threshold_score = _get_threshold_score(threshold_name, combined, parsed)
 
         model_wants_send = bool(parsed.get("should_send", True))
@@ -359,16 +344,13 @@ class ProactiveCommunicationLoop:
             return False
 
     async def _extract_topics_from_history(self, history: str) -> List[str]:
-        """Extract top topics from recent history for BartokGraph traversal.
-
-        Uses word-frequency over non-stopword tokens (length > 3). Good enough
-        for an initial implementation; replace with NER or phrase extraction when
-        graph quality needs improvement.
-        """
+        """Extract the top topics from session history for graph traversal."""
         words = history.lower().split()
-        stopwords = {"the", "a", "an", "in", "on", "at", "to", "for", "of", "and",
-                     "or", "is", "was", "are", "were", "i", "you", "me", "my", "your"}
-        # Frequency count of non-stop tokens
+        stopwords = {
+            "the", "a", "an", "in", "on", "at", "to", "for", "of", "and",
+            "or", "is", "was", "are", "were", "i", "you", "me", "my", "your",
+            "this", "that", "with", "from", "have", "had", "not", "but",
+        }
         freq: Dict[str, int] = {}
         for word in words:
             clean = word.strip(".,!?;:\"'()")
@@ -378,17 +360,40 @@ class ProactiveCommunicationLoop:
         return [word for word, _ in top[:10]]
 
     async def _call_synthesis_model(self, prompt: str) -> str:
-        """Call a cheap/fast model for the synthesis judge.
+        """Call the auxiliary judge model via Hermes's configured provider.
 
-        Implementation: wire to the session's configured LLM provider,
-        using the same lightweight judge pattern as GoalManager._judge_goal()
-        in goals.py. Prefer a local model (Ollama) when available.
+        Uses the same auxiliary client pattern as GoalManager (goals.py).
+        Prefers the cheapest/fastest model — this is a lightweight judge call,
+        not a reasoning task.
         """
-        raise NotImplementedError(
-            "ProactiveCommunicationLoop._call_synthesis_model must be wired "
-            "to the session's LLM provider. See goals.py GoalManager._judge_goal "
-            "for the pattern — use the cheapest/fastest model configured."
+        try:
+            from agent.auxiliary_client import get_text_auxiliary_client
+        except ImportError as exc:
+            raise RuntimeError("auxiliary client not available") from exc
+
+        client, model = get_text_auxiliary_client("proactive_loop_judge")
+        if client is None or not model:
+            raise RuntimeError("no auxiliary client configured for proactive_loop_judge")
+
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a synthesis judge for a proactive communication system. "
+                        "Your job is to evaluate whether a knowledge graph connection is "
+                        "surprising and useful enough to message the user about unprompted. "
+                        "Be strict. Silence is the right answer most of the time."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            max_tokens=DEFAULT_SYNTHESIS_BUDGET_TOKENS,
+            timeout=_JUDGE_TIMEOUT,
         )
+        return resp.choices[0].message.content or ""
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -397,7 +402,7 @@ class ProactiveCommunicationLoop:
 
 
 def _clamp_unit_interval(value: Any) -> float:
-    """Clamp model-provided scores to [0, 1] with safe float coercion."""
+    """Clamp model scores to [0, 1] safely."""
     try:
         v = float(value)
     except (TypeError, ValueError):
@@ -412,13 +417,7 @@ def _get_threshold_score(
     combined_score: float,
     parsed: Dict[str, Any],
 ) -> float:
-    """Resolve the effective threshold score for the given threshold name.
-
-    Custom thresholds registered via @register_threshold are checked first.
-    Built-in thresholds fall back to THRESHOLD_SCORES.
-    """
     if threshold_name in _registered_thresholds:
-        # Custom threshold: create a SynthesisResult stub to pass to it
         stub = SynthesisResult(
             should_send=True,
             message=parsed.get("message"),
@@ -427,7 +426,6 @@ def _get_threshold_score(
             relevance_score=_clamp_unit_interval(parsed.get("relevance", 0.0)),
             combined_score=combined_score,
         )
-        # If custom threshold says no, return 1.1 (impossible to reach)
         return 0.0 if _registered_thresholds[threshold_name].should_send(stub) else 1.1
     return THRESHOLD_SCORES.get(threshold_name, THRESHOLD_SCORES[DEFAULT_THRESHOLD])
 
@@ -440,82 +438,63 @@ def _get_threshold_score(
 def _build_synthesis_prompt(
     history: str,
     already_sent: str,
-    graph_ctx: Optional[BartokGraphContext],
+    graph_ctx: BartokGraphContext,
 ) -> str:
-    """Build the synthesis prompt for the judge model.
+    """Build the judge prompt. graph_ctx is always present here — it's required."""
+    lines = []
+    for conn in graph_ctx.connections[:5]:
+        lines.append(
+            f"  [{conn.connection_type.upper()}] "
+            f"'{conn.node_a_content}' ↔ '{conn.node_b_content}' "
+            f"(strength {conn.strength:.2f}, {conn.days_apart}d ago) — "
+            f"{conn.explanation}"
+        )
 
-    When BartokGraph context is available, adds a BARTOKGRAPH CONNECTIONS
-    section that gives the judge access to cross-temporal knowledge.
-    When not available, produces a clean recency-only prompt.
-    """
-    base = f"""You are deciding whether to send the user an unprompted message.
-Your only job: find something genuinely worth saying. If nothing is, stay quiet.
+    return f"""You are deciding whether to send the user an unprompted message.
 
-RECENT CONVERSATION HISTORY:
+The only valid reason to send: a connection in the knowledge graph that would
+genuinely surprise the user and change how they think about their current work.
+If that bar isn't clearly met, return should_send=false. Silence is correct.
+
+RECENT CONVERSATION HISTORY (for context on what they're working on now):
 {history}
 
-ALREADY SENT TODAY (do not repeat):
-{already_sent}
-"""
-
-    graph_section = ""
-    if graph_ctx and graph_ctx.connections:
-        lines = []
-        for conn in graph_ctx.connections[:3]:
-            lines.append(
-                f"  [{conn.connection_type.upper()}] "
-                f"'{conn.node_a_content}' ↔ '{conn.node_b_content}' "
-                f"(strength {conn.strength:.2f}, {conn.days_apart}d ago) — "
-                f"{conn.explanation}"
-            )
-        graph_section = f"""
-BARTOKGRAPH CONNECTIONS — cross-temporal knowledge from past conversations:
-These are non-obvious connections between today's work and things discussed weeks ago.
-If one of these represents a genuinely surprising insight the user hasn't seen, surface it.
-
+KNOWLEDGE GRAPH CONNECTIONS (cross-temporal, from past conversations):
 {chr(10).join(lines)}
 
 Connection types:
-  TEMPORAL_BRIDGE:   same concept appeared weeks ago — user may have forgotten the solution
-  CROSS_DOMAIN:      concept from one domain structurally connects to a different domain
-  PERSON_KNOWLEDGE:  connects today's work to something a specific person mentioned
-"""
+  TEMPORAL_BRIDGE:   same concept appeared weeks ago — they may have forgotten the solution
+  CROSS_DOMAIN:      structurally identical problem in a different context they're not seeing
+  PERSON_KNOWLEDGE:  something a specific person mentioned that connects to their current work
 
-    instructions = """
-WHAT'S WORTH SENDING:
-1. A completed background task with a result the user cares about
-2. An unresolved question from earlier that now has a clear answer
-3. A TEMPORAL_BRIDGE — something from today echoes an older thread the user forgot
-4. A CROSS_DOMAIN connection — "your X work and Y work share the same structure"
-5. Something the user explicitly asked you to "let me know about" earlier
+ALREADY SENT TODAY (do not repeat):
+{already_sent}
 
-THE BAR IS HIGH. Prefer silence. If you're uncertain, set should_send=false.
+THE BAR: Would this genuinely surprise the user? Would it change how they approach
+their work right now? If not clearly yes, set should_send=false.
 
-COMPOSE THE MESSAGE naturally — as if continuing a conversation.
-  Good: "Hey — just connected something. Your regime detection work and your 
-         anomaly detection and your energy monitoring are solving the same problem: detecting state 
-         transitions in noisy signals."
-  Bad:  "BARTOKGRAPH ANALYSIS: cross-domain connection detected between..."
+COMPOSE THE MESSAGE as a natural, brief note — as if you just noticed something and
+wanted to share it. 2-4 sentences maximum.
+  Right: "Hey — just noticed something. Three weeks ago you were working on X, and
+          what you're building now is the same problem from a different angle."
+  Wrong: "GRAPH CONNECTION DETECTED: cross-domain link between..."
 
-Lead with the surprise. Never mention BartokGraph or the mechanism to the user.
-Keep it to 2-4 sentences.
+Never mention the graph, the mechanism, or how you found it. Lead with the insight.
 
 JSON response:
-{
+{{
   "should_send": true/false,
-  "message": "natural message to send, or null",
+  "message": "the message, or null",
   "novelty": 0.0-1.0,
   "relevance": 0.0-1.0,
   "connection_type": "temporal_bridge|cross_domain|person_knowledge|none",
-  "reasoning": "1-2 sentences on why you send or don't",
-  "candidates": ["things considered"]
-}"""
-
-    return base + graph_section + instructions
+  "reasoning": "1-2 sentences on why send or not",
+  "candidates": ["connections considered"]
+}}"""
 
 
 def _parse_synthesis_response(raw: str) -> Dict[str, Any]:
-    """Parse synthesis model JSON response safely."""
+    """Parse synthesis response safely."""
     try:
         text = raw.strip()
         if text.startswith("```"):
