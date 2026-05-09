@@ -2,14 +2,29 @@ import { createContext, useContext, useState, useCallback, type ReactNode } from
 import type { Locale, Translations } from "./types";
 import { en } from "./en";
 import { zh } from "./zh";
+import { ptBR } from "./pt-BR";
 
-const TRANSLATIONS: Record<Locale, Translations> = { en, zh };
+const TRANSLATIONS: Record<Locale, Translations> = { en, zh, "pt-BR": ptBR };
 const STORAGE_KEY = "hermes-locale";
+const LOCALE_ALIASES: Record<string, Locale> = {
+  pt: "pt-BR",
+  "pt-br": "pt-BR",
+};
+
+function isLocale(value: string): value is Locale {
+  return value === "en" || value === "zh" || value === "pt-BR";
+}
+
+function normalizeLocale(value: string | null): Locale | null {
+  if (!value) return null;
+  if (isLocale(value)) return value;
+  return LOCALE_ALIASES[value.toLowerCase()] ?? null;
+}
 
 function getInitialLocale(): Locale {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === "en" || stored === "zh") return stored;
+    const stored = normalizeLocale(localStorage.getItem(STORAGE_KEY));
+    if (stored) return stored;
   } catch {
     // SSR or privacy mode
   }
