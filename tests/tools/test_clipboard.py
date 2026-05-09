@@ -205,9 +205,20 @@ class TestMacosOsascript:
 
 class TestIsWsl:
     def setup_method(self):
-        # _is_wsl delegates to hermes_constants — reset its cache
+        # _is_wsl is hermes_constants.is_wsl — reset caches (see xdist note on
+        # hermes_constants import identity in large test suites).
         import hermes_constants
+
         hermes_constants._wsl_detected = None
+        _is_wsl.__globals__["_wsl_detected"] = None
+
+    def teardown_method(self):
+        # Reset again after the test so we don't leak a cached value
+        # (True/False) into whichever test the xdist worker runs next.
+        import hermes_constants
+
+        hermes_constants._wsl_detected = None
+        _is_wsl.__globals__["_wsl_detected"] = None
 
     def test_wsl2_detected(self):
         import hermes_constants
