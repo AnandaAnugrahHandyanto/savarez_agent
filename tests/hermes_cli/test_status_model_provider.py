@@ -124,6 +124,31 @@ def test_show_status_hides_nous_subscription_section_when_feature_flag_is_off(mo
     assert "Nous Tool Gateway" not in out
 
 
+def test_show_status_all_redacts_api_keys(monkeypatch, capsys, tmp_path):
+    from hermes_cli import status as status_mod
+
+    raw_key = "sk-or-v1-abcdefghijklmnopqrstuvwxyz1234567890"
+
+    def _get_env_value(name: str):
+        if name == "OPENROUTER_API_KEY":
+            return raw_key
+        return ""
+
+    _patch_common_status_deps(monkeypatch, status_mod, tmp_path)
+    monkeypatch.setattr(status_mod, "get_env_value", _get_env_value, raising=False)
+    monkeypatch.setattr(status_mod, "load_config", lambda: {}, raising=False)
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "openrouter", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "openrouter", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "OpenRouter", raising=False)
+
+    status_mod.show_status(SimpleNamespace(all=True, deep=False))
+
+    out = capsys.readouterr().out
+    assert raw_key not in out
+    assert "OpenRouter" in out
+    assert "sk-o...7890" in out
+
+
 def test_show_status_reports_empty_lmstudio_listing_as_reachable(monkeypatch, capsys, tmp_path):
     from hermes_cli import status as status_mod
 
