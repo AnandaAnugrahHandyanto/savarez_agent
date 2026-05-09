@@ -10,6 +10,7 @@ import codecs
 import json
 import logging
 import os
+import platform
 import select
 import shlex
 import subprocess
@@ -487,6 +488,30 @@ class BaseEnvironment(ABC):
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
         def _drain():
+            if platform.system() == "Windows":
+                # Windows: select.select() doesn't work on anonymous pipes
+                # (OSError WinError 10093).  Use blocking reads instead.
+                # The TextIOWrapper (text=True on Popen) already decodes UTF-8
+                # with errors="replace", so we read strings directly.
+                try:
+                    while True:
+                        try:
+                            chunk = proc.stdout.read(4096)
+                        except (ValueError, OSError):
+                            break
+                        if chunk:
+                            output_chunks.append(chunk)
+                        elif proc.poll() is not None:
+                            break  # process exited and pipe EOF'd
+                finally:
+                    try:
+                        tail = decoder.decode(b"", final=True)
+                        if tail:
+                            output_chunks.append(tail)
+                    except Exception:
+                        pass
+                return
+
             fd = proc.stdout.fileno()
             idle_after_exit = 0
             try:

@@ -2,6 +2,7 @@
 
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -11,6 +12,34 @@ import time
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 
 _IS_WINDOWS = platform.system() == "Windows"
+
+
+def _msys2_to_windows_path(path: str) -> str:
+    """Convert MSYS2/Cygwin/WSL unix paths to Windows paths.
+
+    On Windows with Git-Bash/MSYS2, bash's ``pwd -P`` emits Unix-style
+    paths (``/d/project``).  ``subprocess.Popen(..., cwd=...)`` requires
+    a native Windows path (``D:\\project``) or it raises
+    ``NotADirectoryError [WinError 267]``.
+    """
+    if not path or not _IS_WINDOWS:
+        return path
+    # Already a Windows path — nothing to do
+    if len(path) >= 2 and path[1] == ":":
+        return path
+    # /mnt/d/... → D:\...
+    mnt = re.match(r"^/mnt/([a-zA-Z])/(.*)", path)
+    if mnt:
+        return f"{mnt.group(1).upper()}:\\{mnt.group(2).replace('/', '\\')}"
+    # /d/... → D:\...
+    drive = re.match(r"^/([a-zA-Z])/(.*)", path)
+    if drive:
+        return f"{drive.group(1).upper()}:\\{drive.group(2).replace('/', '\\')}"
+    # Bare /... → prepend current drive
+    if path.startswith("/"):
+        cur_drive = os.getcwd()[:2]
+        return f"{cur_drive}\\{path[1:].replace('/', '\\')}"
+    return path
 
 
 # Hermes-internal env vars that should NOT leak into terminal subprocesses.
@@ -312,7 +341,8 @@ class LocalEnvironment(BaseEnvironment):
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         if cwd:
             cwd = os.path.expanduser(cwd)
-        super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
+        cwd = _msys2_to_windows_path(cwd or os.getcwd())
+        super().__init__(cwd=cwd, timeout=timeout, env=env)
         self.init_session()
 
     def get_temp_dir(self) -> str:
@@ -323,10 +353,15 @@ class LocalEnvironment(BaseEnvironment):
         Unix systems, and only fall back to tempfile.gettempdir() when it also
         resolves to a POSIX path.
 
-        Check the environment configured for this backend first so callers can
-        override the temp root explicitly (for example via terminal.env or a
-        custom TMPDIR), then fall back to the host process environment.
+        On Windows with MSYS2/Git-Bash, ``/tmp`` is mapped differently by bash
+        (to the Windows %TEMP% folder) than by Python (to ``<current_drive>:\\tmp``),
+        causing ``_cwd_file`` and ``_snapshot_path`` to be written by bash but
+        never found by Python.  We avoid this by returning the Windows temp dir
+        with forward slashes, which both bash and Python understand.
         """
+        if _IS_WINDOWS:
+            return tempfile.gettempdir().replace("\\", "/")
+
         for env_var in ("TMPDIR", "TMP", "TEMP"):
             candidate = self.env.get(env_var) or os.environ.get(env_var)
             if candidate and candidate.startswith("/"):
@@ -457,12 +492,16 @@ class LocalEnvironment(BaseEnvironment):
             with open(self._cwd_file) as f:
                 cwd_path = f.read().strip()
             if cwd_path:
-                self.cwd = cwd_path
+                self.cwd = _msys2_to_windows_path(cwd_path)
         except (OSError, FileNotFoundError):
             pass
 
         # Still strip the marker from output so it's not visible
         self._extract_cwd_from_output(result)
+
+        # _extract_cwd_from_output may have set a Unix path from the stdout
+        # marker; make sure we always store a Windows-native path.
+        self.cwd = _msys2_to_windows_path(self.cwd)
 
     def cleanup(self):
         """Clean up temp files."""
