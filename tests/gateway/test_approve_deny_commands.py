@@ -77,6 +77,14 @@ def _clear_approval_state():
     mod._pending.clear()
 
 
+@pytest.fixture(autouse=True)
+def _disable_tirith_for_gateway_approval_tests(monkeypatch):
+    """Keep approval-flow tests independent of external tirith auto-install."""
+    monkeypatch.setenv("TIRITH_ENABLED", "0")
+    yield
+    _clear_approval_state()
+
+
 # ------------------------------------------------------------------
 # Blocking gateway approval infrastructure (tools/approval.py)
 # ------------------------------------------------------------------
