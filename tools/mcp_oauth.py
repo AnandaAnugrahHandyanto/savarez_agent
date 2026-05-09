@@ -522,7 +522,8 @@ def _configure_callback_port(cfg: dict) -> int:
     requested = int(cfg.get("redirect_port", 0))
     port = _find_free_port() if requested == 0 else requested
     cfg["_resolved_port"] = port
-    _oauth_port = port  # legacy consumer: _wait_for_callback reads this
+    _oauth_tls.port = port  # per-thread TLS — primary read path for _wait_for_callback
+    _oauth_port = port  # module-level legacy alias kept for backward-compat test reads
     return port
 
 
