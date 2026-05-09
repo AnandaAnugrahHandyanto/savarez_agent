@@ -963,10 +963,19 @@ def get_active_profile_name() -> str:
     try:
         rel = resolved.relative_to(profiles_root)
         parts = rel.parts
-        if len(parts) == 1 and _PROFILE_ID_RE.match(parts[0]):
+        if parts and _PROFILE_ID_RE.match(parts[0]):
             return parts[0]
     except ValueError:
         pass
+
+    # Arbitrary deployments: …/profiles/<name>[/<subdirs>] outside the fork's
+    # standard root (~/.hermes/profiles/<name>). Docker / mirrored layouts
+    # often use /<data>/profiles/coder patterns.
+    for i, part in enumerate(resolved.parts):
+        if part == "profiles" and i + 1 < len(resolved.parts):
+            cand = resolved.parts[i + 1]
+            if _PROFILE_ID_RE.match(cand):
+                return cand
 
     return "custom"
 

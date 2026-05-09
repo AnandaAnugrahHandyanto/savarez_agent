@@ -12,6 +12,7 @@ from hermes_constants import (
     get_default_hermes_root,
     is_container,
     parse_reasoning_effort,
+    profile_name_if_under_std_profiles,
 )
 
 
@@ -67,6 +68,32 @@ class TestGetDefaultHermesRoot:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(profile))
         assert get_default_hermes_root() == docker_root
+
+
+class TestProfileNameIfUnderStdProfiles:
+    """Tests for profile_name_if_under_std_profiles() — OS-agnostic path segments."""
+
+    def test_none_when_home_not_under_profiles(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        assert profile_name_if_under_std_profiles(tmp_path / ".hermes") is None
+
+    def test_none_when_home_is_profiles_root(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        root = tmp_path / ".hermes" / "profiles"
+        root.mkdir(parents=True)
+        assert profile_name_if_under_std_profiles(root) is None
+
+    def test_single_segment(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        p = tmp_path / ".hermes" / "profiles" / "coder"
+        p.mkdir(parents=True)
+        assert profile_name_if_under_std_profiles(p) == "coder"
+
+    def test_nested_returns_first_segment(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        p = tmp_path / ".hermes" / "profiles" / "coder" / "nested"
+        p.mkdir(parents=True)
+        assert profile_name_if_under_std_profiles(p) == "coder"
 
 
 class TestIsContainer:
