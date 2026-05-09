@@ -12,12 +12,101 @@ from agent.auxiliary_client import call_llm
 
 logger = logging.getLogger(__name__)
 
-# Callback signature: (task_name, exception) -> None. Used to surface
-# auxiliary failures to the user through AIAgent._emit_auxiliary_failure
-# so silent-drops (e.g. OpenRouter 402 exhausting the fallback chain)
-# become visible instead of piling up as NULL session titles.
+# Callback signature: (task_name, exception) -> None. maybe_auto_title only
+# forwards this callback when auxiliary.title_generation.warn_on_failure is
+# enabled; otherwise auto-title failures remain log-only cosmetic background work.
 FailureCallback = Callable[[str, BaseException], None]
 TitleCallback = Callable[[str], None]
+
+
+def _as_bool(value) -> bool:
+    """Parse common config boolean forms without importing setup helpers."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _auto_title_enabled() -> bool:
+    """Return whether optional background title generation should run.
+
+    Minimal installs are intended to be chat-first and quiet by default. Title
+    generation is nice-to-have auxiliary work, and in a minimal Codex-backed
+    install it can surface noisy 30s timeout warnings after the first reply.
+
+    Preserve existing users by only applying the minimal default when the raw
+    config explicitly says ``install_option: minimal`` (or no config exists at
+    all, where the default install option is minimal). Legacy configs without
+    an on-disk ``install_option`` keep the historical enabled-by-default
+    behavior even though ``load_config()`` deep-merges the new default.
+    """
+    try:
+        from hermes_cli.config import get_config_path, load_config, read_raw_config
+
+        raw = read_raw_config()
+        if not isinstance(raw, dict):
+            raw = {}
+        raw_aux = raw.get("auxiliary") if isinstance(raw.get("auxiliary"), dict) else {}
+        raw_title = (
+            raw_aux.get("title_generation")
+            if isinstance(raw_aux.get("title_generation"), dict)
+            else {}
+        )
+        if "enabled" in raw_title:
+            return _as_bool(raw_title.get("enabled"))
+
+        raw_install_option = str(raw.get("install_option", "") or "").strip().lower()
+        if raw_install_option == "minimal":
+            return False
+
+        config_exists = False
+        try:
+            config_exists = bool(get_config_path().exists())
+        except Exception:
+            config_exists = bool(raw)
+
+        if not config_exists:
+            config = load_config()
+            install_option = str(config.get("install_option", "") or "").strip().lower()
+            if install_option == "minimal":
+                return False
+
+        # Legacy configs and standard/full install options retain the old
+        # behavior unless the user explicitly sets auxiliary.title_generation.enabled.
+        return True
+    except Exception:
+        logger.debug("Failed to read auto-title config; leaving enabled", exc_info=True)
+        return True
+
+
+def _auto_title_warn_on_failure() -> bool:
+    """Return whether auto-title failures should be surfaced to the user.
+
+    Auto-title generation is cosmetic background work. Its failures should not
+    interrupt the chat stream or show user-facing auxiliary warnings by default,
+    even on full installs where the feature still runs. Operators who want the
+    old visible-warning behavior can opt in with:
+
+      auxiliary.title_generation.warn_on_failure: true
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        raw = read_raw_config()
+        if not isinstance(raw, dict):
+            raw = {}
+        raw_aux = raw.get("auxiliary") if isinstance(raw.get("auxiliary"), dict) else {}
+        raw_title = (
+            raw_aux.get("title_generation")
+            if isinstance(raw_aux.get("title_generation"), dict)
+            else {}
+        )
+        if "warn_on_failure" in raw_title:
+            return _as_bool(raw_title.get("warn_on_failure"))
+    except Exception:
+        logger.debug("Failed to read auto-title warning config; leaving quiet", exc_info=True)
+    return False
 
 _TITLE_PROMPT = (
     "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
@@ -40,9 +129,9 @@ def generate_title(
     Returns the title string or None on failure.
 
     ``failure_callback`` is invoked with ``(task, exception)`` when the
-    auxiliary call raises — the caller typically wires this to
-    ``AIAgent._emit_auxiliary_failure`` so the user sees a warning instead
-    of silently accumulating untitled sessions.
+    auxiliary call raises. Higher-level callers normally pass this only when
+    ``auxiliary.title_generation.warn_on_failure`` is explicitly enabled,
+    because automatic titles are cosmetic background work.
     """
     # Truncate long messages to keep the request small
     user_snippet = user_message[:500] if user_message else ""
@@ -149,6 +238,10 @@ def maybe_auto_title(
     if not session_db or not session_id or not user_message or not assistant_response:
         return
 
+    if not _auto_title_enabled():
+        logger.debug("Skipping auto-title generation because it is disabled by config")
+        return
+
     # Count user messages in history to detect first exchange.
     # conversation_history includes the exchange that just happened,
     # so for a first exchange we expect exactly 1 user message
@@ -157,11 +250,13 @@ def maybe_auto_title(
     if user_msg_count > 2:
         return
 
+    visible_failure_callback = failure_callback if _auto_title_warn_on_failure() else None
+
     thread = threading.Thread(
         target=auto_title_session,
         args=(session_db, session_id, user_message, assistant_response),
         kwargs={
-            "failure_callback": failure_callback,
+            "failure_callback": visible_failure_callback,
             "main_runtime": main_runtime,
             "title_callback": title_callback,
         },

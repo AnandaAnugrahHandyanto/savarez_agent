@@ -92,6 +92,7 @@ _DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "di
 _TOOLSET_PLATFORM_RESTRICTIONS: Dict[str, Set[str]] = {
     "discord": {"discord"},
     "discord_admin": {"discord"},
+    "yuanbao": {"yuanbao"},
 }
 
 
@@ -102,6 +103,48 @@ def _toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:
     """
     allowed = _TOOLSET_PLATFORM_RESTRICTIONS.get(ts_key)
     return allowed is None or platform in allowed
+
+
+def _minimal_install_option_active(config: dict) -> bool:
+    """Return True for compact installer options that should stay lean."""
+    value = str(config.get("install_option") or "").strip().lower()
+    return value in {"minimal", "minimaltui", "minimal-tui", "minimal_tui", "standard"}
+
+
+def _should_auto_recover_nonconfigurable_toolset(
+    ts_key: str,
+    config: dict,
+    toolset_names: list[str],
+) -> bool:
+    """Decide whether a non-configurable toolset should be inferred.
+
+    Some non-configurable toolsets are platform plumbing and should come along
+    with the platform composite. Kanban is different: its worker tools are
+    runtime-gated and tied to the gateway/dispatcher flow, so compact installs
+    must not silently infer it from the broad hermes-cli tool universe. Explicit
+    `kanban` entries and dispatcher-spawned workers still opt in.
+    """
+    if ts_key != "kanban":
+        return True
+
+    if "kanban" in toolset_names:
+        return True
+
+    root_toolsets = config.get("toolsets") or []
+    if isinstance(root_toolsets, list) and "kanban" in {str(ts) for ts in root_toolsets}:
+        return True
+
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return True
+
+    kanban_cfg = config.get("kanban") or {}
+    if isinstance(kanban_cfg, dict) and kanban_cfg.get("dispatch_in_gateway") is False:
+        return False
+
+    if _minimal_install_option_active(config):
+        return False
+
+    return True
 
 
 def _get_effective_configurable_toolsets():
@@ -138,6 +181,88 @@ def _get_plugin_toolset_keys() -> set:
         return {ts_key for ts_key, _, _ in get_plugin_toolsets()}
     except Exception:
         return set()
+
+
+def _get_toolset_runtime_status(toolset_name: str) -> dict:
+    """Return installed/runtime availability details for a toolset.
+
+    ``toolsets.py`` is intentionally declarative: it lists every Hermes toolset
+    the project knows about.  Minimal installs, however, may not have optional
+    dependencies installed, and some tools may be registered but unavailable
+    until API keys or local services exist.  This helper compares the declared
+    toolset with the live registry so user-facing status surfaces reality
+    instead of static definitions.
+    """
+    try:
+        from toolsets import resolve_toolset
+        from tools.registry import discover_builtin_tools, registry
+
+        # Idempotent; imports built-in modules so the registry reflects the
+        # packages that are actually importable in this environment.
+        discover_builtin_tools()
+        declared_tools = sorted(set(resolve_toolset(toolset_name)))
+        registered_names = set(registry.get_all_tool_names())
+        installed_tools = sorted(t for t in declared_tools if t in registered_names)
+        available_defs = registry.get_definitions(set(declared_tools), quiet=True)
+        available_tools = sorted(
+            td.get("function", {}).get("name", "")
+            for td in available_defs
+            if td.get("function", {}).get("name")
+        )
+    except Exception:
+        declared_tools = []
+        installed_tools = []
+        available_tools = []
+
+    if available_tools:
+        reason = "available"
+    elif installed_tools:
+        reason = "install/config required"
+    else:
+        reason = "not installed"
+
+    return {
+        "available": bool(available_tools),
+        "reason": reason,
+        "tools": available_tools,
+        "installed_tools": installed_tools,
+        "declared_tools": declared_tools,
+        "available_count": len(available_tools),
+        "installed_count": len(installed_tools),
+        "declared_count": len(declared_tools),
+    }
+
+
+_TOOLSET_INSTALL_FEATURE_HINTS = {
+    "web": "web-search",
+    "web-search": "web-search",
+    "search": "web-search",
+    "browser": "browser",
+    "image_gen": "image-gen",
+    "tts": "tts",
+    "cronjob": "cron",
+}
+
+
+def _toolset_install_hint(toolset_name: str) -> str | None:
+    """Return the post-install feature name that can add this toolset."""
+    return _TOOLSET_INSTALL_FEATURE_HINTS.get(toolset_name)
+
+
+def _format_toolset_runtime_detail(toolset_name: str, runtime: dict) -> str:
+    """Human-readable runtime availability suffix for tool status lists."""
+    declared = runtime.get("declared_count") or 0
+    available = runtime.get("available_count") or 0
+    detail = f"{available}/{declared} tools ready" if declared else "no declared tools"
+    if not runtime.get("available"):
+        reason = runtime.get("reason") or "unavailable"
+        detail += f"; {reason}"
+        if reason == "not installed":
+            feature = _toolset_install_hint(toolset_name)
+            if feature:
+                detail += f"; run `hermes install-feature {feature}`"
+    return detail
+
 
 # Platform display config — derived from the canonical registry so every
 # module shares the same data.  Kept as dict-of-dicts for backward
@@ -1060,6 +1185,8 @@ def _get_platform_tools(
         if ts_key in skip:
             continue
         if ts_def.get("includes"):
+            continue
+        if not _should_auto_recover_nonconfigurable_toolset(ts_key, config, toolset_names):
             continue
         ts_tools = set(resolve_toolset(ts_key))
         if not ts_tools or not ts_tools.issubset(platform_tool_universe):
@@ -2613,9 +2740,17 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
     for ts_key, label, _ in effective:
         if ts_key not in builtin_keys:
             continue
-        status = (color("✓ enabled", Colors.GREEN) if ts_key in enabled_toolsets
-                  else color("✗ disabled", Colors.RED))
-        print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
+        runtime = _get_toolset_runtime_status(ts_key)
+        detail = _format_toolset_runtime_detail(ts_key, runtime)
+        if ts_key in enabled_toolsets and runtime.get("available"):
+            status = color("✓ active", Colors.GREEN)
+        elif ts_key in enabled_toolsets:
+            status = color("! enabled/unavailable", Colors.YELLOW)
+        elif runtime.get("available"):
+            status = color("✗ disabled", Colors.RED)
+        else:
+            status = color("✗ unavailable", Colors.DIM)
+        print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}  {color(detail, Colors.DIM)}")
 
     # Plugin toolsets
     plugin_entries = [(k, l) for k, l, _ in effective if k not in builtin_keys]
@@ -2623,9 +2758,17 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
         print()
         print(f"Plugin toolsets ({platform}):")
         for ts_key, label in plugin_entries:
-            status = (color("✓ enabled", Colors.GREEN) if ts_key in enabled_toolsets
-                      else color("✗ disabled", Colors.RED))
-            print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
+            runtime = _get_toolset_runtime_status(ts_key)
+            detail = _format_toolset_runtime_detail(ts_key, runtime)
+            if ts_key in enabled_toolsets and runtime.get("available"):
+                status = color("✓ active", Colors.GREEN)
+            elif ts_key in enabled_toolsets:
+                status = color("! enabled/unavailable", Colors.YELLOW)
+            elif runtime.get("available"):
+                status = color("✗ disabled", Colors.RED)
+            else:
+                status = color("✗ unavailable", Colors.DIM)
+            print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}  {color(detail, Colors.DIM)}")
 
     if mcp_servers:
         print()
@@ -2686,6 +2829,26 @@ def tools_disable_enable_command(args):
             )
         toolset_targets = [t for t in toolset_targets if t not in restricted_targets]
 
+    unavailable_toolsets: List[str] = []
+    if action == "enable":
+        for name in list(toolset_targets):
+            runtime = _get_toolset_runtime_status(name)
+            declared_count = runtime.get("declared_count") or 0
+            installed_count = runtime.get("installed_count") or 0
+            if declared_count > 0 and installed_count == 0:
+                unavailable_toolsets.append(name)
+                feature = _toolset_install_hint(name)
+                if installed_count == 0 and feature:
+                    _print_error(
+                        f"Toolset '{name}' is not installed. Run: hermes install-feature {feature}"
+                    )
+                elif installed_count == 0:
+                    _print_error(f"Toolset '{name}' is not installed in this environment")
+                else:
+                    reason = runtime.get("reason") or "install/config required"
+                    _print_error(f"Toolset '{name}' is not ready: {reason}")
+        toolset_targets = [t for t in toolset_targets if t not in unavailable_toolsets]
+
     if toolset_targets:
         _apply_toolset_change(config, platform, toolset_targets, action)
 
@@ -2699,7 +2862,10 @@ def tools_disable_enable_command(args):
 
     successful = [
         t for t in targets
-        if t not in unknown_toolsets and (":" not in t or t.split(":")[0] not in failed_servers)
+        if t not in unknown_toolsets
+        and t not in restricted_targets
+        and t not in unavailable_toolsets
+        and (":" not in t or t.split(":")[0] not in failed_servers)
     ]
     if successful:
         verb = "Disabled" if action == "disable" else "Enabled"

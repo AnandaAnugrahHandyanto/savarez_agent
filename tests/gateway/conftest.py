@@ -47,7 +47,8 @@ def _ensure_telegram_mock() -> None:
     ``setdefault`` so it wins even if a partial/broken import
     already cached a module with ``ChatType = None``.
     """
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
+    existing = sys.modules.get("telegram")
+    if existing is not None and not isinstance(existing, MagicMock) and getattr(existing, "__file__", None):
         return  # Real library is installed — nothing to mock
 
     mod = MagicMock()
@@ -96,7 +97,8 @@ def _ensure_discord_mock() -> None:
     this function (it short-circuits when already present) rather than
     maintaining their own mock setup.
     """
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+    existing = sys.modules.get("discord")
+    if existing is not None and not isinstance(existing, MagicMock) and getattr(existing, "__file__", None):
         return  # Real library is installed — nothing to mock
 
     from types import SimpleNamespace

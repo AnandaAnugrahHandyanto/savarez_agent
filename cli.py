@@ -5129,34 +5129,69 @@ class HermesCLI:
         self.new_session()
         _cprint(f"{_DIM}Session reset. New tool configuration is active.{_RST}")
 
-    def show_toolsets(self):
-        """Display available toolsets with kawaii ASCII art."""
+    def show_toolsets(self, mode: str = "active"):
+        """Display active toolsets, or the full catalog with runtime status."""
+        from hermes_cli.tools_config import (
+            _format_toolset_runtime_detail,
+            _get_toolset_runtime_status,
+        )
+
         all_toolsets = get_all_toolsets()
-        
+        enabled_ordered = [str(t) for t in (self.enabled_toolsets or [])]
+        enabled_set = set(enabled_ordered)
+        show_available = str(mode or "active").lower() in {"available", "all", "catalog"}
+
+        if show_available or "all" in enabled_set or "*" in enabled_set:
+            names = sorted(all_toolsets.keys())
+        else:
+            # Default /toolsets should reflect the current session/configuration,
+            # not the entire source registry.  Preserve user/config order while
+            # deduplicating so minimal installs only show the compact defaults.
+            names = []
+            seen = set()
+            for name in enabled_ordered:
+                if name in seen:
+                    continue
+                seen.add(name)
+                names.append(name)
+
         # Header
         print()
-        title = "(^_^)b Available Toolsets"
-        width = 58
+        title = "(^_^)b Toolsets Available" if show_available else "(^_^)b Active Toolsets"
+        width = 78
         pad = width - len(title)
         print("+" + "-" * width + "+")
         print("|" + " " * (pad // 2) + title + " " * (pad - pad // 2) + "|")
         print("+" + "-" * width + "+")
         print()
-        
-        for name in sorted(all_toolsets.keys()):
-            info = get_toolset_info(name)
-            if info:
-                tool_count = info["tool_count"]
-                desc = info["description"]
-                
-                # Mark if currently enabled
-                marker = "(*)" if self.enabled_toolsets and name in self.enabled_toolsets else "   "
-                print(f"  {marker} {name:<18} [{tool_count:>2} tools] - {desc}")
-        
+
+        if not names:
+            print("  (._.) No toolsets are configured for this session.")
+        for name in names:
+            info = get_toolset_info(name) or {}
+            desc = info.get("description") or "custom/MCP toolset"
+            runtime = _get_toolset_runtime_status(name)
+            detail = _format_toolset_runtime_detail(name, runtime)
+            enabled = name in enabled_set or ("all" in enabled_set or "*" in enabled_set)
+            if enabled and runtime.get("available"):
+                marker = "(*)"
+            elif enabled:
+                marker = "(!)"
+            else:
+                marker = "   "
+            print(f"  {marker} {name:<18} [{detail}] - {desc}")
+
         print()
-        print("  (*) = currently enabled")
+        print("  (*) = configured and active")
+        print("  (!) = configured but unavailable until dependencies/config are fixed")
         print()
-        print("  Tip: Use 'all' or '*' to enable all toolsets")
+        if show_available:
+            print("  This is the full catalog; some entries need optional install features,")
+            print("  API keys, local services, or a matching messaging platform session.")
+        else:
+            print("  Showing configured toolsets for the current session.")
+            print("  Use /toolsets available for the full installable/catalog view.")
+        print("  Use /tools list to inspect and /tools enable NAME after installing/configuring.")
         print("  Example: python cli.py --toolsets web,terminal")
         print()
     
@@ -6741,7 +6776,11 @@ class HermesCLI:
         elif canonical == "tools":
             self._handle_tools_command(cmd_original)
         elif canonical == "toolsets":
-            self.show_toolsets()
+            parts = cmd_lower.split()
+            if len(parts) > 1 and parts[1] in {"available", "all", "catalog"}:
+                self.show_toolsets(mode="available")
+            else:
+                self.show_toolsets()
         elif canonical == "config":
             self.show_config()
         elif canonical == "redraw":

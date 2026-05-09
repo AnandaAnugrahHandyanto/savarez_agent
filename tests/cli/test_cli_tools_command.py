@@ -55,6 +55,74 @@ class TestToolsSlashList:
         assert cli_obj.enabled_toolsets == {"web", "memory"}
 
 
+# ── /toolsets availability display ───────────────────────────────────────────
+
+
+class TestToolsetsSlashAvailability:
+
+    def test_show_toolsets_defaults_to_configured_toolsets_only(self, capsys):
+        cli_obj = _make_cli(["browser"])
+
+        def runtime(name):
+            if name == "browser":
+                return {
+                    "available": False,
+                    "reason": "not installed",
+                    "available_count": 0,
+                    "declared_count": 1,
+                }
+            return {
+                "available": True,
+                "reason": "available",
+                "available_count": 1,
+                "declared_count": 1,
+            }
+
+        with patch("cli.get_all_toolsets", return_value={
+                "browser": {},
+                "terminal": {},
+                "hermes-discord": {},
+                "yuanbao": {},
+             }), \
+             patch("cli.get_toolset_info", side_effect=lambda name: {"description": f"{name} tools"}), \
+             patch("hermes_cli.tools_config._get_toolset_runtime_status", side_effect=runtime):
+            cli_obj.show_toolsets()
+
+        out = capsys.readouterr().out
+        assert "Active Toolsets" in out
+        assert "(!) browser" in out
+        assert "0/1 tools ready" in out
+        assert "not installed" in out
+        assert "terminal tools" not in out
+        assert "hermes-discord" not in out
+        assert "yuanbao" not in out
+        assert "/toolsets available" in out
+
+    def test_show_toolsets_available_lists_static_registry_on_request(self, capsys):
+        cli_obj = _make_cli(["browser"])
+
+        with patch("cli.get_all_toolsets", return_value={"browser": {}, "terminal": {}}), \
+             patch("cli.get_toolset_info", side_effect=lambda name: {"description": f"{name} tools"}), \
+             patch("hermes_cli.tools_config._get_toolset_runtime_status", return_value={
+                 "available": True,
+                 "reason": "available",
+                 "available_count": 1,
+                 "declared_count": 1,
+             }):
+            cli_obj.show_toolsets(mode="available")
+
+        out = capsys.readouterr().out
+        assert "Toolsets Available" in out
+        assert "browser tools" in out
+        assert "terminal tools" in out
+
+    def test_toolsets_available_subcommand_dispatches_available_mode(self):
+        cli_obj = _make_cli()
+        with patch.object(cli_obj, "show_toolsets") as mock_show:
+            assert cli_obj.process_command("/toolsets available") is True
+        mock_show.assert_called_once_with(mode="available")
+
+
 # ── /tools disable (session reset) ──────────────────────────────────────────
 
 

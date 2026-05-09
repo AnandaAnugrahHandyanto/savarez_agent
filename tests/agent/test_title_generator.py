@@ -1,6 +1,7 @@
 """Tests for agent.title_generator — auto-generated session titles."""
 
 import threading
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -9,6 +10,8 @@ from agent.title_generator import (
     generate_title,
     auto_title_session,
     maybe_auto_title,
+    _auto_title_enabled,
+    _auto_title_warn_on_failure,
 )
 
 
@@ -65,7 +68,7 @@ class TestGenerateTitle:
             assert generate_title("question", "answer") is None
 
     def test_invokes_failure_callback_on_exception(self):
-        """failure_callback must fire so the user sees a warning (issue #15775)."""
+        """generate_title honors a callback when a caller explicitly opts in."""
         captured = []
 
         def _cb(task, exc):
@@ -160,8 +163,73 @@ class TestAutoTitleSession:
             db.set_session_title.assert_not_called()
 
 
+class TestAutoTitleEnabled:
+    """Tests for the install-option gate around optional auto-title generation."""
+
+    @staticmethod
+    @contextmanager
+    def _patched_config(raw_config, merged_config=None, config_exists=True):
+        if merged_config is None:
+            merged_config = raw_config
+        config_path = MagicMock()
+        config_path.exists.return_value = config_exists
+        with patch("hermes_cli.config.read_raw_config", return_value=raw_config), \
+             patch("hermes_cli.config.load_config", return_value=merged_config), \
+             patch("hermes_cli.config.get_config_path", return_value=config_path):
+            yield
+
+    def test_minimal_install_option_disables_auto_title_by_default(self):
+        raw = {"install_option": "minimal", "auxiliary": {"title_generation": {}}}
+        with self._patched_config(raw):
+            assert _auto_title_enabled() is False
+
+    def test_explicit_enabled_overrides_minimal_default(self):
+        raw = {"install_option": "minimal", "auxiliary": {"title_generation": {"enabled": True}}}
+        with self._patched_config(raw):
+            assert _auto_title_enabled() is True
+
+    def test_standard_install_option_keeps_auto_title_enabled_by_default(self):
+        raw = {"install_option": "standard", "auxiliary": {"title_generation": {}}}
+        with self._patched_config(raw):
+            assert _auto_title_enabled() is True
+
+    def test_legacy_config_without_install_option_keeps_auto_title_enabled(self):
+        raw = {"model": {"provider": "openrouter"}, "auxiliary": {"title_generation": {}}}
+        merged = {**raw, "install_option": "minimal"}
+        with self._patched_config(raw, merged_config=merged, config_exists=True):
+            assert _auto_title_enabled() is True
+
+    def test_missing_config_uses_minimal_default_and_disables_auto_title(self):
+        raw = {}
+        merged = {"install_option": "minimal", "auxiliary": {"title_generation": {}}}
+        with self._patched_config(raw, merged_config=merged, config_exists=False):
+            assert _auto_title_enabled() is False
+
+    def test_title_generation_failures_are_quiet_by_default_for_full_install_option(self):
+        raw = {"install_option": "full", "auxiliary": {"title_generation": {}}}
+        with self._patched_config(raw):
+            assert _auto_title_warn_on_failure() is False
+
+    def test_title_generation_warning_can_be_enabled_explicitly(self):
+        raw = {"install_option": "full", "auxiliary": {"title_generation": {"warn_on_failure": True}}}
+        with self._patched_config(raw):
+            assert _auto_title_warn_on_failure() is True
+
+
 class TestMaybeAutoTitle:
     """Tests for maybe_auto_title() — the fire-and-forget entry point."""
+
+    def test_skips_if_minimal_install_option_auto_title_disabled(self):
+        db = MagicMock()
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+
+        with patch("agent.title_generator._auto_title_enabled", return_value=False), \
+             patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "sess-1", "hello", "hi there", history)
+            mock_auto.assert_not_called()
 
     def test_skips_if_not_first_exchange(self):
         """Should not fire for conversations with more than 2 user messages."""
@@ -191,7 +259,8 @@ class TestMaybeAutoTitle:
             {"role": "assistant", "content": "hi there"},
         ]
 
-        with patch("agent.title_generator.auto_title_session") as mock_auto:
+        with patch("agent.title_generator._auto_title_enabled", return_value=True), \
+             patch("agent.title_generator.auto_title_session") as mock_auto:
             maybe_auto_title(db, "sess-1", "hello", "hi there", history)
             # Wait for the daemon thread to complete
             import time
@@ -206,8 +275,8 @@ class TestMaybeAutoTitle:
                 title_callback=None,
             )
 
-    def test_forwards_failure_callback_to_worker(self):
-        """maybe_auto_title must forward failure_callback into the thread."""
+    def test_failure_callback_is_not_forwarded_by_default(self):
+        """Auto-title failures are cosmetic and should stay log-only by default."""
         db = MagicMock()
         db.get_session_title.return_value = None
         history = [
@@ -218,7 +287,37 @@ class TestMaybeAutoTitle:
         def _cb(task, exc):
             pass
 
-        with patch("agent.title_generator.auto_title_session") as mock_auto:
+        with patch("agent.title_generator._auto_title_enabled", return_value=True), \
+             patch("agent.title_generator._auto_title_warn_on_failure", return_value=False), \
+             patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "sess-1", "hello", "hi there", history, failure_callback=_cb)
+            import time
+            time.sleep(0.3)
+            mock_auto.assert_called_once_with(
+                db,
+                "sess-1",
+                "hello",
+                "hi there",
+                failure_callback=None,
+                main_runtime=None,
+                title_callback=None,
+            )
+
+    def test_forwards_failure_callback_to_worker_when_warning_enabled(self):
+        """Users can opt in to user-facing auto-title failure warnings."""
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+
+        def _cb(task, exc):
+            pass
+
+        with patch("agent.title_generator._auto_title_enabled", return_value=True), \
+             patch("agent.title_generator._auto_title_warn_on_failure", return_value=True), \
+             patch("agent.title_generator.auto_title_session") as mock_auto:
             maybe_auto_title(db, "sess-1", "hello", "hi there", history, failure_callback=_cb)
             import time
             time.sleep(0.3)

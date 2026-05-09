@@ -105,6 +105,34 @@ class TestResolveToolset:
         tools = resolve_toolset("*")
         assert len(tools) > 10
 
+    def test_minimal_install_reuses_existing_toolset_definitions(self):
+        assert "hermes-minimal" not in TOOLSETS
+        assert "web-search" not in TOOLSETS
+
+        tools = resolve_multiple_toolsets([
+            "skills", "file", "terminal", "todo", "memory",
+            "session_search", "clarify", "web",
+        ])
+        assert set(tools) == {
+            "skills_list", "skill_view", "skill_manage",
+            "read_file", "write_file", "patch", "search_files",
+            "terminal", "process",
+            "todo", "memory", "session_search", "clarify",
+            "web_search", "web_extract",
+        }
+
+        excluded = {
+            "browser_navigate",
+            "text_to_speech",
+            "image_generate",
+            "vision_analyze",
+            "send_message",
+            "cronjob",
+            "delegate_task",
+            "execute_code",
+        }
+        assert excluded.isdisjoint(tools)
+
 
 class TestResolveMultipleToolsets:
     def test_combines_and_deduplicates(self):

@@ -397,7 +397,13 @@ DEFAULT_CONFIG = {
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
+    "install_option": "default",
+    # Legacy top-level toolsets value is kept for compatibility with callers
+    # that have not moved to platform_toolsets yet.
     "toolsets": ["hermes-cli"],
+    "platform_toolsets": {
+        "cli": ["hermes-cli"],
+    },
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).
@@ -787,6 +793,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 30,
+            "warn_on_failure": False,  # cosmetic auto-title failures stay log-only unless explicitly enabled
             "extra_body": {},
         },
         # Triage specifier — flesh out a rough one-liner in the Kanban
@@ -2917,7 +2924,8 @@ def check_config_version() -> Tuple[int, int]:
 # Fields that are valid at root level of config.yaml
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
-    "fallback_providers", "credential_pool_strategies", "toolsets",
+    "fallback_providers", "credential_pool_strategies", "install_option", "toolsets",
+    "platform_toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
     "sessions",
