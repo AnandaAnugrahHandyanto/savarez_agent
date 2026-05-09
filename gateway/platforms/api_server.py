@@ -1206,9 +1206,39 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=500,
                 )
 
-        final_response = result.get("final_response", "")
-        if not final_response:
-            final_response = result.get("error", "(No response generated)")
+        final_response = result.get("final_response", "") or ""
+        result_completed = result.get("completed", True)
+        result_partial = bool(result.get("partial"))
+        result_failed = bool(result.get("failed"))
+        result_error = result.get("error")
+
+        # An agent run that failed without producing any partial assistant
+        # output should not be flattened into a "successful" assistant
+        # message — clients can't distinguish that from a real answer.
+        # Surface as a structured OpenAI error so HTTP status carries the
+        # signal (#22496).
+        if result_failed and not final_response:
+            err_msg = str(result_error) if result_error else "Agent run failed without a final response"
+            err_headers = {
+                "X-Hermes-Session-Id": result.get("session_id", session_id),
+            }
+            if gateway_session_key:
+                err_headers["X-Hermes-Session-Key"] = gateway_session_key
+            return web.json_response(
+                _openai_error(err_msg, err_type="server_error", code="agent_failed"),
+                status=500,
+                headers=err_headers,
+            )
+
+        # Truncation / non-completed runs: keep the OpenAI shape but mark
+        # finish_reason=length and surface metadata via headers. Never
+        # overwrite the assistant content with an internal error string.
+        if result_partial or not result_completed:
+            finish_reason = "length"
+            content = final_response
+        else:
+            finish_reason = "stop"
+            content = final_response if final_response else "(No response generated)"
 
         response_data = {
             "id": completion_id,
@@ -1220,9 +1250,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     "index": 0,
                     "message": {
                         "role": "assistant",
-                        "content": final_response,
+                        "content": content,
                     },
-                    "finish_reason": "stop",
+                    "finish_reason": finish_reason,
                 }
             ],
             "usage": {
@@ -1237,6 +1267,12 @@ class APIServerAdapter(BasePlatformAdapter):
         }
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        if not result_completed:
+            response_headers["X-Hermes-Completed"] = "false"
+        if result_partial:
+            response_headers["X-Hermes-Partial"] = "true"
+        if result_error and (result_partial or not result_completed):
+            response_headers["X-Hermes-Error"] = str(result_error)[:500]
         return web.json_response(response_data, headers=response_headers)
 
     async def _write_sse_chat_completion(

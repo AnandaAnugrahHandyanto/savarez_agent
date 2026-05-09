@@ -1180,6 +1180,73 @@ class TestChatCompletionsEndpoint:
 
         assert session_ids[0] != session_ids[1]
 
+    @pytest.mark.asyncio
+    async def test_truncated_partial_run_uses_length_finish_reason(self, adapter):
+        """Truncated partial responses must NOT be flattened into a normal
+        successful assistant message — finish_reason must be ``length`` and
+        the internal error string must NOT replace assistant content (#22496).
+        """
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**_kwargs):
+                return (
+                    {
+                        "final_response": "Partial answer so far",
+                        "messages": [],
+                        "api_calls": 1,
+                        "completed": False,
+                        "partial": True,
+                        "error": "Response remained truncated after 3 continuation attempts",
+                    },
+                    {"input_tokens": 5, "output_tokens": 5, "total_tokens": 10},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"model": "test", "messages": [{"role": "user", "content": "hi"}]},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                choice = data["choices"][0]
+                assert choice["finish_reason"] == "length"
+                assert choice["message"]["content"] == "Partial answer so far"
+                assert "truncated" not in choice["message"]["content"].lower()
+                assert resp.headers.get("X-Hermes-Completed") == "false"
+                assert resp.headers.get("X-Hermes-Partial") == "true"
+                assert "truncated" in (resp.headers.get("X-Hermes-Error") or "").lower()
+
+    @pytest.mark.asyncio
+    async def test_failed_run_without_response_returns_500(self, adapter):
+        """A failed agent run with no partial output must surface as a 500
+        error, not a successful chat completion containing the error text
+        (#22496)."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**_kwargs):
+                return (
+                    {
+                        "final_response": None,
+                        "messages": [],
+                        "api_calls": 1,
+                        "completed": False,
+                        "failed": True,
+                        "error": "Operation interrupted: API error",
+                    },
+                    {"input_tokens": 5, "output_tokens": 0, "total_tokens": 5},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"model": "test", "messages": [{"role": "user", "content": "hi"}]},
+                )
+                assert resp.status == 500
+                data = await resp.json()
+                assert "error" in data
+                assert data["error"]["code"] == "agent_failed"
+                assert "interrupted" in data["error"]["message"].lower()
+
 
 # ---------------------------------------------------------------------------
 # _derive_chat_session_id unit tests
