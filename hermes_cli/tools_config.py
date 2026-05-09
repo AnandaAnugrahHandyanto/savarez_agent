@@ -301,6 +301,15 @@ TOOL_CATEGORIES = {
                 ],
             },
             {
+                "name": "Brave Search",
+                "badge": "free tier · search only",
+                "tag": "Privacy-first search with independent index — $5/mo free credit (≈1000 searches)",
+                "web_backend": "brave",
+                "env_vars": [
+                    {"key": "BRAVE_API_KEY", "prompt": "Brave Search API key", "url": "https://api-dashboard.search.brave.com"},
+                ],
+            },
+            {
                 "name": "SearXNG",
                 "badge": "free · self-hosted · search only",
                 "tag": "Privacy-respecting metasearch engine — search only (pair with any extract provider)",

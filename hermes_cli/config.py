@@ -1894,6 +1894,14 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "BRAVE_API_KEY": {
+        "description": "Brave Search API key for privacy-first web search — $5/mo free credit",
+        "prompt": "Brave Search API key",
+        "url": "https://api-dashboard.search.brave.com",
+        "tools": ["web_search"],
+        "password": True,
+        "category": "tool",
+    },
     "BROWSERBASE_API_KEY": {
         "description": "Browserbase API key for cloud browser (optional — local browser works without this)",
         "prompt": "Browserbase API key",
