@@ -29,6 +29,8 @@ from hermes_cli.auth import (
     MINIMAX_OAUTH_CN_BASE,
     MINIMAX_OAUTH_CN_INFERENCE,
     MINIMAX_OAUTH_REFRESH_SKEW_SECONDS,
+    _minimax_normalize_verification_uri,
+    _minimax_oauth_expires_in_seconds,
     _minimax_pkce_pair,
     _minimax_request_user_code,
     _minimax_poll_token,
@@ -70,6 +72,28 @@ def _past_iso(seconds_ago: int = 3600) -> str:
 # ---------------------------------------------------------------------------
 # 1. test_pkce_pair_produces_valid_s256
 # ---------------------------------------------------------------------------
+
+def test_minimax_oauth_verification_uri_uses_platform_host():
+    assert (
+        _minimax_normalize_verification_uri(
+            "https://www.minimax.io/user-center/basic-information/interface-key"
+        )
+        == "https://platform.minimax.io/user-center/basic-information/interface-key"
+    )
+
+
+def test_minimax_oauth_expired_in_accepts_unix_ms_timestamp():
+    now = 1_700_000_000.0
+    expires_ms = int((now + 3600) * 1000)
+
+    assert _minimax_oauth_expires_in_seconds(expires_ms, now=now) == 3600
+
+
+def test_minimax_oauth_expired_in_accepts_duration_seconds():
+    now = 1_700_000_000.0
+
+    assert _minimax_oauth_expires_in_seconds(7200, now=now) == 7200
+
 
 def test_pkce_pair_produces_valid_s256():
     verifier, challenge, state = _minimax_pkce_pair()
