@@ -546,11 +546,10 @@ class TestStripMdv2:
 
 
 class TestWrapMarkdownTables:
-    """_wrap_markdown_tables wraps GFM pipe tables in ``` fences so
-    Telegram renders them as monospace preformatted text instead of the
-    noisy backslash-pipe mess MarkdownV2 produces."""
+    """_wrap_markdown_tables rewrites GFM pipe tables into Telegram-friendly
+    row groups instead of leaving noisy pipe syntax in the final message."""
 
-    def test_basic_table_wrapped(self):
+    def test_basic_table_rewritten_as_row_groups(self):
         text = (
             "Scores:\n\n"
             "| Player | Score |\n"
@@ -560,20 +559,23 @@ class TestWrapMarkdownTables:
             "\nEnd."
         )
         out = _wrap_markdown_tables(text)
-        # Table is now wrapped in a fence
-        assert "```\n| Player | Score |" in out
-        assert "| Bob    | 120   |\n```" in out
+        assert "**Alice**" in out
+        assert "• Player: Alice" in out
+        assert "• Score: 150" in out
+        assert "**Bob**" in out
+        assert "• Score: 120" in out
         # Surrounding prose is preserved
         assert out.startswith("Scores:")
         assert out.endswith("End.")
 
-    def test_bare_pipe_table_wrapped(self):
+    def test_bare_pipe_table_rewritten(self):
         """Tables without outer pipes (GFM allows this) are still detected."""
         text = "head1 | head2\n--- | ---\na | b\nc | d"
         out = _wrap_markdown_tables(text)
-        assert out.startswith("```\n")
-        assert out.rstrip().endswith("```")
-        assert "head1 | head2" in out
+        assert out.startswith("**a**")
+        assert "• head1: a" in out
+        assert "• head2: b" in out
+        assert "**c**" in out
 
     def test_alignment_separators(self):
         """Separator rows with :--- / ---: / :---: alignment markers match."""
@@ -583,9 +585,11 @@ class TestWrapMarkdownTables:
             "| Ada  |  30 | NYC  |"
         )
         out = _wrap_markdown_tables(text)
-        assert out.count("```") == 2
+        assert "**Ada**" in out
+        assert "• Age: 30" in out
+        assert "• City: NYC" in out
 
-    def test_two_consecutive_tables_wrapped_separately(self):
+    def test_two_consecutive_tables_rewritten_separately(self):
         text = (
             "| A | B |\n"
             "|---|---|\n"
@@ -596,8 +600,10 @@ class TestWrapMarkdownTables:
             "| 9 | 8 |"
         )
         out = _wrap_markdown_tables(text)
-        # Four fences total — one opening + closing per table
-        assert out.count("```") == 4
+        assert out.count("**1**") == 1
+        assert out.count("**9**") == 1
+        assert "• A: 1" in out
+        assert "• X: 9" in out
 
     def test_plain_text_with_pipes_not_wrapped(self):
         """A bare pipe in prose must NOT trigger wrapping."""
@@ -637,11 +643,10 @@ class TestWrapMarkdownTables:
 
 
 class TestFormatMessageTables:
-    """End-to-end: a pipe table passes through format_message with its
-    pipes and dashes left alone inside the fence, not mangled by MarkdownV2
-    escaping."""
+    """End-to-end: pipe tables become readable Telegram-native text instead
+    of escaped pipe syntax or fenced code blocks."""
 
-    def test_table_rendered_as_code_block(self, adapter):
+    def test_table_rendered_as_bullets(self, adapter):
         text = (
             "Data:\n\n"
             "| Col1 | Col2 |\n"
@@ -649,11 +654,11 @@ class TestFormatMessageTables:
             "| A    | B    |\n"
         )
         out = adapter.format_message(text)
-        # Pipes inside the fenced block are NOT escaped
-        assert "```\n| Col1 | Col2 |" in out
-        assert "\\|" not in out.split("```")[1]
-        # Dashes in separator not escaped inside fence
-        assert "\\-" not in out.split("```")[1]
+        assert "*A*" in out
+        assert "• Col1: A" in out
+        assert "• Col2: B" in out
+        assert "```" not in out
+        assert "\\|" not in out
 
     def test_text_after_table_still_formatted(self, adapter):
         text = (
@@ -668,6 +673,8 @@ class TestFormatMessageTables:
         assert "*work*" in out
         # Exclamation outside fence is escaped
         assert "\\!" in out
+        assert "*1*" in out
+        assert "• A: 1" in out
 
     def test_multiple_tables_in_single_message(self, adapter):
         text = (
@@ -682,8 +689,9 @@ class TestFormatMessageTables:
             "| 9 | 8 |\n"
         )
         out = adapter.format_message(text)
-        # Two separate fenced blocks in the output
-        assert out.count("```") == 4
+        assert out.count("*1*") == 1
+        assert out.count("*9*") == 1
+        assert "• X: 9" in out
 
 
 @pytest.mark.asyncio
@@ -708,3 +716,44 @@ async def test_send_escapes_chunk_indicator_for_markdownv2(adapter):
     assert len(sent_texts) > 1
     assert re.search(r" \\\([0-9]+/[0-9]+\\\)$", sent_texts[0])
     assert re.search(r" \\\([0-9]+/[0-9]+\\\)$", sent_texts[-1])
+
+
+# =========================================================================
+# edit_message — streaming Markdown safety
+# =========================================================================
+
+
+class TestEditMessageStreamingSafety:
+    @pytest.mark.asyncio
+    async def test_non_final_edit_uses_plain_text_without_markdown(self):
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock()
+
+        result = await adapter.edit_message("123", "456", "partial **bold", finalize=False)
+
+        assert result.success is True
+        adapter._bot.edit_message_text.assert_awaited_once_with(
+            chat_id=123,
+            message_id=456,
+            text="partial **bold",
+        )
+
+    @pytest.mark.asyncio
+    async def test_final_edit_uses_markdownv2_with_plain_fallback(self):
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock(side_effect=[Exception("bad markdown"), None])
+
+        result = await adapter.edit_message("123", "456", "final **bold**", finalize=True)
+
+        assert result.success is True
+        first_call = adapter._bot.edit_message_text.await_args_list[0].kwargs
+        second_call = adapter._bot.edit_message_text.await_args_list[1].kwargs
+        assert "parse_mode" in first_call
+        assert first_call["text"] == "final *bold*"
+        assert second_call == {
+            "chat_id": 123,
+            "message_id": 456,
+            "text": "final **bold**",
+        }
