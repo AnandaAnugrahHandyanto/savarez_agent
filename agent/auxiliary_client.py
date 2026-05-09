@@ -36,8 +36,9 @@ Default "auto" follows the chains above.
 Payment / credit exhaustion fallback:
   When a resolved provider returns HTTP 402 or a credit-related error,
   call_llm() automatically retries with the next available provider in the
-  auto-detection chain.  This handles the common case where a user depletes
-  their OpenRouter balance but has Codex OAuth or another provider available.
+  auto-detection chain.  When the failed auxiliary route is already
+  openai-codex, call_llm() first rotates to the next pooled Codex OAuth
+  credential and retries the same model before trying a different provider.
 """
 
 import json
@@ -1842,6 +1843,290 @@ def _is_auth_error(exc: Exception) -> bool:
         return True
     err_lower = str(exc).lower()
     return "error code: 401" in err_lower or "authenticationerror" in type(exc).__name__.lower()
+
+
+def _extract_auxiliary_error_context(error: Exception) -> Dict[str, Any]:
+    """Extract structured quota/rate-limit details from an auxiliary error.
+
+    Mirrors the main agent's API-error context extraction, but keeps the helper
+    local to this module to avoid importing run_agent.py from the auxiliary
+    client.  The credential pool stores these details so exhausted Codex OAuth
+    entries stay paused until the provider's reset timestamp instead of being
+    retried on every compression attempt.
+    """
+    context: Dict[str, Any] = {}
+    body = getattr(error, "body", None)
+    payload: Any = None
+    if isinstance(body, dict):
+        nested = body.get("error")
+        payload = nested if isinstance(nested, dict) else body
+    if isinstance(payload, dict):
+        reason = payload.get("code") or payload.get("type") or payload.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            context["reason"] = reason.strip()
+        message = payload.get("message") or payload.get("error_description")
+        if isinstance(message, str) and message.strip():
+            context["message"] = message.strip()
+        for key in ("resets_at", "reset_at", "retry_until"):
+            value = payload.get(key)
+            if value not in (None, ""):
+                context["reset_at"] = value
+                break
+        if "reset_at" not in context:
+            resets_in = payload.get("resets_in_seconds")
+            try:
+                if resets_in is not None:
+                    context["retry_until"] = time.time() + float(resets_in)
+            except (TypeError, ValueError):
+                pass
+
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", None) or {}
+    if headers:
+        retry_after = None
+        try:
+            retry_after = headers.get("retry-after") or headers.get("Retry-After")
+        except Exception:
+            retry_after = None
+        if retry_after and "reset_at" not in context and "retry_until" not in context:
+            try:
+                context["retry_until"] = time.time() + float(retry_after)
+            except (TypeError, ValueError):
+                pass
+    return context
+
+
+def _codex_auxiliary_route_matches(
+    resolved_provider: Optional[str],
+    final_model: Optional[str],
+    main_runtime: Optional[Dict[str, Any]] = None,
+    client_base_url: Optional[str] = None,
+) -> bool:
+    """Return True when the failed auxiliary call was routed through Codex.
+
+    ``auxiliary.<task>.provider: auto`` can still resolve to the user's main
+    openai-codex model.  In that case we only treat it as Codex when the actual
+    client base URL is the ChatGPT Codex backend, avoiding accidental rotation
+    of Codex credentials for an auto fallback that really failed on OpenRouter
+    or another provider.
+    """
+    if not final_model:
+        return False
+    provider = _normalize_aux_provider(resolved_provider)
+    if provider == "openai-codex":
+        return True
+    if provider != "auto":
+        return False
+    base = str(client_base_url or "")
+    if base_url_host_matches(base, "chatgpt.com") and "/backend-api/codex" in base:
+        return True
+    runtime = _normalize_main_runtime(main_runtime)
+    main_provider = runtime.get("provider") or _read_main_provider()
+    if _normalize_aux_provider(main_provider) != "openai-codex":
+        return False
+    # Without a Codex-looking base URL, auto may have fallen through to a
+    # different provider because Codex credentials were unavailable.
+    return False
+
+
+def _codex_pool_retry_status(exc: Exception) -> Optional[int]:
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status
+    if _is_rate_limit_error(exc):
+        return 429
+    if _is_payment_error(exc):
+        return 402
+    return None
+
+
+def _is_codex_pool_retryable_error(exc: Exception) -> bool:
+    """True for quota/rate-limit errors where another Codex auth can recover."""
+    return _is_payment_error(exc) or _is_rate_limit_error(exc)
+
+
+def _codex_pool_rotation_attempts(pool: Any) -> int:
+    try:
+        entries = pool.entries()
+        if entries is not None:
+            return max(0, len(entries) - 1)
+    except Exception:
+        pass
+    return 1
+
+
+def _try_codex_pool_rotation_sync(
+    *,
+    first_error: Exception,
+    task: str = None,
+    resolved_provider: str,
+    final_model: Optional[str],
+    messages: list,
+    temperature: float = None,
+    max_tokens: int = None,
+    tools: list = None,
+    timeout: float = None,
+    extra_body: dict = None,
+    resolved_base_url: str = None,
+    resolved_api_key: str = None,
+    resolved_api_mode: str = None,
+    main_runtime: Optional[Dict[str, Any]] = None,
+    client_base_url: str = None,
+) -> Optional[Any]:
+    """Retry a failed Codex auxiliary call on the next pooled auth.
+
+    This is same-provider/same-model recovery, not model fallback.  It fixes
+    compression failures where auth #1 hits ChatGPT/Codex usage_limit_reached
+    while auth #2 still has quota for the same GPT model.
+    """
+    if not _codex_auxiliary_route_matches(resolved_provider, final_model, main_runtime, client_base_url):
+        return None
+    if not _is_codex_pool_retryable_error(first_error):
+        return None
+    try:
+        pool = load_pool("openai-codex")
+    except Exception as exc:
+        logger.debug("Auxiliary %s: could not load Codex credential pool for retry: %s", task or "call", exc)
+        return None
+    if not pool or not getattr(pool, "has_credentials", lambda: False)():
+        return None
+
+    attempts = _codex_pool_rotation_attempts(pool)
+    if attempts <= 0:
+        return None
+
+    last_error = first_error
+    for _ in range(attempts):
+        status_code = _codex_pool_retry_status(last_error)
+        next_entry = pool.mark_exhausted_and_rotate(
+            status_code=status_code,
+            error_context=_extract_auxiliary_error_context(last_error),
+        )
+        if next_entry is None:
+            break
+        logger.info(
+            "Auxiliary %s: Codex %s on pooled auth — retrying same model %s with pool entry %s",
+            task or "call",
+            status_code or "quota/rate-limit error",
+            final_model,
+            getattr(next_entry, "id", "?"),
+        )
+        _evict_cached_clients("openai-codex")
+        retry_client, retry_model = _get_cached_client(
+            "openai-codex",
+            final_model,
+            base_url=resolved_base_url,
+            api_key=resolved_api_key,
+            api_mode=resolved_api_mode,
+            main_runtime=main_runtime,
+        )
+        if retry_client is None:
+            break
+        retry_kwargs = _build_call_kwargs(
+            "openai-codex",
+            retry_model or final_model,
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tools=tools,
+            timeout=timeout,
+            extra_body=extra_body,
+            base_url=str(getattr(retry_client, "base_url", "") or resolved_base_url or ""),
+        )
+        try:
+            return _validate_llm_response(
+                retry_client.chat.completions.create(**retry_kwargs), task)
+        except Exception as retry_error:
+            if not _is_codex_pool_retryable_error(retry_error):
+                raise
+            last_error = retry_error
+    if last_error is not first_error:
+        raise last_error
+    return None
+
+
+async def _try_codex_pool_rotation_async(
+    *,
+    first_error: Exception,
+    task: str = None,
+    resolved_provider: str,
+    final_model: Optional[str],
+    messages: list,
+    temperature: float = None,
+    max_tokens: int = None,
+    tools: list = None,
+    timeout: float = None,
+    extra_body: dict = None,
+    resolved_base_url: str = None,
+    resolved_api_key: str = None,
+    resolved_api_mode: str = None,
+    client_base_url: str = None,
+) -> Optional[Any]:
+    """Async variant of same-model Codex credential-pool retry."""
+    if not _codex_auxiliary_route_matches(resolved_provider, final_model, None, client_base_url):
+        return None
+    if not _is_codex_pool_retryable_error(first_error):
+        return None
+    try:
+        pool = load_pool("openai-codex")
+    except Exception as exc:
+        logger.debug("Auxiliary %s (async): could not load Codex credential pool for retry: %s", task or "call", exc)
+        return None
+    if not pool or not getattr(pool, "has_credentials", lambda: False)():
+        return None
+
+    attempts = _codex_pool_rotation_attempts(pool)
+    if attempts <= 0:
+        return None
+
+    last_error = first_error
+    for _ in range(attempts):
+        status_code = _codex_pool_retry_status(last_error)
+        next_entry = pool.mark_exhausted_and_rotate(
+            status_code=status_code,
+            error_context=_extract_auxiliary_error_context(last_error),
+        )
+        if next_entry is None:
+            break
+        logger.info(
+            "Auxiliary %s (async): Codex %s on pooled auth — retrying same model %s with pool entry %s",
+            task or "call",
+            status_code or "quota/rate-limit error",
+            final_model,
+            getattr(next_entry, "id", "?"),
+        )
+        _evict_cached_clients("openai-codex")
+        retry_client, retry_model = _get_cached_client(
+            "openai-codex",
+            final_model,
+            async_mode=True,
+            base_url=resolved_base_url,
+            api_key=resolved_api_key,
+            api_mode=resolved_api_mode,
+        )
+        if retry_client is None:
+            break
+        retry_kwargs = _build_call_kwargs(
+            "openai-codex",
+            retry_model or final_model,
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tools=tools,
+            timeout=timeout,
+            extra_body=extra_body,
+            base_url=str(getattr(retry_client, "base_url", "") or resolved_base_url or ""),
+        )
+        try:
+            return _validate_llm_response(
+                await retry_client.chat.completions.create(**retry_kwargs), task)
+        except Exception as retry_error:
+            if not _is_codex_pool_retryable_error(retry_error):
+                raise
+            last_error = retry_error
+    if last_error is not first_error:
+        raise last_error
+    return None
 
 
 def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
@@ -3788,6 +4073,31 @@ def call_llm(
                     raise
                 first_err = retry_err
 
+        # ── Same-provider Codex pool rotation ────────────────────────
+        # If the auxiliary call is already on openai-codex (explicitly, or
+        # via auto resolving to the user's main Codex model), try the next
+        # pooled Codex OAuth credential before falling back to a different
+        # provider/model or dropping compression context.
+        codex_retry_response = _try_codex_pool_rotation_sync(
+            first_error=first_err,
+            task=task,
+            resolved_provider=resolved_provider,
+            final_model=final_model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tools=tools,
+            timeout=effective_timeout,
+            extra_body=effective_extra_body,
+            resolved_base_url=resolved_base_url,
+            resolved_api_key=resolved_api_key,
+            resolved_api_mode=resolved_api_mode,
+            main_runtime=main_runtime,
+            client_base_url=_base_info,
+        )
+        if codex_retry_response is not None:
+            return codex_retry_response
+
         # ── Nous auth refresh parity with main agent ──────────────────
         client_is_nous = (
             resolved_provider == "nous"
@@ -4103,6 +4413,25 @@ async def async_call_llm(
                 if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err)):
                     raise
                 first_err = retry_err
+
+        codex_retry_response = await _try_codex_pool_rotation_async(
+            first_error=first_err,
+            task=task,
+            resolved_provider=resolved_provider,
+            final_model=final_model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tools=tools,
+            timeout=effective_timeout,
+            extra_body=effective_extra_body,
+            resolved_base_url=resolved_base_url,
+            resolved_api_key=resolved_api_key,
+            resolved_api_mode=resolved_api_mode,
+            client_base_url=_client_base,
+        )
+        if codex_retry_response is not None:
+            return codex_retry_response
 
         # ── Nous auth refresh parity with main agent ──────────────────
         client_is_nous = (

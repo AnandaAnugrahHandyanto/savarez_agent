@@ -302,6 +302,68 @@ class TestBuildCodexClient:
         assert model is None
 
 
+class TestCodexAuxiliaryPoolRotation:
+    def test_explicit_codex_call_rotates_to_second_auth_and_keeps_model(self):
+        class UsageLimitError(Exception):
+            status_code = 429
+            body = {
+                "error": {
+                    "type": "usage_limit_reached",
+                    "message": "The usage limit has been reached",
+                    "resets_at": 1778553472,
+                }
+            }
+            response = SimpleNamespace(headers={})
+
+            def __str__(self):
+                return "Error code: 429 - {'error': {'type': 'usage_limit_reached'}}"
+
+        first_client = MagicMock()
+        second_client = MagicMock()
+        expected = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="summary ok"))]
+        )
+        first_client.chat.completions.create.side_effect = UsageLimitError()
+        second_client.chat.completions.create.return_value = expected
+
+        class _Pool:
+            def __init__(self):
+                self.rotations = []
+
+            def has_credentials(self):
+                return True
+
+            def entries(self):
+                return [SimpleNamespace(id="first"), SimpleNamespace(id="second")]
+
+            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+                self.rotations.append((status_code, error_context or {}))
+                return SimpleNamespace(id="second", runtime_api_key="token-2", runtime_base_url="https://chatgpt.com/backend-api/codex")
+
+        pool = _Pool()
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.5", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[(first_client, "gpt-5.5"), (second_client, "gpt-5.5")]),
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch("agent.auxiliary_client._evict_cached_clients") as mock_evict,
+        ):
+            response = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        assert response is expected
+        assert pool.rotations == [(429, {
+            "reason": "usage_limit_reached",
+            "message": "The usage limit has been reached",
+            "reset_at": 1778553472,
+        })]
+        mock_evict.assert_called_once_with("openai-codex")
+        assert first_client.chat.completions.create.call_args.kwargs["model"] == "gpt-5.5"
+        assert second_client.chat.completions.create.call_args.kwargs["model"] == "gpt-5.5"
+
+
 class TestExpiredCodexFallback:
     """Test that expired Codex tokens don't block the auto chain."""
 
