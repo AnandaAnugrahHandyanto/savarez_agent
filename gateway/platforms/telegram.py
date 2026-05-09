@@ -2344,15 +2344,25 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _save_active_quick_action(self, token: str, payload: Dict[str, Any]) -> None:
         """Persist a Quick Action payload so callbacks survive restart."""
+        from datetime import datetime, timezone
+
         path = self._quick_actions_path()
         try:
             data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
         except Exception:
             data = {}
-        data[str(token)] = dict(payload)
+        stored_payload = dict(payload)
+        stored_payload.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+        data[str(token)] = stored_payload
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(path)
+        try:
+            from hermes_cli.quick_actions import prune_active_actions
+
+            prune_active_actions(older_than_days=14, drop_undated=False, home=path.parent.parent)
+        except Exception:
+            logger.debug("[%s] Failed to prune stale Quick Actions", self.name, exc_info=True)
 
     def _load_active_quick_action(self, token: str) -> Optional[Dict[str, Any]]:
         """Load an active Quick Action payload from memory or disk."""

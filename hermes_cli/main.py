@@ -9103,6 +9103,17 @@ def cmd_completion(args, parser=None):
         print(generate_bash(parser))
 
 
+def cmd_quick_actions(args):
+    """Review Telegram Quick Action routing candidates."""
+    from hermes_cli.quick_actions import cli_main
+
+    argv = []
+    if getattr(args, "qa_action", None):
+        argv.append(args.qa_action)
+    argv.extend(getattr(args, "qa_args", []) or [])
+    sys.exit(cli_main(argv))
+
+
 def cmd_logs(args):
     """View and filter Hermes log files."""
     from hermes_cli.logs import tail_log, list_logs
@@ -9658,6 +9669,19 @@ def main():
         help="Provider to log out from (default: active provider)",
     )
     logout_parser.set_defaults(func=cmd_logout)
+
+    # =========================================================================
+    # qa / quick-actions command
+    # =========================================================================
+    qa_parser = subparsers.add_parser(
+        "qa",
+        aliases=["quick-actions"],
+        help="Review Telegram Quick Action routing candidates",
+        description="List, promote, discard, and prune Telegram Quick Action routing candidates",
+    )
+    qa_parser.add_argument("qa_action", nargs="?", help="list/show/promote/discard/prune-active")
+    qa_parser.add_argument("qa_args", nargs=argparse.REMAINDER)
+    qa_parser.set_defaults(func=cmd_quick_actions)
 
     auth_parser = subparsers.add_parser(
         "auth",
