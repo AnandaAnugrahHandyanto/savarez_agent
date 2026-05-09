@@ -104,6 +104,50 @@ def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
     assert result.api_key == "no-key-required"
 
 
+def test_switch_model_refreshes_custom_runtime_when_provider_unchanged(monkeypatch):
+    """In-provider switches for named custom providers should use fresh runtime credentials.
+
+    ``resolve_runtime_provider`` intentionally returns provider="custom" for
+    named custom providers.  A same-provider /model switch must still consume
+    its resolved api_key/base_url instead of preserving stale session values.
+    """
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "provider": "custom",
+            "api_key": "fresh-custom-key",
+            "base_url": "https://fresh.example/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="fresh-model",
+        current_provider="custom:my-provider",
+        current_model="old-model",
+        current_base_url="https://stale.example/v1",
+        current_api_key="stale-custom-key",
+        explicit_provider="",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "My Provider",
+                "base_url": "https://fresh.example/v1",
+                "model": "fresh-model",
+            }
+        ],
+    )
+
+    assert result.success is True
+    assert result.provider_changed is False
+    assert result.api_key == "fresh-custom-key"
+    assert result.base_url == "https://fresh.example/v1"
+    assert result.api_mode == "chat_completions"
+
+
 def test_list_groups_same_name_custom_providers_into_one_row(monkeypatch):
     """Multiple custom_providers entries sharing a name should produce one row
     with all models collected, not N duplicate rows."""

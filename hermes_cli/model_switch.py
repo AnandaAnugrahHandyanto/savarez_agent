@@ -885,14 +885,14 @@ def switch_model(
                 requested=current_provider,
                 target_model=new_model,
             )
-            # If resolution fell through to "custom" (e.g. named custom provider like
-            # "ollama-launch" that resolve_runtime_provider doesn't know), keep existing
-            # credentials. Otherwise use the resolved values (picks up credential rotation,
-            # base_url adjustments for OpenCode, etc.).
-            if runtime.get("provider") != "custom":
-                api_key = runtime.get("api_key", "")
-                base_url = runtime.get("base_url", "")
-                api_mode = runtime.get("api_mode", "")
+            # Same-provider switches still need fresh runtime credentials:
+            # credential pools may rotate, provider-specific base URLs/api modes
+            # may be model-dependent, and named custom providers resolve to the
+            # generic runtime label "custom" while still carrying the correct
+            # base_url/api_key for the selected provider.
+            api_key = runtime.get("api_key", "")
+            base_url = runtime.get("base_url", "")
+            api_mode = runtime.get("api_mode", "")
         except Exception:
             pass
 
