@@ -80,6 +80,7 @@ export interface Translations {
       sessions: string;
       skills: string;
       kanban: string;
+      achievements: string;
     };
     modelToolsSheetSubtitle: string;
     modelToolsSheetTitle: string;
