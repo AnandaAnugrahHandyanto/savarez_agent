@@ -155,7 +155,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  const channel = useMemo(() => {
+    void resumeParam;
+    return generateChannelId();
+  }, [resumeParam]);
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -333,7 +336,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           // original keydown event's activation. Log to aid debugging.
           console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
         });
-      } catch (e) {
+      } catch {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
       }
       return true;
