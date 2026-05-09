@@ -850,6 +850,14 @@ delegation:
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  
+  # Subagent resource limits (prevent context explosion and runaway loops)
+  # max_context_tokens: 100000                # Hard limit on context window size (default: 100000)
+                                              # Subagent is interrupted if context exceeds this threshold
+  # context_growth_ratio: 2.5                 # Max allowed context growth ratio (default: 2.5)
+                                              # If output_tokens / input_tokens > ratio, subagent is flagged
+  # timeout_seconds: 120                      # Wall-clock timeout per subagent (default: 120s)
+                                              # Prevents infinite loops and stuck subagents
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)
