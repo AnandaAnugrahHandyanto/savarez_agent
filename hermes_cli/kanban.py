@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_policy as kp
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +188,17 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         ),
     )
     sub = kanban_parser.add_subparsers(dest="kanban_action")
+
+    # --- policy ---
+    p_policy = sub.add_parser(
+        "policy",
+        help="Inspect or validate the active board's project/workspace policy",
+    )
+    policy_sub = p_policy.add_subparsers(dest="policy_action")
+    p_policy_show = policy_sub.add_parser("show", help="Show the effective board policy")
+    p_policy_show.add_argument("--json", action="store_true")
+    p_policy_validate = policy_sub.add_parser("validate", help="Validate the configured board policy")
+    p_policy_validate.add_argument("--json", action="store_true")
 
     # --- init ---
     sub.add_parser("init", help="Create kanban.db if missing (idempotent)")
@@ -691,6 +703,8 @@ def kanban_command(args: argparse.Namespace) -> int:
     # `hermes kanban boards create …`.
     if action == "boards":
         return _dispatch_boards(args)
+    if action == "policy":
+        return _cmd_policy(args)
 
     # Auto-initialize the DB before dispatching any subcommand. init_db
     # is idempotent, so running it every invocation is cheap (one
@@ -769,6 +783,38 @@ def _profile_author() -> str:
         return get_active_profile_name() or "user"
     except Exception:
         return "user"
+
+
+# ---------------------------------------------------------------------------
+# Board policy (hermes kanban policy …)
+# ---------------------------------------------------------------------------
+
+def _cmd_policy(args: argparse.Namespace) -> int:
+    action = getattr(args, "policy_action", None) or "show"
+    board = kb.get_current_board()
+    report = kp.policy_report(board)
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print(f"Board:      {report['board']}")
+        print(f"Configured: {str(report['configured']).lower()}")
+        print(f"Path:       {report['path']}")
+        errors = report.get("errors") or []
+        if errors:
+            print("Errors:")
+            for error in errors:
+                print(f"  - {error}")
+        else:
+            print("Errors:     none")
+        print("Policy:")
+        for key, value in report["policy"].items():
+            print(f"  {key}: {value}")
+    if action == "validate" and report.get("errors"):
+        return 1
+    if action not in {"show", "validate"}:
+        print(f"kanban policy: unknown action {action!r}", file=sys.stderr)
+        return 2
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -1318,7 +1364,8 @@ def _cmd_validate(args: argparse.Namespace) -> int:
             )
         runs_by_task = {t.id: kb.list_runs(conn, t.id) for t in tasks}
 
-    findings = kv.validate_tasks(tasks, runs_by_task)
+    policy = kp.load_policy(kb.get_current_board())
+    findings = kv.validate_tasks(tasks, runs_by_task, policy=policy)
     summary = kv.summarize_findings(findings)
     if getattr(args, "json", False):
         print(json.dumps({
@@ -1622,7 +1669,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                             self.summary = summary
                             self.metadata = metadata
                     pending = _PendingRun(summary if summary is not None else args.result, metadata)
-                    findings = kv.validate_tasks([task], {ids[0]: [pending]})
+                    findings = kv.validate_tasks([task], {ids[0]: [pending]}, policy=kp.load_policy(kb.get_current_board()))
                     completion_findings = [f for f in findings if f.severity == "error"]
                     if completion_findings:
                         print(
@@ -1700,7 +1747,7 @@ def _cmd_block(args: argparse.Namespace) -> int:
                             self.summary = summary
                             self.metadata = metadata
                     pending = _PendingRun(summary if summary is not None else args.result, metadata)
-                    findings = kv.validate_tasks([task], {ids[0]: [pending]})
+                    findings = kv.validate_tasks([task], {ids[0]: [pending]}, policy=kp.load_policy(kb.get_current_board()))
                     completion_findings = [f for f in findings if f.severity == "error"]
                     if completion_findings:
                         print(
@@ -1752,7 +1799,7 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
                             self.summary = summary
                             self.metadata = metadata
                     pending = _PendingRun(summary if summary is not None else args.result, metadata)
-                    findings = kv.validate_tasks([task], {ids[0]: [pending]})
+                    findings = kv.validate_tasks([task], {ids[0]: [pending]}, policy=kp.load_policy(kb.get_current_board()))
                     completion_findings = [f for f in findings if f.severity == "error"]
                     if completion_findings:
                         print(
@@ -1797,7 +1844,7 @@ def _cmd_archive(args: argparse.Namespace) -> int:
                             self.summary = summary
                             self.metadata = metadata
                     pending = _PendingRun(summary if summary is not None else args.result, metadata)
-                    findings = kv.validate_tasks([task], {ids[0]: [pending]})
+                    findings = kv.validate_tasks([task], {ids[0]: [pending]}, policy=kp.load_policy(kb.get_current_board()))
                     completion_findings = [f for f in findings if f.severity == "error"]
                     if completion_findings:
                         print(

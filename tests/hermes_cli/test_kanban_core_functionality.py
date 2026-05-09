@@ -2484,6 +2484,43 @@ def test_resolve_workspace_rejects_relative_worktree_path(kanban_home):
         conn.close()
 
 
+def test_resolve_workspace_uses_policy_worktree_root(kanban_home, tmp_path):
+    policies = kanban_home / "kanban" / "policies"
+    policies.mkdir(parents=True)
+    project = tmp_path / "Project"
+    (policies / "default.json").write_text(json.dumps({
+        "project_root": str(project),
+        "worktree_root": str(project / ".worktrees"),
+    }))
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="wt", assignee="worker", workspace_kind="worktree")
+        resolved = kb.resolve_workspace(kb.get_task(conn, tid))
+        assert resolved == (project / ".worktrees" / tid).resolve(strict=False)
+    finally:
+        conn.close()
+
+
+def test_build_worker_context_includes_board_policy_guidance(kanban_home, tmp_path):
+    policies = kanban_home / "kanban" / "policies"
+    policies.mkdir(parents=True)
+    project = tmp_path / "Project"
+    (policies / "default.json").write_text(json.dumps({
+        "project_root": str(project),
+        "worktree_root": str(project / ".worktrees"),
+        "max_active_issue_pipelines": 1,
+    }))
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="wt", assignee="worker", workspace_kind="worktree")
+        ctx = kb.build_worker_context(conn, tid)
+        assert "## Board policy" in ctx
+        assert str(project.resolve(strict=False)) in ctx
+        assert "Max active issue pipelines: 1" in ctx
+    finally:
+        conn.close()
+
+
 def test_build_worker_context_caps_prior_attempts(kanban_home):
     """When a task has more than _CTX_MAX_PRIOR_ATTEMPTS runs, only
     the most recent N are shown in full; earlier attempts are summarised

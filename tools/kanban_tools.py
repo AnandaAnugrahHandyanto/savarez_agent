@@ -31,6 +31,7 @@ import os
 import re
 from typing import Any, Optional
 
+from hermes_cli import kanban_policy as kp
 from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
@@ -265,7 +266,7 @@ def _handle_complete(args: dict, **kw) -> str:
                         pending = _PendingRun(summary if summary is not None else result, metadata)
                         validation_warnings = [
                             f.to_dict()
-                            for f in kv.validate_tasks([task], {tid: [pending]})
+                            for f in kv.validate_tasks([task], {tid: [pending]}, policy=kp.load_policy(kb.get_current_board()))
                             if f.severity == "error"
                         ]
                 except Exception:

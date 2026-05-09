@@ -11,8 +11,9 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, asdict
-from pathlib import Path
 from typing import Any, Iterable, Optional
+
+from hermes_cli.kanban_policy import BoardPolicy, WorkspacePolicyFinding, validate_workspace
 
 
 _IMPLEMENTER_PROFILES = {
@@ -39,17 +40,6 @@ _USER_VISIBLE_RE = re.compile(
     r"\b(ui|ux|frontend|browser|page|screen|route|modal|form|button|user-visible|live-app|playwright|e2e|screenshot)\b",
     re.IGNORECASE,
 )
-
-# Project-specific safety policy until Kanban has first-class board workspace
-# policy metadata. This intentionally starts narrow: it hard-gates the
-# TrainingBuddy incident class without changing unrelated boards/workloads.
-_PROJECT_WORKTREE_POLICIES = {
-    "trainingbuddy": {
-        "project_root": Path("/home/it/Projects/TrainingBuddy"),
-        "worktrees_root": Path("/home/it/Projects/TrainingBuddy/.worktrees"),
-    }
-}
-
 
 @dataclass
 class ValidationFinding:
@@ -199,7 +189,25 @@ def _validate_contract_task(task: Any) -> list[ValidationFinding]:
     return findings
 
 
-def _validate_ready_task(task: Any) -> list[ValidationFinding]:
+def _ready_repo_touching(task: Any) -> bool:
+    assignee = (getattr(task, "assignee", None) or "").strip()
+    workspace_kind = getattr(task, "workspace_kind", None)
+    if workspace_kind == "worktree":
+        return True
+    return assignee in (_REPO_TOUCHING_PROFILES | _GATE_PROFILES)
+
+
+def _policy_to_validation(task: Any, finding: WorkspacePolicyFinding) -> ValidationFinding:
+    return ValidationFinding(
+        getattr(task, "id"),
+        finding.severity,
+        finding.code,
+        finding.message,
+        finding.detail,
+    )
+
+
+def _validate_ready_task(task: Any, *, policy: BoardPolicy | None = None) -> list[ValidationFinding]:
     findings: list[ValidationFinding] = []
     assignee = (getattr(task, "assignee", None) or "").strip()
     status = getattr(task, "status", None)
@@ -224,55 +232,14 @@ def _validate_ready_task(task: Any) -> list[ValidationFinding]:
             "Review/QA/security/release cards should list validation_assertions_to_verify or otherwise cite parent VC-* IDs.",
         ))
 
-    workspace_kind = getattr(task, "workspace_kind", None) or ""
-    workspace_path = getattr(task, "workspace_path", None) or ""
-    title_body = f"{getattr(task, 'title', '')}\n{body}".lower()
-    looks_trainingbuddy = (
-        "trainingbuddy" in title_body
-        or "github issue #" in title_body
-        or "pr #" in title_body
-        or "issue #" in title_body
-    )
-    # The TrainingBuddy board is a single-repo board. Repo-touching cards must
-    # not resolve to the board scratch workspace or the shared project root;
-    # otherwise workers can edit stale code, hide installs under ~/.hermes, and
-    # leave 700MB+ node_modules trees outside release-manager cleanup.
-    if looks_trainingbuddy and (workspace_kind == "worktree" or assignee in _REPO_TOUCHING_PROFILES | _GATE_PROFILES):
-        policy = _PROJECT_WORKTREE_POLICIES["trainingbuddy"]
-        project_root = policy["project_root"]
-        worktrees_root = policy["worktrees_root"]
-        if workspace_kind == "worktree":
-            if not workspace_path:
-                findings.append(ValidationFinding(
-                    getattr(task, "id"),
-                    "error",
-                    "missing_explicit_project_worktree",
-                    "TrainingBuddy worktree card lacks explicit project-local workspace_path",
-                    f"Use an absolute path under {worktrees_root}; do not rely on dispatcher CWD defaults.",
-                ))
-            else:
-                try:
-                    resolved = Path(workspace_path).expanduser().resolve(strict=False)
-                except Exception:
-                    resolved = Path(workspace_path).expanduser()
-                if resolved == project_root:
-                    findings.append(ValidationFinding(
-                        getattr(task, "id"),
-                        "error",
-                        "shared_project_root_workspace",
-                        "TrainingBuddy repo-editing card targets the shared project root",
-                        f"Use a task-specific worktree under {worktrees_root}; shared project root is read-only inspection space.",
-                    ))
-                try:
-                    resolved.relative_to(worktrees_root)
-                except ValueError:
-                    findings.append(ValidationFinding(
-                        getattr(task, "id"),
-                        "error",
-                        "worktree_outside_project_root",
-                        "TrainingBuddy worktree is outside the project .worktrees directory",
-                        f"workspace_path={workspace_path!r}; allowed root is {worktrees_root}.",
-                    ))
+    if policy is not None:
+        for finding in validate_workspace(
+            policy,
+            workspace_kind=getattr(task, "workspace_kind", None),
+            workspace_path=getattr(task, "workspace_path", None),
+            repo_touching=_ready_repo_touching(task),
+        ):
+            findings.append(_policy_to_validation(task, finding))
     return findings
 
 
@@ -366,19 +333,24 @@ def _validate_completion_handoff(task: Any, latest_run: Any) -> list[ValidationF
     return findings
 
 
-def validate_tasks(tasks: Iterable[Any], runs_by_task: Optional[dict[str, list[Any]]] = None) -> list[ValidationFinding]:
+def validate_tasks(
+    tasks: Iterable[Any],
+    runs_by_task: Optional[dict[str, list[Any]]] = None,
+    *,
+    policy: BoardPolicy | None = None,
+) -> list[ValidationFinding]:
     runs_by_task = runs_by_task or {}
     findings: list[ValidationFinding] = []
     for task in tasks:
         findings.extend(_validate_contract_task(task))
-        findings.extend(_validate_ready_task(task))
+        findings.extend(_validate_ready_task(task, policy=policy))
         latest_run = None
         runs = runs_by_task.get(getattr(task, "id", ""), [])
         if runs:
             latest_run = runs[-1]
-        if latest_run is not None:
-            findings.extend(_validate_completion_handoff(task, latest_run))
+        findings.extend(_validate_completion_handoff(task, latest_run))
     return findings
+
 
 
 def summarize_findings(findings: Iterable[ValidationFinding]) -> dict[str, int]:

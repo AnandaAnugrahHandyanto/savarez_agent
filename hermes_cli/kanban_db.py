@@ -83,6 +83,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from hermes_cli import kanban_policy as kp
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -2675,6 +2677,9 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         return p
     if kind == "worktree":
         if not task.workspace_path:
+            policy = kp.load_policy(_normalize_board_slug(board) or get_current_board())
+            if policy.worktree_root:
+                return policy.worktree_root / task.id
             # Default: .worktrees/<id>/ under CWD.  Worker skill creates it.
             return Path.cwd() / ".worktrees" / task.id
         p = Path(task.workspace_path).expanduser()
@@ -3896,6 +3901,10 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     if task.tenant:
         lines.append(f"Tenant:   {task.tenant}")
     lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")
+    guidance = kp.format_policy_guidance(kp.load_policy(get_current_board()))
+    if guidance:
+        lines.append("")
+        lines.append(guidance.rstrip())
     lines.append("")
 
     if task.body and task.body.strip():
