@@ -83,6 +83,7 @@ def compute_request_metrics() -> dict:
     - max_requests_5h: max sum of api_calls in any rolling 5-hour window (24h)
     - max_requests_5h_30d: max sum of api_calls in any rolling 5-hour window (30d)
     - interactions_24h: number of user interactions (lines) in the last 24h
+    - requests_by_model: dict mapping model -> total api_calls in last 24h
 
     Returns dict with these keys (all 0 if no log data).
     """
@@ -104,7 +105,7 @@ def compute_request_metrics() -> dict:
                     ts = rec.get("ts", 0)
                     api_calls = rec.get("api_calls", 0)
                     if ts >= cutoff_24h:
-                        entries_24h.append((ts, api_calls))
+                        entries_24h.append((ts, api_calls, rec.get("model")))
                     if ts >= cutoff_30d:
                         entries_30d.append((ts, api_calls))
                 except (json.JSONDecodeError, TypeError):
@@ -118,16 +119,26 @@ def compute_request_metrics() -> dict:
             "max_requests_5h": 0,
             "max_requests_5h_30d": sliding_window_max(entries_30d, 5 * 3600),
             "interactions_24h": 0,
+            "requests_by_model": {},
         }
 
-    total_requests_24h = sum(calls for _, calls in entries_24h)
+    total_requests_24h = sum(calls for _, calls, _ in entries_24h)
     interactions_24h = len(entries_24h)
+
+    # Aggregate by model (use a shortened name for readability)
+    model_totals: dict[str, int] = {}
+    for _, calls, model in entries_24h:
+        if model:
+            # Shorten "openai-codex/gpt-5.5" to just "gpt-5.5" for cleanliness
+            short_model = model.split("/")[-1]
+            model_totals[short_model] = model_totals.get(short_model, 0) + calls
 
     return {
         "total_requests_24h": total_requests_24h,
         "max_requests_5h": sliding_window_max(entries_24h, 5 * 3600),
         "max_requests_5h_30d": sliding_window_max(entries_30d, 5 * 3600),
         "interactions_24h": interactions_24h,
+        "requests_by_model": model_totals,
     }
 
 
@@ -161,16 +172,23 @@ def format_report(metrics: dict) -> str:
         "<b>📊 Usage Report (24H)</b>",
         f"  User Interactions: <b>{metrics['interactions_24h']}</b>",
         f"  API Requests: <b>{metrics['total_requests_24h']}</b>",
-        "",
-        "<b>📈 Max Req / 5H Window</b>",
-        f"  24H: <b>{metrics['max_requests_5h']}</b>",
-        f"  30D: <b>{metrics['max_requests_5h_30d']}</b>",
     ]
 
-    if metrics["total_requests_24h"] == 0:
+    # Per-model breakdown
+    model_breakdown = metrics.get("requests_by_model") or {}
+    if model_breakdown:
+        lines.append("")
+        lines.append("<b>📊 By Model</b>")
+        for model, calls in sorted(model_breakdown.items(), key=lambda x: -x[1]):
+            lines.append(f"  {model}: <b>{calls}</b>")
+    else:
         lines.append("")
         lines.append("  <i>No request data yet — metrics populate after first full day.</i>")
 
+    lines.append("")
+    lines.append("<b>📈 Max Req / 5H Window</b>")
+    lines.append(f"  24H: <b>{metrics['max_requests_5h']}</b>")
+    lines.append(f"  30D: <b>{metrics['max_requests_5h_30d']}</b>")
     lines.append("")
     lines.append(f"<i>Snapshot: {now}</i>")
     return "\n".join(lines)

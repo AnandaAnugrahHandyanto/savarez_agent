@@ -5164,25 +5164,30 @@ class GatewayRunner:
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
+            _resolved_model = getattr(agent, "model", None) if agent else None
             _resp_len = len(response)
             logger.info(
-                "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
+                "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars model=%s",
                 _platform_name, source.chat_id or "unknown",
-                _response_time, _api_calls, _resp_len,
+                _response_time, _api_calls, _resp_len, _resolved_model,
             )
 
             # Append to persistent request log for daily cost report metrics
             try:
                 import json as _json
                 _req_log_path = os.environ.get("REQUEST_LOG_PATH", "/opt/data/request-log.jsonl")
+                # Only log model if it's a non-empty string
+                _log_record = {
+                    "ts": time.time(),
+                    "api_calls": _api_calls,
+                    "platform": _platform_name,
+                    "chat": source.chat_id or "unknown",
+                    "duration": round(_response_time, 1),
+                }
+                if _resolved_model:
+                    _log_record["model"] = _resolved_model
                 with open(_req_log_path, "a") as _rl:
-                    _rl.write(_json.dumps({
-                        "ts": time.time(),
-                        "api_calls": _api_calls,
-                        "platform": _platform_name,
-                        "chat": source.chat_id or "unknown",
-                        "duration": round(_response_time, 1),
-                    }) + "\n")
+                    _rl.write(_json.dumps(_log_record) + "\n")
             except Exception:
                 pass  # non-critical — don't break gateway for metrics
 
