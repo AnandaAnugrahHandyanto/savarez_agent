@@ -28,6 +28,28 @@
 - Workday blocks scraping; use Indeed/LinkedIn/Glassdoor for discovery
 - Salary not typically posted on Amgen WD1 postings
 
+## Commuter Rail — Pacific Surfliner (May 2026)
+
+New daily roundtrip launched May 4, 2026. LOSSAN Rail Corridor Agency + VCTC + SBCAG.
+
+**Northbound (commuter direction — Ventura County → Santa Barbara/Goleta):**
+- Camarillo: 6:43 AM
+- Oxnard: 6:57 AM
+- Ventura: 7:11 AM
+- Carpinteria: 7:37 AM
+- Santa Barbara: 7:56 AM
+- Goleta: 8:11 AM
+
+**Southbound:**
+- New train from Santa Barbara ~3 PM
+- Existing: 4:50 PM and 6:50 PM
+
+**For Gordon's commute:** The train is useful for Ventura ↔ Santa Barbara/Goleta end-to-end. For South Coast employers (Amgen/Teledyne Thousand Oaks), the train goes the wrong direction — the northbound train takes you away from Thousand Oaks. Northrop Grumman Camarillo is the northbound route, but only saves the 101 fill-in; it's still ~26 min door-to-door from 1920 E Linda Vista Ave.
+
+**Intro pricing:** $50 for 10 round-trips. Free shuttles from Santa Barbara/Goleta stations to workplaces.
+
+**URL:** pacificsurfliner.com / sbcag.org/train
+
 ## Key Search Patterns
 
 ```
@@ -50,4 +72,4 @@ site:ziprecruiter.com OR site:glassdoor.com [company] [role] Thousand Oaks OR Ca
 - Most roles do NOT require active clearance at application stage — ability to obtain is what's checked
 - Flag this in job reports if citizenship or clearance status might be a blocker for Gordon
 
-## Last Verified: 2026-05-08
+## Last Verified: 2026-05-09

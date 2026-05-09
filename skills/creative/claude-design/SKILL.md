@@ -547,9 +547,38 @@ Better:
 - test light/dark or variants if present
 - test responsive breakpoints if relevant
 
+### Browser verification with `agent-browser`
+
+When the environment has `agent-browser` installed (it's at `/opt/hermes/node_modules/.bin/agent-browser` in this container), use it to open and verify HTML artifacts in a real Chrome instance with JavaScript execution:
+
+```bash
+# Open the file in a real browser (headless by default)
+node /opt/hermes/node_modules/.bin/agent-browser open "file:///path/to/file.html"
+
+# Take a screenshot (useful for visual QA)
+node /opt/hermes/node_modules/.bin/agent-browser screenshot /path/to/screenshot.png
+
+# Get a text snapshot of what's on the page
+node /opt/hermes/node_modules/.bin/agent-browser snapshot
+
+# Check for console errors
+node /opt/hermes/node_modules/.bin/agent-browser console
+
+# Get page title and URL
+node /opt/hermes/node_modules/.bin/agent-browser get title
+```
+
+This is especially useful for verifying:
+- JavaScript-driven content renders correctly
+- CSS animations/playback work
+- No runtime console errors
+- Layout renders as intended (screenshot comparison)
+
+**Installing if missing:** `node /opt/hermes/node_modules/.bin/agent-browser install` downloads Chrome. `agent-browser install --with-deps` also installs system libs (requires root — may not work in all containers).
+
 If verification is limited by environment, say exactly what was and was not verified.
 
-Never say “done” if the file was not actually written.
+Never say "done" if the file was not actually written.
 
 ## Final Response Format
 
