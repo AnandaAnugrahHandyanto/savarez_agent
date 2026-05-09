@@ -2994,6 +2994,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
         event = self._build_message_event(update.message, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
+
+        # If this text message is replying to a message that contains a photo,
+        # download the replied-to photo so the agent can see what's being referenced.
+        await self._fetch_reply_to_photo(update.message, event)
+
         self._enqueue_text_event(event)
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3116,6 +3121,51 @@ class TelegramAdapter(BasePlatformAdapter):
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
+
+    # ------------------------------------------------------------------
+    # Reply-to media fetching
+    # ------------------------------------------------------------------
+
+    async def _fetch_reply_to_photo(self, message: Message, event: MessageEvent) -> None:
+        """Download the photo from a replied-to message and attach it to the event.
+
+        When a user sends a text message as a reply to a message containing a
+        photo, the agent needs access to that image in order to reason about it.
+        This method fetches the replied-to photo (if any), caches it locally,
+        and attaches the path to ``event.media_urls`` / ``event.media_types`` so
+        the downstream image-routing logic in ``run.py`` picks it up.
+
+        If the replied-to message has no photo, this is a no-op.
+        """
+        reply_msg = getattr(message, "reply_to_message", None)
+        if not reply_msg or not getattr(reply_msg, "photo", None):
+            return
+
+        try:
+            # reply_msg.photo is a list of PhotoSize sorted by size; take the largest
+            photo = reply_msg.photo[-1]
+            file_obj = await photo.get_file()
+            image_bytes = await file_obj.download_as_bytearray()
+
+            ext = ".jpg"
+            if file_obj.file_path:
+                for candidate in [".png", ".webp", ".gif", ".jpeg", ".jpg"]:
+                    if file_obj.file_path.lower().endswith(candidate):
+                        ext = candidate
+                        break
+
+            cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
+            event.media_urls.append(cached_path)
+            event.media_types.append(f"image/{ext.lstrip('.')}")
+            logger.info("[Telegram] Cached reply-to photo at %s", cached_path)
+
+            # Ensure reply_to_text conveys that the replied message has an image,
+            # even when there's no caption.
+            if not event.reply_to_text:
+                event.reply_to_text = "[photo]"
+
+        except Exception as e:
+            logger.warning("[Telegram] Failed to cache reply-to photo: %s", e, exc_info=True)
 
     # ------------------------------------------------------------------
     # Photo batching
