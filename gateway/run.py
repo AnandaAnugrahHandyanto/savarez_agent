@@ -6369,6 +6369,9 @@ class GatewayRunner:
         if canonical == "footer":
             return await self._handle_footer_command(event)
 
+        if canonical == "caveman":
+            return await self._handle_caveman_command(event)
+
         if canonical == "yolo":
             return await self._handle_yolo_command(event)
 
@@ -7492,6 +7495,18 @@ class GatewayRunner:
                 "message": message_text[:500],
             }
             await self.hooks.emit("agent:start", hook_ctx)
+
+            # Inject caveman mode instruction into ephemeral system prompt (every API call)
+            _caveman = getattr(session_entry, 'caveman_mode', None)
+            if _caveman:
+                from hermes_cli.commands import CAVEMAN_INTENSITY_RULES, CAVEMAN_SYSTEM_INSTRUCTION
+                _rule = CAVEMAN_INTENSITY_RULES.get(_caveman, "")
+                _caveman_instruction = CAVEMAN_SYSTEM_INSTRUCTION.format(
+                    intensity_upper=_caveman.upper(),
+                    rule=_rule,
+                )
+                context_prompt = (_caveman_instruction + "\n\n" + context_prompt).strip() if context_prompt else _caveman_instruction
+                message_text = message_text + f"\n\n[Reminder: CAVEMAN MODE {_caveman.upper()} is active. Respond in caveman speak.]"
 
             # Run the agent
             agent_result = await self._run_agent(
@@ -10485,6 +10500,54 @@ class GatewayRunner:
         if _save_config_key("agent.service_tier", saved_value):
             return t("gateway.fast.saved", label=label)
         return t("gateway.fast.session_only", label=label)
+
+    async def _handle_caveman_command(self, event: MessageEvent) -> str:
+        """Handle /caveman — toggle caveman speak mode (compressed responses, fewer tokens)."""
+        from hermes_cli.commands import CAVEMAN_INTENSITY_RULES, CAVEMAN_SYSTEM_INSTRUCTION
+
+        text = (event.text or "").strip()
+        parts = text.split()
+        intensity_arg = parts[1].lower() if len(parts) > 1 else None
+        valid_intensities = tuple(CAVEMAN_INTENSITY_RULES)
+
+        session_entry = self.session_store.get_or_create_session(event.source)
+        current = session_entry.caveman_mode
+
+        _sentinel = "[SYSTEM: CAVEMAN MODE"
+
+        if current and not intensity_arg:
+            session_entry.caveman_mode = None
+            history = self.session_store.load_transcript(session_entry.session_id)
+            cleaned = [m for m in history if not (
+                isinstance(m.get("content"), str) and m["content"].startswith(_sentinel)
+            )]
+            if len(cleaned) != len(history):
+                self.session_store.rewrite_transcript(session_entry.session_id, cleaned)
+            return "Caveman mode **OFF** — Normal speech restored."
+
+        if intensity_arg and intensity_arg not in valid_intensities:
+            return (
+                f"Unknown intensity `{intensity_arg}`. "
+                f"Valid options: {', '.join(valid_intensities)}. Caveman mode unchanged."
+            )
+
+        intensity = intensity_arg if intensity_arg in valid_intensities else "full"
+        session_entry.caveman_mode = intensity
+        icons = {"lite": "🪶", "full": "🦴", "ultra": "🔥"}
+        rule = CAVEMAN_INTENSITY_RULES.get(intensity, CAVEMAN_INTENSITY_RULES["full"])
+        msg = CAVEMAN_SYSTEM_INSTRUCTION.format(
+            intensity_upper=intensity.upper(),
+            rule=rule,
+        )
+
+        history = self.session_store.load_transcript(session_entry.session_id)
+        cleaned = [m for m in history if not (
+            isinstance(m.get("content"), str) and m["content"].startswith(_sentinel)
+        )]
+        cleaned.append({"role": "user", "content": msg})
+        self.session_store.rewrite_transcript(session_entry.session_id, cleaned)
+
+        return f"{icons[intensity]} Caveman mode **ON** — intensity: {intensity}. Fewer tokens."
 
     async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /yolo — toggle dangerous command approval bypass for this session only."""
@@ -14879,6 +14942,14 @@ class GatewayRunner:
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+            # Propagate caveman mode so run_agent's post-tool reinforcement fires.
+            # Cached agents outlive the /caveman toggle, so this must be refreshed
+            # every turn from the authoritative session_entry.
+            try:
+                _session_entry = self.session_store.get_or_create_session(source)
+                agent.caveman_mode = getattr(_session_entry, "caveman_mode", None)
+            except Exception:
+                agent.caveman_mode = None
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []
