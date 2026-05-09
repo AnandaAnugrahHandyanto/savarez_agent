@@ -1,14 +1,14 @@
 ---
-title: "Axolotl"
+title: "Axolotl — Axolotl: YAML LLM fine-tuning (LoRA, DPO, GRPO)"
 sidebar_label: "Axolotl"
-description: "Expert guidance for fine-tuning LLMs with Axolotl - YAML configs, 100+ models, LoRA/QLoRA, DPO/KTO/ORPO/GRPO, multimodal support"
+description: "Axolotl: YAML LLM fine-tuning (LoRA, DPO, GRPO)"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Axolotl
 
-Expert guidance for fine-tuning LLMs with Axolotl - YAML configs, 100+ models, LoRA/QLoRA, DPO/KTO/ORPO/GRPO, multimodal support
+Axolotl: YAML LLM fine-tuning (LoRA, DPO, GRPO).
 
 ## Skill metadata
 
@@ -20,6 +20,7 @@ Expert guidance for fine-tuning LLMs with Axolotl - YAML configs, 100+ models, L
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `axolotl`, `torch`, `transformers`, `datasets`, `peft`, `accelerate`, `deepspeed` |
+| Platforms | linux, macos |
 | Tags | `Fine-Tuning`, `Axolotl`, `LLM`, `LoRA`, `QLoRA`, `DPO`, `KTO`, `ORPO`, `GRPO`, `YAML`, `HuggingFace`, `DeepSpeed`, `Multimodal` |
 
 ## Reference: full SKILL.md
@@ -29,6 +30,10 @@ The following is the complete skill definition that Hermes loads when this skill
 :::
 
 # Axolotl Skill
+
+## What's inside
+
+Expert guidance for fine-tuning LLMs with Axolotl — YAML configs, 100+ models, LoRA/QLoRA, DPO/KTO/ORPO/GRPO, multimodal support.
 
 Comprehensive assistance with axolotl development, generated from official documentation.
 

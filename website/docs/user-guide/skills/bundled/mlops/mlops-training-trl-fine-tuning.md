@@ -1,14 +1,14 @@
 ---
-title: "Fine Tuning With Trl"
+title: "Fine Tuning With Trl — TRL: SFT, DPO, PPO, GRPO, reward modeling for LLM RLHF"
 sidebar_label: "Fine Tuning With Trl"
-description: "Fine-tune LLMs using reinforcement learning with TRL - SFT for instruction tuning, DPO for preference alignment, PPO/GRPO for reward optimization, and reward..."
+description: "TRL: SFT, DPO, PPO, GRPO, reward modeling for LLM RLHF"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Fine Tuning With Trl
 
-Fine-tune LLMs using reinforcement learning with TRL - SFT for instruction tuning, DPO for preference alignment, PPO/GRPO for reward optimization, and reward model training. Use when need RLHF, align model with preferences, or train from human feedback. Works with HuggingFace Transformers.
+TRL: SFT, DPO, PPO, GRPO, reward modeling for LLM RLHF.
 
 ## Skill metadata
 
@@ -20,6 +20,7 @@ Fine-tune LLMs using reinforcement learning with TRL - SFT for instruction tunin
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `trl`, `transformers`, `datasets`, `peft`, `accelerate`, `torch` |
+| Platforms | linux, macos, windows |
 | Tags | `Post-Training`, `TRL`, `Reinforcement Learning`, `Fine-Tuning`, `SFT`, `DPO`, `PPO`, `GRPO`, `RLHF`, `Preference Alignment`, `HuggingFace` |
 
 ## Reference: full SKILL.md
