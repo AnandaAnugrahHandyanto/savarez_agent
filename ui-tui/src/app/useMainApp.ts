@@ -16,7 +16,7 @@ import type {
 } from '../gatewayTypes.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
-import { composerPromptWidth } from '../lib/inputMetrics.js'
+import { composerPromptWidth, stableComposerColumns } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
@@ -247,6 +247,9 @@ export function useMainApp(gw: GatewayClient) {
 
   const detailsVisible = detailsLayoutKey !== 'hidden:hidden'
   const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
+  const composerInputCols = stableComposerColumns(cols, userPromptWidth)
+  const composerColsRef = useRef(composerInputCols)
+  composerColsRef.current = composerInputCols
   const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
 
   const heightCache = useMemo(() => {
@@ -542,6 +545,7 @@ export function useMainApp(gw: GatewayClient) {
       sys
     },
     composer: { actions: composerActions, refs: composerRefs, state: composerState },
+    composerColsRef,
     gateway,
     terminal: { hasSelection, scrollRef, scrollWithSelection, selection, stdout },
     voice: {
