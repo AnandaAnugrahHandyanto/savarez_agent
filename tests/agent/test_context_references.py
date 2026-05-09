@@ -334,3 +334,62 @@ async def test_blocks_sensitive_home_and_hermes_paths(tmp_path: Path, monkeypatc
     assert "API_KEY=super-secret" not in result.message
     assert "PRIVATE-KEY" not in result.message
     assert any("sensitive credential" in warning for warning in result.warnings)
+
+
+# ---------------------------------------------------------------------------
+# _default_url_fetcher — JSON decode robustness
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_default_url_fetcher_returns_raw_on_json_decode_error():
+    """web_extract_tool returning plain text must not raise JSONDecodeError."""
+    from agent.context_references import _default_url_fetcher
+
+    with patch(
+        "agent.context_references._default_url_fetcher",
+        wraps=_default_url_fetcher,
+    ):
+        with patch(
+            "tools.web_tools.web_extract_tool",
+            return_value="plain text, not JSON",
+        ):
+            # Before fix this raised json.JSONDecodeError; now returns raw text.
+            result = await _default_url_fetcher("https://example.com")
+    assert result == "plain text, not JSON"
+
+
+@pytest.mark.asyncio
+async def test_default_url_fetcher_returns_empty_on_none_response():
+    """web_extract_tool returning None must not raise TypeError."""
+    from agent.context_references import _default_url_fetcher
+
+    with patch(
+        "tools.web_tools.web_extract_tool",
+        return_value=None,
+    ):
+        result = await _default_url_fetcher("https://example.com")
+    assert result == ""
+
+
+@pytest.mark.asyncio
+async def test_default_url_fetcher_returns_content_on_valid_json():
+    """Valid JSON envelope still extracts document content correctly."""
+    import json as _json
+
+    from agent.context_references import _default_url_fetcher
+
+    payload = _json.dumps({
+        "data": {
+            "documents": [
+                {"content": "extracted markdown", "raw_content": "raw"}
+            ]
+        }
+    })
+
+    with patch(
+        "tools.web_tools.web_extract_tool",
+        return_value=payload,
+    ):
+        result = await _default_url_fetcher("https://example.com")
+    assert result == "extracted markdown"
