@@ -154,6 +154,35 @@ Live in ~30 seconds.
 
 **Enterprise upgrade path:** Set up **Cloudflare Zero Trust** → cloudflare.com/zero-trust → Authentication → Add GitHub identity provider → Access Policy for `/wiki/*`. Replaces client-side auth with proper OAuth/GitHub login. Remove client-side auth check scripts when that is done.
 
+## Wiki content strategy
+
+Gordon's wiki is a long-term knowledge base. When incorporating new information (e.g. from chat exports):
+
+**What to add:** Things that reveal something personally significant — not random factoids:
+- Interests, likes/dislikes (e.g. hiking, fishing, style)
+- Career/project details (e.g. Sidekick Studio evolution)
+- Health or behavioral patterns (e.g. cutting back on alcohol)
+- Financial life decisions
+- Travel that reveals preferences
+
+**What to skip:** One-off factoids, recipes, restaurant tips, ephemeral advice.
+- Trivial "how many minutes" questions
+- Generic questions answered quickly
+- Things that would be outdated in 6 months
+
+**How to incorporate:**
+1. Read the JSON export (`/opt/data/cache/documents/`) — scan titles first with a quick loop to identify meaty conversations
+2. Read the content of significant ones
+3. Write new markdown pages under `/opt/data/wiki/` in the appropriate subdirectory:
+   - `hobbies/` — outdoor activities, fitness, style, travel
+   - `projects/` — Sidekick Studio and similar
+   - `personal/` — health, habits
+   - `entities/` — update the person entity
+   - `concepts/` — update concept pages (e.g. Ventura relocation) with new context
+4. Re-run `python3 /opt/data/scripts/md2html.py /opt/data/wiki`
+5. Git add, commit, push
+6. Update nav bar in `md2html.py` if adding entirely new categories
+
 ## Pitfalls
 
 - **Forgetting to update the index** — results in stale links on the hub page pointing to old filenames
@@ -161,3 +190,6 @@ Live in ~30 seconds.
 - **Interactive git prompts** — never run `git push` without `GIT_TERMINAL_PROMPT=0` in this environment
 - **Git author identity unknown** — always configure `user.email` and `user.name` before committing to hermes-pages repo (different from hermes-agent repo which has its own gitconfig)
 - **Wiki subdirectory in hermes-pages** — the `.git` directory from the original wiki clone can cause `git add` failures. Always `rm -rf /opt/data/hermes-pages-repo/gordons-llm-wiki/.git` before adding.
+- **`md2html.py` runs on import** — the old version had a top-level for-loop that executed immediately on `import`, which is dangerous if the script is ever imported elsewhere. The script now guards all work behind `if __name__ == '__main__'`. Never add top-level side effects to this script.
+- **Login redirect must NOT include `.html`** — the Cloudflare Pages static file server strips `.html` from URLs (returning a 307 to the extensionless version). The auth redirect in `build_page()` MUST use `/wiki/login?dst=...` not `/wiki/login.html?dst=...`. The script generates this inline; verify the generated HTML contains the extensionless URL.
+- **Old wiki source path** — the original script hardcoded `/opt/data/hermes-pages-repo/gordons-llm-wiki` as the markdown source. Always pass the source dir as the first argument: `python3 /opt/data/scripts/md2html.py /opt/data/wiki`.
