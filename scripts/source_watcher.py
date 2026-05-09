@@ -28,6 +28,8 @@ the entrypoint (writes ~/.git-credentials from $GITHUB_TOKEN).
 Ported from GordonClaw's source_watcher.py with path adjustments.
 """
 
+import hashlib
+import html
 import os
 import re
 import shutil
@@ -54,6 +56,20 @@ BLOCKED_LOG_PATH = os.environ.get(
 SKIP_LINT = os.environ.get("HERMES_WATCHER_SKIP_LINT", "").lower() in (
     "1", "true", "yes", "on"
 )
+
+# Dedup state: when lint blocks the same files with the same ruff output
+# on consecutive polls, only Telegram-notify once. Resets when the lint
+# eventually passes (or files change). Prevents notification floods if a
+# broken file sits in the working tree overnight.
+_last_lint_block_signature: str | None = None
+
+
+def _lint_block_signature(files: list[str], ruff_output: str) -> str:
+    h = hashlib.sha256()
+    h.update("\n".join(sorted(files)).encode("utf-8", errors="replace"))
+    h.update(b"\n--\n")
+    h.update(ruff_output.encode("utf-8", errors="replace"))
+    return h.hexdigest()
 
 
 # Telegram notification config — used to alert the operator when a push
@@ -182,7 +198,7 @@ def append_blocked_lint_log(files: list[str], ruff_output: str, diff: str) -> No
 
 def format_lint_blocked_notification(files: list[str], ruff_output: str) -> str:
     listed = files[:8]
-    file_lines = "\n  ".join(f"<code>{f}</code>" for f in listed)
+    file_lines = "\n  ".join(f"<code>{html.escape(f)}</code>" for f in listed)
     if len(files) > len(listed):
         file_lines += f"\n  <i>(+{len(files) - len(listed)} more)</i>"
     summary = "ruff F821/syntax gate failed; commit was skipped"
@@ -192,31 +208,39 @@ def format_lint_blocked_notification(files: list[str], ruff_output: str) -> str:
             break
     return (
         "🚫 <b>Watcher blocked a broken-code commit</b>\n"
-        f"{summary}\n\n"
+        f"{html.escape(summary)}\n\n"
         f"Files:\n  {file_lines}\n\n"
-        f"Full details: <code>{BLOCKED_LOG_PATH}</code>"
+        f"Full details: <code>{html.escape(BLOCKED_LOG_PATH)}</code>"
     )
 
 
 def lint_staged_python_files() -> bool:
     """Gate commits on ruff F821; ruff parser errors still catch syntax failures."""
+    global _last_lint_block_signature
     files = staged_python_files()
     if not files:
+        _last_lint_block_signature = None
         return True
     if SKIP_LINT:
         log(
             "HERMES_WATCHER_SKIP_LINT is set; skipping ruff F821 gate "
             f"for {len(files)} Python file(s)"
         )
+        _last_lint_block_signature = None
         return True
 
     ruff = _ruff_command()
     if not ruff:
         output = "ruff is not installed or not available to source_watcher"
-        diff = _safe_diff_for_log()
-        append_blocked_lint_log(files, output, diff)
-        notify_telegram(format_lint_blocked_notification(files, output))
-        log("REFUSING to commit — ruff is unavailable")
+        sig = _lint_block_signature(files, output)
+        if sig != _last_lint_block_signature:
+            _last_lint_block_signature = sig
+            diff = _safe_diff_for_log()
+            append_blocked_lint_log(files, output, diff)
+            notify_telegram(format_lint_blocked_notification(files, output))
+            log("REFUSING to commit — ruff is unavailable")
+        else:
+            log("REFUSING to commit — ruff is unavailable (same as last cycle, suppressing duplicate notification)")
         return False
 
     # Ruff 0.15 removed E999 as a selectable rule. Syntax failures are still
@@ -230,13 +254,19 @@ def lint_staged_python_files() -> bool:
     )
     if result.returncode == 0:
         log(f"ruff F821 gate passed for {len(files)} Python file(s)")
+        _last_lint_block_signature = None
         return True
 
     output = (result.stdout or "") + (result.stderr or "")
-    diff = _safe_diff_for_log()
-    append_blocked_lint_log(files, output, diff)
-    notify_telegram(format_lint_blocked_notification(files, output))
-    log("REFUSING to commit — ruff F821 gate failed")
+    sig = _lint_block_signature(files, output)
+    if sig != _last_lint_block_signature:
+        _last_lint_block_signature = sig
+        diff = _safe_diff_for_log()
+        append_blocked_lint_log(files, output, diff)
+        notify_telegram(format_lint_blocked_notification(files, output))
+        log("REFUSING to commit — ruff F821 gate failed")
+    else:
+        log("REFUSING to commit — ruff F821 gate failed (same as last cycle, suppressing duplicate notification)")
     return False
 
 
