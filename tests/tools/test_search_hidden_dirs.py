@@ -14,9 +14,15 @@ directories, matching ripgrep's default behavior.
 """
 
 import os
+import shutil
 import subprocess
 
 import pytest
+
+
+def _have_ripgrep() -> bool:
+    """True when ``rg`` is on PATH (``which`` is not portable — see WinError 2)."""
+    return shutil.which("rg") is not None
 
 
 @pytest.fixture
@@ -97,10 +103,7 @@ class TestGrepExcludesHiddenDirs:
 class TestRipgrepAlreadyExcludesHidden:
     """Verify ripgrep's default behavior is to skip hidden directories."""
 
-    @pytest.mark.skipif(
-        subprocess.run(["which", "rg"], capture_output=True).returncode != 0,
-        reason="ripgrep not installed",
-    )
+    @pytest.mark.skipif(not _have_ripgrep(), reason="ripgrep not installed")
     def test_rg_skips_hub_by_default(self, searchable_tree):
         """rg should skip .hub/ by default (no --hidden flag)."""
         result = subprocess.run(
@@ -110,10 +113,7 @@ class TestRipgrepAlreadyExcludesHidden:
         assert ".hub" not in result.stdout
         assert "catalog.json" not in result.stdout
 
-    @pytest.mark.skipif(
-        subprocess.run(["which", "rg"], capture_output=True).returncode != 0,
-        reason="ripgrep not installed",
-    )
+    @pytest.mark.skipif(not _have_ripgrep(), reason="ripgrep not installed")
     def test_rg_finds_visible_content(self, searchable_tree):
         """rg should find content in visible directories."""
         result = subprocess.run(
