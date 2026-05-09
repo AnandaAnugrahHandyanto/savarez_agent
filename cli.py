@@ -1444,6 +1444,42 @@ def _replay_output_history() -> None:
         _OUTPUT_HISTORY_REPLAYING = False
 
 
+# ── Helper: schedule run_in_terminal for both sync (pt<3.0.50) and
+# async (pt>=3.0.50) versions ──────────────────────────────────────────
+def _schedule_run_in_terminal(run_in_terminal, callback, loop=None):
+    """Call run_in_terminal(callback), handling async version in pt>=3.0.50.
+
+    If *loop* is provided (from ``app.loop``), it is used directly.
+    This avoids calling ``asyncio.get_event_loop()`` from a background
+    thread, which emits a DeprecationWarning (3.10/3.11) or
+    RuntimeWarning (3.12+) and can fail to properly schedule the task,
+    causing "coroutine was never awaited" warnings.
+    """
+    import asyncio
+    if asyncio.iscoroutinefunction(run_in_terminal):
+        if loop is not None:
+            loop.create_task(run_in_terminal(callback))
+        else:
+            # Fallback: only used if loop isn't available (shouldn't happen
+            # in normal operation from _cprint).
+            try:
+                loop = asyncio.get_running_loop()
+            except (RuntimeError, Exception):
+                loop = None
+            if loop is not None:
+                loop.create_task(run_in_terminal(callback))
+    else:
+        _result = run_in_terminal(callback)
+        # In pt 3.0.50+, run_in_terminal() is a regular function but returns
+        # an asyncio.Future (via ensure_future).  Discarding the return value
+        # lets Python GC it without ever calling result(), which in Python
+        # 3.12+ fires "coroutine was never awaited" warnings that bubble up
+        # into process_loop's exception handler.  Keep a reference with a
+        # no-op done-callback so the Future is properly collected.
+        if asyncio.isfuture(_result):
+            _result.add_done_callback(lambda _: None)
+
+
 def _cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's native renderer.
 
@@ -1511,7 +1547,7 @@ def _cprint(text: str):
     # fails we fall back to a direct print so the line isn't lost.
     def _schedule():
         try:
-            run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            _schedule_run_in_terminal(run_in_terminal, lambda: _pt_print(_PT_ANSI(text)), loop)
         except Exception:
             try:
                 _pt_print(_PT_ANSI(text))
@@ -5863,7 +5899,7 @@ class HermesCLI:
             self._status_bar_visible = False
             self._app.invalidate()
             try:
-                run_in_terminal(_pick)
+                _schedule_run_in_terminal(run_in_terminal, _pick, getattr(self._app, 'loop', None))
             finally:
                 self._status_bar_visible = was_visible
                 self._app.invalidate()
@@ -5888,7 +5924,7 @@ class HermesCLI:
             self._status_bar_visible = False
             self._app.invalidate()
             try:
-                run_in_terminal(_ask)
+                _schedule_run_in_terminal(run_in_terminal, _ask, getattr(self._app, 'loop', None))
             finally:
                 self._status_bar_visible = was_visible
                 self._app.invalidate()
@@ -11319,7 +11355,7 @@ class HermesCLI:
             def _suspend():
                 os.write(1, msg.encode())
                 os.kill(0, _sig.SIGTSTP)
-            run_in_terminal(_suspend)
+            _schedule_run_in_terminal(run_in_terminal, _suspend, getattr(event.app, 'loop', None))
 
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
         # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search).
