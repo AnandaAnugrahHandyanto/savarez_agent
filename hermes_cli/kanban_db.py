@@ -2503,6 +2503,91 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         return True
 
 
+def specify_triage_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+    author: Optional[str] = None,
+) -> bool:
+    """Flesh out a triage task and promote it to ``todo``.
+
+    Atomically updates ``title`` / ``body`` (when provided) and transitions
+    ``status: triage -> todo`` in a single write txn. Returns False when
+    the task is missing or not in the ``triage`` column — callers should
+    surface that as "nothing to specify" rather than an error.
+
+    ``todo`` (not ``ready``) is the correct landing column: ``recompute_ready``
+    promotes parent-free / parent-done todos to ``ready`` on the next
+    dispatcher tick, which keeps the normal parent-gating behaviour intact
+    for specified tasks that happen to have open parents.
+
+    ``author`` is recorded on an audit comment only when at least one of
+    ``title`` / ``body`` actually changed — avoids noisy comment spam for
+    status-only promotions.
+    """
+    if title is not None and not title.strip():
+        raise ValueError("title cannot be blank")
+    with write_txn(conn):
+        existing = conn.execute(
+            "SELECT title, body FROM tasks WHERE id = ? AND status = 'triage'",
+            (task_id,),
+        ).fetchone()
+        if existing is None:
+            return False
+        sets: list[str] = ["status = 'todo'"]
+        params: list[Any] = []
+        changed_fields: list[str] = []
+        if title is not None and title.strip() != (existing["title"] or ""):
+            sets.append("title = ?")
+            params.append(title.strip())
+            changed_fields.append("title")
+        if body is not None and (body or "") != (existing["body"] or ""):
+            sets.append("body = ?")
+            params.append(body)
+            changed_fields.append("body")
+        params.append(task_id)
+        cur = conn.execute(
+            f"UPDATE tasks SET {', '.join(sets)} "
+            f"WHERE id = ? AND status = 'triage'",
+            tuple(params),
+        )
+        if cur.rowcount != 1:
+            return False
+        if changed_fields and author and author.strip():
+            # Inline INSERT (rather than ``add_comment``) because we're
+            # already inside this function's write_txn — nested BEGIN
+            # IMMEDIATE would raise OperationalError. We also skip the
+            # 'commented' event that ``add_comment`` emits, since the
+            # 'specified' event below already records the change.
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    task_id,
+                    author.strip(),
+                    "Specified — updated "
+                    + ", ".join(changed_fields)
+                    + " and promoted to todo.",
+                    int(time.time()),
+                ),
+            )
+        _append_event(
+            conn,
+            task_id,
+            "specified",
+            {"changed_fields": changed_fields} if changed_fields else None,
+        )
+    # Outside the write_txn above, so we don't nest BEGIN IMMEDIATE — the
+    # ready-promotion pass opens its own IMMEDIATE txn. This runs the same
+    # logic the dispatcher would on its next tick, so a specified task
+    # with no open parents flips straight to 'ready' here instead of
+    # idling in 'todo' until the next sweep.
+    recompute_ready(conn)
+    return True
+
+
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
         cur = conn.execute(
@@ -2720,12 +2805,18 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
 def _pid_alive(pid: Optional[int]) -> bool:
     """Return True if ``pid`` is still running on this host.
 
-    Cross-platform: uses ``os.kill(pid, 0)`` on POSIX and ``OpenProcess``
-    on Windows. Returns False for falsy PIDs or on any OS error.
+    Cross-platform: uses ``OpenProcess`` + ``WaitForSingleObject`` on
+    Windows (via ``gateway.status._pid_exists``) and ``os.kill(pid, 0)``
+    on POSIX. Returns False for falsy PIDs or on any OS error.
 
-    **Zombie handling:** ``os.kill(pid, 0)`` succeeds against
-    zombie processes (post-exit, pre-reap) because the process table
-    entry still exists. A worker that exits without being reaped by its
+    **DO NOT** use ``os.kill(pid, 0)`` directly on Windows — Python's
+    Windows ``os.kill`` treats ``sig=0`` as ``CTRL_C_EVENT`` (bpo-14484)
+    and will broadcast it to the target's console group, potentially
+    killing unrelated processes.
+
+    **Zombie handling:** the existence check succeeds against zombie
+    processes (post-exit, pre-reap) because the process table entry
+    still exists. A worker that exits without being reaped by its
     parent would stay "alive" to the dispatcher forever. Dispatcher
     workers are started via ``start_new_session=True`` + intentional
     Popen handle abandonment, so init reaps them quickly — but during
@@ -2736,21 +2827,14 @@ def _pid_alive(pid: Optional[int]) -> bool:
     """
     if not pid or pid <= 0:
         return False
-    try:
-        if hasattr(os, "kill"):
-            os.kill(int(pid), 0)
-    except ProcessLookupError:
+    from gateway.status import _pid_exists
+    if not _pid_exists(int(pid)):
         return False
-    except PermissionError:
-        # Process exists, we just can't signal it.
-        return True
-    except OSError:
-        return False
-    # Still here → kill(0) succeeded. Check for zombie on platforms
+    # Still here → process exists. Check for zombie on platforms
     # where we have a cheap, deterministic process-state probe.
     if sys.platform == "linux":
         try:
-            with open(f"/proc/{int(pid)}/status", "r") as f:
+            with open(f"/proc/{int(pid)}/status", "r", encoding="utf-8") as f:
                 for line in f:
                     if line.startswith("State:"):
                         # "State:\tZ (zombie)" → dead
@@ -2826,7 +2910,10 @@ def _terminate_reclaimed_worker(
 
     if _pid_alive(pid):
         try:
-            kill(int(pid), signal.SIGKILL)
+            # signal.SIGKILL doesn't exist on Windows; fall back to SIGTERM
+            # (which maps to TerminateProcess via the stdlib shim).
+            _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+            kill(int(pid), _sigkill)
             info["sigkill"] = True
         except (ProcessLookupError, OSError):
             return info
@@ -2950,7 +3037,9 @@ def enforce_max_runtime(
                 time.sleep(0.5)
             if _pid_alive(pid):
                 try:
-                    kill(pid, signal.SIGKILL)
+                    # signal.SIGKILL doesn't exist on Windows.
+                    _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+                    kill(pid, _sigkill)
                     killed = True
                 except (ProcessLookupError, OSError):
                     pass
@@ -3429,17 +3518,24 @@ def dispatch_once(
     # cleanly without calling ``kanban_complete`` / ``kanban_block``
     # (protocol violation — auto-block) from a real crash (OOM killer,
     # SIGKILL, non-zero exit — existing counter behavior).
-    try:
-        while True:
-            try:
-                _pid, _status = os.waitpid(-1, os.WNOHANG)
-            except ChildProcessError:
-                break
-            if _pid == 0:
-                break
-            _record_worker_exit(_pid, _status)
-    except Exception:
-        pass
+    #
+    # Windows has no zombies / no os.WNOHANG — subprocess.Popen handles
+    # are freed when the Python object is garbage-collected or .wait() is
+    # called explicitly.  The kanban dispatcher discards the Popen handle
+    # after spawn (``_default_spawn`` → abandon), so on Windows there's
+    # nothing to reap here — skip the whole block.
+    if os.name != "nt":
+        try:
+            while True:
+                try:
+                    _pid, _status = os.waitpid(-1, os.WNOHANG)
+                except ChildProcessError:
+                    break
+                if _pid == 0:
+                    break
+                _record_worker_exit(_pid, _status)
+        except Exception:
+            pass
 
     result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)
