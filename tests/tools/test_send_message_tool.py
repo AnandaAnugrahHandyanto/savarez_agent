@@ -140,6 +140,7 @@ class TestSendMessageTool:
             "hello",
             thread_id="17585",
             media_files=[],
+            force_document=False,
         )
 
     def test_display_label_target_resolves_via_channel_directory(self, tmp_path):
@@ -178,6 +179,7 @@ class TestSendMessageTool:
             "hello",
             thread_id="17585",
             media_files=[],
+            force_document=False,
         )
 
     def test_mirror_receives_current_session_user_id(self):
@@ -483,7 +485,7 @@ class TestSendToPlatformChunking:
 
         sent_calls = []
 
-        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False):
+        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
             sent_calls.append(media_files or [])
             return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(len(sent_calls))}
 
@@ -738,6 +740,64 @@ class TestSendTelegramHtmlDetection:
         assert result["success"] is True
         assert bot.send_message.await_count == 2
         sleep_mock.assert_awaited_once()
+
+
+class TestSendTelegramThreadIdMapping:
+    """General-topic mapping in _send_telegram (issue #22267).
+
+    Telegram forum supergroups address the General topic as
+    ``message_thread_id="1"`` on incoming updates, but the Bot API rejects
+    sends with ``message_thread_id=1`` ("Message thread not found"). The
+    gateway adapter's ``_message_thread_id_for_send`` helper maps "1" to
+    ``None`` for that reason; the standalone ``_send_telegram`` helper used
+    by the ``send_message`` tool needs the same mapping.
+    """
+
+    def _make_bot(self):
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        return bot
+
+    def test_general_topic_thread_id_omitted(self, monkeypatch):
+        """thread_id="1" must be dropped before calling the Bot API."""
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("tok", "-1001234567890", "hello", thread_id="1"))
+
+        bot.send_message.assert_awaited_once()
+        kwargs = bot.send_message.await_args.kwargs
+        assert "message_thread_id" not in kwargs
+
+    def test_non_general_topic_thread_id_preserved(self, monkeypatch):
+        """Real forum-topic thread ids (>1) still pass through as ints."""
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("tok", "-1001234567890", "hello", thread_id="17585"))
+
+        kwargs = bot.send_message.await_args.kwargs
+        assert kwargs["message_thread_id"] == 17585
+
+    def test_no_thread_id_no_kwarg(self, monkeypatch):
+        """With no thread_id, message_thread_id must not appear in kwargs."""
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("tok", "-1001234567890", "hello"))
+
+        kwargs = bot.send_message.await_args.kwargs
+        assert "message_thread_id" not in kwargs
+
+    def test_general_topic_thread_id_int_input_also_dropped(self, monkeypatch):
+        """thread_id passed as the int 1 (not str) must still be dropped."""
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("tok", "-1001234567890", "hello", thread_id=1))
+
+        kwargs = bot.send_message.await_args.kwargs
+        assert "message_thread_id" not in kwargs
 
 
 # ---------------------------------------------------------------------------
