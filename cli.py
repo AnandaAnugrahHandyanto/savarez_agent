@@ -2416,6 +2416,13 @@ class HermesCLI:
                 self.max_turns = 90
         else:
             self.max_turns = 90
+
+        # Pre-budget warning: emit audit dump when remaining <= N
+        self.prebudget_warn_at = (
+            CLI_CONFIG["agent"].get("prebudget_warn_at", 10)
+            if "prebudget_warn_at" in CLI_CONFIG.get("agent", {})
+            else 10
+        )
         
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
@@ -4030,6 +4037,7 @@ class HermesCLI:
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
                 max_iterations=self.max_turns,
+                prebudget_warn_at=getattr(self, "prebudget_warn_at", 10),
                 enabled_toolsets=self.enabled_toolsets,
                 disabled_toolsets=self.disabled_toolsets,
                 verbose_logging=self.verbose,
@@ -7249,6 +7257,7 @@ class HermesCLI:
                     acp_command=turn_route["runtime"].get("command"),
                     acp_args=turn_route["runtime"].get("args"),
                     max_iterations=self.max_turns,
+                    prebudget_warn_at=getattr(self, "prebudget_warn_at", 10),
                     enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True,
                     verbose_logging=False,
