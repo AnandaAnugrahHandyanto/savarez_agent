@@ -136,6 +136,116 @@ def _resolve_source_meta_and_bundle(identifier: str, sources):
     return meta, bundle, matched_source
 
 
+def _preview_skill_markdown(content: str, *, max_lines: int = 50) -> str:
+    """Return a short SKILL.md preview for inspect surfaces."""
+    lines = str(content).split("\n")
+    preview = "\n".join(lines[:max_lines])
+    if len(lines) > max_lines:
+        preview += f"\n\n... ({len(lines) - max_lines} more lines)"
+    return preview
+
+
+def _is_explicit_remote_identifier(identifier: str, sources) -> bool:
+    """Return True when an inspect target clearly refers to a remote source."""
+    ident = (identifier or "").strip()
+    if not ident:
+        return False
+    if re.match(r"^[a-z]+://", ident, re.IGNORECASE):
+        return True
+
+    prefix = ident.split("/", 1)[0]
+    try:
+        source_ids = {
+            src.source_id()
+            for src in sources
+            if hasattr(src, "source_id") and callable(src.source_id)
+        }
+    except Exception:
+        source_ids = set()
+    return prefix in source_ids
+
+
+def _inspect_local_skill(identifier: str) -> Optional[dict[str, Any]]:
+    """Inspect a local/profile-scoped skill via skill_view()."""
+    from tools.skills_tool import skill_view
+
+    try:
+        parsed = json.loads(skill_view(identifier, preprocess=False))
+    except Exception:
+        return None
+
+    if not parsed.get("success"):
+        return None
+
+    content = parsed.get("content") or ""
+    return {
+        "name": parsed.get("name") or identifier,
+        "description": parsed.get("description") or "",
+        "source": "local",
+        "trust_level": "local",
+        "identifier": identifier,
+        "tags": list(parsed.get("tags") or []),
+        "path": parsed.get("path"),
+        "skill_dir": parsed.get("skill_dir"),
+        "linked_files": parsed.get("linked_files") or None,
+        "readiness_status": parsed.get("readiness_status"),
+        "skill_md_preview": _preview_skill_markdown(content),
+    }
+
+
+def _render_skill_inspect(meta: dict[str, Any], console: Console) -> None:
+    """Render a skill inspect result for either remote or local skills."""
+    c = console or _console
+    c.print()
+
+    source = meta.get("source", "")
+    trust = meta.get("trust_level") or meta.get("trust") or "community"
+    trust_style = {
+        "builtin": "bright_cyan",
+        "trusted": "green",
+        "community": "yellow",
+        "local": "dim",
+    }.get(trust, "dim")
+    trust_label = "official" if source == "official" else trust
+
+    info_lines = [
+        f"[bold]Name:[/] {meta.get('name', '')}",
+        f"[bold]Description:[/] {meta.get('description', '')}",
+        f"[bold]Source:[/] {source}",
+        f"[bold]Trust:[/] [{trust_style}]{trust_label}[/]",
+        f"[bold]Identifier:[/] {meta.get('identifier', '')}",
+    ]
+
+    tags = meta.get("tags") or []
+    if tags:
+        info_lines.append(f"[bold]Tags:[/] {', '.join(tags)}")
+    if meta.get("path"):
+        info_lines.append(f"[bold]Path:[/] {meta['path']}")
+    if meta.get("skill_dir"):
+        info_lines.append(f"[bold]Skill Dir:[/] {meta['skill_dir']}")
+    if meta.get("readiness_status"):
+        info_lines.append(f"[bold]Readiness:[/] {meta['readiness_status']}")
+    if meta.get("linked_files"):
+        info_lines.append(
+            f"[bold]Linked file groups:[/] {', '.join(sorted(meta['linked_files'].keys()))}"
+        )
+    info_lines.extend(_format_extra_metadata_lines(meta.get("extra") or {}))
+
+    c.print(Panel("\n".join(info_lines), title=f"Skill: {meta.get('name', '')}"))
+
+    preview = meta.get("skill_md_preview")
+    if preview:
+        c.print(
+            Panel(
+                preview,
+                title="SKILL.md Preview",
+                subtitle="hermes skills install <id> to install",
+            )
+        )
+
+    c.print()
+
+
 def _derive_category_from_install_path(install_path: str) -> str:
     path = Path(install_path)
     parent = str(path.parent)
@@ -632,6 +742,12 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
     auth = GitHubAuth()
     sources = create_source_router(auth)
 
+    if not _is_explicit_remote_identifier(identifier, sources):
+        local_meta = _inspect_local_skill(identifier)
+        if local_meta:
+            _render_skill_inspect(local_meta, c)
+            return
+
     if "/" not in identifier:
         identifier = _resolve_short_name(identifier, sources, c)
         if not identifier:
@@ -643,35 +759,22 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
         c.print(f"[bold red]Error:[/] Could not find '{identifier}' in any source.\n")
         return
 
-    c.print()
-    trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow"}.get(meta.trust_level, "dim")
-    trust_label = "official" if meta.source == "official" else meta.trust_level
-
-    info_lines = [
-        f"[bold]Name:[/] {meta.name}",
-        f"[bold]Description:[/] {meta.description}",
-        f"[bold]Source:[/] {meta.source}",
-        f"[bold]Trust:[/] [{trust_style}]{trust_label}[/]",
-        f"[bold]Identifier:[/] {meta.identifier}",
-    ]
-    if meta.tags:
-        info_lines.append(f"[bold]Tags:[/] {', '.join(meta.tags)}")
-    info_lines.extend(_format_extra_metadata_lines(meta.extra))
-
-    c.print(Panel("\n".join(info_lines), title=f"Skill: {meta.name}"))
-
+    render_meta: dict[str, Any] = {
+        "name": meta.name,
+        "description": meta.description,
+        "source": meta.source,
+        "trust_level": meta.trust_level,
+        "identifier": meta.identifier,
+        "tags": list(meta.tags) if meta.tags else [],
+        "extra": meta.extra,
+    }
     if bundle and "SKILL.md" in bundle.files:
         content = bundle.files["SKILL.md"]
         if isinstance(content, bytes):
             content = content.decode("utf-8", errors="replace")
-        # Show first 50 lines as preview
-        lines = content.split("\n")
-        preview = "\n".join(lines[:50])
-        if len(lines) > 50:
-            preview += f"\n\n... ({len(lines) - 50} more lines)"
-        c.print(Panel(preview, title="SKILL.md Preview", subtitle="hermes skills install <id> to install"))
+        render_meta["skill_md_preview"] = _preview_skill_markdown(content)
 
-    c.print()
+    _render_skill_inspect(render_meta, c)
 
 
 def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> dict:
@@ -731,6 +834,12 @@ def inspect_skill(identifier: str) -> Optional[dict]:
     c = _Q()
     auth = GitHubAuth()
     sources = create_source_router(auth)
+
+    if not _is_explicit_remote_identifier(identifier, sources):
+        local_meta = _inspect_local_skill(identifier)
+        if local_meta:
+            return local_meta
+
     ident = identifier
     if "/" not in ident:
         ident = _resolve_short_name(ident, sources, c)
@@ -750,11 +859,7 @@ def inspect_skill(identifier: str) -> Optional[dict]:
         content = bundle.files["SKILL.md"]
         if isinstance(content, bytes):
             content = content.decode("utf-8", errors="replace")
-        lines = content.split("\n")
-        preview = "\n".join(lines[:50])
-        if len(lines) > 50:
-            preview += f"\n\n... ({len(lines) - 50} more lines)"
-        out["skill_md_preview"] = preview
+        out["skill_md_preview"] = _preview_skill_markdown(content)
     return out
 
 

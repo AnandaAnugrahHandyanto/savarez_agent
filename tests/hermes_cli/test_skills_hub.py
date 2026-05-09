@@ -1,3 +1,4 @@
+import json
 from io import StringIO
 from unittest.mock import patch
 
@@ -5,7 +6,15 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import (
+    do_check,
+    do_inspect,
+    do_install,
+    do_list,
+    do_update,
+    handle_skills_slash,
+    inspect_skill,
+)
 
 
 class _DummyLockFile:
@@ -96,6 +105,13 @@ def _capture_update(monkeypatch, results) -> tuple[str, list[tuple[str, str, boo
 
     do_update(console=console)
     return sink.getvalue(), installs
+
+
+def _capture_inspect(identifier: str) -> str:
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_inspect(identifier, console=console)
+    return sink.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +247,73 @@ def test_do_check_reports_available_updates(monkeypatch):
     assert "hub-skill" in output
     assert "update_available" in output
     assert "up_to_date" in output
+
+
+def test_do_inspect_falls_back_to_local_skill(monkeypatch):
+    import tools.skills_hub as hub
+    import tools.skills_tool as skills_tool
+
+    monkeypatch.setattr(hub, "GitHubAuth", lambda: object())
+    monkeypatch.setattr(hub, "create_source_router", lambda auth: [])
+    monkeypatch.setattr(
+        skills_tool,
+        "skill_view",
+        lambda identifier, preprocess=False: json.dumps(
+            {
+                "success": True,
+                "name": "market-mac-hermes-operations",
+                "description": "Operate the market Mac Hermes runtime.",
+                "content": "---\nname: market-mac-hermes-operations\n---\nBody\n",
+                "path": "autonomous-ai-agents/market-mac-hermes-operations/SKILL.md",
+                "skill_dir": "/tmp/profile/skills/autonomous-ai-agents/market-mac-hermes-operations",
+                "linked_files": {"references": ["references/triage.md"]},
+                "readiness_status": "available",
+                "tags": ["ops", "macos"],
+            }
+        ),
+    )
+
+    output = _capture_inspect("autonomous-ai-agents/market-mac-hermes-operations")
+
+    assert "Source: local" in output
+    assert "Path:" in output
+    assert "Readiness: available" in output
+    assert "Linked file groups: references" in output
+    assert "SKILL.md Preview" in output
+
+
+def test_inspect_skill_returns_local_metadata(monkeypatch):
+    import tools.skills_hub as hub
+    import tools.skills_tool as skills_tool
+
+    monkeypatch.setattr(hub, "GitHubAuth", lambda: object())
+    monkeypatch.setattr(hub, "create_source_router", lambda auth: [])
+    monkeypatch.setattr(
+        skills_tool,
+        "skill_view",
+        lambda identifier, preprocess=False: json.dumps(
+            {
+                "success": True,
+                "name": "local-skill",
+                "description": "Local skill for the active profile.",
+                "content": "---\nname: local-skill\n---\nHello\n",
+                "path": "local-skill/SKILL.md",
+                "skill_dir": "/tmp/profile/skills/local-skill",
+                "readiness_status": "available",
+                "tags": ["local"],
+            }
+        ),
+    )
+
+    result = inspect_skill("local-skill")
+
+    assert result is not None
+    assert result["source"] == "local"
+    assert result["identifier"] == "local-skill"
+    assert result["path"] == "local-skill/SKILL.md"
+    assert result["skill_dir"] == "/tmp/profile/skills/local-skill"
+    assert result["readiness_status"] == "available"
+    assert "Hello" in result["skill_md_preview"]
 
 
 def test_do_check_handles_no_installed_updates(monkeypatch):
