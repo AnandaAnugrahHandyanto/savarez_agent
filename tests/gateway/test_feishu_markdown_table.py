@@ -5,7 +5,7 @@ import json
 import os
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 
 class TestFeishuMarkdownTablePayload(unittest.TestCase):
@@ -395,6 +395,32 @@ class TestFeishuMarkdownTableSendEdit(unittest.TestCase):
             [(call.kwargs["msg_type"], call.kwargs["reply_to"]) for call in adapter._feishu_send_with_retry.call_args_list],
             [("interactive", "om_user_message"), ("interactive", None)],
         )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_reply_in_thread_false_ignores_thread_metadata_fallback(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"reply_in_thread": False}))
+        message_api = SimpleNamespace(
+            create=Mock(return_value=SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_top"))),
+            reply=Mock(return_value=SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_reply"))),
+        )
+        adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=message_api)))
+
+        response = asyncio.run(
+            adapter._send_raw_message(
+                chat_id="oc_chat",
+                msg_type="text",
+                payload=json.dumps({"text": "ok"}),
+                reply_to=None,
+                metadata={"thread_id": "omt_thread", "reply_to_message_id": "om_parent"},
+            )
+        )
+
+        self.assertTrue(response.success())
+        message_api.create.assert_called_once()
+        message_api.reply.assert_not_called()
 
     @patch.dict(os.environ, {}, clear=True)
     def test_edit_message_does_not_attempt_interactive_update_for_table_content(self):

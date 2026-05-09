@@ -4631,10 +4631,12 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
+        reply_threads_enabled = bool(self.config.extra.get("reply_in_thread", True))
+        thread_id = (metadata or {}).get("thread_id")
         effective_reply_to = reply_to
-        if not effective_reply_to and metadata and metadata.get("thread_id"):
+        if not effective_reply_to and thread_id and reply_threads_enabled:
             effective_reply_to = metadata.get("reply_to_message_id")
-        reply_in_thread = bool((metadata or {}).get("thread_id"))
+        reply_in_thread = bool(thread_id and reply_threads_enabled)
         if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload,
