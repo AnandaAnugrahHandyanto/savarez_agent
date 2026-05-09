@@ -478,6 +478,52 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
+def _cron_display_text(value: object, fallback: str = "cron job") -> str:
+    """Return a single-line, markdown-safe-enough label for cron wrappers."""
+
+    text = " ".join(str(value or fallback).split()).strip() or fallback
+    return text.replace("```", "'''")
+
+
+def _format_cron_delivery(job: dict, content: str, style: str = "compact") -> str:
+    """Format a delivered cron response.
+
+    ``compact`` is optimized for Telegram/mobile scanability: bold job name,
+    monospace job id, and no noisy separator/footer. ``classic`` preserves the
+    old verbose wrapper for users who want it.
+    """
+
+    task_name = _cron_display_text(job.get("name") or job.get("id"))
+    job_id = _cron_display_text(job.get("id", ""), fallback="unknown")
+    body = (content or "").strip()
+
+    if style == "classic":
+        return (
+            f"Cronjob Response: {task_name}\n"
+            f"(job_id: {job_id})\n"
+            f"-------------\n\n"
+            f"{body}\n\n"
+            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+        )
+
+    parts = [f"⏰ **{task_name}**", f"`job_id: {job_id}`"]
+    if body:
+        parts.append(body)
+    return "\n\n".join(parts).strip()
+
+
+def _cron_action_buttons(job: dict) -> list[dict[str, str]]:
+    """Return compact Telegram inline-button metadata for a delivered cron."""
+
+    job_id = str(job.get("id", "")).strip()
+    if not job_id:
+        return []
+    return [
+        {"text": "Stop", "callback_data": f"cj:stop:{job_id}"},
+        {"text": "More Info", "callback_data": f"cj:info:{job_id}"},
+    ]
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -504,22 +550,19 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
     # in config.yaml for clean output.
     wrap_response = True
+    wrap_style = "compact"
+    action_buttons = True
     try:
         user_cfg = load_config()
-        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
+        cron_cfg = user_cfg.get("cron", {})
+        wrap_response = cron_cfg.get("wrap_response", True)
+        wrap_style = cron_cfg.get("wrap_style", "compact")
+        action_buttons = cron_cfg.get("action_buttons", True)
     except Exception:
         pass
 
     if wrap_response:
-        task_name = job.get("name", job["id"])
-        job_id = job.get("id", "")
-        delivery_content = (
-            f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job_id})\n"
-            f"-------------\n\n"
-            f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
-        )
+        delivery_content = _format_cron_delivery(job, content, style=wrap_style)
     else:
         delivery_content = content
 
@@ -573,16 +616,21 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             delivery_errors.append(msg)
             continue
 
+        telegram_buttons = []
+        if action_buttons and platform_name.lower() == "telegram" and not job.get("_proactive_controls"):
+            telegram_buttons = _cron_action_buttons(job)
+        send_metadata = {"thread_id": thread_id} if thread_id else {}
+        if telegram_buttons:
+            send_metadata["telegram_inline_buttons"] = telegram_buttons
+        if job.get("_proactive_controls"):
+            send_metadata["proactive_controls"] = job.get("_proactive_controls")
+        send_metadata = send_metadata or None
+
         # Prefer the live adapter when the gateway is running — this supports E2EE
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
-            send_metadata = {"thread_id": thread_id} if thread_id else {}
-            if job.get("_proactive_controls"):
-                send_metadata["proactive_controls"] = job.get("_proactive_controls")
-            if not send_metadata:
-                send_metadata = None
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()
@@ -628,7 +676,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
         if not delivered:
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            send_kwargs = {"thread_id": thread_id, "media_files": media_files}
+            if telegram_buttons:
+                send_kwargs["telegram_inline_buttons"] = telegram_buttons
+            coro = _send_to_platform(
+                platform,
+                pconfig,
+                chat_id,
+                cleaned_delivery_content,
+                **send_kwargs,
+            )
             try:
                 result = asyncio.run(coro)
             except RuntimeError:
@@ -638,7 +695,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # fresh thread that has no running loop.
                 coro.close()
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                    future = pool.submit(
+                        asyncio.run,
+                        _send_to_platform(
+                            platform,
+                            pconfig,
+                            chat_id,
+                            cleaned_delivery_content,
+                            **send_kwargs,
+                        ),
+                    )
                     result = future.result(timeout=30)
             except Exception as e:
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"

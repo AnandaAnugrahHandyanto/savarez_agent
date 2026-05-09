@@ -539,3 +539,123 @@ class TestTelegramProactiveButtons:
         assert handled
         assert handled[0].text == "User tapped Do it. Draft internally."
         assert handled[0].source.user_id == "111"
+
+
+class TestTelegramCronButtons:
+    @pytest.mark.asyncio
+    async def test_send_adds_cron_management_buttons_to_last_chunk(self):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 88
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        result = await adapter.send(
+            "12345",
+            "Cron output",
+            metadata={
+                "telegram_inline_buttons": [
+                    {"text": "Stop", "callback_data": "cj:stop:job-1"},
+                    {"text": "More Info", "callback_data": "cj:info:job-1"},
+                ]
+            },
+        )
+
+        assert result.success is True
+        kwargs = adapter._bot.send_message.call_args.kwargs
+        assert kwargs["reply_markup"] is not None
+        from gateway.platforms import telegram as telegram_mod
+        recent_buttons = telegram_mod.InlineKeyboardButton.call_args_list[-2:]
+        labels = [call.args[0] for call in recent_buttons]
+        data = [call.kwargs.get("callback_data") for call in recent_buttons]
+        assert labels == ["Stop", "More Info"]
+        assert data == ["cj:stop:job-1", "cj:info:job-1"]
+
+    @pytest.mark.asyncio
+    async def test_stop_callback_pauses_job_and_flips_to_resume(self, monkeypatch):
+        adapter = _make_adapter()
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111")
+        query = AsyncMock()
+        query.data = "cj:stop:job-1"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_thread_id = None
+        query.message.chat.type = "private"
+        query.from_user = MagicMock()
+        query.from_user.id = 111
+        query.from_user.first_name = "Charles"
+        query.answer = AsyncMock()
+        query.edit_message_reply_markup = AsyncMock()
+        update = MagicMock()
+        update.callback_query = query
+
+        with patch("cron.jobs.pause_job", return_value={"id": "job-1", "enabled": False, "name": "Morning"}) as pause_mock:
+            await adapter._handle_callback_query(update, MagicMock())
+
+        pause_mock.assert_called_once_with("job-1", reason="Stopped from Telegram cron button")
+        query.answer.assert_called_once()
+        assert "Stopped" in query.answer.call_args.kwargs["text"]
+        query.edit_message_reply_markup.assert_called_once()
+        from gateway.platforms import telegram as telegram_mod
+        assert any(call.args[0] == "Resume" and call.kwargs.get("callback_data") == "cj:resume:job-1" for call in telegram_mod.InlineKeyboardButton.call_args_list)
+
+    @pytest.mark.asyncio
+    async def test_more_info_callback_sends_compact_job_card(self, monkeypatch):
+        adapter = _make_adapter()
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111")
+        query = AsyncMock()
+        query.data = "cj:info:job-1"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_thread_id = None
+        query.message.chat.type = "private"
+        query.from_user = MagicMock()
+        query.from_user.id = 111
+        query.from_user.first_name = "Charles"
+        query.answer = AsyncMock()
+        update = MagicMock()
+        update.callback_query = query
+
+        job = {
+            "id": "job-1",
+            "name": "Morning check-in",
+            "enabled": True,
+            "schedule": "0 8 * * *",
+            "deliver": "origin",
+            "last_run_at": "2026-05-09T12:00:00Z",
+            "next_run_at": "2026-05-10T13:00:00Z",
+            "prompt": "Find the one useful thing to nudge Charles about.",
+        }
+        with patch("cron.jobs.get_job", return_value=job):
+            await adapter._handle_callback_query(update, MagicMock())
+
+        query.answer.assert_called_once()
+        adapter._bot.send_message.assert_called_once()
+        kwargs = adapter._bot.send_message.call_args.kwargs
+        assert "Morning check-in" in kwargs["text"]
+        assert "job-1" in kwargs["text"]
+        assert "Find the one useful thing" in kwargs["text"]
+        assert kwargs["reply_markup"] is not None
+
+    @pytest.mark.asyncio
+    async def test_run_callback_triggers_job_next_tick(self, monkeypatch):
+        adapter = _make_adapter()
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111")
+        query = AsyncMock()
+        query.data = "cj:run:job-1"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_thread_id = None
+        query.message.chat.type = "private"
+        query.from_user = MagicMock()
+        query.from_user.id = 111
+        query.from_user.first_name = "Charles"
+        query.answer = AsyncMock()
+        update = MagicMock()
+        update.callback_query = query
+
+        with patch("cron.jobs.trigger_job", return_value={"id": "job-1", "name": "Morning"}) as trigger_mock:
+            await adapter._handle_callback_query(update, MagicMock())
+
+        trigger_mock.assert_called_once_with("job-1")
+        query.answer.assert_called_once()
+        assert "next tick" in query.answer.call_args.kwargs["text"]

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, _format_cron_delivery, _cron_action_buttons, run_job, SILENT_MARKER, _build_job_prompt
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -441,10 +441,9 @@ class TestRoutingIntents:
 
 
 class TestDeliverResultWrapping:
-    """Verify that cron deliveries are wrapped with header/footer and no longer mirrored."""
+    """Verify compact cron delivery wrapping and Telegram controls."""
 
-    def test_delivery_wraps_content_with_header_and_footer(self):
-        """Delivered content should include task name header and agent-invisible note."""
+    def test_delivery_wraps_content_with_compact_markdown_header_and_buttons(self):
         from gateway.config import Platform
 
         pconfig = MagicMock()
@@ -464,14 +463,17 @@ class TestDeliverResultWrapping:
 
         send_mock.assert_called_once()
         sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
-        assert "Cronjob Response: daily-report" in sent_content
-        assert "(job_id: test-job)" in sent_content
-        assert "-------------" in sent_content
+        assert sent_content.startswith("⏰ **daily-report**")
+        assert "`job_id: test-job`" in sent_content
         assert "Here is today's summary." in sent_content
-        assert "To stop or manage this job" in sent_content
+        assert "Cronjob Response:" not in sent_content
+        assert "-------------" not in sent_content
+        assert send_mock.call_args.kwargs["telegram_inline_buttons"] == [
+            {"text": "Stop", "callback_data": "cj:stop:test-job"},
+            {"text": "More Info", "callback_data": "cj:info:test-job"},
+        ]
 
     def test_delivery_uses_job_id_when_no_name(self):
-        """When a job has no name, the wrapper should fall back to job id."""
         from gateway.config import Platform
 
         pconfig = MagicMock()
@@ -489,7 +491,73 @@ class TestDeliverResultWrapping:
             _deliver_result(job, "Output.")
 
         sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
-        assert "Cronjob Response: abc-123" in sent_content
+        assert sent_content.startswith("⏰ **abc-123**")
+        assert "`job_id: abc-123`" in sent_content
+
+    def test_delivery_supports_classic_wrap_style(self):
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_style": "classic"}}):
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert "Cronjob Response: daily-report" in sent_content
+        assert "(job_id: test-job)" in sent_content
+        assert "-------------" in sent_content
+        assert "To stop or manage this job" in sent_content
+
+    def test_format_cron_delivery_sanitizes_multiline_job_names(self):
+        rendered = _format_cron_delivery(
+            {"id": "job-1", "name": "nightly\n```weird```"},
+            "Done.",
+        )
+
+        assert rendered.startswith("⏰ **nightly '''weird'''**")
+        assert "```weird```" not in rendered
+        assert "\n```weird```" not in rendered
+
+    def test_cron_action_buttons_use_pause_not_delete(self):
+        assert _cron_action_buttons({"id": "abc-123", "enabled": True}) == [
+            {"text": "Stop", "callback_data": "cj:stop:abc-123"},
+            {"text": "More Info", "callback_data": "cj:info:abc-123"},
+        ]
+
+    def test_cron_action_buttons_skip_jobs_without_ids(self):
+        assert _cron_action_buttons({}) == []
+
+    def test_delivery_action_buttons_can_be_disabled(self):
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"action_buttons": False}}):
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Summary.")
+
+        assert "telegram_inline_buttons" not in send_mock.call_args.kwargs
 
     def test_delivery_skips_wrapping_when_config_disabled(self):
         """When cron.wrap_response is false, deliver raw content without header/footer."""

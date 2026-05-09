@@ -144,6 +144,20 @@ model:
 # worktree: false   # Default — only create when -w flag is passed
 
 # =============================================================================
+# Cron Delivery Formatting
+# =============================================================================
+# Controls how cron job outputs are wrapped when delivered to chat platforms.
+# Set wrap_response: false to send raw job output only.
+# wrap_style: compact keeps Telegram/Slack notifications short; classic restores
+# the old verbose "Cronjob Response" wrapper.
+# action_buttons adds Telegram inline controls (Stop, More Info) to cron outputs.
+#
+# cron:
+#   wrap_response: true
+#   wrap_style: compact     # compact | classic
+#   action_buttons: true    # Telegram only; set false to disable inline controls
+
+# =============================================================================
 # Terminal Tool Configuration
 # =============================================================================
 # Choose ONE of the following terminal configurations by uncommenting it.

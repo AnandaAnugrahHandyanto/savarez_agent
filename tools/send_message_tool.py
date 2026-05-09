@@ -511,7 +511,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, telegram_inline_buttons=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -581,14 +581,19 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
+            telegram_kwargs = {
+                "media_files": media_files if is_last else [],
+                "thread_id": thread_id,
+                "disable_link_previews": disable_link_previews,
+                "force_document": force_document,
+            }
+            if telegram_inline_buttons and is_last:
+                telegram_kwargs["telegram_inline_buttons"] = telegram_inline_buttons
             result = await _send_telegram(
                 pconfig.token,
                 chat_id,
                 chunk,
-                media_files=media_files if is_last else [],
-                thread_id=thread_id,
-                disable_link_previews=disable_link_previews,
-                force_document=force_document,
+                **telegram_kwargs,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -750,7 +755,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     return last_result
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, telegram_inline_buttons=None):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -808,6 +813,18 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 thread_kwargs["message_thread_id"] = effective_thread_id
         if disable_link_previews:
             thread_kwargs["disable_web_page_preview"] = True
+        if telegram_inline_buttons:
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            buttons = [
+                InlineKeyboardButton(
+                    str(button.get("text", "")),
+                    callback_data=str(button.get("callback_data", "")),
+                )
+                for button in telegram_inline_buttons
+                if button.get("text") and button.get("callback_data")
+            ]
+            if buttons:
+                thread_kwargs["reply_markup"] = InlineKeyboardMarkup([buttons])
 
         last_msg = None
         warnings = []

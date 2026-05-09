@@ -48,7 +48,22 @@ def _make_config():
 def _install_telegram_mock(monkeypatch, bot):
     parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
     constants_mod = SimpleNamespace(ParseMode=parse_mode)
-    telegram_mod = SimpleNamespace(Bot=lambda token: bot, constants=constants_mod)
+
+    class InlineKeyboardButton:
+        def __init__(self, text, callback_data=None):
+            self.text = text
+            self.callback_data = callback_data
+
+    class InlineKeyboardMarkup:
+        def __init__(self, inline_keyboard):
+            self.inline_keyboard = inline_keyboard
+
+    telegram_mod = SimpleNamespace(
+        Bot=lambda token: bot,
+        constants=constants_mod,
+        InlineKeyboardButton=InlineKeyboardButton,
+        InlineKeyboardMarkup=InlineKeyboardMarkup,
+    )
     monkeypatch.setitem(sys.modules, "telegram", telegram_mod)
     monkeypatch.setitem(sys.modules, "telegram.constants", constants_mod)
 
@@ -674,6 +689,27 @@ class TestSendTelegramHtmlDetection:
 
         kwargs = bot.send_message.await_args.kwargs
         assert kwargs["disable_web_page_preview"] is True
+
+    def test_inline_buttons_attach_reply_markup(self, monkeypatch):
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(
+            _send_telegram(
+                "tok",
+                "123",
+                "Cron output",
+                telegram_inline_buttons=[
+                    {"text": "Stop", "callback_data": "cj:stop:job-1"},
+                    {"text": "More Info", "callback_data": "cj:info:job-1"},
+                ],
+            )
+        )
+
+        kwargs = bot.send_message.await_args.kwargs
+        markup = kwargs["reply_markup"]
+        assert [button.text for button in markup.inline_keyboard[0]] == ["Stop", "More Info"]
+        assert [button.callback_data for button in markup.inline_keyboard[0]] == ["cj:stop:job-1", "cj:info:job-1"]
 
     def test_html_with_code_and_pre_tags(self, monkeypatch):
         bot = self._make_bot()

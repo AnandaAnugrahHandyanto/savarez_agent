@@ -377,29 +377,49 @@ class TelegramAdapter(BasePlatformAdapter):
         return int(reply_to) if reply_to is not None else None
 
     @staticmethod
-    def _build_proactive_controls_keyboard(controls: Optional[Dict[str, Any]]):
-        if not controls:
+    def _inline_keyboard_from_metadata(metadata: Optional[Dict[str, Any]]):
+        """Build optional Telegram inline keyboard from gateway metadata."""
+
+        metadata = metadata or {}
+        controls = metadata.get("proactive_controls")
+        if controls:
+            nudge_id = str(controls.get("nudge_id") or "").strip()
+            if not nudge_id:
+                return None
+            labels = {
+                "do": "Do it",
+                "more": "More Info",
+                "later": "Later",
+                "not": "Not useful",
+                "dont": "Don't nudge this",
+            }
+            wanted = controls.get("buttons") or ["do", "more", "later", "not", "dont"]
+            buttons = [
+                InlineKeyboardButton(labels[action], callback_data=f"pa:{action}:{nudge_id}")
+                for action in wanted
+                if action in labels
+            ]
+            rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+            return InlineKeyboardMarkup(rows) if rows else None
+
+        raw_buttons = metadata.get("telegram_inline_buttons") or []
+        if not isinstance(raw_buttons, list):
             return None
-        nudge_id = str(controls.get("nudge_id") or "").strip()
-        if not nudge_id:
-            return None
-        labels = {
-            "do": "Do it",
-            "more": "More Info",
-            "later": "Later",
-            "not": "Not useful",
-            "dont": "Don't nudge this",
-        }
-        wanted = controls.get("buttons") or ["do", "more", "later", "not", "dont"]
-        buttons = [
-            InlineKeyboardButton(labels[action], callback_data=f"pa:{action}:{nudge_id}")
-            for action in wanted
-            if action in labels
-        ]
-        if not buttons:
-            return None
-        rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
-        return InlineKeyboardMarkup(rows)
+        # Accept either a flat button list or a list of rows.
+        rows = raw_buttons if raw_buttons and isinstance(raw_buttons[0], list) else [raw_buttons]
+        keyboard = []
+        for row in rows:
+            button_row = []
+            for button in row:
+                if not isinstance(button, dict):
+                    continue
+                text = str(button.get("text", "")).strip()
+                callback_data = str(button.get("callback_data", "")).strip()
+                if text and callback_data:
+                    button_row.append(InlineKeyboardButton(text, callback_data=callback_data))
+            if button_row:
+                keyboard.append(button_row)
+        return InlineKeyboardMarkup(keyboard) if keyboard else None
 
     @classmethod
     def _reply_to_message_id_for_send(
@@ -1379,9 +1399,7 @@ class TelegramAdapter(BasePlatformAdapter):
             
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
-            proactive_reply_markup = self._build_proactive_controls_keyboard(
-                metadata.get("proactive_controls") if metadata else None
-            )
+            reply_markup = self._inline_keyboard_from_metadata(metadata)
             
             try:
                 from telegram.error import NetworkError as _NetErr
@@ -1427,7 +1445,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
-                                reply_markup=proactive_reply_markup if i == 0 else None,
+                                reply_markup=reply_markup if i == len(chunks) - 1 else None,
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                             )
@@ -1441,7 +1459,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     text=plain_chunk,
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
-                                    reply_markup=proactive_reply_markup if i == 0 else None,
+                                    reply_markup=reply_markup if i == len(chunks) - 1 else None,
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                 )
@@ -2119,6 +2137,186 @@ class TelegramAdapter(BasePlatformAdapter):
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
 
+    @staticmethod
+    def _cron_primary_keyboard(job_id: str, paused: bool = False):
+        primary_label = "Resume" if paused else "Stop"
+        primary_action = "resume" if paused else "stop"
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton(primary_label, callback_data=f"cj:{primary_action}:{job_id}"),
+            InlineKeyboardButton("More Info", callback_data=f"cj:info:{job_id}"),
+        ]])
+
+    @staticmethod
+    def _cron_info_keyboard(job_id: str, paused: bool = False):
+        primary_label = "Resume" if paused else "Stop"
+        primary_action = "resume" if paused else "stop"
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Run Now", callback_data=f"cj:run:{job_id}"),
+                InlineKeyboardButton("Last Output", callback_data=f"cj:output:{job_id}"),
+            ],
+            [
+                InlineKeyboardButton("Edit Schedule", callback_data=f"cj:edit:{job_id}"),
+                InlineKeyboardButton(primary_label, callback_data=f"cj:{primary_action}:{job_id}"),
+            ],
+        ])
+
+    @staticmethod
+    def _short_cron_value(value: object, limit: int = 500) -> str:
+        text = " ".join(str(value or "").split()).strip()
+        return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+    @classmethod
+    def _format_cron_job_info(cls, job: dict) -> str:
+        name = _html.escape(cls._short_cron_value(job.get("name") or job.get("id") or "cron job", 120))
+        job_id = _html.escape(str(job.get("id", "unknown")))
+        status = "Paused" if job.get("enabled") is False else "Active"
+        schedule = _html.escape(cls._short_cron_value(job.get("schedule") or "unscheduled", 120))
+        next_run = _html.escape(cls._short_cron_value(job.get("next_run_at") or "unknown", 120))
+        last_run = _html.escape(cls._short_cron_value(job.get("last_run_at") or "never", 120))
+        deliver = _html.escape(cls._short_cron_value(job.get("deliver") or "local", 120))
+        mode = "script-only" if job.get("no_agent") else "agent"
+        toolsets = job.get("enabled_toolsets") or []
+        toolsets_text = ", ".join(map(str, toolsets)) if toolsets else "default"
+        prompt = _html.escape(cls._short_cron_value(job.get("prompt") or job.get("script") or "", 700))
+        return (
+            f"<b>{name}</b>\n"
+            f"<code>job_id: {job_id}</code>\n\n"
+            f"Status: {status}\n"
+            f"Schedule: {schedule}\n"
+            f"Next: {next_run}\n"
+            f"Last: {last_run}\n"
+            f"Deliver: {deliver}\n"
+            f"Mode: {_html.escape(mode)} · Tools: {_html.escape(toolsets_text)}\n\n"
+            f"<b>Prompt / script</b>\n{prompt or '<i>empty</i>'}"
+        )
+
+    @classmethod
+    def _format_cron_last_output(cls, job: dict) -> str:
+        from cron.jobs import OUTPUT_DIR
+
+        job_id = str(job.get("id", ""))
+        job_output_dir = OUTPUT_DIR / job_id
+        if not job_id or not job_output_dir.exists():
+            return "No saved output for this cron job yet."
+        output_files = sorted(job_output_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not output_files:
+            return "No saved output for this cron job yet."
+        latest = output_files[0]
+        try:
+            content = latest.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            return f"Could not read last output: {_html.escape(str(exc))}"
+        trimmed = cls._short_cron_value(content, 1800)
+        return f"<b>Last output</b>\n<code>{_html.escape(latest.name)}</code>\n\n<pre>{_html.escape(trimmed)}</pre>"
+
+    async def _send_cron_callback_message(self, query, text: str, reply_markup=None, parse_mode=None) -> None:
+        if not query.message:
+            return
+        kwargs: Dict[str, Any] = {
+            "chat_id": int(query.message.chat_id),
+            "text": text,
+            "parse_mode": parse_mode or ParseMode.HTML,
+            "reply_markup": reply_markup,
+            **self._link_preview_kwargs(),
+        }
+        thread_id = getattr(query.message, "message_thread_id", None)
+        if thread_id is not None:
+            kwargs.update(
+                self._thread_kwargs_for_send(
+                    str(query.message.chat_id),
+                    str(thread_id),
+                    {"thread_id": str(thread_id)},
+                )
+            )
+        await self._bot.send_message(**kwargs)
+
+    async def _handle_cron_job_callback(self, query, data: str, *, query_chat_id, query_chat_type, query_thread_id, query_user_name) -> None:
+        parts = data.split(":", 2)
+        if len(parts) != 3:
+            await query.answer(text="Invalid cron action.")
+            return
+        action, job_id = parts[1], parts[2]
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ You are not authorized to manage this cron job.")
+            return
+
+        from cron.jobs import get_job, pause_job, resume_job, trigger_job
+
+        if action == "stop":
+            job = pause_job(job_id, reason="Stopped from Telegram cron button")
+            if not job:
+                await query.answer(text="Cron job not found.")
+                return
+            await query.answer(text="Stopped cron job.")
+            try:
+                await query.edit_message_reply_markup(reply_markup=self._cron_primary_keyboard(job_id, paused=True))
+            except Exception:
+                pass
+            return
+
+        if action == "resume":
+            job = resume_job(job_id)
+            if not job:
+                await query.answer(text="Cron job not found.")
+                return
+            await query.answer(text="Resumed cron job.")
+            try:
+                await query.edit_message_reply_markup(reply_markup=self._cron_primary_keyboard(job_id, paused=False))
+            except Exception:
+                pass
+            return
+
+        job = get_job(job_id)
+        if not job and action not in {"run"}:
+            await query.answer(text="Cron job not found.")
+            return
+        paused = bool(job and job.get("enabled") is False)
+
+        if action == "info":
+            await query.answer(text="Cron info")
+            await self._send_cron_callback_message(
+                query,
+                self._format_cron_job_info(job),
+                reply_markup=self._cron_info_keyboard(job_id, paused=paused),
+            )
+            return
+
+        if action == "output":
+            await query.answer(text="Last output")
+            await self._send_cron_callback_message(
+                query,
+                self._format_cron_last_output(job),
+                reply_markup=self._cron_info_keyboard(job_id, paused=paused),
+            )
+            return
+
+        if action == "run":
+            job = trigger_job(job_id)
+            if not job:
+                await query.answer(text="Cron job not found.")
+                return
+            await query.answer(text="Scheduled to run on the next tick.")
+            return
+
+        if action == "edit":
+            await query.answer(text="Edit from chat")
+            await self._send_cron_callback_message(
+                query,
+                f"To edit this cron, use:\n<code>hermes cron edit {_html.escape(job_id)}</code>",
+                reply_markup=self._cron_info_keyboard(job_id, paused=paused),
+            )
+            return
+
+        await query.answer(text="Unknown cron action.")
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -2299,6 +2497,18 @@ class TelegramAdapter(BasePlatformAdapter):
                         await self._bot.send_message(**send_kwargs)
                 except Exception as exc:
                     logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
+            return
+
+        # --- Cron job management callbacks ---
+        if data.startswith("cj:"):
+            await self._handle_cron_job_callback(
+                query,
+                data,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
             return
 
         # --- Proactive nudge callbacks (pa:action:nudge_id) ---
