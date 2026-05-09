@@ -301,8 +301,9 @@ class PlatformConfig:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
         home_channel = None
-        if "home_channel" in data:
-            home_channel = HomeChannel.from_dict(data["home_channel"])
+        raw_home_channel = data.get("home_channel")
+        if raw_home_channel:
+            home_channel = HomeChannel.from_dict(raw_home_channel)
 
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),

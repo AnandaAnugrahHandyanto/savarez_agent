@@ -70,6 +70,17 @@ class TestPlatformConfigRoundtrip:
         restored = PlatformConfig.from_dict({"gateway_restart_notification": "false"})
         assert restored.gateway_restart_notification is False
 
+    def test_from_dict_treats_explicit_null_home_channel_as_absent(self):
+        # YAML `home_channel: null` used to crash in HomeChannel.from_dict
+        # because the key was present so we tried to subscript None. (#13708)
+        restored = PlatformConfig.from_dict({"enabled": True, "home_channel": None})
+        assert restored.enabled is True
+        assert restored.home_channel is None
+
+    def test_from_dict_treats_empty_home_channel_dict_as_absent(self):
+        restored = PlatformConfig.from_dict({"enabled": True, "home_channel": {}})
+        assert restored.home_channel is None
+
 
 class TestGetConnectedPlatforms:
     def test_returns_enabled_with_token(self):
