@@ -107,6 +107,20 @@ import yaml
 # All skills live in ~/.hermes/skills/ (single source of truth)
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
+_ORIGINAL_SKILLS_DIR = SKILLS_DIR
+
+
+def _active_skills_dir() -> Path:
+    """Return skills directory for the currently active profile.
+
+    See tools/skills_tool.py::_active_skills_dir for full rationale.
+    When SKILLS_DIR has been monkeypatched (e.g. by tests), the patched
+    value is honoured.
+    """
+    if SKILLS_DIR != _ORIGINAL_SKILLS_DIR:
+        return SKILLS_DIR
+    return get_hermes_home() / "skills"
+
 
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
@@ -131,7 +145,7 @@ def _containing_skills_root(skill_path: Path) -> Path:
             return root
         except (ValueError, OSError):
             continue
-    return SKILLS_DIR
+    return _active_skills_dir()
 
 
 def _pinned_guard(name: str) -> Optional[str]:
@@ -270,9 +284,10 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
 
 def _resolve_skill_dir(name: str, category: str = None) -> Path:
     """Build the directory path for a new skill, optionally under a category."""
+    _sd = _active_skills_dir()
     if category:
-        return SKILLS_DIR / category / name
-    return SKILLS_DIR / name
+        return _sd / category / name
+    return _sd / name
 
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
@@ -415,7 +430,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     result = {
         "success": True,
         "message": f"Skill '{name}' created.",
-        "path": str(skill_dir.relative_to(SKILLS_DIR)),
+        "path": str(skill_dir.relative_to(_active_skills_dir())),
         "skill_md": str(skill_md),
     }
     if category:
