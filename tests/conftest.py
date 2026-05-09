@@ -338,6 +338,16 @@ def _reset_module_state():
     that don't exist yet (test collection before production import) are
     skipped silently — production import later creates fresh empty state.
     """
+    # --- i18n — catalog + config-lang LRU caches persist on xdist workers;
+    #     if a sibling test mocked YAML or paths badly, catalogs can stay empty
+    #     until process exit (#gateway.draining regressions across Linux CI).
+    try:
+        from agent.i18n import reset_language_cache
+
+        reset_language_cache()
+    except Exception:
+        pass
+
     # --- logging — quiet/one-shot paths mutate process-global logger state ---
     logging.disable(logging.NOTSET)
     for _logger_name in ("tools", "run_agent", "trajectory_compressor", "cron", "hermes_cli"):
