@@ -78,10 +78,16 @@ The hub at `https://hermes-pages.rouse-gordon.workers.dev/` is backed by `/opt/d
 
 Cloudflare Pages auto-deploys on push — typically live within 30 seconds.
 
+## Design preferences (from Gordon's feedback)
+
+- **Email display:** Show as plain text `gordon.rouse@gmail.com` NOT as a `mailto:` link. `mailto:` links trigger browser/app picker dialogs which users find annoying on a static page. Use `<span>✉️ gordon.rouse@gmail.com</span>` instead.
+- **GitHub link:** Use `⚙️ GitHub` button in the hero actions area. Don't put it in the footer alongside the email.
+- **Hero layout:** Avatar + name + role + company + tenure + email (plain text) + status badge + action buttons.
+
 ## Common page types Gordon publishes
 
-- **Profession/career** — landing page with work history, targets, contact info
-- **Hobbies** — future: interests, projects outside work
+- **Profession/career** — landing page with work history, targets, contact info (email as plain text, GitHub in hero)
+- **Hobbies** — future: interests, projects outside work, GitHub link goes here per Gordon's preference
 - **Reports** — one-off generated content (job search summaries, analysis, etc.)
 
 Each gets its own entry in the hub index.

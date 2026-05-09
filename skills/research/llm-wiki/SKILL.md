@@ -23,6 +23,18 @@ Contradictions have already been flagged. Synthesis reflects everything ingested
 **Division of labor:** The human curates sources and directs analysis. The agent
 summarizes, cross-references, files, and maintains consistency.
 
+## Gordon's Wiki — Passive Maintenance Mode
+
+Gordon wants the wiki maintained **passively** — he reads it in Obsidian, I file updates during our conversations without prompting. He doesn't want to be asked "should I add this?" every time.
+
+**How it works:**
+- Wiki lives at `/opt/data/wiki/` (not pushed to any repo by default — Gordon decides if/when to sync)
+- I file relevant information from our conversations into the wiki without asking
+- When Gordon asks about something covered in the wiki, I query it and synthesize
+- Gordon views it in Obsidian (graph view, clickable wikilinks)
+
+**To create a syncable repo later:** Gordon creates `rousegordon-ops/wiki` on GitHub, I push the wiki there. Until then, it's local-only at `/opt/data/wiki/`.
+
 ## When This Skill Activates
 
 Use this skill when the user:
