@@ -80,6 +80,7 @@ export const zh: Translations = {
       skills: "技能",
       kanban: "看板",
       achievements: "成就",
+      example: "示例",
     },
     modelToolsSheetSubtitle: "与工具",
     modelToolsSheetTitle: "模型",

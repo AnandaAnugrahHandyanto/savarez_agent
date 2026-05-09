@@ -10,7 +10,7 @@ export function PageHeaderProvider({
   pluginTabs,
 }: {
   children: ReactNode;
-  pluginTabs: { path: string; label: string }[];
+  pluginTabs: { path: string; label: string; labelKey?: string }[];
 }) {
   const { pathname } = useLocation();
   const { t } = useI18n();

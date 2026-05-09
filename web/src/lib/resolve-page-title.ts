@@ -16,7 +16,7 @@ const BUILTIN: Record<string, keyof Translations["app"]["nav"]> = {
 export function resolvePageTitle(
   pathname: string,
   t: Translations,
-  pluginTabs: { path: string; label: string }[],
+  pluginTabs: { path: string; label: string; labelKey?: string }[],
 ): string {
   const normalized = pathname.replace(/\/$/, "") || "/";
   if (normalized === "/") {
@@ -24,6 +24,10 @@ export function resolvePageTitle(
   }
   const plugin = pluginTabs.find((p) => p.path === normalized);
   if (plugin) {
+    if (plugin.labelKey) {
+      const translated = (t.app.nav as Record<string, string>)[plugin.labelKey];
+      if (translated) return translated;
+    }
     return plugin.label;
   }
   const key = BUILTIN[normalized];

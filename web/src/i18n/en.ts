@@ -81,6 +81,7 @@ export const en: Translations = {
       skills: "Skills",
       kanban: "Kanban",
       achievements: "Achievements",
+      example: "Example",
     },
     modelToolsSheetSubtitle: "& tools",
     modelToolsSheetTitle: "Model",

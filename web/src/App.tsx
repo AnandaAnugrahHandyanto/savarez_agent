@@ -190,6 +190,16 @@ function resolveIcon(name: string): ComponentType<{ className?: string }> {
   return ICON_MAP[name] ?? Puzzle;
 }
 
+const PLUGIN_LABEL_KEYS: Record<string, string> = {
+  kanban: "kanban",
+  "hermes-achievements": "achievements",
+  example: "example",
+};
+
+function getPluginLabelKey(name: string): string | undefined {
+  return PLUGIN_LABEL_KEYS[name];
+}
+
 function buildNavItems(
   builtIn: NavItem[],
   manifests: PluginManifest[],
@@ -203,7 +213,7 @@ function buildNavItems(
     const pluginItem: NavItem = {
       path: manifest.tab.path,
       label: manifest.label,
-      labelKey: manifest.name === "kanban" ? "kanban" : manifest.name === "hermes-achievements" ? "achievements" : undefined,
+      labelKey: getPluginLabelKey(manifest.name),
       icon: resolveIcon(manifest.icon),
     };
 
@@ -368,6 +378,7 @@ export default function App() {
         .map((m) => ({
           path: m.tab.override ?? m.tab.path,
           label: m.label,
+          labelKey: getPluginLabelKey(m.name),
         })),
     [manifests],
   );

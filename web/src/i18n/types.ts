@@ -81,6 +81,7 @@ export interface Translations {
       skills: string;
       kanban: string;
       achievements: string;
+      example: string;
     };
     modelToolsSheetSubtitle: string;
     modelToolsSheetTitle: string;
