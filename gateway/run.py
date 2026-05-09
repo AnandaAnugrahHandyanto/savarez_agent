@@ -6064,6 +6064,11 @@ class GatewayRunner:
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
         self._running_agents_ts[_quick_key] = time.time()
         _run_generation = self._begin_session_run_generation(_quick_key)
+        # Keep gateway_state.json honest while a turn is actually in flight.
+        # Without this, external diagnostics can report active_agents=0 for a
+        # live long-running Discord turn, which makes slow work look like stale
+        # UI/session state.
+        self._update_runtime_status()
 
         try:
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
@@ -12897,6 +12902,7 @@ class GatewayRunner:
         self._running_agents_ts.pop(session_key, None)
         if hasattr(self, "_busy_ack_ts"):
             self._busy_ack_ts.pop(session_key, None)
+        self._update_runtime_status()
         return True
 
     def _clear_session_boundary_security_state(self, session_key: str) -> None:

@@ -21,6 +21,7 @@ Strict invariants:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -57,6 +58,37 @@ DEFAULT_INTERVAL_HOURS = 24 * 7  # 7 days
 DEFAULT_MIN_IDLE_HOURS = 2
 DEFAULT_STALE_AFTER_DAYS = 30
 DEFAULT_ARCHIVE_AFTER_DAYS = 90
+
+_KANBAN_WORKER_ENV_KEYS = (
+    "HERMES_KANBAN_TASK",
+    "HERMES_KANBAN_WORKSPACE",
+    "HERMES_TENANT",
+)
+
+
+@contextlib.contextmanager
+def _without_kanban_worker_context():
+    """Temporarily hide dispatcher env from auxiliary curator agents.
+
+    Curator reviews can be launched from inside a Kanban worker via
+    ``hermes curator run --sync --dry-run``. In that subprocess the worker's
+    ``HERMES_KANBAN_TASK`` env would otherwise make the forked review AIAgent
+    look like the worker itself: kanban tools enter the schema, Kanban worker
+    guidance enters the prompt, and omitted tool task_id args default to the
+    parent task. The curator is an auxiliary maintenance agent, not a worker,
+    so scrub that context only while constructing/running the fork.
+    """
+    saved = {key: os.environ.get(key) for key in _KANBAN_WORKER_ENV_KEYS}
+    try:
+        for key in _KANBAN_WORKER_ENV_KEYS:
+            os.environ.pop(key, None)
+        yield
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 # ---------------------------------------------------------------------------
@@ -1525,7 +1557,6 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
 
     Never raises; callers get a structured failure instead.
     """
-    import contextlib
     result_meta: Dict[str, Any] = {
         "final": "",
         "summary": "",
@@ -1581,36 +1612,41 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
 
     review_agent = None
     try:
-        review_agent = AIAgent(
-            model=_model_name,
-            provider=_resolved_provider,
-            api_key=_api_key,
-            base_url=_base_url,
-            api_mode=_api_mode,
-            # Umbrella-building over a large skill collection is worth a
-            # high iteration ceiling — the pass typically takes 50-100
-            # API calls against hundreds of candidate skills. The
-            # single-session review path caps itself at a much smaller
-            # number because it's not doing a curation sweep.
-            max_iterations=9999,
-            quiet_mode=True,
-            platform="curator",
-            skip_context_files=True,
-            skip_memory=True,
-        )
-        # Disable recursive nudges — the curator must never spawn its own review.
-        review_agent._memory_nudge_interval = 0
-        review_agent._skill_nudge_interval = 0
+        with _without_kanban_worker_context():
+            review_agent = AIAgent(
+                model=_model_name,
+                provider=_resolved_provider,
+                api_key=_api_key,
+                base_url=_base_url,
+                api_mode=_api_mode,
+                # Umbrella-building over a large skill collection is worth a
+                # high iteration ceiling — the pass typically takes 50-100
+                # API calls against hundreds of candidate skills. The
+                # single-session review path caps itself at a much smaller
+                # number because it's not doing a curation sweep.
+                max_iterations=9999,
+                quiet_mode=True,
+                platform="curator",
+                # Defense in depth: even if the process env or the quiet-mode
+                # tool-definition cache says "kanban worker", the curator
+                # fork must not receive kanban tools or worker prompt guidance.
+                disabled_toolsets=["kanban"],
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            # Disable recursive nudges — the curator must never spawn its own review.
+            review_agent._memory_nudge_interval = 0
+            review_agent._skill_nudge_interval = 0
 
-        # Redirect the forked agent's stdout/stderr to /dev/null while it
-        # runs so its tool-call chatter doesn't pollute the foreground
-        # terminal. The background-thread runner also hides it; this
-        # belt-and-suspenders path matters when a caller invokes
-        # run_curator_review(synchronous=True) from the CLI.
-        with open(os.devnull, "w", encoding="utf-8") as _devnull, \
-             contextlib.redirect_stdout(_devnull), \
-             contextlib.redirect_stderr(_devnull):
-            conv_result = review_agent.run_conversation(user_message=prompt)
+            # Redirect the forked agent's stdout/stderr to /dev/null while it
+            # runs so its tool-call chatter doesn't pollute the foreground
+            # terminal. The background-thread runner also hides it; this
+            # belt-and-suspenders path matters when a caller invokes
+            # run_curator_review(synchronous=True) from the CLI.
+            with open(os.devnull, "w", encoding="utf-8") as _devnull, \
+                 contextlib.redirect_stdout(_devnull), \
+                 contextlib.redirect_stderr(_devnull):
+                conv_result = review_agent.run_conversation(user_message=prompt)
 
         final = ""
         if isinstance(conv_result, dict):

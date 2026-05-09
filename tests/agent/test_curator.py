@@ -812,6 +812,88 @@ def test_review_model_legacy_curator_auxiliary_still_works(curator_env, caplog):
     ), "expected deprecation warning when legacy curator.auxiliary is used"
 
 
+def test_llm_review_scrubs_kanban_worker_context_from_curator_fork(
+    curator_env, monkeypatch
+):
+    """A curator fork launched inside a Kanban worker must not inherit the
+    worker task's tools, prompt guidance, or HERMES_KANBAN_* env defaults.
+    """
+    import importlib
+    import os
+    import sys
+    import types
+
+    # The fixture stubs _run_llm_review for most tests; this regression test
+    # needs the real implementation.
+    curator = importlib.reload(curator_env["curator"])
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", "/tmp/parent-workspace")
+    monkeypatch.setenv("HERMES_TENANT", "tenant-a")
+
+    captured = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured["init_kwargs"] = kwargs
+            captured["init_env"] = {
+                key: os.environ.get(key)
+                for key in ("HERMES_KANBAN_TASK", "HERMES_KANBAN_WORKSPACE", "HERMES_TENANT")
+            }
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            captured["run_kwargs"] = kwargs
+            captured["run_env"] = {
+                key: os.environ.get(key)
+                for key in ("HERMES_KANBAN_TASK", "HERMES_KANBAN_WORKSPACE", "HERMES_TENANT")
+            }
+            return {"final_response": "curator done"}
+
+        def close(self):
+            captured["closed"] = True
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    import hermes_cli.config as config_mod
+    import hermes_cli.runtime_provider as runtime_provider_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: {"model": {"provider": "openrouter", "default": "openai/gpt-5.5"}},
+    )
+    monkeypatch.setattr(
+        runtime_provider_mod,
+        "resolve_runtime_provider",
+        lambda requested, target_model: {
+            "provider": requested,
+            "api_key": "test-key",
+            "base_url": "https://example.test/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+
+    meta = curator._run_llm_review("review prompt")
+
+    assert meta["final"] == "curator done"
+    assert captured["closed"] is True
+    assert captured["init_kwargs"]["platform"] == "curator"
+    assert "kanban" in captured["init_kwargs"].get("disabled_toolsets", [])
+    assert captured["run_kwargs"] == {"user_message": "review prompt"}
+    assert captured["init_env"] == {
+        "HERMES_KANBAN_TASK": None,
+        "HERMES_KANBAN_WORKSPACE": None,
+        "HERMES_TENANT": None,
+    }
+    assert captured["run_env"] == captured["init_env"]
+    # The parent process env is restored after the curator pass.
+    assert os.environ["HERMES_KANBAN_TASK"] == "t_parent"
+    assert os.environ["HERMES_KANBAN_WORKSPACE"] == "/tmp/parent-workspace"
+    assert os.environ["HERMES_TENANT"] == "tenant-a"
+
+
 def test_review_model_new_slot_wins_over_legacy(curator_env):
     """When BOTH new and legacy are set, the canonical slot wins."""
     curator = curator_env["curator"]
