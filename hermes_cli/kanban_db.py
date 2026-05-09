@@ -1490,6 +1490,8 @@ def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
 
 
 def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
+    """Remove a parent→child link; on success run ``recompute_ready`` for promotions."""
+    changed = False
     with write_txn(conn):
         cur = conn.execute(
             "DELETE FROM task_links WHERE parent_id = ? AND child_id = ?",
@@ -1500,7 +1502,10 @@ def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
                 conn, child_id, "unlinked",
                 {"parent": parent_id, "child": child_id},
             )
-        return cur.rowcount > 0
+            changed = True
+    if changed:
+        recompute_ready(conn)
+    return changed
 
 
 def parent_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:

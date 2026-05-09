@@ -694,6 +694,24 @@ def test_cli_unblock_bulk(kanban_home):
     assert out.count("Unblocked") == 2
 
 
+def test_unlink_tasks_triggers_recompute_ready(kanban_home):
+    """Removing the last blocking parent must promote child todo → ready (issue #22459)."""
+    conn = kb.connect()
+    try:
+        p_done = kb.create_task(conn, title="done parent")
+        q_block = kb.create_task(conn, title="blocking parent")
+        child = kb.create_task(conn, title="child")
+        kb.link_tasks(conn, p_done, child)
+        kb.link_tasks(conn, q_block, child)
+        assert kb.get_task(conn, child).status == "todo"
+        kb.complete_task(conn, p_done, result="ok")
+        assert kb.get_task(conn, child).status == "todo"
+        assert kb.unlink_tasks(conn, q_block, child) is True
+        assert kb.get_task(conn, child).status == "ready"
+    finally:
+        conn.close()
+
+
 def test_cli_block_bulk_via_ids_flag(kanban_home):
     conn = kb.connect()
     try:
