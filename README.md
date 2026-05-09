@@ -119,16 +119,3 @@ hermes-agent/
 | ThinkCheck 3.0 SDK | 通用谐振评估 SDK | [查看](https://github.com/luoxuejian000/-thinkcheck-lib-/tree/3.0-harmony-sdk) |
 | ThinkCheck 4.0 鸿蒙版 | 鸿蒙原生推理诊断引擎 | [查看](https://github.com/luoxuejian000/-thinkcheck-lib-/tree/4.0-harmony-competition) |
 ```
-
----
-
-### 📌 操作步骤
-
-1. 打开您的 `https://github.com/luoxuejian000/hermes-agent` 仓库。
-2. 找到根目录下的 `README.md` 文件，点击它。
-3. 点击右上角的**铅笔图标**（Edit this file）。
-4. **全选删除**原有内容，粘贴上面的完整 README。
-5. 滚动到底部，提交信息填写：`docs: 更新完整版水晶之心 README`
-6. 点击绿色的 **Commit changes** 按钮。
-
-完成后，您的“水晶之心”项目主页将以专业、完整的姿态呈现给所有访问者，包括项目定位、功能对比、引擎介绍、安装步骤、项目结构、许可证和相关产品矩阵。
