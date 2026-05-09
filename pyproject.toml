@@ -79,7 +79,8 @@ web3-mcp = [
   "web3>=6.11.0,<7",
   "solana>=0.30.0,<0.37",
   "httpx>=0.28.0,<1",
-  "websockets>=13.0,<14",
+  # Align with daytona (hermes-agent[all]) — requires websockets>=15,<16
+  "websockets>=13.0,<16",
 ]
 homeassistant = ["aiohttp>=3.9.0,<4"]
 sms = ["aiohttp>=3.9.0,<4"]
