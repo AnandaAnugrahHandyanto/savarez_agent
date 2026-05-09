@@ -67,6 +67,7 @@ Or in-session:
 | `computer_use` | `computer_use` | Background macOS desktop control via cua-driver — does not steal cursor/focus. Works with any tool-capable model. macOS only; requires `cua-driver` on `$PATH`. |
 | `image_gen` | `image_generate` | Text-to-image generation via FAL.ai (with opt-in OpenAI / xAI backends). |
 | `memory` | `memory` | Persistent cross-session memory management. |
+| `knowledge` | `knowledge_capture`, `knowledge_get`, `knowledge_search` | Opt-in cold source-attributed ledger for decisions, debug histories, skill evaluations, and project state. Not included in default platform toolsets; enable explicitly to avoid schema/token tax. |
 | `messaging` | `send_message` | Send messages to other platforms (Telegram, Discord, etc.) from within a session. |
 | `moa` | `mixture_of_agents` | Multi-model consensus via Mixture of Agents. |
 | `rl` | `rl_check_status`, `rl_edit_config`, `rl_get_current_config`, `rl_get_results`, `rl_list_environments`, `rl_list_runs`, `rl_select_environment`, `rl_start_training`, `rl_stop_training`, `rl_test_inference` | RL training environment management (Atropos). |
