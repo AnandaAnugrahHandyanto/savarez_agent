@@ -1007,6 +1007,88 @@ def _scan_assembled_cron_prompt(assembled: str, job: dict) -> str:
     return assembled
 
 
+def _run_job_via_claude_code(job: dict, prompt: str) -> tuple[bool, str, str, Optional[str]]:
+    """Execute a cron job via the Claude Code wrapper instead of the Hermes agent loop.
+
+    Triggered when ``job["claude_backend"] is True``.  Shells out to
+    ``primal-operator-claude --conversation-id cron:<id> --backend cron`` with
+    the (already assembled) prompt on stdin.  Returns the same 4-tuple shape
+    as the LLM path so the rest of run_job's bookkeeping is unaffected.
+    """
+    import subprocess  # local import keeps top-level imports lean
+    job_id = job["id"]
+    job_name = job["name"]
+    now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
+    workdir = (job.get("workdir") or "").strip() or None
+    timeout_s = int(job.get("claude_backend_timeout_s") or 1500)  # 25 min default
+
+    wrapper = "/home/jake/.local/bin/primal-operator-claude"
+    cmd = [
+        wrapper,
+        "--conversation-id", f"cron:{job_id}",
+        "--backend", "cron",
+    ]
+
+    logger.info(
+        "Job '%s' (ID: %s): dispatching via claude_backend wrapper", job_name, job_id
+    )
+    try:
+        result = subprocess.run(
+            cmd,
+            input=prompt,
+            text=True,
+            capture_output=True,
+            timeout=timeout_s,
+            cwd=workdir,
+        )
+    except subprocess.TimeoutExpired:
+        err = f"primal-operator-claude wrapper timed out after {timeout_s}s"
+        doc = (
+            f"# Cron Job: {job_name} (TIMEOUT)\n\n"
+            f"**Job ID:** {job_id}\n**Run Time:** {now_iso}\n"
+            f"**Backend:** claude-code\n\n## Error\n\n{err}\n"
+        )
+        return False, doc, "", err
+    except Exception as exc:
+        err = f"{type(exc).__name__}: {exc}"
+        doc = (
+            f"# Cron Job: {job_name} (FAILED)\n\n"
+            f"**Job ID:** {job_id}\n**Run Time:** {now_iso}\n"
+            f"**Backend:** claude-code\n\n## Error\n\n{err}\n"
+        )
+        return False, doc, "", err
+
+    final_response = (result.stdout or "").strip()
+
+    if result.returncode != 0:
+        err = f"primal-operator-claude exited {result.returncode}: {(result.stderr or '')[:500]}"
+        doc = (
+            f"# Cron Job: {job_name} (FAILED)\n\n"
+            f"**Job ID:** {job_id}\n**Run Time:** {now_iso}\n"
+            f"**Backend:** claude-code\n\n## Error\n\n{err}\n\n"
+            f"## Partial Stdout\n\n{final_response[:2000]}\n"
+        )
+        return False, doc, "", err
+
+    if not final_response:
+        silent_doc = (
+            f"# Cron Job: {job_name}\n\n"
+            f"**Job ID:** {job_id}\n**Run Time:** {now_iso}\n"
+            f"**Backend:** claude-code\n**Status:** silent (empty response)\n"
+        )
+        return True, silent_doc, SILENT_MARKER, None
+
+    doc = (
+        f"# Cron Job: {job_name}\n\n"
+        f"**Job ID:** {job_id}\n**Run Time:** {now_iso}\n"
+        f"**Schedule:** {job.get('schedule_display', 'N/A')}\n"
+        f"**Backend:** claude-code\n\n"
+        f"## Prompt\n\n{prompt}\n\n## Response\n\n{final_response}\n"
+    )
+    logger.info("Job '%s' (claude_backend) completed successfully", job_name)
+    return True, doc, final_response, None
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -1187,6 +1269,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     if prompt is None:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
         return True, "", SILENT_MARKER, None
+
+    # ---------------------------------------------------------------
+    # claude_backend short-circuit — dispatch to Claude Code wrapper instead
+    # of the Hermes agent loop. Same prompt-build path as LLM, just a
+    # different executor. See _run_job_via_claude_code for the wrapper invocation.
+    # ---------------------------------------------------------------
+    if job.get("claude_backend"):
+        return _run_job_via_claude_code(job, prompt)
+
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 

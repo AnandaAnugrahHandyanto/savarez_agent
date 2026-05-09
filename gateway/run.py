@@ -6316,6 +6316,58 @@ class GatewayRunner:
                 pass
         return source
 
+    async def _dispatch_via_claude_wrapper(self, event, source) -> bool:
+        """Dispatch a message to primal-operator-claude wrapper instead of the Hermes agent loop.
+
+        Returns True on success (response sent), False to fall through to normal handling.
+        Gated by env var HERMES_CLAUDE_BACKEND_TELEGRAM=1 — see _handle_message_with_agent.
+        """
+        import subprocess
+        adapter = self.adapters.get(source.platform)
+        if adapter is None:
+            logger.warning("claude_backend: no adapter for platform=%s", source.platform)
+            return False
+        prompt = event.text or ""
+        if not prompt.strip():
+            return False  # let normal handler deal with empty/non-text events
+        platform_label = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+        conv_id = f"{platform_label}:{source.chat_id or source.user_id or 'unknown'}"
+        try:
+            await adapter.send_typing(source.chat_id)
+        except Exception:
+            pass
+        loop = asyncio.get_event_loop()
+        def _run():
+            return subprocess.run(
+                [
+                    "/home/jake/.local/bin/primal-operator-claude",
+                    "--conversation-id", conv_id,
+                    "--backend", "chat",
+                ],
+                input=prompt,
+                text=True,
+                capture_output=True,
+                timeout=300,
+            )
+        try:
+            result = await loop.run_in_executor(None, _run)
+            response = (result.stdout or "").strip()
+            if result.returncode != 0:
+                response = f"[claude_backend error] exit={result.returncode}\n{(result.stderr or '')[:400]}"
+            elif not response:
+                response = "(no response)"
+        except subprocess.TimeoutExpired:
+            response = "[claude_backend timeout — no response after 300s]"
+        except Exception as exc:
+            response = f"[claude_backend error] {type(exc).__name__}: {exc}"
+        try:
+            await adapter.send(source.chat_id, response)
+        except Exception:
+            logger.exception("claude_backend: adapter.send failed")
+            return False
+        logger.info("claude_backend dispatch complete (conv=%s, response_chars=%d)", conv_id, len(response))
+        return True
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -6326,6 +6378,23 @@ class GatewayRunner:
             _platform_name, source.user_name or source.user_id or "unknown",
             source.chat_id or "unknown", _msg_preview,
         )
+
+        # ---------------------------------------------------------------
+        # Claude Code backend short-circuit — gated by env var.
+        # When HERMES_CLAUDE_BACKEND_TELEGRAM=1 is set in the gateway service
+        # environment AND the active profile is primal-operator, dispatch
+        # the message to the Claude Code wrapper instead of running the
+        # Hermes agent loop. Easy rollback: unset env var, restart gateway.
+        # ---------------------------------------------------------------
+        if os.environ.get("HERMES_CLAUDE_BACKEND_TELEGRAM") == "1":
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+                if get_active_profile_name() == "primal-operator":
+                    handled = await self._dispatch_via_claude_wrapper(event, source)
+                    if handled:
+                        return
+            except Exception:
+                logger.exception("claude_backend short-circuit raised; falling through to Hermes loop")
 
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
