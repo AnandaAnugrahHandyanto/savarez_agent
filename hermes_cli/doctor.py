@@ -245,6 +245,11 @@ def _build_apikey_providers_list() -> list:
     }
     for _label, _canonical in _name_to_canonical.items():
         _known_canonical.add(_canonical)
+    # Providers with their own dedicated check earlier in run_doctor() that
+    # use non-Bearer auth (e.g. Anthropic's x-api-key + anthropic-version).
+    # Without this, the generic Bearer-auth loop re-checks the same key with
+    # the wrong header and reports a bogus HTTP 4xx for the same provider.
+    _known_canonical.add("anthropic")
     try:
         from providers import list_providers
         from providers.base import ProviderProfile as _PP
