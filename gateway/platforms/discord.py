@@ -832,10 +832,51 @@ class DiscordAdapter(BasePlatformAdapter):
 
         except asyncio.TimeoutError:
             logger.error("[%s] Timeout waiting for connection to Discord", self.name, exc_info=True)
+            # The background bot task may have already failed with a
+            # permanent auth error (e.g. LoginFailure) while we were
+            # waiting for the READY event. Check the task's exception
+            # and classify accordingly — otherwise the gateway will
+            # misclassify a bad token as a transient timeout and
+            # keep restart-looping.
+            _permanent = False
+            if self._bot_task and self._bot_task.done():
+                _exc = self._bot_task.exception()
+                if _exc is not None:
+                    if DISCORD_AVAILABLE:
+                        import discord as _discord
+                        _permanent_errs = (
+                            _discord.errors.LoginFailure,
+                            _discord.errors.PrivilegedIntentsRequired,
+                        )
+                        _permanent = isinstance(_exc, _permanent_errs)
+                    if _permanent:
+                        self._set_fatal_error(
+                            type(_exc).__name__, str(_exc), retryable=False
+                        )
+                    else:
+                        logger.error(
+                            "[%s] Background bot task failed: %s",
+                            self.name, _exc,
+                        )
             self._release_platform_lock()
             return False
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to connect to Discord: %s", self.name, e, exc_info=True)
+            # Classify permanent auth/config errors as non-retryable so the
+            # gateway won't restart-loop when a token is invalid/missing.
+            # Network blips and other transient errors remain retryable.
+            _permanent_error = False
+            if DISCORD_AVAILABLE:
+                import discord as _discord
+                _permanent = (
+                    _discord.errors.LoginFailure,
+                    _discord.errors.PrivilegedIntentsRequired,
+                )
+                _permanent_error = isinstance(e, _permanent)
+            if _permanent_error:
+                self._set_fatal_error(
+                    type(e).__name__, str(e), retryable=False
+                )
             self._release_platform_lock()
             return False
 
@@ -861,10 +902,72 @@ class DiscordAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
 
+        # Cancel the background bot task (e.g. client.start()) to prevent
+        # orphaned LoginFailure errors from accumulating in the event loop
+        # after a failed connect() attempt. Also inspect the task's
+        # exception — if it's a permanent auth error, flag it so the
+        # gateway startup logic can correctly treat it as non-retryable
+        # instead of restart-looping.
+        if self._bot_task:
+            # Give the bot task a brief window to finish on its own
+            # (e.g. if it's about to raise LoginFailure). Then inspect
+            # its exception before cancelling.
+            if not self._bot_task.done():
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(self._bot_task), timeout=2.0
+                    )
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+                except Exception as e:
+                    # The wait is only a grace window so we can inspect the
+                    # background task. If it completes with an exception during
+                    # that window, suppress it here and classify/log it below.
+                    logger.debug(
+                        "[%s] Bot task ended during disconnect: %s",
+                        self.name,
+                        e,
+                    )
+            _exc = None
+            if self._bot_task.done():
+                try:
+                    _exc = self._bot_task.exception()
+                except asyncio.CancelledError:
+                    _exc = None
+            if _exc is not None:
+                _permanent = False
+                if DISCORD_AVAILABLE:
+                    import discord as _discord
+                    _permanent_errs = (
+                        _discord.errors.LoginFailure,
+                        _discord.errors.PrivilegedIntentsRequired,
+                    )
+                    _permanent = isinstance(_exc, _permanent_errs)
+                if _permanent:
+                    self._set_fatal_error(
+                        type(_exc).__name__, str(_exc), retryable=False
+                    )
+            if not self._bot_task.done():
+                self._bot_task.cancel()
+            try:
+                await self._bot_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                # If the bot task already ended with an error, the exception
+                # was inspected above. Do not let disconnect() re-raise it;
+                # disconnect must be best-effort cleanup after failed connect().
+                logger.debug(
+                    "[%s] Bot task exception suppressed during disconnect: %s",
+                    self.name,
+                    e,
+                )
+
         self._running = False
         self._client = None
         self._ready_event.clear()
         self._post_connect_task = None
+        self._bot_task = None
 
         self._release_platform_lock()
 

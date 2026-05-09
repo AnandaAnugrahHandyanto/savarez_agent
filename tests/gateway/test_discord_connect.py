@@ -31,6 +31,17 @@ def _ensure_discord_mock():
     """
     if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
         sys.modules["discord"].AllowedMentions = _FakeAllowedMentions
+        # Ensure error classes are available for auth-error classification tests.
+        # When discord.py is installed, the real errors module is already present;
+        # when it's mocked by another test, attach the mock classes.
+        try:
+            import discord as _real_discord
+            if not hasattr(sys.modules["discord"], "errors") or not hasattr(
+                getattr(sys.modules["discord"], "errors", None), "LoginFailure"
+            ):
+                sys.modules["discord"].errors = _real_discord.errors
+        except ImportError:
+            pass
         return
 
     if sys.modules.get("discord") is None:
@@ -53,6 +64,16 @@ def _ensure_discord_mock():
         )
         discord_mod.opus = SimpleNamespace(is_loaded=lambda: True)
 
+        # Use real discord.errors classes if available, otherwise mock them
+        try:
+            import discord as _real_discord
+            discord_mod.errors = _real_discord.errors
+        except ImportError:
+            discord_mod.errors = SimpleNamespace(
+                LoginFailure=type("LoginFailure", (Exception,), {}),
+                PrivilegedIntentsRequired=type("PrivilegedIntentsRequired", (Exception,), {}),
+            )
+
         ext_mod = MagicMock()
         commands_mod = MagicMock()
         commands_mod.Bot = MagicMock
@@ -69,6 +90,31 @@ _ensure_discord_mock()
 
 import gateway.platforms.discord as discord_platform  # noqa: E402
 from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+
+
+# Test exception classes for auth-error classification tests.
+# These mirror discord.errors.LoginFailure / PrivilegedIntentsRequired
+# but are proper Exception subclasses that work regardless of whether
+# the real discord.py or a MagicMock is in sys.modules.
+class _TestLoginFailure(Exception):
+    pass
+
+
+class _TestPrivilegedIntentsRequired(Exception):
+    pass
+
+
+def _patch_discord_errors(monkeypatch):
+    """Make discord.errors.LoginFailure and PrivilegedIntentsRequired
+    available on discord_platform.discord for auth-error tests.
+    Patches both the adapter module's reference AND sys.modules so
+    local 'import discord as _discord' inside disconnect() works."""
+    _err_mod = type("errors", (), {
+        "LoginFailure": _TestLoginFailure,
+        "PrivilegedIntentsRequired": _TestPrivilegedIntentsRequired,
+    })()
+    monkeypatch.setattr(discord_platform.discord, "errors", _err_mod)
+    monkeypatch.setattr(sys.modules["discord"], "errors", _err_mod)
 
 
 @pytest.fixture(autouse=True)
@@ -905,3 +951,119 @@ async def test_safe_sync_detects_contexts_drift():
     fake_http.edit_global_command.assert_not_awaited()
     fake_http.delete_global_command.assert_awaited_once_with(999, 77)
     fake_http.upsert_global_command.assert_awaited_once_with(999, desired)
+
+
+# ── Permanent auth error classification tests ──────────────────────────
+
+
+class LoginFailingBot(FakeBot):
+    """Bot whose start() raises LoginFailure (bad/missing token)."""
+    async def start(self, token):
+        raise _TestLoginFailure("Improper token has been passed.")
+
+
+@pytest.mark.asyncio
+async def test_connect_sets_fatal_error_on_LoginFailure(monkeypatch):
+    """connect() except Exception should call _set_fatal_error(retryable=False)
+    when Bot.start() raises LoginFailure (caught via background task check)."""
+    _patch_discord_errors(monkeypatch)
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="bad-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    monkeypatch.setattr(
+        discord_platform.commands,
+        "Bot",
+        lambda **kwargs: LoginFailingBot(
+            intents=kwargs["intents"],
+            proxy=kwargs.get("proxy"),
+            allowed_mentions=kwargs.get("allowed_mentions"),
+        ),
+    )
+
+    # Bypass the 30s READY timeout — give the bot task one tick to fail
+    async def fake_wait_for(awaitable, timeout):
+        await asyncio.sleep(0)
+        if hasattr(awaitable, "close"):
+            awaitable.close()
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(discord_platform.asyncio, "wait_for", fake_wait_for)
+
+    ok = await adapter.connect()
+
+    assert ok is False
+    assert adapter.has_fatal_error is True
+    assert adapter.fatal_error_retryable is False
+    assert "Improper token" in (adapter.fatal_error_message or "")
+    assert "_TestLoginFailure" in (adapter.fatal_error_code or "")
+
+
+@pytest.mark.asyncio
+async def test_connect_timeout_checks_bot_task_for_LoginFailure(monkeypatch):
+    """When the READY timeout fires and _bot_task already has LoginFailure,
+    connect() should call _set_fatal_error(retryable=False)."""
+    _patch_discord_errors(monkeypatch)
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="bad-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    monkeypatch.setattr(
+        discord_platform.commands,
+        "Bot",
+        lambda **kwargs: LoginFailingBot(
+            intents=kwargs["intents"],
+            proxy=kwargs.get("proxy"),
+            allowed_mentions=kwargs.get("allowed_mentions"),
+        ),
+    )
+
+    # Replace asyncio.wait_for so the 30s READY timeout fires immediately.
+    # Give the event loop one tick first so _bot_task gets created and fails.
+    async def fake_wait_for(awaitable, timeout):
+        await asyncio.sleep(0)  # let bot task start and fail
+        if hasattr(awaitable, "close"):
+            awaitable.close()
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(discord_platform.asyncio, "wait_for", fake_wait_for)
+
+    ok = await adapter.connect()
+
+    assert ok is False
+    assert adapter.has_fatal_error is True
+    assert adapter.fatal_error_retryable is False
+    assert "Improper token" in (adapter.fatal_error_message or "")
+    assert "_TestLoginFailure" in (adapter.fatal_error_code or "")
+
+
+@pytest.mark.asyncio
+async def test_disconnect_cancels_bot_task_and_detects_LoginFailure(monkeypatch):
+    """disconnect() cancels _bot_task and properly nulls the reference."""
+    _patch_discord_errors(monkeypatch)
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="bad-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    # Inject a failing _bot_task
+    async def failing_start(_token):
+        raise _TestLoginFailure("Improper token has been passed.")
+    adapter._bot_task = asyncio.create_task(failing_start("bad-token"))
+    await asyncio.sleep(0)
+
+    assert adapter._bot_task.done()
+
+    await adapter.disconnect()
+
+    # Verify task cleanup
+    assert adapter._bot_task is None
+    assert adapter._post_connect_task is None
