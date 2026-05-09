@@ -421,9 +421,17 @@ def load_jobs() -> List[Dict[str, Any]]:
             with open(JOBS_FILE, 'r', encoding='utf-8') as f:
                 data = json.loads(f.read(), strict=False)
                 if not isinstance(data, dict):
+                    logger.warning(
+                        "jobs.json root is not a JSON object (got %s); returning empty job list",
+                        type(data).__name__,
+                    )
                     return []
                 jobs = data.get("jobs", [])
                 if not isinstance(jobs, list):
+                    logger.warning(
+                        "jobs.json 'jobs' field is not a list (got %s); returning empty job list",
+                        type(jobs).__name__,
+                    )
                     return []
                 if jobs:
                     # Auto-repair: rewrite with proper escaping
