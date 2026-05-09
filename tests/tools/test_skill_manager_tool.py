@@ -943,3 +943,29 @@ class TestPinnedGuard:
                        side_effect=RuntimeError("sidecar broken")):
                 result = _delete_skill("my-skill")
         assert result["success"] is True
+
+
+class TestActiveSkillsDir:
+    """Tests for skill_manager_tool._active_skills_dir() profile-aware resolution."""
+
+    def test_follows_hermes_home(self, tmp_path, monkeypatch):
+        """_active_skills_dir() resolves from get_hermes_home(), not the
+        module constant, when SKILLS_DIR has not been monkeypatched."""
+        import tools.skill_manager_tool as smt
+        profile_home = tmp_path / "profiles" / "test"
+        profile_skills = profile_home / "skills"
+        profile_skills.mkdir(parents=True)
+        monkeypatch.setattr(
+            "hermes_constants.get_hermes_home", lambda: profile_home
+        )
+        assert smt._active_skills_dir() == profile_skills
+
+    def test_honours_monkeypatched_skills_dir(self, tmp_path, monkeypatch):
+        """When SKILLS_DIR is patched (existing test pattern), the patched
+        value takes precedence over dynamic resolution."""
+        import tools.skill_manager_tool as smt
+        patched_dir = tmp_path / "patched_skills"
+        patched_dir.mkdir()
+        monkeypatch.setattr(smt, "SKILLS_DIR", patched_dir)
+        assert smt._active_skills_dir() == patched_dir
+        
