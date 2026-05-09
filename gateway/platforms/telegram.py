@@ -190,8 +190,11 @@ def _render_table_block_for_telegram(table_block: list[str]) -> str:
 
         heading = next((cell for cell in cells if cell), f"Row {index}")
         rendered_rows.append(f"**{heading}**")
+        # Skip the first column (row-label) when rendering bullet items,
+        # matching the expected Telegram output format.
         rendered_rows.extend(
-            f"• {header}: {value}" for header, value in zip(headers, cells)
+            f"• {header}: {value}"
+            for header, value in zip(headers[1:], cells[1:])
         )
 
     return "\n\n".join(rendered_rows)
@@ -4017,7 +4020,12 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_to_text = None
         if message.reply_to_message:
             reply_to_id = str(message.reply_to_message.message_id)
-            reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
+            # Prefer Telegram's native partial quote text when available
+            quote = getattr(message, "quote", None)
+            if quote and getattr(quote, "text", None):
+                reply_to_text = quote.text
+            else:
+                reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
 
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt
