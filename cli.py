@@ -12649,6 +12649,17 @@ def main(
         toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
     
     parsed_skills = _parse_skills_argument(skills)
+    config_always_load = [] if ignore_rules else _parse_skills_argument(
+        CLI_CONFIG.get("skills", {}).get("always_load", [])
+    )
+    if config_always_load:
+        merged_skills = []
+        seen_skills = set()
+        for skill_name in [*config_always_load, *parsed_skills]:
+            if skill_name and skill_name not in seen_skills:
+                seen_skills.add(skill_name)
+                merged_skills.append(skill_name)
+        parsed_skills = merged_skills
 
     # Create CLI instance
     cli = HermesCLI(

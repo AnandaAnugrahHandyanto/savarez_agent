@@ -92,6 +92,35 @@ def test_main_applies_preloaded_skills_to_system_prompt(monkeypatch):
     assert cli_obj.preloaded_skills == ["hermes-agent-dev", "github-auth"]
 
 
+def test_main_auto_loads_skills_from_config(monkeypatch):
+    import cli as cli_mod
+
+    seen = {}
+
+    def fake_prompt(skills, task_id=None):
+        seen["skills"] = list(skills)
+        return ("", list(skills), [])
+
+    monkeypatch.setattr(cli_mod, "HermesCLI", lambda **kwargs: _DummyCLI(**kwargs))
+    monkeypatch.setattr(cli_mod, "build_preloaded_skills_prompt", fake_prompt)
+    monkeypatch.setattr(
+        cli_mod,
+        "CLI_CONFIG",
+        {
+            "skills": {"always_load": ["memory-first-recall"]},
+            "model": {"default": "anthropic/claude-opus-4.6", "provider": "auto"},
+            "display": {"compact": False, "tool_progress": "all"},
+            "agent": {},
+            "terminal": {"env_type": "local"},
+        },
+    )
+
+    with pytest.raises(SystemExit):
+        cli_mod.main(list_tools=True)
+
+    assert seen["skills"] == ["memory-first-recall"]
+
+
 def test_main_raises_for_unknown_preloaded_skill(monkeypatch):
     import cli as cli_mod
 

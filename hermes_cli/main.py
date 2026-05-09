@@ -11325,6 +11325,30 @@ Examples:
 
     _processed_argv = _coalesce_session_name_args(sys.argv[1:])
 
+    # Merge config-level always-load skills into the session startup path so
+    # they behave like preloaded skills for every agent session.
+    def _normalize_skill_list(raw_value):
+        if not raw_value:
+            return []
+        if isinstance(raw_value, (list, tuple)):
+            normalized = []
+            for item in raw_value:
+                normalized.extend(
+                    part.strip() for part in str(item).split(",") if part.strip()
+                )
+            return normalized
+        return [part.strip() for part in str(raw_value).split(",") if part.strip()]
+
+    try:
+        from hermes_cli.config import load_config
+
+        _startup_cfg = load_config()
+        _always_load = _normalize_skill_list(
+            (_startup_cfg.get("skills", {}) or {}).get("always_load", [])
+        )
+    except Exception:
+        _always_load = []
+
     # ── Defensive subparser routing (bpo-9338 workaround) ───────────
     # On some Python versions (notably <3.11), argparse fails to route
     # subcommand tokens when the parent parser has nargs='?' optional
@@ -11370,6 +11394,17 @@ Examples:
     if args.version:
         cmd_version(args)
         return
+
+    if _always_load and not getattr(args, "ignore_user_config", False) and not getattr(args, "ignore_rules", False):
+        current_skills = _normalize_skill_list(getattr(args, "skills", None))
+        merged_skills = []
+        seen_skills = set()
+        for skill_name in [*_always_load, *current_skills]:
+            if skill_name and skill_name not in seen_skills:
+                seen_skills.add(skill_name)
+                merged_skills.append(skill_name)
+        if merged_skills:
+            args.skills = merged_skills
 
     # Discover Python plugins and register shell hooks once, before any
     # command that can fire lifecycle hooks.  Both are idempotent; gated
