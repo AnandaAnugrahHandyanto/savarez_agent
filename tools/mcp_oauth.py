@@ -88,7 +88,16 @@ class OAuthNonInteractiveError(RuntimeError):
 # Module-level state
 # ---------------------------------------------------------------------------
 
-# Port used by the most recent build_oauth_auth() call.  Exposed so that
+# Per-thread OAuth callback port. Concurrent OAuth flows (e.g. two gateway sessions
+# starting MCP servers simultaneously) previously stomped on each other because
+# _oauth_port was a module-level scalar. Replacing it with threading.local isolates
+# each thread's port selection.
+# Kept as a module-level alias for backward-compatible test reads.
+import threading as _oauth_threading
+_oauth_tls = _oauth_threading.local()
+_oauth_tls.port = None
+
+# Legacy alias — reads/writes the current thread's TLS port.
 # tests can verify the callback server and the redirect_uri share a port.
 _oauth_port: int | None = None
 
