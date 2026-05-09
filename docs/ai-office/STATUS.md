@@ -1,6 +1,6 @@
 # Hermes AI Office — STATUS
 
-Last updated: 2026-05-09 12:25 KST
+Last updated: 2026-05-09 12:42 KST
 
 ## Current phase
 
@@ -30,9 +30,57 @@ Current Stage 10-G result: `/office` now has local map-density/readability modes
 
 Current Stage 10-H result: `/office` now exposes safe keyboard jump targets for the RPG office map. `OfficeMapJumpTarget` and `buildOfficeMapJumpTargets(densityPlan)` generate Korean anchors for 지도/사용성/최근 변화/안전 정보, with the recent target adapting to 요약 mode's collapsed rail. The UI renders `data-office-jump-targets` / `data-office-jump-target`, adds stable focusable section anchors, and keeps all jumps read-only/browser-local.
 
-Next phase: proceed to Stage 11 decision planning or stop at the current CSS/SVG RPG dashboard unless further readability gaps appear. Still no individual task identity, generated content-like speech bubbles, sprite assets, Phaser, PixiJS, canvas renderer, backend/API changes, mutation controls, persistent storage, or raw record projection. Stage 11 remains the separate renderer decision gate.
+Current Stage 11-A result: renderer decision gate planning and evidence collection are documented in `docs/ai-office/plans/2026-05-09-stage-11-renderer-decision-gate.md`. The current recommendation is not to add a renderer; keep CSS/SVG as the default and treat the observed crowding as a layout/density polish issue unless later evidence shows DOM/CSS cannot solve it cleanly.
+
+Next phase: Stage 11-B should be a CSS/SVG layout/density polish plan or decision review, not dependency adoption. Still no individual task identity, generated content-like speech bubbles, sprite assets, Phaser, PixiJS, canvas renderer, backend/API changes, mutation controls, persistent storage, or raw record projection. Stage 11 remains the separate renderer decision gate.
 
 Stage 6 slices were approved by the user, including proceeding through the recommended remaining slices. Stage 7 was approved with testing deferred until the end. Stage 8-A was approved as the next safe step by the user saying to proceed in order, and the user then requested items 1 through 3 to run automatically in sequence. The user also approved installing missing test/runtime extras as needed in earlier setup. No gateway restart, cron change, Kanban mutation, NAS/Obsidian write, service/config mutation, memory/skill update, pixel dependency, or mutation-control implementation has been performed. The local dashboard process was restarted only to smoke-test the newly built local frontend bundle.
+
+
+## Stage 11-A renderer decision evidence pass documented
+
+Implemented files/changes:
+
+- `docs/ai-office/plans/2026-05-09-stage-11-renderer-decision-gate.md`
+  - Added Stage 11-A evidence notes for desktop/standard, 요약, 상세, reduced-motion/accessibility posture, visual readability, and build-size baseline.
+  - Current conclusion: keep CSS/SVG; observed issue is density/readability polish, not a proven renderer-dependency need.
+
+Evidence 2026-05-09 12:42 KST:
+
+- Browser URL: `http://127.0.0.1:8765/office?stage11=evidence`; existing dashboard listener on `127.0.0.1:8765` was reused.
+- Standard mode: density controls present, 4 jump targets, recent target `#office-map-recent`, usability rail present, 12 safe character inspect buttons, stable focus anchors present, raw leak regex false, console JS errors none.
+- 요약 mode: 6 safe character inspect buttons, recent target `#office-map-recent-collapsed`, collapsed recent rail present/focusable, raw leak regex false, console JS errors none.
+- 상세 mode: current fixture still shows 12 safe generated characters; no extra hidden detail crowd appeared in this data set, raw leak regex false, console JS errors none.
+- Reduced-motion/accessibility posture: `prefers-reduced-motion` CSS rule present; motion is decorative because text rails, labels, role/status/action chips, jump targets, and safe inspector carry the meaning.
+- Visual smoke: CSS/SVG map is functional but borderline dense; small nameplates and lower rail competition should be treated as CSS/SVG layout/density polish before any renderer spike.
+- Build-size baseline: JS `1,253.73 kB` / gzip `366.78 kB`; CSS `125.63 kB` / gzip `19.99 kB`; existing Vite `>500 kB` chunk warning remains.
+
+Safety notes:
+
+- Stage 11-A did not add dependencies, renderer imports, canvas paths, sprite assets, DeskRPG code/assets, backend/API/schema changes, mutation controls, persistent storage, cron/Kanban/topic/gateway/NAS/Obsidian writes, or raw record projection.
+
+Verification:
+
+- `git diff --check` passed before evidence edits.
+- `npm run build` passed with the existing Vite large-chunk warning.
+
+## Stage 11 renderer decision gate entered
+
+Implemented files/changes:
+
+- `docs/ai-office/plans/2026-05-09-stage-11-renderer-decision-gate.md`
+  - Added decision principles, renderer options, evidence checklist, scoring rubric, hard dependency gates, and current recommendation.
+  - Default recommendation: keep CSS/SVG unless Stage 11-A evidence proves a renderer solves a measured problem.
+
+Safety notes:
+
+- Stage 11 entry did not add dependencies, renderer imports, backend/API/schema changes, mutation controls, persistent storage, sprites, or DeskRPG code/assets.
+- Renderer adoption remains blocked behind explicit user approval, bundle measurement, accessibility plan, license review, and safe DTO-only tests.
+
+Verification 2026-05-09 12:32 KST:
+
+- Git backup commit created and pushed before this Stage 11 entry: `236ae26b feat(office): add Korean RPG dashboard dynamics`.
+- Stage 11 entry is documentation/planning only.
 
 ## Stage 10-H keyboard jump targets implemented
 

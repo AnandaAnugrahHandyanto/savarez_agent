@@ -297,7 +297,7 @@ Next recommended design steps, still before any renderer dependency:
 11. Stage 10-F: completed — RPG office usability rail (`OfficeUsabilitySummary`, `buildOfficeUsabilitySummary(state, characters, options)`, `data-office-usability`) surfaces dense aggregation, missing-source fallback, reduced-motion, responsive posture, and Korean copy checks.
 12. Stage 10-G: completed — density/readability modes (`OfficeMapDensityMode`, `OfficeMapDensityPlan`, `buildOfficeMapDensityPlan(mode, characters)`, `data-office-density-controls`) cap visible generated characters and fold rails safely.
 13. Stage 10-H: completed — keyboard jump targets (`OfficeMapJumpTarget`, `buildOfficeMapJumpTargets(densityPlan)`, `data-office-jump-targets`) link 지도/사용성/최근 변화/안전 정보 to focusable safe sections and adapt the recent target for 요약 mode.
-14. Stage 11 next: decide whether the CSS/SVG RPG office is sufficient before opening the separate renderer gate.
+14. Stage 11-A: documented — renderer decision evidence (`2026-05-09-stage-11-renderer-decision-gate.md`) found the current CSS/SVG map safe and functional but borderline dense; keep CSS/SVG and do layout/density polish before any renderer spike.
 
 ## Non-goals for now
 

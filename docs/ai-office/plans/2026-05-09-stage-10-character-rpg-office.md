@@ -180,7 +180,7 @@ Possible outcomes:
 4. Build a tiny custom canvas renderer only if simpler than Pixi/Phaser.
 5. Stop at current RPG dashboard and avoid engine maintenance.
 
-Stage 11 requires explicit approval before adding dependencies.
+Stage 11 has now started as a documentation-only renderer decision gate in `2026-05-09-stage-11-renderer-decision-gate.md`. Stage 11-A evidence currently favors keeping CSS/SVG and doing layout/density polish first. It requires explicit approval before adding dependencies.
 
 ---
 

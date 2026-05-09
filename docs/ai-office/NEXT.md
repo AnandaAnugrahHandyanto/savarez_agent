@@ -1,6 +1,6 @@
 # Hermes AI Office — NEXT
 
-Last updated: 2026-05-09 12:15 KST
+Last updated: 2026-05-09 12:42 KST
 
 ## Start here after `/new`
 
@@ -95,7 +95,7 @@ Stage 9-F current implementation:
 - First snapshots produce no fabricated history; manual refresh remains the default.
 - Planning note expanded: `docs/ai-office/plans/2026-05-09-koreanization-and-dynamic-map.md`.
 
-Recommended next implementation/design stage: Stage 11 decision planning, or a very small responsive smoke documentation pass, should decide whether the current CSS/SVG RPG office is enough before opening the separate renderer decision gate. Do not expose individual task identity, generate content-like speech bubbles, add character mutation targets, or add Phaser, PixiJS, canvas, sprite assets, DeskRPG code/assets, backend/schema/API changes, mutation controls, persistent storage, or raw record projection. Stage 11 remains the separate renderer decision gate.
+Recommended next implementation/design stage: Stage 11-B should review CSS/SVG layout/density polish options based on the Stage 11-A evidence now documented in `docs/ai-office/plans/2026-05-09-stage-11-renderer-decision-gate.md`. Stage 11-A found a safe functional page with borderline density/crowding, not a measured need for PixiJS/Phaser/canvas. Do not expose individual task identity, generate content-like speech bubbles, add character mutation targets, or add Phaser, PixiJS, canvas, sprite assets, DeskRPG code/assets, backend/schema/API changes, mutation controls, persistent storage, or raw record projection. Stage 11 remains the separate renderer decision gate.
 
 Stage 9-D completed:
 
@@ -133,10 +133,10 @@ Browser smoke: http://127.0.0.1:8765/office
 
 Immediate next action should remain a product/UX decision point, not a control-plane expansion:
 
-1. Stage 11 decision planning: decide whether CSS/SVG remains enough or whether the separate renderer gate is worth opening.
-2. Visual smoke documentation: optionally capture desktop/small-screen office-map smoke notes now that density controls, jump targets, usability rail, and inspector affordance are visible.
+1. Stage 11-B CSS/SVG polish decision: use the Stage 11-A evidence to plan small layout/density improvements for crowded character nameplates and lower-rail competition.
+2. Renderer decision: keep CSS/SVG by default; Stage 11-A did not record a measured performance/functional gap that justifies a renderer spike.
 3. Test-harness review: consider React DOM coverage for polling cleanup/pause behavior only if adding/standardizing that harness is separately approved.
-4. Renderer research: only after Stage 10-D/E/F prove CSS/SVG is insufficient and after separate dependency/licensing/security/accessibility review, decide whether Phaser/PixiJS is worth the bundle/maintenance cost.
+4. Renderer research: only after future evidence proves CSS/SVG is insufficient and after separate dependency/licensing/security/accessibility review, decide whether Phaser/PixiJS is worth the bundle/maintenance cost.
 5. Do not add mutation controls, expose dashboard remotely, add Pixi/Phaser/canvas, copy DeskRPG assets/code, create/edit topic registry data, or create/modify Kanban/Cron state without separate approval.
 
 Completed Stage 6 files:
