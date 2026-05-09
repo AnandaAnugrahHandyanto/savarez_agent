@@ -140,6 +140,20 @@ class TestGenerateZsh:
         # gateway has subcommands so a _cmds array must be generated
         assert "gateway_cmds" in out
 
+    def test_valid_zsh_syntax(self):
+        """Script must pass `zsh -n` syntax check."""
+        if not shutil.which("zsh"):
+            pytest.skip("zsh not installed")
+        out = generate_zsh(_make_parser())
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".zsh", delete=False) as f:
+            f.write(out)
+            path = f.name
+        try:
+            result = subprocess.run(["zsh", "-n", path], capture_output=True)
+            assert result.returncode == 0, result.stderr.decode()
+        finally:
+            os.unlink(path)
+
 
 # ---------------------------------------------------------------------------
 # 4. Fish output
