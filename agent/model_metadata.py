@@ -1415,6 +1415,13 @@ def get_model_context_length(
             return ctx
 
     # 6. OpenRouter live API metadata (provider-unaware fallback)
+    # Prefer explicit thin-table entries over OpenRouter's catalog for slugs we
+    # curate separately (aggregation metadata can drift, e.g. hy3-preview).
+    model_lower_exact = model.lower()
+    for _default_slug, _ctx_len in DEFAULT_CONTEXT_LENGTHS.items():
+        if _default_slug.lower() == model_lower_exact:
+            return _ctx_len
+
     metadata = fetch_model_metadata()
     if model in metadata:
         return metadata[model].get("context_length", DEFAULT_FALLBACK_CONTEXT)
