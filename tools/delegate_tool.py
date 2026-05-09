@@ -130,7 +130,10 @@ MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); grandchild rejected u
 # stays as the default fallback and is still the symbol tests import.
 _MIN_SPAWN_DEPTH = 1
 _MAX_SPAWN_DEPTH_CAP = 3
-
+# Subagent resource limits (prevent context explosion and runaway loops)
+_DEFAULT_MAX_CONTEXT_TOKENS = 100000  # Hard limit on context window size
+_DEFAULT_CONTEXT_GROWTH_RATIO = 2.5   # Max allowed output/input token ratio
+_DEFAULT_TIMEOUT_SECONDS = 120        # Wall-clock timeout per subagent
 
 # ---------------------------------------------------------------------------
 # Runtime state: pause flag + active subagent registry
@@ -446,6 +449,68 @@ def _get_inherit_mcp_toolsets() -> bool:
     cfg = _load_config()
     return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=True)
 
+def _get_max_context_tokens() -> int:
+    """Read delegation.max_context_tokens from config.
+    
+    Hard limit on context window size. Subagent is interrupted if context
+    exceeds this threshold. Default: 100000 tokens.
+    """
+    cfg = _load_config()
+    val = cfg.get("max_context_tokens")
+    if val is not None:
+        try:
+            return max(10000, int(val))  # Floor at 10k tokens
+        except (TypeError, ValueError):
+            logger.warning(
+                "delegation.max_context_tokens=%r is not a valid integer; "
+                "using default %d",
+                val,
+                _DEFAULT_MAX_CONTEXT_TOKENS,
+            )
+    return _DEFAULT_MAX_CONTEXT_TOKENS
+
+
+def _get_context_growth_ratio() -> float:
+    """Read delegation.context_growth_ratio from config.
+    
+    Max allowed context growth ratio (output_tokens / input_tokens).
+    If exceeded, subagent is flagged for potential loop. Default: 2.5.
+    """
+    cfg = _load_config()
+    val = cfg.get("context_growth_ratio")
+    if val is not None:
+        try:
+            return max(1.0, float(val))  # Floor at 1.0
+        except (TypeError, ValueError):
+            logger.warning(
+                "delegation.context_growth_ratio=%r is not a valid number; "
+                "using default %.1f",
+                val,
+                _DEFAULT_CONTEXT_GROWTH_RATIO,
+            )
+    return _DEFAULT_CONTEXT_GROWTH_RATIO
+
+
+def _get_timeout_seconds() -> float:
+    """Read delegation.timeout_seconds from config.
+    
+    Wall-clock timeout per subagent. Prevents infinite loops and stuck
+    subagents. Default: 120 seconds.
+    """
+    cfg = _load_config()
+    val = cfg.get("timeout_seconds")
+    if val is not None:
+        try:
+            return max(10.0, float(val))  # Floor at 10 seconds
+        except (TypeError, ValueError):
+            logger.warning(
+                "delegation.timeout_seconds=%r is not a valid number; "
+                "using default %d",
+                val,
+                _DEFAULT_TIMEOUT_SECONDS,
+            )
+    return float(_DEFAULT_TIMEOUT_SECONDS)
+  
 
 def _is_mcp_toolset_name(name: str) -> bool:
     """Return True for canonical MCP toolsets and their registered aliases."""
@@ -1660,6 +1725,44 @@ def _run_single_child(
         _output_tokens = getattr(child, "session_completion_tokens", 0)
         _model = getattr(child, "model", None)
 
+        # Check resource limits (context explosion, growth ratio)
+        _limit_warnings = []
+        _limit_exceeded = False
+        
+        # Check max context tokens
+        max_context = _get_max_context_tokens()
+        total_tokens = _input_tokens + _output_tokens
+        if total_tokens > max_context:
+            _limit_exceeded = True
+            _limit_warnings.append(
+                f"Context limit exceeded: {total_tokens} tokens > {max_context} limit"
+            )
+            logger.warning(
+                "Subagent %d exceeded context limit: %d tokens (limit: %d)",
+                task_index, total_tokens, max_context
+            )
+        
+        # Check context growth ratio (output/input)
+        if _input_tokens > 0:
+            growth_ratio = _output_tokens / _input_tokens
+            max_ratio = _get_context_growth_ratio()
+            if growth_ratio > max_ratio:
+                _limit_warnings.append(
+                    f"Context growth ratio exceeded: {growth_ratio:.2f} > {max_ratio:.2f} "
+                    f"(output: {_output_tokens}, input: {_input_tokens})"
+                )
+                logger.warning(
+                    "Subagent %d high context growth: %.2f (output: %d, input: %d, limit: %.2f)",
+                    task_index, growth_ratio, _output_tokens, _input_tokens, max_ratio
+                )
+        
+        # If limits exceeded, mark as failed with diagnostic
+        if _limit_exceeded:
+            status = "failed"
+            exit_reason = "resource_limit_exceeded"
+            if not summary:
+                summary = "Subagent exceeded resource limits and was terminated."
+
         entry: Dict[str, Any] = {
             "task_index": task_index,
             "status": status,
@@ -1695,6 +1798,11 @@ def _run_single_child(
                 else 0.0
             ),
         }
+              
+        # Add resource limit warnings if any
+        if _limit_warnings:
+            entry["resource_warnings"] = _limit_warnings
+  
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
 
