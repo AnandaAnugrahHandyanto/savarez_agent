@@ -440,6 +440,11 @@ class QQAdapter(BasePlatformAdapter):
             or os.getenv("ALL_PROXY")
             or os.getenv("all_proxy")
         )
+        # heartbeat= enables aiohttp WS-level Ping/Pong keepalive so
+        # half-open TCP connections (NAT/firewall state expiry) raise an
+        # error in _read_events() instead of hanging on receive() forever.
+        # The op 1 heartbeat in _heartbeat_loop() is QQ-app-level and does
+        # not detect dead transports on its own. See #21633.
         self._ws = await self._session.ws_connect(
             gateway_url,
             headers={
@@ -447,6 +452,7 @@ class QQAdapter(BasePlatformAdapter):
             },
             timeout=CONNECT_TIMEOUT_SECONDS,
             proxy=ws_proxy,
+            heartbeat=30.0,
         )
         logger.info("[%s] WebSocket connected to %s", self._log_tag, gateway_url)
 

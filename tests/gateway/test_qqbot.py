@@ -235,6 +235,49 @@ class TestQQWebSocketProxy:
         assert seen_session_kwargs.get("trust_env") is True
         assert seen_ws_kwargs.get("proxy") == "http://127.0.0.1:7897"
 
+    @pytest.mark.asyncio
+    async def test_open_ws_passes_heartbeat_for_keepalive(self, monkeypatch):
+        """Regression for #21633: aiohttp ws_connect must receive a
+        heartbeat= so half-open TCP connections don't hang receive()
+        forever.  Without this the QQ bot dies silently when NAT/firewall
+        state expires."""
+        from gateway.platforms.qqbot import QQAdapter
+
+        for key in (
+            "WSS_PROXY", "wss_proxy", "HTTPS_PROXY", "https_proxy",
+            "ALL_PROXY", "all_proxy",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+        seen_ws_kwargs: dict = {}
+
+        class FakeSession:
+            def __init__(self, **kwargs):
+                self.closed = False
+
+            async def close(self):
+                self.closed = True
+
+            async def ws_connect(self, *args, **kwargs):
+                seen_ws_kwargs.update(kwargs)
+                return mock.AsyncMock(closed=False)
+
+        with mock.patch(
+            "gateway.platforms.qqbot.adapter.aiohttp.ClientSession",
+            side_effect=FakeSession,
+        ):
+            await adapter._open_ws("wss://api.sgroup.qq.com/websocket")
+
+        heartbeat = seen_ws_kwargs.get("heartbeat")
+        assert heartbeat is not None, (
+            "ws_connect() must be called with heartbeat= so aiohttp emits "
+            "WS-level Ping/Pong to detect dead connections (#21633)."
+        )
+        assert isinstance(heartbeat, (int, float))
+        assert 0 < heartbeat <= 60.0
+
 # ---------------------------------------------------------------------------
 # _strip_at_mention
 # ---------------------------------------------------------------------------
