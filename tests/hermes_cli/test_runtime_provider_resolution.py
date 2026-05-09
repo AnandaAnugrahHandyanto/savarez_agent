@@ -1848,7 +1848,7 @@ class TestAzureFoundryResolution:
         model: str,
         api_mode: str = "chat_completions",
         *,
-        api_mode_explicit: bool = False,
+        api_mode_explicit: bool | None = None,
     ):
         cfg = {
             "provider": "azure-foundry",
@@ -1856,8 +1856,8 @@ class TestAzureFoundryResolution:
             "api_mode": api_mode,
             "default": model,
         }
-        if api_mode_explicit:
-            cfg["api_mode_explicit"] = True
+        if api_mode_explicit is not None:
+            cfg["api_mode_explicit"] = api_mode_explicit
         return cfg
 
     def test_gpt5_codex_upgrades_chat_completions_to_responses(self, monkeypatch):
@@ -1865,13 +1865,33 @@ class TestAzureFoundryResolution:
         monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "az-key")
         monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
         monkeypatch.setattr(rp, "_get_model_config",
-                            lambda: self._make_cfg_with_model("gpt-5.3-codex", "chat_completions"))
+                            lambda: self._make_cfg_with_model(
+                                "gpt-5.3-codex",
+                                "chat_completions",
+                                api_mode_explicit=False,
+                            ))
         monkeypatch.setattr(rp, "load_pool", lambda provider: None)
 
         resolved = rp.resolve_runtime_provider(requested="azure-foundry")
 
         assert resolved["api_mode"] == "codex_responses"
         assert resolved["base_url"] == "https://synopsisse.openai.azure.com/openai/v1"
+
+    def test_legacy_chat_completions_without_marker_is_not_overridden_for_gpt5_codex(self, monkeypatch):
+        """Legacy config with only api_mode should still be treated as explicit."""
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "az-key")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {
+            "provider": "azure-foundry",
+            "base_url": "https://synopsisse.openai.azure.com/openai/v1",
+            "api_mode": "chat_completions",
+            "default": "gpt-5.3-codex",
+        })
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(requested="azure-foundry")
+
+        assert resolved["api_mode"] == "chat_completions"
 
     def test_explicit_chat_completions_is_not_overridden_for_gpt5_codex(self, monkeypatch):
         """Explicit Azure Foundry api_mode must win over model-family inference."""
@@ -1887,6 +1907,23 @@ class TestAzureFoundryResolution:
         resolved = rp.resolve_runtime_provider(requested="azure-foundry")
 
         assert resolved["api_mode"] == "chat_completions"
+
+    def test_invalid_api_mode_does_not_disable_model_family_upgrade(self, monkeypatch):
+        """A stray explicit marker without a valid api_mode should not block inference."""
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "az-key")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {
+            "provider": "azure-foundry",
+            "base_url": "https://synopsisse.openai.azure.com/openai/v1",
+            "api_mode": "not-a-real-mode",
+            "api_mode_explicit": True,
+            "default": "gpt-5.3-codex",
+        })
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(requested="azure-foundry")
+
+        assert resolved["api_mode"] == "codex_responses"
 
     def test_gpt4o_stays_on_chat_completions(self, monkeypatch):
         """gpt-4o-pure worked on Bob's endpoint — must not get upgraded."""
@@ -1957,7 +1994,11 @@ class TestAzureFoundryResolution:
         monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "az-key")
         monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
         monkeypatch.setattr(rp, "_get_model_config",
-                            lambda: self._make_cfg_with_model("o3-mini", "chat_completions"))
+                            lambda: self._make_cfg_with_model(
+                                "o3-mini",
+                                "chat_completions",
+                                api_mode_explicit=False,
+                            ))
         monkeypatch.setattr(rp, "load_pool", lambda provider: None)
 
         resolved = rp.resolve_runtime_provider(requested="azure-foundry")
