@@ -512,6 +512,26 @@ def _resolve_named_custom_runtime(
 
     custom_provider = _get_named_custom_provider(requested_provider)
     if not custom_provider:
+        # Bare `--provider ollama` with no user-configured custom_providers
+        # entry should resolve to the local Ollama daemon, not fall through
+        # to the OpenRouter path (which then complains about a missing
+        # OPENROUTER_API_KEY).  See #21524.  Use OLLAMA_BASE_URL when set,
+        # otherwise the conventional localhost endpoint.  Local Ollama
+        # ignores Authorization headers, so a placeholder key is fine.
+        if requested_norm == "ollama":
+            ollama_base = (
+                (explicit_base_url or "").strip()
+                or os.getenv("OLLAMA_BASE_URL", "").strip()
+                or "http://localhost:11434/v1"
+            ).rstrip("/")
+            return {
+                "provider": "custom",
+                "api_mode": "chat_completions",
+                "base_url": ollama_base,
+                "api_key": (explicit_api_key or "").strip() or "no-key-required",
+                "source": "ollama-default-localhost",
+                "requested_provider": requested_provider,
+            }
         return None
 
     base_url = (
