@@ -246,6 +246,64 @@ async def test_no_thread_id_sends_no_metadata(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_finished_notification_strips_ansi_output(monkeypatch, tmp_path):
+    """Final background-process chat notifications should not leak ANSI codes."""
+    import tools.process_registry as pr_module
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="\x1b[31mred failure\x1b[0m\n\x1b[2Kclean line\n",
+            exited=True,
+            exit_code=1,
+        )
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "result")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher(_watcher_dict())
+
+    sent_message = adapter.send.await_args.args[1]
+    assert "red failure" in sent_message
+    assert "clean line" in sent_message
+    assert "\x1b[" not in sent_message
+
+
+@pytest.mark.asyncio
+async def test_running_notification_strips_ansi_output(monkeypatch, tmp_path):
+    """Incremental background-process chat updates should not leak ANSI codes."""
+    import tools.process_registry as pr_module
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="\x1b[32mbuilding\x1b[0m...\r\x1b[K\n",
+            exited=False,
+            exit_code=None,
+        ),
+        None,
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher(_watcher_dict())
+
+    sent_message = adapter.send.await_args.args[1]
+    assert "building" in sent_message
+    assert "\x1b[" not in sent_message
+
+
+@pytest.mark.asyncio
 async def test_inject_watch_notification_routes_from_session_store_origin(monkeypatch, tmp_path):
     from gateway.session import SessionSource
 

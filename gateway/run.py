@@ -12477,6 +12477,7 @@ class GatewayRunner:
           - ``error``  — final message only when exit code != 0
           - ``off``    — no messages at all
         """
+        from tools.ansi_strip import strip_ansi
         from tools.process_registry import process_registry
 
         session_id = watcher["session_id"]
@@ -12521,7 +12522,6 @@ class GatewayRunner:
                 # Skip if the agent already consumed the result via wait/poll/log
                 from tools.process_registry import process_registry as _pr_check
                 if agent_notify and not _pr_check.is_completion_consumed(session_id):
-                    from tools.ansi_strip import strip_ansi
                     _out = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
                     synth_text = (
                         f"[IMPORTANT: Background process {session_id} completed "
@@ -12577,7 +12577,7 @@ class GatewayRunner:
                     or (notify_mode == "error" and session.exit_code not in (0, None))
                 )
                 if should_notify:
-                    new_output = session.output_buffer[-1000:] if session.output_buffer else ""
+                    new_output = strip_ansi(session.output_buffer[-1000:]) if session.output_buffer else ""
                     message_text = (
                         f"[Background process {session_id} finished with exit code {session.exit_code}~ "
                         f"Here's the final output:\n{new_output}]"
@@ -12598,7 +12598,7 @@ class GatewayRunner:
             elif has_new_output and notify_mode == "all" and not agent_notify:
                 # New output available -- deliver status update (only in "all" mode)
                 # Skip periodic updates for agent_notify watchers (they only care about completion)
-                new_output = session.output_buffer[-500:] if session.output_buffer else ""
+                new_output = strip_ansi(session.output_buffer[-500:]) if session.output_buffer else ""
                 message_text = (
                     f"[Background process {session_id} is still running~ "
                     f"New output:\n{new_output}]"
