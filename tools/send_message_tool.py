@@ -1383,9 +1383,9 @@ def _check_email_recipient_allowed(chat_id: str) -> bool:
     for pattern in allowed:
         if pattern == chat_id:
             return True
-        # Domain wildcard: *@example.com
+        # Domain wildcard: *@example.com → match any address ending in @example.com
         if pattern.startswith("*@"):
-            domain = pattern[1:]  # strip the "*@"
+            domain = pattern[2:]  # strip the "*@" prefix
             if chat_id.lower().endswith(domain.lower()):
                 return True
         # Fallback: use fnmatch for other patterns (e.g. "user@*")
