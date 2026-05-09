@@ -192,6 +192,17 @@ Gordon's wiki is a long-term knowledge base. When incorporating new information 
 - **Fishing** — specifically backcountry/trout fishing, which is a component of backpacking trips. Goes in `hobbies/backcountry-fishing.md`.
 - These are three distinct categories — don't conflate them.
 
+### Wiki content strategy (when adding from chat exports)
+
+See `references/wiki-content-strategy.md` for the full guide. Key rules:
+- **Add** personally significant things — interests, career context, health patterns, financial decisions, travel that reveals preferences.
+- **Skip** trivial one-off facts, generic advice, anything outdated in 6 months.
+- **Understate rather than overstate** — Gordon corrects overstatements. "A hobby project" is safe; "a viable career option" gets corrected. Use "hobby" as the load-bearing word for Sidekick Studio.
+
+### Nav bar organization
+
+The nav bar in `md2html.py` mirrors the category hierarchy. When adding new page categories, add them to the nav list. The current order: Home → Gordon → KLA → Ventura → Sidekick → Fishing → Hiking → Backpacking → Fitness → Style → London → Log. Do not add "Health" as a separate nav item — health habits (alcohol, etc.) live inline in the Fitness page.
+
 ## Pitfalls
 
 - **Forgetting to update the index** — results in stale links on the hub page pointing to old filenames
