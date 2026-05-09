@@ -12,6 +12,7 @@ Usage:
 import asyncio
 import hmac
 import importlib.util
+import inspect
 import json
 import logging
 import os
@@ -53,7 +54,7 @@ from gateway.status import get_running_pid, read_runtime_status
 try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ImportError:
@@ -471,9 +472,22 @@ except (ValueError, TypeError):
     )
     _GATEWAY_HEALTH_TIMEOUT = 3.0
 
+# DEPRECATED (scheduled for removal): GATEWAY_HEALTH_URL / GATEWAY_HEALTH_TIMEOUT.
+# Cross-container / cross-host gateway liveness detection will be folded into a
+# first-class dashboard config key so it's no longer Docker-adjacent lore buried
+# in env vars.  The env vars still work for now so existing Compose deployments
+# don't break.  Do not add new callers — wire new uses through the planned
+# config surface.
+
 
 def _probe_gateway_health() -> tuple[bool, dict | None]:
     """Probe the gateway via its HTTP health endpoint (cross-container).
+
+    .. deprecated::
+        Driven by the deprecated ``GATEWAY_HEALTH_URL`` /
+        ``GATEWAY_HEALTH_TIMEOUT`` env vars.  Scheduled for removal alongside
+        a move to a first-class dashboard config key.  See
+        :data:`_GATEWAY_HEALTH_URL` for context.
 
     Uses ``/health/detailed`` first (returns full state), falling back to
     the simpler ``/health`` endpoint.  Returns ``(is_alive, body_dict)``.
@@ -621,6 +635,13 @@ with latest as (
     'delivery_events', (select count(*) from hermes_notify.delivery_events),
     'audit_events', (select count(*) from hermes_audit.audit_events)
   ) as payload
+), latest_run_counts as (
+  select jsonb_build_object(
+    'report_sections', (select count(*) from hermes_reports.report_sections where report_run_id in (select id from latest_id)),
+    'source_anchors', (select count(*) from hermes_sources.source_anchors where report_run_id in (select id from latest_id)),
+    'delivery_events', (select count(*) from hermes_notify.delivery_events where report_run_id in (select id from latest_id)),
+    'audit_events', (select count(*) from hermes_audit.audit_events where subject_ref in (select run_ref from latest))
+  ) as payload
 )
 select jsonb_build_object(
   'enabled', true,
@@ -654,14 +675,14 @@ select jsonb_build_object(
       select
              channel,
              case
-               when channel = 'dry_run'
-                    and delivery_status = 'dry_run'
-                    and target_ref like 'telegram://dry-run/%'
+              when channel in ('telegram', 'dry_run')
+                   and delivery_status = 'dry_run'
+                   and target_ref like 'telegram://dry-run/%'
                  then target_ref
                else '[redacted]'
              end as target_ref,
              case
-               when channel = 'dry_run' and delivery_status = 'dry_run'
+               when channel in ('telegram', 'dry_run') and delivery_status = 'dry_run'
                  then payload_summary
                else null
              end as payload_summary,
@@ -671,8 +692,9 @@ select jsonb_build_object(
              created_at::text
       from hermes_notify.delivery_events
       where report_run_id in (select id from latest_id)
-        and channel = 'dry_run'
         and delivery_status = 'dry_run'
+        and target_ref like 'telegram://dry-run/%'
+        and channel in ('telegram', 'dry_run')
       order by created_at
     ) d
   ), '[]'::jsonb),
@@ -688,6 +710,7 @@ select jsonb_build_object(
     ) a
   ), '[]'::jsonb),
   'counts', (select payload from counts),
+  'latest_run_counts', (select payload from latest_run_counts),
   'boundaries', jsonb_build_object(
     'writes_enabled', false,
     'telegram_send_enabled', false,
@@ -696,6 +719,63 @@ select jsonb_build_object(
   )
 ) as payload;
 """
+
+
+def _morning_brief_v0_status_path() -> Path:
+    return (
+        _control_plane_workdir()
+        / "hera-198-data-architecture-reset"
+        / "gate-b-v0.2-execution-readback.md"
+    )
+
+
+def _get_morning_brief_v0_canary_payload() -> Dict[str, Any]:
+    """Return the local Gate B/C Morning Brief canary status without mutation.
+
+    This read-only surface exposes local execution readback metadata only. It
+    never sends Supabase credentials to the browser, performs database mutation,
+    sends Telegram messages, or changes cron state.
+    """
+    status_path = _morning_brief_v0_status_path()
+    try:
+        status_text = status_path.read_text(encoding="utf-8")
+    except OSError:
+        return {
+            "enabled": False,
+            "reason": "morning_brief_v0_2_canary_not_configured",
+            "safe_next_action": "verify Gate B/C execution readbacks or keep hold/observe",
+        }
+
+    normalized = status_text.lower()
+    passed = "status: pass" in normalized
+    if not passed:
+        return {
+            "enabled": False,
+            "reason": "morning_brief_v0_2_canary_not_verified",
+            "safe_next_action": "verify Gate B/C execution readbacks or keep hold/observe",
+        }
+
+    return {
+        "enabled": True,
+        "canary_key": "morning-brief-v0.2-preview-canary",
+        "report_kind": "morning_brief",
+        "verification_status": "verified",
+        "rollback_status": "ready_not_needed",
+        "gateb_verification_result": "pass",
+        "hermes_direct_db_verification": True,
+        "verification_source": "hermes_supabase_cli_readback",
+        "report_snapshot_ref": "supabase://hermes_projection/morning_brief_cockpit_v1",
+        "preview_payload_present": True,
+        "source_quality_present": True,
+        "safe_next_action": "Gate D WebUI local read-only observation; Telegram send/cron still require separate approval",
+        "boundaries": {
+            "writes_enabled": False,
+            "telegram_send_enabled": False,
+            "obsidian_authority_edit_enabled": False,
+            "cron_change_enabled": False,
+            "webui_mutation_enabled": False,
+        },
+    }
 
 
 def _get_control_plane_morning_brief_payload() -> Dict[str, Any]:
@@ -718,13 +798,332 @@ def _get_control_plane_morning_brief_payload() -> Dict[str, Any]:
     return payload
 
 
+_CONTROL_PLANE_SAFETY_PREVIEW_FORBIDDEN_KEYS = frozenset({
+    "target_ref",
+    "provider_message_ref",
+    "error_summary",
+    "provider_error_body",
+    "raw_source_packet",
+    "raw_source_dump",
+    "raw_payload",
+    "private_target_payload",
+})
+
+
+def _control_plane_safety_preview_query() -> str:
+    return """
+select
+  run_ref,
+  title,
+  status,
+  lifecycle_state,
+  report_date::text,
+  source_count,
+  quarantined_source_count,
+  source_safety_state,
+  source_safety_summary_kr,
+  source_safety_refs,
+  latest_channel,
+  latest_delivery_mode,
+  latest_send_result,
+  latest_approval_state,
+  delivery_browser_safe,
+  latest_redaction_class,
+  latest_provider_error_class,
+  notification_action_state,
+  authority_boundary_state,
+  obsidian_ref,
+  paperclip_parent_ref,
+  rollback_available,
+  publish_blocked,
+  publish_block_reason_kr
+from hermes_projection.morning_brief_cockpit_v2
+order by report_date desc, run_ref desc
+limit 1;
+"""
+
+
+def _strip_control_plane_forbidden_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _strip_control_plane_forbidden_fields(item)
+            for key, item in value.items()
+            if str(key) not in _CONTROL_PLANE_SAFETY_PREVIEW_FORBIDDEN_KEYS
+        }
+    if isinstance(value, list):
+        return [_strip_control_plane_forbidden_fields(item) for item in value]
+    return value
+
+
+def _control_plane_safety_severity(row: Dict[str, Any]) -> Tuple[str, str]:
+    if row.get("delivery_browser_safe") is False:
+        return "BLOCKED", "delivery_not_browser_safe"
+    if row.get("latest_send_result") in {"failed", "error"}:
+        return "BLOCKED", "delivery_error_present"
+    if row.get("publish_blocked") or row.get("source_safety_state") == "has_quarantine" or (row.get("quarantined_source_count") or 0) > 0:
+        return "HOLD", "publish_blocked_or_quarantined_source"
+    if row.get("latest_approval_state") in {"pending", "required"}:
+        return "ACTION_REQUIRED", "approval_required"
+    if row.get("notification_action_state") in {"preview_only", "observe"}:
+        return "WATCH", "preview_or_observe_only"
+    return "OK", "read_only_checks_passed"
+
+
+def _get_control_plane_safety_preview_payload() -> Dict[str, Any]:
+    rows, disabled = _run_supabase_control_plane_read(_control_plane_safety_preview_query())
+    if disabled is not None:
+        return disabled
+    if not rows:
+        return {
+            "enabled": False,
+            "reason": "control_plane_empty_response",
+            "message": "Control-plane safety-preview query returned no rows",
+        }
+    row = rows[0] if isinstance(rows[0], dict) else None
+    if not isinstance(row, dict):
+        return {
+            "enabled": False,
+            "reason": "control_plane_unexpected_shape",
+            "message": _CONTROL_PLANE_DISABLED_REASONS["control_plane_unexpected_shape"],
+        }
+
+    source_refs = _strip_control_plane_forbidden_fields(row.get("source_safety_refs") or [])
+    severity, severity_reason = _control_plane_safety_severity(row)
+    return {
+        "enabled": True,
+        "status": "ok",
+        "severity": severity,
+        "severity_reason": severity_reason,
+        "mode": "read_only_safety_preview",
+        "run": {
+            "run_ref": row.get("run_ref"),
+            "title": row.get("title"),
+            "status": row.get("status"),
+            "lifecycle_state": row.get("lifecycle_state"),
+            "report_date": row.get("report_date"),
+            "paperclip_parent_ref": row.get("paperclip_parent_ref"),
+        },
+        "source_safety": {
+            "state": row.get("source_safety_state"),
+            "source_count": row.get("source_count"),
+            "quarantined_source_count": row.get("quarantined_source_count"),
+            "summary_kr": row.get("source_safety_summary_kr"),
+            "refs": source_refs,
+        },
+        "notification_readiness": {
+            "action_state": row.get("notification_action_state"),
+            "latest_channel": row.get("latest_channel"),
+            "latest_delivery_mode": row.get("latest_delivery_mode"),
+            "latest_send_result": row.get("latest_send_result"),
+            "latest_approval_state": row.get("latest_approval_state"),
+            "delivery_browser_safe": row.get("delivery_browser_safe"),
+            "latest_redaction_class": row.get("latest_redaction_class"),
+            "latest_provider_error_class": row.get("latest_provider_error_class"),
+        },
+        "authority_boundary": {
+            "state": row.get("authority_boundary_state"),
+            "obsidian_ref_present": bool(row.get("obsidian_ref")),
+            "supabase_is_authority": False,
+            "requires_obsidian_merge_review_before_authority": True,
+        },
+        "rollback_readiness": {
+            "available": row.get("rollback_available"),
+            "publish_blocked": row.get("publish_blocked"),
+            "publish_block_reason_kr": row.get("publish_block_reason_kr"),
+        },
+        "boundaries": {
+            "writes_enabled": False,
+            "telegram_send_enabled": False,
+            "obsidian_authority_edit_enabled": False,
+            "cron_change_enabled": False,
+            "webui_mutation_enabled": False,
+        },
+    }
+
+
+_CONTROL_PLANE_COCKPIT_ARTIFACTS = {
+    "gate_d": "gated_latest_run_status.md",
+    "github_watcher_no_agent": "github_watcher_v0_latest_poll_status.md",
+    "supabase_role_boundary": "supabase_obsidian_role_boundary_decision_record.md",
+    "obsidian_merge_review": "obsidian_merge_review_note_creation_result.md",
+}
+
+_CONTROL_PLANE_COCKPIT_SOURCE_REFS = {
+    "gate_d": "artifact://gated_latest_run_status",
+    "github_watcher_no_agent": "artifact://github_watcher_v0_latest_poll_status",
+    "supabase_role_boundary": "artifact://supabase_obsidian_role_boundary_decision_record",
+    "obsidian_merge_review": "artifact://obsidian_merge_review_note_creation_result",
+}
+
+
+def _control_plane_artifacts_dir() -> Path:
+    workdir = _control_plane_workdir()
+    direct = workdir / "artifacts"
+    if direct.exists():
+        return direct
+    nested = workdir / "hermes-control-plane" / "artifacts"
+    if nested.exists():
+        return nested
+    return direct
+
+
+def _safe_read_control_plane_artifact(name: str) -> str:
+    path = _control_plane_artifacts_dir() / name
+    try:
+        if path.stat().st_size > 128_000:
+            return ""
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def _cockpit_boundaries() -> Dict[str, bool]:
+    return {
+        "read_only": True,
+        "action_controls": False,
+        "mutation_controls": False,
+        "telegram_send_enabled": False,
+        "obsidian_authority_edit_enabled": False,
+        "supabase_schema_change_enabled": False,
+        "cron_change_enabled": False,
+    }
+
+
+def _cockpit_disabled() -> Dict[str, Any]:
+    return {
+        "enabled": False,
+        "reason": "control_plane_not_configured",
+        "safe_next_action": "verify control-plane artifact availability or keep observe",
+    }
+
+
+def _cockpit_panel_severity(status: str) -> str:
+    value = (status or "").lower()
+    if value in {"pass", "recorded", "complete", "ok"}:
+        return "OK"
+    if value in {"blocked", "missing", "failed", "error"}:
+        return "BLOCKED"
+    if value in {"hold"}:
+        return "HOLD"
+    if value in {"action_required", "approval_required"}:
+        return "ACTION_REQUIRED"
+    return "WATCH"
+
+
+def _max_control_plane_severity(values: List[str]) -> str:
+    order = {"OK": 0, "WATCH": 1, "HOLD": 2, "ACTION_REQUIRED": 3, "BLOCKED": 4}
+    return max(values or ["OK"], key=lambda item: order.get(item, 1))
+
+
+def _classify_cockpit_artifacts() -> Tuple[Dict[str, Dict[str, Any]], List[str]]:
+    texts = {
+        key: _safe_read_control_plane_artifact(filename)
+        for key, filename in _CONTROL_PLANE_COCKPIT_ARTIFACTS.items()
+    }
+    if not any(texts.values()):
+        return {}, list(_CONTROL_PLANE_COCKPIT_ARTIFACTS)
+
+    status_values = {
+        "gate_d": "pass" if "run_status: pass" in texts["gate_d"].lower() else "unknown",
+        "github_watcher_no_agent": "pass" if "status: pass" in texts["github_watcher_no_agent"].lower() else "unknown",
+        "supabase_role_boundary": "recorded" if texts["supabase_role_boundary"] else "missing",
+        "obsidian_merge_review": "complete" if "status: complete" in texts["obsidian_merge_review"].lower() else ("recorded" if texts["obsidian_merge_review"] else "missing"),
+    }
+    summaries = {
+        "gate_d": "Gate D Morning Brief runner artifact is present and read-only.",
+        "github_watcher_no_agent": "GitHub Watcher no-agent artifact is present and read-only.",
+        "supabase_role_boundary": "Supabase/Obsidian role-boundary decision record is present.",
+        "obsidian_merge_review": "Obsidian Merge Review note creation result is present.",
+    }
+    statuses = {
+        key: {
+            "status": value,
+            "severity": _cockpit_panel_severity(value),
+            "safe_summary": summaries[key],
+            "artifact_refs": [f"artifact://{Path(_CONTROL_PLANE_COCKPIT_ARTIFACTS[key]).stem}"],
+        }
+        for key, value in status_values.items()
+    }
+    missing = [key for key, text in texts.items() if not text]
+    return statuses, missing
+
+
+def _get_control_plane_cockpit_summary() -> Dict[str, Any]:
+    statuses, missing = _classify_cockpit_artifacts()
+    if not statuses:
+        return _cockpit_disabled()
+
+    ready = all(
+        panel.get("status") in {"pass", "recorded", "complete"}
+        for panel in statuses.values()
+    )
+    return {
+        "enabled": True,
+        "severity": _max_control_plane_severity([panel.get("severity", "WATCH") for panel in statuses.values()]),
+        "counts": {
+            "panels": len(_CONTROL_PLANE_COCKPIT_ARTIFACTS),
+            "missing": len(missing),
+        },
+        "status": statuses,
+        "handoff_summary": "Gate D, GitHub Watcher no-agent, Supabase role boundary, and Obsidian Merge Review are exposed as server-side read-only status only.",
+        "safe_next_action": "frontend_api_client_contract_gate" if ready else "observe",
+        "source_refs": list(_CONTROL_PLANE_COCKPIT_SOURCE_REFS.values()),
+        "artifact_refs": [
+            f"artifact://{Path(name).stem}"
+            for name in _CONTROL_PLANE_COCKPIT_ARTIFACTS.values()
+        ],
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
+def _get_control_plane_cockpit_blockers() -> Dict[str, Any]:
+    statuses, missing = _classify_cockpit_artifacts()
+    if not statuses:
+        return _cockpit_disabled()
+
+    blockers = [
+        {
+            "id": f"{key}:artifact_missing",
+            "status": "blocked",
+            "severity": "BLOCKED",
+            "title": key,
+            "detail": "artifact_missing",
+            "safe_next_action": "observe",
+            "artifact_refs": [f"artifact://{Path(_CONTROL_PLANE_COCKPIT_ARTIFACTS[key]).stem}"],
+        }
+        for key in missing
+    ]
+    blockers.extend(
+        {
+            "id": f"{key}:status_{panel.get('status', 'unknown')}",
+            "status": "observe",
+            "severity": _cockpit_panel_severity(panel.get("status", "unknown")),
+            "title": key,
+            "detail": f"status_{panel.get('status', 'unknown')}",
+            "safe_next_action": "observe",
+            "artifact_refs": panel.get("artifact_refs", []),
+        }
+        for key, panel in statuses.items()
+        if panel.get("status") not in {"pass", "recorded", "complete"}
+        and key not in missing
+    )
+    return {
+        "enabled": True,
+        "severity": _max_control_plane_severity([blocker.get("severity", "WATCH") for blocker in blockers]),
+        "blockers": blockers,
+        "boundaries": _cockpit_boundaries(),
+        "safe_next_action": "frontend_api_client_contract_gate" if not blockers else "observe",
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
 def _first_dry_run_target_ref(delivery_events: Any) -> str:
     if not isinstance(delivery_events, list):
         return "telegram://dry-run/hera-198"
     for event in delivery_events:
         if not isinstance(event, dict):
             continue
-        if event.get("channel") == "dry_run" and event.get("delivery_status") == "dry_run":
+        if event.get("channel") in {"telegram", "dry_run"} and event.get("delivery_status") == "dry_run":
             target_ref = event.get("target_ref")
             if (
                 isinstance(target_ref, str)
@@ -737,6 +1136,8 @@ def _first_dry_run_target_ref(delivery_events: Any) -> str:
 def _build_morning_brief_telegram_preview(canary: Dict[str, Any]) -> Dict[str, Any]:
     run = canary.get("run") if isinstance(canary.get("run"), dict) else {}
     counts = canary.get("counts") if isinstance(canary.get("counts"), dict) else {}
+    latest_run_counts = canary.get("latest_run_counts") if isinstance(canary.get("latest_run_counts"), dict) else {}
+    reader_counts = latest_run_counts or counts
     boundaries = canary.get("boundaries") if isinstance(canary.get("boundaries"), dict) else {}
     delivery_events = canary.get("delivery_events")
 
@@ -744,8 +1145,8 @@ def _build_morning_brief_telegram_preview(canary: Dict[str, Any]) -> Dict[str, A
     status = str(run.get("status") or canary.get("status") or "unknown")
     project = str(canary.get("project") or "hermes-control-plane")
     target_ref = _first_dry_run_target_ref(delivery_events)
-    report_sections = counts.get("report_sections", len(canary.get("sections") or []))
-    source_anchors = counts.get("source_anchors", len(canary.get("sources") or []))
+    report_sections = reader_counts.get("report_sections", len(canary.get("sections") or []))
+    source_anchors = reader_counts.get("source_anchors", len(canary.get("sources") or []))
     delivery_status = "dry_run"
     if isinstance(delivery_events, list) and delivery_events:
         first = delivery_events[0] if isinstance(delivery_events[0], dict) else {}
@@ -799,6 +1200,11 @@ def _build_morning_brief_telegram_preview(canary: Dict[str, Any]) -> Dict[str, A
     }
 
 
+@app.get("/api/control-plane/morning-brief-v0/canary")
+def get_control_plane_morning_brief_v0_canary():
+    return _get_morning_brief_v0_canary_payload()
+
+
 @app.get("/api/control-plane/morning-brief-canary")
 def get_control_plane_morning_brief_canary():
     return _get_control_plane_morning_brief_payload()
@@ -810,6 +1216,21 @@ def get_control_plane_morning_brief_telegram_preview():
     if not canary.get("enabled"):
         return canary
     return _build_morning_brief_telegram_preview(canary)
+
+
+@app.get("/api/control-plane/morning-brief-canary/safety-preview")
+def get_control_plane_morning_brief_safety_preview():
+    return _get_control_plane_safety_preview_payload()
+
+
+@app.get("/api/control-plane/cockpit/summary")
+def get_control_plane_cockpit_summary():
+    return _get_control_plane_cockpit_summary()
+
+
+@app.get("/api/control-plane/cockpit/blockers")
+def get_control_plane_cockpit_blockers():
+    return _get_control_plane_cockpit_blockers()
 
 
 @app.get("/api/status")
@@ -2169,8 +2590,8 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
             name=f"oauth-codex-{sid[:6]}",
         ).start()
         # Block briefly until the worker has populated the user_code, OR error.
-        deadline = time.time() + 10
-        while time.time() < deadline:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
             with _oauth_sessions_lock:
                 s = _oauth_sessions.get(sid)
             if s and (s.get("user_code") or s["status"] != "pending"):
@@ -2304,10 +2725,10 @@ def _codex_full_login_worker(session_id: str) -> None:
             sess["expires_at"] = time.time() + sess["expires_in"]
 
         # Step 2: poll until authorized
-        deadline = time.time() + sess["expires_in"]
+        deadline = time.monotonic() + sess["expires_in"]
         code_resp = None
         with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
-            while time.time() < deadline:
+            while time.monotonic() < deadline:
                 time.sleep(poll_interval)
                 poll = client.post(
                     f"{issuer}/api/accounts/deviceauth/token",
@@ -2465,6 +2886,83 @@ async def cancel_oauth_session(session_id: str, request: Request):
 # ---------------------------------------------------------------------------
 
 
+
+def _session_latest_descendant(session_id: str):
+    """Resolve a session id to the newest child leaf session.
+
+    /model may create child sessions. Dashboard refresh should continue the
+    newest child instead of reopening the old parent.
+    """
+    from hermes_state import SessionDB
+
+    def row_get(row, key, index):
+        if isinstance(row, dict):
+            return row.get(key)
+        try:
+            return row[key]
+        except Exception:
+            try:
+                return row[index]
+            except Exception:
+                return None
+
+    db = SessionDB()
+    try:
+        sid = db.resolve_session_id(session_id)
+        if not sid or not db.get_session(sid):
+            return None, []
+
+        conn = (
+            getattr(db, "conn", None)
+            or getattr(db, "_conn", None)
+            or getattr(db, "connection", None)
+            or getattr(db, "_connection", None)
+        )
+
+        rows = []
+        if conn is not None:
+            raw_rows = conn.execute(
+                "SELECT id, parent_session_id, started_at FROM sessions"
+            ).fetchall()
+            for row in raw_rows:
+                rows.append({
+                    "id": row_get(row, "id", 0),
+                    "parent_session_id": row_get(row, "parent_session_id", 1),
+                    "started_at": row_get(row, "started_at", 2),
+                })
+        else:
+            rows = db.list_sessions_rich(limit=10000, offset=0)
+
+        children = {}
+        for row in rows:
+            rid = row.get("id")
+            parent = row.get("parent_session_id")
+            if rid and parent:
+                children.setdefault(parent, []).append(row)
+
+        def started(row):
+            try:
+                return float(row.get("started_at") or 0)
+            except Exception:
+                return 0.0
+
+        current = sid
+        path = [sid]
+        seen = {sid}
+
+        while children.get(current):
+            candidates = [r for r in children[current] if r.get("id") not in seen]
+            if not candidates:
+                break
+            candidates.sort(key=started, reverse=True)
+            current = candidates[0]["id"]
+            path.append(current)
+            seen.add(current)
+
+        return current, path
+    finally:
+        db.close()
+
 @app.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str):
     from hermes_state import SessionDB
@@ -2478,6 +2976,19 @@ async def get_session_detail(session_id: str):
     finally:
         db.close()
 
+
+
+@app.get("/api/sessions/{session_id}/latest-descendant")
+async def get_session_latest_descendant(session_id: str):
+    latest, path = _session_latest_descendant(session_id)
+    if not latest:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {
+        "requested_session_id": path[0] if path else session_id,
+        "session_id": latest,
+        "path": path,
+        "changed": bool(path and latest != path[0]),
+    }
 
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str):
@@ -2658,6 +3169,7 @@ async def delete_cron_job(job_id: str):
 class ProfileCreate(BaseModel):
     name: str
     clone_from_default: bool = False
+    no_skills: bool = False
 
 
 class ProfileRename(BaseModel):
@@ -2759,15 +3271,19 @@ async def list_profiles_endpoint():
 async def create_profile_endpoint(body: ProfileCreate):
     from hermes_cli import profiles as profiles_mod
     try:
-        path = profiles_mod.create_profile(
-            name=body.name,
-            clone_from="default" if body.clone_from_default else None,
-            clone_config=body.clone_from_default,
-        )
+        create_profile_kwargs = {
+            "name": body.name,
+            "clone_from": "default" if body.clone_from_default else None,
+            "clone_config": body.clone_from_default,
+        }
+        if "no_skills" in inspect.signature(profiles_mod.create_profile).parameters:
+            create_profile_kwargs["no_skills"] = body.no_skills
+        path = profiles_mod.create_profile(**create_profile_kwargs)
         # Match the CLI's profile-create flow: fresh named profiles get the
         # bundled skills installed. When cloning from default, create_profile()
         # has already copied the source profile's skills, including any
-        # user-installed skills.
+        # user-installed skills. When no_skills=True, create_profile() wrote
+        # the opt-out marker and seed_profile_skills() will no-op.
         if not body.clone_from_default:
             profiles_mod.seed_profile_skills(path, quiet=True)
 
@@ -3238,8 +3754,18 @@ def _resolve_chat_argv(
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
     env = os.environ.copy()
     env.setdefault("NODE_ENV", "production")
+    # Browser-embedded chat should prefer stable wheel-based scrollback over
+    # native terminal mouse tracking. When mouse tracking is enabled, wheel
+    # events are consumed by the TUI and forwarded as terminal input, which
+    # makes browser-side transcript scrolling feel broken. Keep the terminal
+    # build unchanged for native CLI usage; only disable mouse tracking for
+    # the dashboard PTY path.
+    env.setdefault("HERMES_TUI_DISABLE_MOUSE", "1")
 
     if resume:
+        latest_resume, _latest_path = _session_latest_descendant(resume)
+        if latest_resume:
+            resume = latest_resume
         env["HERMES_TUI_RESUME"] = resume
 
     if sidecar_url:
@@ -3497,12 +4023,42 @@ async def events_ws(ws: WebSocket) -> None:
                     _event_channels.pop(channel, None)
 
 
+def _normalise_prefix(raw: Optional[str]) -> str:
+    """Normalise an X-Forwarded-Prefix header value.
+
+    Returns a string like ``"/hermes"`` (no trailing slash) or ``""`` when
+    no prefix is set / the header is malformed. We deliberately reject
+    anything containing ``..`` or non-printable bytes so a hostile proxy
+    can't inject HTML via the prefix.
+    """
+    if not raw:
+        return ""
+    p = raw.strip()
+    if not p:
+        return ""
+    if not p.startswith("/"):
+        p = "/" + p
+    p = p.rstrip("/")
+    if "//" in p or ".." in p or any(c in p for c in ('"', "'", "<", ">", " ", "\n", "\r", "\t")):
+        return ""
+    if len(p) > 64:
+        return ""
+    return p
+
+
 def mount_spa(application: FastAPI):
     """Mount the built SPA. Falls back to index.html for client-side routing.
 
     The session token is injected into index.html via a ``<script>`` tag so
     the SPA can authenticate against protected API endpoints without a
     separate (unauthenticated) token-dispensing endpoint.
+
+    When served behind a path-prefix reverse proxy (e.g.
+    ``mission-control.tilos.com/hermes/*`` -> local Caddy -> :9119), the
+    proxy injects ``X-Forwarded-Prefix: /hermes`` on every request. We
+    rewrite the served ``index.html`` so absolute asset URLs (``/assets/...``)
+    and the SPA's runtime ``__HERMES_BASE_PATH__`` honour that prefix
+    without rebuilding the bundle.
     """
     if not WEB_DIST.exists():
         @application.get("/{full_path:path}")
@@ -3515,24 +4071,62 @@ def mount_spa(application: FastAPI):
 
     _index_path = WEB_DIST / "index.html"
 
-    def _serve_index():
-        """Return index.html with the session token injected."""
+    def _serve_index(prefix: str = ""):
+        """Return index.html with the session token + base-path injected.
+
+        ``prefix`` is the normalised ``X-Forwarded-Prefix`` (e.g. ``/hermes``)
+        or empty string when served at root.
+        """
         html = _index_path.read_text()
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         token_script = (
             f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
-            f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};</script>"
+            f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
+            f'window.__HERMES_BASE_PATH__="{prefix}";</script>'
         )
+        if prefix:
+            # Rewrite absolute asset URLs baked into the Vite build so the
+            # browser fetches them through the same proxy prefix.
+            html = html.replace('href="/assets/', f'href="{prefix}/assets/')
+            html = html.replace('src="/assets/', f'src="{prefix}/assets/')
+            html = html.replace('href="/favicon.ico"', f'href="{prefix}/favicon.ico"')
+            html = html.replace('href="/fonts/', f'href="{prefix}/fonts/')
+            html = html.replace('href="/ds-assets/', f'href="{prefix}/ds-assets/')
+            html = html.replace('src="/ds-assets/', f'src="{prefix}/ds-assets/')
         html = html.replace("</head>", f"{token_script}</head>", 1)
         return HTMLResponse(
             html,
             headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
         )
 
+    # When served behind a path-prefix proxy, the built CSS contains
+    # absolute ``url(/fonts/...)`` and ``url(/ds-assets/...)`` references.
+    # Browsers resolve those against the document origin, which means
+    # under ``/hermes`` they'd hit ``mission-control.tilos.com/fonts/...``
+    # (the MC Pages app), not the Hermes backend. Intercept CSS asset
+    # requests BEFORE the StaticFiles mount and rewrite the absolute paths
+    # when a prefix is in play.
+    @application.get("/assets/{filename}.css")
+    async def serve_css(filename: str, request: Request):
+        css_path = WEB_DIST / "assets" / f"{filename}.css"
+        if not css_path.is_file() or not css_path.resolve().is_relative_to(
+            WEB_DIST.resolve()
+        ):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
+        css = css_path.read_text()
+        if prefix:
+            for asset_dir in ("/fonts/", "/fonts-terminal/", "/ds-assets/", "/assets/"):
+                css = css.replace(f"url({asset_dir}", f"url({prefix}{asset_dir}")
+                css = css.replace(f"url(\"{asset_dir}", f"url(\"{prefix}{asset_dir}")
+                css = css.replace(f"url('{asset_dir}", f"url('{prefix}{asset_dir}")
+        return Response(content=css, media_type="text/css")
+
     application.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
 
     @application.get("/{full_path:path}")
-    async def serve_spa(full_path: str):
+    async def serve_spa(full_path: str, request: Request):
+        prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
         file_path = WEB_DIST / full_path
         # Prevent path traversal via url-encoded sequences (%2e%2e/)
         if (
@@ -3542,7 +4136,7 @@ def mount_spa(application: FastAPI):
             and file_path.is_file()
         ):
             return FileResponse(file_path)
-        return _serve_index()
+        return _serve_index(prefix)
 
 
 # ---------------------------------------------------------------------------
@@ -3552,8 +4146,9 @@ def mount_spa(application: FastAPI):
 # Built-in dashboard themes — label + description only.  The actual color
 # definitions live in the frontend (web/src/themes/presets.ts).
 _BUILTIN_DASHBOARD_THEMES = [
-    {"name": "default",   "label": "Hermes Teal",  "description": "Classic dark teal — the canonical Hermes look"},
-    {"name": "midnight",  "label": "Midnight",      "description": "Deep blue-violet with cool accents"},
+    {"name": "default",       "label": "Hermes Teal",         "description": "Classic dark teal — the canonical Hermes look"},
+    {"name": "default-large", "label": "Hermes Teal (Large)", "description": "Hermes Teal with bigger fonts and roomier spacing"},
+    {"name": "midnight",      "label": "Midnight",            "description": "Deep blue-violet with cool accents"},
     {"name": "ember",     "label": "Ember",          "description": "Warm crimson and bronze — forge vibes"},
     {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},
     {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},

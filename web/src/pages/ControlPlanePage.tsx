@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
-import { Database, MessageSquareText, RefreshCw, ShieldCheck } from "lucide-react";
+import { Database, Gauge, MessageSquareText, RefreshCw, ShieldCheck } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -7,7 +7,15 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   api,
   type MorningBriefCanaryResponse,
+  type MorningBriefV0CanaryResponse,
   type MorningBriefTelegramPreviewResponse,
+  type MorningBriefSafetyPreviewResponse,
+  type MorningBriefSection,
+  type MorningBriefSourceAnchor,
+  type MorningBriefDeliveryEvent,
+  type ControlPlaneCockpitBlockersResponse,
+  type ControlPlaneCockpitStatusPanel,
+  type ControlPlaneCockpitSummaryResponse,
 } from "@/lib/api";
 import { usePageHeader } from "@/contexts/usePageHeader";
 
@@ -37,10 +45,163 @@ function BoundaryBadge({ label, value }: { label: string; value?: boolean }) {
   );
 }
 
+type ControlPlaneSeverity = "OK" | "WATCH" | "HOLD" | "BLOCKED" | "ACTION_REQUIRED" | string;
+
+function severityTone(severity?: ControlPlaneSeverity): "success" | "warning" | "secondary" | "destructive" {
+  switch ((severity ?? "").toUpperCase()) {
+    case "OK":
+      return "success";
+    case "WATCH":
+    case "HOLD":
+    case "ACTION_REQUIRED":
+      return "warning";
+    case "BLOCKED":
+      return "destructive";
+    default:
+      return "secondary";
+  }
+}
+
+function statusToSeverity(panel?: ControlPlaneCockpitStatusPanel): ControlPlaneSeverity {
+  if (panel?.severity) return panel.severity;
+  const value = `${panel?.status ?? ""} ${panel?.state ?? ""} ${panel?.last_status ?? ""}`.toLowerCase();
+  if (value.includes("fail") || value.includes("error") || value.includes("blocked")) return "BLOCKED";
+  if (value.includes("hold")) return "HOLD";
+  if (value.includes("observe")) return "WATCH";
+  if (value.includes("pass") || value.includes("ok") || value.includes("recorded") || value.includes("complete") || panel?.enabled) return "OK";
+  return "WATCH";
+}
+
+function panelTone(panel?: ControlPlaneCockpitStatusPanel): "success" | "warning" | "secondary" | "destructive" {
+  return severityTone(statusToSeverity(panel));
+}
+
+function CockpitPanelSummary({
+  label,
+  panel,
+}: {
+  label: string;
+  panel?: ControlPlaneCockpitStatusPanel;
+}) {
+  return (
+    <div className="rounded-md border border-current/15 p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="text-xs uppercase text-muted-foreground">{label}</p>
+        <Badge tone={panelTone(panel)} className="text-[10px]">
+          {statusToSeverity(panel)}
+        </Badge>
+      </div>
+      <p className="normal-case text-sm text-muted-foreground">
+        {panel?.safe_summary ?? "No cockpit summary loaded yet."}
+      </p>
+      <dl className="mt-2 grid gap-1 text-xs text-muted-foreground">
+        <div><dt className="inline uppercase">last</dt>: <dd className="inline">{panel?.last_run_at ?? "-"}</dd></div>
+        <div><dt className="inline uppercase">next</dt>: <dd className="inline">{panel?.next_run_at ?? "-"}</dd></div>
+      </dl>
+    </div>
+  );
+}
+
+function CountCards({ title, counts }: { title: string; counts?: Record<string, number> }) {
+  const entries = Object.entries(counts ?? {});
+  return (
+    <div className="space-y-2">
+      <p className="text-xs uppercase text-muted-foreground">{title}</p>
+      <div className="grid gap-2 md:grid-cols-2">
+        {entries.length > 0 ? entries.map(([key, value]) => (
+          <div key={key} className="rounded-md border border-current/15 p-3">
+            <p className="text-xs uppercase text-muted-foreground">{key}</p>
+            <p className="text-lg font-semibold text-foreground">{value}</p>
+          </div>
+        )) : <p className="text-sm text-muted-foreground">No counts loaded.</p>}
+      </div>
+    </div>
+  );
+}
+
+function SectionCards({ sections }: { sections?: MorningBriefSection[] }) {
+  if (!sections || sections.length === 0) {
+    return <p className="text-sm text-muted-foreground">No sections for latest run.</p>;
+  }
+  return (
+    <div className="space-y-3">
+      {sections.map((section, index) => (
+        <article key={`${section.section_key ?? "section"}-${index}`} className="rounded-md border border-current/15 p-3">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <Badge tone="secondary" className="text-[10px]">#{section.section_order ?? index + 1}</Badge>
+            {section.judgment_label && <Badge tone="warning" className="text-[10px]">{section.judgment_label}</Badge>}
+          </div>
+          <h3 className="text-sm font-semibold text-foreground">{section.title ?? section.section_key ?? "Untitled section"}</h3>
+          <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted-foreground normal-case">
+            {section.body_md ?? "No section body."}
+          </p>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function SourceAnchorCards({ sources }: { sources?: MorningBriefSourceAnchor[] }) {
+  if (!sources || sources.length === 0) {
+    return <p className="text-sm text-muted-foreground">No source anchors for latest run.</p>;
+  }
+  return (
+    <div className="space-y-3">
+      {sources.map((source, index) => (
+        <article key={`${source.source_ref ?? "source"}-${index}`} className="rounded-md border border-current/15 p-3">
+          <div className="mb-2 flex flex-wrap items-center gap-2 uppercase">
+            <Badge tone={source.quality_label === "hold" ? "warning" : "secondary"} className="text-[10px]">
+              quality: {source.quality_label ?? "unknown"}
+            </Badge>
+            <Badge tone="secondary" className="text-[10px]">timing: {source.timing_label ?? "unknown"}</Badge>
+          </div>
+          <h3 className="text-sm font-semibold text-foreground">{source.source_title ?? source.source_ref ?? "Untitled source"}</h3>
+          <dl className="mt-2 grid gap-1 text-xs text-muted-foreground">
+            <div><dt className="inline uppercase">publisher</dt>: <dd className="inline">{source.publisher ?? "-"}</dd></div>
+            <div><dt className="inline uppercase">claim</dt>: <dd className="inline break-all font-mono-ui">{source.claim_ref ?? "-"}</dd></div>
+            <div><dt className="inline uppercase">source ref</dt>: <dd className="inline break-all font-mono-ui">{source.source_ref ?? "-"}</dd></div>
+          </dl>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function DeliveryEventCards({ events }: { events?: MorningBriefDeliveryEvent[] }) {
+  if (!events || events.length === 0) {
+    return <p className="text-sm text-muted-foreground">No dry-run delivery event for latest run.</p>;
+  }
+  return (
+    <div className="space-y-3">
+      {events.map((event, index) => (
+        <article key={`${event.channel ?? "delivery"}-${event.created_at ?? index}`} className="rounded-md border border-current/15 p-3">
+          <div className="mb-2 flex flex-wrap items-center gap-2 uppercase">
+            <Badge tone="secondary" className="text-[10px]">channel: {event.channel ?? "-"}</Badge>
+            <Badge tone={event.delivery_status === "dry_run" ? "success" : "warning"} className="text-[10px]">
+              status: {event.delivery_status ?? "unknown"}
+            </Badge>
+          </div>
+          <dl className="grid gap-1 text-xs text-muted-foreground">
+            <div><dt className="inline uppercase">target</dt>: <dd className="inline break-all font-mono-ui">{event.target_ref ?? "[redacted]"}</dd></div>
+            <div><dt className="inline uppercase">payload</dt>: <dd className="inline normal-case">{event.payload_summary ?? "No browser-safe payload summary."}</dd></div>
+          </dl>
+        </article>
+      ))}
+    </div>
+  );
+}
+
 export default function ControlPlanePage() {
   const [data, setData] = useState<MorningBriefCanaryResponse | null>(null);
+  const [v0Canary, setV0Canary] = useState<MorningBriefV0CanaryResponse | null>(null);
   const [telegramPreview, setTelegramPreview] =
     useState<MorningBriefTelegramPreviewResponse | null>(null);
+  const [safetyPreview, setSafetyPreview] =
+    useState<MorningBriefSafetyPreviewResponse | null>(null);
+  const [cockpitSummary, setCockpitSummary] =
+    useState<ControlPlaneCockpitSummaryResponse | null>(null);
+  const [cockpitBlockers, setCockpitBlockers] =
+    useState<ControlPlaneCockpitBlockersResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { setAfterTitle, setEnd } = usePageHeader();
@@ -49,6 +210,10 @@ export default function ControlPlanePage() {
     setLoading(true);
     setError(null);
     setTelegramPreview(null);
+    setSafetyPreview(null);
+    setCockpitSummary(null);
+    setCockpitBlockers(null);
+    setV0Canary(null);
 
     try {
       const canary = await api.getMorningBriefCanary();
@@ -61,6 +226,17 @@ export default function ControlPlanePage() {
     }
 
     try {
+      const v0 = await api.getMorningBriefV0Canary();
+      setV0Canary(v0);
+    } catch {
+      setV0Canary({
+        enabled: false,
+        reason: "morning_brief_v0_canary_unavailable",
+        safe_next_action: "verify Gate B artifact status or keep hold/observe",
+      });
+    }
+
+    try {
       const preview = await api.getMorningBriefTelegramPreview();
       setTelegramPreview(preview);
     } catch {
@@ -69,13 +245,49 @@ export default function ControlPlanePage() {
         reason: "telegram_preview_unavailable",
         message: "Telegram preview unavailable; control-plane readback can still be shown.",
       });
+    }
+
+    try {
+      const safety = await api.getMorningBriefSafetyPreview();
+      setSafetyPreview(safety);
+    } catch {
+      setSafetyPreview({
+        enabled: false,
+        reason: "safety_preview_unavailable",
+        message: "Safety preview unavailable; keep publish/send blocked until verified.",
+      });
+    }
+
+    try {
+      const [summary, blockers] = await Promise.all([
+        api.getControlPlaneCockpitSummary(),
+        api.getControlPlaneCockpitBlockers(),
+      ]);
+      setCockpitSummary(summary);
+      setCockpitBlockers(blockers);
+    } catch {
+      setCockpitSummary({
+        enabled: false,
+        reason: "control_plane_cockpit_unavailable",
+        handoff_summary: "Control Plane Cockpit read failed; keep current observe posture.",
+        safe_next_action: "verify backend route status before relying on cockpit summary",
+      });
+      setCockpitBlockers({
+        enabled: false,
+        reason: "control_plane_cockpit_unavailable",
+        blockers: [],
+        safe_next_action: "verify backend route status before relying on cockpit blockers",
+      });
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void refresh();
+    const timer = window.setTimeout(() => {
+      void refresh();
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [refresh]);
 
   useLayoutEffect(() => {
@@ -107,6 +319,9 @@ export default function ControlPlanePage() {
 
   const run = data?.run;
   const boundaries = data?.boundaries ?? {};
+  const cockpitStatus = cockpitSummary?.status ?? {};
+  const cockpitBlockerCount = cockpitBlockers?.blockers?.length ?? 0;
+  const cockpitBoundaryFlags = cockpitBlockers?.boundaries ?? {};
 
   return (
     <div className="flex flex-col gap-4 normal-case">
@@ -139,12 +354,119 @@ export default function ControlPlanePage() {
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader className="py-3 px-4">
+          <CardTitle className="flex items-center gap-2 text-sm uppercase">
+            <Gauge className="h-4 w-4" />
+            Control Plane Cockpit
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 p-4 text-sm">
+          <div className="flex flex-wrap gap-2 uppercase">
+            <Badge tone="secondary" className="text-[10px]">Operator Mode</Badge>
+            <Badge tone="success" className="text-[10px]">read-only cockpit</Badge>
+          </div>
+          {cockpitSummary && !cockpitSummary.enabled && (
+            <div className="rounded-md border border-warning/30 bg-warning/10 p-3">
+              <p className="text-sm font-semibold uppercase text-warning">Cockpit disabled</p>
+              <p className="text-sm text-muted-foreground">
+                {cockpitSummary.reason ?? "control_plane_not_configured"}
+              </p>
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2 uppercase">
+            <Badge tone={severityTone(cockpitSummary?.severity)} className="text-[10px]">
+              severity: {cockpitSummary?.severity ?? "loading"}
+            </Badge>
+            <Badge tone={cockpitSummary?.enabled === false ? "secondary" : "success"} className="text-[10px]">
+              {cockpitSummary?.enabled === false ? "safe disabled" : "read-only"}
+            </Badge>
+            <Badge tone={cockpitBlockerCount > 0 ? "warning" : "success"} className="text-[10px]">
+              blockers: {cockpitBlockerCount}
+            </Badge>
+            <Badge tone={cockpitBoundaryFlags.action_controls ? "destructive" : "success"} className="text-[10px]">
+              actions: {cockpitBoundaryFlags.action_controls ? "enabled" : "off"}
+            </Badge>
+            <Badge tone={cockpitBoundaryFlags.mutation_controls ? "destructive" : "success"} className="text-[10px]">
+              mutations: {cockpitBoundaryFlags.mutation_controls ? "enabled" : "off"}
+            </Badge>
+          </div>
+          <div className="grid gap-3 xl:grid-cols-4">
+            <CockpitPanelSummary label="Gate D" panel={cockpitStatus.gate_d} />
+            <CockpitPanelSummary label="GitHub Watcher" panel={cockpitStatus.github_watcher_no_agent} />
+            <CockpitPanelSummary label="Supabase Boundary" panel={cockpitStatus.supabase_role_boundary} />
+            <CockpitPanelSummary label="Obsidian Merge Review" panel={cockpitStatus.obsidian_merge_review} />
+          </div>
+          <dl className="grid gap-2 md:grid-cols-2">
+            <div>
+              <dt className="text-xs uppercase text-muted-foreground">handoff summary</dt>
+              <dd className="normal-case text-muted-foreground">
+                {cockpitSummary?.handoff_summary ?? "No cockpit summary loaded yet."}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs uppercase text-muted-foreground">safe next step</dt>
+              <dd className="normal-case text-muted-foreground">
+                {cockpitSummary?.safe_next_action ?? cockpitBlockers?.safe_next_action ?? "Keep observe until verified."}
+              </dd>
+            </div>
+          </dl>
+          <p className="text-xs text-muted-foreground normal-case">
+            Visible read-only cockpit: backend/API readback only; no action controls, no browser-side Supabase access, no public endpoint.
+          </p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="py-3 px-4">
+          <CardTitle className="flex items-center gap-2 text-sm uppercase">
+            <ShieldCheck className="h-4 w-4" />
+            Morning Brief v0.2 Gate B/C Verification
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 p-4 text-sm">
+          <div className="flex flex-wrap gap-2 uppercase">
+            <Badge tone={v0Canary?.enabled ? "success" : "secondary"} className="text-[10px]">
+              {v0Canary?.enabled ? "local readback pass" : "safe disabled"}
+            </Badge>
+            <Badge tone="secondary" className="text-[10px]">
+              Hermes DB readback: {v0Canary?.hermes_direct_db_verification ? "yes" : "no"}
+            </Badge>
+            <Badge tone={v0Canary?.boundaries?.webui_mutation_enabled ? "destructive" : "success"} className="text-[10px]">
+              webui mutation: {v0Canary?.boundaries?.webui_mutation_enabled ? "enabled" : "off"}
+            </Badge>
+          </div>
+          {v0Canary?.enabled ? (
+            <dl className="grid gap-2 md:grid-cols-2">
+              <div><dt className="text-xs uppercase text-muted-foreground">Canary key</dt><dd className="break-all font-mono-ui text-xs">{v0Canary.canary_key}</dd></div>
+              <div><dt className="text-xs uppercase text-muted-foreground">Result</dt><dd>{v0Canary.gateb_verification_result}</dd></div>
+              <div><dt className="text-xs uppercase text-muted-foreground">Verification</dt><dd>{v0Canary.verification_status}</dd></div>
+              <div><dt className="text-xs uppercase text-muted-foreground">Rollback</dt><dd>{v0Canary.rollback_status}</dd></div>
+              <div className="md:col-span-2"><dt className="text-xs uppercase text-muted-foreground">Evidence source</dt><dd>{v0Canary.verification_source}</dd></div>
+              <div className="md:col-span-2"><dt className="text-xs uppercase text-muted-foreground">Snapshot ref</dt><dd className="break-all font-mono-ui text-xs">{v0Canary.report_snapshot_ref}</dd></div>
+            </dl>
+          ) : (
+            <div className="rounded-md border border-warning/30 bg-warning/10 p-3">
+              <p className="text-sm font-semibold uppercase text-warning">Safe disabled</p>
+              <p className="text-sm text-muted-foreground">{v0Canary?.reason ?? "morning_brief_v0_canary_not_configured"}</p>
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground normal-case">
+            Read-only only: no browser-side Supabase secret, no DB mutation, no Telegram send, no cron/routine integration.
+          </p>
+        </CardContent>
+      </Card>
+
       <div className="grid gap-4 xl:grid-cols-2">
         <Card>
           <CardHeader className="py-3 px-4">
             <CardTitle className="text-sm uppercase">Latest Morning Brief Run</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 p-4 text-sm">
+            <div className="flex flex-wrap gap-2 uppercase">
+              <Badge tone="success" className="text-[10px]">Reader Mode</Badge>
+              <Badge tone="secondary" className="text-[10px]">latest-run scoped</Badge>
+            </div>
             {run ? (
               <>
                 <p className="font-semibold text-foreground">{run.title}</p>
@@ -172,21 +494,77 @@ export default function ControlPlanePage() {
               Counts / Verification
             </CardTitle>
           </CardHeader>
-          <CardContent className="p-4">
-            <div className="grid gap-2 md:grid-cols-2">
-              {Object.entries(data?.counts ?? {}).map(([key, value]) => (
-                <div key={key} className="rounded-md border border-current/15 p-3">
-                  <p className="text-xs uppercase text-muted-foreground">{key}</p>
-                  <p className="text-lg font-semibold text-foreground">{value}</p>
-                </div>
-              ))}
-              {loading && !data && (
-                <p className="text-sm text-muted-foreground">Loading verification counts…</p>
-              )}
-            </div>
+          <CardContent className="space-y-4 p-4">
+            <CountCards title="Latest run counts" counts={data?.latest_run_counts} />
+            <CountCards title="Control-plane totals" counts={data?.counts} />
+            {loading && !data && (
+              <p className="text-sm text-muted-foreground">Loading verification counts…</p>
+            )}
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader className="py-3 px-4">
+          <CardTitle className="flex items-center gap-2 text-sm uppercase">
+            <ShieldCheck className="h-4 w-4" />
+            Source Safety Preview
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 p-4 text-sm">
+          {safetyPreview && !safetyPreview.enabled && (
+            <div className="rounded-md border border-warning/30 bg-warning/10 p-3">
+              <p className="text-sm font-semibold uppercase text-warning">Safety preview disabled</p>
+              <p className="text-sm text-muted-foreground">
+                {safetyPreview.reason}: {safetyPreview.message}
+              </p>
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2 uppercase">
+            <Badge tone={severityTone(safetyPreview?.severity)} className="text-[10px]">
+              severity: {safetyPreview?.severity ?? "loading"}
+            </Badge>
+            <Badge tone={safetyPreview?.source_safety?.state === "has_quarantine" ? "warning" : "success"} className="text-[10px]">
+              source safety: {safetyPreview?.source_safety?.state ?? "loading"}
+            </Badge>
+            <Badge tone={safetyPreview?.rollback_readiness?.publish_blocked ? "warning" : "success"} className="text-[10px]">
+              publish_blocked: {safetyPreview?.rollback_readiness?.publish_blocked ? "yes" : "no"}
+            </Badge>
+            <Badge tone={safetyPreview?.boundaries?.webui_mutation_enabled ? "destructive" : "success"} className="text-[10px]">
+              webui mutation: {safetyPreview?.boundaries?.webui_mutation_enabled ? "enabled" : "off"}
+            </Badge>
+          </div>
+          <dl className="grid gap-2 md:grid-cols-2">
+            <div>
+              <dt className="text-xs uppercase text-muted-foreground">quarantined_source_count</dt>
+              <dd className="text-lg font-semibold text-foreground">
+                {safetyPreview?.source_safety?.quarantined_source_count ?? 0}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs uppercase text-muted-foreground">notification action</dt>
+              <dd>{safetyPreview?.notification_readiness?.action_state ?? "preview_only"}</dd>
+            </div>
+            <div>
+              <dt className="text-xs uppercase text-muted-foreground">authority state</dt>
+              <dd>{safetyPreview?.authority_boundary?.state ?? "no_obsidian_ref"}</dd>
+            </div>
+            <div>
+              <dt className="text-xs uppercase text-muted-foreground">rollback available</dt>
+              <dd>{safetyPreview?.rollback_readiness?.available ? "yes" : "no"}</dd>
+            </div>
+            <div className="md:col-span-2">
+              <dt className="text-xs uppercase text-muted-foreground">publish block reason</dt>
+              <dd className="normal-case text-muted-foreground">
+                {safetyPreview?.rollback_readiness?.publish_block_reason_kr ?? "No safety preview loaded yet."}
+              </dd>
+            </div>
+          </dl>
+          <p className="text-xs text-muted-foreground normal-case">
+            Read-only safety preview: no send controls, no browser-side Supabase access, no cron change, no Obsidian authority edit.
+          </p>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader className="py-3 px-4">
@@ -239,15 +617,15 @@ export default function ControlPlanePage() {
       <div className="grid gap-4 xl:grid-cols-2">
         <Card>
           <CardHeader className="py-3 px-4"><CardTitle className="text-sm uppercase">Sections</CardTitle></CardHeader>
-          <CardContent className="p-4"><JsonList value={data?.sections} /></CardContent>
+          <CardContent className="p-4"><SectionCards sections={data?.sections} /></CardContent>
         </Card>
         <Card>
           <CardHeader className="py-3 px-4"><CardTitle className="text-sm uppercase">Source Anchors</CardTitle></CardHeader>
-          <CardContent className="p-4"><JsonList value={data?.sources} /></CardContent>
+          <CardContent className="p-4"><SourceAnchorCards sources={data?.sources} /></CardContent>
         </Card>
         <Card>
           <CardHeader className="py-3 px-4"><CardTitle className="text-sm uppercase">Delivery Events</CardTitle></CardHeader>
-          <CardContent className="p-4"><JsonList value={data?.delivery_events} /></CardContent>
+          <CardContent className="p-4"><DeliveryEventCards events={data?.delivery_events} /></CardContent>
         </Card>
         <Card>
           <CardHeader className="py-3 px-4"><CardTitle className="text-sm uppercase">Audit Events</CardTitle></CardHeader>
