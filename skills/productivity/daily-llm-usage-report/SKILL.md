@@ -18,6 +18,7 @@ Gordon's daily LLM usage report — sends request metrics to Telegram at 6 AM PT
 
 - User Interactions (24h)
 - API Requests (24h)
+- **API Requests by Model (24h)** — model names shortened (e.g. `openai-codex/gpt-5.5` → `gpt-5.5`), sorted descending by call count
 - Max Req / 5H Window (24h)
 - Max Req / 5H Window (30d)
 

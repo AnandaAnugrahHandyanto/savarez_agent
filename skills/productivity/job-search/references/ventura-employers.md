@@ -12,9 +12,10 @@
 ## ATS / Job Board Quirks
 
 ### Teledyne FLIR Careers (Workday)
-- URL: `https://flir.wd1.myworkdayjobs.com/en-US/flircareers`
-- Workday ATS blocks most scraping tools
-- Search for "Thousand Oaks, CA" or "Camarillo, CA" manually
+- Direct URL: `https://flir.wd1.myworkdayjobs.com/en-US/flircareers`
+- Workday blocks scraping — DO NOT rely on direct site scraping
+- **Best discovery method:** LinkedIn search for "Teledyne Thousand Oaks" or "Teledyne Camarillo" with software/systems/manager keywords
+- Glassdoor shows Teledyne Sr. Software Engineer salaries $163K–$259K in this region
 - Glassdoor/LinkedIn better sources for salary + role discovery
 
 ### Northrop Grumman

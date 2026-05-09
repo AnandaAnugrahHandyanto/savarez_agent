@@ -34,55 +34,47 @@ Career research, employer analysis, and automated job monitoring for Gordon's re
 ## Daily Job Report (Cron)
 
 Set up with `cronjob` tool. Cron job ID: `041c2bde2ba9` (Ventura Area Tech Jobs Daily).
-Schedule: `0 14 * * 1-5` (2 PM UTC = 7 AM PT, Mon–Fri). Delivery: `origin` (delivers output to this Telegram chat automatically — do NOT set `deliver: telegram`; the gateway origin IS the Telegram delivery path).
+Schedule: `0 14 * * 1-5` (2 PM UTC = 7 AM PT, Mon–Fri). Delivery: `origin`.
+
+**Important — cron job prompt style:**
+- Attach prompt TEXT directly, not a skill reference
+- Do NOT attach `autonomous-ai-agents/hermes-agent` or any skill to cron jobs that just do web search — skills are heavy and unnecessary for simple search tasks
+- Set `skills: []` explicitly when creating or updating job crons
 
 Prompt template (attach as cron prompt, not as a separate sub-agent skill):
 ```
-Every weekday morning (Mon-Fri), check careers pages at three companies near Ventura CA for senior-level roles matching Gordon's background: software engineering management, systems engineering management, program management, senior IC (staff/principal). Gordon has 20+ years in tech including Director of Engineering at KLA (semiconductor capital equipment). Prefers IC track but will consider management.
+Every weekday morning (Mon-Fri), search for senior-level roles at Northrop Grumman, Amgen, and Teledyne near Ventura CA for Gordon Rouse. Gordon is a Director of Engineering at KLA with 20+ years in software/systems engineering and program management. Prefers IC track (staff/principal) but will consider management. No firmware/Verilog/VHDL, no adtech.
 
-Search the following companies directly:
+**Companies & commute:**
+- Northrop Grumman | Camarillo | ~26 min
+- Amgen | Thousand Oaks | ~32 min
+- Teledyne | Thousand Oaks/Camarillo | ~37 min
 
-1. Northrop Grumman Camarillo (jobs.northropgrumman.com) — search for: software engineer OR systems engineer OR program manager OR manager programs in Camarillo CA
-2. Amgen Thousand Oaks (careers.amgen.com) — search for: senior engineer OR staff engineer OR manager OR associate director in Thousand Oaks engineering
-3. Teledyne Thousand Oaks/Camarillo — search for: software engineer OR systems engineer OR engineering manager at teledyne.com careers
+**Search sources:**
+- Northrop Grumman: jobs.northropgrumman.com + LinkedIn
+- Amgen: careers.amgen.com + LinkedIn
+- Teledyne: flir.wd1.myworkdayjobs.com (Teledyne FLIR uses this ATS) + LinkedIn site:linkedin.com Teledyne Thousand Oaks OR Camarillo software engineer OR systems engineer OR manager
 
-Filter criteria:
-- Include: senior software engineer, staff software engineer, principal engineer, engineering manager, program manager, systems engineer, software engineering manager
-- Exclude: The Trade Desk, Verilog/VHDL/firmware/hardware-description roles, embedded hardware/firmware bringup
-- Exclude jobs requiring active security clearance (note if clearance may be needed but not required)
-- Focus on roles that would fit a Director-level candidate willing to go IC or manage
+**Include:** Senior Software Engineer, Staff Engineer, Principal Engineer, Engineering Manager, Program Manager, Systems Engineer, Software Engineering Manager, Director-level roles.
 
-For each job found, report:
-- Company
-- Title
-- Location (city)
-- Salary if available (often shown on Indeed, Glassdoor, ZipRecruiter, or the company's own site)
-- Direct URL to the job posting
+**Exclude:** The Trade Desk, Verilog/VHDL/FPGA/firmware, embedded hardware bringup, jobs requiring active clearance (note if clearance may be needed later).
 
-Format the report as:
+**For each job:** Company | Title | City | Salary if available | Direct URL | 1-line fit assessment.
 
-**Ventura Area Jobs Report — [DAY, DATE]**
+**Format:**
+**Ventura Area Jobs — [DAY, DATE]**
 
-**Northrop Grumman (Camarillo ~26 min from home)**
-- [Title] | [City] | $[salary] if available
-  [1-line description]
-  [link]
-- No new relevant postings
+**Northrop Grumman (Camarillo ~26 min)**
+- ...
 
-**Amgen (Thousand Oaks ~32 min from home)**
-- [Title] | [City] | $[salary] if available
-  [1-line description]
-  [link]
-- No new relevant postings
+**Amgen (Thousand Oaks ~32 min)**
+- ...
 
-**Teledyne (Thousand Oaks ~37 min from home)**
-- [Title] | [City] | $[salary] if available
-  [1-line description]
-  [link]
-- No new relevant postings
+**Teledyne (Thousand Oaks/Camarillo ~37 min)**
+- ...
 
-If no relevant jobs at a company, say "No new relevant postings today."
-Keep total under 500 words. Deliver to this Telegram chat.
+If no new relevant postings, say "No new relevant postings today."
+Keep under 500 words.
 ```
 
 **Cron output location:** `/opt/data/cron/output/041c2bde2ba9/` (latest run: `YYYY-MM-DD_HH-MM-SS.md`). Parse the "## Response" section for the actual job report. The "## Prompt" section is the skill attachment and can be skipped.
