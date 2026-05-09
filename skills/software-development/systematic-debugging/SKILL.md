@@ -273,6 +273,20 @@ This is NOT a failed hypothesis — this is a wrong architecture.
 
 ---
 
+## Pitfalls
+
+### Silent Daemon Wedge
+
+A long-running daemon (watcher, daemon, etc.) can appear frozen — no output, no errors, but process alive. Before assuming the process is wedged, check:
+
+1. **`git status --porcelain`** from a terminal — is the tree actually dirty? The daemon may be waiting for changes that arrived after you last looked.
+2. **Log file mtime** — run `stat /path/to/log`, wait 30s, `stat` again. No change = process may be in a sleep/polling cycle, OR it exited and a new process is writing.
+3. **Staged ≠ untracked** — a file staged via `git add` (`A  file`) is in the git index and appears in `git status --porcelain`. An untracked file (`?? file`) is invisible to the daemon. If the daemon only sees staged changes, deleting the untracked file from disk does nothing.
+4. **`/proc/<pid>/fd/1`** — verify stdout/stderr still point to the log file (inode match).
+5. **`cat /proc/<pid>/syscall`** — check what syscall the process is currently blocked in.
+
+See `references/source-watcher-silent-wedge.md` for a full case study (watcher gate test, 2026-05-09).
+
 ## Red Flags — STOP and Follow Process
 
 If you catch yourself thinking:

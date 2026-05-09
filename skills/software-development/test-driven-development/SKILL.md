@@ -332,6 +332,40 @@ Never fix bugs without a test.
 - **Happy path only** — always test edge cases, errors, and boundaries
 - **Brittle tests** — tests should verify behavior, not structure; refactoring shouldn't break them
 
+## E2E / Integration Testing for Daemons and Watchers
+
+Unit tests mock at boundaries. E2E tests touch the real system. For long-running daemons (watchers, daemons, cron-driven processes), E2E testing requires time and state management.
+
+### Watcher Gate E2E Test Pattern
+
+For testing a file-watching daemon that gates commits on lint:
+
+**Key constraint — tracked vs untracked:**
+- `git add file.py` → staged (`A  file.py`) — watcher WILL see and attempt to commit
+- `echo 'code' > file.py` without `git add` → untracked (`?? file.py`) — watcher may NOT see it depending on porcelain logic
+- When gate blocks a staged file, the file stays in the index after the failed attempt
+- Use `git reset HEAD -- <file>` to unstage before deletion if you need a clean recovery test
+
+**Test phases:**
+1. Plant broken file (staged via `git add`)
+2. Wait for debounce (watcher polls at 10s, debounce is 180s — need 3+ min of NO other file changes)
+3. Verify gate refused: check `watcher.log` for "REFUSING to commit" + `watcher-blocked.log` for ruff output
+4. Verify staging state: `git status --porcelain` shows staged (not untracked) — untracked = test design error
+5. Delete + unstage + wait for debounce
+6. Verify gate passed: log shows "ruff F821 gate passed" + "auto:" commit
+
+**Recovery test verification:**
+- After fix commit (e.g. `b12fd7b` — defensive `git reset`), staging clears automatically
+- Before fix: `git status --porcelain` showed `A  _broken.py` (staged, wedged)
+- After fix: `git status --porcelain` shows `?? _broken.py` (untracked, not stuck)
+
+**Silent wedge diagnostic (daemon appears frozen):**
+- Process alive but log mtime frozen → verify log file inode matches `/proc/<pid>/fd/1`
+- Tree clean from terminal but daemon not committing → daemon may be waiting for actual changes, not worktree changes
+- Always verify independent of the daemon: run `git status --porcelain` and `git diff --cached` from a separate terminal
+
+See `references/source-watcher-silent-wedge.md` in this skill for full case study.
+
 ## Final Rule
 
 ```
