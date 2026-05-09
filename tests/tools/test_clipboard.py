@@ -12,6 +12,7 @@ import os
 import queue
 import subprocess
 import sys
+import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock, PropertyMock, mock_open
 
@@ -204,18 +205,24 @@ class TestMacosOsascript:
 # ── WSL detection ────────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def reset_wsl_cache():
-    """``is_wsl`` caches `_wsl_detected` globally; isolate TestIsWsl cases."""
-    import hermes_constants
+class TestIsWsl(unittest.TestCase):
+    """Unit tests for ``hermes_constants.is_wsl`` (imported as clipboard._is_wsl).
 
-    hermes_constants._wsl_detected = None
-    yield
-    hermes_constants._wsl_detected = None
+    ``is_wsl`` caches ``_wsl_detected`` on the module; pytest-only fixtures on a
+    plain class have proven flaky in CI (cache leaked → wrong booleans / mock
+    never called). ``unittest.TestCase`` ``setUp``/``tearDown`` run reliably
+    under pytest-xdist.
+    """
 
+    def setUp(self):
+        import hermes_constants
 
-@pytest.mark.usefixtures("reset_wsl_cache")
-class TestIsWsl:
+        hermes_constants._wsl_detected = None
+
+    def tearDown(self):
+        import hermes_constants
+
+        hermes_constants._wsl_detected = None
 
     def test_wsl2_detected(self):
         import hermes_constants
