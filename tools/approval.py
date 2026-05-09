@@ -94,6 +94,26 @@ def _get_session_platform() -> str:
         return os.getenv("HERMES_SESSION_PLATFORM", "") or ""
 
 
+def _tirith_fail_open_setting() -> bool:
+    """Return the effective tirith_fail_open value without importing tirith.
+
+    Used when ``tools.tirith_security`` itself is not importable so we can
+    still honour ``security.tirith_fail_open: false`` and refuse to silently
+    allow commands. Env var ``TIRITH_FAIL_OPEN`` wins over config; default
+    matches ``_load_security_config`` (True).
+    """
+    env_val = os.getenv("TIRITH_FAIL_OPEN")
+    if env_val is not None and env_val != "":
+        return is_truthy_value(env_val)
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config().get("security", {}) or {}
+        return bool(cfg.get("tirith_fail_open", True))
+    except Exception:
+        return True
+
+
 def _is_gateway_approval_context() -> bool:
     """True when this call is inside a gateway/API session.
 
@@ -1010,7 +1030,19 @@ def check_all_command_guards(command: str, env_type: str,
         from tools.tirith_security import check_command_security
         tirith_result = check_command_security(command)
     except ImportError:
-        pass  # tirith module not installed — allow
+        # Module not installed. Respect tirith_fail_open: when False, block
+        # rather than silently allowing — otherwise the setting is bypassed
+        # whenever the scanner package is missing.
+        if not _tirith_fail_open_setting():
+            logger.warning(
+                "tirith module unavailable and tirith_fail_open=false; "
+                "blocking command"
+            )
+            tirith_result = {
+                "action": "block",
+                "findings": [],
+                "summary": "tirith scanner unavailable (fail-closed)",
+            }
 
     # Dangerous command check (detection only, no approval)
     is_dangerous, pattern_key, description = detect_dangerous_command(command)

@@ -965,3 +965,99 @@ class TestFailClosedUnderPromptToolkit:
             assert result == "once"
         finally:
             ptc.get_app_or_none = orig
+
+
+class TestTirithImportFailOpenRespected:
+    """Regression for #20733.
+
+    When ``tools.tirith_security`` cannot be imported, the previous code
+    silently allowed every command. ``security.tirith_fail_open: false``
+    must be honoured even when the scanner package is missing.
+    """
+
+    def test_setting_helper_env_override_false(self, monkeypatch):
+        from tools.approval import _tirith_fail_open_setting
+
+        monkeypatch.setenv("TIRITH_FAIL_OPEN", "false")
+        assert _tirith_fail_open_setting() is False
+
+    def test_setting_helper_env_override_true(self, monkeypatch):
+        from tools.approval import _tirith_fail_open_setting
+
+        monkeypatch.setenv("TIRITH_FAIL_OPEN", "true")
+        assert _tirith_fail_open_setting() is True
+
+    def test_setting_helper_reads_config_when_env_absent(self, monkeypatch):
+        from tools.approval import _tirith_fail_open_setting
+
+        monkeypatch.delenv("TIRITH_FAIL_OPEN", raising=False)
+        with mock_patch(
+            "hermes_cli.config.load_config",
+            return_value={"security": {"tirith_fail_open": False}},
+        ):
+            assert _tirith_fail_open_setting() is False
+
+    def test_setting_helper_defaults_true_when_load_fails(self, monkeypatch):
+        from tools.approval import _tirith_fail_open_setting
+
+        monkeypatch.delenv("TIRITH_FAIL_OPEN", raising=False)
+        with mock_patch(
+            "hermes_cli.config.load_config",
+            side_effect=RuntimeError("boom"),
+        ):
+            assert _tirith_fail_open_setting() is True
+
+    def test_import_error_with_fail_open_false_blocks(self, monkeypatch):
+        """ImportError on tirith_security + fail_open=False must block."""
+        import sys
+
+        from tools.approval import check_all_command_guards
+
+        monkeypatch.setitem(sys.modules, "tools.tirith_security", None)
+        monkeypatch.setenv("TIRITH_FAIL_OPEN", "false")
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+
+        captured = {}
+
+        def fake_callback(command, description, **kwargs):
+            captured["description"] = description
+            return "deny"
+
+        with mock_patch(
+            "tools.approval._get_approval_mode", return_value="ask"
+        ):
+            result = check_all_command_guards(
+                "echo hello",
+                env_type="local",
+                approval_callback=fake_callback,
+            )
+
+        assert result["approved"] is False
+        assert "fail-closed" in (captured.get("description") or "").lower()
+
+    def test_import_error_with_fail_open_true_allows(self, monkeypatch):
+        """Default fail_open=True still allows when scanner missing."""
+        import sys
+
+        from tools.approval import check_all_command_guards
+
+        monkeypatch.setitem(sys.modules, "tools.tirith_security", None)
+        monkeypatch.setenv("TIRITH_FAIL_OPEN", "true")
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+
+        with mock_patch(
+            "tools.approval._get_approval_mode", return_value="ask"
+        ):
+            result = check_all_command_guards(
+                "echo hello",
+                env_type="local",
+                approval_callback=lambda *a, **kw: "deny",
+            )
+
+        assert result["approved"] is True
