@@ -67,13 +67,43 @@ SUPPORTED_POOL_STRATEGIES = {
     STRATEGY_LEAST_USED,
 }
 
-# Cooldown before retrying an exhausted credential.
+# Cooldown before retrying an exhausted credential (when no provider reset_at).
 # Transient 401 auth failures cool down briefly so single-key setups can recover.
-# 429 (rate-limited), 402 (billing/quota), and other failures cool down after 1 hour.
-# Provider-supplied reset_at timestamps override these defaults.
-EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
-EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
-EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
+# 429 (rate-limited), 402 (billing/quota), and other exhaustion codes share a longer
+# base cooldown (default 1 hour). Provider-supplied reset_at timestamps override these.
+#
+# Optional env override (minimum 60s): HERMES_CREDENTIAL_TTL_SECONDS or
+# HERMES_CREDENTIAL_COOLDOWN_SECONDS — applies to 429 and default-class exhaustion
+# (401 keeps the short fixed window).
+EXHAUSTED_TTL_401_SECONDS = 5 * 60  # 5 minutes
+
+_DEFAULT_EXHAUSTED_COOLDOWN_SECONDS = 60 * 60
+_MIN_EXHAUSTED_COOLDOWN_SECONDS = 60
+
+
+def _parse_positive_int_env(name: str) -> Optional[int]:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw, 10)
+    except ValueError:
+        return None
+
+
+def _resolved_exhausted_cooldown_seconds() -> int:
+    """Return base exhausted-cooldown seconds from env (re-read each call for tests)."""
+    for key in ("HERMES_CREDENTIAL_TTL_SECONDS", "HERMES_CREDENTIAL_COOLDOWN_SECONDS"):
+        parsed = _parse_positive_int_env(key)
+        if parsed is not None:
+            return max(_MIN_EXHAUSTED_COOLDOWN_SECONDS, parsed)
+    return _DEFAULT_EXHAUSTED_COOLDOWN_SECONDS
+
+
+def __getattr__(name: str) -> int:
+    if name in {"EXHAUSTED_TTL_429_SECONDS", "EXHAUSTED_TTL_DEFAULT_SECONDS"}:
+        return _resolved_exhausted_cooldown_seconds()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # Pool key prefix for custom OpenAI-compatible endpoints.
 # Custom endpoints all share provider='custom' but are keyed by their
@@ -194,9 +224,7 @@ def _exhausted_ttl(error_code: Optional[int]) -> int:
     """Return cooldown seconds based on the HTTP status that caused exhaustion."""
     if error_code == 401:
         return EXHAUSTED_TTL_401_SECONDS
-    if error_code == 429:
-        return EXHAUSTED_TTL_429_SECONDS
-    return EXHAUSTED_TTL_DEFAULT_SECONDS
+    return _resolved_exhausted_cooldown_seconds()
 
 
 def _parse_absolute_timestamp(value: Any) -> Optional[float]:

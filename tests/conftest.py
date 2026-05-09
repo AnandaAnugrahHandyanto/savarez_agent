@@ -440,6 +440,17 @@ def _reset_module_state():
     except Exception:
         pass
 
+    # --- agent.i18n — reset cached language + catalogs between tests ---
+    # _config_language_cached() is process-global; without clearing, the first test
+    # on an xdist worker can pin load_config()'s idea of display.language and leave
+    # gateway.i18n t() falling back to raw keys for later tests after HERMES_HOME moves.
+    try:
+        from agent import i18n as _i18n_mod
+
+        _i18n_mod.reset_language_cache()
+    except Exception:
+        pass
+
     yield
 
 

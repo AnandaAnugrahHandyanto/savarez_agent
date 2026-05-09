@@ -1414,6 +1414,12 @@ def get_model_context_length(
         if ctx:
             return ctx
 
+    # 5d. Bare slugs pinned in DEFAULT_CONTEXT_LENGTHS can disagree with OpenRouter's
+    #     live metadata (e.g. hy3-preview is 256K on Tencent TokenHub; OR may list 262144).
+    #     Prefer the curated Hermes default before the OR cache so tests and routing stay stable.
+    if model.strip().lower() == "hy3-preview":
+        return DEFAULT_CONTEXT_LENGTHS["hy3-preview"]
+
     # 6. OpenRouter live API metadata (provider-unaware fallback)
     metadata = fetch_model_metadata()
     if model in metadata:
