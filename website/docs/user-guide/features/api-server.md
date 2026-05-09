@@ -243,7 +243,7 @@ Create a new agent run. Returns a `run_id` that can be used to subscribe to prog
 }
 ```
 
-Runs accept a simple `input` string and optional `session_id`, `instructions`, `conversation_history`, or `previous_response_id`. When `session_id` is provided, Hermes uses it as the agent task/session boundary so external UIs can keep tool state, logs, and cancellation aligned with their own conversation IDs.
+Runs accept a simple `input` string and optional `session_id`, `instructions`, `conversation_history`, or `previous_response_id`. When `session_id` is provided, Hermes surfaces it in the run status so external UIs can correlate runs with their own conversation IDs.
 
 ### GET /v1/runs/\{run_id\}
 
@@ -281,7 +281,7 @@ Poll the current run state. This is useful for dashboards that need status witho
 }
 ```
 
-Statuses and a bounded sanitized event history are retained briefly after terminal states (`completed`, `failed`, or `cancelled`) for polling and UI reconciliation. The timeline intentionally contains tool names, sanitized argument previews, sanitized result previews, lifecycle state, token usage, and redacted reasoning markers, not private chain-of-thought text. Secret-looking fields such as API keys, tokens, cookies, and passwords are redacted before emission.
+Statuses and a bounded sanitized event history are retained briefly after terminal states (`completed`, `failed`, or `cancelled`) for polling and UI reconciliation. The timeline intentionally contains tool names, sanitized argument previews, sanitized result previews, lifecycle state, token usage, approval markers, and redacted reasoning markers, not private chain-of-thought text. Secret-looking fields such as API keys, tokens, cookies, and passwords are redacted before emission.
 
 ### GET /v1/runs/\{run_id\}/events
 
