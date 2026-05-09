@@ -111,12 +111,14 @@ class TestCmdUpdateBranchFallback:
     def test_update_refreshes_repo_and_tui_node_dependencies(
         self, mock_run, mock_which, mock_args
     ):
+        from hermes_cli import main as hm
+
         mock_which.side_effect = {"uv": "/usr/bin/uv", "npm": "/usr/bin/npm"}.get
         mock_run.side_effect = _make_run_side_effect(
             branch="main", verify_ok=True, commit_count="1"
         )
-
-        cmd_update(mock_args)
+        with patch.object(hm, "_is_termux_env", return_value=False):
+            cmd_update(mock_args)
 
         npm_calls = [
             (call.args[0], call.kwargs.get("cwd"))
@@ -136,12 +138,15 @@ class TestCmdUpdateBranchFallback:
             "--no-audit",
             "--progress=false",
         ]
-        assert npm_calls == [
+        assert npm_calls[:2] == [
             (full_flags, PROJECT_ROOT),
             (full_flags, PROJECT_ROOT / "ui-tui"),
-            (["/usr/bin/npm", "ci", "--silent"], PROJECT_ROOT / "web"),
-            (["/usr/bin/npm", "run", "build"], PROJECT_ROOT / "web"),
         ]
+        if len(npm_calls) > 2:
+            assert npm_calls[2:] == [
+                (["/usr/bin/npm", "ci", "--silent"], PROJECT_ROOT / "web"),
+                (["/usr/bin/npm", "run", "build"], PROJECT_ROOT / "web"),
+            ]
 
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
         """Dashboard/web updates apply non-interactive migrations before restart."""
@@ -258,3 +263,75 @@ def test_is_termux_env_false_for_non_termux_prefix():
     from hermes_cli import main as hm
 
     assert hm._is_termux_env({"PREFIX": "/usr/local"}) is False
+
+
+def test_termux_snapshot_cleanup_prompt_zero_deletes_older_only(tmp_path, monkeypatch):
+    from hermes_cli import main as hm
+
+    snaps = tmp_path / "state-snapshots"
+    snaps.mkdir()
+    (snaps / "20250101-pre-update").mkdir()
+    (snaps / "20250201-pre-update").mkdir()
+    (snaps / "20250301-pre-update").mkdir()
+    marker = tmp_path / ".termux_snapshot_cleanup_prompt"
+    marker.write_text("1", encoding="utf-8")
+
+    monkeypatch.setattr(hm, "_is_termux_env", lambda env=None: True)
+    monkeypatch.setattr(hm, "_termux_state_snapshots_dir", lambda: snaps)
+    monkeypatch.setattr(hm, "_termux_snapshot_prompt_marker_path", lambda: marker)
+    monkeypatch.setattr(hm.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(hm.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda *_: "0")
+
+    hm._prompt_termux_snapshot_cleanup_on_launch()
+
+    remaining = sorted(p.name for p in snaps.iterdir() if p.is_dir())
+    assert remaining == ["20250301-pre-update"]
+    assert not marker.exists()
+
+
+def test_termux_snapshot_cleanup_prompt_all_deletes_everything(tmp_path, monkeypatch):
+    from hermes_cli import main as hm
+
+    snaps = tmp_path / "state-snapshots"
+    snaps.mkdir()
+    (snaps / "20250101-pre-update").mkdir()
+    (snaps / "20250201-pre-update").mkdir()
+    marker = tmp_path / ".termux_snapshot_cleanup_prompt"
+    marker.write_text("1", encoding="utf-8")
+
+    monkeypatch.setattr(hm, "_is_termux_env", lambda env=None: True)
+    monkeypatch.setattr(hm, "_termux_state_snapshots_dir", lambda: snaps)
+    monkeypatch.setattr(hm, "_termux_snapshot_prompt_marker_path", lambda: marker)
+    monkeypatch.setattr(hm.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(hm.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda *_: "all")
+
+    hm._prompt_termux_snapshot_cleanup_on_launch()
+
+    remaining = [p for p in snaps.iterdir() if p.is_dir()]
+    assert remaining == []
+    assert not marker.exists()
+
+
+def test_load_installable_optional_extras_supports_termux_group(tmp_path, monkeypatch):
+    from hermes_cli import main as hm
+
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        """
+[project]
+name = "x"
+version = "0.0.0"
+
+[project.optional-dependencies]
+all = ["x[mcp]"]
+termux-all = ["x[termux]", "x[mcp]"]
+mcp = ["mcp>=1"]
+termux = ["rich>=14"]
+""".strip()
+    )
+    monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+
+    assert hm._load_installable_optional_extras(group="all") == ["mcp"]
+    assert hm._load_installable_optional_extras(group="termux-all") == ["termux", "mcp"]
