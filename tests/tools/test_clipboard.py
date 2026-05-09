@@ -203,16 +203,19 @@ class TestMacosOsascript:
 
 # ── WSL detection ────────────────────────────────────────────────────────
 
-class TestIsWsl:
-    @pytest.fixture(autouse=True)
-    def reset_wsl_cache(self):
-        # Plain pytest classes do NOT run unittest ``setup_method`` — without
-        # this, ordering leaks ``hermes_constants._wsl_detected`` across tests.
-        import hermes_constants
 
-        hermes_constants._wsl_detected = None
-        yield
-        hermes_constants._wsl_detected = None
+@pytest.fixture
+def reset_wsl_cache():
+    """``is_wsl`` caches `_wsl_detected` globally; isolate TestIsWsl cases."""
+    import hermes_constants
+
+    hermes_constants._wsl_detected = None
+    yield
+    hermes_constants._wsl_detected = None
+
+
+@pytest.mark.usefixtures("reset_wsl_cache")
+class TestIsWsl:
 
     def test_wsl2_detected(self):
         import hermes_constants
