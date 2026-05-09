@@ -384,6 +384,16 @@ def test_worker_context_includes_parent_results_and_comments(kanban_home):
     assert "child" in ctx
 
 
+def test_worker_context_disambiguates_comment_author(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x")
+        kb.add_comment(conn, t, "hermes-system", "COMMENT_MARKER")
+        ctx = kb.build_worker_context(conn, t)
+    assert "comment from worker @hermes-system at " in ctx
+    assert "**hermes-system**" not in ctx
+    assert "COMMENT_MARKER" in ctx
+
+
 # ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------

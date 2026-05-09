@@ -4024,7 +4024,7 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
             )
         for c in shown_c:
             ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(c.created_at))
-            lines.append(f"**{c.author}** ({ts}):")
+            lines.append(f"comment from worker @{c.author} at {ts}:")
             lines.append(_cap(c.body, _CTX_MAX_COMMENT_BYTES))
             lines.append("")
 
