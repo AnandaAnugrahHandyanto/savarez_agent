@@ -226,6 +226,11 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     runner.pairing_store._is_rate_limited = MagicMock(return_value=False)
     runner.pairing_store.generate_code = MagicMock(return_value="ABC123")
 
+    # Destructive slash (/new, /reset, …) goes through _maybe_confirm_destructive_slash,
+    # which reads approvals.destructive_slash_confirm from real config by default.
+    # Bare-runner harness must bypass confirmation so /new reaches reset_session.
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": False}}
+
     return runner
 
 

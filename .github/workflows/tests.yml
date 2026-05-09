@@ -75,7 +75,8 @@ jobs:
       - name: Run e2e tests
         run: |
           source .venv/bin/activate
-          python -m pytest tests/e2e/ -v --tb=short
+          # Override pyproject addopts (-n auto breaks asyncio e2e under xdist).
+          python -m pytest tests/e2e/ -v --tb=short --override-ini addopts= -n 0
         env:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
