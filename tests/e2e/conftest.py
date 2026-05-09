@@ -25,6 +25,21 @@ from gateway.session import SessionEntry, SessionSource, build_session_key
 
 E2E_MESSAGE_SETTLE_DELAY = 0.3
 
+
+@pytest.fixture(autouse=True)
+def _e2e_disable_plugin_invoke_hook(monkeypatch):
+    """Keep gateway e2e independent of optional workspace plugins.
+
+    CI installs ``.[all,dev]``; discovered plugins may register
+    ``pre_gateway_dispatch`` hooks that rewrite or short-circuit slash
+    commands so ``/new`` never reaches ``_handle_reset_command`` while a
+    reply is still sent (e.g. redirected to ``/help``).
+    """
+    import hermes_cli.plugins as plugins_mod
+
+    monkeypatch.setattr(plugins_mod, "invoke_hook", lambda *args, **kwargs: [])
+
+
 # Platform library mocks
 
 # Ensure telegram module is available (mock it if not installed)
