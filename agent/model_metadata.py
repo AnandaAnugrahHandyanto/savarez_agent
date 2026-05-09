@@ -409,7 +409,7 @@ def detect_local_server_type(base_url: str, api_key: str = "", provider: str = "
 
     Returns one of: "ollama", "lm-studio", "vllm", "llamacpp", or None.
     
-    """""
+    """
     import httpx
 
     # Skip probes for known gateway providers.
