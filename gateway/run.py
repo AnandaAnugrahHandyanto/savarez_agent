@@ -875,8 +875,14 @@ def _load_gateway_config() -> dict:
     Uses the module-level ``_hermes_home`` (so tests that monkeypatch it
     still see their fixture) and shares the mtime-keyed raw-yaml cache
     from ``hermes_cli.config.read_raw_config`` when the paths match.
+
+    ``${VAR}`` references inside string values are expanded against the
+    process environment so callers (custom_providers base_url,
+    model resolution, hygiene worker, …) see fully-resolved values
+    instead of raw templates.
     """
     config_path = _hermes_home / 'config.yaml'
+    cfg: dict = {}
     try:
         from hermes_cli.config import get_config_path, read_raw_config
         # Fast path: if _hermes_home agrees with the canonical config
@@ -884,18 +890,28 @@ def _load_gateway_config() -> dict:
         # direct read (keeps test fixtures with a monkeypatched
         # _hermes_home working).
         if config_path == get_config_path():
-            return read_raw_config()
+            cfg = read_raw_config()
     except Exception:
-        pass
+        cfg = {}
+
+    if not cfg:
+        try:
+            if config_path.exists():
+                import yaml
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    cfg = yaml.safe_load(f) or {}
+        except Exception:
+            logger.debug("Could not load gateway config from %s", config_path)
+            return {}
+
+    if not cfg:
+        return {}
 
     try:
-        if config_path.exists():
-            import yaml
-            with open(config_path, 'r', encoding='utf-8') as f:
-                return yaml.safe_load(f) or {}
+        from hermes_cli.config import _expand_env_vars
+        return _expand_env_vars(cfg)
     except Exception:
-        logger.debug("Could not load gateway config from %s", config_path)
-    return {}
+        return cfg
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
