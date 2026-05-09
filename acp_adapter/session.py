@@ -442,6 +442,12 @@ class SessionManager:
             session_meta["base_url"] = base_url.strip()
         if isinstance(api_mode, str) and api_mode.strip():
             session_meta["api_mode"] = api_mode.strip()
+        # Persist /effort and /show_thinking
+        rc = getattr(state.agent, "reasoning_config", None)
+        if isinstance(rc, dict) and rc.get("effort"):
+            session_meta["effort"] = rc["effort"]
+        if not getattr(state, "show_thinking", True):
+            session_meta["show_thinking"] = False
         cwd_json = json.dumps(session_meta)
 
         try:
@@ -541,6 +547,17 @@ class SessionManager:
             history=history,
             cancel_event=threading.Event(),
         )
+        # 恢复 /effort 和 /show_thinking
+        try:
+            saved_meta = json.loads(mc) if isinstance(mc, str) else (mc if isinstance(mc, dict) else {})
+        except Exception:
+            saved_meta = {}
+        if isinstance(saved_meta, dict):
+            effort = saved_meta.get("effort")
+            if effort:
+                agent.reasoning_config = {"effort": effort}
+            if saved_meta.get("show_thinking") is False:
+                state.show_thinking = False
         with self._lock:
             self._sessions[session_id] = state
         _register_task_cwd(session_id, cwd)

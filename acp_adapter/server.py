@@ -454,6 +454,8 @@ class HermesACPAgent(acp.Agent):
         "compact": "Compress conversation context",
         "steer": "Inject guidance into the currently running agent turn",
         "queue": "Queue a prompt to run after the current turn finishes",
+        "effort": "Show or set reasoning effort (none/low/medium/high/xhigh)",
+        "show_thinking": "Toggle reasoning display (on/off)",
         "version": "Show Hermes version",
     }
 
@@ -492,6 +494,16 @@ class HermesACPAgent(acp.Agent):
             "name": "queue",
             "description": "Queue a prompt to run after the current turn finishes",
             "input_hint": "prompt to run next",
+        },
+        {
+            "name": "effort",
+            "description": "Show or set reasoning effort (none/low/medium/high/xhigh)",
+            "input_hint": "reasoning effort level",
+        },
+        {
+            "name": "show_thinking",
+            "description": "Toggle reasoning display (on/off)",
+            "input_hint": "on or off",
         },
         {
             "name": "version",
@@ -1175,7 +1187,11 @@ class HermesACPAgent(acp.Agent):
 
         if conn:
             tool_progress_cb = make_tool_progress_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
-            reasoning_cb = make_thinking_cb(conn, session_id, loop)
+            # 思考流式：respect /show_thinking toggle
+            if getattr(state, "show_thinking", True):
+                reasoning_cb = make_thinking_cb(conn, session_id, loop)
+            else:
+                reasoning_cb = None
             step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
             message_cb = make_message_cb(conn, session_id, loop)
 
@@ -1414,6 +1430,8 @@ class HermesACPAgent(acp.Agent):
             "compact": self._cmd_compact,
             "steer": self._cmd_steer,
             "queue": self._cmd_queue,
+            "effort": self._cmd_effort,
+            "show_thinking": self._cmd_show_thinking,
             "version": self._cmd_version,
         }.get(cmd)
 
@@ -1645,6 +1663,33 @@ class HermesACPAgent(acp.Agent):
 
     def _cmd_version(self, args: str, state: SessionState) -> str:
         return f"Hermes Agent v{HERMES_VERSION}"
+
+    def _cmd_effort(self, args: str, state: SessionState) -> str:
+        """显示或设置 reasoning effort."""
+        current = getattr(state.agent, "reasoning_config", None) or {}
+        current_effort = current.get("effort", "default") if isinstance(current, dict) else "default"
+        level = (args or "").strip().lower()
+        valid = {"none", "low", "medium", "high", "xhigh"}
+        if level not in valid:
+            return (
+                f"⚡ Reasoning effort: {current_effort}\n"
+                f"   用法: /effort none | low | medium | high | xhigh"
+            )
+        state.agent.reasoning_config = {"effort": level}
+        self.session_manager.save_session(state.session_id)
+        return f"⚡ Reasoning effort 设为: {level} (was: {current_effort})"
+
+    def _cmd_show_thinking(self, args: str, state: SessionState) -> str:
+        toggle = (args or "").strip().lower()
+        if toggle not in ("on", "off"):
+            current = getattr(state, "show_thinking", True)
+            return (
+                f"🧠 Thinking display: {'ON' if current else 'OFF'}\n"
+                f"   用法: /show_thinking on | off"
+            )
+        state.show_thinking = (toggle == "on")
+        self.session_manager.save_session(state.session_id)
+        return f"🧠 Thinking display: {'ON' if state.show_thinking else 'OFF'}"
 
     # ---- Model switching (ACP protocol method) -------------------------------
 
