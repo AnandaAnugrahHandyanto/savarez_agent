@@ -149,10 +149,14 @@ def _xai_curated_models() -> list[str]:
             ids = [mid for mid in models.keys() if isinstance(mid, str)]
             if ids:
                 return sorted(ids)
-    except Exception:
+    except (ImportError, OSError, json.JSONDecodeError, UnicodeDecodeError) as _exc:
         # Any failure (missing file, malformed JSON, import error)
         # falls through to the static list.
-        pass
+        import logging as _logging
+        _logging.getLogger(__name__).debug(
+            "xAI curated models: disk cache unavailable (%s: %s); using static fallback.",
+            type(_exc).__name__, _exc,
+        )
     return list(_XAI_STATIC_FALLBACK)
 
 
@@ -521,7 +525,7 @@ def fetch_nous_account_tier(access_token: str, portal_base_url: str = "") -> dic
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=8) as resp:
             return json.loads(resp.read().decode())
-    except Exception:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return {}
 
 
@@ -681,7 +685,7 @@ def fetch_nous_recommended_models(
             data = json.loads(resp.read().decode())
         if not isinstance(data, dict):
             data = {}
-    except Exception:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         data = {}
 
     _nous_recommended_cache[base] = (data, now)
@@ -991,7 +995,7 @@ def fetch_openrouter_models(
     try:
         from hermes_cli.model_catalog import get_curated_openrouter_models
         remote = get_curated_openrouter_models()
-    except Exception:
+    except (ImportError, OSError, json.JSONDecodeError, UnicodeDecodeError):
         remote = None
     fallback = list(remote) if remote else list(OPENROUTER_MODELS)
     preferred_ids = [mid for mid, _ in fallback]
@@ -1003,7 +1007,7 @@ def fetch_openrouter_models(
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
-    except Exception:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return list(_openrouter_catalog_cache or fallback)
 
     live_items = payload.get("data", [])
@@ -1057,7 +1061,7 @@ def get_curated_nous_model_ids() -> list[str]:
     try:
         from hermes_cli.model_catalog import get_curated_nous_models
         remote = get_curated_nous_models()
-    except Exception:
+    except (ImportError, OSError, json.JSONDecodeError, UnicodeDecodeError):
         remote = None
     if remote:
         return list(remote)
@@ -1097,7 +1101,7 @@ def fetch_ai_gateway_models(
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
-    except Exception:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return list(_ai_gateway_catalog_cache or fallback)
 
     live_items = payload.get("data", [])
@@ -1275,7 +1279,7 @@ def fetch_models_with_pricing(
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
-    except Exception:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         _pricing_cache[cache_key] = {}
         return {}
 
@@ -1322,7 +1326,7 @@ def fetch_ai_gateway_pricing(
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
-    except Exception:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         _pricing_cache[cache_key] = {}
         return {}
 
