@@ -95,8 +95,22 @@ After creation, the topic's detail page has a **Subscriptions** tab. Create one:
 
 On the **topic** (not the subscription), add an IAM principal:
 
-- Principal: `chat-api-push@system.gserviceaccount.com`
+- Principal: the per-project Workspace Add-ons / Chat API service agent.
+  Find the exact email in **Google Cloud Console → Chat API → Configuration →
+  Connection settings** — it looks like
+  `service-PROJECT_NUMBER@gcp-sa-gsuiteaddons.iam.gserviceaccount.com`,
+  where `PROJECT_NUMBER` is your GCP project's numeric ID.
 - Role: `Pub/Sub Publisher`
+
+:::caution Do NOT grant `chat-api-push@system.gserviceaccount.com`
+Older tutorials (and even some current ones) reference the generic
+`chat-api-push@system.gserviceaccount.com`. Don't use that — Chat now publishes
+from a per-project service agent and the generic SA is no longer authorized.
+The failure mode is silent: Chat shows "Hermes Agent not responding" and the
+gateway log emits no inbound event lines at all, because events never make it
+to the topic. Always copy the SA email from the **Connection settings** screen
+of your specific Chat app.
+:::
 
 Without this, Google Chat cannot publish events to your topic and your bot will
 never receive anything.
@@ -293,8 +307,12 @@ evicts only that user's cache. Users don't disrupt each other.
    If it does, Hermes isn't authenticated — verify `GOOGLE_CHAT_SERVICE_ACCOUNT_JSON`
    and that the SA is listed as `Pub/Sub Subscriber` on the subscription.
 2. If the subscription has zero messages, Google Chat isn't publishing.
-   Double-check the IAM binding on the **topic**:
-   `chat-api-push@system.gserviceaccount.com` must have `Pub/Sub Publisher`.
+   Double-check the IAM binding on the **topic**: the per-project Chat API
+   service agent
+   (`service-PROJECT_NUMBER@gcp-sa-gsuiteaddons.iam.gserviceaccount.com`,
+   shown in **Chat API → Configuration → Connection settings**) must have
+   `Pub/Sub Publisher`. Do NOT rely on the generic
+   `chat-api-push@system.gserviceaccount.com` — see Step 5.
 3. Check `hermes gateway` logs for `[GoogleChat] Connected`. If you see
    `[GoogleChat] Config validation failed`, the error message tells you which
    env var to fix.
