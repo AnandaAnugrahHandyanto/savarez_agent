@@ -24,7 +24,20 @@ const config: Config = {
 
   i18n: {
     defaultLocale: 'en',
-    locales: ['en', 'ru'],
+    locales: ['en', 'zh-Hans', 'ru'],
+    localeConfigs: {
+      en: {
+        label: 'English',
+      },
+      'zh-Hans': {
+        label: '简体中文',
+        htmlLang: 'zh-Hans',
+      },
+      ru: {
+        label: 'Русский',
+        htmlLang: 'ru',
+      },
+    },
   },
 
   themes: [
@@ -34,7 +47,7 @@ const config: Config = {
       /** @type {import("@easyops-cn/docusaurus-search-local").PluginOptions} */
       ({
         hashed: true,
-        language: ['en', 'ru'],
+        language: ['en', 'zh', 'ru'],
         indexBlog: false,
         docsRouteBasePath: '/',
         // Disabled: appends ?_highlight=... to URLs (before the #anchor),

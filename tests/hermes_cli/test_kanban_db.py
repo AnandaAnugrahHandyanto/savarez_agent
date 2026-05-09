@@ -168,18 +168,79 @@ def test_claim_fails_on_non_ready(kanban_home):
         assert kb.claim_task(conn, t) is None
 
 
-def test_stale_claim_reclaimed(kanban_home):
+def test_stale_claim_reclaimed(kanban_home, monkeypatch):
+    import signal
+    import hermes_cli.kanban_db as _kb
+
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")
-        kb.claim_task(conn, t)
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        killed: list[int] = []
+        state = {"alive": True}
+
+        def _signal(pid, sig):
+            killed.append(sig)
+            if sig == signal.SIGTERM:
+                state["alive"] = False
+
+        kb._set_worker_pid(conn, t, 12345)
         # Rewind claim_expires so it looks stale.
         conn.execute(
             "UPDATE tasks SET claim_expires = ? WHERE id = ?",
             (int(time.time()) - 3600, t),
         )
-        reclaimed = kb.release_stale_claims(conn)
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: state["alive"])
+        reclaimed = kb.release_stale_claims(conn, signal_fn=_signal)
         assert reclaimed == 1
         assert kb.get_task(conn, t).status == "ready"
+        assert killed == [signal.SIGTERM]
+
+
+def test_max_runtime_uses_current_run_start_after_retry(kanban_home):
+    """A retry should get a fresh max-runtime window.
+
+    ``tasks.started_at`` intentionally records the first time the task ever
+    started. Runtime enforcement must therefore use the active
+    ``task_runs.started_at`` row; otherwise every retry of an old task is
+    immediately timed out again.
+    """
+    with kb.connect() as conn:
+        host = kb._claimer_id().split(":", 1)[0]
+        t = kb.create_task(
+            conn, title="retry", assignee="a", max_runtime_seconds=10,
+        )
+
+        kb.claim_task(conn, t, claimer=f"{host}:first")
+        first_run_id = kb.latest_run(conn, t).id
+        old_started = int(time.time()) - 20
+        conn.execute(
+            "UPDATE tasks SET started_at = ?, worker_pid = ? WHERE id = ?",
+            (old_started, 999999, t),
+        )
+        conn.execute(
+            "UPDATE task_runs SET started_at = ?, worker_pid = ? WHERE id = ?",
+            (old_started, 999999, first_run_id),
+        )
+
+        timed_out = kb.enforce_max_runtime(conn, signal_fn=lambda _pid, _sig: None)
+        assert timed_out == [t]
+        assert kb.get_task(conn, t).status == "ready"
+
+        kb.claim_task(conn, t, claimer=f"{host}:retry")
+        retry_run = kb.latest_run(conn, t)
+        conn.execute(
+            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
+            (999999, t),
+        )
+        conn.execute(
+            "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
+            (999999, retry_run.id),
+        )
+
+        timed_out = kb.enforce_max_runtime(conn, signal_fn=lambda _pid, _sig: None)
+        assert timed_out == []
+        assert kb.get_task(conn, t).status == "running"
 
 
 def test_heartbeat_extends_claim(kanban_home):
@@ -233,6 +294,122 @@ def test_block_then_unblock(kanban_home):
         kb.claim_task(conn, t)
         assert kb.block_task(conn, t, reason="need input")
         assert kb.get_task(conn, t).status == "blocked"
+        assert kb.unblock_task(conn, t)
+        assert kb.get_task(conn, t).status == "ready"
+
+
+# ---------------------------------------------------------------------------
+# Parent-completion invariant at the claim gate (RCA t_a6acd07d)
+# ---------------------------------------------------------------------------
+
+def test_claim_rejects_when_parents_not_done(kanban_home):
+    """claim_task must refuse ready->running if any parent isn't 'done'.
+
+    Simulates the create-then-link race: a task gets status='ready' via a
+    racy writer while it still has undone parents. The claim gate must
+    detect the violation, demote the child back to 'todo', append a
+    'claim_rejected' event, and return None. Covers Fix 1 of the RCA.
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        child = kb.create_task(
+            conn, title="child", assignee="a", parents=[parent],
+        )
+        # Child correctly starts 'todo' because parent is not 'done'.
+        assert kb.get_task(conn, child).status == "todo"
+        # Simulate the race: a racy writer force-promotes the child to
+        # 'ready' while parent is still pending.
+        conn.execute(
+            "UPDATE tasks SET status='ready' WHERE id=?", (child,),
+        )
+        conn.commit()
+        assert kb.get_task(conn, child).status == "ready"
+
+        result = kb.claim_task(conn, child, claimer="host:1")
+
+    assert result is None
+    with kb.connect() as conn:
+        assert kb.get_task(conn, child).status == "todo"
+        events = conn.execute(
+            "SELECT kind, payload FROM task_events "
+            "WHERE task_id = ? ORDER BY id",
+            (child,),
+        ).fetchall()
+    kinds = [e["kind"] for e in events]
+    assert "claim_rejected" in kinds
+    # No 'claimed' event was emitted for the blocked attempt.
+    assert "claimed" not in kinds
+
+
+def test_claim_succeeds_once_parents_done(kanban_home):
+    """After parents complete, recompute_ready -> claim_task must succeed."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        child = kb.create_task(
+            conn, title="child", assignee="a", parents=[parent],
+        )
+        kb.claim_task(conn, parent)
+        assert kb.complete_task(conn, parent, result="ok")
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, child).status == "ready"
+        claimed = kb.claim_task(conn, child, claimer="host:1")
+    assert claimed is not None
+    assert claimed.status == "running"
+
+
+def test_create_with_parents_stays_todo_until_parents_done(kanban_home):
+    """kanban_create(parents=[...]) must land in 'todo' and only promote on parent done."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        child = kb.create_task(
+            conn, title="child", assignee="a", parents=[parent],
+        )
+        assert kb.get_task(conn, child).status == "todo"
+        # Dispatcher tick between create and some later event must NOT
+        # produce a winner for this child.
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0
+        assert kb.get_task(conn, child).status == "todo"
+        # Complete parent; complete_task internally runs recompute_ready,
+        # which promotes the child to 'ready'.
+        kb.claim_task(conn, parent)
+        kb.complete_task(conn, parent, result="ok")
+        assert kb.get_task(conn, child).status == "ready"
+
+
+def test_unblock_with_pending_parents_goes_to_todo(kanban_home):
+    """unblock_task must re-gate on parent completion (Fix 3).
+
+    A task blocked while parents are still in progress must return to
+    'todo' (not 'ready') on unblock. Otherwise the dispatcher will claim
+    it immediately, repeating Bug 2 from the RCA.
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        child = kb.create_task(
+            conn, title="child", assignee="a", parents=[parent],
+        )
+        # Force child into 'blocked' regardless of parent progress
+        # (simulates a worker that self-blocked, or an operator block).
+        conn.execute(
+            "UPDATE tasks SET status='blocked' WHERE id=?", (child,),
+        )
+        conn.commit()
+        assert kb.unblock_task(conn, child)
+        assert kb.get_task(conn, child).status == "todo"
+        # After parent completes + recompute, the child is ready.
+        kb.claim_task(conn, parent)
+        kb.complete_task(conn, parent, result="ok")
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, child).status == "ready"
+
+
+def test_unblock_without_parents_goes_to_ready(kanban_home):
+    """Parent-free unblock still produces 'ready' (behavior preserved)."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="lone", assignee="a")
+        kb.claim_task(conn, t)
+        assert kb.block_task(conn, t, reason="need input")
         assert kb.unblock_task(conn, t)
         assert kb.get_task(conn, t).status == "ready"
 
@@ -327,7 +504,7 @@ def test_worker_context_includes_parent_results_and_comments(kanban_home):
 # Dispatcher
 # ---------------------------------------------------------------------------
 
-def test_dispatch_dry_run_does_not_claim(kanban_home):
+def test_dispatch_dry_run_does_not_claim(kanban_home, all_assignees_spawnable):
     with kb.connect() as conn:
         t1 = kb.create_task(conn, title="a", assignee="alice")
         t2 = kb.create_task(conn, title="b", assignee="bob")
@@ -344,10 +521,58 @@ def test_dispatch_skips_unassigned(kanban_home):
         t = kb.create_task(conn, title="floater")
         res = kb.dispatch_once(conn, dry_run=True)
     assert t in res.skipped_unassigned
+    assert t not in res.skipped_nonspawnable
     assert not res.spawned
 
 
-def test_dispatch_promotes_ready_and_spawns(kanban_home):
+def test_dispatch_skips_nonspawnable_into_separate_bucket(kanban_home, monkeypatch):
+    """Tasks whose assignee fails profile_exists() must NOT land in
+    ``skipped_unassigned`` (which is operator-actionable) — they go in
+    the dedicated ``skipped_nonspawnable`` bucket so health telemetry
+    can suppress false-positive "stuck" warnings."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="for-terminal", assignee="orion-cc")
+        res = kb.dispatch_once(conn, dry_run=True)
+    assert t in res.skipped_nonspawnable
+    assert t not in res.skipped_unassigned
+    assert not res.spawned
+
+
+def test_has_spawnable_ready_false_when_only_terminal_lanes(kanban_home, monkeypatch):
+    """``has_spawnable_ready`` returns False when every ready task is
+    assigned to a control-plane lane — used by gateway/CLI dispatchers
+    to silence the stuck-warn while terminals still have queued work."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    with kb.connect() as conn:
+        kb.create_task(conn, title="t1", assignee="orion-cc")
+        kb.create_task(conn, title="t2", assignee="orion-research")
+        assert kb.has_spawnable_ready(conn) is False
+
+
+def test_has_spawnable_ready_true_when_real_profile_present(kanban_home, monkeypatch):
+    """``has_spawnable_ready`` returns True as soon as ANY ready task
+    has an assignee that maps to a real Hermes profile — preserves the
+    real "stuck" signal when a daily/agent task is queued."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(
+        profiles, "profile_exists", lambda name: name == "daily"
+    )
+    with kb.connect() as conn:
+        kb.create_task(conn, title="terminal-task", assignee="orion-cc")
+        kb.create_task(conn, title="hermes-task", assignee="daily")
+        assert kb.has_spawnable_ready(conn) is True
+
+
+def test_has_spawnable_ready_false_on_empty_queue(kanban_home):
+    """Empty queue is the trivial false case — no ready tasks at all."""
+    with kb.connect() as conn:
+        assert kb.has_spawnable_ready(conn) is False
+
+
+def test_dispatch_promotes_ready_and_spawns(kanban_home, all_assignees_spawnable):
     spawns = []
 
     def fake_spawn(task, workspace):
@@ -368,7 +593,7 @@ def test_dispatch_promotes_ready_and_spawns(kanban_home):
         assert kb.get_task(conn, c).status == "running"
 
 
-def test_dispatch_spawn_failure_releases_claim(kanban_home):
+def test_dispatch_spawn_failure_releases_claim(kanban_home, all_assignees_spawnable):
     def boom(task, workspace):
         raise RuntimeError("spawn failed")
 
@@ -728,3 +953,166 @@ class TestSharedBoardPaths:
             default_home / "kanban" / "workspaces"
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
+
+
+# ---------------------------------------------------------------------------
+# latest_summary / latest_summaries — surface task_runs.summary handoffs
+# ---------------------------------------------------------------------------
+
+def test_latest_summary_returns_none_when_no_runs(kanban_home):
+    """A freshly-created task has no runs and therefore no summary."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="fresh", assignee="alice")
+        assert kb.latest_summary(conn, t) is None
+
+
+def test_latest_summary_returns_summary_after_complete(kanban_home):
+    """``complete_task(summary=...)`` is the canonical kanban-worker
+    handoff; ``latest_summary`` must surface it so dashboards/CLI can
+    render what the worker actually did."""
+    handoff = "shipped 3 files, ran tests, opened PR #42"
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="work", assignee="alice")
+        kb.complete_task(conn, t, summary=handoff)
+        assert kb.latest_summary(conn, t) == handoff
+
+
+def test_latest_summary_picks_newest_when_multiple_runs(kanban_home):
+    """When a task has been re-run (block → unblock → complete), the
+    newest run's summary wins. We unblock to take the task back to
+    ``ready``, then complete a second time and verify the second
+    summary surfaces."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="retry", assignee="alice")
+        kb.complete_task(conn, t, summary="first attempt")
+        # Move back to ready by direct SQL — block_task / unblock_task
+        # paths require an active claim, but we just want a second run
+        # row to exist with a later ended_at.
+        conn.execute(
+            "UPDATE tasks SET status='ready', completed_at=NULL WHERE id=?",
+            (t,),
+        )
+        # Sleep 1s so the second run's ended_at is provably later than
+        # the first (complete_task uses int(time.time())).
+        time.sleep(1.05)
+        kb.complete_task(conn, t, summary="second attempt — final")
+        assert kb.latest_summary(conn, t) == "second attempt — final"
+
+
+def test_latest_summary_skips_empty_string(kanban_home):
+    """A run with an empty-string summary should not mask an earlier
+    populated one — empty strings carry no information."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="t", assignee="alice")
+        kb.complete_task(conn, t, summary="real handoff")
+        # Inject a later run with empty summary directly. Workers
+        # writing "" instead of None is a real shape we want to ignore.
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, started_at, ended_at, "
+            "outcome, summary) VALUES (?, 'done', ?, ?, 'completed', ?)",
+            (t, int(time.time()) + 1, int(time.time()) + 2, ""),
+        )
+        conn.commit()
+        assert kb.latest_summary(conn, t) == "real handoff"
+
+
+def test_latest_summaries_batch_omits_tasks_without_summary(kanban_home):
+    """``latest_summaries`` is the dashboard's N+1 escape hatch — it
+    must return only entries for tasks that actually have a summary,
+    keep the per-task latest, and accept an empty input gracefully."""
+    with kb.connect() as conn:
+        t1 = kb.create_task(conn, title="a", assignee="alice")
+        t2 = kb.create_task(conn, title="b", assignee="bob")
+        t3 = kb.create_task(conn, title="c", assignee="carol")
+        kb.complete_task(conn, t1, summary="alpha")
+        kb.complete_task(conn, t3, summary="charlie")
+        out = kb.latest_summaries(conn, [t1, t2, t3])
+        assert out == {t1: "alpha", t3: "charlie"}
+        # Empty input → empty dict, no SQL syntax error from "IN ()".
+        assert kb.latest_summaries(conn, []) == {}
+
+
+
+# ---------------------------------------------------------------------------
+# NFS / network-filesystem fallback (see hermes_state.apply_wal_with_fallback)
+# ---------------------------------------------------------------------------
+
+def test_connect_falls_back_to_delete_on_locking_protocol(kanban_home, caplog):
+    """kanban_db.connect() must handle ``locking protocol`` on NFS/SMB.
+
+    Without this fallback, the gateway's kanban dispatcher crashes every
+    60s and the kanban migration (``consecutive_failures`` ADD COLUMN) is
+    retried forever — which is what the real-world user report shows
+    (see hermes-agent issue #22032).
+    """
+    import sqlite3 as _sqlite3
+    from unittest.mock import patch as _patch
+
+    # Clear module cache so a fresh connect() is attempted
+    kb._INITIALIZED_PATHS.clear()
+
+    real_connect = _sqlite3.connect
+
+    class _WalBlockingConnection(_sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+            if "journal_mode=wal" in sql.lower().replace(" ", ""):
+                raise _sqlite3.OperationalError("locking protocol")
+            return super().execute(sql, *args, **kwargs)
+
+    def wal_blocking_connect(*args, **kwargs):
+        return real_connect(
+            *args, factory=_WalBlockingConnection, **kwargs
+        )
+
+    with _patch("hermes_cli.kanban_db.sqlite3.connect", side_effect=wal_blocking_connect):
+        with caplog.at_level("WARNING", logger="hermes_state"):
+            conn = kb.connect()
+
+    # One fallback warning, naming kanban.db
+    warnings = [
+        r for r in caplog.records
+        if r.levelname == "WARNING" and "kanban.db" in r.getMessage()
+    ]
+    assert len(warnings) >= 1, (
+        f"Expected a kanban.db WARNING, got: {[r.getMessage() for r in caplog.records]}"
+    )
+
+    # DB still usable end-to-end — create + list a task
+    t = kb.create_task(conn, title="post-fallback task")
+    tasks = kb.list_tasks(conn)
+    assert any(row.id == t for row in tasks)
+    conn.close()
+
+
+def test_unlink_tasks_triggers_recompute_ready(kanban_home):
+    """Regression test for issue #22459.
+
+    Removing a dependency via unlink_tasks must immediately promote the child
+    to ready when all remaining parents are done — same contract as
+    complete_task and unblock_task.
+
+    Before the fix, child stayed 'todo' indefinitely after unlink; only the
+    next dispatcher tick or a manual 'hermes kanban recompute' would promote it.
+    """
+    with kb.connect() as conn:
+        # A is done.
+        a = kb.create_task(conn, title="parent-done")
+        kb.complete_task(conn, a)
+
+        # C is running (not done) — blocks child B.
+        c = kb.create_task(conn, title="parent-running")
+        kb.claim_task(conn, c, claimer="worker:1")
+
+        # B depends on both A (done) and C (running) → stays todo.
+        b = kb.create_task(conn, title="child", parents=[a, c])
+        assert kb.get_task(conn, b).status == "todo"
+
+        # Remove the blocking dependency C → B.
+        removed = kb.unlink_tasks(conn, c, b)
+        assert removed is True
+
+        # B's only remaining parent is A (done) → must be ready immediately.
+        assert kb.get_task(conn, b).status == "ready", (
+            "child should promote to ready immediately after unlink_tasks "
+            "removes its last blocking dependency"
+        )
