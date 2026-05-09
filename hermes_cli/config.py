@@ -1238,6 +1238,7 @@ DEFAULT_CONFIG = {
         "tirith_path": "tirith",
         "tirith_timeout": 5,
         "tirith_fail_open": True,
+        "read_only": False,  # When True, blocks all destructive operations (write_file, patch, terminal, etc.)
         "website_blocklist": {
             "enabled": False,
             "domains": [],

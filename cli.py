@@ -6900,6 +6900,8 @@ class HermesCLI:
             self._handle_footer_command(cmd_original)
         elif canonical == "yolo":
             self._toggle_yolo()
+        elif canonical == "readonly":
+            self._toggle_readonly(cmd_original)
         elif canonical == "reasoning":
             self._handle_reasoning_command(cmd_original)
         elif canonical == "fast":
@@ -6918,6 +6920,10 @@ class HermesCLI:
             self._handle_paste_command()
         elif canonical == "image":
             self._handle_image_command(cmd_original)
+        elif canonical == "pr":
+            self._handle_pr_command(cmd_original)
+        elif canonical == "feature":
+            self._handle_feature_command(cmd_original)
         elif canonical == "reload":
             from hermes_cli.config import reload_env
             count = reload_env()
@@ -7531,6 +7537,283 @@ class HermesCLI:
         self._goal_manager = mgr
         return mgr
 
+    def _handle_pr_command(self, cmd: str):
+        """Handle /pr — create or manage GitHub pull requests.
+
+        Usage:
+            /pr create <title> [--body <desc>] [--draft]
+            /pr list [open|closed|merged|all] [--limit N]
+            /pr view <number>
+        """
+        from hermes_cli.colors import Colors as _Colors
+
+        parts = cmd.strip().split(maxsplit=2)
+        if len(parts) < 2:
+            _cprint("  Usage: /pr <create|list|view> [args...]")
+            _cprint("  Example: /pr create 'Fix login bug' --body 'This PR fixes...'")
+            return
+
+        subcmd = parts[1].strip().lower()
+
+        if subcmd == "create":
+            # Parse title and optional args
+            rest = parts[2] if len(parts) > 2 else ""
+            title = rest.strip()
+            body = ""
+            draft = False
+
+            # Simple arg parsing
+            if " --body " in rest:
+                title_part, body_part = rest.split(" --body ", 1)
+                title = title_part.strip()
+                body = body_part.strip()
+            if " --draft" in rest:
+                draft = True
+                title = title.replace(" --draft", "").strip()
+
+            if not title:
+                _cprint("  Usage: /pr create <title> [--body <desc>] [--draft]")
+                return
+
+            _cprint(f"  Creating PR: {title}")
+            try:
+                from tools.github_pr_tool import create_pull_request
+                result = create_pull_request(title=title, body=body, draft=draft)
+                data = json.loads(result)
+                if data.get("success"):
+                    _cprint(f"  {_Colors.GREEN}✓{_Colors.RESET} {data.get('message', 'PR created')}")
+                else:
+                    _cprint(f"  {_Colors.RED}✗{_Colors.RESET} Error: {data.get('error', 'Unknown error')}")
+            except Exception as e:
+                _cprint(f"  {_Colors.RED}✗{_Colors.RESET} Failed: {e}")
+
+        elif subcmd == "list":
+            state = "open"
+            limit = 10
+            rest = parts[2] if len(parts) > 2 else ""
+            if rest.strip():
+                state = rest.strip().split()[0]
+            try:
+                from tools.github_pr_tool import list_pull_requests
+                result = list_pull_requests(state=state, limit=limit)
+                data = json.loads(result)
+                if data.get("success"):
+                    prs = data.get("pull_requests", [])
+                    _cprint(f"  Pull requests ({state}, {len(prs)} total):")
+                    for pr in prs:
+                        num = pr.get("number", "?")
+                        title = pr.get("title", "Untitled")
+                        author = pr.get("author", {}).get("login", "?")
+                        url = pr.get("url", "")
+                        _cprint(f"    #{num} {title} by @{author}")
+                        if url:
+                            _cprint(f"       {url}")
+                else:
+                    _cprint(f"  {_Colors.RED}✗{_Colors.RESET} Error: {data.get('error', 'Unknown error')}")
+            except Exception as e:
+                _cprint(f"  {_Colors.RED}✗{_Colors.RESET} Failed: {e}")
+
+        elif subcmd == "view":
+            rest = parts[2] if len(parts) > 2 else ""
+            try:
+                num = int(rest.strip().split()[0])
+            except (ValueError, IndexError):
+                _cprint("  Usage: /pr view <number>")
+                return
+            try:
+                from tools.github_pr_tool import view_pull_request
+                result = view_pull_request(number=num)
+                data = json.loads(result)
+                if data.get("success"):
+                    pr = data.get("pull_request", {})
+                    _cprint(f"  PR #{pr.get('number', num)}: {pr.get('title', 'Untitled')}")
+                    _cprint(f"  State: {pr.get('state', '?')} | Author: @{pr.get('author', {}).get('login', '?')}")
+                    _cprint(f"  URL: {pr.get('url', '')}")
+                    body = pr.get("body", "")
+                    if body:
+                        _cprint(f"\n  Body:\n  {body[:500]}{'...' if len(body) > 500 else ''}")
+                else:
+                    _cprint(f"  {_Colors.RED}✗{_Colors.RESET} Error: {data.get('error', 'Unknown error')}")
+            except Exception as e:
+                _cprint(f"  {_Colors.RED}✗{_Colors.RESET} Failed: {e}")
+
+        else:
+            _cprint(f"  Unknown subcommand: {subcmd}")
+            _cprint("  Usage: /pr <create|list|view> [args...]")
+
+    def _handle_feature_command(self, cmd: str):
+        """Handle /feature — submit or manage feature requests.
+
+        Usage:
+            /feature submit "<title>" [--desc "<description>"] [--priority <low|medium|high|critical>] [--tags tag1,tag2]
+            /feature list [status] [priority] [--limit N]
+            /feature get <id>
+            /feature update <id> [--status <status>] [--priority <priority>] [--note "<text>"]
+            /feature delete <id>
+        """
+        from hermes_cli.colors import Colors as _Colors
+
+        parts = cmd.strip().split(maxsplit=2)
+        if len(parts) < 2:
+            _cprint("  Usage: /feature <submit|list|get|update|delete> [args...]")
+            return
+
+        subcmd = parts[1].strip().lower()
+
+        def _parse_args(rest: str) -> dict:
+            """Simple arg parser for --key value pairs."""
+            result = {"_rest": rest.strip()}
+            tokens = rest.strip().split()
+            i = 0
+            while i < len(tokens):
+                if tokens[i].startswith("--"):
+                    key = tokens[i][2:]
+                    if i + 1 < len(tokens):
+                        result[key] = tokens[i + 1]
+                        i += 2
+                    else:
+                        result[key] = ""
+                        i += 1
+                else:
+                    i += 1
+            return result
+
+        if subcmd == "submit":
+            rest = parts[2] if len(parts) > 2 else ""
+            parsed = _parse_args(rest)
+            title = parsed.get("_rest", "").split(" --")[0].strip().strip('"\'')
+            if not title:
+                _cprint("  Usage: /feature submit \"<title>\" [--desc \"<description>\"] [--priority <level>] [--tags tag1,tag2]")
+                return
+
+            description = parsed.get("desc", "")
+            priority = parsed.get("priority", "medium")
+            tags_str = parsed.get("tags", "")
+            tags = [t.strip() for t in tags_str.split(",") if t.strip()]
+
+            try:
+                from tools.feature_request_tool import submit_feature_request
+                result = submit_feature_request(
+                    title=title,
+                    description=description,
+                    priority=priority,
+                    tags=tags,
+                )
+                data = json.loads(result)
+                if data.get("success"):
+                    _cprint(f"  {_Colors.GREEN}✓{_Colors.RESET} {data.get('message', 'Feature submitted')}")
+                    _cprint(f"  ID: {data.get('feature_id')}")
+                else:
+                    _cprint(f"  {_Colors.RED}✗{_Colors.RESET} Error: {data.get('error', 'Unknown error')}")
+            except Exception as e:
+                _cprint(f"  {_Colors.RED}✗{_Colors.RESET} Failed: {e}")
+
+        elif subcmd == "list":
+            rest = parts[2] if len(parts) > 2 else ""
+            parsed = _parse_args(rest)
+            status = parsed.get("status", "")
+            priority = parsed.get("priority", "")
+            try:
+                limit = int(parsed.get("limit", "50"))
+            except ValueError:
+                limit = 50
+
+            try:
+                from tools.feature_request_tool import list_feature_requests
+                result = list_feature_requests(status=status, priority=priority, limit=limit)
+                data = json.loads(result)
+                if data.get("success"):
+                    features = data.get("features", [])
+                    _cprint(f"  Feature requests ({len(features)} total):")
+                    for f in features:
+                        fid = f.get("id", "?")
+                        title = f.get("title", "Untitled")
+                        status_icon = f.get("status", "?")
+                        priority_icon = f.get("priority", "?")
+                        _cprint(f"    [{status_icon}] [{priority_icon}] {fid}: {title}")
+                else:
+                    _cprint(f"  {_Colors.RED}✗{_Colors.RESET} Error: {data.get('error', 'Unknown error')}")
+            except Exception as e:
+                _cprint(f"  {_Colors.RED}✗{_Colors.RESET} Failed: {e}")
+
+        elif subcmd == "get":
+            rest = parts[2] if len(parts) > 2 else ""
+            feature_id = rest.strip().split()[0] if rest.strip() else ""
+            if not feature_id:
+                _cprint("  Usage: /feature get <id>")
+                return
+            try:
+                from tools.feature_request_tool import get_feature_request
+                result = get_feature_request(feature_id)
+                data = json.loads(result)
+                if data.get("success"):
+                    f = data.get("feature", {})
+                    _cprint(f"  Feature: {f.get('id')}")
+                    _cprint(f"  Title: {f.get('title')}")
+                    _cprint(f"  Status: {f.get('status')} | Priority: {f.get('priority')}")
+                    desc = f.get("description", "")
+                    if desc:
+                        _cprint(f"  Description: {desc[:200]}{'...' if len(desc) > 200 else ''}")
+                    tags = f.get("tags", [])
+                    if tags:
+                        _cprint(f"  Tags: {', '.join(tags)}")
+                    notes = f.get("notes", [])
+                    if notes:
+                        _cprint(f"  Notes ({len(notes)}):")
+                        for n in notes:
+                            _cprint(f"    - {n.get('text', '')}")
+                else:
+                    _cprint(f"  {_Colors.RED}✗{_Colors.RESET} Error: {data.get('error', 'Unknown error')}")
+            except Exception as e:
+                _cprint(f"  {_Colors.RED}✗{_Colors.RESET} Failed: {e}")
+
+        elif subcmd == "update":
+            rest = parts[2] if len(parts) > 2 else ""
+            parsed = _parse_args(rest)
+            feature_id = parsed.get("_rest", "").split(" --")[0].strip()
+            if not feature_id:
+                _cprint("  Usage: /feature update <id> [--status <status>] [--priority <priority>] [--note \"<text>\"]")
+                return
+            status = parsed.get("status", "")
+            priority = parsed.get("priority", "")
+            note = parsed.get("note", "")
+            try:
+                from tools.feature_request_tool import update_feature_request
+                result = update_feature_request(
+                    feature_id=feature_id,
+                    status=status,
+                    priority=priority,
+                    note=note,
+                )
+                data = json.loads(result)
+                if data.get("success"):
+                    _cprint(f"  {_Colors.GREEN}✓{_Colors.RESET} {data.get('message', 'Feature updated')}")
+                else:
+                    _cprint(f"  {_Colors.RED}✗{_Colors.RESET} Error: {data.get('error', 'Unknown error')}")
+            except Exception as e:
+                _cprint(f"  {_Colors.RED}✗{_Colors.RESET} Failed: {e}")
+
+        elif subcmd == "delete":
+            rest = parts[2] if len(parts) > 2 else ""
+            feature_id = rest.strip().split()[0] if rest.strip() else ""
+            if not feature_id:
+                _cprint("  Usage: /feature delete <id>")
+                return
+            try:
+                from tools.feature_request_tool import delete_feature_request
+                result = delete_feature_request(feature_id)
+                data = json.loads(result)
+                if data.get("success"):
+                    _cprint(f"  {_Colors.GREEN}✓{_Colors.RESET} {data.get('message', 'Feature deleted')}")
+                else:
+                    _cprint(f"  {_Colors.RED}✗{_Colors.RESET} Error: {data.get('error', 'Unknown error')}")
+            except Exception as e:
+                _cprint(f"  {_Colors.RED}✗{_Colors.RESET} Failed: {e}")
+
+        else:
+            _cprint(f"  Unknown subcommand: {subcmd}")
+            _cprint("  Usage: /feature <submit|list|get|update|delete> [args...]")
+
     def _handle_goal_command(self, cmd: str) -> None:
         """Dispatch /goal subcommands: set / status / pause / resume / clear."""
         parts = (cmd or "").strip().split(None, 1)
@@ -7826,6 +8109,46 @@ class HermesCLI:
                 f"  ⚡ YOLO mode {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}"
                 " — all commands auto-approved. Use with caution."
             )
+
+    def _toggle_readonly(self, cmd: str = ""):
+        """Toggle read-only mode — block destructive operations.
+
+        Usage:
+            /readonly           Show current read-only status
+            /readonly on        Enable read-only mode
+            /readonly off       Disable read-only mode
+            /readonly status    Show current read-only status
+        """
+        from hermes_cli.colors import Colors as _Colors
+        from hermes_cli.config import load_config, save_config
+
+        config = load_config()
+        current = config.get("security", {}).get("read_only", False)
+
+        parts = cmd.strip().split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        if arg in ("on", "enable", "true", "yes"):
+            config.setdefault("security", {})["read_only"] = True
+            save_config(config)
+            _cprint(
+                f"  🔒 Read-only mode {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}"
+                " — destructive operations are blocked."
+            )
+        elif arg in ("off", "disable", "false", "no"):
+            config.setdefault("security", {})["read_only"] = False
+            save_config(config)
+            _cprint(
+                f"  🔓 Read-only mode {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET}"
+                " — destructive operations are allowed."
+            )
+        elif arg in ("status", ""):
+            state = "on ✓" if current else "off"
+            _cprint(f"  {_ACCENT}Read-only mode: {state}{_RST}")
+            _cprint(f"  {_DIM}Usage: /readonly <on|off|status>{_RST}")
+        else:
+            _cprint(f"  {_ACCENT}Unknown argument: {arg}{_RST}")
+            _cprint(f"  {_DIM}Usage: /readonly <on|off|status>{_RST}")
 
     def _handle_reasoning_command(self, cmd: str):
         """Handle /reasoning — manage effort level and display toggle.

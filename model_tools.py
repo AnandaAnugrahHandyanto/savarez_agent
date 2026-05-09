@@ -705,6 +705,41 @@ def handle_function_call(
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
 
+    # Read-only mode check: block destructive operations
+    _READ_ONLY_DESTRUCTIVE_TOOLS = {
+        "write_file", "patch", "browser_click", "browser_type", "browser_press",
+        "send_message", "cronjob",
+    }
+    try:
+        from hermes_cli.config import load_config
+        _ro_config = load_config()
+        if _ro_config.get("security", {}).get("read_only", False):
+            if function_name in _READ_ONLY_DESTRUCTIVE_TOOLS:
+                return json.dumps({
+                    "error": f"🔒 Read-only mode is active. The tool '{function_name}' is blocked because it performs destructive/write operations. Disable read-only mode with /readonly off to use this tool."
+                }, ensure_ascii=False)
+            # Also block terminal commands that look destructive
+            if function_name == "terminal":
+                _cmd = str(function_args.get("command", "")).lower()
+                _destructive_prefixes = ("rm ", "rm\t", "chmod ", "chown ", "mv ", "cp ",
+                                          "dd ", "mkfs", "git reset", "git clean", "git push --force",
+                                          "> ", ">>", "| sh", "| bash", "sudo ", "umount")
+                if any(_cmd.strip().startswith(p) or p in _cmd for p in _destructive_prefixes):
+                    return json.dumps({
+                        "error": f"🔒 Read-only mode blocked this terminal command because it appears destructive: {_cmd[:80]}. Disable read-only mode with /readonly off to run it."
+                    }, ensure_ascii=False)
+            if function_name == "execute_code":
+                _code = str(function_args.get("code", "")).lower()
+                _destructive_snippets = ("open(", "write(", "os.remove", "os.rmdir",
+                                           "shutil.rmtree", "subprocess.call", "os.system",
+                                           "os.rename", "os.replace", "pathlib.Path().write")
+                if any(s in _code for s in _destructive_snippets):
+                    return json.dumps({
+                        "error": "🔒 Read-only mode blocked this execute_code call because it contains file-write or destructive operations. Disable read-only mode with /readonly off to run it."
+                    }, ensure_ascii=False)
+    except Exception:
+        pass  # Fail open if config can't be read
+
     try:
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
