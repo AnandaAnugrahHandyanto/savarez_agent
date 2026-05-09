@@ -20,8 +20,10 @@ describe('formatBytes', () => {
   })
 
   it('formats small byte values with B unit', () => {
-    expect(formatBytes(1)).toMatch(/B$/)
-    expect(formatBytes(500)).toMatch(/B$/)
+    // /B$/ alone would also match KB/MB/GB/TB; assert exact strings so a
+    // unit regression for small values fails this test.
+    expect(formatBytes(1)).toBe('1.0B')
+    expect(formatBytes(500)).toBe('500B')
   })
 
   it('formats kilobyte-range values with KB unit', () => {
