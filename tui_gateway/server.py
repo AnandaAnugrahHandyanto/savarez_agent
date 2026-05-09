@@ -2,6 +2,7 @@ import atexit
 import concurrent.futures
 import contextvars
 import copy
+import inspect
 import json
 import logging
 import os
@@ -572,7 +573,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
             current["agent"] = agent
 
             try:
-                worker = _SlashWorker(
+                worker = _create_slash_worker(
                     key,
                     getattr(agent, "model", _resolve_model()),
                     getattr(agent, "enabled_toolsets", None),
@@ -1054,6 +1055,33 @@ def _agent_toolsets_for_slash_worker(session: dict):
     return getattr(agent, "enabled_toolsets", None)
 
 
+def _create_slash_worker(
+    session_key: str,
+    model: str,
+    enabled_toolsets=_SLASH_WORKER_TOOLSETS_UNSET,
+):
+    """Create the slash worker, passing runtime toolsets when supported.
+
+    Tests and plugins sometimes monkeypatch ``_SlashWorker`` with a tiny fake
+    that still accepts the historical ``(session_key, model)`` signature.  The
+    real worker accepts ``enabled_toolsets`` so the TUI `/toolsets` command can
+    mirror the active agent, but the compatibility path keeps older fakes from
+    failing before the code under test is exercised.
+    """
+    try:
+        params = inspect.signature(_SlashWorker).parameters
+    except (TypeError, ValueError):
+        params = {}
+
+    if "enabled_toolsets" in params:
+        return _SlashWorker(
+            session_key,
+            model,
+            enabled_toolsets=enabled_toolsets,
+        )
+    return _SlashWorker(session_key, model)
+
+
 def _restart_slash_worker(session: dict):
     worker = session.get("slash_worker")
     if worker:
@@ -1062,7 +1090,7 @@ def _restart_slash_worker(session: dict):
         except Exception:
             pass
     try:
-        session["slash_worker"] = _SlashWorker(
+        session["slash_worker"] = _create_slash_worker(
             session["session_key"],
             getattr(session.get("agent"), "model", _resolve_model()),
             _agent_toolsets_for_slash_worker(session),

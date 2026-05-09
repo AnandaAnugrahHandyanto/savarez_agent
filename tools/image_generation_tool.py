@@ -38,13 +38,13 @@ from tools.tool_backend_helpers import (
 )
 
 logger = logging.getLogger(__name__)
-_fal_client = None
+fal_client = None
 
 
 def _require_fal_client():
     """Import fal-client lazily so minimal installs can import this module."""
-    global _fal_client
-    if _fal_client is None:
+    global fal_client
+    if fal_client is None:
         try:
             import fal_client as client
         except ImportError as exc:
@@ -53,8 +53,8 @@ def _require_fal_client():
                 "Install them with `hermes install-feature image-gen` or "
                 "`pip install 'hermes-agent[image-gen]'`."
             ) from exc
-        _fal_client = client
-    return _fal_client
+        fal_client = client
+    return fal_client
 
 
 # ---------------------------------------------------------------------------

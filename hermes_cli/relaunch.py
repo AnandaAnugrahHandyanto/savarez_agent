@@ -51,6 +51,23 @@ def _build_inherited_flag_table() -> list[tuple[str, bool]]:
 _INHERITED_FLAGS_TABLE = _build_inherited_flag_table()
 
 
+def _is_hermes_process_argv(argv0: str) -> bool:
+    """Return True when ``sys.argv`` belongs to a Hermes CLI process.
+
+    Unit tests, pytest, and embedded callers can import this module and call
+    ``build_relaunch_argv()`` directly.  In those contexts ``sys.argv`` belongs
+    to the host process, so inheriting flags from it can leak unrelated options
+    such as pytest's ``-m 'not integration'`` into the relaunched Hermes argv.
+    """
+    base = os.path.basename(argv0).lower()
+    normalized = argv0.replace("\\", "/").lower()
+    return (
+        base in {"hermes", "hermes.exe", "hermes.cmd", "hermes.bat"}
+        or normalized.endswith("/hermes_cli/main.py")
+        or normalized.endswith("/hermes_cli/__main__.py")
+    )
+
+
 def _extract_inherited_flags(argv: Sequence[str]) -> list[str]:
     """Pull out flags that should carry over into a self-relaunched hermes."""
     flags: list[str] = []
@@ -143,7 +160,12 @@ def build_relaunch_argv(
     else:
         argv = [sys.executable, "-m", "hermes_cli.main"]
 
-    src = list(original_argv) if original_argv is not None else list(sys.argv[1:])
+    if original_argv is not None:
+        src = list(original_argv)
+    elif _is_hermes_process_argv(sys.argv[0] if sys.argv else ""):
+        src = list(sys.argv[1:])
+    else:
+        src = []
 
     if preserve_inherited:
         argv.extend(_extract_inherited_flags(src))

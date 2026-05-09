@@ -2802,9 +2802,8 @@ def tools_disable_enable_command(args):
         for name in list(toolset_targets):
             runtime = _get_toolset_runtime_status(name)
             declared_count = runtime.get("declared_count") or 0
-            available_count = runtime.get("available_count") or 0
             installed_count = runtime.get("installed_count") or 0
-            if declared_count > 0 and available_count == 0:
+            if declared_count > 0 and installed_count == 0:
                 unavailable_toolsets.append(name)
                 feature = _toolset_install_hint(name)
                 if installed_count == 0 and feature:
