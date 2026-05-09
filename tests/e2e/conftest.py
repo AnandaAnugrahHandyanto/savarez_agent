@@ -235,6 +235,9 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     runner._show_reasoning = False
 
     runner._is_user_authorized = lambda _source: True
+    # Gateway gates /new and /undo behind approvals.destructive_slash_confirm (reads
+    # config via _read_user_config). E2E must execute destructive handlers immediately.
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": False}}
     runner._set_session_env = lambda _context: None
     runner._handle_message_with_agent = AsyncMock(return_value="agent-handled-default")
     runner._should_send_voice_reply = lambda *_a, **_kw: False
