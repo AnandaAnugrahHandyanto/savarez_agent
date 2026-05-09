@@ -1100,6 +1100,41 @@ setup_path() {
         return 0
     fi
 
+    # Defensive guard against the recursive-wrapper hang (#21802): a correct
+    # pip-generated venv/bin/hermes is a Python script with a python shebang.
+    # If it is instead a bash wrapper that execs back into venv/bin/hermes
+    # (left over from a botched install or a clobbered venv), the launcher
+    # we are about to write would call into an infinite exec loop and `hermes`
+    # would hang silently.  Detect that shape and regenerate via pip.
+    if [ "$USE_VENV" = true ]; then
+        first_line="$(head -n 1 "$HERMES_BIN" 2>/dev/null || true)"
+        case "$first_line" in
+            '#!'*python*) : ;;
+            *)
+                log_warn "venv entry point at $HERMES_BIN is not a Python script"
+                log_info "Regenerating with pip to avoid recursive-exec hang (#21802)..."
+                if (cd "$INSTALL_DIR" && ./venv/bin/python -m pip install \
+                        --force-reinstall --no-deps -e . >/dev/null 2>&1); then
+                    first_line="$(head -n 1 "$HERMES_BIN" 2>/dev/null || true)"
+                    case "$first_line" in
+                        '#!'*python*)
+                            log_success "venv entry point regenerated"
+                            ;;
+                        *)
+                            log_warn "venv entry point still not a Python script"
+                            log_info "Manual fix: cd $INSTALL_DIR && uv pip install -e '.[all]'"
+                            return 0
+                            ;;
+                    esac
+                else
+                    log_warn "Could not regenerate venv entry point"
+                    log_info "Manual fix: cd $INSTALL_DIR && uv pip install -e '.[all]'"
+                    return 0
+                fi
+                ;;
+        esac
+    fi
+
     local command_link_dir
     local command_link_display_dir
     command_link_dir="$(get_command_link_dir)"
