@@ -94,33 +94,52 @@ Each gets its own entry in the hub index.
 
 ## Wiki as HTML pages (md2html)
 
-Gordon maintains his personal wiki in markdown (`/opt/data/wiki/`). Convert and publish:
+Gordon maintains his personal wiki in markdown (`/opt/data/wiki/`). Convert and publish as auth-protected HTML at `https://hermes-pages.rouse-gordon.workers.dev/wiki/`:
 
-1. **Run the converter:**
-   ```
-   python3 /opt/data/skills/creative/html-to-cloudflare/scripts/md2html.py /opt/data/wiki --dest /opt/data/hermes-pages-repo/wiki
-   ```
-   Output: `index.html` (login), plus `.html` for each wiki `.md` file, all with auth-check.
+### Workflow
 
-2. **Push to hermes-pages:**
-   ```
-   cd /opt/data/hermes-pages-repo && git add wiki/ && git commit -m "Update wiki" && GIT_TERMINAL_PROMPT=0 git push origin main
-   ```
-   Live in ~30 seconds at `https://hermes-pages.rouse-gordon.workers.dev/wiki/`
+**1. Update the markdown source first** (in `/opt/data/wiki/`), then:
 
-3. **Password:** `GordonWiki2026!` (hardcoded in the script — change in both LOGIN and AUTH_CHECK vars if Gordon ever changes it)
+**2. Convert markdown → HTML:**
+```
+python3 /opt/data/scripts/md2html.py
+```
+This generates:
+- `wiki/index.html` — login page (the hub entry point at `/wiki/` redirects here)
+- `wiki/login.html` — standalone login (email + password, `rouse.gordon@gmail.com` + `GordonWiki2026!`)
+- `wiki/entities/<name>.html` — entity pages
+- `wiki/concepts/<name>.html` — concept pages
+- `wiki/schema.html`, `wiki/log.html` — meta pages
+- `wiki/raw/articles/<name>.html` — raw sources
+
+Every generated page (except login.html) has an inline auth-check script that redirects to `/wiki/login` if the `wiki_auth=GW2026` cookie is missing.
+
+**3. Push to hermes-pages:**
+```bash
+cd /opt/data/hermes-pages-repo && git add wiki/ && git commit -m "Update wiki" && GIT_TERMINAL_PROMPT=0 git push origin main
+```
+Live in ~30 seconds.
+
+**4. Update the hub index** (`index.html`) with a link to `/wiki/` if not already present. Push index update separately.
 
 ### Client-side auth pattern (vs Cloudflare Access)
 
 When Cloudflare Access isn't available (Workers.dev free tier doesn't have it built in), use client-side cookie auth:
 
-- **login.html** — shows password field, checks input against hardcoded secret, sets `wiki_auth=GW2026` cookie on success, redirects back to intended page via `?dst=` param
+- **login.html** — shows email + password fields. Only `rouse.gordon@gmail.com` accepted. Password: `GordonWiki2026!`. On success: sets `wiki_auth=GW2026` cookie, redirects to intended page via `?dst=` param.
 - **Wiki pages** — inline `<script>` checks for `wiki_auth=GW2026` cookie, redirects to login if missing. No server round-trip.
+- **Error handling:** Wrong email → "Email not recognized". Wrong password → "Incorrect password". Separate error per field so it's clear which one failed.
 - **Cookie:** `path=/wiki; max-age=31536000; SameSite=Strict` — scoped to wiki path, lasts 1 year
 - **Pros:** No Cloudflare product needed, works on any static host
-- **Cons:** Anyone who knows the password can extract the cookie value from their own browser and share it; not enterprise-grade
+- **Cons:** Anyone who knows the password can extract the cookie value and share it; not enterprise-grade
 
 If Gordon later wants enterprise-grade auth, set up **Cloudflare Zero Trust** (cloudflare.com/zero-trust → Settings → Authentication → Add GitHub identity provider → Access Policy for `/wiki/*`).
+
+**Login page fields:**
+- Email input (`type="email"`) — must match `rouse.gordon@gmail.com`
+- Password input — must match `GordonWiki2026!`
+- Sign In button — calls `login()` function
+- "Access is by invitation only" hint text at bottom
 
 ## Pitfalls
 

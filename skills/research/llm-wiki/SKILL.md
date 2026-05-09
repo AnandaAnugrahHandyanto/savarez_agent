@@ -25,15 +25,22 @@ summarizes, cross-references, files, and maintains consistency.
 
 ## Gordon's Wiki — Passive Maintenance Mode
 
-Gordon wants the wiki maintained **passively** — he reads it in Obsidian, I file updates during our conversations without prompting. He doesn't want to be asked "should I add this?" every time.
+Gordon wants the wiki maintained **passively** — he reads it in a browser at `https://hermes-pages.rouse-gordon.workers.dev/wiki/`, I file updates during our conversations without prompting. He doesn't want to be asked "should I add this?" every time.
 
 **How it works:**
-- Wiki lives at `/opt/data/wiki/` (not pushed to any repo by default — Gordon decides if/when to sync)
-- I file relevant information from our conversations into the wiki without asking
-- When Gordon asks about something covered in the wiki, I query it and synthesize
-- Gordon views it in Obsidian (graph view, clickable wikilinks)
+- Wiki lives at `/opt/data/wiki/` (markdown source), synced to `/opt/data/hermes-pages-repo/gordons-llm-wiki/` and published as HTML at `https://hermes-pages.rouse-gordon.workers.dev/wiki/`
+- HTML rendering: python3 `/opt/data/scripts/md2html.py` converts all `.md` files to `.html`, push to `hermes-pages` repo, Cloudflare auto-deploys
+- Auth: email+password login required. Only `rouse.gordon@gmail.com` / `GordonWiki2026!`
+- Gordon views the rendered HTML in his browser; I maintain the markdown source files
+- When Gordon asks about something in the wiki, I query the markdown source files directly
 
-**To create a syncable repo later:** Gordon creates `rousegordon-ops/wiki` on GitHub, I push the wiki there. Until then, it's local-only at `/opt/data/wiki/`.
+**To update the wiki:**
+1. Edit/add markdown in `/opt/data/wiki/`
+2. Run `python3 /opt/data/scripts/md2html.py` to regenerate HTML
+3. `cd /opt/data/hermes-pages-repo && git add wiki/ && git commit -m "Update wiki" && GIT_TERMINAL_PROMPT=0 git push origin main`
+4. Live in ~30 seconds at the wiki URL
+
+**To add the wiki to Obsidian later:** Clone `https://github.com/rousegordon-ops/hermes-pages`, point Obsidian at `gordons-llm-wiki/` subdirectory.
 
 ## When This Skill Activates
 
