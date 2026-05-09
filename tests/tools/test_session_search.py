@@ -560,3 +560,82 @@ class TestSessionSearch:
         assert entry["source"] == "api_server", (
             f"source should be parent's 'api_server', got {entry['source']!r}"
         )
+
+    def test_content_fetched_from_child_when_match_came_from_child(self):
+        """Regression for #22150: when FTS5 hits a delegation/compression child
+        session, content for summarization must come from that child — not the
+        resolved parent — because the matched text only lives in the child.
+        """
+        from unittest.mock import MagicMock, AsyncMock, patch as _patch
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = [
+            {
+                "session_id": "child_sid",
+                "content": "discussion about headless-chatgpt setup",
+                "source": "cli",
+                "session_started": 1709400000,
+                "model": "gpt-4o-mini",
+            },
+        ]
+
+        def _get_session(session_id):
+            if session_id == "child_sid":
+                return {
+                    "id": "child_sid",
+                    "parent_session_id": "parent_sid",
+                    "source": "cli",
+                    "started_at": 1709400000,
+                    "model": "gpt-4o-mini",
+                }
+            if session_id == "parent_sid":
+                return {
+                    "id": "parent_sid",
+                    "parent_session_id": None,
+                    "source": "cli",
+                    "started_at": 1709300000,
+                    "model": "gpt-4o-mini",
+                }
+            return None
+
+        mock_db.get_session.side_effect = _get_session
+
+        def _messages_for(sid):
+            if sid == "child_sid":
+                return [
+                    {"role": "user", "content": "let's set up headless-chatgpt"},
+                    {"role": "assistant", "content": "ok, here's how"},
+                ]
+            if sid == "parent_sid":
+                return [
+                    {"role": "user", "content": "delegated a task"},
+                    {"role": "assistant", "content": "result delivered"},
+                ]
+            return []
+
+        mock_db.get_messages_as_conversation.side_effect = _messages_for
+
+        with _patch(
+            "tools.session_search_tool.async_call_llm",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("no provider"),
+        ):
+            result = json.loads(
+                session_search(query="headless-chatgpt", db=mock_db)
+            )
+
+        called_sids = [c.args[0] for c in mock_db.get_messages_as_conversation.call_args_list]
+        assert "child_sid" in called_sids, (
+            f"content retrieval must use the child session where the match lives, "
+            f"got calls for: {called_sids}"
+        )
+        assert "parent_sid" not in called_sids, (
+            f"content retrieval must NOT fetch parent's messages, got calls for: {called_sids}"
+        )
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        entry = result["results"][0]
+        assert entry["session_id"] == "parent_sid"
+        assert "headless-chatgpt" in entry["summary"]

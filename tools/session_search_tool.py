@@ -427,7 +427,14 @@ def session_search(
                 continue
             if resolved_sid not in seen_sessions:
                 result = dict(result)
+                # Surface the resolved parent ID for display/dedup so callers
+                # see the canonical conversation, but remember the child where
+                # the FTS5 hit actually lives for content retrieval. Without
+                # this, get_messages_as_conversation() below would fetch the
+                # parent's messages — which often don't contain the matched
+                # text when the hit comes from a delegation/compression child.
                 result["session_id"] = resolved_sid
+                result["content_session_id"] = raw_sid
                 seen_sessions[resolved_sid] = result
             if len(seen_sessions) >= limit:
                 break
@@ -436,7 +443,8 @@ def session_search(
         tasks = []
         for session_id, match_info in seen_sessions.items():
             try:
-                messages = db.get_messages_as_conversation(session_id)
+                content_sid = match_info.get("content_session_id", session_id)
+                messages = db.get_messages_as_conversation(content_sid)
                 if not messages:
                     continue
                 session_meta = db.get_session(session_id) or {}
