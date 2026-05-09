@@ -765,6 +765,70 @@ def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path
     assert not any("opencode" in url.lower() and "models" in url.lower() for url, _, _ in calls)
 
 
+def test_run_doctor_gemini_native_uses_google_api_key_header(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    (home / ".env").write_text("GOOGLE_API_KEY=***\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    monkeypatch.setenv("GOOGLE_API_KEY", "AIzaSy-test-key")
+    monkeypatch.delenv("GEMINI_BASE_URL", raising=False)
+    monkeypatch.setattr(
+        doctor_mod,
+        "_APIKEY_PROVIDERS_CACHE",
+        [
+            (
+                "Google AI Studio",
+                ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+                "https://generativelanguage.googleapis.com/v1beta/models",
+                "GEMINI_BASE_URL",
+                True,
+            )
+        ],
+    )
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    except ImportError:
+        pass
+
+    calls = []
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append((url, headers or {}, timeout))
+        return types.SimpleNamespace(status_code=200)
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert "Google AI Studio" in out
+    assert "invalid API key" not in out
+    assert calls
+    assert calls[0][0] == "https://generativelanguage.googleapis.com/v1beta/models"
+    assert calls[0][1]["x-goog-api-key"] == "AIzaSy-test-key"
+    assert "Authorization" not in calls[0][1]
+
+
 class TestGitHubTokenCheck:
     """Tests for GitHub token / gh auth detection in doctor."""
 

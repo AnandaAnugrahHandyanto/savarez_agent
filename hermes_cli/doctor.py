@@ -1290,11 +1290,19 @@ def run_doctor(args):
                     _base = _to_openai_base_url(_base)
                 if base_url_host_matches(_base, "api.kimi.com") and _base.rstrip("/").endswith("/coding"):
                     _base = _base.rstrip("/") + "/v1"
+                _health_base = _base or ""
+                if not _health_base and _default_url:
+                    _health_base = _default_url.rsplit("/models", 1)[0]
                 _url = (_base.rstrip("/") + "/models") if _base else _default_url
-                _headers = {
-                    "Authorization": f"Bearer {_key}",
-                    "User-Agent": _HERMES_USER_AGENT,
-                }
+                _headers = {"User-Agent": _HERMES_USER_AGENT}
+                try:
+                    from agent.gemini_native_adapter import is_native_gemini_base_url
+                except Exception:
+                    is_native_gemini_base_url = lambda *_args, **_kwargs: False  # type: ignore[assignment]
+                if is_native_gemini_base_url(_health_base):
+                    _headers["x-goog-api-key"] = _key
+                else:
+                    _headers["Authorization"] = f"Bearer {_key}"
                 if base_url_host_matches(_base, "api.kimi.com"):
                     _headers["User-Agent"] = "claude-code/0.1.0"
                 _resp = httpx.get(
