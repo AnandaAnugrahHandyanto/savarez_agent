@@ -5,10 +5,10 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
-from gateway.session import SessionSource
+from gateway.session import SessionSource, SessionStore
 
 
-def _make_runner(*, stt_config=None, adapter=None):
+def _make_runner(*, stt_config=None, adapter=None, tmp_path=None):
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
@@ -19,9 +19,7 @@ def _make_runner(*, stt_config=None, adapter=None):
         runner.config.stt = stt_config
     runner.adapters = {Platform.TELEGRAM: adapter or SimpleNamespace(send=AsyncMock())}
     runner._pending_native_image_paths_by_session = {}
-    runner.session_store = SimpleNamespace(
-        _generate_session_key=lambda source: "agent:main:telegram:dm:123:456"
-    )
+    runner.session_store = SessionStore(sessions_dir=tmp_path, config=runner.config)
     runner._decide_image_input_mode = lambda: "text"
     runner._has_setup_skill = lambda: False
     return runner
@@ -44,13 +42,24 @@ def _make_voice_event():
     )
 
 
+def test_gateway_config_preserves_stt_mapping_for_transcript_echo():
+    cfg = GatewayConfig.from_dict(
+        {
+            "platforms": {"telegram": {"enabled": True}},
+            "stt": {"enabled": True, "echo_transcript": True, "echo_mode": "separate"},
+        }
+    )
+
+    assert cfg.stt == {"enabled": True, "echo_transcript": True, "echo_mode": "separate"}
+
+
 @pytest.mark.asyncio
-async def test_stt_echo_prefix_prepends_user_visible_transcript(monkeypatch):
+async def test_stt_echo_prefix_prepends_user_visible_transcript(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "tools.transcription_tools.transcribe_audio",
         lambda path: {"success": True, "transcript": "please check the backups"},
     )
-    runner = _make_runner(stt_config={"echo_transcript": True, "echo_mode": "prefix"})
+    runner = _make_runner(stt_config={"echo_transcript": True, "echo_mode": "prefix"}, tmp_path=tmp_path)
 
     text = await runner._prepare_inbound_message_text(
         event=_make_voice_event(),
@@ -63,13 +72,13 @@ async def test_stt_echo_prefix_prepends_user_visible_transcript(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_stt_echo_separate_sends_transcript_before_agent(monkeypatch):
+async def test_stt_echo_separate_sends_transcript_before_agent(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "tools.transcription_tools.transcribe_audio",
         lambda path: {"success": True, "transcript": "restart the gateway"},
     )
     adapter = SimpleNamespace(send=AsyncMock())
-    runner = _make_runner(stt_config={"echo_transcript": True, "echo_mode": "separate"}, adapter=adapter)
+    runner = _make_runner(stt_config={"echo_transcript": True, "echo_mode": "separate"}, adapter=adapter, tmp_path=tmp_path)
     event = _make_voice_event()
 
     text = await runner._prepare_inbound_message_text(
@@ -87,13 +96,13 @@ async def test_stt_echo_separate_sends_transcript_before_agent(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_stt_echo_separate_uses_thread_metadata(monkeypatch):
+async def test_stt_echo_separate_uses_thread_metadata(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "tools.transcription_tools.transcribe_audio",
         lambda path: {"success": True, "transcript": "threaded voice note"},
     )
     adapter = SimpleNamespace(send=AsyncMock())
-    runner = _make_runner(stt_config={"echo_transcript": True, "echo_mode": "separate"}, adapter=adapter)
+    runner = _make_runner(stt_config={"echo_transcript": True, "echo_mode": "separate"}, adapter=adapter, tmp_path=tmp_path)
     event = _make_voice_event()
     event.source.thread_id = "61892"
 
