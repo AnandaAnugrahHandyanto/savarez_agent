@@ -1,0 +1,15 @@
+{
+  "project_root": "/home/it/Projects/TrainingBuddy",
+  "base_branch": "main",
+  "worktree_root": "/home/it/Projects/TrainingBuddy/.worktrees",
+  "denied_workspace_roots": [
+    "/home/it/.hermes/kanban",
+    "/home/it/.hermes/scripts",
+    "/tmp"
+  ],
+  "shared_project_root_writable": false,
+  "scratch_repo_operations_allowed": false,
+  "max_active_issue_pipelines": 1,
+  "cleanup_after_merge": true,
+  "forbid_dirty_completion": true
+}
