@@ -204,6 +204,38 @@ class TestGoalManager:
         assert "active" in mgr.status_line().lower()
         assert "port the thing" in mgr.status_line()
 
+    def test_set_attaches_enki_linear_link_when_available(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        link = {
+            "task_id": "task-1",
+            "linear_issue_id": "issue-1",
+            "linear_identifier": "ENK-38",
+            "linear_url": "https://linear.app/enki-arno/issue/ENK-38/example",
+        }
+        with patch.object(goals, "link_goal_to_linear", return_value=link) as mocked:
+            mgr = GoalManager(session_id="linear-sid-1", default_max_turns=5)
+            state = mgr.set("port the thing")
+
+        mocked.assert_called_once_with("linear-sid-1", "port the thing")
+        assert state.task_id == "task-1"
+        assert state.linear_identifier == "ENK-38"
+        assert "ENK-38" in mgr.status_line()
+        assert "https://linear.app" in mgr.status_line()
+
+    def test_set_remains_fail_soft_when_enki_linear_linking_errors(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        with patch.object(goals, "link_goal_to_linear", side_effect=RuntimeError("db down")):
+            mgr = GoalManager(session_id="linear-sid-2", default_max_turns=5)
+            state = mgr.set("port the thing")
+
+        assert state.goal == "port the thing"
+        assert state.status == "active"
+        assert state.linear_identifier is None
+
     def test_set_rejects_empty(self, hermes_home):
         from hermes_cli.goals import GoalManager
 

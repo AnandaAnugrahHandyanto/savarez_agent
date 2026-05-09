@@ -108,6 +108,13 @@ class GoalState:
     last_reason: Optional[str] = None
     paused_reason: Optional[str] = None       # why we auto-paused (budget, etc.)
     consecutive_parse_failures: int = 0       # judge-output parse failures in a row
+    # Enki control-plane mirrors. Upstream SessionDB goal state remains the
+    # canonical runtime loop; these optional fields attach that state to Enki's
+    # local task DB / Linear when the fail-soft bridge is available.
+    task_id: Optional[str] = None
+    linear_issue_id: Optional[str] = None
+    linear_identifier: Optional[str] = None
+    linear_url: Optional[str] = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -126,6 +133,10 @@ class GoalState:
             last_reason=data.get("last_reason"),
             paused_reason=data.get("paused_reason"),
             consecutive_parse_failures=int(data.get("consecutive_parse_failures", 0) or 0),
+            task_id=data.get("task_id"),
+            linear_issue_id=data.get("linear_issue_id"),
+            linear_identifier=data.get("linear_identifier"),
+            linear_url=data.get("linear_url"),
         )
 
 
@@ -353,6 +364,25 @@ def judge_goal(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Enki Linear bridge (optional / fail-soft)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def link_goal_to_linear(session_id: str, goal: str) -> Any:
+    """Attach an explicit /goal to Enki's local DB/Linear when configured.
+
+    Kept as a tiny wrapper so tests and downstream Enki deployments can patch
+    this module without changing upstream goal-loop behavior.
+    """
+    try:
+        from hermes_cli.enki_goal_linear import link_goal_to_linear as _link
+    except Exception as exc:
+        logger.debug("GoalManager: Enki goal-linear module unavailable: %s", exc)
+        return None
+    return _link(session_id, goal)
+
+
+# ──────────────────────────────────────────────────────────────────────
 # GoalManager — the orchestration surface CLI + gateway talk to
 # ──────────────────────────────────────────────────────────────────────
 
@@ -396,14 +426,26 @@ class GoalManager:
         if s is None or s.status in ("cleared",):
             return "No active goal. Set one with /goal <text>."
         turns = f"{s.turns_used}/{s.max_turns} turns"
+        linear = self._linear_status_suffix(s)
         if s.status == "active":
-            return f"⊙ Goal (active, {turns}): {s.goal}"
+            return f"⊙ Goal (active, {turns}): {s.goal}{linear}"
         if s.status == "paused":
             extra = f" — {s.paused_reason}" if s.paused_reason else ""
-            return f"⏸ Goal (paused, {turns}{extra}): {s.goal}"
+            return f"⏸ Goal (paused, {turns}{extra}): {s.goal}{linear}"
         if s.status == "done":
-            return f"✓ Goal done ({turns}): {s.goal}"
-        return f"Goal ({s.status}, {turns}): {s.goal}"
+            return f"✓ Goal done ({turns}): {s.goal}{linear}"
+        return f"Goal ({s.status}, {turns}): {s.goal}{linear}"
+
+    @staticmethod
+    def _linear_status_suffix(state: GoalState) -> str:
+        if not state.linear_identifier and not state.linear_url:
+            return ""
+        bits = []
+        if state.linear_identifier:
+            bits.append(state.linear_identifier)
+        if state.linear_url:
+            bits.append(state.linear_url)
+        return " — Linear: " + " ".join(bits)
 
     # --- mutation -----------------------------------------------------
 
@@ -419,9 +461,30 @@ class GoalManager:
             created_at=time.time(),
             last_turn_at=0.0,
         )
+        self._attach_enki_linear_link(state)
         self._state = state
         save_goal(self.session_id, state)
         return state
+
+    def _attach_enki_linear_link(self, state: GoalState) -> None:
+        """Best-effort Enki Linear/local-task attachment.
+
+        The autonomous /goal loop must still start if Postgres, Linear, or the
+        Enki bridge is unavailable, so every failure here is logged at debug
+        level and ignored.
+        """
+        try:
+            link = link_goal_to_linear(self.session_id, state.goal)
+        except Exception as exc:
+            logger.debug("GoalManager: Enki Linear link failed: %s", exc)
+            return
+        if not link:
+            return
+        getter = link.get if isinstance(link, dict) else lambda key, default=None: getattr(link, key, default)
+        state.task_id = getter("task_id")
+        state.linear_issue_id = getter("linear_issue_id")
+        state.linear_identifier = getter("linear_identifier")
+        state.linear_url = getter("linear_url")
 
     def pause(self, reason: str = "user-paused") -> Optional[GoalState]:
         if not self._state:
@@ -590,4 +653,5 @@ __all__ = [
     "save_goal",
     "clear_goal",
     "judge_goal",
+    "link_goal_to_linear",
 ]
