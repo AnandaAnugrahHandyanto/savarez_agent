@@ -1,8 +1,8 @@
 """Tests for the pre_gateway_dispatch plugin hook.
 
-The hook allows plugins to intercept incoming messages before auth and
-agent dispatch. It runs in _handle_message and acts on returned action
-dicts: {"action": "skip"|"rewrite"|"allow"}.
+The hook allows trusted plugins to intercept incoming messages before auth and
+agent dispatch. It runs in _handle_message and acts on returned action dicts:
+{"action": "skip"|"rewrite"|"respond"|"allow"}.
 """
 
 from types import SimpleNamespace
@@ -77,6 +77,27 @@ async def test_hook_skip_short_circuits_dispatch(monkeypatch):
     result = await runner._handle_message(_make_event("hi"))
 
     assert result is None
+    adapter.send.assert_not_awaited()
+    runner.pairing_store.generate_code.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_hook_respond_short_circuits_dispatch_before_auth(monkeypatch):
+    """A trusted plugin can respond before auth/pairing and agent dispatch."""
+    _clear_auth_env(monkeypatch)
+
+    def _fake_hook(name, **kwargs):
+        if name == "pre_gateway_dispatch":
+            return [{"action": "respond", "response": "plugin response"}]
+        return []
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+
+    runner, adapter = _make_runner(Platform.WHATSAPP)
+
+    result = await runner._handle_message(_make_event("hi"))
+
+    assert result == "plugin response"
     adapter.send.assert_not_awaited()
     runner.pairing_store.generate_code.assert_not_called()
 

@@ -5106,9 +5106,11 @@ class GatewayRunner:
         # Plugins receive the MessageEvent and may return a dict influencing flow:
         #   {"action": "skip",    "reason": ...}    -> drop (no reply, plugin handled)
         #   {"action": "rewrite", "text":  ...}     -> replace event.text, continue
+        #   {"action": "respond", "response": ...} -> return response, no agent dispatch
         #   {"action": "allow"}   /   None          -> normal dispatch
-        # Hook runs BEFORE auth so plugins can handle unauthorized senders
-        # (e.g. customer handover ingest) without triggering the pairing flow.
+        # Hook runs BEFORE auth so trusted plugins can intentionally handle
+        # unauthenticated messages (for example external handover ingest)
+        # without triggering the pairing flow.
         if not is_internal:
             try:
                 from hermes_cli.plugins import invoke_hook as _invoke_hook
@@ -5134,6 +5136,9 @@ class GatewayRunner:
                         source.chat_id or "unknown",
                     )
                     return None
+                if _action == "respond":
+                    _response = _result.get("response")
+                    return _response if isinstance(_response, str) else None
                 if _action == "rewrite":
                     _new_text = _result.get("text")
                     if isinstance(_new_text, str):

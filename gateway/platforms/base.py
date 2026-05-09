@@ -954,15 +954,12 @@ _PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 
 def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
-    """Rewrite a tiny set of DM plaintext admin phrases into slash commands.
+    """Rewrite configured plaintext aliases into slash commands.
 
-    This keeps high-impact operational phrases like ``restart gateway`` out of
-    the LLM/tool path, where they can trigger a self-restart from inside the
-    currently running agent and leave the gateway stuck in ``draining`` while it
-    waits for that same agent to finish.
-
-    Scope is intentionally narrow: DM text messages only, exact restart-style
-    phrases only. Group chats keep natural-language semantics.
+    Core keeps its historical restart phrases for compatibility and also
+    consults plugin-registered aliases so private phrases can live outside the
+    upstream core. Restart phrases remain DM-only; plugin aliases are DM-only
+    by default but may opt into non-DM chats when registered.
     """
     try:
         if event is None or event.message_type != MessageType.TEXT:
@@ -971,12 +968,19 @@ def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
         if not text or text.startswith("/"):
             return
         source = getattr(event, "source", None)
-        if getattr(source, "chat_type", None) != "dm":
-            return
-        for pattern in _PLAINTEXT_GATEWAY_RESTART_PATTERNS:
-            if pattern.match(text):
-                event.text = "/restart"
-                return
+        is_dm = getattr(source, "chat_type", None) == "dm"
+        if is_dm:
+            for pattern in _PLAINTEXT_GATEWAY_RESTART_PATTERNS:
+                if pattern.match(text):
+                    event.text = "/restart"
+                    return
+        try:
+            from hermes_cli.plugins import resolve_plaintext_command_alias
+            command = resolve_plaintext_command_alias(text, is_dm=is_dm)
+        except Exception:
+            command = None
+        if command:
+            event.text = f"/{command}"
     except Exception:
         return
 

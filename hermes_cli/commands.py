@@ -404,6 +404,14 @@ def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = N
     return False
 
 
+def is_gateway_command_available(name: str) -> bool:
+    """Return True when a built-in command name or alias is gateway-dispatchable."""
+    cmd = resolve_command(name)
+    if cmd is None:
+        return False
+    return _is_gateway_available(cmd)
+
+
 def _requires_argument(args_hint: str) -> bool:
     """Return True when selecting a command without text would be incomplete."""
     return args_hint.strip().startswith("<")

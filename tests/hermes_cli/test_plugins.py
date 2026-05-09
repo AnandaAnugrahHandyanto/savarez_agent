@@ -20,7 +20,9 @@ from hermes_cli.plugins import (
     get_plugin_manager,
     get_plugin_command_handler,
     get_plugin_commands,
+    get_plaintext_command_aliases,
     get_pre_tool_call_block_message,
+    resolve_plaintext_command_alias,
     resolve_plugin_command_result,
     discover_plugins,
     invoke_hook,
@@ -887,6 +889,91 @@ class TestPluginCommands:
         ctx.register_command("status-cmd", lambda a: a)
         assert mgr._plugin_commands["status-cmd"]["description"] == "Plugin command"
 
+    def test_register_plaintext_command_alias(self):
+        """Plugins can register exact plaintext aliases for slash commands."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command("my-cmd", lambda a: a)
+        ctx.register_plaintext_command_alias("  AliasCmd  ", "/my_cmd")
+
+        assert mgr._plaintext_command_aliases == {
+            "aliascmd": {"command": "my-cmd", "first_token": False, "dm_only": True}
+        }
+
+    def test_register_plaintext_command_alias_accepts_target_keyword(self):
+        """Plugins can use target_command/first_token metadata like bundle stubs."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command("mycmd", lambda a: a)
+        ctx.register_plaintext_command_alias(
+            "aliascmd", target_command="mycmd", first_token=True, dm_only=False
+        )
+
+        assert mgr._plaintext_command_aliases == {
+            "aliascmd": {"command": "mycmd", "first_token": True, "dm_only": False}
+        }
+
+    def test_register_plaintext_command_alias_rejects_invalid(self, caplog):
+        """Invalid plaintext aliases are ignored."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            ctx.register_plaintext_command_alias("aliascmd", "bad/command")
+
+        assert mgr._plaintext_command_aliases == {}
+        assert "invalid plaintext command alias" in caplog.text
+
+    def test_register_plaintext_command_alias_rejects_unknown_target(self, caplog):
+        """Aliases cannot target commands that are not gateway dispatchable."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            ctx.register_plaintext_command_alias("aliascmd", "missingcmd")
+            ctx.register_plaintext_command_alias("clear-screen", "clear")
+
+        assert mgr._plaintext_command_aliases == {}
+        assert "unknown or gateway-unavailable command '/missingcmd'" in caplog.text
+        assert "unknown or gateway-unavailable command '/clear'" in caplog.text
+
+    def test_register_plaintext_command_alias_accepts_gateway_command_target(self):
+        """Trusted plugins may alias gateway-dispatchable built-in commands."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_plaintext_command_alias("status please", "status")
+
+        assert mgr._plaintext_command_aliases == {
+            "status please": {"command": "status", "first_token": False, "dm_only": True}
+        }
+
+    def test_register_plaintext_command_alias_collision_keeps_first(self, caplog):
+        """Alias collisions warn and preserve the first registered target."""
+        mgr = PluginManager()
+        first_manifest = PluginManifest(name="first-plugin", source="user")
+        second_manifest = PluginManifest(name="second-plugin", source="user")
+        first_ctx = PluginContext(first_manifest, mgr)
+        second_ctx = PluginContext(second_manifest, mgr)
+        first_ctx.register_command("firstcmd", lambda a: a)
+        second_ctx.register_command("secondcmd", lambda a: a)
+        first_ctx.register_plaintext_command_alias("aliascmd", "firstcmd")
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            second_ctx.register_plaintext_command_alias("aliascmd", "secondcmd")
+
+        assert mgr._plaintext_command_aliases == {
+            "aliascmd": {"command": "firstcmd", "first_token": False, "dm_only": True}
+        }
+        assert "keeping existing target" in caplog.text
+
     def test_get_plugin_command_handler_found(self):
         """get_plugin_command_handler() returns the handler for a registered command."""
         mgr = PluginManager()
@@ -919,6 +1006,89 @@ class TestPluginCommands:
             assert "cmd-a" in cmds
             assert "cmd-b" in cmds
             assert cmds["cmd-a"]["description"] == "A"
+
+    def test_get_plaintext_command_aliases_returns_copy(self):
+        """Plaintext alias lookup exposes plugin aliases without mutable internals."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+        ctx.register_command("mycmd", lambda a: a)
+        ctx.register_plaintext_command_alias("aliascmd", "mycmd")
+
+        with patch("hermes_cli.plugins._plugin_manager", mgr):
+            aliases = get_plaintext_command_aliases()
+            aliases["aliascmd"] = "changed"
+
+        assert mgr._plaintext_command_aliases == {
+            "aliascmd": {"command": "mycmd", "first_token": False, "dm_only": True}
+        }
+
+    def test_resolve_plaintext_command_alias_preserves_first_token_args(self):
+        """First-token aliases preserve the remaining user text as command args."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+        ctx.register_command("mycmd", lambda a: a)
+        ctx.register_plaintext_command_alias("aliascmd", target_command="mycmd", first_token=True)
+
+        with patch("hermes_cli.plugins._plugin_manager", mgr):
+            assert resolve_plaintext_command_alias("aliascmd do this") == "mycmd do this"
+            assert resolve_plaintext_command_alias("AliasCmd") == "mycmd"
+
+    def test_resolve_plaintext_command_alias_uses_longest_word_branch(self):
+        """Specific aliases branch below broader first-token aliases."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+        ctx.register_command("rootcmd", lambda a: a)
+        ctx.register_command("childcmd", lambda a: a)
+        ctx.register_plaintext_command_alias("foo", target_command="rootcmd", first_token=True)
+        ctx.register_plaintext_command_alias("foo bar", target_command="childcmd", first_token=True)
+
+        with patch("hermes_cli.plugins._plugin_manager", mgr):
+            assert resolve_plaintext_command_alias("foo") == "rootcmd"
+            assert resolve_plaintext_command_alias("foo baz") == "rootcmd baz"
+            assert resolve_plaintext_command_alias("foo bar") == "childcmd"
+            assert resolve_plaintext_command_alias("foo bar baz") == "childcmd baz"
+
+    def test_resolve_plaintext_command_alias_exact_specific_branch(self):
+        """Exact multi-word aliases can specialize a first-token parent branch."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+        ctx.register_command("rootcmd", lambda a: a)
+        ctx.register_command("exactcmd", lambda a: a)
+        ctx.register_plaintext_command_alias("foo", target_command="rootcmd", first_token=True)
+        ctx.register_plaintext_command_alias("foo bar", target_command="exactcmd")
+
+        with patch("hermes_cli.plugins._plugin_manager", mgr):
+            assert resolve_plaintext_command_alias("foo bar") == "exactcmd"
+            assert resolve_plaintext_command_alias("foo bar baz") == "rootcmd bar baz"
+
+    def test_resolve_plaintext_command_alias_honors_dm_only(self):
+        """DM-only aliases do not resolve for non-DM gateway contexts."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+        ctx.register_command("mycmd", lambda a: a)
+        ctx.register_plaintext_command_alias("aliascmd", target_command="mycmd", first_token=True)
+
+        with patch("hermes_cli.plugins._plugin_manager", mgr):
+            assert resolve_plaintext_command_alias("aliascmd rest", is_dm=True) == "mycmd rest"
+            assert resolve_plaintext_command_alias("aliascmd rest", is_dm=False) is None
+
+    def test_resolve_plaintext_command_alias_can_opt_into_non_dm(self):
+        """Plugins can opt aliases into group/thread contexts explicitly."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+        ctx.register_command("mycmd", lambda a: a)
+        ctx.register_plaintext_command_alias(
+            "aliascmd", target_command="mycmd", first_token=True, dm_only=False
+        )
+
+        with patch("hermes_cli.plugins._plugin_manager", mgr):
+            assert resolve_plaintext_command_alias("aliascmd rest", is_dm=False) == "mycmd rest"
 
     def test_get_plugin_command_handler_discovers_plugins_lazily(self, tmp_path, monkeypatch):
         """Handler lookup should work before any explicit discover_plugins() call."""

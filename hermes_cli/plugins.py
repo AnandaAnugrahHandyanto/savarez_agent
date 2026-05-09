@@ -98,6 +98,7 @@ VALID_HOOKS: Set[str] = {
     # dispatch. Plugins may return a dict to influence flow:
     #   {"action": "skip",    "reason": "..."}  -> drop message (no reply)
     #   {"action": "rewrite", "text": "..."}    -> replace event.text, continue
+    #   {"action": "respond", "response": "..."}-> return response, no agent dispatch
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
@@ -527,6 +528,73 @@ class PluginContext:
             name,
         )
 
+    # -- plaintext command aliases -----------------------------------------
+
+    def register_plaintext_command_alias(
+        self,
+        alias: str,
+        command: str = "",
+        *,
+        target_command: str = "",
+        first_token: bool = False,
+        dm_only: bool = True,
+        **_: Any,
+    ) -> None:
+        """Register a plaintext message alias for a slash command.
+
+        Gateway adapters may use these aliases to rewrite plaintext messages
+        into slash commands before normal dispatch. This is a trusted-plugin
+        extension point: aliases can route user text into existing command
+        handlers, so they are DM-only by default. ``first_token=True`` means
+        ``"alias rest"`` rewrites to ``"/command rest"``; otherwise the whole
+        message must exactly match the alias. Aliases are resolved by the
+        longest matching word branch, so a specific alias such as ``"foo bar"``
+        wins over a broader first-token alias such as ``"foo"``. The
+        ``target_command`` keyword is accepted for plugin compatibility with
+        manifest/stub terminology.
+        """
+        clean_alias = " ".join(str(alias or "").strip().split()).lower()
+        raw_command = target_command or command
+        clean_command = str(raw_command or "").strip().lstrip("/").replace("_", "-")
+        if not clean_alias or not clean_command or "/" in clean_command or " " in clean_command:
+            logger.warning(
+                "Plugin '%s' tried to register an invalid plaintext command alias.",
+                self.manifest.name,
+            )
+            return
+        command_registered = clean_command in self._manager._plugin_commands
+        if not command_registered:
+            try:
+                from hermes_cli.commands import is_gateway_command_available
+                command_registered = is_gateway_command_available(clean_command)
+            except Exception:
+                command_registered = False
+        if not command_registered:
+            logger.warning(
+                "Plugin '%s' tried to register plaintext alias '%s' for unknown or gateway-unavailable command '/%s'.",
+                self.manifest.name,
+                clean_alias,
+                clean_command,
+            )
+            return
+        if clean_alias in self._manager._plaintext_command_aliases:
+            logger.warning(
+                "Plugin '%s' tried to overwrite plaintext command alias '%s'; keeping existing target.",
+                self.manifest.name,
+                clean_alias,
+            )
+            return
+        self._manager._plaintext_command_aliases[clean_alias] = {
+            "command": clean_command,
+            "first_token": bool(first_token),
+            "dm_only": bool(dm_only),
+        }
+        logger.debug(
+            "Plugin %s registered plaintext command alias for /%s",
+            self.manifest.name,
+            clean_command,
+        )
+
     # -- hook registration --------------------------------------------------
 
     def register_hook(self, hook_name: str, callback: Callable) -> None:
@@ -609,6 +677,7 @@ class PluginManager:
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
+        self._plaintext_command_aliases: Dict[str, dict] = {}
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
@@ -633,6 +702,7 @@ class PluginManager:
             self._plugin_tool_names.clear()
             self._cli_commands.clear()
             self._plugin_commands.clear()
+            self._plaintext_command_aliases.clear()
             self._plugin_skills.clear()
             self._context_engine = None
         self._discovered = True
@@ -1319,6 +1389,55 @@ def get_plugin_commands() -> Dict[str, dict]:
     before any explicit discover_plugins() call.
     """
     return _ensure_plugins_discovered()._plugin_commands
+
+
+def get_plaintext_command_aliases() -> Dict[str, str]:
+    """Return plugin-registered plaintext aliases as alias → command."""
+    return {
+        alias: str(entry.get("command"))
+        for alias, entry in _ensure_plugins_discovered()._plaintext_command_aliases.items()
+        if isinstance(entry, dict) and entry.get("command")
+    }
+
+
+def resolve_plaintext_command_alias(text: str, *, is_dm: bool = True) -> Optional[str]:
+    """Resolve plaintext alias text to a slash command string without leading slash.
+
+    Matching is word-branch based: the resolver chooses the longest alias whose
+    words match the start of the message. Exact aliases match only the full
+    message, while ``first_token`` aliases also preserve trailing words as
+    command arguments. This lets plugins register both a broad branch like
+    ``"foo"`` and a more specific branch like ``"foo bar"`` deterministically.
+    """
+    stripped = str(text or "").strip()
+    words = stripped.split()
+    key_words = [word.lower() for word in words]
+    if not key_words:
+        return None
+
+    def _entry_allowed(entry: dict) -> bool:
+        return is_dm or not bool(entry.get("dm_only", True))
+
+    candidates: list[tuple[int, str, dict, str]] = []
+    aliases = _ensure_plugins_discovered()._plaintext_command_aliases
+    for alias, entry in aliases.items():
+        if not isinstance(entry, dict) or not entry.get("command") or not _entry_allowed(entry):
+            continue
+        alias_words = str(alias or "").split()
+        if not alias_words or key_words[: len(alias_words)] != alias_words:
+            continue
+        has_remainder = len(key_words) > len(alias_words)
+        if has_remainder and not entry.get("first_token"):
+            continue
+        remainder = " ".join(words[len(alias_words):])
+        candidates.append((len(alias_words), str(alias), entry, remainder))
+
+    if not candidates:
+        return None
+
+    _, _, entry, remainder = max(candidates, key=lambda item: (item[0], len(item[1])))
+    command = str(entry["command"])
+    return f"{command} {remainder}".strip()
 
 
 def get_plugin_toolsets() -> List[tuple]:
