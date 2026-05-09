@@ -449,7 +449,10 @@ class MatrixAdapter(BasePlatformAdapter):
     ) -> bool:
         """Re-query the server after share_keys() and verify our ed25519 key matches."""
         try:
-            resp = await client.query_keys({client.mxid: [client.device_id]})
+            # Use list form to query all devices for the user.
+            # The dict form {mxid: [device_id]} can cause serialization issues
+            # with some homeservers expecting strict list-of-strings format.
+            resp = await client.query_keys([client.mxid])
             dk = getattr(resp, "device_keys", {}) or {}
             ud = dk.get(str(client.mxid)) or {}
             dev = ud.get(str(client.device_id))
@@ -475,7 +478,10 @@ class MatrixAdapter(BasePlatformAdapter):
         Returns False if verification fails (caller should refuse E2EE).
         """
         try:
-            resp = await client.query_keys({client.mxid: [client.device_id]})
+            # Use list form to query all devices for the user.
+            # The dict form {mxid: [device_id]} can cause serialization issues
+            # with some homeservers expecting strict list-of-strings format.
+            resp = await client.query_keys([client.mxid])
         except Exception as exc:
             logger.error(
                 "Matrix: cannot verify device keys on server: %s — refusing E2EE",
@@ -589,14 +595,27 @@ class MatrixAdapter(BasePlatformAdapter):
                 resp = await client.whoami()
                 resolved_user_id = getattr(resp, "user_id", "") or self._user_id
                 resolved_device_id = getattr(resp, "device_id", "")
+                
                 if resolved_user_id:
                     self._user_id = str(resolved_user_id)
                     client.mxid = UserID(self._user_id)
 
                 # Prefer user-configured device_id for stable E2EE identity.
                 effective_device_id = self._device_id or resolved_device_id
-                if effective_device_id:
-                    client.device_id = effective_device_id
+                
+                # device_id is required for E2EE operations.
+                if not effective_device_id:
+                    logger.error(
+                        "Matrix: device_id is required for encryption but was not provided. "
+                        "Your homeserver (whoami) didn't return a device_id. "
+                        "Please set MATRIX_DEVICE_ID in your config to the device ID from the "
+                        "first login, or log in again with a fresh token."
+                    )
+                    await api.session.close()
+                    return False
+                
+                # Always set client.device_id - required for E2EE
+                client.device_id = effective_device_id
 
                 logger.info(
                     "Matrix: using access token for %s%s",
