@@ -2788,7 +2788,7 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
 
     # Use eval to run JavaScript that extracts images
     js_code = """JSON.stringify(
-        [...document.images].map(img => ({
+        [...document.querySelectorAll('img')].map(img => ({
             src: img.src,
             alt: img.alt || '',
             width: img.naturalWidth,
