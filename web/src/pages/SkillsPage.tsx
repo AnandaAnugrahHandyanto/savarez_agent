@@ -64,6 +64,115 @@ function prettyCategory(
     .join(" ");
 }
 
+
+const SKILL_DESCRIPTION_JA: Record<string, string> = {
+  "claude-code": "Claude Code CLI に実装作業を任せます（機能追加、PR 作成など）。",
+  "codex": "OpenAI Codex CLI に実装作業を任せます（機能追加、PR 作成など）。",
+  "hermes-agent": "Hermes Agent の設定、拡張、開発に使います。",
+  "opencode": "OpenCode CLI に実装作業や PR レビューを任せます。",
+  "cloudflare": "Workers、Pages、KV/D1/R2、Workers AI、Tunnel、WAF など Cloudflare 全般を扱います。",
+  "agents-sdk": "Cloudflare Workers 上で、状態を持つエージェント、ワークフロー、WebSocket アプリ、MCP サーバー、チャット/音声エージェントを作ります。",
+  "cloudflare-email-service": "Cloudflare Email Service で取引メールの送受信、ルーティング、Workers 連携を扱います。",
+  "durable-objects": "Cloudflare Durable Objects で状態管理、SQLite ストレージ、アラーム、WebSocket を実装・レビューします。",
+  "sandbox-sdk": "安全なコード実行、コードインタープリタ、CI/CD、対話型の開発環境を構築します。",
+  "workers-best-practices": "Cloudflare Workers のコードを本番運用向けの作法に沿って作成・レビューします。",
+  "wrangler": "Wrangler CLI で Workers、KV、R2、D1、Vectorize、Workers AI などをデプロイ・管理します。",
+  "web-perf": "Chrome DevTools MCP で Core Web Vitals と Web 性能を分析します。",
+  "architecture-diagram": "ダークテーマのアーキテクチャ図、クラウド構成図、インフラ図を SVG/HTML で作成します。",
+  "ascii-art": "pyfiglet、cowsay、boxes、image-to-ascii で ASCII アートを作成します。",
+  "ascii-video": "動画や音声を、色付き ASCII の MP4/GIF に変換します。",
+  "baoyu-comic": "教育、伝記、チュートリアル向けの知識漫画を作成します。",
+  "baoyu-infographic": "情報図や可視化インフォグラフィックを、21 種類の構成と 21 種類のスタイルで作成します。",
+  "claude-design": "ランディングページ、資料、プロトタイプなど、単発の HTML デザイン成果物を作成します。",
+  "comfyui": "ComfyUI の導入、起動、ワークフロー実行を行い、画像・動画・音声を生成します。",
+  "ideation": "制約条件を手がかりに、プロジェクト案を発想します。",
+  "design-md": "Google DESIGN.md のトークン仕様ファイルを作成、検証、書き出しします。",
+  "excalidraw": "アーキテクチャ、フロー、シーケンスなどの手描き風 Excalidraw JSON 図を作成します。",
+  "humanizer": "AI っぽさを取り除き、自然な文章に整えます。",
+  "manim-video": "Manim CE で 3Blue1Brown 風の数学・アルゴリズム動画を作成します。",
+  "p5js": "p5.js で生成アート、シェーダー、対話型スケッチ、3D スケッチを作ります。",
+  "pixel-art": "NES、Game Boy、PICO-8 などの配色でピクセルアートを作ります。",
+  "popular-web-designs": "Stripe、Linear、Vercel など実在のデザインシステム風 HTML/CSS を作成します。",
+  "pretext": "@chenglou/pretext で ASCII や文字組みを使ったブラウザデモを構築します。",
+  "sketch": "比較用の使い捨て HTML モックアップを 2〜3 案作成します。",
+  "songwriting-and-ai-music": "作詞の技法と Suno 向け音楽生成プロンプトを扱います。",
+  "touchdesigner-mcp": "twozero MCP で TouchDesigner を操作し、リアルタイム映像を構築します。",
+  "jupyter-live-kernel": "稼働中の Jupyter カーネルを使い、Python を対話的に探索します。",
+  "domain-lifecycle": "ドメインの命名、空き確認、DNS、Cloudflare、メールルーティング、到達性を扱います。",
+  "kanban-orchestrator": "Kanban で作業を分解し、適切な専門プロファイルへ回すための手順です。",
+  "kanban-worker": "Hermes Kanban ワーカー向けに、落とし穴、引き継ぎ、再試行、例外処理を扱います。",
+  "linux-desktop-admin-and-troubleshooting": "Linux デスクトップ/ワークステーションの DNS、HTTPS 信頼、polkit、リモートデスクトップ、端末キー設定を管理・調査します。",
+  "self-hosted-service-ops": "LAN 優先のセルフホストサービスを Docker Compose などで運用します。",
+  "webhook-subscriptions": "Webhook 購読によるイベント駆動のエージェント実行を扱います。",
+  "dogfood": "Web アプリを探索的に QA し、不具合、証拠、報告をまとめます。",
+  "himalaya": "Himalaya CLI で IMAP/SMTP メールを端末から扱います。",
+  "minecraft-modpack-server": "CurseForge/Modrinth などの Mod 入り Minecraft サーバーを構築・運用します。",
+  "pokemon-player": "ヘッドレスエミュレータと RAM 読み取りで Pokemon をプレイします。",
+  "codebase-inspection": "pygount でコードベースの行数、言語構成、比率を調査します。",
+  "github-auth": "GitHub の HTTPS トークン、SSH キー、gh CLI ログインを設定します。",
+  "github-code-review": "PR の差分をレビューし、gh/REST でインラインコメントします。",
+  "github-issues": "GitHub Issue の作成、整理、ラベル付け、担当者設定を行います。",
+  "github-pr-workflow": "GitHub PR のブランチ作成、コミット、オープン、CI、マージまでを扱います。",
+  "github-repo-management": "リポジトリの clone/create/fork、remote、release を管理します。",
+  "native-mcp": "MCP クライアントとして stdio/HTTP サーバーに接続し、ツール登録を扱います。",
+  "gif-search": "Tenor から curl + jq で GIF を検索・取得します。",
+  "heartmula": "HeartMuLa で歌詞とタグから Suno 風の曲を生成します。",
+  "songsee": "音声のスペクトログラムや特徴量（mel、chroma、MFCC）を CLI で扱います。",
+  "spotify": "Spotify の再生、検索、キュー、プレイリスト、デバイスを管理します。",
+  "youtube-content": "YouTube の文字起こしを要約、スレッド、ブログ記事に変換します。",
+  "evaluating-llms-harness": "lm-eval-harness で MMLU、GSM8K などの LLM ベンチマークを実行します。",
+  "weights-and-biases": "W&B で実験、スイープ、モデル登録、ダッシュボードを管理します。",
+  "huggingface-hub": "Hugging Face の hf CLI でモデル/データセットを検索、取得、アップロードします。",
+  "llama-cpp": "llama.cpp でローカル GGUF 推論と Hugging Face Hub のモデル探索を扱います。",
+  "obliteratus": "diff-in-means による LLM の拒否傾向除去を扱います。",
+  "outlines": "Outlines で JSON、正規表現、Pydantic に沿った構造化生成を行います。",
+  "serving-llms-vllm": "vLLM で高スループットの LLM 配信、OpenAI API、量子化を扱います。",
+  "audiocraft-audio-generation": "AudioCraft/MusicGen/AudioGen でテキストから音楽や効果音を生成します。",
+  "segment-anything-model": "SAM で点、矩形、マスクを使ったゼロショット画像セグメンテーションを行います。",
+  "dspy": "DSPy で宣言的な LM プログラム、プロンプト最適化、RAG を構築します。",
+  "axolotl": "Axolotl の YAML で LoRA、DPO、GRPO などの LLM ファインチューニングを行います。",
+  "fine-tuning-with-trl": "TRL で SFT、DPO、PPO、GRPO、報酬モデル作成を行います。",
+  "unsloth": "Unsloth で高速な LoRA/QLoRA ファインチューニングを行います。",
+  "explicit-memory": "『覚えておいて』『メモして』などの依頼を、明示的なメモとして保存します。",
+  "obsidian": "Obsidian vault のノートを読み取り、検索し、新規作成します。",
+  "airtable": "Airtable REST API でレコードの CRUD、絞り込み、upsert を行います。",
+  "google-workspace": "Gmail、Calendar、Drive、Docs、Sheets を gws CLI や Python で扱います。",
+  "linear": "Linear の Issue、プロジェクト、チームを GraphQL/curl で管理します。",
+  "maps": "OpenStreetMap/OSRM でジオコーディング、施設検索、経路、タイムゾーンを扱います。",
+  "nano-pdf": "nano-pdf CLI で PDF の誤字、本文、タイトルを自然言語で編集します。",
+  "notion": "Notion API でページ、データベース、ブロック、検索を扱います。",
+  "ocr-and-documents": "PDF やスキャン画像から pymupdf や marker-pdf でテキストを抽出します。",
+  "powerpoint": "PowerPoint 資料の作成、読み取り、編集、ノート、テンプレートを扱います。",
+  "voice-dictation-apps": "ローカル音声認識とカスタム LLM/API バックエンドを使う GUI 音声入力アプリを評価・設定します。",
+  "godmode": "Parseltongue、GODMODE、ULTRAPLINIAN などの LLM jailbreak を扱います。",
+  "arxiv": "arXiv 論文をキーワード、著者、カテゴリ、ID で検索します。",
+  "blogwatcher": "blogwatcher-cli でブログや RSS/Atom フィードを監視します。",
+  "llm-wiki": "Karpathy の LLM Wiki を Markdown 知識ベースとして構築・検索します。",
+  "polymarket": "Polymarket のマーケット、価格、板、履歴を照会します。",
+  "research-paper-writing": "NeurIPS/ICML/ICLR 向け ML 論文の設計から投稿までを支援します。",
+  "openhue": "OpenHue CLI で Philips Hue のライト、シーン、部屋を制御します。",
+  "xurl": "xurl CLI で X/Twitter の投稿、検索、DM、メディア、v2 API を扱います。",
+  "debugging-hermes-tui-commands": "Hermes TUI の slash command を Python、gateway、Ink UI の経路でデバッグします。",
+  "docs-commit-push-workflow": "ドキュメント更新後の確認、差分確認、コミット、プッシュを安全に実行します。",
+  "hermes-agent-development": "Hermes Agent 本体の開発、デバッグ、UI ビルド成果物、実行時検証を扱います。",
+  "hermes-agent-skill-authoring": "リポジトリ内 SKILL.md の frontmatter、検証、構造を作成します。",
+  "node-inspect-debugger": "Node.js を --inspect と Chrome DevTools Protocol CLI でデバッグします。",
+  "plan": "実行せず、Markdown の計画を .hermes/plans/ に書く計画モードです。",
+  "python-debugpy": "pdb REPL と debugpy リモート（DAP）で Python をデバッグします。",
+  "requesting-code-review": "コミット前レビュー、セキュリティ確認、品質ゲート、自動修正を行います。",
+  "spike": "実装前に使い捨ての実験でアイデアを検証します。",
+  "subagent-driven-development": "delegate_task サブエージェントで、2 段階レビュー付きの実装を行います。",
+  "systematic-debugging": "原因理解を先に行う 4 段階の系統的デバッグです。",
+  "test-driven-development": "RED-GREEN-REFACTOR に沿ったテスト駆動開発を行います。",
+  "vscode-extension-development": "VS Code 拡張機能のビルド、デバッグ、パッケージ化、設定を扱います。",
+  "writing-plans": "小さなタスク、対象パス、コード方針を含む実装計画を書きます。",
+  "yuanbao": "Yuanbao（元宝）のグループで @mention、情報照会、メンバー照会を行います。",
+};
+function skillDescription(skill: SkillInfo, locale: string): string {
+  if (locale === "ja") return SKILL_DESCRIPTION_JA[skill.name] || skill.description;
+  return skill.description;
+}
+
 const TOOLSET_ICONS: Record<
   string,
   React.ComponentType<{ className?: string }>
@@ -102,7 +211,7 @@ export default function SkillsPage() {
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [togglingSkills, setTogglingSkills] = useState<Set<string>>(new Set());
   const { toast, showToast } = useToast();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
 
   useEffect(() => {
@@ -150,9 +259,10 @@ export default function SkillsPage() {
       (s) =>
         s.name.toLowerCase().includes(lowerSearch) ||
         s.description.toLowerCase().includes(lowerSearch) ||
+        skillDescription(s, locale).toLowerCase().includes(lowerSearch) ||
         (s.category ?? "").toLowerCase().includes(lowerSearch),
     );
-  }, [skills, isSearching, lowerSearch]);
+  }, [skills, isSearching, lowerSearch, locale]);
 
   const activeSkills = useMemo(() => {
     if (isSearching) return [];
@@ -364,6 +474,7 @@ export default function SkillsPage() {
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         noDescriptionLabel={t.skills.noDescription}
+                        locale={locale}
                       />
                     ))}
                   </div>
@@ -407,6 +518,7 @@ export default function SkillsPage() {
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         noDescriptionLabel={t.skills.noDescription}
+                        locale={locale}
                       />
                     ))}
                   </div>
@@ -502,6 +614,7 @@ function SkillRow({
   toggling,
   onToggle,
   noDescriptionLabel,
+  locale,
 }: SkillRowProps) {
   return (
     <div className="group flex items-start gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40">
@@ -523,7 +636,7 @@ function SkillRow({
           </span>
         </div>
         <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">
-          {skill.description || noDescriptionLabel}
+          {skillDescription(skill, locale) || noDescriptionLabel}
         </p>
       </div>
     </div>
@@ -556,6 +669,7 @@ interface PanelItemProps {
 
 interface SkillRowProps {
   noDescriptionLabel: string;
+  locale: string;
   onToggle: () => void;
   skill: SkillInfo;
   toggling: boolean;
