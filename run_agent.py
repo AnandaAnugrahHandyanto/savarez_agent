@@ -5063,16 +5063,25 @@ class AIAgent:
                 pass
 
     def commit_memory_session(self, messages: list = None) -> None:
-        """Trigger end-of-session extraction without tearing providers down.
+        """Trigger end-of-session hooks without tearing providers down.
         Called when session_id rotates (e.g. /new, context compression);
         providers keep their state and continue running under the old
         session_id — they just flush pending extraction now."""
-        if not self._memory_manager:
-            return
-        try:
-            self._memory_manager.on_session_end(messages or [])
-        except Exception:
-            pass
+        session_messages = messages or []
+        memory_manager = getattr(self, "_memory_manager", None)
+        if memory_manager:
+            try:
+                memory_manager.on_session_end(session_messages)
+            except Exception:
+                pass
+        if hasattr(self, "context_compressor") and self.context_compressor:
+            try:
+                self.context_compressor.on_session_end(
+                    self.session_id or "",
+                    session_messages,
+                )
+            except Exception:
+                pass
 
     def _sync_external_memory_for_turn(
         self,

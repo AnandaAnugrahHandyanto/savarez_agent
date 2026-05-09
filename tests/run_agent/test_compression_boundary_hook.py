@@ -86,6 +86,21 @@ class TestCompressionBoundaryHook:
             assert call.kwargs.get("old_session_id") == original_sid, \
                 f"Expected old_session_id={original_sid!r}, got {call.kwargs!r}"
 
+            compressor.on_session_end.assert_called_once_with(original_sid, messages)
+            end_index = next(
+                idx for idx, mock_call in enumerate(compressor.mock_calls)
+                if mock_call[0] == "on_session_end"
+            )
+            start_index = next(
+                idx for idx, mock_call in enumerate(compressor.mock_calls)
+                if (
+                    mock_call[0] == "on_session_start"
+                    and mock_call.kwargs.get("boundary_reason") == "compression"
+                )
+            )
+            assert end_index < start_index, \
+                "context engine should receive old-session end before new compression-boundary start"
+
     def test_no_hook_when_no_session_db(self):
         """Without session_db, session_id does not rotate and the hook is not fired."""
         from run_agent import AIAgent
