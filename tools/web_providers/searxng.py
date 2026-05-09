@@ -40,6 +40,9 @@ class SearXNGSearchProvider(WebSearchProvider):
     sorted by SearXNG's own score and truncated to *limit*.
     """
 
+    # ── ProviderRegistry metadata ────────────────────────────────────────
+    required_env_vars = ["SEARXNG_URL"]
+
     def provider_name(self) -> str:
         return "searxng"
 

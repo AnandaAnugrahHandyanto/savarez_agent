@@ -122,32 +122,43 @@ def _get_backend() -> str:
     """Determine which web backend to use (shared fallback).
 
     Reads ``web.backend`` from config.yaml (set by ``hermes tools``).
-    Falls back to whichever API key is present for users who configured
-    keys manually without running setup.
+    Falls back to whichever provider's API key/env is present for users
+    who configured keys manually without running setup.
     """
+    from tools.web_providers.registry import ProviderRegistry
+
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs"):
-        return configured
 
-    # Fallback for manual / legacy config — pick the highest-priority
-    # available backend. Firecrawl also counts as available when the managed
-    # tool gateway is configured for Nous subscribers.
-    # Free-tier backends (searxng / brave-free / ddgs) trail the paid ones so
-    # existing paid setups are unaffected.
-    backend_candidates = (
-        ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
-        ("parallel", _has_env("PARALLEL_API_KEY")),
-        ("tavily", _has_env("TAVILY_API_KEY")),
-        ("exa", _has_env("EXA_API_KEY")),
-        ("searxng", _has_env("SEARXNG_URL")),
-        ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
-        ("ddgs", _ddgs_package_importable()),
-    )
-    for backend, available in backend_candidates:
-        if available:
-            return backend
+    # If the user explicitly set web.backend to a known provider, trust it
+    # unconditionally (backward compat — old code returned it without
+    # checking whether the API key was actually available).
+    if configured:
+        if configured == "firecrawl" or ProviderRegistry.get_search_provider(configured):
+            return configured
+        # Unknown backend name — fall through to auto-detect
 
-    return "firecrawl"  # default (backward compat)
+    # Auto-detect fallback: preserve legacy priority order.
+    # Firecrawl (with its complex gateway) must be checked first.
+    if (
+        _has_env("FIRECRAWL_API_KEY")
+        or _has_env("FIRECRAWL_API_URL")
+        or _is_tool_gateway_ready()
+    ):
+        return "firecrawl"
+
+    # Legacy priority for auto-detect: parallel → tavily → exa → searxng
+    # (Brave and any future backends are discovered by the registry and
+    # checked after the legacy priority chain).
+    for legacy_name in ("parallel", "tavily", "exa", "searxng"):
+        if ProviderRegistry.is_search_available(legacy_name):
+            return legacy_name
+
+    # Check any registry-only backends not in the legacy list (e.g. brave).
+    first = ProviderRegistry.find_first_available()
+    if first:
+        return first
+
+    return "firecrawl"  # ultimate default (backward compat)
 
 
 def _get_search_backend() -> str:
@@ -190,20 +201,18 @@ def _get_capability_backend(capability: str) -> str:
 
 def _is_backend_available(backend: str) -> bool:
     """Return True when the selected backend is currently usable."""
-    if backend == "exa":
-        return _has_env("EXA_API_KEY")
-    if backend == "parallel":
-        return _has_env("PARALLEL_API_KEY")
+    from tools.web_providers.registry import ProviderRegistry
+
+    # Try the auto-discovered providers first.
+    if ProviderRegistry.is_search_available(backend):
+        return True
+    if ProviderRegistry.is_extract_available(backend):
+        return True
+
+    # Firecrawl has special gateway-based availability.
     if backend == "firecrawl":
         return check_firecrawl_api_key()
-    if backend == "tavily":
-        return _has_env("TAVILY_API_KEY")
-    if backend == "searxng":
-        return _has_env("SEARXNG_URL")
-    if backend == "brave-free":
-        return _has_env("BRAVE_SEARCH_API_KEY")
-    if backend == "ddgs":
-        return _ddgs_package_importable()
+
     return False
 
 
@@ -284,28 +293,22 @@ def _firecrawl_backend_help_suffix() -> str:
 
 
 def _web_requires_env() -> list[str]:
-    """Return tool metadata env vars for the currently enabled web backends.
+    """Return tool metadata env vars for all registered web backends."""
+    from tools.web_providers.registry import ProviderRegistry
 
-    The gateway env vars are always reported — they're metadata strings
-    used by the tool registry to light up the tool when the variable is
-    set.  Gating them on ``managed_nous_tools_enabled()`` only saved
-    string noise in the metadata list, but cost a synchronous HTTP
-    refresh against the Nous portal on every CLI startup (invoked at
-    tool-registration time).  The behavioral contract is: if the env var
-    is set, the tool sees it; if not, it doesn't.  Not-logged-in users
-    simply don't have the vars set, so the extra entries are harmless.
-    """
-    return [
-        "EXA_API_KEY",
-        "PARALLEL_API_KEY",
-        "TAVILY_API_KEY",
-        "FIRECRAWL_API_KEY",
-        "FIRECRAWL_API_URL",
-        "FIRECRAWL_GATEWAY_URL",
-        "TOOL_GATEWAY_DOMAIN",
-        "TOOL_GATEWAY_SCHEME",
-        "TOOL_GATEWAY_USER_TOKEN",
-    ]
+    requires = sorted(ProviderRegistry.all_required_env_vars())
+    # Firecrawl env vars (Firecrawl is not yet a ProviderRegistry provider)
+    requires.extend(["FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"])
+    if managed_nous_tools_enabled():
+        requires.extend(
+            [
+                "FIRECRAWL_GATEWAY_URL",
+                "TOOL_GATEWAY_DOMAIN",
+                "TOOL_GATEWAY_SCHEME",
+                "TOOL_GATEWAY_USER_TOKEN",
+            ]
+        )
+    return requires
 
 
 def _get_firecrawl_client():
@@ -1199,102 +1202,43 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
         # Dispatch to the configured search backend
         backend = _get_search_backend()
-        if backend == "parallel":
-            response_data = _parallel_search(query, limit)
-            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
-            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-            debug_call_data["final_response_size"] = len(result_json)
-            _debug.log_call("web_search_tool", debug_call_data)
-            _debug.save()
-            return result_json
 
-        if backend == "exa":
-            response_data = _exa_search(query, limit)
-            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
-            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-            debug_call_data["final_response_size"] = len(result_json)
-            _debug.log_call("web_search_tool", debug_call_data)
-            _debug.save()
-            return result_json
-
-        if backend == "searxng":
-            from tools.web_providers.searxng import SearXNGSearchProvider
-            response_data = SearXNGSearchProvider().search(query, limit)
-            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
-            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-            debug_call_data["final_response_size"] = len(result_json)
-            _debug.log_call("web_search_tool", debug_call_data)
-            _debug.save()
-            return result_json
-
-        if backend == "brave-free":
-            from tools.web_providers.brave_free import BraveFreeSearchProvider
-            response_data = BraveFreeSearchProvider().search(query, limit)
-            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
-            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-            debug_call_data["final_response_size"] = len(result_json)
-            _debug.log_call("web_search_tool", debug_call_data)
-            _debug.save()
-            return result_json
-
-        if backend == "ddgs":
-            from tools.web_providers.ddgs import DDGSSearchProvider
-            response_data = DDGSSearchProvider().search(query, limit)
-            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
-            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-            debug_call_data["final_response_size"] = len(result_json)
-            _debug.log_call("web_search_tool", debug_call_data)
-            _debug.save()
-            return result_json
-
-        if backend == "tavily":
-            logger.info("Tavily search: '%s' (limit: %d)", query, limit)
-            raw = _tavily_request("search", {
-                "query": query,
-                "max_results": min(limit, 20),
-                "include_raw_content": False,
-                "include_images": False,
-            })
-            response_data = _normalize_tavily_search_results(raw)
-            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
-            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-            debug_call_data["final_response_size"] = len(result_json)
-            _debug.log_call("web_search_tool", debug_call_data)
-            _debug.save()
-            return result_json
-
-        logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
-
-        response = _get_firecrawl_client().search(
-            query=query,
-            limit=limit
-        )
-
-        web_results = _extract_web_search_results(response)
-        results_count = len(web_results)
-        logger.info("Found %d search results", results_count)
-        
-        # Build response with just search metadata (URLs, titles, descriptions)
-        response_data = {
-            "success": True,
-            "data": {
-                "web": web_results
+        # Firecrawl has complex client setup — handle separately.
+        if backend == "firecrawl":
+            logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
+            response = _get_firecrawl_client().search(
+                query=query,
+                limit=limit
+            )
+            web_results = _extract_web_search_results(response)
+            results_count = len(web_results)
+            logger.info("Found %d search results", results_count)
+            response_data = {
+                "success": True,
+                "data": {
+                    "web": web_results
+                }
             }
-        }
-        
-        # Capture debug information
-        debug_call_data["results_count"] = results_count
-        
-        # Convert to JSON
-        result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-        
-        debug_call_data["final_response_size"] = len(result_json)
-        
-        # Log debug information
-        _debug.log_call("web_search_tool", debug_call_data)
-        _debug.save()
-        
-        return result_json
+            debug_call_data["results_count"] = results_count
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
+        # ProviderRegistry dispatch — all registered providers use this path.
+        from tools.web_providers.registry import ProviderRegistry
+        provider_cls = ProviderRegistry.get_search_provider(backend)
+        if provider_cls:
+            response_data = provider_cls().search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
+        return tool_error(f"Unknown search backend: '{backend}'")
         
     except Exception as e:
         error_msg = f"Error searching web: {str(e)}"
@@ -1386,27 +1330,30 @@ async def web_extract_tool(
         else:
             backend = _get_extract_backend()
 
-            if backend == "parallel":
-                results = await _parallel_extract(safe_urls)
-            elif backend == "exa":
-                results = _exa_extract(safe_urls)
-            elif backend == "tavily":
-                logger.info("Tavily extract: %d URL(s)", len(safe_urls))
-                raw = _tavily_request("extract", {
-                    "urls": safe_urls,
-                    "include_images": False,
-                })
-                results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
-            elif backend in ("searxng", "brave-free", "ddgs"):
-                # These backends are search-only — they cannot extract URL content
-                _label = {"searxng": "SearXNG", "brave-free": "Brave Search (free tier)", "ddgs": "DuckDuckGo (ddgs)"}[backend]
+            # ProviderRegistry dispatch — all registered extract providers go here.
+            from tools.web_providers.registry import ProviderRegistry
+            provider_cls = ProviderRegistry.get_extract_provider(backend)
+            if provider_cls:
+                instance = provider_cls()
+                extract_fn = instance.extract
+                if asyncio.iscoroutinefunction(extract_fn):
+                    provider_result = await extract_fn(safe_urls)
+                else:
+                    provider_result = extract_fn(safe_urls)
+                if provider_result.get("success"):
+                    results = provider_result.get("data", [])
+                else:
+                    results = []
+            elif ProviderRegistry.get_search_provider(backend):
+                # This is a search-only backend — it cannot extract URL content
+                _label = backend.replace("-", " ").title()
                 return json.dumps({
                     "success": False,
                     "error": f"{_label} is a search-only backend and cannot extract URL content. "
                              "Set web.extract_backend to firecrawl, tavily, exa, or parallel.",
                 }, ensure_ascii=False)
             else:
-                # ── Firecrawl extraction ──
+                # ── Firecrawl extraction (default fallback) ──
                 # Determine requested formats for Firecrawl v2
                 formats: List[str] = []
                 if format == "markdown":
@@ -2081,15 +2028,47 @@ def check_firecrawl_api_key() -> bool:
     return _has_direct_firecrawl_config() or _is_tool_gateway_ready()
 
 
+def check_web_search_available() -> bool:
+    """Check whether any web_search backend is available."""
+    from tools.web_providers.registry import ProviderRegistry
+
+    cfg = _load_web_config()
+    # If user explicitly configured a backend, check ONLY that backend.
+    search_cfg = (cfg.get("search_backend") or "").lower().strip()
+    if search_cfg:
+        return _is_backend_available(search_cfg)
+    shared = (cfg.get("backend") or "").lower().strip()
+    if shared:
+        return _is_backend_available(shared)
+    # No explicit config → auto-detect any available backend.
+    return ProviderRegistry.any_search_available() or check_firecrawl_api_key()
+
+
+def check_web_extract_available() -> bool:
+    """Check whether any web_extract backend is available."""
+    from tools.web_providers.registry import ProviderRegistry
+
+    cfg = _load_web_config()
+    # If user explicitly configured a backend, check ONLY that backend.
+    extract_cfg = (cfg.get("extract_backend") or "").lower().strip()
+    if extract_cfg:
+        return _is_backend_available(extract_cfg)
+    shared = (cfg.get("backend") or "").lower().strip()
+    if shared:
+        return _is_backend_available(shared)
+    # No explicit config → auto-detect any available backend.
+    return ProviderRegistry.any_extract_available() or check_firecrawl_api_key()
+
+
+# ── Legacy alias for backward compatibility ──────────────────────────────────
+
 def check_web_api_key() -> bool:
-    """Check whether the configured web backend is available."""
-    configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"):
-        return _is_backend_available(configured)
-    return any(
-        _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
-    )
+    """Check whether the configured web backend is available.
+    
+    Deprecated: prefer ``check_web_search_available()`` or
+    ``check_web_extract_available()`` for capability-specific checks.
+    """
+    return check_web_search_available()
 
 
 def check_auxiliary_model() -> bool:
@@ -2260,7 +2239,7 @@ registry.register(
     toolset="web",
     schema=WEB_SEARCH_SCHEMA,
     handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5)),
-    check_fn=check_web_api_key,
+    check_fn=check_web_search_available,
     requires_env=_web_requires_env(),
     emoji="🔍",
     max_result_size_chars=100_000,
@@ -2271,7 +2250,7 @@ registry.register(
     schema=WEB_EXTRACT_SCHEMA,
     handler=lambda args, **kw: web_extract_tool(
         args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
-    check_fn=check_web_api_key,
+    check_fn=check_web_extract_available,
     requires_env=_web_requires_env(),
     is_async=True,
     emoji="📄",
