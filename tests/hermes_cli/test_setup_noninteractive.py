@@ -29,6 +29,8 @@ def _make_chat_args(**overrides):
         pass_session_id=overrides.get("pass_session_id", False),
         quiet=overrides.get("quiet", False),
         checkpoints=overrides.get("checkpoints", False),
+        image=overrides.get("image", None),
+        tui=overrides.get("tui", False),
     )
 
 
@@ -143,6 +145,48 @@ class TestNonInteractiveSetup:
         mock_setup.assert_not_called()
         out = capsys.readouterr().out
         assert "hermes config set model.provider custom" in out
+
+    def test_chat_headless_interactive_exits_before_prompt_toolkit(self, capsys):
+        """Bare `hermes` with configured provider needs a TTY instead of crashing in prompt_toolkit."""
+        from hermes_cli.main import cmd_chat
+
+        args = _make_chat_args()
+
+        with (
+            patch("hermes_cli.main._has_any_provider_configured", return_value=True),
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value=None),
+            patch("cli.main", side_effect=AssertionError("prompt_toolkit should not start")),
+            patch("sys.stdin") as mock_stdin,
+        ):
+            mock_stdin.isatty.return_value = False
+            with pytest.raises(SystemExit) as exc:
+                cmd_chat(args)
+
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "hermes chat" in err
+        assert "requires an interactive terminal" in err
+
+    def test_chat_headless_single_query_still_allowed(self):
+        """`hermes chat -q` is the supported non-interactive automation path."""
+        from hermes_cli.main import cmd_chat
+
+        args = _make_chat_args(query="hello")
+        captured = {}
+
+        def fake_cli_main(**kwargs):
+            captured.update(kwargs)
+
+        with (
+            patch("hermes_cli.main._has_any_provider_configured", return_value=True),
+            patch("tools.skills_sync.sync_skills"),
+            patch("cli.main", side_effect=fake_cli_main),
+            patch("sys.stdin") as mock_stdin,
+        ):
+            mock_stdin.isatty.return_value = False
+            cmd_chat(args)
+
+        assert captured["query"] == "hello"
 
     def test_main_accepts_tts_setup_section(self, monkeypatch):
         """`hermes setup tts` should parse and dispatch like other setup sections."""
