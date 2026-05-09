@@ -189,6 +189,8 @@ async function startSocket() {
     if (qr) {
       console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
       qrcode.generate(qr, { small: true });
+      // Write raw QR string for external PNG generation
+      try { require('fs').writeFileSync('/tmp/ares-qr-raw.txt', qr); } catch(e) {}
       console.log('\nWaiting for scan...\n');
     }
 
@@ -543,6 +545,8 @@ const MIME_MAP = {
   doc: 'application/msword',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  ppt: 'application/vnd.ms-powerpoint',
 };
 
 function inferMediaType(ext) {
