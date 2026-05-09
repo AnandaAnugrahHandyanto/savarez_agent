@@ -612,7 +612,10 @@ def _map_normalized_positions(original: str, normalized: str,
         else:
             orig_end = orig_start + (norm_end - norm_start)
         
-        # Expand to include trailing whitespace that was normalized
+        # Expand to include trailing whitespace that was normalized,
+        # but cap at the start of the NEXT line to avoid consuming content
+        # from the line that follows the matched block (off-by-one).
+        next_line_start = sum(len(c) + 1 for c in content_lines if content_lines) if orig_end < len(original) else len(original)
         while orig_end < len(original) and original[orig_end] in ' \t':
             orig_end += 1
         
