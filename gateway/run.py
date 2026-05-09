@@ -6899,6 +6899,18 @@ class GatewayRunner:
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
+            # Send typing indicator so the user sees "..." while agent works
+            try:
+                _typing_adapter = self.adapters.get(source.platform)
+                if _typing_adapter and hasattr(_typing_adapter, "send_typing"):
+                    logger.info("Sending typing indicator for %s on %s", source.chat_id, source.platform)
+                    await _typing_adapter.send_typing(source.chat_id)
+                    logger.info("Typing indicator sent successfully for %s", source.chat_id)
+                else:
+                    logger.debug("No send_typing support for platform %s", source.platform)
+            except Exception as e:
+                logger.warning("Failed to send typing indicator: %s", e)
+
             # Run the agent
             agent_result = await self._run_agent(
                 message=message_text,
