@@ -108,7 +108,9 @@ def _parse_npm_package(token: str) -> Tuple[Optional[str], Optional[str]]:
         # Scoped: @scope/name@version
         match = re.match(r"^(@[^/]+/[^@]+)(?:@(.+))?$", token)
         if match:
-            return match.group(1), match.group(2)
+            raw_version = match.group(2)
+            version = raw_version if raw_version and raw_version != "latest" else None
+            return match.group(1), version
         return token, None
     # Unscoped: name@version
     if "@" in token:

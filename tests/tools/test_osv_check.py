@@ -50,6 +50,20 @@ class TestParseNpmPackage:
     def test_latest_ignored(self):
         assert _parse_npm_package("react@latest") == ("react", None)
 
+    def test_scoped_latest_ignored(self):
+        """Scoped packages with @latest should return version=None.
+
+        Regression: prior behaviour returned ("@scope/pkg", "latest") for
+        scoped tokens because the @latest filter in the unscoped branch was
+        not applied in the scoped (regex) branch.  Passing "latest" as a
+        version to the OSV API yields zero matches, silently missing malware
+        advisories that affect the package at all versions.
+        """
+        assert _parse_npm_package("@modelcontextprotocol/server@latest") == (
+            "@modelcontextprotocol/server", None
+        )
+        assert _parse_npm_package("@scope/pkg@latest") == ("@scope/pkg", None)
+
 
 class TestParsePypiPackage:
     def test_simple(self):
