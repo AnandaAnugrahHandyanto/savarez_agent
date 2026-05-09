@@ -516,6 +516,76 @@ def test_dispatch_dry_run_does_not_claim(kanban_home, all_assignees_spawnable):
         assert kb.get_task(conn, t2).status == "ready"
 
 
+def test_dispatch_dry_run_respects_global_max_spawn(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        t1 = kb.create_task(conn, title="a", assignee="alice")
+        t2 = kb.create_task(conn, title="b", assignee="bob")
+        kb.create_task(conn, title="c", assignee="carol")
+        res = kb.dispatch_once(conn, dry_run=True, max_spawn=2)
+
+    assert [task_id for task_id, _, _ in res.spawned] == [t1, t2]
+    with kb.connect() as conn:
+        assert kb.get_task(conn, t1).status == "ready"
+        assert kb.get_task(conn, t2).status == "ready"
+
+
+def test_dispatch_respects_per_assignee_caps_against_running_and_current_tick(
+    kanban_home, all_assignees_spawnable
+):
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append((task.id, task.assignee, workspace))
+
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="already running", assignee="alice")
+        queued_1 = kb.create_task(conn, title="queued 1", assignee="alice")
+        queued_2 = kb.create_task(conn, title="queued 2", assignee="alice")
+        bob = kb.create_task(conn, title="bob queued", assignee="bob")
+        kb.claim_task(conn, running)
+
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=fake_spawn,
+            max_spawn_by_assignee={"alice": 2, "bob": 1},
+        )
+
+        assert [task_id for task_id, _, _ in res.spawned] == [queued_1, bob]
+        assert [task_id for task_id, _, _ in spawns] == [queued_1, bob]
+        assert kb.get_task(conn, queued_1).status == "running"
+        assert kb.get_task(conn, queued_2).status == "ready"
+        assert kb.get_task(conn, bob).status == "running"
+
+
+def test_dispatch_dry_run_counts_same_tick_spawns_toward_assignee_cap(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        t1 = kb.create_task(conn, title="a1", assignee="alice")
+        t2 = kb.create_task(conn, title="a2", assignee="alice")
+        t3 = kb.create_task(conn, title="b1", assignee="bob")
+        res = kb.dispatch_once(
+            conn,
+            dry_run=True,
+            max_spawn_by_assignee={"alice": 1, "bob": 1},
+        )
+
+    assert [task_id for task_id, _, _ in res.spawned] == [t1, t3]
+    with kb.connect() as conn:
+        assert kb.get_task(conn, t1).status == "ready"
+        assert kb.get_task(conn, t2).status == "ready"
+        assert kb.get_task(conn, t3).status == "ready"
+
+
+def test_dispatch_rejects_invalid_per_assignee_caps(kanban_home):
+    with kb.connect() as conn:
+        kb.create_task(conn, title="a", assignee="alice")
+        with pytest.raises(ValueError, match="max_spawn_by_assignee"):
+            kb.dispatch_once(conn, dry_run=True, max_spawn_by_assignee={"alice": 0})
+
+
 def test_dispatch_skips_unassigned(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="floater")

@@ -46,6 +46,35 @@ def _fmt_ts(ts: Optional[int]) -> str:
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
 
 
+def _parse_max_assignee_overrides(raw_items: Optional[list[str]]) -> dict[str, int]:
+    """Parse repeated ``--max-assignee profile=N`` CLI args."""
+    if not raw_items:
+        return {}
+    parsed: dict[str, int] = {}
+    for item in raw_items:
+        text = str(item or "").strip()
+        if not text or "=" not in text:
+            raise ValueError(
+                "--max-assignee expects PROFILE=N (example: ship-planner=1)"
+            )
+        assignee, limit = text.split("=", 1)
+        key = assignee.strip()
+        if not key:
+            raise ValueError("--max-assignee requires a non-empty assignee name")
+        try:
+            count = int(limit)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"--max-assignee {item!r} has invalid limit {limit!r}; expected positive int"
+            ) from exc
+        if count < 1:
+            raise ValueError(
+                f"--max-assignee {item!r} must be >= 1"
+            )
+        parsed[key] = count
+    return parsed
+
+
 def _fmt_task_line(t: kb.Task) -> str:
     icon = _STATUS_ICONS.get(t.status, "?")
     assignee = t.assignee or "(unassigned)"
@@ -451,6 +480,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                         help="Don't actually spawn processes; just print what would happen")
     p_disp.add_argument("--max", type=int, default=None,
                         help="Cap number of spawns this pass")
+    p_disp.add_argument(
+        "--max-assignee",
+        action="append",
+        default=None,
+        help="Per-assignee cap override, repeatable as PROFILE=N (example: ship-planner=1)",
+    )
     p_disp.add_argument("--failure-limit", type=int,
                         default=kb.DEFAULT_SPAWN_FAILURE_LIMIT,
                         help=f"Auto-block a task after this many consecutive non-success attempts "
@@ -466,6 +501,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Seconds between dispatch ticks (default: 60)")
     p_daemon.add_argument("--max", type=int, default=None,
                           help="Cap number of spawns per tick")
+    p_daemon.add_argument(
+        "--max-assignee",
+        action="append",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     p_daemon.add_argument("--failure-limit", type=int,
                           default=kb.DEFAULT_SPAWN_FAILURE_LIMIT)
     p_daemon.add_argument("--pidfile", default=None,
@@ -1209,7 +1250,9 @@ def _cmd_show(args: argparse.Namespace) -> int:
         sev_marker = {"warning": "⚠", "error": "!!", "critical": "!!!"}
         print(f"\n  Diagnostics ({len(diags)}):")
         for d in diags:
-            print(f"    {sev_marker.get(d.severity, '?')} [{d.severity}] {d.title}")
+            primary_class = (d.classification or {}).get("primary")
+            class_tag = f" [{primary_class}]" if primary_class else ""
+            print(f"    {sev_marker.get(d.severity, '?')} [{d.severity}]{class_tag} {d.title}")
             if d.data:
                 bits = []
                 for k, v in d.data.items():
@@ -1430,7 +1473,9 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
         assignee = m.get("assignee") or "(unassigned)"
         print(f"  {tid}  {status:8s}  @{assignee:18s}  {title}")
         for d in dl:
-            print(f"    {sev_marker.get(d.severity, '?')} [{d.severity}] {d.kind}: {d.title}")
+            primary_class = (d.classification or {}).get("primary")
+            class_tag = f" [{primary_class}]" if primary_class else ""
+            print(f"    {sev_marker.get(d.severity, '?')} [{d.severity}]{class_tag} {d.kind}: {d.title}")
             if d.data:
                 # Compact key:value pairs on one line.
                 bits = []
@@ -1655,11 +1700,15 @@ def _cmd_tail(args: argparse.Namespace) -> int:
 
 
 def _cmd_dispatch(args: argparse.Namespace) -> int:
+    max_spawn_by_assignee = kb._normalize_max_spawn_by_assignee(
+        _parse_max_assignee_overrides(getattr(args, "max_assignee", None))
+    )
     with kb.connect() as conn:
         res = kb.dispatch_once(
             conn,
             dry_run=args.dry_run,
             max_spawn=args.max,
+            max_spawn_by_assignee=max_spawn_by_assignee,
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
         )
     if getattr(args, "json", False):
@@ -1827,9 +1876,13 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             return False
 
     try:
+        max_spawn_by_assignee = kb._normalize_max_spawn_by_assignee(
+            _parse_max_assignee_overrides(getattr(args, "max_assignee", None))
+        )
         kb.run_daemon(
             interval=args.interval,
             max_spawn=args.max,
+            max_spawn_by_assignee=max_spawn_by_assignee,
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
             on_tick=_on_tick,
         )

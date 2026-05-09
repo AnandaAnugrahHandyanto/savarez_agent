@@ -1498,6 +1498,7 @@ def test_diagnostics_endpoint_empty_for_clean_board(client):
     data = r.json()
     assert data["count"] == 0
     assert data["diagnostics"] == []
+    assert data["diagnostic_rollup"]["diagnostic_count"] == 0
 
 
 def test_diagnostics_endpoint_surfaces_blocked_hallucination(client):
@@ -1522,7 +1523,10 @@ def test_diagnostics_endpoint_surfaces_blocked_hallucination(client):
     assert row["task_id"] == parent
     assert row["diagnostics"][0]["kind"] == "hallucinated_cards"
     assert row["diagnostics"][0]["severity"] == "error"
+    assert row["diagnostics"][0]["classification"]["primary"] is None
     assert "t_ffff00001234" in row["diagnostics"][0]["data"]["phantom_ids"]
+    assert data["diagnostic_rollup"]["diagnostic_count"] == 1
+    assert data["diagnostic_rollup"]["unclassified_count"] == 1
 
 
 def test_diagnostics_endpoint_severity_filter(client):
@@ -1556,20 +1560,20 @@ def test_diagnostics_endpoint_severity_filter(client):
     assert data["diagnostics"][0]["task_id"] == p2
 
 
-def test_board_exposes_diagnostics_list_and_summary(client):
-    """/board should attach both the full diagnostics list AND the
-    compact warnings summary (with highest_severity) on each task
-    that has any diagnostic.
+def test_board_exposes_diagnostics_list_summary_and_rollup(client):
+    """/board should attach the full diagnostics list, per-task warning summary,
+    and a board-level rollup with failure classifications.
     """
     conn = kb.connect()
     try:
         t = kb.create_task(conn, title="crashy", assignee="worker")
-        # Simulate 2 consecutive crashes -> repeated_crashes error diag
+        # Simulate 2 consecutive crashes -> repeated_crashes error diag.
+        # Error text intentionally mentions pytest so the classification is repo_tests.
         for i in range(2):
             conn.execute(
                 "INSERT INTO task_runs (task_id, status, outcome, started_at, "
                 "ended_at, error) VALUES (?, 'crashed', 'crashed', ?, ?, ?)",
-                (t, int(time.time()) - 100, int(time.time()) - 50, "OOM"),
+                (t, int(time.time()) - 100, int(time.time()) - 50, "pytest failed: 2 tests failed"),
             )
         conn.commit()
     finally:
@@ -1581,7 +1585,39 @@ def test_board_exposes_diagnostics_list_and_summary(client):
     task_dict = next(x for x in tasks if x["title"] == "crashy")
     assert task_dict["warnings"] is not None
     assert task_dict["warnings"]["highest_severity"] == "error"
+    assert task_dict["warnings"]["primary_classification"] == "repo_tests"
+    assert task_dict["warnings"]["classification_counts"]["repo_tests"] == 1
     assert task_dict["diagnostics"][0]["kind"] == "repeated_crashes"
+    assert task_dict["diagnostics"][0]["classification"]["primary"] == "repo_tests"
+    assert data["diagnostic_rollup"]["diagnostic_count"] == 1
+    assert data["diagnostic_rollup"]["classification_counts"]["repo_tests"] == 1
+    assert "repo_tests" in data["diagnostic_rollup"]["taxonomy"]
+
+
+
+
+def test_diagnostics_endpoint_rolls_up_stale_worker_classification(client):
+    now = int(time.time())
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="wedged", assignee="worker")
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, last_heartbeat_at=? WHERE id=?",
+            ("lock123", now - 600, now - 900, task_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/diagnostics")
+    assert r.status_code == 200
+    data = r.json()
+    row = next(x for x in data["diagnostics"] if x["task_id"] == task_id)
+    diag = row["diagnostics"][0]
+    assert diag["kind"] == "stale_worker"
+    assert diag["classification"]["primary"] == "stale_worker"
+    assert data["diagnostic_rollup"]["classification_counts"]["stale_worker"] == 1
+    assert data["diagnostic_rollup"]["highest_severity"] == "error"
 
 
 # ---------------------------------------------------------------------------

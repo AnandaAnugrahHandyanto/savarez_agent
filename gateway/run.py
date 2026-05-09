@@ -4057,6 +4057,23 @@ class GatewayRunner:
         if max_spawn is not None:
             logger.info(f"kanban dispatcher: max_spawn={max_spawn}")
 
+        raw_max_spawn_by_assignee = kanban_cfg.get("max_spawn_by_assignee", None)
+        try:
+            max_spawn_by_assignee = _kb._normalize_max_spawn_by_assignee(
+                raw_max_spawn_by_assignee
+            )
+        except ValueError:
+            logger.warning(
+                "kanban dispatcher: invalid kanban.max_spawn_by_assignee=%r; ignoring per-assignee caps",
+                raw_max_spawn_by_assignee,
+            )
+            max_spawn_by_assignee = {}
+        if max_spawn_by_assignee:
+            logger.info(
+                "kanban dispatcher: max_spawn_by_assignee=%s",
+                max_spawn_by_assignee,
+            )
+
         raw_failure_limit = kanban_cfg.get("failure_limit", _kb.DEFAULT_FAILURE_LIMIT)
         try:
             failure_limit = int(raw_failure_limit)
@@ -4107,6 +4124,7 @@ class GatewayRunner:
                     conn,
                     board=slug,
                     max_spawn=max_spawn,
+                    max_spawn_by_assignee=max_spawn_by_assignee,
                     failure_limit=failure_limit,
                 )
             except Exception:

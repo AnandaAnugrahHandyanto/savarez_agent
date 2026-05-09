@@ -267,18 +267,18 @@ def _compute_task_diagnostics(
 def _warnings_summary_from_diagnostics(
     diagnostics: list[dict],
 ) -> Optional[dict]:
-    """Compact summary for cards: {count, highest_severity, kinds,
-    latest_at}. Replaces the old hallucination-only ``warnings`` object
-    — same shape additions plus ``highest_severity`` so the UI can color
-    badges per diagnostic severity.
+    """Compact per-task summary for card badges and attention strips.
 
+    Includes severity and failure-class rollups so the UI can distinguish
+    "credentials" vs "stale worker" without hydrating the full drawer.
     Returns None when ``diagnostics`` is empty.
     """
     if not diagnostics:
         return None
-    from hermes_cli.kanban_diagnostics import SEVERITY_ORDER
+    from hermes_cli.kanban_diagnostics import SEVERITY_ORDER, FAILURE_CLASSIFICATION_ORDER
 
     kinds: dict[str, int] = {}
+    classification_counts: dict[str, int] = {}
     latest = 0
     highest_idx = -1
     highest_sev: Optional[str] = None
@@ -295,11 +295,63 @@ def _warnings_summary_from_diagnostics(
             if idx > highest_idx:
                 highest_idx = idx
                 highest_sev = sev
+        primary = ((d.get("classification") or {}).get("primary"))
+        if primary:
+            classification_counts[primary] = classification_counts.get(primary, 0) + 1
+    primary_classification = None
+    for slug in FAILURE_CLASSIFICATION_ORDER:
+        if classification_counts.get(slug):
+            primary_classification = slug
+            break
     return {
         "count": count,
         "kinds": kinds,
         "latest_at": latest,
         "highest_severity": highest_sev,
+        "classification_counts": classification_counts,
+        "primary_classification": primary_classification,
+    }
+
+
+def _diagnostic_rollup(diags_by_task: dict[str, list[dict]]) -> dict:
+    """Aggregate board-level/API-level diagnostic rollup."""
+    from hermes_cli.kanban_diagnostics import (
+        FAILURE_CLASSIFICATION_ORDER,
+        FAILURE_CLASSIFICATION_TAXONOMY,
+        SEVERITY_ORDER,
+    )
+
+    severity_counts = {sev: 0 for sev in SEVERITY_ORDER}
+    classification_counts = {slug: 0 for slug in FAILURE_CLASSIFICATION_ORDER}
+    highest_idx = -1
+    highest_severity = None
+    diagnostic_count = 0
+    unclassified_count = 0
+
+    for dl in diags_by_task.values():
+        for d in dl:
+            diagnostic_count += 1
+            sev = d.get("severity")
+            if sev in severity_counts:
+                severity_counts[sev] += 1
+                idx = SEVERITY_ORDER.index(sev)
+                if idx > highest_idx:
+                    highest_idx = idx
+                    highest_severity = sev
+            primary = ((d.get("classification") or {}).get("primary"))
+            if primary in classification_counts:
+                classification_counts[primary] += 1
+            else:
+                unclassified_count += 1
+
+    return {
+        "task_count": len(diags_by_task),
+        "diagnostic_count": diagnostic_count,
+        "highest_severity": highest_severity,
+        "severity_counts": severity_counts,
+        "classification_counts": classification_counts,
+        "unclassified_count": unclassified_count,
+        "taxonomy": FAILURE_CLASSIFICATION_TAXONOMY,
     }
 
 
@@ -444,6 +496,7 @@ def get_board(
             ],
             "tenants": tenants,
             "assignees": assignees,
+            "diagnostic_rollup": _diagnostic_rollup(diagnostics_per_task),
             "latest_event_id": int(latest_event_id),
             "now": int(time.time()),
         }
@@ -920,7 +973,7 @@ def list_diagnostics(
     try:
         diags_by_task = _compute_task_diagnostics(conn, task_ids=None)
         if not diags_by_task:
-            return {"diagnostics": [], "count": 0}
+            return {"diagnostics": [], "count": 0, "diagnostic_rollup": _diagnostic_rollup({})}
 
         # Narrow by severity if asked.
         if severity:
@@ -931,7 +984,7 @@ def list_diagnostics(
                     filtered[tid] = keep
             diags_by_task = filtered
             if not diags_by_task:
-                return {"diagnostics": [], "count": 0}
+                return {"diagnostics": [], "count": 0, "diagnostic_rollup": _diagnostic_rollup({})}
 
         # Pull the task rows we need in one query so we can include
         # titles/statuses without a per-task lookup.
@@ -966,9 +1019,11 @@ def list_diagnostics(
             )
         out.sort(key=_sort_key)
 
+        filtered_by_task = {row["task_id"]: row["diagnostics"] for row in out}
         return {
             "diagnostics": out,
             "count": sum(len(d["diagnostics"]) for d in out),
+            "diagnostic_rollup": _diagnostic_rollup(filtered_by_task),
         }
     finally:
         conn.close()

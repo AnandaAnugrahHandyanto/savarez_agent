@@ -41,6 +41,182 @@ import time
 SEVERITY_ORDER = ("warning", "error", "critical")
 
 
+# First-class failure-class taxonomy for Kanban diagnostics. This is
+# intentionally narrower than diagnostic ``kind``: kinds describe the
+# concrete signal (hallucinated cards, repeated crashes, stale worker),
+# while classes answer "what operational bucket does this failure belong
+# to?" so dashboards and APIs can roll up actionably across many tasks.
+FAILURE_CLASSIFICATION_TAXONOMY: dict[str, dict[str, str]] = {
+    "readiness": {
+        "label": "Readiness",
+        "description": (
+            "Worker/profile/repo is not ready to execute the task cleanly "
+            "(missing profile, dependency, worktree, or other preflight setup)."
+        ),
+    },
+    "linear_writeback": {
+        "label": "Linear writeback",
+        "description": (
+            "The task failed while writing status or metadata back to Linear."
+        ),
+    },
+    "vault_persistence": {
+        "label": "Vault persistence",
+        "description": (
+            "The task failed while persisting durable notes/artifacts to the vault."
+        ),
+    },
+    "credentials": {
+        "label": "Credentials",
+        "description": (
+            "The task failed because required credentials, API keys, or OAuth "
+            "state were missing or invalid."
+        ),
+    },
+    "stale_worker": {
+        "label": "Stale worker",
+        "description": (
+            "A worker claim or heartbeat went stale and operator intervention is needed."
+        ),
+    },
+    "repo_tests": {
+        "label": "Repo tests",
+        "description": (
+            "The task failed because repository tests or verification steps failed."
+        ),
+    },
+}
+
+FAILURE_CLASSIFICATION_ORDER = tuple(FAILURE_CLASSIFICATION_TAXONOMY.keys())
+
+
+def _empty_failure_classification() -> dict:
+    return {"primary": None, "matches": [], "confidence": "none"}
+
+
+def _failure_classification(
+    primary: Optional[str],
+    matches: Optional[Iterable[str]] = None,
+    *,
+    confidence: str = "high",
+) -> dict:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for slug in FAILURE_CLASSIFICATION_ORDER:
+        if slug == primary and slug not in seen:
+            seen.add(slug)
+            ordered.append(slug)
+    for slug in matches or []:
+        if slug in FAILURE_CLASSIFICATION_TAXONOMY and slug not in seen:
+            seen.add(slug)
+            ordered.append(slug)
+    return {
+        "primary": primary if primary in FAILURE_CLASSIFICATION_TAXONOMY else None,
+        "matches": ordered,
+        "confidence": confidence if ordered else "none",
+    }
+
+
+def _pick_primary_failure_class(matches: Iterable[str]) -> Optional[str]:
+    seen = set(matches)
+    for slug in FAILURE_CLASSIFICATION_ORDER:
+        if slug in seen:
+            return slug
+    return None
+
+
+def _contains_any(text: str, needles: Iterable[str]) -> bool:
+    return any(n in text for n in needles)
+
+
+def _classify_failure_signal(*, error_text: Optional[str], outcome: Optional[str] = None) -> dict:
+    """Conservatively classify a failure signal into taxonomy buckets.
+
+    Only emits a class when the text clearly points at that operational bucket.
+    Ambiguous failures stay unclassified rather than producing false positives.
+    """
+    text = (error_text or "").strip().lower()
+    matches: list[str] = []
+    if not text and outcome != "spawn_failed":
+        return _empty_failure_classification()
+
+    if _contains_any(text, (
+        "vault-sync",
+        "vault frontmatter",
+        "obsidian vault",
+        "/vault/",
+        " vault/",
+        "vault persistence",
+    )):
+        matches.append("vault_persistence")
+    if _contains_any(text, (
+        "linear writeback",
+        "linear graphql",
+        "api.linear.app",
+        "linear api",
+        "commentcreate",
+        "issueupdate",
+        "issue label",
+        "label inventory",
+    )):
+        matches.append("linear_writeback")
+    if _contains_any(text, (
+        "credential",
+        "credentials",
+        "api key",
+        "oauth",
+        "access token",
+        "refresh token",
+        "auth token",
+        "login required",
+        "not logged in",
+        "no provider credentials",
+        "missing credentials",
+        "invalid api key",
+        "expired token",
+    )):
+        matches.append("credentials")
+    if _contains_any(text, (
+        "pytest",
+        "tests failed",
+        "test failed",
+        "failing tests",
+        "assertionerror",
+        "repo tests",
+        "unit test",
+        "integration test",
+    )):
+        matches.append("repo_tests")
+    if _contains_any(text, (
+        "stale worker",
+        "stale claim",
+        "claim expired",
+        "heartbeat",
+    )):
+        matches.append("stale_worker")
+    if outcome == "spawn_failed" and _contains_any(text, (
+        "profile",
+        "doctor",
+        "does not exist",
+        "command not found",
+        "module not found",
+        "no such file or directory",
+        "not installed",
+        "venv",
+        "virtualenv",
+        "workspace",
+        "worktree",
+        "dependency",
+        "importerror",
+        "modulenotfounderror",
+    )):
+        matches.append("readiness")
+
+    primary = _pick_primary_failure_class(matches)
+    confidence = "high" if len(matches) <= 1 else "medium"
+    return _failure_classification(primary, matches, confidence=confidence)
+
+
 @dataclass
 class DiagnosticAction:
     """A single recovery action attached to a diagnostic.
@@ -92,6 +268,8 @@ class Diagnostic:
     run_id: Optional[int] = None
     # Optional structured payload for the UI (phantom ids, failure count).
     data: dict = field(default_factory=dict)
+    # Optional machine-readable failure classification taxonomy.
+    classification: dict = field(default_factory=_empty_failure_classification)
 
     def to_dict(self) -> dict:
         return {
@@ -105,6 +283,7 @@ class Diagnostic:
             "count": self.count,
             "run_id": self.run_id,
             "data": self.data,
+            "classification": self.classification,
         }
 
 
@@ -219,6 +398,18 @@ def _generic_recovery_actions(task: Any, *, running: bool) -> list[DiagnosticAct
     return out
 
 
+def _running_task_log_hint(task: Any) -> list[DiagnosticAction]:
+    task_id = _task_field(task, "id")
+    if not task_id:
+        return []
+    return [DiagnosticAction(
+        kind="cli_hint",
+        label=f"Check logs: hermes kanban log {task_id}",
+        payload={"command": f"hermes kanban log {task_id}"},
+        suggested=True,
+    )]
+
+
 # ---------------------------------------------------------------------------
 # Rule implementations
 # ---------------------------------------------------------------------------
@@ -275,6 +466,7 @@ def _rule_hallucinated_cards(task, events, runs, now, cfg) -> list[Diagnostic]:
         last_seen_at=last,
         count=len(hits),
         data={"phantom_ids": phantom_ids},
+        classification=_empty_failure_classification(),
     )]
 
 
@@ -309,6 +501,7 @@ def _rule_prose_phantom_refs(task, events, runs, now, cfg) -> list[Diagnostic]:
         last_seen_at=_event_ts(hits[-1]),
         count=len(hits),
         data={"phantom_refs": phantom_refs},
+        classification=_empty_failure_classification(),
     )]
 
 
@@ -377,14 +570,7 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
     elif most_recent_outcome in ("timed_out", "crashed"):
         # Worker got off the ground but died. Logs are the right place
         # to diagnose; reclaim/reassign are the recovery levers.
-        task_id = _task_field(task, "id")
-        if task_id:
-            actions.append(DiagnosticAction(
-                kind="cli_hint",
-                label=f"Check logs: hermes kanban log {task_id}",
-                payload={"command": f"hermes kanban log {task_id}"},
-                suggested=True,
-            ))
+        actions.extend(_running_task_log_hint(task))
     actions.extend(_generic_recovery_actions(
         task, running=_task_field(task, "status") == "running",
     ))
@@ -429,6 +615,10 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
             "most_recent_outcome": most_recent_outcome,
             "last_error": last_err,
         },
+        classification=_classify_failure_signal(
+            error_text=last_err,
+            outcome=most_recent_outcome,
+        ),
     )]
 
 
@@ -477,15 +667,8 @@ def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
             continue
     if consecutive < threshold:
         return []
-    task_id = _task_field(task, "id")
     actions: list[DiagnosticAction] = []
-    if task_id:
-        actions.append(DiagnosticAction(
-            kind="cli_hint",
-            label=f"Check logs: hermes kanban log {task_id}",
-            payload={"command": f"hermes kanban log {task_id}"},
-            suggested=True,
-        ))
+    actions.extend(_running_task_log_hint(task))
     running = _task_field(task, "status") == "running"
     actions.extend(_generic_recovery_actions(task, running=running))
     severity = "critical" if consecutive >= threshold * 2 else "error"
@@ -516,6 +699,52 @@ def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
         last_seen_at=now,
         count=consecutive,
         data={"consecutive_crashes": consecutive, "last_error": last_err},
+        classification=_classify_failure_signal(error_text=last_err, outcome="crashed"),
+    )]
+
+
+def _rule_stale_worker(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """A running task whose claim has already expired is almost certainly wedged.
+
+    This is intentionally conservative: we only fire once the active claim is
+    already stale (plus a small grace window), not merely when a task has been
+    running for a long time.
+    """
+    if _task_field(task, "status") != "running":
+        return []
+    claim_expires = _task_field(task, "claim_expires")
+    if not claim_expires:
+        return []
+    grace_seconds = int(cfg.get("stale_worker_grace_seconds", 60))
+    stale_seconds = now - int(claim_expires)
+    if stale_seconds <= grace_seconds:
+        return []
+    heartbeat_at = _task_field(task, "last_heartbeat_at")
+    data = {
+        "claim_expires": int(claim_expires),
+        "stale_seconds": stale_seconds,
+    }
+    if heartbeat_at:
+        data["last_heartbeat_at"] = int(heartbeat_at)
+        data["heartbeat_age_seconds"] = max(0, now - int(heartbeat_at))
+    actions: list[DiagnosticAction] = []
+    actions.extend(_running_task_log_hint(task))
+    actions.extend(_generic_recovery_actions(task, running=True))
+    return [Diagnostic(
+        kind="stale_worker",
+        severity="error",
+        title=f"Worker claim expired {stale_seconds}s ago",
+        detail=(
+            "This task is still marked running, but its claim TTL has already "
+            "expired. That usually means the worker wedged, died without a clean "
+            "handoff, or stopped heartbeating. Reclaim the task after checking the log."
+        ),
+        actions=actions,
+        first_seen_at=int(claim_expires),
+        last_seen_at=now,
+        count=1,
+        data=data,
+        classification=_failure_classification("stale_worker", ["stale_worker"]),
     )]
 
 
@@ -567,6 +796,7 @@ def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
         last_seen_at=last_blocked_ts,
         count=1,
         data={"blocked_at": last_blocked_ts, "age_hours": round(age_hours, 1)},
+        classification=_empty_failure_classification(),
     )]
 
 
@@ -575,6 +805,7 @@ def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
 _RULES: list[RuleFn] = [
     _rule_hallucinated_cards,
     _rule_prose_phantom_refs,
+    _rule_stale_worker,
     _rule_repeated_failures,
     _rule_repeated_crashes,
     _rule_stuck_in_blocked,
@@ -586,6 +817,7 @@ _RULES: list[RuleFn] = [
 DIAGNOSTIC_KINDS = (
     "hallucinated_cards",
     "prose_phantom_refs",
+    "stale_worker",
     "repeated_failures",
     "repeated_crashes",
     "stuck_in_blocked",
@@ -598,6 +830,7 @@ DEFAULT_CONFIG = {
     "spawn_failure_threshold": 3,
     "crash_threshold": 2,
     "blocked_stale_hours": 24,
+    "stale_worker_grace_seconds": 60,
 }
 
 

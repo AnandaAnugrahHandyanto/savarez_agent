@@ -243,6 +243,23 @@ def test_stuck_in_blocked_silent_when_not_blocked():
     assert kd.compute_task_diagnostics(task, events, [], now=9999999) == []
 
 
+def test_stale_worker_fires_when_running_claim_has_expired():
+    now = int(time.time())
+    task = _task(
+        status="running",
+        claim_expires=now - 600,
+        last_heartbeat_at=now - 900,
+    )
+    diags = kd.compute_task_diagnostics(task, [], [], now=now)
+    assert len(diags) == 1
+    d = diags[0]
+    assert d.kind == "stale_worker"
+    assert d.classification["primary"] == "stale_worker"
+    assert d.data["stale_seconds"] >= 600
+    suggested = [a.label for a in d.actions if a.suggested]
+    assert any("log" in s.lower() for s in suggested)
+
+
 def test_repeated_crashes_surfaces_actual_error_in_title():
     """The title should lead with the actual error text so operators
     see WHAT broke (e.g. rate-limit, auth, OOM) without opening logs.
@@ -279,6 +296,28 @@ def test_repeated_failures_surfaces_actual_error_in_title():
     d = diags[0]
     assert "insufficient_quota" in d.title or "billing limit" in d.title
     assert "insufficient_quota" in d.detail
+
+
+@pytest.mark.parametrize(
+    ("outcome", "error_text", "expected_primary"),
+    [
+        ("spawn_failed", "Profile 'debugger' does not exist", "readiness"),
+        ("spawn_failed", "missing credentials for provider openai", "credentials"),
+        ("crashed", "Linear GraphQL writeback failed", "linear_writeback"),
+        ("crashed", "vault-sync failed: frontmatter lint error", "vault_persistence"),
+        ("crashed", "pytest failed: 2 tests failed", "repo_tests"),
+    ],
+)
+def test_failure_signal_classifier_maps_known_hardening_taxonomy(
+    outcome, error_text, expected_primary,
+):
+    classification = kd._classify_failure_signal(
+        error_text=error_text,
+        outcome=outcome,
+    )
+    assert classification["primary"] == expected_primary
+    assert expected_primary in classification["matches"]
+    assert classification["confidence"] in {"high", "medium"}
 
 
 def test_repeated_crashes_truncates_huge_tracebacks():

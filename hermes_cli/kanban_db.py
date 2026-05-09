@@ -3527,6 +3527,34 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     return False
 
 
+def _normalize_max_spawn_by_assignee(
+    raw: Optional[dict[str, Any]],
+) -> dict[str, int]:
+    """Validate + normalize per-assignee dispatcher caps."""
+    if not raw:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("max_spawn_by_assignee must be a mapping of assignee -> positive int")
+
+    normalized: dict[str, int] = {}
+    for assignee, limit in raw.items():
+        key = str(assignee or "").strip()
+        if not key:
+            raise ValueError("max_spawn_by_assignee keys must be non-empty assignee names")
+        try:
+            count = int(limit)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"max_spawn_by_assignee[{key!r}] must be a positive int"
+            ) from exc
+        if count < 1:
+            raise ValueError(
+                f"max_spawn_by_assignee[{key!r}] must be >= 1"
+            )
+        normalized[key] = count
+    return normalized
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -3534,6 +3562,7 @@ def dispatch_once(
     ttl_seconds: int = DEFAULT_CLAIM_TTL_SECONDS,
     dry_run: bool = False,
     max_spawn: Optional[int] = None,
+    max_spawn_by_assignee: Optional[dict[str, Any]] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     board: Optional[str] = None,
 ) -> DispatchResult:
@@ -3603,6 +3632,21 @@ def dispatch_once(
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn)
 
+    per_assignee_caps = _normalize_max_spawn_by_assignee(max_spawn_by_assignee)
+    running_by_assignee: dict[str, int] = {}
+    if per_assignee_caps:
+        running_rows = conn.execute(
+            "SELECT assignee, COUNT(*) AS n FROM tasks "
+            "WHERE status = 'running' AND assignee IS NOT NULL "
+            "GROUP BY assignee"
+        ).fetchall()
+        running_by_assignee = {
+            str(row["assignee"]): int(row["n"])
+            for row in running_rows
+            if row["assignee"]
+        }
+    spawned_this_tick_by_assignee: dict[str, int] = {}
+
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
@@ -3615,6 +3659,15 @@ def dispatch_once(
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
+        assignee = str(row["assignee"])
+        assignee_cap = per_assignee_caps.get(assignee)
+        if assignee_cap is not None:
+            in_flight = (
+                running_by_assignee.get(assignee, 0)
+                + spawned_this_tick_by_assignee.get(assignee, 0)
+            )
+            if in_flight >= assignee_cap:
+                continue
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
         # with "Profile 'X' does not exist" when the assignee names a
@@ -3640,6 +3693,10 @@ def dispatch_once(
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
+            spawned += 1
+            spawned_this_tick_by_assignee[assignee] = (
+                spawned_this_tick_by_assignee.get(assignee, 0) + 1
+            )
             continue
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
@@ -3680,6 +3737,10 @@ def dispatch_once(
             # counter is cleared only on successful completion (see
             # complete_task).
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
+            if claimed.assignee:
+                spawned_this_tick_by_assignee[claimed.assignee] = (
+                    spawned_this_tick_by_assignee.get(claimed.assignee, 0) + 1
+                )
             spawned += 1
         except Exception as exc:
             auto = _record_spawn_failure(
@@ -3840,6 +3901,7 @@ def run_daemon(
     *,
     interval: float = 60.0,
     max_spawn: Optional[int] = None,
+    max_spawn_by_assignee: Optional[dict[str, Any]] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stop_event=None,
     on_tick=None,
@@ -3877,6 +3939,7 @@ def run_daemon(
                 res = dispatch_once(
                     conn,
                     max_spawn=max_spawn,
+                    max_spawn_by_assignee=max_spawn_by_assignee,
                     failure_limit=failure_limit,
                 )
             if on_tick is not None:

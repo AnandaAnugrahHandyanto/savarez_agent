@@ -3082,6 +3082,9 @@ def test_config_default_dispatch_in_gateway_is_true():
     assert isinstance(interval, (int, float)) and interval >= 1, (
         f"dispatch_interval_seconds must be a positive number, got {interval!r}"
     )
+    assert kanban.get("max_spawn_by_assignee") == {}, (
+        "kanban.max_spawn_by_assignee default should be an empty mapping"
+    )
 
 
 def test_check_dispatcher_presence_silent_when_gateway_running(monkeypatch):
@@ -3252,6 +3255,33 @@ def test_cli_daemon_help_marks_deprecated():
     )
 
 
+def test_kanban_dispatch_parser_accepts_per_assignee_caps():
+    """CLI surface exposes repeatable --max-assignee PROFILE=N overrides."""
+    import argparse as _ap
+    from hermes_cli import kanban as kb_cli
+
+    parser = _ap.ArgumentParser()
+    kb_cli.build_parser(parser.add_subparsers(dest="command"))
+
+    args = parser.parse_args(
+        [
+            "kanban",
+            "dispatch",
+            "--dry-run",
+            "--max-assignee",
+            "ship-planner=1",
+            "--max-assignee",
+            "ship-coder=2",
+        ]
+    )
+
+    assert args.max_assignee == ["ship-planner=1", "ship-coder=2"]
+    assert kb_cli._parse_max_assignee_overrides(args.max_assignee) == {
+        "ship-planner": 1,
+        "ship-coder": 2,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Gateway embedded dispatcher watcher
 # ---------------------------------------------------------------------------
@@ -3317,6 +3347,72 @@ def test_gateway_dispatcher_watcher_env_truthy_uses_config(monkeypatch):
             timeout=3.0,
         )
     )
+
+
+def test_gateway_dispatcher_watcher_passes_per_assignee_caps(monkeypatch):
+    """Embedded dispatcher should parse kanban.max_spawn_by_assignee and
+    forward the normalized mapping into dispatch_once."""
+    import asyncio
+    from types import SimpleNamespace
+    from gateway.run import GatewayRunner
+    import hermes_cli.config as _cfg_mod
+    from hermes_cli import kanban_db as _kb
+
+    calls = []
+
+    class _FakeConn:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        _cfg_mod,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 1,
+                "max_spawn": 5,
+                "max_spawn_by_assignee": {"ship-planner": 1, "ship-coder": 2},
+                "failure_limit": 2,
+            }
+        },
+    )
+    _real_sleep = asyncio.sleep
+
+    async def _fast_sleep(*_args, **_kwargs):
+        await _real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", _fast_sleep)
+    monkeypatch.setattr(_kb, "connect", lambda board=None: _FakeConn())
+    monkeypatch.setattr(_kb, "init_db", lambda board=None: None)
+    monkeypatch.setattr(
+        _kb,
+        "list_boards",
+        lambda include_archived=False: [{"slug": _kb.DEFAULT_BOARD}],
+    )
+    monkeypatch.setattr(_kb, "has_spawnable_ready", lambda conn: False)
+
+    def _fake_dispatch_once(conn, **kwargs):
+        calls.append(kwargs)
+        runner._running = False
+        return SimpleNamespace(
+            spawned=[], reclaimed=0, crashed=[], timed_out=[], promoted=0, auto_blocked=[]
+        )
+
+    monkeypatch.setattr(_kb, "dispatch_once", _fake_dispatch_once)
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    asyncio.run(
+        asyncio.wait_for(
+            runner._kanban_dispatcher_watcher(),
+            timeout=3.0,
+        )
+    )
+
+    assert calls, "dispatch_once was not called"
+    assert calls[0]["max_spawn"] == 5
+    assert calls[0]["max_spawn_by_assignee"] == {"ship-planner": 1, "ship-coder": 2}
 
 
 # ---------------------------------------------------------------------------

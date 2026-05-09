@@ -1281,6 +1281,14 @@ DEFAULT_CONFIG = {
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
+        # Global cap on workers spawned per dispatcher tick. Omit / leave
+        # unset for no global cap.
+        "max_spawn": None,
+        # Optional per-assignee caps. Example:
+        #   {"ship-planner": 1, "ship-coder": 2}
+        # Counts currently-running tasks plus workers already spawned in the
+        # same tick before dispatching more work to that assignee.
+        "max_spawn_by_assignee": {},
         # Auto-block after this many consecutive non-success attempts for the
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
