@@ -11,6 +11,7 @@ No LLM, no real platform connections.
 
 import asyncio
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -268,22 +269,26 @@ async def send_and_capture(adapter, text: str, platform: Platform, **event_kwarg
     await adapter.handle_message(event)
     # ``handle_message`` returns after spawning ``_process_message_background``
     # for normal turns — side effects (e.g. ``session_store.reset_session``)
-    # happen inside that task. A fixed sleep flakes on slow CI runners.
+    # happen inside that task. On fast machines the owner task can finish and
+    # be removed from ``_session_tasks`` before we read it, so we also wait
+    # until ``send`` has been observed (or time out).
     session_key = build_session_key(
         event.source,
         group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
         thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
     )
-    task = getattr(adapter, "_session_tasks", {}).get(session_key)
-    if task is not None and hasattr(task, "done"):
-        if not task.done():
+    deadline = time.monotonic() + 35.0
+    while time.monotonic() < deadline:
+        if adapter.send.called:
+            return adapter.send
+        task = getattr(adapter, "_session_tasks", {}).get(session_key)
+        if task is not None and hasattr(task, "done") and not task.done():
             try:
                 await asyncio.wait_for(task, timeout=120.0)
             except (asyncio.TimeoutError, asyncio.CancelledError, RuntimeError):
-                await asyncio.sleep(0.3)
-    else:
-        # Inline bypass dispatch (/new while active, etc.) completes before return.
-        await asyncio.sleep(0.05)
+                await asyncio.sleep(0.05)
+            continue
+        await asyncio.sleep(0.02)
     return adapter.send
 
 
