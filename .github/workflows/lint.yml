@@ -123,6 +123,8 @@ jobs:
 
       - name: Post / update PR comment
         if: github.event_name == 'pull_request'
+        # Fork workflows default to read-only upstream tokens — comment updates fail there.
+        continue-on-error: true
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
           script: |

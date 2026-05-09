@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 
@@ -92,6 +93,46 @@ def test_explicit_negative_p_profile_flag_still_applies(monkeypatch, tmp_path: P
     apply_profile_env_override(cli_argv=["-p", "svc000"])
 
     assert Path(os.environ["HERMES_HOME"]).resolve() == svc.resolve()
+
+
+def test_implicit_bootstrap_noop_inside_pytest(monkeypatch, tmp_path: Path) -> None:
+    """In-process pytest: implicit gateway bootstrap must not remap HERMES_HOME."""
+    assert "pytest" in sys.modules
+
+    from hermes_cli.profile_env_bootstrap import apply_profile_env_override
+
+    home = tmp_path
+    monkeypatch.setattr(Path, "home", lambda: home)
+    root = home / ".hermes"
+    root.mkdir(parents=True)
+    prof_dir = root / "profiles" / "svc"
+    prof_dir.mkdir(parents=True)
+    (root / "active_profile").write_text("svc", encoding="utf-8")
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+
+    apply_profile_env_override()
+
+    assert "HERMES_HOME" not in os.environ
+
+
+def test_cli_forced_bootstrap_applies_inside_pytest(monkeypatch, tmp_path: Path) -> None:
+    """``hermes_cli.main`` disables the pytest deferral — sticky profile still resolves."""
+    assert "pytest" in sys.modules
+
+    from hermes_cli.profile_env_bootstrap import apply_profile_env_override
+
+    home = tmp_path
+    monkeypatch.setattr(Path, "home", lambda: home)
+    root = home / ".hermes"
+    root.mkdir(parents=True)
+    prof_dir = root / "profiles" / "svc"
+    prof_dir.mkdir(parents=True)
+    (root / "active_profile").write_text("svc", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root.resolve()))
+
+    apply_profile_env_override(skip_under_test_runner=False)
+
+    assert Path(os.environ["HERMES_HOME"]).resolve() == prof_dir.resolve()
 
 
 def test_negative_p_illegal_leader_is_ignored(monkeypatch, tmp_path: Path) -> None:

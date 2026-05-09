@@ -23,9 +23,24 @@ from typing import List, Optional
 _PROFILE_ID_TAIL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
-def apply_profile_env_override(cli_argv: Optional[List[str]] = None) -> None:
-    """Pre-parse profile flags / ``active_profile`` before ``get_hermes_home()`` reads env."""
+def apply_profile_env_override(
+    cli_argv: Optional[List[str]] = None,
+    *,
+    skip_under_test_runner: bool = True,
+) -> None:
+    """Pre-parse profile flags / ``active_profile`` before ``get_hermes_home()`` reads env.
+
+    Gateways imported while ``pytest`` is already loaded (in-process suite runs) skip
+    implicit bootstrap here: pytest reserves ``-p`` for plugins, and Hermetic fixtures
+    are not established yet — applying sticky profiles at import-time would collide
+    with test isolation.
+
+    CLI entry (:mod:`hermes_cli.main`) calls with ``skip_under_test_runner=False`` so its
+    classic behavior is unchanged inside pytest-collected suites.
+    """
     mutate_sys_argv = cli_argv is None
+    if mutate_sys_argv and skip_under_test_runner and sys.modules.get("pytest"):
+        return
     argv: List[str] = list(sys.argv[1:] if mutate_sys_argv else cli_argv)
 
     profile_name = None

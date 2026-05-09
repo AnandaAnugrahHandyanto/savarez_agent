@@ -119,7 +119,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # ---------------------------------------------------------------------------
 from hermes_cli.profile_env_bootstrap import apply_profile_env_override
 
-apply_profile_env_override()
+apply_profile_env_override(skip_under_test_runner=False)
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
