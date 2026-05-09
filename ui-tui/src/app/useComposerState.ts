@@ -98,6 +98,15 @@ export function looksLikeDroppedPath(text: string): boolean {
   return false
 }
 
+// Paste hotkeys mean "use the clipboard the user just invoked from their
+// terminal", which is the local clipboard over SSH/tmux. If TextInput already
+// recognized a remote paste hotkey, prefer OSC 52 first so we do not
+// accidentally paste stale server-side clipboard text from xclip/wl-paste.
+// Explicit IDE terminal setup should also prefer the terminal clipboard path.
+export function shouldPreferOsc52ForPasteHotkey(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isRemoteShellSession(env) || shouldHandleClipboardHotkeys(env)
+}
+
 export function useComposerState({
   gw,
   onClipboardPaste,
@@ -230,7 +239,7 @@ export function useComposerState({
       value
     }: PasteEvent): MaybePromise<null | { cursor: number; value: string }> => {
       if (hotkey) {
-        const preferOsc52 = isRemoteShellSession(process.env) && shouldHandleClipboardHotkeys(process.env)
+        const preferOsc52 = shouldPreferOsc52ForPasteHotkey(process.env)
 
         const readPreferredText = preferOsc52
           ? readOsc52Clipboard(querier).then(async osc52Text => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { looksLikeDroppedPath } from '../app/useComposerState.js'
+import { looksLikeDroppedPath, shouldPreferOsc52ForPasteHotkey } from '../app/useComposerState.js'
 
 describe('looksLikeDroppedPath', () => {
   it('recognizes macOS screenshot temp paths and file URIs', () => {
@@ -10,6 +10,14 @@ describe('looksLikeDroppedPath', () => {
     expect(
       looksLikeDroppedPath('file:///var/folders/x/T/TemporaryItems/Screenshot%202026-04-21%20at%201.04.43%20PM.png')
     ).toBe(true)
+  })
+
+  it('prefers OSC 52 for remote or explicitly configured paste hotkeys', () => {
+    expect(
+      shouldPreferOsc52ForPasteHotkey({ SSH_CONNECTION: '1 2 3 4', TMUX: '/tmp/tmux-1/default,1,0' } as NodeJS.ProcessEnv)
+    ).toBe(true)
+    expect(shouldPreferOsc52ForPasteHotkey({ TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv)).toBe(true)
+    expect(shouldPreferOsc52ForPasteHotkey({} as NodeJS.ProcessEnv)).toBe(false)
   })
 
   it('rejects normal multiline or plain text paste', () => {
