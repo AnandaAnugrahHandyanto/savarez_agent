@@ -4020,7 +4020,12 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_to_text = None
         if message.reply_to_message:
             reply_to_id = str(message.reply_to_message.message_id)
-            reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
+            # Prefer Telegram's native partial quote text when available
+            quote = getattr(message, "quote", None)
+            if quote and getattr(quote, "text", None):
+                reply_to_text = quote.text
+            else:
+                reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
 
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt
