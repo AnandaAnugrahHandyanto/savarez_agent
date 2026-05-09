@@ -914,3 +914,28 @@ def test_latest_summaries_batch_omits_tasks_without_summary(kanban_home):
         assert out == {t1: "alpha", t3: "charlie"}
         # Empty input → empty dict, no SQL syntax error from "IN ()".
         assert kb.latest_summaries(conn, []) == {}
+
+
+def test_unlink_promotes_when_blocker_removed(kanban_home):
+    """Unlinking the last blocking parent must trigger recompute_ready."""
+    with kb.connect() as conn:
+        # Done parent A
+        pa = kb.create_task(conn, title="A", assignee="worker")
+        kb.claim_task(conn, pa)
+        kb.complete_task(conn, pa, summary="done")
+
+        # Child B depends on A → A done → B starts ready
+        pb = kb.create_task(conn, title="B", assignee="worker", parents=[pa])
+        assert kb.get_task(conn, pb).status == "ready"
+
+        # Running parent C, link to B → demotes B to todo
+        pc = kb.create_task(conn, title="C", assignee="worker")
+        kb.claim_task(conn, pc)
+        kb.link_tasks(conn, pc, pb)
+        assert kb.get_task(conn, pb).status == "todo"
+
+        # Unlink C → only done parent A remains → B should be ready
+        assert kb.unlink_tasks(conn, pc, pb) is True
+        assert kb.get_task(conn, pb).status == "ready", (
+            "unlink must trigger recompute_ready so child promotes"
+        )

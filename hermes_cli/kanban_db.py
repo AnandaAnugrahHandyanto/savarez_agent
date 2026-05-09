@@ -1490,6 +1490,13 @@ def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
 
 
 def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
+    """Delete a parent→child dependency edge.
+
+    Removes the link and re-runs :func:`recompute_ready` so the child is
+    promoted immediately if the removed parent was the last blocker
+    (same pattern as :func:`complete_task` and :func:`unblock_task`).
+    """
+    removed = False
     with write_txn(conn):
         cur = conn.execute(
             "DELETE FROM task_links WHERE parent_id = ? AND child_id = ?",
@@ -1500,7 +1507,10 @@ def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
                 conn, child_id, "unlinked",
                 {"parent": parent_id, "child": child_id},
             )
-        return cur.rowcount > 0
+            removed = True
+    if removed:
+        recompute_ready(conn)
+    return removed
 
 
 def parent_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
