@@ -3,13 +3,20 @@ import { Typography } from "@/components/NouiTypography";
 import { useI18n } from "@/i18n/context";
 
 /**
- * Compact language toggle — shows a clickable flag that switches between
- * English and Chinese.  Persists choice to localStorage.
+ * Compact language toggle — cycles through English, Chinese, and Hungarian.
+ * Persists choice to localStorage.
  */
 export function LanguageSwitcher() {
   const { locale, setLocale, t } = useI18n();
 
-  const toggle = () => setLocale(locale === "en" ? "zh" : "en");
+  const toggle = () => {
+    if (locale === "en") setLocale("zh");
+    else if (locale === "zh") setLocale("hu");
+    else setLocale("en");
+  };
+
+  const flag = locale === "en" ? "🇬🇧" : locale === "zh" ? "🇨🇳" : "🇭🇺";
+  const label = locale === "en" ? "EN" : locale === "zh" ? "中文" : "HU";
 
   return (
     <Button
@@ -21,14 +28,14 @@ export function LanguageSwitcher() {
     >
       <span className="inline-flex items-center gap-1.5">
         <span className="text-base leading-none">
-          {locale === "en" ? "🇬🇧" : "🇨🇳"}
+          {flag}
         </span>
 
         <Typography
           mondwest
           className="hidden sm:inline tracking-wide uppercase text-[0.65rem]"
         >
-          {locale === "en" ? "EN" : "中文"}
+          {label}
         </Typography>
       </span>
     </Button>
