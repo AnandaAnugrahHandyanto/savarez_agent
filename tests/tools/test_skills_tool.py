@@ -1076,3 +1076,27 @@ Do the legacy thing.
         assert result["setup_needed"] is False
         assert result["missing_required_environment_variables"] == []
         assert result["readiness_status"] == "available"
+
+
+class TestActiveSkillsDir:
+    """Tests for _active_skills_dir() profile-aware resolution."""
+
+    def test_follows_hermes_home(self, tmp_path, monkeypatch):
+        """_active_skills_dir() resolves from get_hermes_home(), not the
+        module constant, when SKILLS_DIR has not been monkeypatched."""
+        profile_home = tmp_path / "profiles" / "test"
+        profile_skills = profile_home / "skills"
+        profile_skills.mkdir(parents=True)
+        monkeypatch.setattr(
+            "hermes_constants.get_hermes_home", lambda: profile_home
+        )
+        assert skills_tool_module._active_skills_dir() == profile_skills
+
+    def test_honours_monkeypatched_skills_dir(self, tmp_path, monkeypatch):
+        """When SKILLS_DIR is patched (existing test pattern), the patched
+        value takes precedence over dynamic resolution."""
+        patched_dir = tmp_path / "patched_skills"
+        patched_dir.mkdir()
+        monkeypatch.setattr(skills_tool_module, "SKILLS_DIR", patched_dir)
+        assert skills_tool_module._active_skills_dir() == patched_dir
+        
