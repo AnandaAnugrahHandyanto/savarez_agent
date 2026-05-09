@@ -158,6 +158,32 @@ def _looks_like_credential(name: str) -> bool:
     return any(name.endswith(suf) for suf in _CREDENTIAL_SUFFIXES)
 
 
+# Kanban env pins are legitimate production/operator controls: the CLI uses
+# them for board selection, the dispatcher injects them into worker processes,
+# and the gateway honours the dispatcher toggle. They still must be scrubbed
+# from pytest's ambient process env because tests that need Kanban context set
+# it explicitly and default-board tests rely on no ambient board/path pin.
+#
+# Scope this set to HERMES_KANBAN_* variables. The dispatcher also injects
+# HERMES_PROFILE for worker author attribution, but that is a broader profile
+# selector rather than a Kanban-specific pin and is intentionally out of this
+# narrow regression fix.
+_HERMES_KANBAN_BEHAVIORAL_VARS = frozenset({
+    # Board and path resolution pins.
+    "HERMES_KANBAN_BOARD",
+    "HERMES_KANBAN_DB",
+    "HERMES_KANBAN_HOME",
+    "HERMES_KANBAN_WORKSPACES_ROOT",
+    # Dispatcher-spawned worker runtime pins.
+    "HERMES_KANBAN_TASK",
+    "HERMES_KANBAN_WORKSPACE",
+    "HERMES_KANBAN_RUN_ID",
+    "HERMES_KANBAN_CLAIM_LOCK",
+    # Gateway dispatcher escape hatch.
+    "HERMES_KANBAN_DISPATCH_IN_GATEWAY",
+})
+
+
 # HERMES_* vars that change test behavior by being set. Unset all of these
 # unconditionally — individual tests that need them set do so explicitly.
 _HERMES_BEHAVIORAL_VARS = frozenset({
@@ -188,6 +214,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_BACKGROUND_NOTIFICATIONS",
     "HERMES_EXEC_ASK",
     "HERMES_HOME_MODE",
+    *_HERMES_KANBAN_BEHAVIORAL_VARS,
     "TERMINAL_CWD",
     "TERMINAL_ENV",
     "TERMINAL_VERCEL_RUNTIME",
