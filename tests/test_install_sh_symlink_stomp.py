@@ -14,6 +14,7 @@ as a regular file in $command_link_dir, leaving venv/bin/hermes intact.
 from __future__ import annotations
 
 import os
+import shlex
 import stat
 import subprocess
 import textwrap
@@ -69,8 +70,8 @@ def test_shim_write_does_not_stomp_symlinked_venv_entrypoint(tmp_path: Path) -> 
         f"""\
         #!/usr/bin/env bash
         set -euo pipefail
-        command_link_dir={command_link_dir!s}
-        HERMES_BIN={venv_entry!s}
+        command_link_dir={shlex.quote(str(command_link_dir))}
+        HERMES_BIN={shlex.quote(str(venv_entry))}
         {block}
         """
     )
