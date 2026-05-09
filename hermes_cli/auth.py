@@ -4757,20 +4757,30 @@ def _minimax_request_user_code(
     return payload
 
 
+def _minimax_parse_expired_in(value: Any) -> tuple[float, int]:
+    """Parse MiniMax/OpenClaw ``expired_in`` as epoch-ms or TTL seconds.
+
+    Some flows return ``expired_in`` as a unix-ms timestamp, while others return
+    a TTL in seconds.  Return both the absolute expiry time (epoch seconds) and
+    a normalized positive TTL in seconds for storage.
+    """
+    raw = int(value)
+    now_s = time.time()
+    if raw > int(now_s * 1000) // 2:
+        expires_at_s = raw / 1000.0
+        ttl_s = max(1, int(expires_at_s - now_s))
+    else:
+        ttl_s = max(1, raw)
+        expires_at_s = now_s + ttl_s
+    return expires_at_s, ttl_s
+
+
 def _minimax_poll_token(
     client: httpx.Client, *, portal_base_url: str, client_id: str,
     user_code: str, code_verifier: str, expired_in: int, interval_ms: Optional[int],
 ) -> Dict[str, Any]:
-    # OpenClaw treats expired_in as a unix-ms timestamp (Date.now() < expireTimeMs).
-    # Defensive parsing: if it's small enough to be a duration, treat as seconds.
     import time as _time
-    now_ms = int(_time.time() * 1000)
-    if expired_in > now_ms // 2:
-        # Looks like a unix-ms timestamp.
-        deadline = expired_in / 1000.0
-    else:
-        # Treat as duration in seconds from now.
-        deadline = _time.time() + max(1, expired_in)
+    deadline, _ = _minimax_parse_expired_in(expired_in)
     interval = max(2.0, (interval_ms or 2000) / 1000.0)
 
     while _time.time() < deadline:
@@ -4884,8 +4894,7 @@ def _minimax_oauth_login(
         )
 
     now = datetime.now(timezone.utc)
-    expires_in_s = int(token_data["expired_in"])
-    expires_at = now.timestamp() + expires_in_s
+    expires_at, expires_in_s = _minimax_parse_expired_in(token_data["expired_in"])
 
     auth_state = {
         "provider": "minimax-oauth",
@@ -4960,14 +4969,13 @@ def _refresh_minimax_oauth_state(
             relogin_required=True,
         )
     now_dt = datetime.now(timezone.utc)
-    expires_in_s = int(payload["expired_in"])
+    expires_at, expires_in_s = _minimax_parse_expired_in(payload["expired_in"])
     new_state = dict(state)
     new_state.update({
         "access_token": payload["access_token"],
         "refresh_token": payload.get("refresh_token", state["refresh_token"]),
         "obtained_at": now_dt.isoformat(),
-        "expires_at": datetime.fromtimestamp(now_dt.timestamp() + expires_in_s,
-                                             tz=timezone.utc).isoformat(),
+        "expires_at": datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat(),
         "expires_in": expires_in_s,
     })
     _minimax_save_auth_state(new_state)

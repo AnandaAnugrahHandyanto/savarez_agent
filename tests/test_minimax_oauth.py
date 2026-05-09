@@ -30,6 +30,7 @@ from hermes_cli.auth import (
     MINIMAX_OAUTH_CN_INFERENCE,
     MINIMAX_OAUTH_REFRESH_SKEW_SECONDS,
     _minimax_pkce_pair,
+    _minimax_oauth_login,
     _minimax_request_user_code,
     _minimax_poll_token,
     _refresh_minimax_oauth_state,
@@ -362,6 +363,38 @@ def test_refresh_updates_access_token():
     assert result["expires_in"] == 7200
 
 
+def test_minimax_oauth_login_accepts_epoch_ms_expired_in():
+    future_expiry_ms = int((time.time() + 7200) * 1000)
+
+    with patch("hermes_cli.auth._minimax_pkce_pair", return_value=("verifier", "challenge", "state")), \
+         patch("hermes_cli.auth._minimax_request_user_code", return_value={
+             "verification_uri": "https://minimax.io/verify",
+             "user_code": "ABC-123",
+             "expired_in": future_expiry_ms,
+         }), \
+         patch("hermes_cli.auth._minimax_poll_token", return_value={
+             "status": "success",
+             "access_token": "access-abc",
+             "refresh_token": "refresh-xyz",
+             "expired_in": future_expiry_ms,
+             "token_type": "Bearer",
+         }), \
+         patch("hermes_cli.auth._minimax_save_auth_state"), \
+         patch("hermes_cli.auth.webbrowser.open", return_value=False), \
+         patch("hermes_cli.auth._is_remote_session", return_value=True), \
+         patch("httpx.Client") as mock_client_class:
+        mock_client_instance = MagicMock()
+        mock_client_instance.__enter__ = MagicMock(return_value=mock_client_instance)
+        mock_client_instance.__exit__ = MagicMock(return_value=False)
+        mock_client_class.return_value = mock_client_instance
+
+        result = _minimax_oauth_login(open_browser=False)
+
+    expires_at_ts = datetime.fromisoformat(result["expires_at"]).timestamp()
+    assert expires_at_ts == pytest.approx(future_expiry_ms / 1000.0, abs=2)
+    assert 7190 <= result["expires_in"] <= 7200
+
+
 # ---------------------------------------------------------------------------
 # 10. test_refresh_reuse_triggers_relogin_required
 # ---------------------------------------------------------------------------
@@ -394,6 +427,40 @@ def test_refresh_reuse_triggers_relogin_required():
 
     assert exc_info.value.code == "refresh_failed"
     assert exc_info.value.relogin_required is True
+
+
+def test_refresh_accepts_epoch_ms_expired_in():
+    future_expiry_ms = int((time.time() + 7200) * 1000)
+    state = {
+        "access_token": "old-access",
+        "refresh_token": "my-refresh",
+        "portal_base_url": MINIMAX_OAUTH_GLOBAL_BASE,
+        "client_id": MINIMAX_OAUTH_CLIENT_ID,
+        "inference_base_url": MINIMAX_OAUTH_GLOBAL_INFERENCE,
+        "expires_at": _future_iso(MINIMAX_OAUTH_REFRESH_SKEW_SECONDS - 1),
+    }
+    new_token_body = {
+        "status": "success",
+        "access_token": "new-access",
+        "refresh_token": "new-refresh",
+        "expired_in": future_expiry_ms,
+    }
+
+    mock_resp = _make_httpx_response(200, new_token_body)
+
+    with patch("httpx.Client") as mock_client_class:
+        mock_client_instance = MagicMock()
+        mock_client_instance.__enter__ = MagicMock(return_value=mock_client_instance)
+        mock_client_instance.__exit__ = MagicMock(return_value=False)
+        mock_client_instance.post.return_value = mock_resp
+        mock_client_class.return_value = mock_client_instance
+
+        with patch("hermes_cli.auth._minimax_save_auth_state"):
+            result = _refresh_minimax_oauth_state(state)
+
+    expires_at_ts = datetime.fromisoformat(result["expires_at"]).timestamp()
+    assert expires_at_ts == pytest.approx(future_expiry_ms / 1000.0, abs=2)
+    assert 7190 <= result["expires_in"] <= 7200
 
 
 # ---------------------------------------------------------------------------
