@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -33,32 +34,76 @@ _MAX_EXCERPT_CHARS = 280
 
 _SCAN_BUCKETS = [
     {
+        "kind": "blocker_or_waiting",
+        "area": "projects",
+        "query": 'blocked OR blocker OR waiting OR failed OR failure OR stuck OR "Xcode ready" OR TestFlight OR gateway OR deploy OR shipping',
+        "mode": "ask_or_checked",
+        "reason": "possible blocker or waiting item that may need one concrete next action",
+        "score": 80,
+    },
+    {
+        "kind": "decision_needed",
+        "area": "decisions",
+        "query": 'decide OR decision OR choose OR approval OR approve OR "which one" OR "should we" OR "what do you think" OR option OR tradeoff',
+        "mode": "ask_smart_question",
+        "reason": "possible decision point where a good question could unblock Charles or prevent rework",
+        "score": 76,
+    },
+    {
+        "kind": "commitment_or_followup",
+        "area": "follow_up",
+        "query": '"I will" OR "I’ll" OR "remind me" OR "follow up" OR "circle back" OR "waiting on" OR "next step" OR "want me to" OR "look into"',
+        "mode": "ask_to_investigate",
+        "reason": "possible user-requested follow-up, watch item, or permission-shaped assistant opportunity",
+        "score": 72,
+    },
+    {
         "kind": "content_opportunity",
-        "query": '"meeting notes" OR speech OR "sales team" OR critique OR "X posts" OR delivery OR Notion',
+        "area": "content",
+        "query": '"meeting notes" OR speech OR "sales team" OR critique OR "X posts" OR delivery OR Notion OR draft OR framework OR content',
         "mode": "offer_to_produce",
         "reason": "fresh notes/content may create a useful draft, critique, or synthesis opportunity",
+        "score": 66,
     },
     {
-        "kind": "blocker_or_waiting",
-        "query": 'blocked OR blocker OR waiting OR failed OR failure OR TestFlight OR "Xcode ready" OR gateway',
-        "mode": "ask_or_checked",
-        "reason": "possible blocker or waiting item that may need a next action",
-    },
-    {
-        "kind": "follow_up_or_watch",
-        "query": '"want me" OR "look into" OR "follow up" OR reminder OR proactive OR "More Info"',
-        "mode": "ask_to_investigate",
-        "reason": "possible user-requested follow-up, watch item, or permission-shaped opportunity",
+        "kind": "personal_logistics",
+        "area": "personal",
+        "query": 'family OR house OR home OR kids OR school OR appointment OR reservation OR travel OR dinner OR errands OR contractor OR install',
+        "mode": "ask_smart_question",
+        "reason": "possible personal/logistics item where a small assistant question or next step could help",
+        "score": 58,
     },
     {
         "kind": "external_risk",
-        "query": 'Stripe OR payment OR purchase OR order OR email OR post OR DM OR calendar OR "App Store Connect"',
+        "area": "external_risk",
+        "query": 'Stripe OR payment OR purchase OR order OR email OR post OR DM OR calendar OR "App Store Connect" OR publish OR send',
         "mode": "ask_first",
         "reason": "external/money/reputation risk; draft or ask only, never act externally",
+        "score": 62,
     },
 ]
 
 _SUPPRESSION_QUERY = 'OwnerPath OR "on hold" OR paused OR "do not nudge" OR "don\'t nudge" OR "not useful"'
+
+_META_PROACTIVITY_RE = re.compile(
+    r"\b(proactive|proactivity|nudge|nudges|more info|do it|not useful|don't nudge|dont nudge|feedback buttons?)\b",
+    re.I,
+)
+
+_LOG_INTERESTING_RE = re.compile(r"(error|exception|traceback|failed|timeout|conflict|delivery|unauthorized|context overflow)", re.I)
+_LOG_NOISE_RE = re.compile(r"(DEBUG|heartbeat|typing action|inbound message:|Suppressing normal final send)", re.I)
+_INTERNAL_SUMMARY_RE = re.compile(r"(context compaction|reference only|completed actions|active task|handoff)", re.I)
+_SIGNAL_KIND_SCORE = {
+    "cron_failure": 95,
+    "gateway_log_watch": 82,
+    "state_decision_needed": 80,
+    "blocker_or_waiting": 80,
+    "decision_needed": 76,
+    "commitment_or_followup": 72,
+    "external_risk": 62,
+    "content_opportunity": 66,
+    "personal_logistics": 58,
+}
 
 
 @dataclass(frozen=True)
@@ -92,6 +137,8 @@ def _looks_machine_text(value: Any) -> bool:
     lower = text.lower()
     if not text:
         return True
+    if _INTERNAL_SUMMARY_RE.search(text):
+        return True
     if text.startswith(("{", "[{", "[TOOL]", "[Called:")):
         return True
     machine_markers = (
@@ -101,10 +148,44 @@ def _looks_machine_text(value: Any) -> bool:
         '"bytes_written"',
         '"exit_code"',
         '"files_modified"',
+        '"signals":',
+        '"kind":',
         "response_item_id",
         "tool_use",
+        "diff --git",
+        "@@",
+        "tmp_path",
+        "monkeypatch",
+        "\\\\n+",
+        "## active state",
+        "mcp_link_cli",
     )
     return any(marker in lower for marker in machine_markers)
+
+
+def _looks_meta_proactivity_text(value: Any) -> bool:
+    """Avoid letting self-improvement chatter become the proactive nudge."""
+
+    text = _clip(value, 700)
+    if not text:
+        return False
+    if not _META_PROACTIVITY_RE.search(text):
+        return False
+    operational_markers = (
+        "wfg",
+        "spark",
+        "slack",
+        "testflight",
+        "xcode",
+        "smoothcurb",
+        "stripe",
+        "ticktick",
+        "cron failed",
+        "gateway conflict",
+        "meeting notes",
+        "sales team",
+    )
+    return not any(marker in text.lower() for marker in operational_markers)
 
 
 def _iso(ts: Any) -> str | None:
@@ -124,9 +205,154 @@ def _recent(ts: Any, cutoff: float) -> bool:
 def _signal_key(signal: Dict[str, Any]) -> tuple:
     return (
         signal.get("kind"),
-        signal.get("session_id"),
+        signal.get("session_id") or signal.get("name") or signal.get("source"),
         _clip(signal.get("excerpt"), 100).lower(),
     )
+
+
+def _signal_score(signal: Dict[str, Any]) -> int:
+    try:
+        base = int(signal.get("score") or _SIGNAL_KIND_SCORE.get(str(signal.get("kind")), 40))
+    except Exception:
+        base = 40
+    mode = str(signal.get("mode") or "")
+    if mode == "ask_smart_question":
+        base += 4
+    if signal.get("timestamp"):
+        base += 1
+    return base
+
+
+def _rank_signals(signals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    ranked = []
+    for idx, signal in enumerate(signals):
+        item = dict(signal)
+        item.setdefault("score", _signal_score(item))
+        ranked.append((idx, item))
+    ranked.sort(key=lambda pair: (-_signal_score(pair[1]), pair[0]))
+    return [item for _idx, item in ranked]
+
+
+def _read_home_file(name: str, limit: int = 800) -> str:
+    try:
+        path = get_hermes_home() / name
+        if not path.exists():
+            return ""
+        return _clip(path.read_text(encoding="utf-8", errors="ignore"), limit)
+    except Exception:
+        return ""
+
+
+def _extract_section(text: str, heading: str) -> str:
+    marker = f"## {heading}"
+    idx = text.find(marker)
+    if idx < 0:
+        return ""
+    rest = text[idx + len(marker):]
+    next_heading = re.search(r"\n##\s+", rest)
+    return rest[: next_heading.start()].strip() if next_heading else rest.strip()
+
+
+def _profile_context_snapshot() -> Dict[str, str]:
+    state = _read_home_file("proactive-state.md", 1800)
+    heartbeat = _read_home_file("HEARTBEAT.md", 900)
+    return {
+        "proactive_state": state,
+        "heartbeat_rules": heartbeat,
+    }
+
+
+def _signals_from_profile_context(context: Dict[str, str]) -> List[Dict[str, Any]]:
+    signals: List[Dict[str, Any]] = []
+    blocked = _extract_section(context.get("proactive_state", ""), "Blocked / Needs Decision")
+    for line in blocked.splitlines():
+        text = line.strip().lstrip("- ").strip()
+        if not text or text.lower().startswith("none") or _looks_meta_proactivity_text(text):
+            continue
+        signals.append(
+            {
+                "kind": "state_decision_needed",
+                "area": "decisions",
+                "mode": "ask_smart_question",
+                "reason": "proactive state lists a blocked item or decision Charles may need to resolve",
+                "source": "proactive-state.md",
+                "excerpt": _clip(text),
+                "score": _SIGNAL_KIND_SCORE["state_decision_needed"],
+            }
+        )
+    return signals
+
+
+def _log_health_signals(limit: int = 3) -> List[Dict[str, Any]]:
+    signals: List[Dict[str, Any]] = []
+    log_dir = get_hermes_home() / "logs"
+    for name in ("gateway.log", "errors.log", "agent.log"):
+        path = log_dir / name
+        if not path.exists():
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()[-300:]
+        except Exception:
+            continue
+        for line in lines:
+            if _LOG_NOISE_RE.search(line) or not _LOG_INTERESTING_RE.search(line):
+                continue
+            signals.append(
+                {
+                    "kind": "gateway_log_watch",
+                    "area": "system_health",
+                    "mode": "already_checked",
+                    "reason": "recent Hermes logs contain a possible issue worth verifying before it affects Charles",
+                    "source": name,
+                    "excerpt": _clip(line, 260),
+                    "score": _SIGNAL_KIND_SCORE["gateway_log_watch"],
+                }
+            )
+            if len(signals) >= limit:
+                return signals
+    return signals
+
+
+def _custom_profile_signals(limit: int = 12) -> List[Dict[str, Any]]:
+    """Load optional profile-local signals from ~/.hermes/proactive/signals.json.
+
+    This is the escape hatch for user-specific scanners (email/calendar/business
+    metrics/TickTick/WFG/etc.) without hardcoding private integrations upstream.
+    Shape: {"signals": [{"kind": ..., "excerpt": ..., "mode": ...}]} or a raw list.
+    """
+
+    path = get_hermes_home() / "proactive" / "signals.json"
+    if not path.exists():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    items = raw.get("signals") if isinstance(raw, dict) else raw
+    if not isinstance(items, list):
+        return []
+    signals: List[Dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        excerpt = _clip(item.get("excerpt") or item.get("detail") or item.get("title"), 360)
+        if not excerpt or _looks_machine_text(excerpt) or _looks_meta_proactivity_text(excerpt):
+            continue
+        signal = {
+            "kind": _clip(item.get("kind") or "custom_profile_signal", 80),
+            "area": _clip(item.get("area") or "custom", 80),
+            "mode": _clip(item.get("mode") or "ask_to_investigate", 80),
+            "reason": _clip(item.get("reason") or "profile-local proactive signal", 220),
+            "source": _clip(item.get("source") or "proactive/signals.json", 120),
+            "excerpt": excerpt,
+            "score": int(item.get("score") or 70),
+        }
+        if item.get("action"):
+            signal["suggested_action"] = _clip(item.get("action"), 260)
+        signals.append(signal)
+        if len(signals) >= limit:
+            break
+    return signals
 
 
 def _ledger_path() -> Path:
@@ -436,8 +662,10 @@ Proactive modes:
 High-signal candidates, in order:
 - A time-sensitive blocker that prevents a project from shipping and has one obvious next action.
 - A user-requested follow-up/reminder/watch item that is now due or newly relevant.
+- A smart question that would unblock Charles, clarify a decision, or prevent rework.
 - A system/job/integration failure Charles likely expects Hermes to notice.
 - A fresh artifact or conversation that creates an obvious assistant opportunity, e.g. meeting notes → sales coaching critique or X post drafts.
+- A useful pattern across work, content, family/personal logistics, tools, inbox, calendar, tasks, sales ops, or projects — not just WFG/source health.
 - A near-term commitment Charles explicitly owns.
 - A concise synthesis that prevents repeated work or a dropped ball.
 
@@ -446,6 +674,8 @@ Do not send low-value nudges:
 - No stale ambitions, paused/on-hold work, or old projects unless Charles recently reopened them.
 - No "test this sometime" unless it is blocking something Charles is actively trying to ship.
 - No nudges based only on one vague mention, weak inference, or your desire to be helpful.
+- Do not nudge Charles about making Hermes more proactive, adding buttons, feedback schemas, or other meta-Hermes improvements from this cron; those belong in the active chat/PR workflow, not random proactive messages.
+- Prefer real-world operational signals over conversation meta: WFG/source quality shifts, broken jobs, waiting blockers, deadlines, customer-impacting issues, or a concrete draft/synthesis opportunity.
 
 Safety policy:
 - Send at most one proactive message.
@@ -490,6 +720,9 @@ def collect_proactive_signals(
         "available_access": [
             "local Hermes session history (state.db)",
             "local Hermes cron job metadata",
+            "local Hermes profile state files (proactive-state.md, HEARTBEAT.md)",
+            "local Hermes logs for health signals",
+            "optional profile-local proactive/signals.json for user-specific scanners",
             "built-in memory/user preferences available to the judge",
         ],
         "boundaries": {
@@ -500,6 +733,7 @@ def collect_proactive_signals(
             "external_send_allowed_from_cron": False,
         },
         "recent_sessions": [],
+        "assistant_context": _profile_context_snapshot(),
         "signals": [],
         "suppressed_topics": [],
         "scan_errors": [],
@@ -508,11 +742,20 @@ def collect_proactive_signals(
     seen: set[tuple] = set()
 
     def add_signal(signal: Dict[str, Any]) -> None:
+        signal = dict(signal)
+        signal.setdefault("score", _signal_score(signal))
         key = _signal_key(signal)
         if key in seen:
             return
         seen.add(key)
         report["signals"].append(signal)
+
+    for signal in _signals_from_profile_context(report["assistant_context"]):
+        add_signal(signal)
+    for signal in _custom_profile_signals():
+        add_signal(signal)
+    for signal in _log_health_signals():
+        add_signal(signal)
 
     try:
         from hermes_state import SessionDB
@@ -566,22 +809,24 @@ def collect_proactive_signals(
                 if _looks_machine_text(snippet) and not context_text:
                     continue
                 content = context_text if _looks_machine_text(snippet) else (snippet or context_text)
-                if not content:
+                if not content or _looks_meta_proactivity_text(content):
                     continue
                 add_signal(
                     {
                         "kind": bucket["kind"],
+                        "area": bucket.get("area"),
                         "mode": bucket["mode"],
                         "reason": bucket["reason"],
                         "session_id": match.get("session_id"),
                         "source": match.get("source"),
                         "timestamp": _iso(ts),
                         "excerpt": _clip(content),
+                        "score": bucket.get("score"),
                     }
                 )
-                if len(report["signals"]) >= 12:
+                if len(report["signals"]) >= 80:
                     break
-            if len(report["signals"]) >= 12:
+            if len(report["signals"]) >= 80:
                 break
 
         try:
@@ -631,6 +876,7 @@ def collect_proactive_signals(
                 add_signal(
                     {
                         "kind": "cron_failure",
+                        "area": "system_health",
                         "mode": "already_checked",
                         "reason": "scheduled job reports an error or failed delivery",
                         "job_id": job.get("id"),
@@ -638,6 +884,7 @@ def collect_proactive_signals(
                         "state": job.get("state"),
                         "last_status": job.get("last_status"),
                         "excerpt": _clip(last_error or delivery_error or "cron job failed"),
+                        "score": _SIGNAL_KIND_SCORE["cron_failure"],
                     }
                 )
     except Exception as exc:
@@ -645,7 +892,7 @@ def collect_proactive_signals(
 
     # Keep prompt injection compact and stable.
     report["recent_sessions"] = report["recent_sessions"][:10]
-    report["signals"] = report["signals"][:12]
+    report["signals"] = _rank_signals(report["signals"])[:12]
     report["suppressed_topics"] = report["suppressed_topics"][:5]
     report["wakeAgent"] = bool(report["signals"] or report["scan_errors"])
     return report

@@ -27,6 +27,10 @@ def test_build_reflection_prompt_is_safe_and_silent_by_default():
     assert "meeting notes" in prompt
     assert "Silence is the correct answer unless the best candidate clears the bar" in prompt
     assert "No generic summaries, status theater" in prompt
+    assert "meta-Hermes" in prompt
+    assert "WFG/source quality shifts" in prompt
+    assert "smart question" in prompt
+    assert "family/personal logistics" in prompt
     assert "Would Charles plausibly reply" in prompt
 
 
@@ -86,6 +90,138 @@ def test_collect_proactive_signals_returns_structured_scan(monkeypatch):
     rendered = proactive.render_signal_scan(report)
     assert "## Proactive signal scan" in rendered
     assert json.loads(rendered.splitlines()[-1]) == {"wakeAgent": True}
+
+
+def test_collect_proactive_signals_ignores_meta_proactivity_chatter(monkeypatch):
+    now = time.time()
+
+    class FakeDB:
+        def list_sessions_rich(self, **kwargs):
+            return [
+                {
+                    "id": "meta-session",
+                    "source": "telegram",
+                    "title": "Making Hermes proactive",
+                    "last_active": now,
+                    "preview": "Add More Info and Not useful feedback buttons",
+                }
+            ]
+
+        def search_messages(self, query, **kwargs):
+            if "want me" in query or "More Info" in query:
+                return [
+                    {
+                        "session_id": "meta-session",
+                        "source": "telegram",
+                        "timestamp": now,
+                        "snippet": "Add Do it, More Info, Not useful, and Don't nudge this buttons to proactive messages",
+                    }
+                ]
+            return []
+
+    monkeypatch.setitem(sys.modules, "hermes_state", types.SimpleNamespace(SessionDB=FakeDB))
+    monkeypatch.setattr(proactive, "list_jobs", lambda include_disabled=True: [])
+
+    report = proactive.collect_proactive_signals(lookback_days=2, max_sessions=5)
+
+    assert report["signals"] == []
+    assert report["wakeAgent"] is False
+
+
+def test_collect_proactive_signals_surfaces_profile_decisions(tmp_path, monkeypatch):
+    (tmp_path / "proactive-state.md").write_text(
+        "# State\n\n## Blocked / Needs Decision\n- Choose whether to ship the dashboard as a draft PR or split it first.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "HEARTBEAT.md").write_text("Ask smart questions when useful.", encoding="utf-8")
+
+    class FakeDB:
+        def list_sessions_rich(self, **kwargs):
+            return []
+
+        def search_messages(self, query, **kwargs):
+            return []
+
+    monkeypatch.setattr(proactive, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setitem(sys.modules, "hermes_state", types.SimpleNamespace(SessionDB=FakeDB))
+    monkeypatch.setattr(proactive, "list_jobs", lambda include_disabled=True: [])
+
+    report = proactive.collect_proactive_signals(lookback_days=2, max_sessions=5)
+
+    assert report["wakeAgent"] is True
+    assert report["assistant_context"]["proactive_state"]
+    assert report["signals"][0]["kind"] == "state_decision_needed"
+    assert report["signals"][0]["mode"] == "ask_smart_question"
+    assert "dashboard" in report["signals"][0]["excerpt"]
+
+
+def test_collect_proactive_signals_ranks_cron_failures_over_content(monkeypatch):
+    now = time.time()
+
+    class FakeDB:
+        def list_sessions_rich(self, **kwargs):
+            return []
+
+        def search_messages(self, query, **kwargs):
+            if "meeting notes" in query:
+                return [
+                    {
+                        "session_id": "content",
+                        "source": "telegram",
+                        "timestamp": now,
+                        "snippet": "meeting notes include a decent content opportunity",
+                    }
+                ]
+            return []
+
+    monkeypatch.setitem(sys.modules, "hermes_state", types.SimpleNamespace(SessionDB=FakeDB))
+    monkeypatch.setattr(proactive, "list_jobs", lambda include_disabled=True: [
+        {"id": "bad", "name": "Broken job", "last_error": "delivery failed", "state": "scheduled"}
+    ])
+
+    report = proactive.collect_proactive_signals(lookback_days=2, max_sessions=5)
+
+    assert report["signals"][0]["kind"] == "cron_failure"
+    assert {signal["kind"] for signal in report["signals"]} >= {"cron_failure", "content_opportunity"}
+
+
+def test_collect_proactive_signals_loads_profile_local_custom_signals(tmp_path, monkeypatch):
+    signal_dir = tmp_path / "proactive"
+    signal_dir.mkdir()
+    (signal_dir / "signals.json").write_text(
+        json.dumps(
+            {
+                "signals": [
+                    {
+                        "kind": "calendar_question",
+                        "area": "calendar",
+                        "mode": "ask_smart_question",
+                        "reason": "upcoming meeting needs a prep choice",
+                        "excerpt": "Tomorrow's ops meeting has no agenda; ask whether to draft a 3-bullet prep note.",
+                        "score": 88,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeDB:
+        def list_sessions_rich(self, **kwargs):
+            return []
+
+        def search_messages(self, query, **kwargs):
+            return []
+
+    monkeypatch.setattr(proactive, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setitem(sys.modules, "hermes_state", types.SimpleNamespace(SessionDB=FakeDB))
+    monkeypatch.setattr(proactive, "list_jobs", lambda include_disabled=True: [])
+
+    report = proactive.collect_proactive_signals(lookback_days=2, max_sessions=5)
+
+    assert report["signals"][0]["kind"] == "calendar_question"
+    assert report["signals"][0]["area"] == "calendar"
+    assert "ops meeting" in report["signals"][0]["excerpt"]
 
 
 def test_proactive_ledger_suppresses_recently_nudged_signal(tmp_path, monkeypatch):
