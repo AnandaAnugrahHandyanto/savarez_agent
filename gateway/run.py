@@ -5164,7 +5164,7 @@ class GatewayRunner:
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
-            _resolved_model = getattr(agent, "model", None) if agent else None
+            _resolved_model = agent_result.get("model") if isinstance(agent_result, dict) else None
             _resp_len = len(response)
             logger.info(
                 "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars model=%s",
