@@ -1024,10 +1024,16 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     # don't clobber each other's targets (os.environ is process-global).
     from gateway.session_context import set_session_vars, clear_session_vars, _VAR_MAP
 
+    # Cron execution is an internal scheduler context, not a live inbound
+    # gateway message from the stored delivery origin. Do not seed the
+    # gateway sender identity from ``origin`` here: origin is often a group
+    # chat, and access-control filtering would then strip restricted toolsets
+    # (web/file/terminal) from otherwise-authorized scheduled jobs. Delivery
+    # routing is handled separately via HERMES_CRON_AUTO_DELIVER_* below.
     _ctx_tokens = set_session_vars(
-        platform=origin["platform"] if origin else "",
-        chat_id=str(origin["chat_id"]) if origin else "",
-        chat_name=origin.get("chat_name", "") if origin else "",
+        platform="",
+        chat_id="",
+        chat_name="",
     )
     _cron_delivery_vars = (
         "HERMES_CRON_AUTO_DELIVER_PLATFORM",
