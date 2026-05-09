@@ -92,7 +92,8 @@ def test_environment_variable_in_entry_is_expanded(isolated_hermes_home, monkeyp
 
 def test_tilde_in_entry_is_expanded(isolated_hermes_home):
     home, root = isolated_hermes_home
-    # Path.home() is patched to tmp_path by the fixture.
+    # The fixture sets HOME=tmp_path; get_external_skills_dirs() expands `~`
+    # via os.path.expanduser(), which on POSIX consults the HOME env var.
     target = root / "tilde_target"
     target.mkdir()
 
