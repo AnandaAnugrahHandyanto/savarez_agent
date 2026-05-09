@@ -218,3 +218,7 @@ def safe_redirect_url(
             exc_info=True,
         )
         return fallback_url
+
+
+# Alias for compatibility (some codebases may use camelCase naming)
+getSafeRedirect = safe_redirect_url

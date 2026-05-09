@@ -417,3 +417,20 @@ class TestIntegrationScenarios:
             fallback_url="/",
         )
         assert result == "/"
+
+
+class TestAliases:
+    """Test function aliases."""
+    
+    BASE_URL = "https://app.example.com"
+    
+    def test_getSafeRedirect_alias(self):
+        from tools.redirect_safety import getSafeRedirect
+        
+        # Verify the alias works
+        result = getSafeRedirect("/dashboard", self.BASE_URL)
+        assert result == "https://app.example.com/dashboard"
+        
+        # Verify it blocks javascript: URLs
+        result = getSafeRedirect("javascript:alert(1)", self.BASE_URL)
+        assert result == "/"
