@@ -177,7 +177,11 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     )
     runner.adapters = {}
     runner._voice_mode = {}
-    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.hooks = SimpleNamespace(
+        emit=AsyncMock(),
+        emit_collect=AsyncMock(return_value=[]),
+        loaded_hooks=False,
+    )
 
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = session_entry
@@ -262,7 +266,24 @@ async def send_and_capture(adapter, text: str, platform: Platform, **event_kwarg
     event = make_event(platform, text, **event_kwargs)
     adapter.send.reset_mock()
     await adapter.handle_message(event)
-    await asyncio.sleep(0.3)
+    # ``handle_message`` returns after spawning ``_process_message_background``
+    # for normal turns — side effects (e.g. ``session_store.reset_session``)
+    # happen inside that task. A fixed sleep flakes on slow CI runners.
+    session_key = build_session_key(
+        event.source,
+        group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
+        thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
+    )
+    task = getattr(adapter, "_session_tasks", {}).get(session_key)
+    if task is not None and hasattr(task, "done"):
+        if not task.done():
+            try:
+                await asyncio.wait_for(task, timeout=120.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError, RuntimeError):
+                await asyncio.sleep(0.3)
+    else:
+        # Inline bypass dispatch (/new while active, etc.) completes before return.
+        await asyncio.sleep(0.05)
     return adapter.send
 
 
