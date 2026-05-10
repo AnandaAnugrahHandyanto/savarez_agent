@@ -79,6 +79,35 @@ def test_dispatch_rejects_non_object_params():
     }
 
 
+def test_session_info_includes_profile_provider_and_title(monkeypatch):
+    class _Db:
+        def get_session_title(self, _session_key):
+            return "db title"
+
+    monkeypatch.setattr(server, "_get_db", lambda: _Db())
+    monkeypatch.setattr(server, "_active_profile_name", lambda: "coder")
+
+    agent = types.SimpleNamespace(
+        model="anthropic/claude-sonnet-4",
+        provider="anthropic",
+        reasoning_config={"enabled": True, "effort": "high"},
+        service_tier=None,
+        session_id="sess-123",
+        tools=[],
+        _cached_system_prompt="",
+    )
+
+    info = server._session_info(
+        agent,
+        {"session_key": "sess-123", "pending_title": "Draft title"},
+    )
+
+    assert info["profile"] == "coder"
+    assert info["provider"] == "anthropic"
+    assert info["session_key"] == "sess-123"
+    assert info["session_title"] == "Draft title"
+
+
 def test_voice_toggle_returns_configured_record_key(monkeypatch):
     monkeypatch.setattr(
         server,
