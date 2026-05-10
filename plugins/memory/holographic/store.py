@@ -175,6 +175,10 @@ class MemoryStore:
                 row = self._conn.execute(
                     "SELECT fact_id FROM facts WHERE content = ?", (content,)
                 ).fetchone()
+                if row is None:
+                    raise RuntimeError(
+                        "IntegrityError on insert but no matching row found"
+                    )
                 return int(row["fact_id"])
 
             # Entity extraction and linking
@@ -296,9 +300,14 @@ class MemoryStore:
             if content is not None:
                 self._compute_hrr_vector(fact_id, content)
             # Rebuild bank for relevant category
-            cat = category or self._conn.execute(
-                "SELECT category FROM facts WHERE fact_id = ?", (fact_id,)
-            ).fetchone()["category"]
+            cat = category
+            if cat is None:
+                row = self._conn.execute(
+                    "SELECT category FROM facts WHERE fact_id = ?", (fact_id,)
+                ).fetchone()
+                if row is None:
+                    return False
+                cat = row["category"]
             self._rebuild_bank(cat)
 
             return True
