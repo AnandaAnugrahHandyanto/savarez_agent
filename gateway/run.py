@@ -5583,6 +5583,17 @@ class GatewayRunner:
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
 
+            # Slash command access control on the running-agent fast-path.
+            # Mirrors the cold-path gate further below so non-admin users
+            # can't bypass gating just because an agent happens to be busy.
+            # /status above is intentionally pre-gate so users always see
+            # session state. /help and /whoami fall under the always-allowed
+            # floor inside _check_slash_access.
+            if _evt_cmd and _cmd_def_inner is not None:
+                _denied = self._check_slash_access(source, _cmd_def_inner.name)
+                if _denied is not None:
+                    return _denied
+
             if _cmd_def_inner and _cmd_def_inner.name == "restart":
                 return await self._handle_restart_command(event)
 
@@ -5908,30 +5919,9 @@ class GatewayRunner:
         # ``user_allowed_commands`` (plus the always-allowed floor: /help,
         # /whoami). Plain chat is unaffected — only slash commands gate.
         if command and canonical and is_gateway_known_command(canonical):
-            from gateway.slash_access import policy_for_source as _policy_for_source
-            _policy = _policy_for_source(self.config, source)
-            if _policy.enabled and not _policy.can_run(source.user_id, canonical):
-                logger.info(
-                    "Slash command /%s denied for %s:%s (not admin, not in user_allowed_commands)",
-                    canonical,
-                    source.platform.value if source.platform else "?",
-                    source.user_id,
-                )
-                _allowed_preview = sorted(_policy.user_allowed_commands)
-                if _allowed_preview:
-                    _suffix = (
-                        "You can run: " +
-                        ", ".join(f"/{c}" for c in _allowed_preview[:12]) +
-                        ("…" if len(_allowed_preview) > 12 else "") +
-                        ". Use /whoami for the full list."
-                    )
-                else:
-                    _suffix = (
-                        "No slash commands are enabled for non-admins on this "
-                        "platform. Ask an admin to add you to allow_admin_from "
-                        "or to set user_allowed_commands."
-                    )
-                return f"⛔ /{canonical} is admin-only here. {_suffix}"
+            _denied = self._check_slash_access(source, canonical)
+            if _denied is not None:
+                return _denied
 
         # Fire the ``command:<canonical>`` hook for any recognized slash
         # command — built-in OR plugin-registered. Handlers can return a
@@ -7860,6 +7850,49 @@ class GatewayRunner:
         ]
 
         return "\n".join(lines)
+
+
+    def _check_slash_access(
+        self, source: SessionSource, canonical_cmd: str
+    ) -> Optional[str]:
+        """Return a denial message if ``source`` cannot run ``canonical_cmd``,
+        else None. Used by both the cold and running-agent dispatch paths
+        in ``_handle_message`` so admin/user gating can't be bypassed by
+        an in-flight agent.
+
+        Backward-compat semantics live in
+        :func:`gateway.slash_access.policy_for_source` — when the operator
+        hasn't set ``allow_admin_from`` for the scope, the policy returns
+        ``enabled=False`` and this method always returns None.
+        """
+        from gateway.slash_access import policy_for_source as _policy_for_source
+
+        if not canonical_cmd:
+            return None
+        policy = _policy_for_source(self.config, source)
+        if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
+            return None
+        logger.info(
+            "Slash command /%s denied for %s:%s (not admin, not in user_allowed_commands)",
+            canonical_cmd,
+            source.platform.value if source.platform else "?",
+            source.user_id,
+        )
+        allowed_preview = sorted(policy.user_allowed_commands)
+        if allowed_preview:
+            suffix = (
+                "You can run: "
+                + ", ".join(f"/{c}" for c in allowed_preview[:12])
+                + ("…" if len(allowed_preview) > 12 else "")
+                + ". Use /whoami for the full list."
+            )
+        else:
+            suffix = (
+                "No slash commands are enabled for non-admins on this "
+                "platform. Ask an admin to add you to allow_admin_from "
+                "or to set user_allowed_commands."
+            )
+        return f"⛔ /{canonical_cmd} is admin-only here. {suffix}"
 
 
     async def _handle_whoami_command(self, event: MessageEvent) -> str:
