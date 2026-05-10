@@ -434,6 +434,63 @@ def test_dispatch_skips_nonspawnable_into_separate_bucket(kanban_home, monkeypat
     assert not res.spawned
 
 
+def test_dispatch_skips_invalid_task_skills_and_keeps_ready(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="bad-skills", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET skills = ? WHERE id = ?",
+                ('["web", "translation"]', tid),
+            )
+        res = kb.dispatch_once(conn, dry_run=True)
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+    assert tid in res.skipped_invalid_skills
+    assert tid not in res.spawned
+    assert task.status == "ready"
+    assert events[-1].kind == "dispatch_skipped_invalid_skills"
+    assert events[-1].payload["invalid_skills"] == ["web"]
+
+
+def test_reset_task_failures_clears_counter_and_emits_event(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="retrying", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET consecutive_failures = 4, "
+                "last_failure_error = 'boom' WHERE id = ?",
+                (tid,),
+            )
+        assert kb.reset_task_failures(conn, tid) is True
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+    assert task.consecutive_failures == 0
+    assert task.last_failure_error is None
+    assert events[-1].kind == "edited"
+    assert events[-1].payload["failures_reset"] is True
+
+
+def test_edit_task_recovery_fields_clear_claim_on_non_running_task(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="stale", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'ready', claim_lock = ?, "
+                "claim_expires = ?, worker_pid = ? WHERE id = ?",
+                ("lock-1", 1234567890, 9999, tid),
+            )
+        assert kb.edit_task_recovery_fields(conn, tid, clear_claim=True) is True
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+    assert task.claim_lock is None
+    assert task.claim_expires is None
+    assert task.worker_pid is None
+    assert events[-1].kind == "edited"
+    assert events[-1].payload["claim_cleared"] is True
+
+
 def test_has_spawnable_ready_false_when_only_terminal_lanes(kanban_home, monkeypatch):
     """``has_spawnable_ready`` returns False when every ready task is
     assigned to a control-plane lane — used by gateway/CLI dispatchers

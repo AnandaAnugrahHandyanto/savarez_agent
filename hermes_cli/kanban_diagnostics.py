@@ -231,6 +231,27 @@ def _profile_exists_safe(name: Optional[str]) -> Optional[bool]:
         return None
 
 
+def _profile_toolsets_safe(name: Optional[str]) -> Optional[list[str]]:
+    if not name:
+        return None
+    try:
+        from hermes_cli import profiles
+        from hermes_cli import config as config_mod
+        from hermes_constants import _profile_override_context
+
+        profile_dir = profiles.get_profile_dir(name)
+        if not profile_dir.is_dir():
+            return None
+        with _profile_override_context(str(profile_dir)):
+            cfg = config_mod.read_raw_config()
+        toolsets = cfg.get("toolsets")
+        if not isinstance(toolsets, list):
+            return None
+        return [str(t).strip() for t in toolsets if str(t).strip()]
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Rule implementations
 # ---------------------------------------------------------------------------
@@ -660,6 +681,49 @@ def _rule_assignee_profile_not_found(task, events, runs, now, cfg) -> list[Diagn
     )]
 
 
+def _rule_profile_may_lack_core_toolsets(task, events, runs, now, cfg) -> list[Diagnostic]:
+    assignee = _task_field(task, "assignee")
+    status = _task_field(task, "status")
+    if not assignee or status not in ("triage", "todo", "ready", "running", "blocked"):
+        return []
+    if _profile_exists_safe(assignee) is not True:
+        return []
+    toolsets = _profile_toolsets_safe(assignee)
+    if not toolsets:
+        return []
+    lowered = {t.casefold() for t in toolsets}
+    if lowered not in ({"hermes-cli"}, {"hermes-cli", "kanban"}):
+        return []
+    return [Diagnostic(
+        kind="profile_may_lack_core_toolsets",
+        severity="warning",
+        title="Assigned profile may lack tools for Kanban work",
+        detail=(
+            f"Profile '{assignee}' appears to be configured with only "
+            "control-plane toolsets. That can be fine for routing or board "
+            "maintenance tasks, but research/coding/file tasks may need "
+            "additional toolsets on the assignee profile."
+        ),
+        actions=[
+            DiagnosticAction(
+                kind="cli_hint",
+                label=f"Review profile config: hermes -p {assignee} config show",
+                payload={"command": f"hermes -p {assignee} config show"},
+                suggested=True,
+            ),
+            DiagnosticAction(
+                kind="reassign",
+                label="Reassign to different profile",
+                payload={"reclaim_first": status == "running"},
+            ),
+        ],
+        first_seen_at=now,
+        last_seen_at=now,
+        count=1,
+        data={"assignee": assignee, "toolsets": sorted(lowered)},
+    )]
+
+
 def _rule_stale_running_claim(task, events, runs, now, cfg) -> list[Diagnostic]:
     if _task_field(task, "status") != "running":
         return []
@@ -714,6 +778,7 @@ _RULES: list[RuleFn] = [
     _rule_stale_running_claim,
     _rule_invalid_task_skills,
     _rule_assignee_profile_not_found,
+    _rule_profile_may_lack_core_toolsets,
     _rule_hallucinated_cards,
     _rule_prose_phantom_refs,
     _rule_repeated_failures,
@@ -728,6 +793,7 @@ DIAGNOSTIC_KINDS = (
     "stale_running_claim",
     "invalid_task_skills",
     "assignee_profile_not_found",
+    "profile_may_lack_core_toolsets",
     "hallucinated_cards",
     "prose_phantom_refs",
     "repeated_failures",

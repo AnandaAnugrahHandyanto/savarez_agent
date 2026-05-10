@@ -285,6 +285,30 @@ def test_missing_assignee_profile_silent_when_profile_exists(monkeypatch):
     assert kd.compute_task_diagnostics(task, [], []) == []
 
 
+def test_profile_may_lack_core_toolsets_warns(monkeypatch):
+    monkeypatch.setattr(kd, "_profile_exists_safe", lambda _name: True)
+    monkeypatch.setattr(
+        kd, "_profile_toolsets_safe", lambda _name: ["hermes-cli", "kanban"]
+    )
+    task = _task(status="ready", assignee="worker")
+    diags = kd.compute_task_diagnostics(task, [], [])
+    assert len(diags) == 1
+    d = diags[0]
+    assert d.kind == "profile_may_lack_core_toolsets"
+    assert d.severity == "warning"
+    assert d.data["toolsets"] == ["hermes-cli", "kanban"]
+
+
+def test_profile_may_lack_core_toolsets_silent_for_richer_profile(monkeypatch):
+    monkeypatch.setattr(kd, "_profile_exists_safe", lambda _name: True)
+    monkeypatch.setattr(
+        kd, "_profile_toolsets_safe",
+        lambda _name: ["hermes-cli", "web", "browser", "terminal", "file"],
+    )
+    task = _task(status="ready", assignee="worker")
+    assert kd.compute_task_diagnostics(task, [], []) == []
+
+
 def test_stale_running_claim_fires():
     now = int(time.time())
     task = _task(

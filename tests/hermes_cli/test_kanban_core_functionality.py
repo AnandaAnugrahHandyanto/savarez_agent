@@ -1785,6 +1785,86 @@ def test_cli_edit_clear_skills_rejects_result_fields(kanban_home):
     assert "--clear-skills cannot be combined" in out
 
 
+def test_cli_edit_reset_failures(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET consecutive_failures = 3, "
+                "last_failure_error = 'bad run' WHERE id = ?",
+                (tid,),
+            )
+    finally:
+        conn.close()
+
+    out = run_slash(f"edit {tid} --reset-failures")
+
+    assert "Edited" in out
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+    finally:
+        conn.close()
+    assert task.consecutive_failures == 0
+    assert task.last_failure_error is None
+    assert events[-1].kind == "edited"
+    assert events[-1].payload["failures_reset"] is True
+
+
+def test_cli_edit_reset_failures_rejects_result_fields(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+    finally:
+        conn.close()
+
+    out = run_slash(f"edit {tid} --reset-failures --result nope")
+
+    assert "--reset-failures cannot be combined" in out
+
+
+def test_cli_edit_clear_claim(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='ready', claim_lock=?, "
+                "claim_expires=?, worker_pid=? WHERE id=?",
+                ("lock-1", 1234567890, 9999, tid),
+            )
+    finally:
+        conn.close()
+
+    out = run_slash(f"edit {tid} --clear-claim")
+
+    assert "Edited" in out
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+    finally:
+        conn.close()
+    assert task.claim_lock is None
+    assert task.claim_expires is None
+    assert task.worker_pid is None
+    assert events[-1].payload["claim_cleared"] is True
+
+
+def test_cli_edit_clear_claim_rejects_result_fields(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+    finally:
+        conn.close()
+
+    out = run_slash(f"edit {tid} --clear-claim --result nope")
+
+    assert "--clear-claim cannot be combined" in out
+
+
 def test_cli_complete_bad_metadata_exits_nonzero(kanban_home):
     conn = kb.connect()
     try:
