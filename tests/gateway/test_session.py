@@ -167,6 +167,41 @@ class TestLocalCliFactory:
         assert source.chat_name == "CLI terminal"
 
 
+class TestTelegramGeneratedSessionTitles:
+    def _store_with_db(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        store._db = db
+        return store, db
+
+    def test_new_telegram_session_gets_fallback_title_immediately(self, tmp_path):
+        store, db = self._store_with_db(tmp_path)
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="dm",
+            user_id="42",
+            user_name="stevan",
+        )
+
+        entry = store.get_or_create_session(source)
+
+        title = db.get_session_title(entry.session_id)
+        assert title is not None
+        assert title.startswith("Telegram ")
+        assert entry.session_id.rsplit("_", 1)[-1][:6] in title
+
+    def test_new_local_session_stays_untitled(self, tmp_path):
+        store, db = self._store_with_db(tmp_path)
+        source = SessionSource(platform=Platform.LOCAL, chat_id="cli")
+
+        entry = store.get_or_create_session(source)
+
+        assert db.get_session_title(entry.session_id) is None
+
+
 class TestBuildSessionContextPrompt:
     def test_telegram_prompt_contains_platform_and_chat(self):
         config = GatewayConfig(
@@ -491,7 +526,7 @@ class TestLoadTranscriptCorruptLines:
         session_id = "corrupt_test"
         transcript_path = store.get_transcript_path(session_id)
         transcript_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(transcript_path, "w") as f:
+        with open(transcript_path, "w", encoding="utf-8") as f:
             f.write('{"role": "user", "content": "hello"}\n')
             f.write('{"role": "assistant", "content": "hi th')  # truncated
             f.write("\n")
@@ -506,7 +541,7 @@ class TestLoadTranscriptCorruptLines:
         session_id = "all_corrupt"
         transcript_path = store.get_transcript_path(session_id)
         transcript_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(transcript_path, "w") as f:
+        with open(transcript_path, "w", encoding="utf-8") as f:
             f.write("not json at all\n")
             f.write("{truncated\n")
 
