@@ -133,6 +133,30 @@ class TestEagerFallbackWithPool:
 
         agent._try_activate_fallback.assert_called_once()
 
+    def test_eager_fallback_fires_for_billing_despite_available_pool(self):
+        """402 billing should trigger eager fallback even when pool has available entries.
+
+        For billing errors (credit exhaustion), credential rotation won't help —
+        it's an account-level issue.  The pool check must be bypassed so the
+        fallback provider is activated immediately.  (#23138)
+        """
+        agent = self._make_agent(has_pool=True, pool_has_creds=True, has_fallback=True)
+
+        from agent.error_classifier import FailoverReason
+
+        is_rate_limited = True
+        is_billing = True  # classified.reason == FailoverReason.billing
+        if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
+            pool = agent._credential_pool
+            pool_may_recover = (
+                False if is_billing
+                else pool is not None and pool.has_available()
+            )
+            if not pool_may_recover:
+                agent._try_activate_fallback(reason=FailoverReason.billing)
+
+        agent._try_activate_fallback.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # 5. Full 429 rotation cycle via _recover_with_credential_pool

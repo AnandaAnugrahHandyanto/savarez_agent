@@ -10672,8 +10672,20 @@ class AIAgent:
                         # Don't eagerly fallback if credential pool rotation may
                         # still recover.  See _pool_may_recover_from_rate_limit
                         # for the single-credential-pool exception.  Fixes #11314.
-                        pool_may_recover = _pool_may_recover_from_rate_limit(
-                            self._credential_pool
+                        #
+                        # For billing errors (HTTP 402 / credit exhaustion),
+                        # always bypass the pool check: credential rotation was
+                        # already attempted in _recover_with_credential_pool()
+                        # above, and if we reach here every pool entry is
+                        # exhausted.  Pool cooldown-based "availability" is
+                        # irrelevant for account-level balance depletion — no
+                        # amount of waiting will restore credits.  (#23138)
+                        is_billing = classified.reason == FailoverReason.billing
+                        pool_may_recover = (
+                            False if is_billing
+                            else _pool_may_recover_from_rate_limit(
+                                self._credential_pool
+                            )
                         )
                         if not pool_may_recover:
                             self._emit_status("⚠️ Rate limited — switching to fallback provider...")
