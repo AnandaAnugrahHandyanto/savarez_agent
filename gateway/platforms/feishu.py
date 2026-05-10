@@ -2931,13 +2931,25 @@ class FeishuAdapter(BasePlatformAdapter):
                 text = f"{hint}\n\n{text}" if text else hint
 
         thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+        # Extract quote (reply-to) context — check both the structural parent
+        # fields and the quote object (used when users long-press → Quote in
+        # the Feishu/Lark client).  Fixes #22934.
+        _quote = getattr(message, "quote", None) or {}
+        _quote_id = _quote.get("message_id") or _quote.get("id") or None
+        _quote_text = _quote.get("text") or None
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)
             or getattr(message, "root_id", None)
+            or _quote_id
             or None
         )
-        reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
+        # Prefer the in-band quote text so we avoid an extra API round-trip
+        # when the user has already sent the quoted text in the event payload.
+        reply_to_text = (
+            _quote_text
+            or (await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None)
+        )
 
         sender_primary = (
             getattr(sender_id, "open_id", None)
