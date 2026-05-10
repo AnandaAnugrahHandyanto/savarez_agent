@@ -1,10 +1,13 @@
 #!/bin/bash
-# Railway entrypoint for Hermes Agent - no privilege dropping
+# Railway entrypoint for Hermes Agent
 
 set -e
 
 HERMES_HOME="${HERMES_HOME:-/opt/data}"
 INSTALL_DIR="/opt/hermes"
+
+# Allow root on Railway (Railway runs as root, can't use gosu)
+export HERMES_ALLOW_ROOT_GATEWAY=1
 
 echo "[hermes-railway] Starting Hermes Agent on Railway"
 echo "[hermes-railway] HERMES_HOME=$HERMES_HOME"
