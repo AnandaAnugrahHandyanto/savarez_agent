@@ -235,6 +235,16 @@ With streaming enabled (the default), you'll see brief inline indicators as tool
 | `API_SERVER_PORT` | `8642` | HTTP server port |
 | `API_SERVER_HOST` | `127.0.0.1` | Bind address |
 | `API_SERVER_KEY` | _(required)_ | Bearer token for auth. Match `OPENAI_API_KEY`. |
+| `API_SERVER_RUNTIME_MODE` | `server_agent` | `server_agent` runs a full server-side Hermes agent; `llm_proxy` forwards Chat Completions to the configured upstream LLM and returns raw `tool_calls` to the client for local execution. |
+
+### Runtime modes
+
+| Mode | Tool execution | Remote skills/memory | Use case |
+|------|----------------|----------------------|----------|
+| `server_agent` | API-server host | Yes | Open WebUI as a frontend for that Hermes runtime. |
+| `llm_proxy` | HTTP client / local Hermes | No | Use the remote machine as a pure model/provider proxy while keeping local workspace tools local. |
+
+`llm_proxy` is a compatibility step toward split-runtime workflows: it solves the immediate locality surprise for clients that already execute tools themselves, such as a local Hermes instance using the remote API server as `model.base_url`. It does **not** inject the remote Hermes skills or memory; full "remote brain, local hands" remains tracked in [#18715](https://github.com/NousResearch/hermes-agent/issues/18715).
 
 ### Open WebUI
 
