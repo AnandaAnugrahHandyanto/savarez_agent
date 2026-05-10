@@ -5605,7 +5605,7 @@ class HermesCLI:
             return
 
         sessions = self._session_db.list_sessions_rich(
-            source=None, exclude_sources=["tool"], limit=500
+            exclude_sources=["tool"], limit=500
         )
         if not sessions:
             print("No sessions found.")
@@ -8223,8 +8223,9 @@ class HermesCLI:
         compressions = compressor.compression_count
 
         msg_count = len(self.conversation_history)
+        model_name = agent.model if isinstance(agent.model, str) else ""
         cost_result = estimate_usage_cost(
-            agent.model,
+            model_name,
             CanonicalUsage(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,

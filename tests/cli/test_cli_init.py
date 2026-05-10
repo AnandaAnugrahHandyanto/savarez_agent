@@ -499,7 +499,6 @@ class TestSessionsCommand:
             assert cli.process_command("/sessions") is True
 
         cli._session_db.list_sessions_rich.assert_called_once_with(
-            source=None,
             exclude_sources=["tool"],
             limit=500,
         )
