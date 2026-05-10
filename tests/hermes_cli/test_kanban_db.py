@@ -450,8 +450,23 @@ def test_dispatch_skips_invalid_task_skills_and_keeps_ready(
     assert tid in res.skipped_invalid_skills
     assert tid not in res.spawned
     assert task.status == "ready"
-    assert events[-1].kind == "dispatch_skipped_invalid_skills"
-    assert events[-1].payload["invalid_skills"] == ["web"]
+    assert [e.kind for e in events] == ["created"]
+
+
+def test_dispatch_skips_invalid_task_skills_without_event_spam(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="bad-skills", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET skills = ? WHERE id = ?",
+                ('["web", "translation"]', tid),
+            )
+        res = kb.dispatch_once(conn, dry_run=False)
+        events = kb.list_events(conn, tid)
+    assert tid in res.skipped_invalid_skills
+    assert [e.kind for e in events] == ["created"]
 
 
 def test_reset_task_failures_clears_counter_and_emits_event(kanban_home):
@@ -475,18 +490,32 @@ def test_reset_task_failures_clears_counter_and_emits_event(kanban_home):
 def test_edit_task_recovery_fields_clear_claim_on_non_running_task(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="stale", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        assert run_id is not None
         with kb.write_txn(conn):
             conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = ?, "
-                "claim_expires = ?, worker_pid = ? WHERE id = ?",
-                ("lock-1", 1234567890, 9999, tid),
+                "claim_expires = ?, worker_pid = ?, last_heartbeat_at = ?, "
+                "current_run_id = ? WHERE id = ?",
+                ("lock-1", 1234567890, 9999, 1234567000, run_id, tid),
             )
         assert kb.edit_task_recovery_fields(conn, tid, clear_claim=True) is True
         task = kb.get_task(conn, tid)
         events = kb.list_events(conn, tid)
+        run_row = conn.execute(
+            "SELECT status, outcome, ended_at FROM task_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
     assert task.claim_lock is None
     assert task.claim_expires is None
     assert task.worker_pid is None
+    assert task.last_heartbeat_at is None
+    assert task.current_run_id is None
+    assert run_row["status"] == "reclaimed"
+    assert run_row["outcome"] == "reclaimed"
+    assert run_row["ended_at"] is not None
     assert events[-1].kind == "edited"
     assert events[-1].payload["claim_cleared"] is True
 

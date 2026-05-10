@@ -83,6 +83,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from toolsets import get_toolset_names
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -94,33 +96,11 @@ VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 # ``tasks.skills`` stores worker SKILL bundles that are forwarded to
 # ``hermes --skills ...``. Toolset names are a different config surface; when
 # they land here by mistake, worker startup eventually fails with
-# "Unknown skill(s): ...". Keep this list explicit and narrow so we reject the
-# common confusion without pretending to fully validate skill bundle existence.
-INVALID_TASK_SKILL_NAMES = frozenset({
-    "browser",
-    "clarify",
-    "code_execution",
-    "cronjob",
-    "debugging",
-    "delegation",
-    "discord",
-    "file",
-    "hermes-cli",
-    "kanban",
-    "memory",
-    "messaging",
-    "safe",
-    "search",
-    "session_search",
-    "skills",
-    "terminal",
-    "todo",
-    "tts",
-    "video",
-    "vision",
-    "web",
-    "yuanbao",
-})
+# "Unknown skill(s): ...". Resolve against the toolset registry so the
+# validation stays aligned with the actual shipped toolset surface.
+INVALID_TASK_SKILL_NAMES = frozenset(
+    str(name).strip().casefold() for name in get_toolset_names()
+)
 
 # A running task's claim is valid for 15 minutes; after that the next
 # dispatcher tick reclaims it.  Workers that outlive this window should call
@@ -2417,22 +2397,39 @@ def edit_task_recovery_fields(
         if clear_claim:
             if row["status"] == "running":
                 return False
-            if (
+            had_claim_state = not (
                 row["claim_lock"] is None
                 and row["claim_expires"] is None
                 and row["worker_pid"] is None
-            ):
+                and row["current_run_id"] is None
+            )
+            if not had_claim_state:
                 return True
+            run_id = row["current_run_id"]
+            if run_id is not None:
+                _end_run(
+                    conn, task_id,
+                    outcome="reclaimed", status="reclaimed",
+                    error="operator_clear_claim",
+                )
             conn.execute(
                 "UPDATE tasks SET claim_lock = NULL, claim_expires = NULL, "
-                "worker_pid = NULL WHERE id = ?",
+                "worker_pid = NULL, last_heartbeat_at = NULL, "
+                "current_run_id = NULL WHERE id = ?",
                 (task_id,),
             )
             _append_event(
                 conn, task_id, "edited",
-                {"fields": ["claim_lock", "claim_expires", "worker_pid"],
+                {
+                 "fields": [
+                     "claim_lock",
+                     "claim_expires",
+                     "worker_pid",
+                     "last_heartbeat_at",
+                     "current_run_id",
+                 ],
                  "claim_cleared": True},
-                run_id=row["current_run_id"],
+                run_id=run_id,
             )
             return True
         if clear_skills:
@@ -3712,11 +3709,6 @@ def dispatch_once(
             ]
             if invalid_skills:
                 result.skipped_invalid_skills.append(row["id"])
-                with write_txn(conn):
-                    _append_event(
-                        conn, row["id"], "dispatch_skipped_invalid_skills",
-                        {"invalid_skills": sorted(set(invalid_skills))},
-                    )
                 continue
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
