@@ -91,6 +91,37 @@ from typing import Any, Iterable, Optional
 VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "archived"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
+# ``tasks.skills`` stores worker SKILL bundles that are forwarded to
+# ``hermes --skills ...``. Toolset names are a different config surface; when
+# they land here by mistake, worker startup eventually fails with
+# "Unknown skill(s): ...". Keep this list explicit and narrow so we reject the
+# common confusion without pretending to fully validate skill bundle existence.
+INVALID_TASK_SKILL_NAMES = frozenset({
+    "browser",
+    "clarify",
+    "code_execution",
+    "cronjob",
+    "debugging",
+    "delegation",
+    "discord",
+    "file",
+    "hermes-cli",
+    "kanban",
+    "memory",
+    "messaging",
+    "safe",
+    "search",
+    "session_search",
+    "skills",
+    "terminal",
+    "todo",
+    "tts",
+    "video",
+    "vision",
+    "web",
+    "yuanbao",
+})
+
 # A running task's claim is valid for 15 minutes; after that the next
 # dispatcher tick reclaims it.  Workers that outlive this window should call
 # ``heartbeat_claim(task_id)`` periodically.  In practice most kanban
@@ -1172,6 +1203,42 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str]]:
+    """Normalize task skills and reject obvious toolset-name confusion."""
+    if skills is None:
+        return None
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    invalid: list[str] = []
+    for s in skills:
+        if not s:
+            continue
+        name = str(s).strip()
+        if not name:
+            continue
+        if "," in name:
+            raise ValueError(
+                f"skill name cannot contain comma: {name!r} "
+                f"(pass a list of separate names instead of a comma-joined string)"
+            )
+        lowered = name.casefold()
+        if lowered in INVALID_TASK_SKILL_NAMES:
+            if lowered not in invalid:
+                invalid.append(lowered)
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        cleaned.append(name)
+    if invalid:
+        raise ValueError(
+            "task skills must be SKILL bundle names, not toolset names. "
+            f"Invalid values: {', '.join(invalid)}. Configure toolsets on "
+            "the assignee profile instead."
+        )
+    return cleaned
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -1224,31 +1291,7 @@ def create_task(
         )
     parents = tuple(p for p in parents if p)
 
-    # Normalise + validate skills: strip whitespace, drop empties, dedupe
-    # (preserving order). Refuse commas inside a single name so we don't
-    # invisibly splatter a comma-joined string into one argv slot — the
-    # `hermes --skills X,Y` comma syntax is handled in the dispatcher,
-    # not here.
-    skills_list: Optional[list[str]] = None
-    if skills is not None:
-        cleaned: list[str] = []
-        seen: set[str] = set()
-        for s in skills:
-            if not s:
-                continue
-            name = str(s).strip()
-            if not name:
-                continue
-            if "," in name:
-                raise ValueError(
-                    f"skill name cannot contain comma: {name!r} "
-                    f"(pass a list of separate names instead of a comma-joined string)"
-                )
-            if name in seen:
-                continue
-            seen.add(name)
-            cleaned.append(name)
-        skills_list = cleaned
+    skills_list = _normalize_task_skills(skills)
 
     # Idempotency check — return the existing task instead of creating a
     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
@@ -2346,17 +2389,50 @@ def edit_completed_task_result(
     conn: sqlite3.Connection,
     task_id: str,
     *,
-    result: str,
+    result: Optional[str] = None,
     summary: Optional[str] = None,
     metadata: Optional[dict] = None,
+    clear_skills: bool = False,
 ) -> bool:
-    """Backfill the user-visible result for an already completed task."""
+    """Edit narrow recovery fields on a task.
+
+    Supported today:
+    * backfill result/summary/metadata on an already-completed task
+    * clear persisted ``skills`` on a non-running task
+    """
+    if not clear_skills and result is None:
+        raise ValueError("result is required unless clear_skills=True")
     handoff_summary = summary if summary is not None else result
     with write_txn(conn):
         row = conn.execute(
             "SELECT status FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
-        if not row or row["status"] != "done":
+        if not row:
+            return False
+        if clear_skills:
+            if row["status"] == "running":
+                return False
+            run_id = None
+            if row["status"] == "done":
+                run = conn.execute(
+                    """
+                    SELECT id FROM task_runs
+                     WHERE task_id = ?
+                       AND outcome = 'completed'
+                     ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC
+                     LIMIT 1
+                    """,
+                    (task_id,),
+                ).fetchone()
+                run_id = int(run["id"]) if run else None
+            conn.execute("UPDATE tasks SET skills = NULL WHERE id = ?", (task_id,))
+            _append_event(
+                conn, task_id, "edited",
+                {"fields": ["skills"], "skills_cleared": True},
+                run_id=run_id,
+            )
+            return True
+        if row["status"] != "done":
             return False
         conn.execute(
             "UPDATE tasks SET result = ? WHERE id = ?",

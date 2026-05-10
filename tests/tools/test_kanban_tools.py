@@ -112,6 +112,18 @@ def test_show_explicit_task_id(worker_env):
     assert d["task"]["id"] == other
 
 
+def test_create_rejects_toolset_names_in_skills(worker_env):
+    from tools import kanban_tools as kt
+    out = kt._handle_create({
+        "title": "bad child",
+        "assignee": "test-worker",
+        "skills": ["web", "browser"],
+    })
+    err = json.loads(out)
+    assert err.get("error")
+    assert "toolset names" in err["error"]
+
+
 def test_complete_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_complete({

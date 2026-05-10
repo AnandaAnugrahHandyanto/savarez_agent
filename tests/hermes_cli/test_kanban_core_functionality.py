@@ -1739,6 +1739,40 @@ def test_cli_edit_rejects_non_done_task(kanban_home):
     assert "not done" in out
 
 
+def test_cli_edit_clear_skills_on_non_running_task(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker", skills=["translation"])
+    finally:
+        conn.close()
+
+    out = run_slash(f"edit {tid} --clear-skills")
+
+    assert "Edited" in out
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+    finally:
+        conn.close()
+    assert task.skills is None
+    assert events[-1].kind == "edited"
+    assert events[-1].payload["skills_cleared"] is True
+
+
+def test_cli_edit_clear_skills_rejects_running_task(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker", skills=["translation"])
+        kb.claim_task(conn, tid)
+    finally:
+        conn.close()
+
+    out = run_slash(f"edit {tid} --clear-skills")
+
+    assert "cannot clear skills" in out
+
+
 def test_cli_complete_bad_metadata_exits_nonzero(kanban_home):
     conn = kb.connect()
     try:
@@ -2770,6 +2804,11 @@ def test_cli_create_without_skill_flag_leaves_none(kanban_home):
     with kb.connect() as conn:
         task = kb.get_task(conn, tid)
     assert task.skills is None
+
+
+def test_cli_create_rejects_toolset_names_in_skills(kanban_home):
+    out = run_slash("create 'bad-skill' --assignee x --skill web --json")
+    assert "toolset names" in out
 
 
 def test_cli_show_renders_skills(kanban_home):

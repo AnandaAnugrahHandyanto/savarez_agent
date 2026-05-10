@@ -80,6 +80,16 @@ def test_workspace_kind_validation(kanban_home):
         kb.create_task(conn, title="bad ws", workspace_kind="cloud")
 
 
+def test_create_task_rejects_toolset_names_in_skills(kanban_home):
+    with kb.connect() as conn, pytest.raises(ValueError, match="toolset names"):
+        kb.create_task(
+            conn,
+            title="bad skills",
+            assignee="alice",
+            skills=["web", "browser"],
+        )
+
+
 # ---------------------------------------------------------------------------
 # Links + dependency resolution
 # ---------------------------------------------------------------------------

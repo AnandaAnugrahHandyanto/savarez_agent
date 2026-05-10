@@ -406,12 +406,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
 
     p_edit = sub.add_parser(
         "edit",
-        help="Edit recovery fields on an already-completed task",
+        help="Edit recovery fields on a task",
     )
     p_edit.add_argument("task_id")
     p_edit.add_argument(
         "--result",
-        required=True,
+        default=None,
         help="Backfilled task result text for a done task",
     )
     p_edit.add_argument(
@@ -423,6 +423,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--metadata",
         default=None,
         help="JSON dict of structured facts to store on the latest completed run.",
+    )
+    p_edit.add_argument(
+        "--clear-skills",
+        action="store_true",
+        help="Clear persisted task skills on a non-running task.",
     )
 
     p_block = sub.add_parser("block", help="Mark one or more tasks blocked")
@@ -1037,25 +1042,29 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    with kb.connect() as conn:
-        task_id = kb.create_task(
-            conn,
-            title=args.title,
-            body=args.body,
-            assignee=args.assignee,
-            created_by=args.created_by or _profile_author(),
-            workspace_kind=ws_kind,
-            workspace_path=ws_path,
-            tenant=args.tenant,
-            priority=args.priority,
-            parents=tuple(args.parent or ()),
-            triage=bool(getattr(args, "triage", False)),
-            idempotency_key=getattr(args, "idempotency_key", None),
-            max_runtime_seconds=max_runtime,
-            skills=getattr(args, "skills", None) or None,
-            max_retries=max_retries,
-        )
-        task = kb.get_task(conn, task_id)
+    try:
+        with kb.connect() as conn:
+            task_id = kb.create_task(
+                conn,
+                title=args.title,
+                body=args.body,
+                assignee=args.assignee,
+                created_by=args.created_by or _profile_author(),
+                workspace_kind=ws_kind,
+                workspace_path=ws_path,
+                tenant=args.tenant,
+                priority=args.priority,
+                parents=tuple(args.parent or ()),
+                triage=bool(getattr(args, "triage", False)),
+                idempotency_key=getattr(args, "idempotency_key", None),
+                max_runtime_seconds=max_runtime,
+                skills=getattr(args, "skills", None) or None,
+                max_retries=max_retries,
+            )
+            task = kb.get_task(conn, task_id)
+    except ValueError as exc:
+        print(f"kanban: create: {exc}", file=sys.stderr)
+        return 2
     if getattr(args, "json", False):
         print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
     else:
@@ -1555,6 +1564,12 @@ def _cmd_complete(args: argparse.Namespace) -> int:
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:
+    if not getattr(args, "clear_skills", False) and args.result is None:
+        print(
+            "kanban: edit requires --result unless --clear-skills is used",
+            file=sys.stderr,
+        )
+        return 2
     raw_meta = getattr(args, "metadata", None)
     metadata = None
     if raw_meta:
@@ -1572,7 +1587,15 @@ def _cmd_edit(args: argparse.Namespace) -> int:
             result=args.result,
             summary=getattr(args, "summary", None),
             metadata=metadata,
+            clear_skills=bool(getattr(args, "clear_skills", False)),
         ):
+            if getattr(args, "clear_skills", False):
+                print(
+                    f"cannot clear skills on {args.task_id} "
+                    f"(unknown id or task is running)",
+                    file=sys.stderr,
+                )
+                return 1
             print(
                 f"cannot edit {args.task_id} (unknown id or task is not done)",
                 file=sys.stderr,
