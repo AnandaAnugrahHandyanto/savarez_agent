@@ -625,6 +625,12 @@ class SessionManager:
         except Exception:
             logger.debug("ACP session falling back to default provider resolution", exc_info=True)
 
+        # Pass the shared SessionDB so session_search works in ACP mode.
+        try:
+            kwargs["session_db"] = self.db
+        except Exception:
+            logger.debug("SessionDB unavailable for ACP agent init", exc_info=True)
+
         _register_task_cwd(session_id, cwd)
         agent = AIAgent(**kwargs)
         # ACP stdio transport requires stdout to remain protocol-only JSON-RPC.
