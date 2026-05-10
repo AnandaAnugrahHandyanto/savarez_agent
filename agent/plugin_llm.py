@@ -540,6 +540,56 @@ def _extract_text(response: Any) -> str:
     return ""
 
 
+def _resolve_attribution(
+    *,
+    provider_override: Optional[str],
+    model_override: Optional[str],
+    response: Any,
+) -> tuple[str, str]:
+    """Decide what to record as ``result.provider`` / ``result.model``.
+
+    Precedence:
+
+    1. Explicit overrides win — if the plugin asked for ``provider="x"``
+       or ``model="y"``, that's what we record (it's what the call
+       actually targeted).
+    2. Otherwise we ask the host for the current main provider/model
+       via :func:`_read_main_provider` / :func:`_read_main_model`, since
+       those are what ``call_llm`` resolves to when ``provider=None``
+       and ``model=None`` are passed through. They reflect runtime
+       overrides set by ``set_runtime_main()``.
+    3. ``response.model`` (if present) overrides the recorded model
+       string. Providers post-resolution often return a slightly
+       different model id than the request (e.g. ``gpt-4o`` →
+       ``gpt-4o-2024-08-06``); the plugin's audit log should reflect
+       what actually ran.
+    4. If everything above is empty, fall back to ``"auto"`` /
+       ``"default"`` so the result object has non-empty strings.
+    """
+    if provider_override:
+        provider = provider_override
+    else:
+        try:
+            from agent.auxiliary_client import _read_main_provider
+            provider = (_read_main_provider() or "").strip() or "auto"
+        except Exception:  # pragma: no cover — defensive
+            provider = "auto"
+
+    response_model = getattr(response, "model", None)
+    if isinstance(response_model, str) and response_model.strip():
+        model = response_model.strip()
+    elif model_override:
+        model = model_override
+    else:
+        try:
+            from agent.auxiliary_client import _read_main_model
+            model = (_read_main_model() or "").strip() or "default"
+        except Exception:  # pragma: no cover — defensive
+            model = "default"
+
+    return provider, model
+
+
 # ---------------------------------------------------------------------------
 # PluginLlm facade
 # ---------------------------------------------------------------------------
@@ -906,11 +956,12 @@ class PluginLlm:
             timeout=timeout,
             extra_body=merged_extra or None,
         )
-        return (
-            provider_override or "auto",
-            model_override or "default",
-            response,
+        provider, model = _resolve_attribution(
+            provider_override=provider_override,
+            model_override=model_override,
+            response=response,
         )
+        return provider, model, response
 
     async def _invoke_async(
         self,
@@ -949,11 +1000,12 @@ class PluginLlm:
             timeout=timeout,
             extra_body=merged_extra or None,
         )
-        return (
-            provider_override or "auto",
-            model_override or "default",
-            response,
+        provider, model = _resolve_attribution(
+            provider_override=provider_override,
+            model_override=model_override,
+            response=response,
         )
+        return provider, model, response
 
 
 # ---------------------------------------------------------------------------

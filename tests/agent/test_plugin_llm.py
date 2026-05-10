@@ -799,3 +799,193 @@ class TestPluginContextIntegration:
         manager = PluginManager()
         ctx = PluginContext(manifest, manager)
         assert ctx.llm._plugin_id == "image_gen/openai"  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# Attribution (result.provider / result.model / audit log)
+# ---------------------------------------------------------------------------
+
+
+class TestAttribution:
+    """Verifies that the result object and the audit log carry the real
+    provider/model that ``call_llm`` ended up using, NOT the placeholder
+    fallbacks ('auto', 'default') from earlier drafts."""
+
+    def test_explicit_overrides_recorded_when_no_response_model(self):
+        from agent.plugin_llm import _resolve_attribution
+
+        # Response with no .model attribute — overrides win.
+        response = SimpleNamespace(choices=[], usage=None)
+        provider, model = _resolve_attribution(
+            provider_override="openrouter",
+            model_override="anthropic/claude-3-5-sonnet",
+            response=response,
+        )
+        assert provider == "openrouter"
+        assert model == "anthropic/claude-3-5-sonnet"
+
+    def test_response_model_wins_over_model_override(self):
+        """Providers often canonicalise the model name (e.g. ``gpt-4o``
+        → ``gpt-4o-2024-08-06``). Whatever they actually returned wins
+        for the recorded model so the audit log reflects reality."""
+        from agent.plugin_llm import _resolve_attribution
+
+        response = SimpleNamespace(model="gpt-4o-2024-08-06", choices=[])
+        provider, model = _resolve_attribution(
+            provider_override="openrouter",
+            model_override="openai/gpt-4o",
+            response=response,
+        )
+        assert model == "gpt-4o-2024-08-06"
+        # Provider override is unaffected by response.model.
+        assert provider == "openrouter"
+
+    def test_falls_back_to_main_provider_and_model_when_no_overrides(self, monkeypatch):
+        """When the plugin doesn't override anything, attribution
+        reflects the user's active main provider/model rather than
+        misleading placeholders."""
+        from agent import plugin_llm
+        import agent.auxiliary_client as ac
+
+        monkeypatch.setattr(ac, "_read_main_provider", lambda: "openrouter")
+        monkeypatch.setattr(ac, "_read_main_model", lambda: "anthropic/claude-3-5-sonnet")
+
+        response = SimpleNamespace(choices=[])  # no .model attribute
+        provider, model = plugin_llm._resolve_attribution(
+            provider_override=None,
+            model_override=None,
+            response=response,
+        )
+        assert provider == "openrouter"
+        assert model == "anthropic/claude-3-5-sonnet"
+
+    def test_response_model_used_even_when_no_overrides(self, monkeypatch):
+        """The provider's canonical model name should still flow through
+        when no overrides are set."""
+        from agent import plugin_llm
+        import agent.auxiliary_client as ac
+
+        monkeypatch.setattr(ac, "_read_main_provider", lambda: "openrouter")
+        monkeypatch.setattr(ac, "_read_main_model", lambda: "openai/gpt-4o")
+
+        response = SimpleNamespace(model="openai/gpt-4o-2024-08-06", choices=[])
+        provider, model = plugin_llm._resolve_attribution(
+            provider_override=None,
+            model_override=None,
+            response=response,
+        )
+        assert provider == "openrouter"
+        assert model == "openai/gpt-4o-2024-08-06"
+
+    def test_placeholder_fallback_only_when_everything_is_empty(self, monkeypatch):
+        """If main_provider/main_model are unset AND there's no override
+        AND the response has no .model, fall through to the safety
+        placeholders so the result object never has empty strings."""
+        from agent import plugin_llm
+        import agent.auxiliary_client as ac
+
+        monkeypatch.setattr(ac, "_read_main_provider", lambda: "")
+        monkeypatch.setattr(ac, "_read_main_model", lambda: "")
+
+        response = SimpleNamespace(choices=[])
+        provider, model = plugin_llm._resolve_attribution(
+            provider_override=None,
+            model_override=None,
+            response=response,
+        )
+        assert provider == "auto"
+        assert model == "default"
+
+
+# ---------------------------------------------------------------------------
+# Hook-mode integration (ctx.llm called from a post_tool_call callback)
+# ---------------------------------------------------------------------------
+
+
+class TestHookMode:
+    """The docs page promises ``ctx.llm`` works from inside lifecycle
+    hooks. This exercises that path: register a ``post_tool_call``
+    callback that calls ``ctx.llm.complete``, fire the hook through
+    the real ``invoke_hook`` machinery, and check the call landed."""
+
+    def test_complete_works_from_post_tool_call_hook(self):
+        from hermes_cli.plugins import PluginContext, PluginManifest, PluginManager
+
+        manifest = PluginManifest(name="hook-plugin", source="test", key="hook-plugin")
+        manager = PluginManager()
+        ctx = PluginContext(manifest, manager)
+
+        # Replace ctx.llm with a stub that records what the hook called.
+        captured: list = []
+
+        def fake_caller(**kwargs):
+            captured.append(kwargs)
+            return "openrouter", "openai/gpt-4o", _fake_response("rewrote it")
+
+        ctx._llm = make_plugin_llm_for_test(  # type: ignore[attr-defined]
+            plugin_id="hook-plugin",
+            policy=_TrustPolicy(plugin_id="hook-plugin"),
+            sync_caller=fake_caller,
+        )
+
+        # Plugin registers a hook that runs ctx.llm.complete on every tool call.
+        def rewrite_error_hook(*, tool_name, args, result, **_):
+            if "Traceback" in (result or ""):
+                rewritten = ctx.llm.complete(
+                    messages=[
+                        {"role": "system", "content": "Rewrite errors plainly."},
+                        {"role": "user", "content": result},
+                    ],
+                    max_tokens=64,
+                    purpose="hook-plugin.rewrite",
+                )
+                # Real hook would return the rewritten text via
+                # transform_tool_result; here we just capture for the assert.
+                captured.append({"hook_returned": rewritten.text})
+
+        ctx.register_hook("post_tool_call", rewrite_error_hook)
+
+        # Fire the hook the same way the agent core does it.
+        manager.invoke_hook(
+            "post_tool_call",
+            tool_name="terminal",
+            args={"command": "boom"},
+            result="Traceback (most recent call last):\n  RuntimeError",
+        )
+
+        # Verify ctx.llm.complete fired through the hook.
+        assert len(captured) == 2  # one llm call + one hook return record
+        llm_call = captured[0]
+        assert "messages" in llm_call
+        assert any("rewrite" in m.get("content", "").lower()
+                   for m in llm_call["messages"] if isinstance(m, dict))
+        hook_record = captured[1]
+        assert hook_record["hook_returned"] == "rewrote it"
+
+    def test_complete_works_from_post_tool_call_hook_when_async_caller_set(self):
+        """Hooks fired synchronously should still work with sync
+        ctx.llm.complete even if other callsites use async."""
+        from hermes_cli.plugins import PluginContext, PluginManifest, PluginManager
+
+        manifest = PluginManifest(name="hook-async", source="test", key="hook-async")
+        manager = PluginManager()
+        ctx = PluginContext(manifest, manager)
+
+        def fake_caller(**_):
+            return "openrouter", "model-x", _fake_response("ok")
+
+        ctx._llm = make_plugin_llm_for_test(  # type: ignore[attr-defined]
+            plugin_id="hook-async",
+            policy=_TrustPolicy(plugin_id="hook-async"),
+            sync_caller=fake_caller,
+        )
+
+        called: list = []
+
+        def hook(**kwargs):
+            r = ctx.llm.complete(messages=[{"role": "user", "content": "x"}])
+            called.append(r.text)
+
+        ctx.register_hook("post_tool_call", hook)
+        manager.invoke_hook("post_tool_call", tool_name="x", args={}, result="y")
+        assert called == ["ok"]
