@@ -692,8 +692,8 @@ class TestConfigInheritance:
         assert result == base
         assert result is not base
 
-    def test_should_inherit_with_comment_header(self, tmp_path):
-        """Test inheritance detection with comment header."""
+    def test_should_inherit_with_explicit_true(self, tmp_path):
+        """Test inheritance detection with inherit: true YAML key."""
         from hermes_cli.config import _should_inherit
         from hermes_constants import get_default_config_path
 
@@ -701,9 +701,7 @@ class TestConfigInheritance:
         default_path.parent.mkdir(parents=True, exist_ok=True)
         default_path.write_text("model: anthropic/claude-sonnet-4\n")
         config_path = tmp_path / "config.yaml"
-        config_path.write_text(
-            "# This profile inherits from ~/.hermes/config.yaml\nmodel: anthropic/claude-opus-4\n"
-        )
+        config_path.write_text("inherit: true\nmodel: anthropic/claude-opus-4\n")
         inherit_from = _should_inherit(config_path)
         assert inherit_from == default_path
 
