@@ -503,9 +503,9 @@ class TestSendToPlatformChunking:
         assert all(call == [] for call in sent_calls[:-1])
         assert sent_calls[-1] == media
 
-    def test_matrix_media_uses_native_adapter_helper(self):
+    def test_matrix_media_uses_native_adapter_helper(self, tmp_path):
 
-        doc_path = Path("/tmp/test-send-message-matrix.pdf")
+        doc_path = tmp_path / "test-send-message-matrix.pdf"
         doc_path.write_bytes(b"%PDF-1.4 test")
 
         try:
@@ -531,7 +531,7 @@ class TestSendToPlatformChunking:
             doc_path.unlink(missing_ok=True)
 
     def test_matrix_text_only_uses_lightweight_path(self):
-        """Text-only Matrix sends should NOT go through the heavy adapter path."""
+        """Text-only Matrix sends stay lightweight when E2EE is disabled."""
         helper = AsyncMock()
         lightweight = AsyncMock(return_value={"success": True, "platform": "matrix", "chat_id": "!room:ex.com", "message_id": "$txt"})
         with patch("tools.send_message_tool._send_matrix_via_adapter", helper), \
@@ -539,7 +539,7 @@ class TestSendToPlatformChunking:
             result = asyncio.run(
                 _send_to_platform(
                     Platform.MATRIX,
-                    SimpleNamespace(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.com"}),
+                    SimpleNamespace(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.com", "encryption": False}),
                     "!room:ex.com",
                     "just text, no files",
                 )
@@ -548,6 +548,54 @@ class TestSendToPlatformChunking:
         assert result["success"] is True
         helper.assert_not_awaited()
         lightweight.assert_awaited_once()
+
+    def test_matrix_text_only_uses_adapter_when_encryption_enabled(self):
+        helper = AsyncMock(return_value={"success": True, "platform": "matrix", "chat_id": "!room:ex.com", "message_id": "$txt"})
+        lightweight = AsyncMock()
+        with patch("tools.send_message_tool._send_matrix_via_adapter", helper), \
+             patch("tools.send_message_tool._send_matrix", lightweight):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.MATRIX,
+                    SimpleNamespace(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.com", "encryption": True}),
+                    "!room:ex.com",
+                    "encrypted text",
+                )
+            )
+
+        assert result["success"] is True
+        helper.assert_awaited_once()
+        lightweight.assert_not_awaited()
+
+    def test_send_matrix_via_adapter_reuses_live_gateway_adapter(self):
+        calls = []
+
+        class FakeAdapter:
+            async def send(self, chat_id, message, metadata=None):
+                calls.append(("send", chat_id, message, metadata))
+                return SimpleNamespace(success=True, message_id="$live")
+
+        fake_runner = SimpleNamespace(adapters={Platform.MATRIX: FakeAdapter()})
+
+        with patch("gateway.run._gateway_runner_ref", return_value=fake_runner):
+            result = asyncio.run(
+                _send_matrix_via_adapter(
+                    SimpleNamespace(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.com", "encryption": True}),
+                    "!room:example.com",
+                    "hello from live adapter",
+                    thread_id="$thread",
+                )
+            )
+
+        assert result == {
+            "success": True,
+            "platform": "matrix",
+            "chat_id": "!room:example.com",
+            "message_id": "$live",
+        }
+        assert calls == [
+            ("send", "!room:example.com", "hello from live adapter", {"thread_id": "$thread"})
+        ]
 
     def test_send_matrix_via_adapter_sends_document(self, tmp_path):
         file_path = tmp_path / "report.pdf"
