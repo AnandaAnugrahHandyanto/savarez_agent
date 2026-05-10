@@ -64,14 +64,18 @@ class _SmokeSessionDB:
         self.messages: list[dict] = []
         self.proactive_rows: list[dict] = []
 
-    def get_messages_since(self, session_id: str, cutoff: float) -> list[dict]:
-        return [m for m in self.messages if m.get("ts", time.time()) >= cutoff]
+    def get_messages(self, session_id: str) -> list[dict]:
+        """Return all messages (PCL filters by timestamp internally)."""
+        return list(self.messages)
 
-    def get_proactive_sent(self, session_id: str, since_hours: int = 24) -> list[dict]:
-        return list(self.proactive_rows)
+    def get_meta(self, key: str):
+        """Return proactive sent record for rate-limit check."""
+        import json as _json
+        rows = [r for r in self.proactive_rows if key.endswith(r.get("session_id", ""))]
+        return _json.dumps(rows) if rows else None
 
-    def record_proactive_sent(self, session_id: str, payload: dict) -> None:
-        self.proactive_rows.append({"session_id": session_id, **payload})
+    def set_meta(self, key: str, value: str) -> None:
+        pass  # smoke test — no persistence needed
 
 
 def test_smoke_high_score_sends_natural_message_without_branding():
@@ -81,7 +85,7 @@ def test_smoke_high_score_sends_natural_message_without_branding():
         db.messages.append({
             "role": "user" if i % 2 == 0 else "assistant",
             "content": f"Message {i}: discussing soil carbon and regime detection work.",
-            "ts": base + i * 60,
+            "timestamp": base + i * 60,
         })
 
     graph_doc = _make_graph_json_five_nodes_30d()
@@ -146,7 +150,7 @@ def test_smoke_high_score_sends_natural_message_without_branding():
 
 def test_smoke_low_score_no_send():
     db = _SmokeSessionDB()
-    db.messages.append({"role": "user", "content": "hi", "ts": time.time()})
+    db.messages.append({"role": "user", "content": "hi", "timestamp": time.time()})
 
     cfg = MagicMock()
     cfg.get.side_effect = lambda k, d=None: {
