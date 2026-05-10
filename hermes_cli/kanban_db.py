@@ -3521,7 +3521,7 @@ def _record_task_failure(
                 )
             # Timeout/crash path's caller already emitted its own event.
     if blocked:
-        _maybe_fire_webhooks(conn, "blocked", task_id, run_id=run_id, summary=error[:500])
+        _maybe_fire_webhooks(conn, "gave_up", task_id, run_id=run_id, summary=error[:500])
     return blocked
 
 
@@ -4400,6 +4400,73 @@ def advance_notify_cursor(
 # Webhooks (per-board outbound HTTP notifications on terminal transitions)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Webhook secret encryption (Fernet, at-rest)
+# ---------------------------------------------------------------------------
+
+import base64
+
+_fernet_instance: Any = None
+
+
+def _webhook_key_path() -> Path:
+    return kanban_home() / ".kanban_webhook_key"
+
+
+def _webhook_fernet() -> Any:
+    """Return a lazily-initialized ``cryptography.fernet.Fernet``.
+
+    The key is stored at ``<kanban_home>/.kanban_webhook_key`` with
+    ``0o600`` permissions.  Generated on first use if absent.
+    """
+    global _fernet_instance
+    if _fernet_instance is not None:
+        return _fernet_instance
+    key_path = _webhook_key_path()
+    if key_path.exists():
+        key = key_path.read_text().strip()
+    else:
+        from cryptography.fernet import Fernet
+        key = Fernet.generate_key().decode("ascii")
+        key_path.write_text(key)
+        key_path.chmod(0o600)
+    from cryptography.fernet import Fernet
+    _fernet_instance = Fernet(key.encode("ascii"))
+    return _fernet_instance
+
+
+def _encrypt_webhook_secret(secret: str) -> str:
+    """Encrypt a raw webhook secret for at-rest storage."""
+    f = _webhook_fernet()
+    return f.encrypt(secret.encode("utf-8")).decode("ascii")
+
+
+def _decrypt_webhook_secret(cipher_text: Optional[str]) -> Optional[str]:
+    """Decrypt a webhook secret from DB storage.
+
+    Falls back to returning the raw value if decryption fails
+    (back-compat for pre-encryption rows).
+    """
+    if not cipher_text:
+        return None
+    f = _webhook_fernet()
+    try:
+        return f.decrypt(cipher_text.encode("ascii")).decode("utf-8")
+    except Exception:
+        # Likely a plaintext secret from before encryption was added.
+        return cipher_text
+
+
+def _get_webhook_secret_by_id(conn: sqlite3.Connection, webhook_id: int) -> Optional[str]:
+    """Return the decrypted secret for a specific webhook id."""
+    row = conn.execute(
+        "SELECT secret FROM kanban_webhooks WHERE id = ?", (int(webhook_id),)
+    ).fetchone()
+    if row is None or not row["secret"]:
+        return None
+    return _decrypt_webhook_secret(row["secret"])
+
+
 VALID_WEBHOOK_EVENTS = {"done", "blocked", "crashed", "timed_out", "gave_up"}
 
 
@@ -4414,11 +4481,12 @@ def add_webhook(
     if events is None:
         events = ["done", "blocked", "crashed", "timed_out"]
     ev_str = ",".join(events)
+    encrypted_secret = _encrypt_webhook_secret(secret) if secret else None
     with write_txn(conn):
         cur = conn.execute(
             "INSERT INTO kanban_webhooks (url, events, secret, created_at) "
             "VALUES (?, ?, ?, ?)",
-            (url, ev_str, secret, now),
+            (url, ev_str, encrypted_secret, now),
         )
     return int(cur.lastrowid or 0)
 
@@ -4453,19 +4521,23 @@ def get_webhooks_for_event(
 ) -> list[dict]:
     """Return webhooks that subscribe to ``event``.
 
-    Each row is a dict with ``id``, ``url``, ``secret`` (raw string).
+    Each row is a dict with ``id``, ``url``, ``secret`` (decrypted raw
+    string, or ``None`` if no secret).
     """
     rows = conn.execute(
-        "SELECT id, url, events, secret FROM kanban_webhooks"
+        "SELECT id, url, events, secret FROM kanban_webhooks WHERE events LIKE '%' || ? || '%'",
+        (event,),
     ).fetchall()
     out: list[dict] = []
     for r in rows:
         evs = {e.strip() for e in (r["events"] or "").split(",")}
         if event in evs:
+            raw_secret = r["secret"]
+            secret = _decrypt_webhook_secret(raw_secret) if raw_secret else None
             out.append({
                 "id": r["id"],
                 "url": r["url"],
-                "secret": r["secret"],
+                "secret": secret,
             })
     return out
 

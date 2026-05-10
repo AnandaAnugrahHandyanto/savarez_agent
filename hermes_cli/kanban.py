@@ -2028,12 +2028,14 @@ def _cmd_webhook(args: argparse.Namespace) -> int:
     if sub == "test":
         from hermes_cli import kanban_webhooks as kwh
         with kb.connect() as conn:
-            hooks = kb.list_webhooks(conn)
-        target = next((h for h in hooks if h["id"] == args.webhook_id), None)
+            secret = kb._get_webhook_secret_by_id(conn, args.webhook_id)
+            target = next(
+                (h for h in kb.list_webhooks(conn) if h["id"] == args.webhook_id),
+                None,
+            )
         if target is None:
             print(f"Webhook {args.webhook_id} not found", file=sys.stderr)
             return 1
-        secret = target.get("secret") or None
         payload = kwh.build_payload(
             event="test",
             board=kb.get_current_board(),

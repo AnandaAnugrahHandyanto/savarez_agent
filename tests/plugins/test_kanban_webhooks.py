@@ -302,3 +302,39 @@ def test_slash_webhook_add_and_list(kanban_home):
     assert "registered" in add_out.lower() or "webhook" in add_out.lower()
     list_out = run_slash("webhook list")
     assert "https://example.com/hook" in list_out
+
+
+def test_webhook_fires_on_gave_up(kanban_home, echo_server):
+    """Circuit breaker (gave_up) must fire a webhook when the task trips."""
+    url, received = echo_server
+    conn = kb.connect()
+    try:
+        kb.add_webhook(conn, url, events=["gave_up"], secret="sekrit")
+        tid = kb.create_task(conn, title="breaker test", assignee="x")
+        # Trip the breaker with failure_limit=1 (one failure = gave_up).
+        kb._record_task_failure(
+            conn, tid, error="spawn failed",
+            outcome="spawn_failed", failure_limit=1,
+            release_claim=True, end_run=True,
+        )
+    finally:
+        conn.close()
+
+    # Wait for async delivery
+    for _ in range(50):
+        if received:
+            break
+        time.sleep(0.05)
+
+    assert len(received) == 1
+    req = received[0]
+    assert req["body"]["event"] == "gave_up"
+    assert req["body"]["task"]["id"] == tid
+    assert req["body"]["task"]["status"] == "blocked"
+    assert "delivery_id" in req["body"]
+    # Verify signature
+    sig_header = req["headers"].get("X-Kanban-Signature", "")
+    assert sig_header.startswith("sha256=")
+    body_bytes = json.dumps(req["body"], ensure_ascii=False, separators=(",", ":")).encode()
+    expected_sig = hmac.new(b"sekrit", body_bytes, hashlib.sha256).hexdigest()
+    assert sig_header == f"sha256={expected_sig}"

@@ -14,6 +14,7 @@ import logging
 import threading
 import time
 import urllib.request
+import uuid
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -127,6 +128,7 @@ def build_payload(
             "url": f"hermes://kanban/{board}/{task.get('id')}",
             "run_id": run_id,
         },
+        "delivery_id": str(uuid.uuid4()),
         "timestamp": int(time.time()),
     }
 

@@ -800,6 +800,7 @@ Sends a synthetic `"event": "test"` payload to webhook id 3 so you can verify co
     "url": "hermes://kanban/default/t_a1b2c3d4",
     "run_id": 42
   },
+  "delivery_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
   "timestamp": 1715350000
 }
 ```
@@ -809,6 +810,8 @@ Sends a synthetic `"event": "test"` payload to webhook id 3 so you can verify co
 * **Async** — fired in a daemon `threading.Thread` after the DB transaction commits.  Slow receivers cannot block the dispatcher.
 * **Retry** — up to 3 attempts with exponential backoff (1 s, 2 s, 4 s).  Only HTTP 2xx counts as success.
 * **Logging** — failures are written to the `kanban_webhooks` Python logger (captured in `~/.hermes/logs/agent.log` by default).
+* **Best-effort, at-least-once** — webhooks may be delivered more than once (e.g., a slow receiver times out after already processing the request, triggering a retry).  Every payload includes a `delivery_id` (UUID v4) so consumers can deduplicate.
+* **No shutdown guarantee** — because deliveries run in daemon threads, an in-flight webhook may be abruptly dropped if the Hermes process exits.  For critical workflows, pair webhooks with `hermes kanban watch` or poll `task_events` directly.
 * **No guarantee** — webhooks are best-effort.  For critical workflows, pair them with `hermes kanban watch` or poll `task_events` directly.
 
 ### Configuring in `config.yaml`
