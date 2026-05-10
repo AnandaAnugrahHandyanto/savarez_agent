@@ -3482,6 +3482,29 @@ def _convert_openai_images_to_anthropic(messages: list) -> list:
 
 
 
+def _needs_reasoning_content_fill(provider: str, model: str, base_url: str) -> bool:
+    """Return True when the target provider requires reasoning_content on assistant tool-call messages.
+
+    Covers direct Kimi/Moonshot, OpenRouter-routed Kimi, and DeepSeek thinking mode.
+    """
+    model_lower = (model or "").lower()
+    provider_lower = (provider or "").lower()
+    return (
+        provider_lower in {"kimi-coding", "kimi-coding-cn"}
+        or base_url_host_matches(base_url, "api.kimi.com")
+        or base_url_host_matches(base_url, "moonshot.ai")
+        or base_url_host_matches(base_url, "moonshot.cn")
+        or model_lower.startswith("moonshotai/")
+        or (
+            base_url_host_matches(base_url, "openrouter.ai")
+            and "kimi" in model_lower
+        )
+        or provider_lower == "deepseek"
+        or "deepseek" in model_lower
+        or base_url_host_matches(base_url, "api.deepseek.com")
+    )
+
+
 def _build_call_kwargs(
     provider: str,
     model: str,
@@ -3567,6 +3590,24 @@ def _build_call_kwargs(
         merged_extra.setdefault("tags", []).extend(["product=hermes-agent"])
     if merged_extra:
         kwargs["extra_body"] = merged_extra
+
+    # Kimi / Moonshot / DeepSeek thinking mode: assistant messages with
+    # tool_calls MUST include reasoning_content or the provider rejects
+    # the request with HTTP 400 on replay. Inject a single space when
+    # the field is missing or empty — same guard as run_agent.py.
+    if _needs_reasoning_content_fill(provider, model, base_url or ""):
+        filled_messages = []
+        for msg in messages:
+            if (
+                isinstance(msg, dict)
+                and msg.get("role") == "assistant"
+                and msg.get("tool_calls")
+            ):
+                existing = msg.get("reasoning_content")
+                if existing is None or existing == "":
+                    msg = {**msg, "reasoning_content": " "}
+            filled_messages.append(msg)
+        kwargs["messages"] = filled_messages
 
     return kwargs
 
