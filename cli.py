@@ -8195,8 +8195,9 @@ class HermesCLI:
         compressions = compressor.compression_count
 
         msg_count = len(self.conversation_history)
+        model_name = agent.model if isinstance(agent.model, str) else ""
         cost_result = estimate_usage_cost(
-            agent.model,
+            model_name,
             CanonicalUsage(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
