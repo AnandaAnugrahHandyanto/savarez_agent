@@ -160,12 +160,13 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
 
   useInput((ch, key) => {
     const lower = ch.toLowerCase()
+    const n = parseInt(ch, 10)
 
-    if (key.escape || (key.ctrl && lower === 'c') || lower === 'n') {
+    if (key.escape || (key.ctrl && lower === 'c') || lower === 'n' || n === 1) {
       return onCancel()
     }
 
-    if (lower === 'y') {
+    if (lower === 'y' || n === 2) {
       return onConfirm()
     }
 
@@ -185,8 +186,8 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
   const accent = req.danger ? t.color.error : t.color.warn
 
   const rows = [
-    { color: t.color.text, label: req.cancelLabel ?? 'No' },
-    { color: req.danger ? t.color.error : t.color.text, label: req.confirmLabel ?? 'Yes' }
+    { color: t.color.text, key: 'cancel', label: req.cancelLabel ?? 'No' },
+    { color: req.danger ? t.color.error : t.color.text, key: 'confirm', label: req.confirmLabel ?? 'Yes' }
   ]
 
   return (
@@ -206,13 +207,15 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
       <Text />
 
       {rows.map((row, i) => (
-        <Text key={row.label}>
+        <Text key={row.key}>
           <Text color={sel === i ? accent : t.color.muted}>{sel === i ? '▸ ' : '  '}</Text>
-          <Text color={sel === i ? row.color : t.color.muted}>{row.label}</Text>
+          <Text color={sel === i ? row.color : t.color.muted}>
+            {i + 1}. {row.label}
+          </Text>
         </Text>
       ))}
 
-      <Text color={t.color.muted}>↑/↓ select · Enter confirm · Y/N quick · Esc cancel</Text>
+      <Text color={t.color.muted}>↑/↓ select · Enter confirm · 1/2 or Y/N quick · Esc cancel</Text>
     </Box>
   )
 }
