@@ -118,11 +118,48 @@ kanban_block(reason="Rate limit key choice: IP (simple, NAT-unsafe) or user_id (
 
 The block message is what appears in the dashboard / gateway notifier. The comment is the deeper context a human reads when they open the task.
 
-## Heartbeats worth sending
+## Posting progress notes (the heartbeat note)
 
-Good heartbeats name progress: `"epoch 12/50, loss 0.31"`, `"scanned 1.2M/2.4M rows"`, `"uploaded 47/120 videos"`.
+`kanban_heartbeat(note=...)` is the lightweight mid-run progress channel — call it after each meaningful step (file written, test run, API call made, decision reached). The `kanban_slack_bridge` mirrors any non-empty note as a reply in the task's #tasks Slack thread (prefixed with 🫀), so Max can follow what you're doing without opening the dashboard.
 
-Bad heartbeats: `"still working"`, empty notes, sub-second intervals. Every few minutes max; skip entirely for tasks under ~2 minutes.
+Rules:
+
+- **One sentence, present-tense or past-tense verb.** "wrote rate_limiter.py, 14 tests pass" / "queried Stripe customers, found 3 with mismatched billing".
+- **Send after each meaningful step**, not on a clock. Three to ten notes per run is healthy for a non-trivial task; one or two is fine for a small one. Skip entirely for sub-2-minute tasks.
+- **Don't paste raw output, full file contents, stack traces, or stage-name boilerplate.** Notes are surface-area, not logs. If you need to record the full result of a step, that's `kanban_comment`, not heartbeat.
+- **Empty / note-less heartbeats are silent on Slack** but still update the dispatcher's liveness timestamp. Use them inside long subprocesses (training, encoding, multi-minute crawl) where you just need to keep the stale-detector happy without spamming the channel.
+
+Examples:
+
+```python
+# After a file write
+kanban_heartbeat(note="wrote /opt/data/scripts/foo.py — 4 functions, 80 lines")
+
+# After running tests
+kanban_heartbeat(note="14 tests pass on rate_limiter — 0 failures")
+
+# After making an API call
+kanban_heartbeat(note="created Calendly event — id evt_abc123, link in metadata")
+
+# After a decision
+kanban_heartbeat(note="picked Postgres over SQLite — multi-writer requirement decides it")
+
+# Inside a long crawl (no Slack noise; just liveness)
+kanban_heartbeat()
+```
+
+Bad heartbeat notes:
+
+```python
+kanban_heartbeat(note="still working")          # no information
+kanban_heartbeat(note="step 3")                 # no information
+kanban_heartbeat(note="Traceback (most recent call last):\n  File ...")  # use kanban_comment
+kanban_heartbeat(note="""```diff\n+ def foo()...""")                     # use kanban_comment
+```
+
+## Heartbeats during long subprocesses
+
+Inside a single long-running subprocess (training, encoding, multi-million-row scan) where you have no meaningful step boundaries to report, send a note-bearing heartbeat every few minutes with progress: `"epoch 12/50, loss 0.31"`, `"scanned 1.2M/2.4M rows"`, `"uploaded 47/120 videos"`. Notes during long ops are still mirrored to Slack — keep them short and quantitative.
 
 ## Retry scenarios
 
