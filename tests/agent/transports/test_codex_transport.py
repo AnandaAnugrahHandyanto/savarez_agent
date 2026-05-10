@@ -212,8 +212,10 @@ class TestCodexBuildKwargs:
             is_xai_responses=True,
             reasoning_config={"enabled": False},
         )
-        # When reasoning is disabled, do not send the reasoning key at all
+        # When reasoning is disabled, do not send the reasoning key at all.
+        # include is also absent: no reasoning tokens are generated, nothing to suppress.
         assert "reasoning" not in kw
+        assert "include" not in kw
 
     def test_xai_minimal_effort_clamped(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
@@ -266,9 +268,10 @@ class TestCodexBuildKwargs:
             assert "reasoning" not in kw, (
                 f"{model} must not receive a reasoning key (xAI rejects it)"
             )
+            assert kw.get("include") == []
 
     def test_xai_grok_3_non_mini_omits_reasoning_effort(self, transport):
-        """Plain grok-3 rejects reasoning.effort — only grok-3-mini accepts it."""
+        """Plain grok-3 rejects reasoning.effort."""
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="grok-3", messages=messages, tools=[],
@@ -276,9 +279,11 @@ class TestCodexBuildKwargs:
             reasoning_config={"effort": "medium"},
         )
         assert "reasoning" not in kw
+        assert kw.get("include") == []
 
     def test_xai_grok_3_mini_keeps_reasoning_effort(self, transport):
-        """grok-3-mini and -fast variants do accept the effort dial."""
+        """grok-3-mini and -fast variants no longer accept reasoning.effort per
+        official xAI docs (only grok-4.3 and grok-4.20-multi-agent are listed)."""
         messages = [{"role": "user", "content": "Hi"}]
         for model in ("grok-3-mini", "grok-3-mini-fast"):
             kw = transport.build_kwargs(
@@ -286,7 +291,8 @@ class TestCodexBuildKwargs:
                 is_xai_responses=True,
                 reasoning_config={"effort": "high"},
             )
-            assert kw.get("reasoning") == {"effort": "high"}
+            assert "reasoning" not in kw
+            assert kw.get("include") == []
 
     def test_xai_grok_4_20_0309_variants_omit_reasoning_effort(self, transport):
         """grok-4.20-0309-(non-)reasoning reject the effort dial.
@@ -301,16 +307,7 @@ class TestCodexBuildKwargs:
                 reasoning_config={"effort": "high"},
             )
             assert "reasoning" not in kw, f"{model} must not receive reasoning"
-
-    def test_xai_grok_4_20_multi_agent_keeps_reasoning_effort(self, transport):
-        """grok-4.20-multi-agent-0309 is the one grok-4.20 variant that accepts effort."""
-        messages = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="grok-4.20-multi-agent-0309", messages=messages, tools=[],
-            is_xai_responses=True,
-            reasoning_config={"effort": "low"},
-        )
-        assert kw.get("reasoning") == {"effort": "low"}
+            assert kw.get("include") == []
 
     def test_xai_grok_code_fast_omits_reasoning_effort(self, transport):
         """grok-code-fast-1 rejects reasoning.effort."""
@@ -321,24 +318,253 @@ class TestCodexBuildKwargs:
             reasoning_config={"effort": "high"},
         )
         assert "reasoning" not in kw
+        assert kw.get("include") == []
 
-    def test_xai_aggregator_prefix_stripped(self, transport):
-        """`x-ai/grok-3-mini` (OpenRouter-style slug) still resolves correctly."""
-        messages = [{"role": "user", "content": "Hi"}]
-        # Effort-capable
-        kw = transport.build_kwargs(
-            model="x-ai/grok-3-mini", messages=messages, tools=[],
+
+class TestCodexXaiReasoningEffortGating:
+    """Regression coverage for issue #23088.
+
+    Background: xAI's Responses API rejects ``reasoning.effort`` with HTTP 400
+    on most Grok models (e.g. ``grok-4-1-fast``). Only ``grok-4.3`` and
+    ``grok-4.20-multi-agent`` advertise support per xAI's docs. The transport
+    must drop both ``reasoning`` and ``reasoning.encrypted_content`` (include)
+    from the request when the selected model does not accept the effort dial.
+    The ``x-grok-conv-id`` header and other xAI-specific fields are unaffected.
+
+    These tests probe BEHAVIOR through ``build_kwargs`` using representative
+    model names. They deliberately avoid importing the internal allowlist
+    constant so the suite remains stable as the allowlist grows.
+    """
+
+    def _xai_kwargs(self, transport, model, reasoning_config=None, **extra):
+        return transport.build_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
             is_xai_responses=True,
-            reasoning_config={"effort": "high"},
+            reasoning_config=reasoning_config,
+            **extra,
+        )
+
+    # ── Bug-repro / regression guard ─────────────────────────────────────
+
+    def test_grok_4_1_fast_drops_reasoning_when_effort_configured(self, transport):
+        """Issue #23088 literal repro: this MUST fail if the fix is reverted."""
+        kw = self._xai_kwargs(
+            transport, "grok-4-1-fast", reasoning_config={"effort": "high"},
+        )
+        assert "reasoning" not in kw
+
+    def test_grok_4_1_fast_drops_reasoning_even_when_explicitly_enabled(self, transport):
+        """Capability beats user intent — even an explicit enabled+effort drops."""
+        kw = self._xai_kwargs(
+            transport,
+            "grok-4-1-fast",
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert "reasoning" not in kw
+
+    def test_grok_4_drops_reasoning(self, transport):
+        """grok-4 (base) is documented as rejecting reasoning.effort."""
+        kw = self._xai_kwargs(
+            transport, "grok-4", reasoning_config={"effort": "medium"},
+        )
+        assert "reasoning" not in kw
+
+    # ── Allowlist happy paths (both buckets) ─────────────────────────────
+
+    def test_grok_4_3_keeps_reasoning(self, transport):
+        kw = self._xai_kwargs(
+            transport, "grok-4.3", reasoning_config={"effort": "high"},
         )
         assert kw.get("reasoning") == {"effort": "high"}
-        # Effort-incapable
+        # Bare allowlist token (no suffix) also works at a lower effort level.
+        kw_low = self._xai_kwargs(
+            transport, "grok-4.3", reasoning_config={"effort": "low"},
+        )
+        assert kw_low.get("reasoning") == {"effort": "low"}
+
+    def test_grok_4_20_multi_agent_keeps_reasoning(self, transport):
+        """Real model id ``grok-4.20-multi-agent-0309`` (substring match)."""
+        kw = self._xai_kwargs(
+            transport, "grok-4.20-multi-agent-0309",
+            reasoning_config={"effort": "medium"},
+        )
+        assert kw.get("reasoning") == {"effort": "medium"}
+
+    def test_allowlisted_model_minimal_effort_still_clamped(self, transport):
+        """Effort clamping must apply on the allowlisted path too."""
+        kw = self._xai_kwargs(
+            transport, "grok-4.3", reasoning_config={"effort": "minimal"},
+        )
+        assert kw.get("reasoning") == {"effort": "low"}
+
+    # ── ``include`` field invariants ─────────────────────────────────────
+
+    def test_include_dropped_when_effort_gated_off(self, transport):
+        """When the model doesn't accept ``reasoning.effort``, the current fix
+        also drops the ``reasoning.encrypted_content`` include — both keys
+        move together in/out of the kwargs dict. This test pins that
+        coupling so a future change to decouple them is intentional, not
+        accidental, and so the suite catches the inverse mistake (sending
+        only one of the pair, or sending an empty include list).
+        """
+        kw = self._xai_kwargs(
+            transport, "grok-4-1-fast", reasoning_config={"effort": "high"},
+        )
+        assert "reasoning" not in kw
+        assert kw.get("include") == []
+
+    def test_include_empty_for_allowlisted_model(self, transport):
+        kw = self._xai_kwargs(
+            transport, "grok-4.3", reasoning_config={"effort": "high"},
+        )
+        assert kw.get("include") == []
+
+    def test_no_reasoning_or_encrypted_include_when_disabled_on_unsupported(self, transport):
+        kw = self._xai_kwargs(
+            transport, "grok-4-1-fast", reasoning_config={"enabled": False},
+        )
+        assert "reasoning" not in kw
+        assert "reasoning.encrypted_content" not in kw.get("include", [])
+
+    def test_no_reasoning_or_encrypted_include_when_disabled_on_supported(self, transport):
+        kw = self._xai_kwargs(
+            transport, "grok-4.3", reasoning_config={"enabled": False},
+        )
+        assert "reasoning" not in kw
+        assert "reasoning.encrypted_content" not in kw.get("include", [])
+
+    # ── Defaults (no reasoning_config supplied) ──────────────────────────
+
+    def test_unsupported_model_default_config_drops_reasoning(self, transport):
+        """No reasoning_config == default ``enabled=True, effort=medium``;
+        unsupported model should still drop the effort. The current fix also
+        drops the ``include`` (coupled in the xAI request shape)."""
+        kw = self._xai_kwargs(transport, "grok-4-1-fast")
+        assert "reasoning" not in kw
+        assert kw.get("include") == []
+
+    def test_supported_model_default_config_keeps_reasoning(self, transport):
+        kw = self._xai_kwargs(transport, "grok-4.3")
+        assert kw.get("reasoning") == {"effort": "medium"}
+
+    # ── Cross-provider isolation ─────────────────────────────────────────
+
+    def test_gate_does_not_apply_to_openai(self, transport):
+        """OpenAI / Codex backend is unaffected by xAI gating."""
         kw = transport.build_kwargs(
-            model="x-ai/grok-4-0709", messages=messages, tools=[],
-            is_xai_responses=True,
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            reasoning_config={"effort": "high"},
+        )
+        assert kw.get("reasoning", {}).get("effort") == "high"
+
+    def test_grok_model_without_xai_flag_takes_non_xai_branch(self, transport):
+        """Sanity: ``is_xai_responses=False`` means the xAI gate is bypassed —
+        the non-xAI Responses branch is responsible for whatever it sends."""
+        kw = transport.build_kwargs(
+            model="grok-4-1-fast",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            is_xai_responses=False,
+            reasoning_config={"effort": "high"},
+        )
+        # Non-xAI branch sends OpenAI-style reasoning. The point of this test
+        # is that the gating logic doesn't leak across the is_xai_responses
+        # boundary; assert the xAI gate didn't strip the reasoning here.
+        assert kw.get("reasoning") == {"effort": "high", "summary": "auto"}
+
+    # ── Robustness: casing, edge inputs ──────────────────────────────────
+
+    def test_uppercase_model_name_still_gated_correctly(self, transport):
+        """Helper lowercases the model name."""
+        kw = self._xai_kwargs(
+            transport, "GROK-4.3", reasoning_config={"effort": "high"},
+        )
+        assert kw.get("reasoning") == {"effort": "high"}
+
+    def test_mixed_case_unsupported_model_still_drops(self, transport):
+        kw = self._xai_kwargs(
+            transport, "Grok-4-1-Fast", reasoning_config={"effort": "high"},
+        )
+        assert "reasoning" not in kw
+
+    def test_empty_model_drops_reasoning_without_crash(self, transport):
+        kw = self._xai_kwargs(
+            transport, "", reasoning_config={"effort": "high"},
+        )
+        assert "reasoning" not in kw
+
+    def test_none_model_drops_reasoning_without_crash(self, transport):
+        kw = self._xai_kwargs(
+            transport, None, reasoning_config={"effort": "high"},
+        )
+        assert "reasoning" not in kw
+
+    # ── Boundary semantics: token boundary, not substring ────────────────
+
+    def test_numeric_lookalike_does_not_leak_into_allowlist(self, transport):
+        """``grok-4.30-something`` must NOT match the ``grok-4.3`` allowlist
+        entry. A naive substring check would misclassify it; the helper uses
+        an exact-or-hyphen-prefix boundary specifically to prevent this."""
+        kw = self._xai_kwargs(
+            transport, "grok-4.30-pro", reasoning_config={"effort": "high"},
+        )
+        assert "reasoning" not in kw
+
+    def test_openrouter_prefix_stripped_for_allowlisted(self, transport):
+        """``x-ai/grok-4.3`` (OpenRouter-style prefix) must still match."""
+        kw = self._xai_kwargs(
+            transport, "x-ai/grok-4.3", reasoning_config={"effort": "high"},
+        )
+        assert kw.get("reasoning") == {"effort": "high"}
+
+    def test_openrouter_prefix_stripped_for_unsupported(self, transport):
+        """``x-ai/grok-4-1-fast`` (OpenRouter-style prefix) must drop too."""
+        kw = self._xai_kwargs(
+            transport, "x-ai/grok-4-1-fast", reasoning_config={"effort": "high"},
+        )
+        assert "reasoning" not in kw
+
+    # ── Scope-creep guard: xAI side-effects untouched by the gate ────────
+
+    def test_xai_conv_id_header_set_even_when_effort_gated_off(self, transport):
+        """The fix targets ``reasoning`` only; conv-id plumbing must survive."""
+        kw = self._xai_kwargs(
+            transport,
+            "grok-4-1-fast",
+            reasoning_config={"effort": "high"},
+            session_id="conv-xyz",
+        )
+        assert kw.get("extra_headers", {}).get("x-grok-conv-id") == "conv-xyz"
+        assert "reasoning" not in kw  # still gated
+
+    def test_other_xai_kwargs_preserved_when_gated(self, transport):
+        kw = self._xai_kwargs(
+            transport,
+            "grok-4-1-fast",
+            reasoning_config={"effort": "high"},
+            session_id="abc",
+            max_tokens=1024,
+        )
+        assert kw.get("model") == "grok-4-1-fast"
+        assert kw.get("store") is False
+        assert kw.get("max_output_tokens") == 1024
+        assert kw.get("extra_body", {}).get("prompt_cache_key") == "abc"
+
+    # ── Future-proofing ──────────────────────────────────────────────────
+
+    def test_unknown_future_model_fails_closed(self, transport):
+        """Models not yet in the allowlist must default to NOT sending effort.
+        Failing closed avoids re-introducing #23088 every time xAI ships a model."""
+        kw = self._xai_kwargs(
+            transport, "grok-99-future-preview",
             reasoning_config={"effort": "high"},
         )
         assert "reasoning" not in kw
+        assert kw.get("include") == []
 
 
 class TestCodexValidateResponse:

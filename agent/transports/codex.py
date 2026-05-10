@@ -56,7 +56,7 @@ class ResponsesApiTransport(ProviderTransport):
             base_url_hostname: str | None — hostname for backend detection
             is_github_responses: bool — Copilot/GitHub models backend
             is_codex_backend: bool — chatgpt.com/backend-api/codex
-            is_xai_responses: bool — xAI/Grok backend
+            is_xai_responses: bool — xAI/Grok backend (reasoning.effort gated per model)
             github_reasoning_extra: dict | None — Copilot reasoning params
         """
         from agent.codex_responses_adapter import (

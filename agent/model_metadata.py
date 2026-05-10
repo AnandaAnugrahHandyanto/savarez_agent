@@ -249,20 +249,22 @@ DEFAULT_CONTEXT_LENGTHS = {
 }
 
 # xAI Grok models that ACCEPT the `reasoning.effort` parameter on
-# api.x.ai. Verified live against /v1/responses 2026-05-10:
+# api.x.ai. Per the official xAI reasoning docs (May 2026):
+#   https://docs.x.ai/developers/model-capabilities/text/reasoning
 #
-#   ACCEPTS effort:  grok-3-mini, grok-3-mini-fast, grok-4.20-multi-agent-0309,
-#                    grok-4.3
-#   REJECTS effort:  grok-3, grok-4, grok-4-0709, grok-4-fast-(non-)reasoning,
-#                    grok-4-1-fast-(non-)reasoning, grok-4.20-0309-(non-)reasoning,
-#                    grok-code-fast-1
+#   ACCEPTS effort:  grok-4.3, grok-4.20-multi-agent
+#   REJECTS effort:  all other Grok models (grok-3, grok-4, grok-4-0709,
+#                    grok-4-fast, grok-4-1-fast, grok-4.20-0309-*,
+#                    grok-code-fast, grok-3-mini, ...)
 #
 # REJECTS-side models still reason natively — they just don't expose an
 # effort dial — so callers should send no `reasoning` key at all rather
 # than a default `medium` (which 400s with "Model X does not support
 # parameter reasoningEffort").
+#
+# Matching is exact-or-hyphen-bounded: ``grok-4.3`` matches ``grok-4.3``
+# and ``grok-4.3-*`` but NOT ``grok-4.30-*`` (numeric lookalike guard).
 _GROK_EFFORT_CAPABLE_PREFIXES = (
-    "grok-3-mini",
     "grok-4.20-multi-agent",
     "grok-4.3",
 )
@@ -271,8 +273,8 @@ _GROK_EFFORT_CAPABLE_PREFIXES = (
 def grok_supports_reasoning_effort(model: str) -> bool:
     """Return True when an xAI Grok model accepts ``reasoning.effort``.
 
-    Allowlist by substring (matches both bare ``grok-3-mini`` and
-    aggregator-prefixed ``x-ai/grok-3-mini``). Conservative by design:
+    Allowlist by prefix (matches both bare ``grok-4.3`` and
+    aggregator-prefixed ``x-ai/grok-4.3``). Conservative by design:
     if a future Grok model isn't listed, we send no effort dial rather
     than 400.
     """
@@ -283,7 +285,10 @@ def grok_supports_reasoning_effort(model: str) -> bool:
     for sep in ("/",):
         if sep in name:
             name = name.rsplit(sep, 1)[-1]
-    return any(name.startswith(prefix) for prefix in _GROK_EFFORT_CAPABLE_PREFIXES)
+    return any(
+        name == prefix or name.startswith(prefix + "-")
+        for prefix in _GROK_EFFORT_CAPABLE_PREFIXES
+    )
 
 
 _CONTEXT_LENGTH_KEYS = (

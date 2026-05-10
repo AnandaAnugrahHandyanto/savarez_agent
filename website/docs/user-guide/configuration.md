@@ -1061,6 +1061,10 @@ agent:
 
 When unset (default), reasoning effort defaults to "medium" — a balanced level that works well for most tasks. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
 
+:::note xAI / Grok models
+xAI only accepts `reasoning.effort` on `grok-4.3` and `grok-4.20-multi-agent`; sending it to other Grok models (e.g. `grok-4-1-fast`) causes the request to fail with HTTP 400. Hermes detects this and silently drops the parameter for unsupported xAI models, so the configured value has no effect there but still applies to every other provider. See the [xAI provider notes](../integrations/providers.md#xai-grok--responses-api--prompt-caching) for details.
+:::
+
 You can also change the reasoning effort at runtime with the `/reasoning` command:
 
 ```

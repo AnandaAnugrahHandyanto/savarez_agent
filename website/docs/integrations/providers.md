@@ -329,7 +329,11 @@ When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoin
 
 ### xAI (Grok) — Responses API + Prompt Caching
 
-xAI is wired through the Responses API (`codex_responses` transport) for automatic reasoning support on Grok 4 models — no `reasoning_effort` parameter needed, the server reasons by default. Set `XAI_API_KEY` in `~/.hermes/.env` and pick xAI in `hermes model`, or drop `grok` as a shortcut into `/model grok-4-1-fast-reasoning`.
+xAI is wired through the Responses API (`codex_responses` transport) for automatic reasoning support on Grok 4 models. Set `XAI_API_KEY` in `~/.hermes/.env` and pick xAI in `hermes model`, or drop `grok` as a shortcut into `/model grok-4-1-fast-reasoning`.
+
+:::note `reasoning_effort` per-model gating
+xAI's API only accepts the `reasoning.effort` parameter on a subset of Grok models — currently `grok-4.3` and `grok-4.20-multi-agent` ([xAI reasoning docs](https://docs.x.ai/developers/model-capabilities/text/reasoning)). Other Grok models (e.g. `grok-4-1-fast`, `grok-4-fast-reasoning`) reject requests carrying it with HTTP 400. Hermes sends `reasoning.effort` only for the supported models and silently drops it (debug-logged) for the rest, so a configured `reasoning_effort` value still applies to non-xAI providers but has no effect when the active xAI model doesn't support it. Reasoning still happens server-side on Grok models that support it — the server just reasons at its default level — but Hermes also stops asking for `reasoning.encrypted_content` for non-allowlisted models, so streamed reasoning tokens won't be returned for them.
+:::
 
 SuperGrok subscribers can sign in with browser OAuth instead of using an API key — pick **xAI Grok OAuth (SuperGrok Subscription)** in `hermes model`, or run `hermes auth add xai-oauth`. The same OAuth bearer token is automatically reused by direct-to-xAI tools (TTS, image gen, video gen, transcription). See the [xAI Grok OAuth guide](../guides/xai-grok-oauth.md) for the full flow — and if Hermes runs on a remote host, also see [OAuth over SSH / Remote Hosts](../guides/oauth-over-ssh.md) for the required `ssh -L` tunnel.
 
