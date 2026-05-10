@@ -2653,6 +2653,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 if not target:
                     await query.answer(text="Unknown promote target.")
                     return
+                from hermes_constants import get_hermes_home
                 from hermes_cli.quick_actions import _candidate_id, promote_candidate
 
                 row = await asyncio.to_thread(
@@ -2660,6 +2661,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     identifier,
                     target=target,
                     actor=actor,
+                    home=get_hermes_home(),
                 )
                 cid = _candidate_id(row)
                 await query.answer(text=f"✅ Promoted {cid} → {target}")
@@ -2670,6 +2672,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="Invalid discard action.")
                     return
                 _, identifier = parts
+                from hermes_constants import get_hermes_home
                 from hermes_cli.quick_actions import _candidate_id, discard_candidate
 
                 row = await asyncio.to_thread(
@@ -2677,6 +2680,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     identifier,
                     reason="telegram_review_button",
                     actor=actor,
+                    home=get_hermes_home(),
                 )
                 cid = _candidate_id(row)
                 await query.answer(text=f"🗑️ Discarded {cid}")
