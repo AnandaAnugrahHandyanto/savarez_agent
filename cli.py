@@ -6429,24 +6429,16 @@ class HermesCLI:
             return False
 
     def _should_handle_prompting_command_inline(self, text: str, has_images: bool = False) -> bool:
-        """Return True for slash commands whose handlers synchronously prompt.
+        """Return True for legacy slash handlers that must run inline.
 
-        The prompt_toolkit input loop normally queues slash commands to the
-        process_loop worker thread.  That is fine for non-interactive commands,
-        but commands that call ``_prompt_text_input()`` must run on the UI
-        thread.  Otherwise the worker prints ``Choice [1/2/3]:`` while the
-        prompt_toolkit composer still owns stdin, so the user's ``1``/``2``/``3``
-        is submitted as the next chat message instead of answering the prompt.
+        Destructive session commands used to run inline because their old
+        ``input()`` confirmation prompt could not safely read from the worker
+        thread while prompt_toolkit owned stdin.  They now use the native TUI
+        approval panel when the app is live, so they should stay on the normal
+        worker queue: the UI thread remains free to handle the numbered
+        approve/deny keystrokes, and the worker blocks on a response queue.
         """
-        if not text or has_images or not _looks_like_slash_command(text):
-            return False
-        try:
-            from hermes_cli.commands import resolve_command
-            base = text.split(None, 1)[0].lower().lstrip('/')
-            cmd = resolve_command(base)
-            return bool(cmd and cmd.name in {"clear", "new", "undo", "reload-mcp"})
-        except Exception:
-            return False
+        return False
 
     def _should_handle_steer_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when /steer should be dispatched immediately while the agent is running.
@@ -8692,6 +8684,45 @@ class HermesCLI:
         if not confirm_required:
             return "once"
 
+        # When the prompt_toolkit app is active and this command is being
+        # processed on the worker thread, use the existing native approval
+        # panel instead of a blocking ``input()`` prompt.  The UI thread stays
+        # free to handle 1/2/3 keystrokes, while this worker waits on the
+        # panel's response queue.  Calling ``_prompt_text_input`` from the UI
+        # thread used to depend on prompt_toolkit's ``run_in_terminal`` being
+        # effectively synchronous; newer prompt_toolkit returns an awaitable,
+        # which made /clear render the warning as plain text and then submit
+        # the user's choice as the next chat message.
+        try:
+            app_active = bool(getattr(self, "_app", None))
+            in_main_thread = threading.current_thread() is threading.main_thread()
+        except Exception:
+            app_active = False
+            in_main_thread = True
+
+        if app_active and not in_main_thread:
+            verdict = self._approval_callback(
+                f"/{command}",
+                detail,
+                allow_permanent=True,
+                choices=["once", "always", "deny"],
+            )
+            if verdict == "deny":
+                return None
+            # The generic command-approval panel has a session-scoped option;
+            # destructive slash confirmations only need one-shot vs permanent
+            # opt-out, so treat session approval as proceed-once.
+            if verdict == "session":
+                return "once"
+            if verdict == "always":
+                if save_config_value("approvals.destructive_slash_confirm", False):
+                    _cprint("🔒 Future /clear, /new, /reset, and /undo will run without confirmation.")
+                    _cprint("   Re-enable via `approvals.destructive_slash_confirm: true` in config.yaml.")
+                else:
+                    _cprint("⚠️  Couldn't persist opt-out — proceeding once.")
+                return "always"
+            return "once"
+
         # Render warning + prompt — single-line composer prompt, mirrors
         # ``_confirm_and_reload_mcp``.
         print()
@@ -8756,6 +8787,33 @@ class HermesCLI:
             confirm_required = True
 
         if not confirm_required:
+            with self._busy_command(self._slow_command_status(cmd_original)):
+                self._reload_mcp()
+            return
+
+        try:
+            app_active = bool(getattr(self, "_app", None))
+            in_main_thread = threading.current_thread() is threading.main_thread()
+        except Exception:
+            app_active = False
+            in_main_thread = True
+
+        if app_active and not in_main_thread:
+            verdict = self._approval_callback(
+                "/reload-mcp",
+                "Reloading MCP servers rebuilds the tool set for this session and invalidates the provider prompt cache. The next message will re-send full input tokens (can be expensive on long-context or high-reasoning models).",
+                allow_permanent=True,
+                choices=["once", "always", "deny"],
+            )
+            if verdict == "deny":
+                _cprint("🟡 /reload-mcp cancelled. MCP tools unchanged.")
+                return
+            if verdict == "always":
+                if save_config_value("approvals.mcp_reload_confirm", False):
+                    _cprint("🔒 Future /reload-mcp commands will run without confirmation.")
+                    _cprint("   Re-enable via `approvals.mcp_reload_confirm: true` in config.yaml.")
+                else:
+                    _cprint("⚠️  Couldn't persist opt-out — reloading once.")
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._reload_mcp()
             return
@@ -9669,7 +9727,8 @@ class HermesCLI:
         return ""
 
     def _approval_callback(self, command: str, description: str,
-                           *, allow_permanent: bool = True) -> str:
+                           *, allow_permanent: bool = True,
+                           choices: list[str] | None = None) -> str:
         """
         Prompt for dangerous command approval through the prompt_toolkit UI.
 
@@ -9692,7 +9751,7 @@ class HermesCLI:
             self._approval_state = {
                 "command": command,
                 "description": description,
-                "choices": self._approval_choices(command, allow_permanent=allow_permanent),
+                "choices": choices if choices is not None else self._approval_choices(command, allow_permanent=allow_permanent),
                 "selected": 0,
                 "response_queue": response_queue,
             }

@@ -6,6 +6,7 @@ don't have to construct a full HermesCLI (which requires extensive setup).
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -152,22 +153,23 @@ def test_gate_default_true_when_config_missing():
     assert result is None
 
 
-def test_prompting_slash_commands_are_handled_inline():
-    """Commands that prompt must bypass the worker queue in prompt_toolkit mode.
+def test_prompting_slash_commands_use_worker_queue():
+    """Destructive slash commands should not run inline in prompt_toolkit mode.
 
-    If /clear is processed by the background process_loop, the regular composer
-    still owns stdin and the user's "1" is submitted as a normal chat message.
+    The worker path now uses the native approval panel, leaving the UI thread
+    free to capture numbered approval keystrokes.  Running inline regressed on
+    newer prompt_toolkit because run_in_terminal returns an awaitable.
     """
     from cli import HermesCLI
 
     self_ = SimpleNamespace()
     should_inline = _bound(HermesCLI._should_handle_prompting_command_inline, self_)
 
-    assert should_inline("/clear") is True
-    assert should_inline("/new") is True
-    assert should_inline("/reset") is True
-    assert should_inline("/undo") is True
-    assert should_inline("/reload-mcp") is True
+    assert should_inline("/clear") is False
+    assert should_inline("/new") is False
+    assert should_inline("/reset") is False
+    assert should_inline("/undo") is False
+    assert should_inline("/reload-mcp") is False
 
 
 def test_non_prompting_slash_commands_still_use_normal_queue():
@@ -180,3 +182,42 @@ def test_non_prompting_slash_commands_still_use_normal_queue():
     assert should_inline("/model") is False
     assert should_inline("hello") is False
     assert should_inline("/clear", has_images=True) is False
+
+
+def test_prompt_toolkit_worker_uses_approval_panel_for_clear():
+    """When a TUI app is active on the worker thread, use approval UI.
+
+    This is the regression path for /clear: process_loop runs on a daemon
+    thread, and the main prompt_toolkit thread must remain available to handle
+    the user's 1/2/3 selection.
+    """
+    from cli import HermesCLI
+
+    calls = []
+    self_ = SimpleNamespace(
+        _app=object(),
+        _approval_callback=lambda command, detail, allow_permanent=True, choices=None: calls.append(
+            (command, detail, allow_permanent, choices)
+        ) or "once",
+        _prompt_text_input=lambda _prompt: (_ for _ in ()).throw(
+            AssertionError("legacy input prompt should not run in TUI worker path")
+        ),
+    )
+    result_holder = []
+
+    def _run():
+        with patch(
+            "cli.load_cli_config",
+            return_value={"approvals": {"destructive_slash_confirm": True}},
+        ):
+            result_holder.append(
+                _bound(HermesCLI._confirm_destructive_slash, self_)("clear", "detail")
+            )
+
+    t = threading.Thread(target=_run)
+    t.start()
+    t.join(timeout=2)
+
+    assert not t.is_alive()
+    assert result_holder == ["once"]
+    assert calls == [("/clear", "detail", True, ["once", "always", "deny"])]
