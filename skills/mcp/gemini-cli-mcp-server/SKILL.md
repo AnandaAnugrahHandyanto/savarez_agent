@@ -18,11 +18,12 @@ A lightweight [FastMCP](https://gofastmcp.com) server that wraps Google's [Gemin
 
 ## Overview
 
-This MCP server shells out to `gemini -p "prompt" --approval-mode yolo` for tool calls. It uses the Gemini CLI binary (OAuth-authenticated), NOT the Google Gen AI Python SDK. This means:
+This MCP server shells out to `gemini -p "prompt"` for tool calls. It uses the Gemini CLI binary (OAuth-authenticated), NOT the Google Gen AI Python SDK. This means:
 
 - **No API keys to configure** — uses the CLI's existing OAuth session
 - **Full Gemini model access** — the 1M token context window of Gemini models
 - **Plan mode for safety** — read-only review/audit mode (guaranteed no mutations)
+- **Safe by default** — `gemini_prompt` uses `--approval-mode auto-edit`, requires explicit opt-in for yolo mode
 
 ## When to Use
 
@@ -39,17 +40,24 @@ This MCP server shells out to `gemini -p "prompt" --approval-mode yolo` for tool
   gemini --version          # Verify
   gemini                    # First run completes OAuth login
   ```
-- **Python 3.11+** with `fastmcp` package
+- **Python 3.11+**
 
 ## Installation
 
-### 1. Clone the server
+### Option 1: pip install (recommended)
+
+```bash
+pip install gemini-mcp-server
+gemini-mcp    # starts the MCP server
+```
+
+### Option 2: From source
 
 ```bash
 git clone https://github.com/jxsprt/gemini-mcp-server.git
 cd gemini-mcp-server
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -e .
 ```
 
 ### 2. Add to Hermes config
@@ -60,7 +68,16 @@ In `~/.hermes/config.yaml`:
 mcp_servers:
   gemini-cli:
     command: "/path/to/gemini-mcp-server/.venv/bin/python3"
-    args: ["/path/to/gemini-mcp-server/server.py"]
+    args: ["-m", "gemini_mcp_server"]
+    timeout: 240
+```
+
+Or if installed globally:
+
+```yaml
+mcp_servers:
+  gemini-cli:
+    command: "gemini-mcp"
     timeout: 240
 ```
 
@@ -69,24 +86,23 @@ Restart the Hermes gateway. Tools auto-discover as `mcp_gemini_cli_*`.
 ### 3. Verify
 
 ```bash
-cd /path/to/gemini-mcp-server
-.venv/bin/python -c "
-import server
-print('Version:', server.gemini_version())
-print('Test:', server.gemini_prompt('Say hello in one word'))
-"
+python3 -m gemini_mcp_server    # starts the server
+# In another terminal:
+pip install fastmcp
+fastmcp list /path/to/server.py --json
 ```
 
 ## Tools (3)
 
 ### `gemini_prompt`
-Send any prompt to Gemini CLI. Supports model selection and JSON output.
+Send any prompt to Gemini CLI. **Safe by default** — uses `auto_edit` mode. Pass `dangerous=True` for full `yolo`.
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `prompt` | ✅ | Prompt text (max ~100K chars) |
+| `prompt` | ✅ | Prompt text (max ~100K chars, configurable via `GEMINI_MAX_PROMPT`) |
 | `model` | ❌ | Model name (e.g., `gemini-3-flash-preview`) |
 | `output_format` | ❌ | `text`, `json`, or `stream-json` |
+| `dangerous` | ❌ | `true` = `--approval-mode yolo` (auto-approves shell commands) |
 
 ### `gemini_plan`
 Read-only audit and review mode. Uses `--approval-mode plan` — **guarantees no file mutations or shell execution**.
@@ -95,32 +111,39 @@ Read-only audit and review mode. Uses `--approval-mode plan` — **guarantees no
 |-----------|----------|-------------|
 | `prompt` | ✅ | Analysis question or review request |
 | `model` | ❌ | Gemini model |
-| `include_directories` | ❌ | Comma-separated additional dirs in workspace |
+| `include_directories` | ❌ | Comma-separated additional dirs (validated to CWD subdirs only) |
 
 ### `gemini_version`
 Returns the installed Gemini CLI version (e.g., `0.41.2`).
 
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GEMINI_CLI_PATH` | auto-discover | Explicit path to `gemini` binary |
+| `GEMINI_TIMEOUT` | `120` | Timeout for `gemini_prompt` (seconds) |
+| `GEMINI_PLAN_TIMEOUT` | `240` | Timeout for `gemini_plan` (seconds) |
+| `GEMINI_MAX_PROMPT` | `100000` | Max prompt character length |
+| `GEMINI_MCP_HTTP` | `0` | Set to `1`/`true` to enable HTTP transport on port 8000 |
+
 ## Common Pitfalls
 
-1. **Gemini CLI not on PATH.** The server discovers the binary via `shutil.which("gemini")`. If it can't find it, the server won't start. Ensure `npm install -g @google/gemini-cli` ran successfully.
-
-2. **Plan mode timeouts.** Large repos with the full 1M context can take 2-4 minutes. The default timeout is 240s — increase it in the config if needed.
-
-3. **Capacity errors.** Gemini's reasoning models hit rate limits under load. The CLI retries up to 7 times with exponential backoff. If it fails, try again later or use a different model.
-
-4. **Filtered environment in MCP subprocesses.** Hermes passes a filtered environment to MCP servers. The `gemini` binary still works because it uses OAuth credentials stored at `~/.gemini/gemini-credentials.json`, not env vars.
+1. **Gemini CLI not on PATH.** Set `GEMINI_CLI_PATH` to the full binary path if auto-discovery fails.
+2. **Plan mode timeouts.** Large repos with 1M token context can take 2-4 minutes. Increase `GEMINI_PLAN_TIMEOUT`.
+3. **Capacity errors.** Gemini's reasoning models hit rate limits. The CLI retries up to 7 times. If it fails, try again or use a different model.
+4. **Not a pip package yet.** `gemini-mcp-server` is not on PyPI yet. Install from source or wait for it to be uploaded.
+5. **Filtered environment.** Hermes passes a filtered env to MCP subprocesses. Gemini works because it uses `~/.gemini/gemini-credentials.json`, not env vars.
 
 ## Verification Checklist
 
 - [ ] Gemini CLI is installed: `gemini --version`
 - [ ] Gemini CLI is authenticated: `gemini -p "hi"` works in terminal
-- [ ] Server venv is set up: `.venv/bin/python -c "import fastmcp"`
+- [ ] Package installed: `python3 -c "from gemini_mcp_server import gemini_version; print(gemini_version())"`
 - [ ] Config entry exists in `~/.hermes/config.yaml` under `mcp_servers.gemini-cli`
-- [ ] Gateway is running and MCP tools appear in Hermes (check `/reload-mcp`)
-- [ ] Direct test passes: `.venv/bin/python -c "import server; print(server.gemini_version())"`
+- [ ] Gateway is running and MCP tools appear (check `/reload-mcp`)
 
 ## Related
 
-- [github.com/jxsprt/gemini-mcp-server](https://github.com/jxsprt/gemini-mcp-server) — source code with full README
+- [github.com/jxsprt/gemini-mcp-server](https://github.com/jxsprt/gemini-mcp-server) — source code
 - `fastmcp` skill — for building similar MCP servers
 - `native-mcp` skill — for configuring MCP servers in Hermes
