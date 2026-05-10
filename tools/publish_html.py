@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_FILES_DIR = "/opt/data/hermes-pages-files"
 DEFAULT_PROJECT = "hermes-pages"
-DEFAULT_BASE_URL = "https://hermes-pages.rouse-gordon.workers.dev"
+DEFAULT_BASE_URL = "https://hermes-pages-d55.pages.dev"
 DEFAULT_BRANCH = "main"
 
 NPM_PREFIX = "/opt/data/.npm-global"
