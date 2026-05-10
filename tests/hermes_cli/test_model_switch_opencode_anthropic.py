@@ -155,7 +155,7 @@ class TestOpenCodeZenV1Strip:
         result = _run_opencode_switch(
             raw_input="claude-sonnet-4-6",
             current_provider="opencode-zen",
-            current_model="gemini-3-flash",
+            current_model="gemini-2.5-flash",
             current_base_url="https://opencode.ai/zen/v1",
         )
 
@@ -166,7 +166,7 @@ class TestOpenCodeZenV1Strip:
     def test_switch_to_gemini_leaves_v1_intact(self):
         """Gemini on opencode-zen stays on chat_completions with /v1."""
         result = _run_opencode_switch(
-            raw_input="gemini-3-flash",
+            raw_input="gemini-2.5-flash",
             current_provider="opencode-zen",
             current_model="claude-sonnet-4-6",
             current_base_url="https://opencode.ai/zen",  # stripped from previous Claude

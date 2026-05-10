@@ -84,7 +84,7 @@ ULTRAPLINIAN_MODELS = [
     'minimax/minimax-m2.5',
     'xiaomi/mimo-v2-pro',
     'mistralai/mistral-large-2512',
-    'google/gemini-3-flash-preview',
+    'google/gemini-2.5-flash',
     'moonshotai/kimi-k2',
     # ULTRA TIER (50-55)
     'x-ai/grok-4-fast',

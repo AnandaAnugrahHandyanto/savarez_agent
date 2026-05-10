@@ -266,7 +266,7 @@ delegation:
   # max_concurrent_children: 3              # Parallel children per batch (default: 3)
   # max_spawn_depth: 1                      # Tree depth (1-3, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3 for three levels.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
-  model: "google/gemini-3-flash-preview"             # Optional provider/model override
+  model: "google/gemini-2.5-flash"             # Optional provider/model override
   provider: "openrouter"                             # Optional built-in provider
 
 # Or use a direct custom endpoint instead of provider:

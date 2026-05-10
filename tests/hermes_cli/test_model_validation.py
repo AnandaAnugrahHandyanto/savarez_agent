@@ -402,7 +402,7 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-zen", "opencode-zen/gpt-5.4") == "codex_responses"
         assert opencode_model_api_mode("opencode-zen", "claude-sonnet-4-6") == "anthropic_messages"
         assert opencode_model_api_mode("opencode-zen", "opencode-zen/claude-sonnet-4-6") == "anthropic_messages"
-        assert opencode_model_api_mode("opencode-zen", "gemini-3-flash") == "chat_completions"
+        assert opencode_model_api_mode("opencode-zen", "gemini-2.5-flash") == "chat_completions"
         assert opencode_model_api_mode("opencode-zen", "minimax-m2.5") == "chat_completions"
 
     def test_opencode_go_api_modes_match_docs(self):

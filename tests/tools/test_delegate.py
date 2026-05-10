@@ -866,14 +866,31 @@ class TestDelegationCredentialResolution(unittest.TestCase):
     def test_model_only_no_provider(self):
         """When only model is set (no provider), model is returned but credentials are None."""
         parent = _make_mock_parent(depth=0)
-        cfg = {"model": "google/gemini-3-flash-preview", "provider": ""}
+        cfg = {"model": "google/gemini-2.5-flash", "provider": ""}
         creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertEqual(creds["model"], "google/gemini-3-flash-preview")
+        self.assertEqual(creds["model"], "google/gemini-2.5-flash")
         self.assertIsNone(creds["provider"])
         self.assertIsNone(creds["base_url"])
         self.assertIsNone(creds["api_key"])
 
-
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_provider_resolves_full_credentials(self, mock_resolve):
+        """When delegation.provider is set, full credentials are resolved."""
+        mock_resolve.return_value = {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-test-key",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "google/gemini-2.5-flash", "provider": "openrouter"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["model"], "google/gemini-2.5-flash")
+        self.assertEqual(creds["provider"], "openrouter")
+        self.assertEqual(creds["base_url"], "https://openrouter.ai/api/v1")
+        self.assertEqual(creds["api_key"], "sk-or-test-key")
+        self.assertEqual(creds["api_mode"], "chat_completions")
+        mock_resolve.assert_called_once_with(requested="openrouter")
 
     def test_direct_endpoint_uses_configured_base_url_and_api_key(self):
         parent = _make_mock_parent(depth=0)
@@ -967,11 +984,11 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         """When delegation.provider is configured, child agent gets resolved credentials."""
         mock_cfg.return_value = {
             "max_iterations": 45,
-            "model": "google/gemini-3-flash-preview",
+            "model": "google/gemini-2.5-flash",
             "provider": "openrouter",
         }
         mock_creds.return_value = {
-            "model": "google/gemini-3-flash-preview",
+            "model": "google/gemini-2.5-flash",
             "provider": "openrouter",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key": "sk-or-delegation-key",
@@ -989,7 +1006,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             delegate_task(goal="Test provider routing", parent_agent=parent)
 
             _, kwargs = MockAgent.call_args
-            self.assertEqual(kwargs["model"], "google/gemini-3-flash-preview")
+            self.assertEqual(kwargs["model"], "google/gemini-2.5-flash")
             self.assertEqual(kwargs["provider"], "openrouter")
             self.assertEqual(kwargs["base_url"], "https://openrouter.ai/api/v1")
             self.assertEqual(kwargs["api_key"], "sk-or-delegation-key")
@@ -1001,11 +1018,11 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         """Parent on Nous, subagent on OpenRouter — full credential switch."""
         mock_cfg.return_value = {
             "max_iterations": 45,
-            "model": "google/gemini-3-flash-preview",
+            "model": "google/gemini-2.5-flash",
             "provider": "openrouter",
         }
         mock_creds.return_value = {
-            "model": "google/gemini-3-flash-preview",
+            "model": "google/gemini-2.5-flash",
             "provider": "openrouter",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key": "sk-or-key",
@@ -1237,11 +1254,11 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         """Setting only model (no provider) changes model but keeps parent credentials."""
         mock_cfg.return_value = {
             "max_iterations": 45,
-            "model": "google/gemini-3-flash-preview",
+            "model": "google/gemini-2.5-flash",
             "provider": "",
         }
         mock_creds.return_value = {
-            "model": "google/gemini-3-flash-preview",
+            "model": "google/gemini-2.5-flash",
             "provider": None,
             "base_url": None,
             "api_key": None,
@@ -1260,7 +1277,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
 
             _, kwargs = MockAgent.call_args
             # Model should be overridden
-            self.assertEqual(kwargs["model"], "google/gemini-3-flash-preview")
+            self.assertEqual(kwargs["model"], "google/gemini-2.5-flash")
             # But provider/base_url/api_key should inherit from parent
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["base_url"], parent.base_url)
