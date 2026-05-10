@@ -100,6 +100,81 @@ class _OpenAIProxy:
 
 OpenAI = _OpenAIProxy()
 
+
+def _kanban_worker_startup_env() -> Optional[dict[str, Any]]:
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    if not task_id:
+        return None
+    run_raw = os.environ.get("HERMES_KANBAN_RUN_ID", "").strip()
+    if not run_raw:
+        return {
+            "task_id": task_id,
+            "run_id": None,
+            "claim_lock": os.environ.get("HERMES_KANBAN_CLAIM_LOCK", "").strip() or None,
+            "db_path": os.environ.get("HERMES_KANBAN_DB", "").strip() or None,
+            "env_error": "missing_run_id",
+        }
+    try:
+        run_id: Optional[int] = int(run_raw)
+    except ValueError:
+        return {
+            "task_id": task_id,
+            "run_id": None,
+            "claim_lock": os.environ.get("HERMES_KANBAN_CLAIM_LOCK", "").strip() or None,
+            "db_path": os.environ.get("HERMES_KANBAN_DB", "").strip() or None,
+            "env_error": "invalid_run_id",
+        }
+    return {
+        "task_id": task_id,
+        "run_id": run_id,
+        "claim_lock": os.environ.get("HERMES_KANBAN_CLAIM_LOCK", "").strip() or None,
+        "db_path": os.environ.get("HERMES_KANBAN_DB", "").strip() or None,
+        "env_error": None,
+    }
+
+
+def _terminal_run_result(
+    agent,
+    *,
+    final_response: str,
+    turn_exit_reason: Optional[str],
+    completed: bool = False,
+    messages: Optional[list[dict[str, Any]]] = None,
+    api_calls: int = 0,
+    interrupted: bool = False,
+    response_previewed: bool = False,
+    partial: bool = False,
+    last_reasoning: Optional[str] = None,
+    last_prompt_tokens: int = 0,
+) -> dict[str, Any]:
+    """Build the standard run_conversation terminal result shape."""
+    return {
+        "final_response": final_response,
+        "last_reasoning": last_reasoning,
+        "messages": messages or [],
+        "api_calls": api_calls,
+        "completed": completed,
+        "turn_exit_reason": turn_exit_reason,
+        "partial": partial,
+        "interrupted": interrupted,
+        "response_previewed": response_previewed,
+        "model": agent.model,
+        "provider": agent.provider,
+        "base_url": agent.base_url,
+        "input_tokens": agent.session_input_tokens,
+        "output_tokens": agent.session_output_tokens,
+        "cache_read_tokens": agent.session_cache_read_tokens,
+        "cache_write_tokens": agent.session_cache_write_tokens,
+        "reasoning_tokens": agent.session_reasoning_tokens,
+        "prompt_tokens": agent.session_prompt_tokens,
+        "completion_tokens": agent.session_completion_tokens,
+        "total_tokens": agent.session_total_tokens,
+        "last_prompt_tokens": last_prompt_tokens,
+        "estimated_cost_usd": agent.session_estimated_cost_usd,
+        "cost_status": agent.session_cost_status,
+        "cost_source": agent.session_cost_source,
+    }
+
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -11514,6 +11589,63 @@ class AIAgent:
         # rejection and kept False for the rest of the session so we never re-send
         # images to a text-only endpoint.  Scoped per `_run()` call, not per instance.
         self._vision_supported = True
+
+        # Dispatcher-spawned Kanban workers validate ownership/state before
+        # doing any model work. The task may have been reclaimed, blocked,
+        # archived, or superseded by a newer run in the claim->spawn gap.
+        _kanban_startup = _kanban_worker_startup_env()
+        if _kanban_startup is not None:
+            if _kanban_startup.get("env_error"):
+                reason = str(_kanban_startup["env_error"])
+                return _terminal_run_result(
+                    self,
+                    final_response=(
+                        "Kanban worker startup skipped because worker ownership "
+                        f"metadata is invalid ({reason})."
+                    ),
+                    turn_exit_reason=f"kanban_startup_guard:{reason}",
+                    last_prompt_tokens=0,
+                )
+            try:
+                from hermes_cli import kanban_db as _kanban_db
+
+                db_path = _kanban_startup.get("db_path")
+                if db_path:
+                    conn = _kanban_db.connect(Path(db_path))
+                else:
+                    conn = _kanban_db.connect()
+                try:
+                    verdict = _kanban_db.check_worker_startup_guard(
+                        conn,
+                        task_id=_kanban_startup["task_id"],
+                        expected_run_id=_kanban_startup["run_id"],
+                        expected_claim_lock=_kanban_startup["claim_lock"],
+                    )
+                finally:
+                    conn.close()
+                if not verdict.allowed:
+                    _turn_exit_reason = f"kanban_startup_guard:{verdict.reason}"
+                    final_response = (
+                        "Kanban worker startup skipped because the task no longer "
+                        f"belongs to this worker ({verdict.reason})."
+                    )
+                    logger.info(
+                        "Kanban startup guard skipped worker: task=%s reason=%s "
+                        "expected_run=%s current_run=%s status=%s",
+                        verdict.task_id,
+                        verdict.reason,
+                        verdict.run_id,
+                        verdict.current_run_id,
+                        verdict.status,
+                    )
+                    return _terminal_run_result(
+                        self,
+                        final_response=final_response,
+                        turn_exit_reason=_turn_exit_reason,
+                        last_prompt_tokens=0,
+                    )
+            except Exception:
+                logger.debug("kanban worker startup guard failed open", exc_info=True)
 
         # Pre-turn connection health check: detect and clean up dead TCP
         # connections left over from provider outages or dropped streams.
