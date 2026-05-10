@@ -57,6 +57,28 @@ def test_get_codex_model_ids_falls_back_to_curated_defaults(tmp_path, monkeypatc
     assert "gpt-5.3-codex-spark" in models
 
 
+def test_default_codex_models_excludes_chatgpt_account_unsupported():
+    """Regression for #23097: the openai-codex picker fallback must not
+    surface slugs the ChatGPT-account Codex backend rejects with HTTP 400.
+
+    The openai-codex provider always authenticates via the ChatGPT-account
+    OAuth backend in Hermes (resolve_codex_runtime_credentials always sets
+    auth_mode="chatgpt"), so DEFAULT_CODEX_MODELS — used as the offline /
+    transient-failure fallback for the picker — must only contain models
+    that backend accepts.
+    """
+    rejected_on_chatgpt_account = {
+        "gpt-5.2-codex",
+        "gpt-5.1-codex-max",
+        "gpt-5.1-codex-mini",
+    }
+    assert rejected_on_chatgpt_account.isdisjoint(DEFAULT_CODEX_MODELS), (
+        "DEFAULT_CODEX_MODELS still contains models the ChatGPT-account "
+        "Codex backend rejects: "
+        f"{rejected_on_chatgpt_account.intersection(DEFAULT_CODEX_MODELS)}"
+    )
+
+
 def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.codex_models._fetch_models_from_api",

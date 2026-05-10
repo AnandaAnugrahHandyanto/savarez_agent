@@ -29,9 +29,15 @@ DEFAULT_CODEX_MODELS: List[str] = [
     # curated fallback so Pro users still see Spark in `/model` when live
     # discovery is unavailable (offline first run, transient API failure).
     "gpt-5.3-codex-spark",
-    "gpt-5.2-codex",
-    "gpt-5.1-codex-max",
-    "gpt-5.1-codex-mini",
+    # gpt-5.2-codex, gpt-5.1-codex-max, and gpt-5.1-codex-mini are
+    # intentionally NOT listed here. The openai-codex provider always
+    # authenticates via the ChatGPT-account OAuth backend
+    # (chatgpt.com/backend-api/codex; resolve_codex_runtime_credentials
+    # always sets auth_mode="chatgpt"), and that backend rejects those
+    # older slugs with HTTP 400: "The '<model>' model is not supported
+    # when using Codex with a ChatGPT account." Issue #23097. They remain
+    # in _PROVIDER_MODELS["openai"] / opencode-zen because those backends
+    # still accept them; this fallback is openai-codex-only.
 ]
 
 _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
