@@ -17,7 +17,10 @@ import type { PanelSection } from '../../../types.js'
 import { applyDelegationStatus, getDelegationState } from '../../delegationStore.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { getSpawnHistory, pushDiskSnapshot, setDiffPair, type SpawnSnapshot } from '../../spawnHistoryStore.js'
+import { translate, type TranslationKey } from '../../../i18n.js'
 import type { SlashCommand } from '../types.js'
+
+const tz = (key: TranslationKey, vars?: Record<string, string | number>) => translate('zh', key, vars)
 
 interface SkillInfo {
   category?: string
@@ -155,7 +158,7 @@ export const opsCommands: SlashCommand[] = [
       const url = action === 'connect' ? rest.join(' ').trim() || 'http://127.0.0.1:9222' : undefined
 
       if (url) {
-        ctx.transcript.sys(`checking Chrome remote debugging at ${url}...`)
+        ctx.transcript.sys(tz('sys.browserChecking', { url }))
       }
 
       ctx.gateway
@@ -177,13 +180,13 @@ export const opsCommands: SlashCommand[] = [
             }
 
             if (action === 'disconnect') {
-              return ctx.transcript.sys('browser disconnected')
+              return ctx.transcript.sys(tz('sys.browserDisconnected'))
             }
 
             if (r.connected) {
-              ctx.transcript.sys('Browser connected to live Chrome via CDP')
-              ctx.transcript.sys(`Endpoint: ${r.url || '(url unavailable)'}`)
-              ctx.transcript.sys('next browser tool call will use this CDP endpoint')
+              ctx.transcript.sys(tz('sys.browserConnected'))
+              ctx.transcript.sys(tz('sys.browserEndpoint', { url: r.url || '(url unavailable)' }))
+              ctx.transcript.sys(tz('sys.browserNextCall'))
             }
           })
         )
@@ -196,7 +199,7 @@ export const opsCommands: SlashCommand[] = [
     name: 'rollback',
     run: (arg, ctx) => {
       if (!ctx.sid) {
-        return ctx.transcript.sys('no active session — nothing to rollback')
+        return ctx.transcript.sys(tz('sys.rollbackNoSession'))
       }
 
       const trimmed = arg.trim()
@@ -209,13 +212,13 @@ export const opsCommands: SlashCommand[] = [
           .then(
             ctx.guarded<RollbackListResponse>(r => {
               if (!r.enabled) {
-                return ctx.transcript.sys('checkpoints are not enabled')
+                return ctx.transcript.sys(tz('sys.rollbackNoCheckpoints'))
               }
 
               const checkpoints = r.checkpoints ?? []
 
               if (!checkpoints.length) {
-                return ctx.transcript.sys('no checkpoints found')
+                return ctx.transcript.sys(tz('sys.rollbackNone'))
               }
 
               ctx.transcript.panel('Rollback checkpoints', [
@@ -245,7 +248,7 @@ export const opsCommands: SlashCommand[] = [
               const body = (r.rendered || r.diff || '').trim()
 
               if (!body && !r.stat) {
-                return ctx.transcript.sys('no changes since this checkpoint')
+                return ctx.transcript.sys(tz('sys.rollbackNoChanges'))
               }
 
               const text = [r.stat || '', body].filter(Boolean).join('\n\n')
@@ -299,7 +302,7 @@ export const opsCommands: SlashCommand[] = [
           .request<DelegationPauseResponse>('delegation.pause', { paused })
           .then(r => {
             applyDelegationStatus({ paused: r?.paused })
-            ctx.transcript.sys(`delegation · ${r?.paused ? 'paused' : 'resumed'}`)
+            ctx.transcript.sys(r?.paused ? tz('sys.delegationPaused') : tz('sys.delegationResumed'))
           })
           .catch(ctx.guardedErr)
 
@@ -339,7 +342,7 @@ export const opsCommands: SlashCommand[] = [
               const entries = r.entries ?? []
 
               if (!entries.length) {
-                return ctx.transcript.sys('no archived spawn trees on disk for this session')
+                return ctx.transcript.sys(tz('sys.replayNoArchive'))
               }
 
               const rows: [string, string][] = entries.map(e => {
@@ -370,7 +373,7 @@ export const opsCommands: SlashCommand[] = [
           .then(
             ctx.guarded<SpawnTreeLoadResponse>(r => {
               if (!r.subagents?.length) {
-                return ctx.transcript.sys('snapshot empty or unreadable')
+                return ctx.transcript.sys(tz('sys.replayEmpty'))
               }
 
               // Push onto the in-memory history so the overlay picks it up
@@ -386,7 +389,7 @@ export const opsCommands: SlashCommand[] = [
 
       // ── In-memory nav (same-session) ─────────────────────────────
       if (!history.length) {
-        return ctx.transcript.sys('no completed spawn trees this session · try /replay list')
+        return ctx.transcript.sys(tz('sys.replayNoCompleted'))
       }
 
       let index = 1
@@ -512,7 +515,7 @@ export const opsCommands: SlashCommand[] = [
               const cats = Object.entries(r.skills ?? {}).sort()
 
               if (!cats.length) {
-                return sys('no skills available')
+                return sys(tz('sys.noSkills'))
               }
 
               panel(
@@ -537,7 +540,7 @@ export const opsCommands: SlashCommand[] = [
               const info = r.info ?? {}
 
               if (!info.name) {
-                return sys(`unknown skill: ${query}`)
+                return sys(tz('sys.skillsUnknown', { name: query }))
               }
 
               const rows: [string, string][] = [
@@ -571,7 +574,7 @@ export const opsCommands: SlashCommand[] = [
               const results = r.results ?? []
 
               if (!results.length) {
-                return sys(`no results for: ${query}`)
+                return sys(tz('sys.skillsNoResults', { query }))
               }
 
               panel(`Search: ${query}`, [{ rows: results.map(s => [s.name, s.description ?? '']) }])
@@ -587,12 +590,12 @@ export const opsCommands: SlashCommand[] = [
           return sys('usage: /skills install <name or url>')
         }
 
-        sys(`installing ${query}…`)
+        sys(tz('sys.skillsInstalling', { name: query }))
 
         rpc<SkillsInstallResponse>('skills.manage', { action: 'install', query })
           .then(
             ctx.guarded<SkillsInstallResponse>(r =>
-              sys(r.installed ? `installed ${r.name ?? query}` : 'install failed')
+              sys(r.installed ? tz('sys.skillsInstalled', { name: r.name ?? query }) : tz('sys.skillsInstallFailed'))
             )
           )
           .catch(ctx.guardedErr)
@@ -607,7 +610,7 @@ export const opsCommands: SlashCommand[] = [
           return sys('usage: /skills browse [page]  (page must be a positive number)')
         }
 
-        sys('fetching community skills (scans 6 sources, may take ~15s)…')
+        sys(tz('sys.skillsFetching'))
 
         rpc<SkillsBrowseResponse>('skills.manage', { action: 'browse', page: pageNum })
           .then(
