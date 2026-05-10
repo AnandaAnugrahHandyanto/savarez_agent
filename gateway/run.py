@@ -9085,19 +9085,10 @@ class GatewayRunner:
         if not mgr.is_active():
             return
 
-        # Wrap the messages list in a small shim so the GoalManager's
-        # agent-message extractor can find them via `agent.messages`.
-        _agent_shim = None
-        if agent_messages:
-            class _GatewayAgentShim:
-                pass
-            _agent_shim = _GatewayAgentShim()
-            _agent_shim.messages = agent_messages
-
         decision = mgr.evaluate_after_turn(
             final_response or "",
             user_initiated=True,
-            agent=_agent_shim,
+            messages=agent_messages or [],
         )
         msg = decision.get("message") or ""
 

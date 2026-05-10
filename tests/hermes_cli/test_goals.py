@@ -987,3 +987,87 @@ class TestJudgeReadFile:
         assert result["returned"] == 5
         assert "line-9" in result["content"]   # 1-based: line 10 == zero-indexed 9
         assert result["next_offset"] == 15
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Index conversion: judge emits 1-based, apply layer uses 0-based
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestJudgeIndexConversion:
+    def test_parse_evaluate_converts_1based_to_0based(self):
+        """The judge sees the checklist with 1-based indices (rendered as
+        '1. [ ] foo, 2. [ ] bar'). It emits updates with those same indices.
+        ``_parse_evaluate_response`` must convert them to 0-based so the
+        apply layer can index ``state.checklist`` directly.
+        """
+        from hermes_cli.goals import _parse_evaluate_response
+
+        raw = '''
+        {"updates": [
+            {"index": 1, "status": "completed", "evidence": "first item"},
+            {"index": 3, "status": "impossible", "evidence": "third item"}
+        ],
+         "new_items": [],
+         "reason": "evaluated"}
+        '''
+        parsed, parse_failed = _parse_evaluate_response(raw)
+        assert parse_failed is False
+        # 1 → 0, 3 → 2
+        assert [u["index"] for u in parsed["updates"]] == [0, 2]
+        assert parsed["updates"][0]["evidence"] == "first item"
+        assert parsed["updates"][1]["status"] == "impossible"
+
+    def test_full_round_trip_judge_index_to_state(self, hermes_home):
+        """End-to-end: judge emits 1-based, parser converts, apply layer
+        flips the right items in state.checklist."""
+        from hermes_cli import goals
+        from hermes_cli.goals import (
+            GoalManager, ChecklistItem, ITEM_PENDING, ITEM_COMPLETED,
+            ADDED_BY_JUDGE,
+        )
+
+        mgr = GoalManager(session_id="idx-round-trip")
+        mgr.set("g")
+        mgr.state.decomposed = True
+        mgr.state.checklist = [
+            ChecklistItem(text="first", status=ITEM_PENDING, added_by=ADDED_BY_JUDGE),
+            ChecklistItem(text="second", status=ITEM_PENDING, added_by=ADDED_BY_JUDGE),
+            ChecklistItem(text="third", status=ITEM_PENDING, added_by=ADDED_BY_JUDGE),
+        ]
+        goals.save_goal("idx-round-trip", mgr.state)
+
+        # Simulate the judge returning a raw-JSON Phase-B reply via the
+        # auxiliary client: the parser handles the 1-based → 0-based
+        # conversion so the apply layer flips item 1 (text="first").
+        class FakeMessage:
+            content = '''
+            {"updates": [{"index": 1, "status": "completed", "evidence": "first done"}],
+             "new_items": [],
+             "reason": "..."}
+            '''
+            tool_calls = None
+
+        class FakeChoice:
+            message = FakeMessage()
+
+        class FakeResponse:
+            choices = [FakeChoice()]
+
+        class FakeClient:
+            class chat:
+                class completions:
+                    @staticmethod
+                    def create(**kwargs):
+                        return FakeResponse()
+
+        with patch.object(goals, "_get_judge_client", return_value=(FakeClient, "fake-model")):
+            mgr.evaluate_after_turn("ran the script and item 1 is done")
+
+        # Item 1 (text="first") should now be completed.
+        assert mgr.state.checklist[0].text == "first"
+        assert mgr.state.checklist[0].status == ITEM_COMPLETED
+        assert mgr.state.checklist[0].evidence == "first done"
+        # Other items still pending.
+        assert mgr.state.checklist[1].status == ITEM_PENDING
+        assert mgr.state.checklist[2].status == ITEM_PENDING

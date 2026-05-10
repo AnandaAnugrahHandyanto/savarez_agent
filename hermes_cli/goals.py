@@ -176,18 +176,27 @@ EVALUATE_SYSTEM_PROMPT_FREEFORM = (
 )
 
 EVALUATE_SYSTEM_PROMPT_CHECKLIST = (
-    "You are a strict, harsh judge evaluating an autonomous agent's "
-    "progress on a user's goal that has a detailed checklist of "
-    "completion criteria. For EACH currently-pending checklist item, "
-    "decide whether the agent's most recent turn provides evidence the "
-    "item is satisfied.\n\n"
-    "Be HARSH. Default to leaving items pending. Only flip pending → "
-    "completed when the response shows clear, specific evidence the item "
-    "is done. Only flip pending → impossible when the response demonstrates "
-    "the item cannot be achieved in this environment (not just that the "
-    "agent didn't try). Vague claims, intentions, or 'I will do X next' "
-    "do NOT count as completion evidence.\n\n"
-    "You may also APPEND new checklist items if the agent's work reveals "
+    "You are a strict judge evaluating an autonomous agent's progress on "
+    "a user's goal that has a detailed checklist of completion criteria. "
+    "For EACH currently-pending checklist item, decide whether the "
+    "available evidence shows the item is satisfied.\n\n"
+    "Be strict but not absurd. Default to leaving items pending UNLESS "
+    "evidence is reasonably clear. Reasonable evidence includes:\n"
+    "- The agent's most recent response describing or showing the work\n"
+    "- Tool call results visible in the conversation history (file writes, "
+    "command output, web requests, etc.)\n"
+    "- A clear statement by the agent that the work was done, when "
+    "supported by tool output earlier in the conversation\n\n"
+    "Do NOT require the agent to re-prove items it has already established "
+    "in earlier turns. If a tool call earlier in the conversation already "
+    "wrote a file, you do not need fresh `ls` output every turn — once "
+    "established, it's done.\n\n"
+    "Flip pending → completed when the response or recent tool calls show "
+    "the item is satisfied. Flip pending → impossible only when the work "
+    "demonstrates the item cannot be achieved in this environment (NOT "
+    "merely that the agent didn't try). Vague intentions ('I will do X "
+    "next') do NOT count as completion.\n\n"
+    "You may APPEND new checklist items if the agent's work reveals "
     "criteria the original decomposition missed. Stay strict — only add "
     "items that genuinely belong as completion criteria.\n\n"
     "STICKINESS: items already marked completed or impossible are frozen. "
@@ -202,16 +211,18 @@ EVALUATE_SYSTEM_PROMPT_CHECKLIST = (
     '{"updates": [{"index": <i>, "status": "completed|impossible", "evidence": "<why>"}, ...], '
     '"new_items": [{"text": "<new item>"}, ...], '
     '"reason": "<one-sentence overall rationale>"}\n'
+    "When citing evidence, reference the agent's actual output specifically. "
     "Empty updates is fine. Empty new_items is fine. The reason field is required."
 )
 
 EVALUATE_USER_PROMPT_CHECKLIST_TEMPLATE = (
     "Goal:\n{goal}\n\n"
-    "Current checklist:\n{checklist_block}\n\n"
+    "Current checklist (each item is numbered, 1-based — use these "
+    "exact 1-based numbers as the ``index`` field in your updates):\n{checklist_block}\n\n"
     "Agent's most recent response (snippet):\n{response}\n\n"
     "Conversation history file (call read_file on this path if you need "
     "more context — pagination supported via offset/limit):\n{history_path}\n\n"
-    "Evaluate each pending item. Be harsh."
+    "Evaluate each pending item. Cite specific evidence."
 )
 
 EVALUATE_USER_PROMPT_FREEFORM_TEMPLATE = (
@@ -602,9 +613,13 @@ def _parse_evaluate_response(raw: str) -> Tuple[Dict[str, Any], bool]:
             if not isinstance(upd, dict):
                 continue
             try:
-                idx = int(upd.get("index"))
+                # Judge sees the checklist rendered with 1-based indices
+                # (matches the /subgoal CLI). Convert to 0-based here so the
+                # apply layer can index ``state.checklist`` directly.
+                idx_1based = int(upd.get("index"))
             except (TypeError, ValueError):
                 continue
+            idx = idx_1based - 1
             status = str(upd.get("status", "")).strip().lower()
             if status not in TERMINAL_ITEM_STATUSES:
                 # Phase-B only accepts terminal flips. Pending → pending is a no-op.
@@ -1228,6 +1243,7 @@ class GoalManager:
         *,
         user_initiated: bool = True,
         agent: Any = None,
+        messages: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Run the judge and update state. Return a decision dict.
 
@@ -1235,9 +1251,15 @@ class GoalManager:
         continuation prompt we fed ourselves (False). Both increment
         ``turns_used`` because both consume model budget.
 
-        ``agent`` is the AIAgent instance for this session, used to dump
-        the conversation history for the judge's read_file tool. Optional
-        — when missing, the judge runs from the snippet only.
+        ``messages`` is the agent's full conversation list for this session.
+        When provided, it's dumped to ``<HERMES_HOME>/goals/<sid>.json`` so
+        the Phase-B judge's read_file tool can inspect history. Optional —
+        when missing, the judge runs from the snippet only.
+
+        ``agent`` is a back-compat path — when ``messages`` is None we try
+        to extract them from common AIAgent attribute names. Most callers
+        should pass ``messages`` directly because AIAgent does not store
+        the message list as a public instance attribute.
 
         Decision keys:
           - ``status``: current goal status after update
@@ -1299,7 +1321,7 @@ class GoalManager:
 
         # ── Phase B: evaluate ────────────────────────────────────────
         verdict, reason, parse_failed = self._evaluate_state_phase_b(
-            state, last_response, agent=agent
+            state, last_response, agent=agent, messages=messages
         )
         state.last_verdict = verdict
         state.last_reason = reason
@@ -1388,6 +1410,7 @@ class GoalManager:
         last_response: str,
         *,
         agent: Any = None,
+        messages: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[str, str, bool]:
         """Run the right kind of Phase-B evaluation given current state.
 
@@ -1401,12 +1424,27 @@ class GoalManager:
             return "continue", "empty response (nothing to evaluate)", False
 
         if state.checklist:
-            # Dump conversation history if we have an agent reference.
+            # Dump conversation history if we have one. Prefer explicit
+            # ``messages`` arg (most reliable); fall back to extracting from
+            # the agent instance for back-compat.
             history_path: Optional[Path] = None
-            if agent is not None:
+            msgs: List[Dict[str, Any]] = []
+            if messages:
+                msgs = list(messages)
+            elif agent is not None:
                 msgs = self._extract_agent_messages(agent)
-                if msgs:
-                    history_path = dump_conversation(self.session_id, msgs)
+            if msgs:
+                history_path = dump_conversation(self.session_id, msgs)
+                if history_path is None:
+                    logger.debug(
+                        "goal: conversation dump failed for session %s",
+                        self.session_id,
+                    )
+            else:
+                logger.debug(
+                    "goal: no messages available for session %s — judge will run from snippet only",
+                    self.session_id,
+                )
 
             parsed, parse_failed = evaluate_checklist(
                 state, last_response, history_path=history_path

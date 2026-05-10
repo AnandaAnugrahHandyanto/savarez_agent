@@ -7846,7 +7846,7 @@ class HermesCLI:
         decision = mgr.evaluate_after_turn(
             last_response,
             user_initiated=True,
-            agent=getattr(self, "agent", None),
+            messages=getattr(self, "conversation_history", None) or [],
         )
         msg = decision.get("message") or ""
         if msg:
