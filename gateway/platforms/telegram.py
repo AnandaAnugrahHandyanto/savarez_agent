@@ -455,6 +455,44 @@ class TelegramAdapter(BasePlatformAdapter):
             return {}
         return {"disable_notification": True}
 
+    async def _register_bot_commands(self) -> tuple[int, int]:
+        """Register Telegram BotCommand menu from the current command registry."""
+        if self._bot is None:
+            return (0, 0)
+
+        from telegram import BotCommand
+        from hermes_cli.commands import telegram_menu_commands
+
+        # Telegram allows up to 100 commands but has an undocumented payload
+        # size limit.  Skill descriptions are truncated to 40 chars in
+        # telegram_menu_commands() to fit 100 commands safely.
+        menu_commands, hidden_count = telegram_menu_commands(max_commands=100)
+        bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
+
+        await self._bot.set_my_commands(bot_commands)
+
+        if hidden_count:
+            logger.info(
+                "[%s] Telegram menu: %d commands registered, %d hidden (over 100 limit). Use /commands for full list.",
+                self.name,
+                len(menu_commands),
+                hidden_count,
+            )
+        return (len(menu_commands), hidden_count)
+
+    async def refresh_skill_group(self) -> tuple[int, int]:
+        """Refresh Telegram BotCommand menu after ``/reload-skills``."""
+        try:
+            return await self._register_bot_commands()
+        except Exception as e:
+            logger.warning(
+                "[%s] Could not refresh Telegram command menu: %s",
+                self.name,
+                e,
+                exc_info=True,
+            )
+            return (0, 0)
+
     def _is_callback_user_authorized(
         self,
         user_id: str,
@@ -1389,20 +1427,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # List is derived from the central COMMAND_REGISTRY — adding a new
             # gateway command there automatically adds it to the Telegram menu.
             try:
-                from telegram import BotCommand
-                from hermes_cli.commands import telegram_menu_commands
-                # Telegram allows up to 100 commands but has an undocumented
-                # payload size limit.  Skill descriptions are truncated to 40
-                # chars in telegram_menu_commands() to fit 100 commands safely.
-                menu_commands, hidden_count = telegram_menu_commands(max_commands=100)
-                await self._bot.set_my_commands([
-                    BotCommand(name, desc) for name, desc in menu_commands
-                ])
-                if hidden_count:
-                    logger.info(
-                        "[%s] Telegram menu: %d commands registered, %d hidden (over 100 limit). Use /commands for full list.",
-                        self.name, len(menu_commands), hidden_count,
-                    )
+                await self._register_bot_commands()
             except Exception as e:
                 logger.warning(
                     "[%s] Could not register Telegram command menu: %s",
