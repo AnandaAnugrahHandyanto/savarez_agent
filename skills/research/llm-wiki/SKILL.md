@@ -590,6 +590,7 @@ If a `[[wikilink]]` in `index.md` doesn't have a map entry, `wiki_link()` falls 
   first, then use them.
 - **Keep pages scannable** — a wiki page should be readable in 30 seconds. Split pages over
   200 lines. Move detailed analysis to dedicated deep-dive pages.
+- **Avoid low-contrast formatting** — Gordon finds dim gray metadata/text unreadable. Use high-contrast text for all substantive content, including meta/trend/source notes; do not hide important claims in muted styles.
 - **Ask before mass-updating** — if an ingest would touch 10+ existing pages, confirm
   the scope with the user first.
 - **Rotate the log** — when log.md exceeds 500 entries, rename it `log-YYYY.md` and start fresh.
