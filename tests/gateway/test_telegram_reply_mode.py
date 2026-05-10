@@ -77,6 +77,17 @@ class TestReplyToModeConfig:
         adapter = TelegramAdapter(config)
         assert adapter._reply_to_mode == "first"
 
+    def test_invalid_batch_delay_envs_fall_back_to_defaults(self, monkeypatch):
+        monkeypatch.setenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "nope")
+        monkeypatch.setenv("HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS", "still-nope")
+        monkeypatch.setenv("HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS", "bad")
+
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+        assert adapter._media_batch_delay_seconds == 0.8
+        assert adapter._text_batch_delay_seconds == 0.6
+        assert adapter._text_batch_split_delay_seconds == 2.0
+
 
 class TestShouldThreadReply:
     """Tests for _should_thread_reply method."""

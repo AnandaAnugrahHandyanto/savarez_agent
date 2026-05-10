@@ -99,6 +99,15 @@ class TestReplyToModeConfig:
         adapter = DiscordAdapter(config)
         assert adapter._reply_to_mode == "first"
 
+    def test_invalid_batch_delay_envs_fall_back_to_defaults(self, monkeypatch):
+        monkeypatch.setenv("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", "nope")
+        monkeypatch.setenv("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", "bad")
+
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+        assert adapter._text_batch_delay_seconds == 0.6
+        assert adapter._text_batch_split_delay_seconds == 2.0
+
 
 def _make_discord_adapter(reply_to_mode: str = "first"):
     """Create a DiscordAdapter with mocked client and channel for send() tests."""

@@ -8,6 +8,7 @@ and thread participation tracking.
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -19,6 +20,23 @@ if TYPE_CHECKING:
     from gateway.platforms.base import MessageEvent
 
 logger = logging.getLogger(__name__)
+
+
+def safe_float_env(name: str, default: float) -> float:
+    """Parse a float env var with warning + fallback on malformed values."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid %s=%r; falling back to default %.3f",
+            name,
+            raw,
+            default,
+        )
+        return default
 
 
 # ─── Message Deduplication ────────────────────────────────────────────────────

@@ -73,6 +73,16 @@ class TestWeComAdapterInit:
         assert adapter._secret == "env-secret"
         assert adapter._ws_url == "wss://env.example/ws"
 
+    def test_invalid_batch_delay_envs_fall_back_to_defaults(self, monkeypatch):
+        monkeypatch.setenv("HERMES_WECOM_TEXT_BATCH_DELAY_SECONDS", "nope")
+        monkeypatch.setenv("HERMES_WECOM_TEXT_BATCH_SPLIT_DELAY_SECONDS", "bad")
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+
+        assert adapter._text_batch_delay_seconds == 0.6
+        assert adapter._text_batch_split_delay_seconds == 2.0
+
 
 class TestWeComConnect:
     @pytest.mark.asyncio

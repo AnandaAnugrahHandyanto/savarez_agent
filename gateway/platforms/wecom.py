@@ -59,7 +59,7 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, safe_float_env
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -178,8 +178,14 @@ class WeComAdapter(BasePlatformAdapter):
 
         # Text batching: merge rapid successive messages (Telegram-style).
         # WeCom clients split long messages around 4000 chars.
-        self._text_batch_delay_seconds = float(os.getenv("HERMES_WECOM_TEXT_BATCH_DELAY_SECONDS", "0.6"))
-        self._text_batch_split_delay_seconds = float(os.getenv("HERMES_WECOM_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
+        self._text_batch_delay_seconds = safe_float_env(
+            "HERMES_WECOM_TEXT_BATCH_DELAY_SECONDS",
+            0.6,
+        )
+        self._text_batch_split_delay_seconds = safe_float_env(
+            "HERMES_WECOM_TEXT_BATCH_SPLIT_DELAY_SECONDS",
+            2.0,
+        )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._device_id = uuid.uuid4().hex
