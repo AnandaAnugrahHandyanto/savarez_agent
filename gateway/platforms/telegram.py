@@ -329,6 +329,40 @@ class TelegramAdapter(BasePlatformAdapter):
         #               behavior; opt-in via display.platforms.telegram.notifications).
         self._notifications_mode: str = "important"
 
+    def _is_bot_ready(self) -> bool:
+        """Return whether the PTB bot exists and completed initialization.
+
+        ``Application.build()`` creates an ``ExtBot`` before ``initialize()``
+        performs its first Bot API call. If that call times out, ``self._bot``
+        is non-None but PTB still has ``_initialized = False``; touching bot
+        methods then raises "ExtBot is not properly initialized". Treat that
+        state as disconnected so delivery failures stay local and retryable.
+        """
+        bot = self._bot
+        if bot is None:
+            return False
+        return getattr(bot, "_initialized", True) is not False
+
+    async def _discard_partial_application(self) -> None:
+        """Best-effort cleanup for an app built before startup failed."""
+        app = self._app
+        if app is not None:
+            try:
+                if getattr(app, "running", False):
+                    await app.stop()
+                await app.shutdown()
+            except Exception as cleanup_err:
+                logger.debug(
+                    "[%s] Telegram partial startup cleanup failed (non-fatal): %s",
+                    self.name,
+                    cleanup_err,
+                    exc_info=True,
+                )
+        self._app = None
+        self._bot = None
+        self._webhook_mode = False
+        self._mark_disconnected()
+
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
@@ -826,7 +860,7 @@ class TelegramAdapter(BasePlatformAdapter):
         Uses Bot API 9.4's createForumTopic which now works for 1-on-1 chats.
         Returns the message_thread_id on success, None on failure.
         """
-        if not self._bot:
+        if not self._is_bot_ready():
             return None
         try:
             kwargs: Dict[str, Any] = {"chat_id": chat_id, "name": name}
@@ -872,7 +906,7 @@ class TelegramAdapter(BasePlatformAdapter):
         name: str,
     ) -> None:
         """Rename a forum topic in a private (DM) chat."""
-        if not self._bot:
+        if not self._is_bot_ready():
             return
         try:
             chat_id_arg = int(chat_id)
@@ -1300,6 +1334,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
             
         except Exception as e:
+            await self._discard_partial_application()
             self._release_platform_lock()
             message = f"Telegram startup failed: {e}"
             self._set_fatal_error("telegram_connect_error", message, retryable=True)
@@ -1367,7 +1402,7 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None
     ) -> SendResult:
         """Send a message to a Telegram chat."""
-        if not self._bot:
+        if not self._is_bot_ready():
             return SendResult(success=False, error="Not connected")
         
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
@@ -1552,7 +1587,7 @@ class TelegramAdapter(BasePlatformAdapter):
         finalize: bool = False,
     ) -> SendResult:
         """Edit a previously sent Telegram message."""
-        if not self._bot:
+        if not self._is_bot_ready():
             return SendResult(success=False, error="Not connected")
         try:
             if not finalize:
@@ -1648,7 +1683,7 @@ class TelegramAdapter(BasePlatformAdapter):
         messages in the last 48 hours.  Failures are non-fatal — the
         caller leaves the preview in place and logs at debug level.
         """
-        if not self._bot:
+        if not self._is_bot_ready():
             return False
         try:
             await self._bot.delete_message(
@@ -1673,7 +1708,7 @@ class TelegramAdapter(BasePlatformAdapter):
         Used by the gateway ``/update`` watcher when ``hermes update --gateway``
         needs user input (stash restore, config migration).
         """
-        if not self._bot:
+        if not self._is_bot_ready():
             return SendResult(success=False, error="Not connected")
         try:
             default_hint = f" (default: {default})" if default else ""
@@ -1715,7 +1750,7 @@ class TelegramAdapter(BasePlatformAdapter):
         The buttons call ``resolve_gateway_approval()`` to unblock the waiting
         agent thread — same mechanism as the text ``/approve`` flow.
         """
-        if not self._bot:
+        if not self._is_bot_ready():
             return SendResult(success=False, error="Not connected")
 
         try:
@@ -1781,7 +1816,7 @@ class TelegramAdapter(BasePlatformAdapter):
         confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Render a three-button slash-command confirmation prompt."""
-        if not self._bot:
+        if not self._is_bot_ready():
             return SendResult(success=False, error="Not connected")
 
         try:
@@ -1840,7 +1875,7 @@ class TelegramAdapter(BasePlatformAdapter):
         Two-step drill-down: provider selection → model selection.
         Edits the same message in-place as the user navigates.
         """
-        if not self._bot:
+        if not self._is_bot_ready():
             return SendResult(success=False, error="Not connected")
 
         try:
@@ -2373,7 +2408,7 @@ class TelegramAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         """Send audio as a native Telegram voice message or audio file."""
-        if not self._bot:
+        if not self._is_bot_ready():
             return SendResult(success=False, error="Not connected")
         
         try:
@@ -2470,7 +2505,7 @@ class TelegramAdapter(BasePlatformAdapter):
         opened as byte streams. On failure the whole batch falls back to
         the base adapter's per-image loop.
         """
-        if not self._bot:
+        if not self._is_bot_ready():
             return
         if not images:
             return
@@ -2596,7 +2631,7 @@ class TelegramAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         """Send a local image file natively as a Telegram photo."""
-        if not self._bot:
+        if not self._is_bot_ready():
             return SendResult(success=False, error="Not connected")
 
         try:
@@ -2689,7 +2724,7 @@ class TelegramAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         """Send a document/file natively as a Telegram file attachment."""
-        if not self._bot:
+        if not self._is_bot_ready():
             return SendResult(success=False, error="Not connected")
 
         try:
@@ -2738,7 +2773,7 @@ class TelegramAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         """Send a video natively as a Telegram video message."""
-        if not self._bot:
+        if not self._is_bot_ready():
             return SendResult(success=False, error="Not connected")
 
         try:
@@ -2787,7 +2822,7 @@ class TelegramAdapter(BasePlatformAdapter):
         Tries URL-based send first (fast, works for <5MB images).
         Falls back to downloading and uploading as file (supports up to 10MB).
         """
-        if not self._bot:
+        if not self._is_bot_ready():
             return SendResult(success=False, error="Not connected")
 
         from tools.url_safety import is_safe_url
@@ -2875,7 +2910,7 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an animated GIF natively as a Telegram animation (auto-plays inline)."""
-        if not self._bot:
+        if not self._is_bot_ready():
             return SendResult(success=False, error="Not connected")
         
         try:
@@ -2947,7 +2982,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Telegram chat."""
-        if not self._bot:
+        if not self._is_bot_ready():
             return {"name": "Unknown", "type": "dm"}
         
         try:
@@ -3261,13 +3296,13 @@ class TelegramAdapter(BasePlatformAdapter):
         return chat_type in ("group", "supergroup")
 
     def _is_reply_to_bot(self, message: Message) -> bool:
-        if not self._bot or not getattr(message, "reply_to_message", None):
+        if not self._is_bot_ready() or not getattr(message, "reply_to_message", None):
             return False
         reply_user = getattr(message.reply_to_message, "from_user", None)
         return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
 
     def _message_mentions_bot(self, message: Message) -> bool:
-        if not self._bot:
+        if not self._is_bot_ready():
             return False
 
         bot_username = (getattr(self._bot, "username", None) or "").lstrip("@").lower()
@@ -4146,7 +4181,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Set a single emoji reaction on a Telegram message."""
-        if not self._bot:
+        if not self._is_bot_ready():
             return False
         try:
             await self._bot.set_message_reaction(
