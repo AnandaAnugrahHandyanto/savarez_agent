@@ -5863,7 +5863,8 @@ class HermesCLI:
 
         def _ask():
             try:
-                result[0] = input(prompt_text).strip() or None
+                from prompt_toolkit.shortcuts import prompt as pt_prompt
+                result[0] = pt_prompt(prompt_text).strip() or None
             except (KeyboardInterrupt, EOFError):
                 pass
 
