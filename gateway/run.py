@@ -10500,7 +10500,7 @@ class GatewayRunner:
             "  /topic             Enable topic mode, or show status if already on\n"
             "  /topic help        Show this message\n"
             "  /topic off         Disable topic mode and clear topic bindings\n"
-            "  /topic <id>        Inside a topic: restore a previous session by ID\n"
+            "  /topic <id-or-title> Inside a topic: restore a previous session by ID or title\n"
             "\n"
             "How it works:\n"
             "1. Run /topic once in this DM — Hermes checks BotFather Threads\n"
@@ -10585,7 +10585,7 @@ class GatewayRunner:
             if not source.thread_id:
                 return (
                     "To restore a session, first create or open a Telegram topic, "
-                    "then send /topic <session-id> inside that topic. To create a "
+                    "then send /topic <session-id-or-title> inside that topic. To create a "
                     "new topic, open All Messages and send any message there."
                 )
             return await self._restore_telegram_topic_session(event, args)
@@ -10697,7 +10697,7 @@ class GatewayRunner:
                 "",
                 "To restore one:",
                 "1. Create or open a topic. To create a new one, open All Messages and send any message there.",
-                "2. Send /topic <session-id> inside that topic.",
+                "2. Send /topic <session-id-or-title> inside that topic.",
                 f"Example: Send /topic {sessions[0].get('id')} inside a topic.",
             ])
         else:
@@ -10706,20 +10706,26 @@ class GatewayRunner:
                 "",
                 "To restore a previous session later:",
                 "1. Create or open a topic. To create a new one, open All Messages and send any message there.",
-                "2. Send /topic <session-id> inside that topic.",
+                "2. Send /topic <session-id-or-title> inside that topic.",
             ])
         return "\n".join(lines)
 
     async def _restore_telegram_topic_session(self, event: MessageEvent, raw_session_id: str) -> str:
         """Restore an existing Telegram-owned Hermes session into this topic."""
         source = event.source
-        session_id = self._session_db.resolve_session_id(raw_session_id.strip())
+        raw = raw_session_id.strip()
+        session_id = self._session_db.resolve_session_id(raw)
         if not session_id:
-            return f"Session not found: {raw_session_id.strip()}"
+            try:
+                session_id = self._session_db.resolve_session_by_title(raw)
+            except Exception:
+                session_id = None
+        if not session_id:
+            return f"Session not found: {raw}"
 
         session = self._session_db.get_session(session_id)
         if not session:
-            return f"Session not found: {raw_session_id.strip()}"
+            return f"Session not found: {raw}"
         if str(session.get("source") or "") != "telegram":
             return "That session is not a Telegram session and cannot be restored into this topic."
         if str(session.get("user_id") or "") != str(source.user_id):
@@ -10863,6 +10869,27 @@ class GatewayRunner:
         except Exception as e:
             logger.debug("Failed to resolve resume continuation for %s: %s", target_id, e)
 
+        # A Telegram topic can only own one session binding at a time, and a
+        # session can only be linked to one topic. Check before switching the
+        # in-memory SessionStore so an already-linked target doesn't leave the
+        # current topic half-switched.
+        if self._is_telegram_topic_lane(source):
+            try:
+                current_binding = self._session_db.get_telegram_topic_binding(
+                    chat_id=str(source.chat_id),
+                    thread_id=str(source.thread_id),
+                )
+                target_linked = self._session_db.is_telegram_session_linked_to_topic(
+                    session_id=target_id,
+                )
+                if target_linked and (
+                    not current_binding
+                    or str(current_binding.get("session_id") or "") != str(target_id)
+                ):
+                    return "That session is already linked to another Telegram topic."
+            except Exception:
+                logger.debug("Failed to preflight Telegram topic resume binding", exc_info=True)
+
         # Check if already on that session
         current_entry = self.session_store.get_or_create_session(source)
         if current_entry.session_id == target_id:
@@ -10886,6 +10913,20 @@ class GatewayRunner:
 
         # Get the title for confirmation
         title = self._session_db.get_session_title(target_id) or name
+
+        # Telegram topic lanes are pinned by an explicit topic -> session_id
+        # binding. Keep it in sync with /resume so the next message doesn't
+        # snap back to the previously-bound session.
+        if self._is_telegram_topic_lane(source):
+            try:
+                self._record_telegram_topic_binding(source, new_entry)
+                self._schedule_telegram_topic_title_rename(source, target_id, title)
+            except ValueError as exc:
+                if "already linked" in str(exc):
+                    return "That session is already linked to another Telegram topic."
+                raise
+            except Exception:
+                logger.debug("Failed to rebind Telegram topic after /resume", exc_info=True)
 
         # Count messages for context
         history = self.session_store.load_transcript(target_id)
