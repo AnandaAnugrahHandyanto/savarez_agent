@@ -1026,6 +1026,23 @@ display:
 #   redact_pii: false
 
 # =============================================================================
+# Kanban Webhooks
+# =============================================================================
+# Outbound HTTP notifications fired when a task reaches a terminal state.
+# Webhooks are stored per-board in the kanban SQLite DB (not in this file).
+# Use the CLI to register them:
+#
+#   hermes kanban webhook add https://example.com/hook --events done,blocked
+#
+# The commented example below shows the shape for documentation only.
+#
+# kanban:
+#   webhooks:
+#     - url: https://example.com/kanban-hook
+#       events: [done, blocked, crashed, timed_out]
+#       secret: ${KANBAN_WEBHOOK_SECRET}
+
+# =============================================================================
 # Shell-script hooks
 # =============================================================================
 # Register shell scripts as plugin-hook callbacks.  Each entry is executed as

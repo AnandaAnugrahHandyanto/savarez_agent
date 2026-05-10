@@ -752,6 +752,79 @@ Runs are exposed on the dashboard (Run History section in the drawer, one colour
 
 Two nullable columns on `tasks` are reserved for v2 workflow routing: `workflow_template_id` (which template this task belongs to) and `current_step_key` (which step in that template is active). The v1 kernel ignores them for routing but lets clients write them, so a v2 release can add the routing machinery without another schema migration.
 
+## Webhook Notifications
+
+The board can fire outbound HTTP webhooks when tasks reach terminal states (`done`, `blocked`, `crashed`, `timed_out`).  This is a generic, platform-agnostic alternative to the gateway's built-in Telegram/Discord notifier — any system that can receive a POST request can subscribe.
+
+### Registering a webhook
+
+```bash
+hermes kanban webhook add https://example.com/kanban-hook \
+    --events done,blocked,crashed,timed_out \
+    --secret my-shared-secret
+```
+
+* `--events` — comma-separated subset of `done`, `blocked`, `crashed`, `timed_out`.
+* `--secret` — optional shared secret used to sign the payload with `HMAC-SHA256`.  The receiver validates the `X-Kanban-Signature: sha256=<hex>` header.
+
+Webhooks are **per-board** (stored in the same SQLite DB as the tasks).  Switching boards with `hermes kanban boards switch <slug>` shows a different webhook list.
+
+### Listing and removing
+
+```bash
+hermes kanban webhook list          # human table
+hermes kanban webhook list --json   # machine-readable
+hermes kanban webhook remove 3      # delete webhook id 3
+```
+
+### Testing delivery
+
+```bash
+hermes kanban webhook test 3
+```
+
+Sends a synthetic `"event": "test"` payload to webhook id 3 so you can verify connectivity and signature verification without waiting for a real task transition.
+
+### Payload shape
+
+```json
+{
+  "event": "done",
+  "board": "default",
+  "task": {
+    "id": "t_a1b2c3d4",
+    "title": "Implement rate limiter",
+    "assignee": "fixer",
+    "status": "done",
+    "summary": "shipped token bucket, 14 tests pass",
+    "url": "hermes://kanban/default/t_a1b2c3d4",
+    "run_id": 42
+  },
+  "timestamp": 1715350000
+}
+```
+
+### Delivery semantics
+
+* **Async** — fired in a daemon `threading.Thread` after the DB transaction commits.  Slow receivers cannot block the dispatcher.
+* **Retry** — up to 3 attempts with exponential backoff (1 s, 2 s, 4 s).  Only HTTP 2xx counts as success.
+* **Logging** — failures are written to the `kanban_webhooks` Python logger (captured in `~/.hermes/logs/agent.log` by default).
+* **No guarantee** — webhooks are best-effort.  For critical workflows, pair them with `hermes kanban watch` or poll `task_events` directly.
+
+### Configuring in `config.yaml`
+
+There is no top-level `kanban.webhooks` key — webhooks live in the board DB so they survive config reloads.  The example config shows a commented placeholder:
+
+```yaml
+# kanban:
+#   webhooks:
+#     - url: https://example.com/kanban-hook
+#       events: [done, blocked]
+#       secret: ${KANBAN_WEBHOOK_SECRET}
+```
+
+(The CLI `webhook add` command writes to the DB directly; config-file webhooks are not currently auto-imported.)
+
 ## Event reference
 
 Every transition appends a row to `task_events`. Each row carries an optional `run_id` so UIs can group events by attempt. Kinds group into three clusters so filtering is easy (`hermes kanban watch --kinds completed,gave_up,timed_out`):

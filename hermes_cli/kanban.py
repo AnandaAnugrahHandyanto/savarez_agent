@@ -527,6 +527,32 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_nrm.add_argument("--chat-id", required=True)
     p_nrm.add_argument("--thread-id", default=None)
 
+    # --- webhook ---
+    p_wh = sub.add_parser(
+        "webhook",
+        help="Manage board webhooks (HTTP notifications on terminal transitions)",
+    )
+    wh_sub = p_wh.add_subparsers(dest="webhook_action")
+
+    wh_add = wh_sub.add_parser("add", help="Register a webhook URL for this board")
+    wh_add.add_argument("url", help="Webhook endpoint URL")
+    wh_add.add_argument(
+        "--events",
+        default="done,blocked,crashed,timed_out",
+        help="Comma-separated events to subscribe to (default: done,blocked,crashed,timed_out)",
+    )
+    wh_add.add_argument("--secret", default=None,
+                        help="Shared secret for HMAC-SHA256 signature")
+
+    wh_list = wh_sub.add_parser("list", help="List registered webhooks")
+    wh_list.add_argument("--json", action="store_true")
+
+    wh_rm = wh_sub.add_parser("remove", help="Remove a webhook by id")
+    wh_rm.add_argument("webhook_id", type=int, help="Webhook id from list")
+
+    wh_test = wh_sub.add_parser("test", help="Send a test payload to a webhook")
+    wh_test.add_argument("webhook_id", type=int, help="Webhook id from list")
+
     # --- log ---
     p_log = sub.add_parser(
         "log",
@@ -719,6 +745,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "notify-subscribe":   _cmd_notify_subscribe,
         "notify-list":        _cmd_notify_list,
         "notify-unsubscribe": _cmd_notify_unsubscribe,
+        "webhook":            _cmd_webhook,
         "context":  _cmd_context,
         "specify":  _cmd_specify,
         "gc":       _cmd_gc,
@@ -1958,6 +1985,73 @@ def _cmd_notify_unsubscribe(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_webhook(args: argparse.Namespace) -> int:
+    sub = getattr(args, "webhook_action", None) or "list"
+    if sub == "add":
+        events = [e.strip() for e in (args.events or "").split(",") if e.strip()]
+        invalid = set(events) - kb.VALID_WEBHOOK_EVENTS
+        if invalid:
+            print(
+                f"kanban webhook add: invalid events {sorted(invalid)}. "
+                f"Valid: {sorted(kb.VALID_WEBHOOK_EVENTS)}",
+                file=sys.stderr,
+            )
+            return 2
+        with kb.connect() as conn:
+            wh_id = kb.add_webhook(
+                conn, url=args.url, events=events, secret=args.secret,
+            )
+        print(f"Webhook {wh_id} registered for {', '.join(events)}")
+        return 0
+    if sub == "list":
+        with kb.connect() as conn:
+            hooks = kb.list_webhooks(conn)
+        if getattr(args, "json", False):
+            print(json.dumps(hooks, indent=2, ensure_ascii=False))
+            return 0
+        if not hooks:
+            print("(no webhooks registered for this board)")
+            return 0
+        print(f"{'ID':>4s}  {'URL':40s}  {'EVENTS':30s}")
+        for h in hooks:
+            evs = ",".join(h["events"])
+            print(f"{h['id']:>4d}  {h['url']:40s}  {evs:30s}")
+        return 0
+    if sub == "remove":
+        with kb.connect() as conn:
+            ok = kb.remove_webhook(conn, args.webhook_id)
+        if not ok:
+            print(f"Webhook {args.webhook_id} not found", file=sys.stderr)
+            return 1
+        print(f"Webhook {args.webhook_id} removed")
+        return 0
+    if sub == "test":
+        from hermes_cli import kanban_webhooks as kwh
+        with kb.connect() as conn:
+            hooks = kb.list_webhooks(conn)
+        target = next((h for h in hooks if h["id"] == args.webhook_id), None)
+        if target is None:
+            print(f"Webhook {args.webhook_id} not found", file=sys.stderr)
+            return 1
+        secret = target.get("secret") or None
+        payload = kwh.build_payload(
+            event="test",
+            board=kb.get_current_board(),
+            task={"id": "t_test", "title": "Test payload", "assignee": None,
+                  "status": "done", "summary": "Webhook test"},
+        )
+        ok = kwh.send_webhook_notification(
+            url=target["url"], secret=secret, payload=payload,
+        )
+        if ok:
+            print(f"Test delivered to webhook {args.webhook_id}")
+            return 0
+        print(f"Test delivery to webhook {args.webhook_id} failed", file=sys.stderr)
+        return 1
+    print(f"kanban webhook: unknown action {sub!r}", file=sys.stderr)
+    return 2
+
+
 def _cmd_log(args: argparse.Namespace) -> int:
     content = kb.read_worker_log(args.task_id, tail_bytes=args.tail)
     if content is None:
@@ -2137,7 +2231,7 @@ def _cmd_gc(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 _SLASH_KANBAN_HELP = """\
-**/kanban** — manage the shared task board.
+|**/kanban** — manage the shared task board.
 
 Common subcommands:
   `list` (alias `ls`)   List tasks on the current board
@@ -2153,6 +2247,9 @@ Common subcommands:
   `context <id>`        Full worker-context dump
   `runs <id>`           Attempt history
   `log <id>`            Worker log
+  `webhook add <url>`   Register a terminal-state webhook
+  `webhook list`        Show registered webhooks
+  `webhook test <id>`   Send a test payload
 
 Run `/kanban <subcommand> -h` for arguments. \
 Read-only commands are safe while an agent is running.\

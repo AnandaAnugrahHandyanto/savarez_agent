@@ -874,7 +874,16 @@ CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, cre
 CREATE INDEX IF NOT EXISTS idx_events_run            ON task_events(run_id, id);
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
+CREATE TABLE IF NOT EXISTS kanban_webhooks (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    url        TEXT NOT NULL,
+    events     TEXT NOT NULL DEFAULT 'done,blocked,crashed,timed_out',
+    secret     TEXT,
+    created_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_webhooks_events       ON kanban_webhooks(events);
 """
 
 
@@ -1152,6 +1161,25 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             (new, old),
         )
 
+    # kanban_webhooks table migration for pre-existing DBs
+    wh_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_webhooks'"
+    ).fetchone() is not None
+    if not wh_exists:
+        conn.execute(
+            "CREATE TABLE kanban_webhooks ("
+            "    id         INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "    url        TEXT NOT NULL,"
+            "    events     TEXT NOT NULL DEFAULT 'done,blocked,crashed,timed_out',"
+            "    secret     TEXT,"
+            "    created_at INTEGER NOT NULL"
+            ")"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_webhooks_events "
+            "ON kanban_webhooks(events)"
+        )
+
 
 @contextlib.contextmanager
 def write_txn(conn: sqlite3.Connection):
@@ -1174,6 +1202,27 @@ def write_txn(conn: sqlite3.Connection):
 # ---------------------------------------------------------------------------
 # ID generation
 # ---------------------------------------------------------------------------
+
+def _maybe_fire_webhooks(
+    conn: sqlite3.Connection,
+    event: str,
+    task_id: str,
+    run_id: Optional[int] = None,
+    summary: Optional[str] = None,
+) -> None:
+    """Lazy-import and fire webhooks for a terminal transition."""
+    from hermes_cli import kanban_webhooks as kwh
+    board = get_current_board()
+    task_row = conn.execute(
+        "SELECT id, title, assignee, status FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if task_row is None:
+        return
+    task = dict(task_row)
+    task["summary"] = summary
+    kwh.maybe_fire_webhooks(conn, event, board, task, run_id=run_id)
+
 
 def _new_task_id() -> str:
     """Generate a short, URL-safe task id.
@@ -2382,6 +2431,7 @@ def complete_task(
             completed_payload,
             run_id=run_id,
         )
+    _maybe_fire_webhooks(conn, "done", task_id, run_id=run_id, summary=summary)
     # Prose-scan the summary + result for t_<hex> references that do
     # not resolve. Advisory — does not block the completion. Runs in
     # its own txn so the completion itself is already durable by the
@@ -2532,7 +2582,8 @@ def block_task(
                 summary=reason,
             )
         _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
-        return True
+    _maybe_fire_webhooks(conn, "blocked", task_id, run_id=run_id, summary=reason)
+    return True
 
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
@@ -3079,6 +3130,7 @@ def enforce_max_runtime(
     """
     import signal
     timed_out: list[str] = []
+    timed_out_run_ids: dict[str, int] = {}
     now = int(time.time())
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
 
@@ -3156,11 +3208,7 @@ def enforce_max_runtime(
                     conn, tid, "timed_out", payload, run_id=run_id,
                 )
                 timed_out.append(tid)
-        # Increment the unified failure counter. Outside the write_txn
-        # above because ``_record_task_failure`` opens its own. If the
-        # breaker trips, this flips the task ``ready → blocked`` and
-        # emits a ``gave_up`` event on top of the ``timed_out`` we
-        # already emitted.
+                timed_out_run_ids[tid] = run_id
         if cur.rowcount == 1:
             _record_task_failure(
                 conn, tid,
@@ -3170,6 +3218,8 @@ def enforce_max_runtime(
                 end_run=False,
                 event_payload_extra={"pid": pid, "sigkill": killed},
             )
+    for tid in timed_out:
+        _maybe_fire_webhooks(conn, "timed_out", tid, run_id=timed_out_run_ids.get(tid))
     return timed_out
 
 
@@ -3208,6 +3258,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     returning 0 without a terminal transition just loops forever.
     """
     crashed: list[str] = []
+    crashed_run_ids: dict[str, int] = {}
     # Per-crash details collected inside the main txn, used after it
     # closes to run ``_record_task_failure`` (which needs its own
     # write_txn so can't nest). ``protocol_violation`` flags the
@@ -3280,10 +3331,13 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     run_id=run_id,
                 )
                 crashed.append(row["id"])
+                crashed_run_ids[row["id"]] = run_id
                 crash_details.append(
                     (row["id"], pid, row["claim_lock"],
                      protocol_violation, error_text)
                 )
+    for tid in crashed:
+        _maybe_fire_webhooks(conn, "crashed", tid, run_id=crashed_run_ids.get(tid))
     # Outside the main txn: increment the unified failure counter for
     # each crashed task. If the breaker trips, the task transitions
     # ready → blocked with a ``gave_up`` event on top of the ``crashed``
@@ -3466,6 +3520,8 @@ def _record_task_failure(
                     run_id=run_id,
                 )
             # Timeout/crash path's caller already emitted its own event.
+    if blocked:
+        _maybe_fire_webhooks(conn, "blocked", task_id, run_id=run_id, summary=error[:500])
     return blocked
 
 
@@ -4338,6 +4394,80 @@ def advance_notify_cursor(
             "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
             (int(new_cursor), task_id, platform, chat_id, thread_id or ""),
         )
+
+
+# ---------------------------------------------------------------------------
+# Webhooks (per-board outbound HTTP notifications on terminal transitions)
+# ---------------------------------------------------------------------------
+
+VALID_WEBHOOK_EVENTS = {"done", "blocked", "crashed", "timed_out", "gave_up"}
+
+
+def add_webhook(
+    conn: sqlite3.Connection,
+    url: str,
+    events: Optional[list[str]] = None,
+    secret: Optional[str] = None,
+) -> int:
+    """Register a new webhook. Returns the webhook id."""
+    now = int(time.time())
+    if events is None:
+        events = ["done", "blocked", "crashed", "timed_out"]
+    ev_str = ",".join(events)
+    with write_txn(conn):
+        cur = conn.execute(
+            "INSERT INTO kanban_webhooks (url, events, secret, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (url, ev_str, secret, now),
+        )
+    return int(cur.lastrowid or 0)
+
+
+def list_webhooks(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        "SELECT id, url, events, secret, created_at FROM kanban_webhooks "
+        "ORDER BY created_at ASC"
+    ).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        out.append({
+            "id": r["id"],
+            "url": r["url"],
+            "events": (r["events"] or "").split(","),
+            "secret": bool(r["secret"]),
+            "created_at": r["created_at"],
+        })
+    return out
+
+
+def remove_webhook(conn: sqlite3.Connection, webhook_id: int) -> bool:
+    with write_txn(conn):
+        cur = conn.execute(
+            "DELETE FROM kanban_webhooks WHERE id = ?", (int(webhook_id),)
+        )
+    return cur.rowcount > 0
+
+
+def get_webhooks_for_event(
+    conn: sqlite3.Connection, event: str,
+) -> list[dict]:
+    """Return webhooks that subscribe to ``event``.
+
+    Each row is a dict with ``id``, ``url``, ``secret`` (raw string).
+    """
+    rows = conn.execute(
+        "SELECT id, url, events, secret FROM kanban_webhooks"
+    ).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        evs = {e.strip() for e in (r["events"] or "").split(",")}
+        if event in evs:
+            out.append({
+                "id": r["id"],
+                "url": r["url"],
+                "secret": r["secret"],
+            })
+    return out
 
 
 # ---------------------------------------------------------------------------
