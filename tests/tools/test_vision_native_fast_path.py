@@ -159,6 +159,10 @@ class TestHandleVisionAnalyzeFastPath:
                 "auxiliary": {"vision": {"provider": "auto"}},
             },
         )
+        monkeypatch.setattr(
+            "agent.image_routing.decide_image_input_mode",
+            lambda provider, model, cfg: "native",
+        )
 
         # Set runtime override so the handler thinks we're on opus@openrouter
         from agent.auxiliary_client import set_runtime_main, clear_runtime_main
