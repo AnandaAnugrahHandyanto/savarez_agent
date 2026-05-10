@@ -2704,7 +2704,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             print(f"[{self.name}] Failed to send document: {e}")
-            return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata, thumbnail_path=thumbnail_path)
+            return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
 
     async def send_video(
         self,

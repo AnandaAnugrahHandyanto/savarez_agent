@@ -275,7 +275,10 @@ def _handle_send(args):
     # instead of send_photo so the original bytes survive (e.g. info-graph
     # JPGs where Telegram's sendPhoto recompresses to 1280px).
     force_document_attachments = "[[as_document]]" in message
-    thumbnail_path, message_for_media = _extract_media_thumbnail_directive(message)
+    thumbnail_path = None
+    message_for_media = message
+    if platform == Platform.TELEGRAM:
+        thumbnail_path, message_for_media = _extract_media_thumbnail_directive(message)
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message_for_media)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
@@ -466,7 +469,6 @@ async def _send_via_adapter(
     thread_id=None,
     media_files=None,
     force_document=False,
-    thumbnail_path=None,
 ):
     """Send a message via a live gateway adapter, with a standalone fallback
     for out-of-process callers (e.g. cron running separately from the gateway).
@@ -519,7 +521,6 @@ async def _send_via_adapter(
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document,
-                thumbnail_path=thumbnail_path,
             )
         except asyncio.CancelledError:
             raise
@@ -778,7 +779,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document,
-                thumbnail_path=thumbnail_path,
             )
 
         if isinstance(result, dict) and result.get("error"):

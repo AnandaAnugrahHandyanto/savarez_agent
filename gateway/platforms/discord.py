@@ -2656,7 +2656,6 @@ class DiscordAdapter(BasePlatformAdapter):
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
-        thumbnail_path: Optional[str] = None,
     ) -> SendResult:
         """Send an arbitrary file natively as a Discord attachment."""
         try:
@@ -2665,15 +2664,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"File not found: {file_path}")
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send document, falling back to base adapter: %s", self.name, e, exc_info=True)
-            return await super().send_document(
-                chat_id,
-                file_path,
-                caption,
-                file_name,
-                reply_to,
-                metadata=metadata,
-                thumbnail_path=thumbnail_path,
-            )
+            return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Start a persistent typing indicator for a channel.
