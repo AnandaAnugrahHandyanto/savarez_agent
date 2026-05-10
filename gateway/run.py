@@ -43,6 +43,26 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List, Union
 
+# [HERMES_DURABLE_NOOP_v1] See spark-X note 2026-05-09.
+_DURABLE_AVAILABLE = False
+_durable = None
+
+
+def _get_durable_runtime():
+    """Return the durable integration module only when it is fully available.
+
+    Queued follow-up turns run on a rare recursive path. A partial patch once
+    referenced ``_DURABLE_AVAILABLE`` there without defining the sentinel at the
+    module level, which surfaced as an intermittent NameError only for users who
+    hit the queued-follow-up branch. Resolve through ``globals().get`` so the
+    guard degrades to "durable unavailable" instead of crashing even if a future
+    partial update/regression drops the sentinel again.
+    """
+
+    if not globals().get("_DURABLE_AVAILABLE", False):
+        return None
+    return globals().get("_durable")
+
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
 # patches (tests/gateway/test_usage_command.py) target
@@ -15108,18 +15128,61 @@ class GatewayRunner:
                     except Exception:
                         pass
 
-                return await self._run_agent(
-                    message=next_message,
-                    context_prompt=context_prompt,
-                    history=updated_history,
-                    source=next_source,
-                    session_id=session_id,
-                    session_key=session_key,
-                    run_generation=run_generation,
-                    _interrupt_depth=_interrupt_depth + 1,
-                    event_message_id=next_message_id,
-                    channel_prompt=next_channel_prompt,
-                )
+                # Stage A wrap for queued follow-up. Without this, the
+                # recursive _run_agent's begin_run cannot link to a row
+                # (original on_agent_start's row already has its
+                # resume_chain_id taken by the prior chain). See cron
+                # patch (772ea38) for the analogous wrap.
+                _followup_dur_handle = None
+                _followup_terminal_state = "FAIL"
+                _followup_durable = _get_durable_runtime()
+                if _followup_durable is not None:
+                    try:
+                        _followup_dur_cfg = _load_gateway_config()
+                        _followup_dur_handle = _followup_durable.on_agent_start(
+                            config=_followup_dur_cfg,
+                            session_id=session_id,
+                            session_key=session_key,
+                            source_platform=str(source.platform),
+                            agent_profile=(
+                                _followup_dur_cfg.get("client_identity")
+                                or _followup_dur_cfg.get("profile")
+                                or os.environ.get("HERMES_PROFILE")
+                                or "unknown"
+                            ),
+                            note="queued_followup",
+                        )
+                    except Exception as _qf_exc:
+                        logger.warning("Queued follow-up: durable on_agent_start failed: %s", _qf_exc)
+                        _followup_dur_handle = None
+                try:
+                    _followup_result = await self._run_agent(
+                        message=next_message,
+                        context_prompt=context_prompt,
+                        history=updated_history,
+                        source=next_source,
+                        session_id=session_id,
+                        session_key=session_key,
+                        run_generation=run_generation,
+                        _interrupt_depth=_interrupt_depth + 1,
+                        event_message_id=next_message_id,
+                        channel_prompt=next_channel_prompt,
+                    )
+                    if isinstance(_followup_result, dict) and _followup_result.get("completed", True):
+                        _followup_terminal_state = "SUCCESS"
+                    if _followup_dur_handle is not None and _followup_durable is not None:
+                        try:
+                            _followup_durable.on_agent_end(_followup_dur_handle, terminal_state=_followup_terminal_state)
+                        except Exception:
+                            pass
+                    return _followup_result
+                except Exception:
+                    if _followup_dur_handle is not None and _followup_durable is not None:
+                        try:
+                            _followup_durable.on_agent_end(_followup_dur_handle, terminal_state="FAIL")
+                        except Exception:
+                            pass
+                    raise
         finally:
             # Stop progress sender, interrupt monitor, and notification task
             if progress_task:
