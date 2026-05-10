@@ -165,6 +165,7 @@ VALID_HOOKS: Set[str] = {
     #   choice: "once" | "session" | "always" | "deny" | "timeout"
     "pre_approval_request",
     "post_approval_response",
+    "pre_gateway_text_send",  # rewrite/block outbound text before platform send
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

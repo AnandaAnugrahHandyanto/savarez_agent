@@ -24,9 +24,9 @@ Architecture:
 2. Aggregator model synthesizes responses into a high-quality output
 3. Multiple layers can be used for iterative refinement (future enhancement)
 
-Models Used (via OpenRouter):
-- Reference Models: claude-opus-4.6, gemini-3-pro-preview, gpt-5.4-pro, deepseek-v3.2
-- Aggregator Model: claude-opus-4.6 (highest capability for synthesis)
+Models Used (via Requesty or OpenRouter):
+- Reference Models: claude-opus-4-7, gemini-3.1-pro, gpt-5.5, deepseek-v4-pro, GLM-5.1
+- Aggregator Model: claude-opus-4-7 (highest capability for synthesis)
 
 Configuration:
     To customize the MoA setup, modify the configuration constants at the top of this file:
@@ -57,19 +57,42 @@ from tools.debug_helpers import DebugSession
 
 logger = logging.getLogger(__name__)
 
+# Requesty router support
+_REQUESTY_BASE_URL = "https://router.requesty.ai/v1"
+
+# OpenRouter base URL (fallback)
+_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+def _get_requesty_key() -> str | None:
+    """Lazy-read Requesty API key from environment or .env file."""
+    import os
+    key = os.environ.get("REQUESTY_API_KEY")
+    if key:
+        return key
+    # Try .env files
+    for env_path in [os.path.expanduser("~/.hermes/.env"), os.path.expanduser("~/.hermes/profiles/dev/.env")]:
+        if os.path.isfile(env_path):
+            with open(env_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("REQUESTY_API_KEY="):
+                        return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return None
+
 # Configuration for MoA processing
 # Reference models - these generate diverse initial responses in parallel.
 # Keep this list aligned with current top-tier OpenRouter frontier options.
 REFERENCE_MODELS = [
-    "anthropic/claude-opus-4.6",
-    "google/gemini-2.5-pro",
-    "openai/gpt-5.4-pro",
-    "deepseek/deepseek-v3.2",
+    "anthropic/claude-opus-4-7",
+    "google/gemini-3.1-pro",
+    "openai/gpt-5.5",
+    "deepseek/deepseek-v4-pro",
+    "zhipu/GLM-5.1",
 ]
 
 # Aggregator model - synthesizes reference responses into final output.
 # Prefer the strongest synthesis model in the current OpenRouter lineup.
-AGGREGATOR_MODEL = "anthropic/claude-opus-4.6"
+AGGREGATOR_MODEL = "anthropic/claude-opus-4-7"
 
 # Temperature settings optimized for MoA performance
 REFERENCE_TEMPERATURE = 0.6  # Balanced creativity for diverse perspectives
@@ -298,9 +321,17 @@ async def mixture_of_agents_tool(
         logger.info("Starting Mixture-of-Agents processing...")
         logger.info("Query: %s", user_prompt[:100])
         
-        # Validate API key availability
-        if not os.getenv("OPENROUTER_API_KEY"):
-            raise ValueError("OPENROUTER_API_KEY environment variable not set")
+        # Validate API key availability — prefer Requesty, fallback to OpenRouter
+        openrouter_key = os.getenv("OPENROUTER_API_KEY")
+        requesty_key = _get_requesty_key()
+        if requesty_key:
+            base_url = _REQUESTY_BASE_URL
+            api_key = requesty_key
+        elif openrouter_key:
+            base_url = _OPENROUTER_BASE_URL
+            api_key = openrouter_key
+        else:
+            return "Error: No API key found. Set REQUESTY_API_KEY or OPENROUTER_API_KEY."
         
         # Use provided models or defaults
         ref_models = reference_models or REFERENCE_MODELS
@@ -535,7 +566,7 @@ registry.register(
     schema=MOA_SCHEMA,
     handler=lambda args, **kw: mixture_of_agents_tool(user_prompt=args.get("user_prompt", "")),
     check_fn=check_moa_requirements,
-    requires_env=["OPENROUTER_API_KEY"],
+    requires_env=[],
     is_async=True,
     emoji="🧠",
 )

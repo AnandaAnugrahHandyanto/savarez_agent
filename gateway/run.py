@@ -52,6 +52,7 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from hermes_cli.config import cfg_get
+from hermes_cli.plugins import get_plugin_manager
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -3353,6 +3354,7 @@ class GatewayRunner:
 
         # Discover and load event hooks
         self.hooks.discover_and_load()
+        get_plugin_manager().discover_and_load()
 
         
         # Recover background processes from checkpoint (crash recovery)

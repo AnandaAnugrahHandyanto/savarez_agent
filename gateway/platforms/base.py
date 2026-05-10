@@ -23,6 +23,26 @@ from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
 
+
+def _apply_text_hooks(text: str, event: "MessageEvent", session_id: Optional[str] = None) -> tuple[str, str]:
+    """Apply pre_gateway_text_send hooks. Returns (action, text).
+    action is 'allow', 'block', or 'rewrite'.
+    """
+    from hermes_cli.plugins import invoke_hook
+    result = invoke_hook("pre_gateway_text_send", text=text, event=event, session_id=session_id)
+    if not result:
+        return "allow", text
+    # Hooks may return list of results; take first non-None
+    for r in result:
+        if r is not None:
+            if isinstance(r, dict):
+                action = r.get("action", "allow")
+                new_text = r.get("text", text)
+                return action, new_text
+            elif isinstance(r, str):
+                return "allow", r
+    return "allow", text
+
 # Audio file extensions Hermes recognizes for native audio delivery.
 # Kept in sync with tools/send_message_tool.py and cron/scheduler.py via
 # should_send_media_as_audio() below.
@@ -2945,6 +2965,11 @@ class BasePlatformAdapter(ABC):
                             os.remove(_tts_path)
                         except OSError:
                             pass
+
+                # Apply pre_gateway_text_send hooks
+                _hook_action, text_content = _apply_text_hooks(text_content, event)
+                if _hook_action == "block":
+                    text_content = ""
 
                 # Send the text portion
                 if text_content:

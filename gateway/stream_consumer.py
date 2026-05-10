@@ -25,6 +25,12 @@ from typing import Any, Optional
 
 logger = logging.getLogger("gateway.stream_consumer")
 
+
+def _apply_streaming_text_hooks(text: str, event: "MessageEvent", session_id: Optional[str] = None) -> tuple[str, str]:
+    """Same as _apply_text_hooks but for streaming output."""
+    from gateway.platforms.base import _apply_text_hooks
+    return _apply_text_hooks(text, event, session_id)
+
 # Sentinel to signal the stream is complete
 _DONE = object()
 
@@ -421,6 +427,11 @@ class GatewayStreamConsumer:
                     # here instead of letting the base gateway path send the
                     # full response again.
                     if self._accumulated:
+                        # Apply pre_gateway_text_send hooks to streamed text
+                        _stream_action, self._accumulated = _apply_streaming_text_hooks(self._accumulated, None)
+                        if _stream_action == "block":
+                            self._accumulated = ""
+                            return
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
                         elif (
