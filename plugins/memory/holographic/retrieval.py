@@ -51,64 +51,88 @@ class FactRetriever:
         category: str | None = None,
         min_trust: float = 0.3,
         limit: int = 10,
+        rrf_k: int = 60,
     ) -> list[dict]:
-        """Hybrid search: FTS5 candidates → Jaccard rerank → trust weighting.
+        """Three-channel RRF fusion: FTS5 + Jaccard + HRR.
+
+        RRF (Reciprocal Rank Fusion): Each channel produces a ranked list.
+        A result at rank r in any channel gets score 1/(k+r). Sum across
+        channels gives fused score. Robust to channel quality differences.
 
         Pipeline:
-        1. FTS5 search: Get limit*3 candidates from SQLite full-text search
-        2. Jaccard boost: Token overlap between query and fact content
-        3. Trust weighting: final_score = relevance * trust_score
-        4. Temporal decay (optional): decay = 0.5^(age_days / half_life)
+        1. FTS5: rank by BM25 score (already normalized 0-1)
+        2. Jaccard: rank by token overlap
+        3. HRR: rank by vector similarity
+        4. RRF fuse → apply trust weighting → optional temporal decay
 
         Returns list of dicts with fact data + 'score' field, sorted by score desc.
         """
-        # Stage 1: Get FTS5 candidates (more than limit for reranking headroom)
-        candidates = self._fts_candidates(query, category, min_trust, limit * 3)
-
-        if not candidates:
+        # Stage 1: Get candidates from all three channels
+        fts_candidates = self._fts_candidates(query, category, min_trust, limit * 4)
+        if not fts_candidates:
             return []
 
-        # Stage 2: Rerank with Jaccard + trust + optional decay
         query_tokens = self._tokenize(query)
-        scored = []
+        query_vec = hrr.encode_text(query, self.hrr_dim) if self.hrr_weight > 0 else None
 
-        for fact in candidates:
+        # Score all candidates with all three channels
+        scored: dict[int, dict] = {}  # fact_id → enriched fact
+
+        for fact in fts_candidates:
+            fid = fact["fact_id"]
             content_tokens = self._tokenize(fact["content"])
             tag_tokens = self._tokenize(fact.get("tags", ""))
             all_tokens = content_tokens | tag_tokens
 
-            jaccard = self._jaccard_similarity(query_tokens, all_tokens)
+            # Channel 1: FTS5 rank score
             fts_score = fact.get("fts_rank", 0.0)
 
-            # HRR similarity
+            # Channel 2: Jaccard
+            jaccard = self._jaccard_similarity(query_tokens, all_tokens)
+
+            # Channel 3: HRR
             if self.hrr_weight > 0 and fact.get("hrr_vector"):
                 fact_vec = hrr.bytes_to_phases(fact["hrr_vector"])
-                query_vec = hrr.encode_text(query, self.hrr_dim)
-                hrr_sim = (hrr.similarity(query_vec, fact_vec) + 1.0) / 2.0  # shift to [0,1]
+                hrr_sim = (hrr.similarity(query_vec, fact_vec) + 1.0) / 2.0
             else:
-                hrr_sim = 0.5  # neutral
+                hrr_sim = 0.5
 
-            # Combine FTS5 + Jaccard + HRR
-            relevance = (self.fts_weight * fts_score
-                        + self.jaccard_weight * jaccard
-                        + self.hrr_weight * hrr_sim)
+            fact["_fts_s"] = fts_score
+            fact["_jac_s"] = jaccard
+            fact["_hrr_s"] = hrr_sim
+            fact.pop("hrr_vector", None)
+            scored[fid] = fact
 
-            # Trust weighting
-            score = relevance * fact["trust_score"]
+        # Build ranked lists for RRF
+        fts_ranked = sorted(scored.values(), key=lambda x: x["_fts_s"], reverse=True)
+        jac_ranked = sorted(scored.values(), key=lambda x: x["_jac_s"], reverse=True)
+        hrr_ranked = sorted(scored.values(), key=lambda x: x["_hrr_s"], reverse=True)
 
-            # Optional temporal decay
+        rrf_scores: dict[int, float] = {fid: 0.0 for fid in scored}
+
+        for rank, fact in enumerate(fts_ranked):
+            rrf_scores[fact["fact_id"]] += 1.0 / (rrf_k + rank + 1) * self.fts_weight
+        for rank, fact in enumerate(jac_ranked):
+            rrf_scores[fact["fact_id"]] += 1.0 / (rrf_k + rank + 1) * self.jaccard_weight
+        for rank, fact in enumerate(hrr_ranked):
+            rrf_scores[fact["fact_id"]] += 1.0 / (rrf_k + rank + 1) * self.hrr_weight
+
+        # Apply trust weighting + optional temporal decay, then finalize
+        for fid, fact in scored.items():
+            score = rrf_scores[fid] * fact["trust_score"]
             if self.half_life > 0:
                 score *= self._temporal_decay(fact.get("updated_at") or fact.get("created_at"))
-
             fact["score"] = score
-            scored.append(fact)
 
-        # Sort by score descending, return top limit
-        scored.sort(key=lambda x: x["score"], reverse=True)
-        results = scored[:limit]
-        # Strip raw HRR bytes — callers expect JSON-serializable dicts
+        # Sort by fused score descending
+        results = sorted(scored.values(), key=lambda x: x["score"], reverse=True)[:limit]
+
+        # Strip internal channel score fields
         for fact in results:
-            fact.pop("hrr_vector", None)
+            fact.pop("_fts_s", None)
+            fact.pop("_jac_s", None)
+            fact.pop("_hrr_s", None)
+
         return results
 
     def probe(
