@@ -709,6 +709,15 @@ class WebhookAdapter(BasePlatformAdapter):
         self, content: str, delivery: dict
     ) -> SendResult:
         """Post agent response as a GitHub PR/issue comment via ``gh`` CLI."""
+        # Convention for webhook routes: an agent response of exactly SKIP
+        # means "do not deliver anything".  PR-review routes use this for
+        # trusted webhook actions such as closed/deleted/review_requested.
+        # Without this guard, the sentinel itself gets posted as a noisy
+        # GitHub comment.
+        if content.strip() == "SKIP":
+            logger.info("[webhook] Suppressed SKIP response for github_comment delivery")
+            return SendResult(success=True)
+
         extra = delivery.get("deliver_extra", {})
         repo = extra.get("repo", "")
         pr_number = extra.get("pr_number", "")

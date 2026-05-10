@@ -638,6 +638,21 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
+
+_COMPRESSION_LIFECYCLE_STATUS_PREFIXES = (
+    "📦 Preflight compression:",
+    "🗜️ Context reduced to ",
+    "🗜️ Context too large ",
+    "🗜️ Compressed ",
+    "⚠️  Request payload too large",
+)
+
+
+def _should_suppress_gateway_lifecycle_status(platform: Any, event_type: str, message: str) -> bool:
+    """Return True for lifecycle notices that are too noisy for chat platforms."""
+    if platform not in {Platform.TELEGRAM, Platform.DISCORD} or event_type != "lifecycle":
+        return False
+    return (message or "").strip().startswith(_COMPRESSION_LIFECYCLE_STATUS_PREFIXES)
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -14146,6 +14161,16 @@ class GatewayRunner:
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
+                return
+            # Messaging platforms should feel like a PA/friend, not a debug
+            # console.  Compression lifecycle notices are useful in CLI/TUI, but
+            # noisy in Telegram/Discord where they arrive as standalone messages.
+            if _should_suppress_gateway_lifecycle_status(source.platform, event_type, message):
+                logger.debug(
+                    "suppressing gateway compression lifecycle status for %s: %s",
+                    source.platform.value if source.platform else "",
+                    (message or "").strip(),
+                )
                 return
             try:
                 _fut = asyncio.run_coroutine_threadsafe(

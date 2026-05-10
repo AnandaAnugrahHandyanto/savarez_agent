@@ -337,3 +337,40 @@ class TestGitHubCommentDelivery:
         # Delivery info is retained after send() so interim status messages
         # don't strand the final response (TTL-based cleanup happens on POST).
         assert chat_id in adapter._delivery_info
+
+    @pytest.mark.asyncio
+    async def test_github_comment_delivery_suppresses_skip_sentinel(self):
+        """A literal SKIP response is a control sentinel, not a comment body."""
+        routes = {
+            "pr-bot": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "Review: {pull_request.title}",
+                "deliver": "github_comment",
+                "deliver_extra": {
+                    "repo": "{repository.full_name}",
+                    "pr_number": "{number}",
+                },
+            }
+        }
+        adapter = _make_adapter(routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/pr-bot",
+                json=GITHUB_PR_PAYLOAD,
+                headers={
+                    "X-GitHub-Event": "pull_request",
+                    "X-GitHub-Delivery": "gh-comment-skip-001",
+                },
+            )
+            assert resp.status == 202
+
+        chat_id = "webhook:pr-bot:gh-comment-skip-001"
+
+        with patch("gateway.platforms.webhook.subprocess.run") as mock_run:
+            result = await adapter.send(chat_id, "SKIP")
+
+        assert result.success is True
+        mock_run.assert_not_called()
