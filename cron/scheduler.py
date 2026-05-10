@@ -12,6 +12,7 @@ import asyncio
 import concurrent.futures
 import contextvars
 import json
+import re
 import logging
 import os
 import shutil
@@ -27,6 +28,7 @@ except ImportError:
         import msvcrt
     except ImportError:
         msvcrt = None
+from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Optional
 
@@ -35,7 +37,7 @@ from typing import List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
@@ -143,6 +145,68 @@ def _get_lock_paths() -> tuple[Path, Path]:
     hermes_home = _get_hermes_home()
     lock_dir = hermes_home / "cron"
     return lock_dir, lock_dir / ".tick.lock"
+
+
+def _job_profile_name(job: dict) -> str:
+    """Return the canonical per-job profile assignment, if any.
+
+    ``profile`` is the canonical field.  ``agent_id`` is accepted as a
+    read-only compatibility alias for hand-authored/imported configs, but new
+    writes should use ``profile``.
+    """
+    raw = job.get("profile") or job.get("agent_id") or ""
+    profile = str(raw).strip()
+    if not profile:
+        return ""
+    if profile in {".", ".."} or "/" in profile or "\\" in profile:
+        raise ValueError(f"Invalid cron job profile assignment: {profile!r}")
+    if not re.match(r"^[A-Za-z0-9_.-]+$", profile):
+        raise ValueError(f"Invalid cron job profile assignment: {profile!r}")
+    return profile
+
+
+def _profile_home_for_job(job: dict) -> Optional[Path]:
+    profile = _job_profile_name(job)
+    if not profile:
+        return None
+    profile_home = (get_default_hermes_root() / "profiles" / profile).resolve()
+    if not profile_home.is_dir():
+        raise ValueError(f"Cron job profile {profile!r} does not exist at {profile_home}")
+    return profile_home
+
+
+@contextmanager
+def _temporary_job_profile_env(job: dict):
+    """Temporarily execute one global cron job under its assigned profile.
+
+    The global scheduler still reads/writes the global jobs.json, but runtime
+    code that resolves config/env/SOUL/skills/scripts/sessions via
+    ``get_hermes_home()`` sees the target profile's home.  We snapshot and
+    restore the entire process environment because loading a profile .env uses
+    override=True.  Profile-assigned jobs are serialized in ``tick()`` so these
+    process-wide mutations cannot race other cron jobs.
+    """
+    profile_home = _profile_home_for_job(job)
+    if profile_home is None:
+        yield
+        return
+
+    old_env = dict(os.environ)
+    os.environ["HERMES_HOME"] = str(profile_home)
+    profile_sub_home = profile_home / "home"
+    if profile_sub_home.is_dir():
+        os.environ["HOME"] = str(profile_sub_home)
+    try:
+        logger.info(
+            "Job '%s': using profile %s (%s)",
+            job.get("id"),
+            _job_profile_name(job),
+            profile_home,
+        )
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(old_env)
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -1010,7 +1074,7 @@ def _scan_assembled_cron_prompt(assembled: str, job: dict) -> str:
     return assembled
 
 
-def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
+def _run_job_under_current_home(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
     
@@ -1655,6 +1719,18 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
+def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
+    """Execute a cron job, honoring canonical per-job ``profile`` assignment.
+
+    Jobs without ``profile`` retain legacy behavior and run under the
+    scheduler's current HERMES_HOME.  Assigned global jobs run with
+    HERMES_HOME pointed at ``<Hermes root>/profiles/<profile>`` for the
+    duration of the job only.
+    """
+    with _temporary_job_profile_env(job):
+        return _run_job_under_current_home(job)
+
+
 def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     """
     Check and run all due jobs.
@@ -1770,17 +1846,23 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 mark_job_run(job["id"], False, str(e))
                 return False
 
-        # Partition due jobs: those with a per-job workdir mutate
-        # os.environ["TERMINAL_CWD"] inside run_job, which is process-global —
+        # Partition due jobs: those with a per-job workdir or profile mutate
+        # process-wide os.environ inside run_job (TERMINAL_CWD/HERMES_HOME/.env),
         # so they MUST run sequentially to avoid corrupting each other.  Jobs
-        # without a workdir leave env untouched and stay parallel-safe.
-        workdir_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
-        parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
+        # without either leave env untouched and stay parallel-safe.
+        isolated_jobs = [
+            j for j in due_jobs
+            if (j.get("workdir") or "").strip() or _job_profile_name(j)
+        ]
+        parallel_jobs = [
+            j for j in due_jobs
+            if not ((j.get("workdir") or "").strip() or _job_profile_name(j))
+        ]
 
         _results: list = []
 
-        # Sequential pass for workdir jobs.
-        for job in workdir_jobs:
+        # Sequential pass for jobs that need process-env isolation.
+        for job in isolated_jobs:
             _ctx = contextvars.copy_context()
             _results.append(_ctx.run(_process_job, job))
 

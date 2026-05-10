@@ -281,6 +281,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if job.get("profile"):
+        result["profile"] = job["profile"]
     return result
 
 
@@ -304,6 +306,7 @@ def cronjob(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    profile: Optional[str] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -370,6 +373,7 @@ def cronjob(
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
+                profile=_normalize_optional_job_value(profile),
             )
             return json.dumps(
                 {
@@ -503,6 +507,10 @@ def cronjob(
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
                 updates["workdir"] = _normalize_optional_job_value(workdir) or None
+            if profile is not None:
+                # Canonical per-job profile assignment for global cron jobs.
+                # Empty string clears the field; update_job() validates names.
+                updates["profile"] = _normalize_optional_job_value(profile) or None
             if no_agent is not None:
                 # Toggling no_agent on/off at update time. If flipping to True,
                 # we need a script to already exist on the job (or be part of
@@ -654,7 +662,11 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "workdir": {
                 "type": "string",
-                "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
+                "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
+            },
+            "profile": {
+                "type": "string",
+                "description": "Optional canonical Hermes profile assignment for global cron jobs. When set, the scheduler executes this job with HERMES_HOME pointing at ~/.hermes/profiles/<profile>, so profile config, .env, SOUL.md, skills, scripts, sessions, and memory resolve under that agent. Empty string clears on update."
             },
         },
         "required": ["action"]
@@ -704,6 +716,7 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        profile=args.get("profile"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

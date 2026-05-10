@@ -16,7 +16,7 @@ import re
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from typing import Optional, Dict, List, Any, Union
 
 logger = logging.getLogger(__name__)
@@ -446,6 +446,35 @@ def save_jobs(jobs: List[Dict[str, Any]]):
         raise
 
 
+def _normalize_profile(profile: Optional[str]) -> Optional[str]:
+    """Normalize the canonical per-job profile assignment field.
+
+    ``profile`` is the canonical field name for global cron jobs that should
+    execute under a named Hermes profile.  ``None``/empty means the scheduler
+    uses its own current HERMES_HOME, preserving legacy jobs.  Profile names are
+    constrained to simple directory names under ``<Hermes root>/profiles`` so a
+    hand-edited global jobs.json cannot escape into arbitrary paths.
+    """
+    if profile is None:
+        return None
+    raw = str(profile).strip()
+    if not raw:
+        return None
+    if raw in {".", ".."} or "/" in raw or "\\" in raw:
+        raise ValueError(f"Cron profile must be a simple profile name (got {raw!r})")
+    if not re.match(r"^[A-Za-z0-9_.-]+$", raw):
+        raise ValueError(
+            f"Cron profile contains unsupported characters: {raw!r}. "
+            "Use letters, numbers, dash, underscore, and dot only."
+        )
+    profile_home = get_default_hermes_root() / "profiles" / raw
+    if not profile_home.exists():
+        raise ValueError(f"Cron profile does not exist: {raw!r} ({profile_home})")
+    if not profile_home.is_dir():
+        raise ValueError(f"Cron profile path is not a directory: {profile_home}")
+    return raw
+
+
 def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     """Normalize and validate a cron job workdir.
 
@@ -496,6 +525,7 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -540,6 +570,11 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        profile: Optional canonical profile assignment.  When set on a global
+                cron job, the scheduler runs that job with
+                ``HERMES_HOME=<root>/profiles/<profile>`` so profile config,
+                env, SOUL.md, skills, scripts, sessions, and memory resolve
+                under the intended agent.
 
     Returns:
         The created job dict
@@ -574,6 +609,7 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
+    normalized_profile = _normalize_profile(profile)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -627,6 +663,7 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "profile": normalized_profile,
     }
 
     jobs = load_jobs()
@@ -700,6 +737,13 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
         # Validate / normalize workdir if present in updates.  Empty string or
         # None both mean "clear the field" (restore old behaviour).
+        if "profile" in updates:
+            _profile = updates["profile"]
+            if _profile in (None, "", False):
+                updates["profile"] = None
+            else:
+                updates["profile"] = _normalize_profile(_profile)
+
         if "workdir" in updates:
             _wd = updates["workdir"]
             if _wd in {None, "", False}:
