@@ -52,6 +52,7 @@ from types import SimpleNamespace
 import urllib.request
 import uuid
 from typing import List, Dict, Any, Optional
+from tools.i18n import format_zh
 from urllib.parse import urlparse, parse_qs, urlunparse
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
@@ -7241,7 +7242,7 @@ class AIAgent:
         )
 
         _call_start = time.time()
-        self._touch_activity("waiting for non-streaming API response")
+        self._touch_activity(format_zh("waiting for non-streaming API response"))
 
         t = threading.Thread(target=_call, daemon=True)
         t.start()
@@ -7643,7 +7644,7 @@ class AIAgent:
             # Reset stale-stream timer so the detector measures from this
             # attempt's start, not a previous attempt's last chunk.
             last_chunk_time["t"] = time.time()
-            self._touch_activity("waiting for provider response (streaming)")
+            self._touch_activity(format_zh("waiting for provider response (streaming)"))
             # Initialize per-attempt stream diagnostics so the retry block can
             # reach for them after the stream dies.  Lives on
             # ``request_client_holder["diag"]`` for closure access.
@@ -8254,7 +8255,7 @@ class AIAgent:
                 _last_heartbeat = _hb_now
                 _waiting_secs = int(_hb_now - last_chunk_time["t"])
                 self._touch_activity(
-                    f"waiting for stream response ({_waiting_secs}s, no chunks yet)"
+                    format_zh(f"waiting for stream response ({_waiting_secs}s, no chunks yet)")
                 )
 
             # Detect stale streams: connections kept alive by SSE pings
@@ -10368,7 +10369,7 @@ class AIAgent:
 
         # ── Pre-flight: interrupt check ──────────────────────────────────
         if self._interrupt_requested:
-            print(f"{self.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
+            print(f"{self.log_prefix}{format_zh('⚡ Interrupt: skipping {n} tool call(s)', n=num_tools)}")
             for tc in tool_calls:
                 messages.append({
                     "role": "tool",
@@ -10767,7 +10768,7 @@ class AIAgent:
             if self._interrupt_requested:
                 remaining_calls = assistant_message.tool_calls[i-1:]
                 if remaining_calls:
-                    self._vprint(f"{self.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)", force=True)
+                    self._vprint(f"{self.log_prefix}{format_zh('⚡ Interrupt: skipping {n} tool call(s)', n=len(remaining_calls))}", force=True)
                 for skipped_tc in remaining_calls:
                     skipped_name = skipped_tc.function.name
                     skip_msg = {
@@ -11165,7 +11166,7 @@ class AIAgent:
 
             if self._interrupt_requested and i < len(assistant_message.tool_calls):
                 remaining = len(assistant_message.tool_calls) - i
-                self._vprint(f"{self.log_prefix}⚡ Interrupt: skipping {remaining} remaining tool call(s)", force=True)
+                self._vprint(f"{self.log_prefix}{format_zh('⚡ Interrupt: skipping {n} remaining tool call(s)', n=remaining)}", force=True)
                 for skipped_tc in assistant_message.tool_calls[i:]:
                     skipped_name = skipped_tc.function.name
                     skip_msg = {
@@ -11841,7 +11842,7 @@ class AIAgent:
                 interrupted = True
                 _turn_exit_reason = "interrupted_by_user"
                 if not self.quiet_mode:
-                    self._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
+                    self._safe_print(format_zh("\n⚡ Breaking out of tool loop due to interrupt..."))
                 break
             
             api_call_count += 1
@@ -12505,7 +12506,7 @@ class AIAgent:
                         _backoff_touch_counter = 0
                         while time.time() < sleep_end:
                             if self._interrupt_requested:
-                                self._vprint(f"{self.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
+                                self._vprint(f"{self.log_prefix}{format_zh('⚡ Interrupt detected during retry wait, aborting.')}", force=True)
                                 self._persist_session(messages, conversation_history)
                                 self.clear_interrupt()
                                 return {
@@ -12894,7 +12895,7 @@ class AIAgent:
                     if self.thinking_callback:
                         self.thinking_callback("")
                     api_elapsed = time.time() - api_start_time
-                    self._vprint(f"{self.log_prefix}⚡ Interrupted during API call.", force=True)
+                    self._vprint(f"{self.log_prefix}{format_zh('⚡ Interrupted during API call.')}", force=True)
                     self._persist_session(messages, conversation_history)
                     interrupted = True
                     final_response = f"Operation interrupted: waiting for model response ({api_elapsed:.1f}s elapsed)."
@@ -13426,7 +13427,7 @@ class AIAgent:
 
                     # Check for interrupt before deciding to retry
                     if self._interrupt_requested:
-                        self._vprint(f"{self.log_prefix}⚡ Interrupt detected during error handling, aborting retries.", force=True)
+                        self._vprint(f"{self.log_prefix}{format_zh('⚡ Interrupt detected during error handling, aborting retries.')}", force=True)
                         self._persist_session(messages, conversation_history)
                         self.clear_interrupt()
                         return {
@@ -14015,7 +14016,7 @@ class AIAgent:
                     _backoff_touch_counter = 0
                     while time.time() < sleep_end:
                         if self._interrupt_requested:
-                            self._vprint(f"{self.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
+                            self._vprint(f"{self.log_prefix}{format_zh('⚡ Interrupt detected during retry wait, aborting.')}", force=True)
                             self._persist_session(messages, conversation_history)
                             self.clear_interrupt()
                             return {
