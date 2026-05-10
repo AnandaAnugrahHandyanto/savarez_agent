@@ -272,32 +272,52 @@ export class StylePool {
    * Cache is keyed by baseId only — setSelectionBg() clears it on change.
    */
   private selectionBgCode: AnsiCode | null = null
-  private selectionBgCache = new Map<number, number>()
+  private selectionFgCode: AnsiCode | null = null
+  private selectionOverlayCache = new Map<number, number>()
   setSelectionBg(bg: AnsiCode | null): void {
     if (this.selectionBgCode?.code === bg?.code) {
       return
     }
 
     this.selectionBgCode = bg
-    this.selectionBgCache.clear()
+    this.selectionOverlayCache.clear()
+  }
+  setSelectionFg(fg: AnsiCode | null): void {
+    if (this.selectionFgCode?.code === fg?.code) {
+      return
+    }
+
+    this.selectionFgCode = fg
+    this.selectionOverlayCache.clear()
   }
   withSelectionBg(baseId: number): number {
     const bg = this.selectionBgCode
+    const fg = this.selectionFgCode
 
-    if (bg === null) {
+    if (bg === null && fg === null) {
       return this.withInverse(baseId)
     }
 
-    let id = this.selectionBgCache.get(baseId)
+    let id = this.selectionOverlayCache.get(baseId)
 
     if (id === undefined) {
-      // Keep everything except bg (49m) and inverse (27m). Fg, bold, dim,
-      // italic, underline, strikethrough all preserved.
-      const kept = this.get(baseId).filter(c => c.endCode !== '\x1b[49m' && c.endCode !== '\x1b[27m')
+      // Keep everything except bg (49m), inverse (27m), and fg (39m) when a
+      // selection foreground is configured. Bold, italic, underline etc. are
+      // preserved so the text keeps its visual weight under selection.
+      const kept = this.get(baseId).filter(
+        c => c.endCode !== '\x1b[49m' && c.endCode !== '\x1b[27m' && (fg !== null ? c.endCode !== '\x1b[39m' : true)
+      )
 
-      kept.push(bg)
+      if (fg !== null) {
+        kept.push(fg)
+      }
+
+      if (bg !== null) {
+        kept.push(bg)
+      }
+
       id = this.intern(kept)
-      this.selectionBgCache.set(baseId, id)
+      this.selectionOverlayCache.set(baseId, id)
     }
 
     return id

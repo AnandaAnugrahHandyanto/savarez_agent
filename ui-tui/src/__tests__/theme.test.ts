@@ -237,6 +237,22 @@ describe('fromSkin', () => {
     expect(theme.color.selectionBg).toBe('#654321')
   })
 
+  it('maps selection_fg from skins', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    const theme = fromSkin({ selection_fg: '#abcdef' }, {})
+
+    expect(theme.color.selectionFg).toBe('#abcdef')
+  })
+
+  it('falls back to theme default when selection_fg is not in skin', async () => {
+    const { DEFAULT_THEME, fromSkin } = await importThemeWithCleanEnv()
+
+    const theme = fromSkin({}, {})
+
+    expect(theme.color.selectionFg).toBe(DEFAULT_THEME.color.selectionFg)
+  })
+
   it('overrides branding', async () => {
     const { fromSkin } = await importThemeWithCleanEnv()
     const { brand } = fromSkin({}, { agent_name: 'TestBot', prompt_symbol: '$' })

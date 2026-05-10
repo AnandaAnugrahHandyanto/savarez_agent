@@ -153,6 +153,7 @@ declare module '@hermes/ink' {
     readonly moveFocus: (move: unknown) => void
     readonly captureScrolledRows: (firstRow: number, lastRow: number, side: 'above' | 'below') => void
     readonly setSelectionBgColor: (color: string) => void
+    readonly setSelectionFgColor: (color: string) => void
   }
   export function useHasSelection(): boolean
   export function useStdout(): { readonly stdout?: NodeJS.WriteStream }

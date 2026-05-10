@@ -1560,6 +1560,23 @@ export default class Ink {
     // selection exists (which itself triggers a full-damage frame).
   }
 
+  setSelectionFgColor(color: string): void {
+    const wrapped = colorize('\0', color, 'foreground')
+    const nul = wrapped.indexOf('\0')
+
+    if (nul <= 0 || nul === wrapped.length - 1) {
+      this.stylePool.setSelectionFg(null)
+
+      return
+    }
+
+    this.stylePool.setSelectionFg({
+      type: 'ansi',
+      code: wrapped.slice(0, nul),
+      endCode: wrapped.slice(nul + 1) // always \x1b[39m for fg
+    })
+  }
+
   /**
    * Capture text from rows about to scroll out of the viewport during
    * drag-to-scroll. Must be called BEFORE the ScrollBox scrolls so the
