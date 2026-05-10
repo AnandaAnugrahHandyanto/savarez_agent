@@ -144,19 +144,11 @@ def _apply_profile_override() -> None:
             profile_name = None
             consume = 0
 
-    # 1.5 If HERMES_HOME is already set and no explicit flag was given, trust it
-    # only when it already points to a specific profile directory.  The
-    # distinguishing heuristic: a profile path has "profiles" as its immediate
-    # parent directory name (e.g. ~/.hermes/profiles/coder or
-    # /opt/data/profiles/coder).  If HERMES_HOME points to the hermes root
-    # instead (e.g. systemd hardcodes HERMES_HOME=/root/.hermes), we must
-    # still read active_profile — the user may have switched profiles via
-    # `hermes profile use` and the gateway should honour that choice.
-    # See issue #22502.
-    hermes_home_env = os.environ.get("HERMES_HOME", "")
-    if profile_name is None and hermes_home_env:
-        if Path(hermes_home_env).parent.name == "profiles":
-            return
+    # 1.5 If HERMES_HOME is already set and no explicit flag was given, trust it.
+    # This lets child processes (relaunch, subprocess) inherit the parent's
+    # profile choice without having to pass --profile again.
+    if profile_name is None and os.environ.get("HERMES_HOME"):
+        return
 
     # 2. If no flag, check active_profile in the hermes root
     if profile_name is None:
@@ -5744,92 +5736,6 @@ def _print_curator_first_run_notice() -> None:
     )
 
 
-def _print_curator_recent_run_notice() -> None:
-    """Print the most recent curator run summary, exactly once.
-
-    The curator runs in the background (gateway tick + CLI session start),
-    so users learn about skill consolidations only by stumbling into a
-    rename. ``hermes update`` is a high-attention surface — surface the
-    most recent run's rename map here, once.
-
-    Show-once: state stamps ``last_run_summary_shown_at`` after printing.
-    Subsequent ``hermes update`` invocations skip the block until a newer
-    curator run lands. Silent when the curator has never run, when the
-    most recent summary has already been shown, or when the summary has
-    no rename information to display (no archives).
-    """
-    try:
-        from agent import curator
-    except Exception:
-        return
-    try:
-        state = curator.load_state()
-    except Exception:
-        return
-
-    last_run_at = state.get("last_run_at")
-    if not last_run_at:
-        return  # no curator run yet — first-run notice handles this case
-
-    if state.get("last_run_summary_shown_at") == last_run_at:
-        return  # already shown for this run
-
-    summary = state.get("last_run_summary") or ""
-    if not summary:
-        return
-
-    # Only print when there's something interesting to show — i.e. the
-    # rename map block was appended (multi-line summary). A bare "auto:
-    # no changes; llm: no change" doesn't warrant interrupting the
-    # update flow.
-    if "\n" not in summary:
-        # Still stamp it shown so we don't reconsider it on every update.
-        try:
-            state["last_run_summary_shown_at"] = last_run_at
-            curator.save_state(state)
-        except Exception:
-            pass
-        return
-
-    # Format the timestamp as "Xh ago" for readability.
-    when = _format_time_ago(last_run_at)
-    print()
-    print(f"ℹ Skill curator — last run {when}")
-    for line in summary.splitlines():
-        print(f"  {line}")
-    print(
-        "  (This message shows once per curator run. "
-        "View anytime: hermes curator status)"
-    )
-
-    # Stamp shown so we don't repeat on the next update.
-    try:
-        state["last_run_summary_shown_at"] = last_run_at
-        curator.save_state(state)
-    except Exception:
-        pass
-
-
-def _format_time_ago(iso_ts: str) -> str:
-    """Render an ISO timestamp as `Xh ago` / `Xd ago` / `Xm ago`. Best effort."""
-    try:
-        from datetime import datetime, timezone
-        ts = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        delta = datetime.now(timezone.utc) - ts
-        secs = int(delta.total_seconds())
-        if secs < 60:
-            return "just now"
-        if secs < 3600:
-            return f"{secs // 60}m ago"
-        if secs < 86400:
-            return f"{secs // 3600}h ago"
-        return f"{secs // 86400}d ago"
-    except Exception:
-        return "recently"
-
-
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend",
 ) -> None:
@@ -6075,10 +5981,6 @@ def _update_via_zip(args):
         _print_curator_first_run_notice()
     except Exception as e:
         logger.debug("Curator first-run notice failed: %s", e)
-    try:
-        _print_curator_recent_run_notice()
-    except Exception as e:
-        logger.debug("Curator recent-run notice failed: %s", e)
     _kill_stale_dashboard_processes()
 
 
@@ -6535,11 +6437,13 @@ def _invalidate_update_cache():
             pass
 
 
-def _load_installable_optional_extras(group: str = "all") -> list[str]:
-    """Return optional extras referenced by a dependency group.
+def _load_installable_optional_extras() -> list[str]:
+    """Return the optional extras referenced by the ``all`` group.
 
-    ``group`` is usually ``all`` (desktop/server broad install) or
-    ``termux-all`` (Termux-compatible broad install).
+    Only extras that ``[all]`` actually pulls in are retried individually.
+    Extras outside ``[all]`` (e.g. ``rl``, ``yc-bench``) are intentionally
+    excluded — they have heavy or platform-specific deps that most users
+    never installed.
     """
     try:
         import tomllib
@@ -6553,9 +6457,11 @@ def _load_installable_optional_extras(group: str = "all") -> list[str]:
     if not isinstance(optional_deps, dict):
         return []
 
-    refs = optional_deps.get(group, [])
+    # Parse the [all] group to find which extras it references.
+    # Entries look like "hermes-agent[matrix]" or "package-name[extra]".
+    all_refs = optional_deps.get("all", [])
     referenced: list[str] = []
-    for ref in refs:
+    for ref in all_refs:
         if "[" in ref and "]" in ref:
             name = ref.split("[", 1)[1].split("]", 1)[0]
             if name in optional_deps:
@@ -6603,20 +6509,70 @@ def _run_install_with_heartbeat(
         t.join(timeout=0.2)
 
 
+def _rename_active_windows_exe() -> "Path | None":
+    """On Windows, rename hermes.exe to hermes.exe.old before uv/pip install.
+
+    Windows holds a file lock on any running .exe, which causes
+    ``uv pip install -e .`` to fail with "Access is denied (os error 5)"
+    when it tries to overwrite the active hermes.exe inside the venv.
+
+    Renaming (not deleting) releases the write lock while keeping the
+    process alive — Windows allows renaming an open executable in place.
+    The installer then writes a fresh hermes.exe, and the stale .old file
+    is cleaned up on the next call to _cleanup_windows_exe_old().
+
+    Returns the Path of the renamed .old file, or None if not applicable.
+    """
+    if sys.platform != "win32":
+        return None
+    exe_path = PROJECT_ROOT / "venv" / "Scripts" / "hermes.exe"
+    if not exe_path.exists():
+        return None
+    old_path = exe_path.with_suffix(".exe.old")
+    try:
+        # Remove a leftover .old from a previous interrupted update
+        if old_path.exists():
+            old_path.unlink(missing_ok=True)
+        exe_path.rename(old_path)
+        return old_path
+    except OSError as exc:
+        logger.debug("Windows exe rename skipped: %s", exc)
+        return None
+
+
+def _cleanup_windows_exe_old(old_path: "Path | None") -> None:
+    """Remove the .old backup created by _rename_active_windows_exe()."""
+    if old_path is None:
+        return
+    try:
+        old_path.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.debug("Could not remove %s (will be cleaned up on next update): %s", old_path, exc)
+
+
 def _install_python_dependencies_with_optional_fallback(
     install_cmd_prefix: list[str],
     *,
     env: dict[str, str] | None = None,
-    group: str = "all",
 ) -> None:
     """Install base deps plus as many optional extras as the environment supports.
 
-    By default this targets ``.[all]``; Termux callers can pass
-    ``group='termux-all'`` to use the curated Android-compatible profile.
+    We intentionally do NOT pass ``--quiet`` to pip. On platforms without
+    prebuilt wheels for some extras (Termux/Android aarch64, older musl
+    distros, fresh Raspberry Pi) pip has to compile C/Rust extensions from
+    source, which can take several minutes with zero network activity.
+    Without progress output the call looks like a hang and users Ctrl+C it.
+    Pip's default output is proportional to actual work (one line per
+    Collecting/Building/Installing step), so keeping it visible costs
+    nothing on fast hardware and prevents the "hermes update hangs" reports
+    on slow hardware.
+
+    We also add periodic heartbeat lines in case the resolver/build backend is
+    itself silent for long stretches.
     """
     try:
         _run_install_with_heartbeat(
-            install_cmd_prefix + ["install", "-e", f".[{group}]"],
+            install_cmd_prefix + ["install", "-e", ".[all]"],
             env=env,
         )
         return
@@ -6632,7 +6588,7 @@ def _install_python_dependencies_with_optional_fallback(
 
     failed_extras: list[str] = []
     installed_extras: list[str] = []
-    for extra in _load_installable_optional_extras(group=group):
+    for extra in _load_installable_optional_extras():
         try:
             _run_install_with_heartbeat(
                 install_cmd_prefix + ["install", "-e", f".[{extra}]"],
@@ -6656,65 +6612,6 @@ def _is_termux_env(env: dict[str, str] | None = None) -> bool:
     check = env or os.environ
     prefix = str(check.get("PREFIX", ""))
     return "com.termux" in prefix or prefix.startswith("/data/data/com.termux/")
-
-
-def _is_android_python() -> bool:
-    return sys.platform == "android"
-
-
-def _install_psutil_android_compat(
-    install_cmd_prefix: list[str],
-    *,
-    env: dict[str, str] | None = None,
-) -> None:
-    """Install psutil on Android by patching upstream platform detection.
-
-    psutil's setup currently gates Linux sources behind
-    ``sys.platform.startswith('linux')``. On Termux Python reports
-    ``sys.platform == 'android'``, so setup aborts with
-    "platform android is not supported" despite compiling fine when using the
-    Linux source path.
-
-    We patch only the extracted build tree used for this install attempt;
-    nothing is persisted in the repository.
-
-    Stopgap: remove this once https://github.com/giampaolo/psutil/pull/2762
-    merges and ships in a release. ``scripts/install_psutil_android.py``
-    contains the same logic for ``scripts/install.sh`` (fresh installs).
-    Both copies should be removed together.
-    """
-    import tarfile
-    import tempfile
-    import urllib.request
-
-    psutil_url = (
-        "https://files.pythonhosted.org/packages/aa/c6/"
-        "d1ddf4abb55e93cebc4f2ed8b5d6dbad109ecb8d63748dd2b20ab5e57ebe/"
-        "psutil-7.2.2.tar.gz"
-    )
-
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        archive = tmp_path / "psutil.tar.gz"
-        urllib.request.urlretrieve(psutil_url, archive)
-        with tarfile.open(archive) as tar:
-            tar.extractall(tmp_path)
-
-        src_root = next(
-            p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith("psutil-")
-        )
-        common_py = src_root / "psutil" / "_common.py"
-        content = common_py.read_text(encoding="utf-8")
-        marker = 'LINUX = sys.platform.startswith("linux")'
-        replacement = 'LINUX = sys.platform.startswith(("linux", "android"))'
-        if marker not in content:
-            raise RuntimeError("psutil Android compatibility patch marker not found")
-        common_py.write_text(content.replace(marker, replacement), encoding="utf-8")
-
-        _run_install_with_heartbeat(
-            install_cmd_prefix + ["install", "--no-build-isolation", str(src_root)],
-            env=env,
-        )
 
 
 def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
@@ -7470,49 +7367,42 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # breaks on this machine, keep base deps and reinstall the remaining extras
         # individually so update does not silently strip working capabilities.
         print("→ Updating Python dependencies...")
-        pip_cmd = [sys.executable, "-m", "pip"]
-        uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
-        install_group = "all"
-
-        if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-            if _is_termux_env(uv_env):
-                uv_env.pop("PYTHONPATH", None)
-                uv_env.pop("PYTHONHOME", None)
-                install_group = "termux-all"
-                print("  → Termux detected: using uv + curated termux-all optional profile...")
-            if _is_termux_env(uv_env) and _is_android_python():
-                print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
-                _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
-            _install_python_dependencies_with_optional_fallback(
-                [uv_bin, "pip"], env=uv_env, group=install_group
-            )
-        else:
-            # Use sys.executable to explicitly call the venv's pip module,
-            # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
-            # Some environments lose pip inside the venv; bootstrap it back with
-            # ensurepip before trying the editable install.
+        # On Windows, rename hermes.exe before install to release the file
+        # lock that would otherwise cause "Access is denied (os error 5)".
+        _windows_exe_old = _rename_active_windows_exe()
+        try:
             pip_cmd = [sys.executable, "-m", "pip"]
-            try:
-                subprocess.run(
-                    pip_cmd + ["--version"],
-                    cwd=PROJECT_ROOT,
-                    check=True,
-                    capture_output=True,
+            uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
+            if uv_bin:
+                uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+                if _is_termux_env(uv_env):
+                    uv_env.pop("PYTHONPATH", None)
+                    uv_env.pop("PYTHONHOME", None)
+                _install_python_dependencies_with_optional_fallback(
+                    [uv_bin, "pip"], env=uv_env
                 )
-            except subprocess.CalledProcessError:
-                subprocess.run(
-                    [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                    cwd=PROJECT_ROOT,
-                    check=True,
-                )
-            if _is_termux_env():
-                install_group = "termux-all"
-                print("  → Termux detected: using curated termux-all optional profile...")
-            if _is_termux_env() and _is_android_python():
-                print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
-                _install_psutil_android_compat(pip_cmd)
-            _install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
+            else:
+                # Use sys.executable to explicitly call the venv's pip module,
+                # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
+                # Some environments lose pip inside the venv; bootstrap it back with
+                # ensurepip before trying the editable install.
+                pip_cmd = [sys.executable, "-m", "pip"]
+                try:
+                    subprocess.run(
+                        pip_cmd + ["--version"],
+                        cwd=PROJECT_ROOT,
+                        check=True,
+                        capture_output=True,
+                    )
+                except subprocess.CalledProcessError:
+                    subprocess.run(
+                        [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+                        cwd=PROJECT_ROOT,
+                        check=True,
+                    )
+                _install_python_dependencies_with_optional_fallback(pip_cmd)
+        finally:
+            _cleanup_windows_exe_old(_windows_exe_old)
 
         _update_node_dependencies()
         _build_web_ui(PROJECT_ROOT / "web")
@@ -7691,16 +7581,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _print_curator_first_run_notice()
         except Exception as e:
             logger.debug("Curator first-run notice failed: %s", e)
-
-        # Most-recent curator run notice — show-once per run. Surfaces the
-        # rename map (`old-name → umbrella`) on the high-attention update
-        # surface so users learn about consolidations without having to
-        # check `hermes curator status`. Self-stamps after printing so it
-        # never repeats for the same run.
-        try:
-            _print_curator_recent_run_notice()
-        except Exception as e:
-            logger.debug("Curator recent-run notice failed: %s", e)
 
         # Repair RHEL-family root installs where /usr/local/bin isn't on PATH
         # for non-login interactive shells.  No-op on every other platform.
@@ -9045,7 +8925,6 @@ def _build_provider_choices() -> list[str]:
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "auth", "backup", "checkpoints", "claw", "completion",
-        "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "mcp", "memory", "model",
@@ -10666,54 +10545,6 @@ Examples:
             tools_command(args)
 
     tools_parser.set_defaults(func=cmd_tools)
-
-    # =========================================================================
-    # computer-use command — manage Computer Use (cua-driver) on macOS
-    # =========================================================================
-    computer_use_parser = subparsers.add_parser(
-        "computer-use",
-        help="Manage the Computer Use (cua-driver) backend (macOS)",
-        description=(
-            "Install or check the cua-driver binary used by the\n"
-            "`computer_use` toolset. macOS-only.\n\n"
-            "Use `hermes computer-use install` to fetch and run the\n"
-            "upstream cua-driver installer. This is equivalent to the\n"
-            "post-setup hook that `hermes tools` runs when you first\n"
-            "enable the Computer Use toolset, and is a stable target\n"
-            "for re-running the install if it didn't fire (e.g. when\n"
-            "toggling the toolset on a returning-user setup)."
-        ),
-    )
-    computer_use_sub = computer_use_parser.add_subparsers(dest="computer_use_action")
-
-    computer_use_sub.add_parser(
-        "install",
-        help="Install or repair the cua-driver binary (macOS)",
-    )
-    computer_use_sub.add_parser(
-        "status",
-        help="Print whether cua-driver is installed and on PATH",
-    )
-
-    def cmd_computer_use(args):
-        action = getattr(args, "computer_use_action", None)
-        if action == "install":
-            from hermes_cli.tools_config import _run_post_setup
-            _run_post_setup("cua_driver")
-            return
-        if action == "status":
-            import shutil
-            path = shutil.which("cua-driver")
-            if path:
-                print(f"cua-driver: installed at {path}")
-                return
-            print("cua-driver: not installed")
-            print("  Run: hermes computer-use install")
-            return
-        # No subcommand → show help
-        computer_use_parser.print_help()
-
-    computer_use_parser.set_defaults(func=cmd_computer_use)
     # =========================================================================
     # mcp command — manage MCP server connections
     # =========================================================================
