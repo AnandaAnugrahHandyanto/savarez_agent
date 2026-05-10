@@ -6922,6 +6922,10 @@ class HermesCLI:
             self.new_session(title=title)
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
+        elif canonical == "sessions":
+            if not self._show_recent_sessions(reason="resume"):
+                print("  No recent sessions yet.")
+                print()
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
         elif canonical == "gquota":
@@ -7075,6 +7079,8 @@ class HermesCLI:
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
             self._handle_voice_command(cmd_original)
+        elif canonical == "indicator":
+            self._handle_indicator_command(cmd_original)
         elif canonical == "busy":
             self._handle_busy_command(cmd_original)
         else:
@@ -7999,6 +8005,46 @@ class HermesCLI:
             _cprint(f"  {_DIM}{behavior}{_RST}")
         else:
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (session only){_RST}")
+
+    def _handle_indicator_command(self, cmd: str):
+        """Handle /indicator in classic CLI mode.
+
+        Usage:
+            /indicator            Show the current busy-indicator style
+            /indicator status     Show the current busy-indicator style
+            /indicator ascii      Use ASCII spinner frames
+            /indicator emoji      Use emoji spinner frames
+            /indicator kaomoji    Use kaomoji spinner frames
+            /indicator unicode    Use unicode spinner frames
+        """
+        from hermes_cli.config import load_config
+
+        allowed = ("kaomoji", "emoji", "unicode", "ascii")
+        default = "kaomoji"
+
+        parts = (cmd or "").strip().split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else "status"
+
+        cfg = load_config() or {}
+        raw = ((cfg.get("display") or {}).get("tui_status_indicator", ""))
+        current = str(raw).strip().lower()
+        if current not in allowed:
+            current = default
+
+        if arg in ("", "status", "?"):
+            _cprint(f"  {_ACCENT}Busy indicator: {current}{_RST}")
+            _cprint(f"  {_DIM}Usage: /indicator [kaomoji|emoji|unicode|ascii|status]{_RST}")
+            return
+
+        if arg not in allowed:
+            _cprint(f"  {_DIM}(._.) Unknown indicator: {arg}{_RST}")
+            _cprint(f"  {_DIM}Usage: /indicator [kaomoji|emoji|unicode|ascii|status]{_RST}")
+            return
+
+        if save_config_value("display.tui_status_indicator", arg):
+            _cprint(f"  {_ACCENT}✓ Busy indicator set to '{arg}' (saved to config){_RST}")
+        else:
+            _cprint("  Failed to save indicator setting to config.yaml")
 
     def _handle_fast_command(self, cmd: str):
         """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode)."""
