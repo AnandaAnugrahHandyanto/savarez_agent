@@ -150,3 +150,33 @@ def test_gate_default_true_when_config_missing():
     # treated as on despite the config error.  If the gate had been off
     # this would have returned 'once' without consulting the prompt.
     assert result is None
+
+
+def test_prompting_slash_commands_are_handled_inline():
+    """Commands that prompt must bypass the worker queue in prompt_toolkit mode.
+
+    If /clear is processed by the background process_loop, the regular composer
+    still owns stdin and the user's "1" is submitted as a normal chat message.
+    """
+    from cli import HermesCLI
+
+    self_ = SimpleNamespace()
+    should_inline = _bound(HermesCLI._should_handle_prompting_command_inline, self_)
+
+    assert should_inline("/clear") is True
+    assert should_inline("/new") is True
+    assert should_inline("/reset") is True
+    assert should_inline("/undo") is True
+    assert should_inline("/reload-mcp") is True
+
+
+def test_non_prompting_slash_commands_still_use_normal_queue():
+    from cli import HermesCLI
+
+    self_ = SimpleNamespace()
+    should_inline = _bound(HermesCLI._should_handle_prompting_command_inline, self_)
+
+    assert should_inline("/help") is False
+    assert should_inline("/model") is False
+    assert should_inline("hello") is False
+    assert should_inline("/clear", has_images=True) is False
