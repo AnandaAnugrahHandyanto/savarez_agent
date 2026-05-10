@@ -595,6 +595,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         raise
                     if send_result and not getattr(send_result, "success", True):
                         err = getattr(send_result, "error", "unknown")
+                        retryable = getattr(send_result, "retryable", True)
+                        if retryable is False:
+                            msg = f"live adapter delivery to {platform_name}:{chat_id} failed non-retryably: {err}"
+                            logger.error("Job '%s': %s; not falling back to standalone", job["id"], msg)
+                            delivery_errors.append(msg)
+                            continue
                         logger.warning(
                             "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
                             job["id"], platform_name, chat_id, err,

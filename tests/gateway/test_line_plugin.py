@@ -40,6 +40,9 @@ _is_system_bypass = _line._is_system_bypass
 RequestCache = _line.RequestCache
 State = _line.State
 LineAdapter = _line.LineAdapter
+SendResult = _line.SendResult
+SessionSource = _line.SessionSource
+Platform = _line.Platform
 register = _line.register
 check_requirements = _line.check_requirements
 validate_config = _line.validate_config
@@ -367,6 +370,46 @@ class TestSendRouting:
         adapter._client.push.assert_not_called()
         assert adapter._cache.get(rid).state is State.READY
         assert adapter._cache.get(rid).payload == "the answer"
+
+    def test_slow_response_button_spends_reply_token_without_push(self, adapter):
+        import time as _time
+        adapter._post_json = AsyncMock(return_value=SendResult(success=True, message_id="line-reply"))
+        adapter._reply_tokens["msg-1"] = ("rt-token", "Uchat", _time.time())
+        adapter._reply_message_ids_by_chat["Uchat"] = "msg-1"
+
+        asyncio.run(adapter._send_slow_response_button("Uchat"))
+
+        assert "msg-1" not in adapter._reply_tokens
+        assert "Uchat" not in adapter._reply_message_ids_by_chat
+        assert adapter._post_json.call_count == 1
+        url, payload = adapter._post_json.call_args.args[:2]
+        assert url.endswith("/message/reply")
+        assert payload["replyToken"] == "rt-token"
+        assert payload["messages"][0]["type"] == "template"
+        rid = next(iter(adapter._pending_buttons.values()))
+        assert adapter._cache.get(rid).state is State.PENDING
+        adapter._client.push.assert_not_called()
+
+    def test_show_response_postback_replies_with_cached_answer_without_push(self, adapter):
+        adapter._post_json = AsyncMock(return_value=SendResult(success=True, message_id="line-reply"))
+        rid = adapter._cache.register_pending("Uchat")
+        adapter._cache.set_ready(rid, "cached **answer**")
+        adapter._pending_buttons["Uchat"] = rid
+        event = {"replyToken": "tap-token"}
+        source = SessionSource(platform=Platform.LINE, chat_id="Uchat", chat_type="dm", user_id="Uuser")
+        data = json.dumps({"action": "show_response", "request_id": rid})
+
+        handled = asyncio.run(adapter._maybe_handle_show_response_postback(event, source, data))
+
+        assert handled is True
+        assert adapter._cache.get(rid).state is State.DELIVERED
+        assert "Uchat" not in adapter._pending_buttons
+        assert adapter._post_json.call_count == 1
+        url, payload = adapter._post_json.call_args.args[:2]
+        assert url.endswith("/message/reply")
+        assert payload["replyToken"] == "tap-token"
+        assert payload["messages"][0] == {"type": "text", "text": "cached answer"}
+        adapter._client.push.assert_not_called()
 
     def test_send_system_bypass_skips_postback_cache(self, adapter):
         # Even with a pending button, system busy-acks must surface visibly.
