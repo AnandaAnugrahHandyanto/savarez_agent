@@ -2584,8 +2584,8 @@ class TelegramAdapter(BasePlatformAdapter):
             code = target_codes.get(target, "m")
             label = target_labels.get(target, target)
             buttons.append([
-                InlineKeyboardButton(f"⬆️ {idx} → {label}", callback_data=f"qcp:{line_no}:{code}"),
-                InlineKeyboardButton(f"✕ {idx}", callback_data=f"qcd:{line_no}"),
+                InlineKeyboardButton(f"{idx} Promote {label}", callback_data=f"qcp:{line_no}:{code}"),
+                InlineKeyboardButton(f"{idx} Discard", callback_data=f"qcd:{line_no}"),
             ])
         return InlineKeyboardMarkup(buttons) if buttons else None
 
@@ -2690,21 +2690,41 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer(text=f"⚠️ Quick Actions review failed: {exc}")
             return
 
+        # Keep the review card usable after one button press.  Earlier builds
+        # removed the whole inline keyboard, which made multi-candidate review
+        # require a fresh `/qa list` after every promote/discard.  Refresh the
+        # card from the JSONL ledger instead: resolved candidates disappear,
+        # remaining candidates keep their one-tap buttons, and an empty queue
+        # collapses to a completed state.
         try:
-            await query.edit_message_reply_markup(reply_markup=None)
-        except Exception:
-            pass
-        try:
-            if query_message:
-                await self._bot.send_message(
-                    chat_id=int(query_chat_id),
-                    text=resolved,
+            from hermes_cli.quick_actions import format_candidate_digest, list_candidates
+
+            rows = await asyncio.to_thread(list_candidates, status="candidate", limit=10)
+            notice = resolved.replace("\n", " · ")
+            if rows:
+                refreshed = format_candidate_digest(rows, status="candidate", limit=10, verbose=False, notice=notice)
+                markup = self._quick_action_review_keyboard(rows)
+                await query.edit_message_text(
+                    text=refreshed,
                     parse_mode=ParseMode.MARKDOWN,
-                    message_thread_id=self._message_thread_id_for_send(query_thread_id),
+                    reply_markup=markup,
+                    **self._link_preview_kwargs(),
+                )
+            else:
+                await query.edit_message_text(
+                    text=format_candidate_digest([], status="candidate", limit=10, notice=notice),
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=None,
                     **self._link_preview_kwargs(),
                 )
         except Exception:
-            pass
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+        # The edited review card is the durable feedback surface; avoid sending
+        # a new chat message per click, which made review sessions noisy.
+        return
 
     async def _handle_quick_action_callback(self, query: Any, data: str) -> None:
         """Handle one-tap Telegram Quick Actions for a prior assistant reply."""

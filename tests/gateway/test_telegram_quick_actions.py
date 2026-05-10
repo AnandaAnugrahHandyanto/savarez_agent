@@ -351,6 +351,7 @@ class TestTelegramQuickActionsCallback:
         query.message.chat.type = "supergroup"
         query.answer = AsyncMock()
         query.edit_message_reply_markup = AsyncMock()
+        query.edit_message_text = AsyncMock()
         update = MagicMock(callback_query=query)
 
         with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": ""}):
@@ -358,8 +359,13 @@ class TestTelegramQuickActionsCallback:
 
         query.answer.assert_called_once()
         assert "Promoted tok123" in query.answer.call_args.kwargs["text"]
-        query.edit_message_reply_markup.assert_called_once_with(reply_markup=None)
-        adapter._bot.send_message.assert_called_once()
+        query.edit_message_text.assert_called_once()
+        text = query.edit_message_text.call_args.kwargs["text"]
+        assert "Queue is clear" in text
+        assert "Promoted `tok123`" in text
+        assert query.edit_message_text.call_args.kwargs["reply_markup"] is None
+        query.edit_message_reply_markup.assert_not_called()
+        adapter._bot.send_message.assert_not_called()
         rows = [json.loads(line) for line in (qa_dir / "routing_candidates.jsonl").read_text().splitlines()]
         assert rows[0]["status"] == "promoted"
         assert rows[0]["promoted_to"] == "cortex_memory"
@@ -373,15 +379,29 @@ class TestTelegramQuickActionsCallback:
         qa_dir = tmp_path / "telegram_quick_actions"
         qa_dir.mkdir(parents=True, exist_ok=True)
         (qa_dir / "routing_candidates.jsonl").write_text(
-            json.dumps(
-                {
-                    "token": "tok123",
-                    "action": "todo",
-                    "status": "candidate",
-                    "title": "Candidate title",
-                    "recommended_targets": ["cortex_todo", "kanban_candidate"],
-                },
-                ensure_ascii=False,
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "token": "tok123",
+                            "action": "todo",
+                            "status": "candidate",
+                            "title": "Candidate title",
+                            "recommended_targets": ["cortex_todo", "kanban_candidate"],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        {
+                            "token": "tok456",
+                            "action": "save",
+                            "status": "candidate",
+                            "title": "Still queued",
+                            "recommended_targets": ["cortex_memory"],
+                        },
+                        ensure_ascii=False,
+                    ),
+                ]
             )
             + "\n",
             encoding="utf-8",
@@ -396,6 +416,7 @@ class TestTelegramQuickActionsCallback:
         query.message.chat.type = "supergroup"
         query.answer = AsyncMock()
         query.edit_message_reply_markup = AsyncMock()
+        query.edit_message_text = AsyncMock()
 
         update = MagicMock()
         update.callback_query = query
@@ -405,10 +426,16 @@ class TestTelegramQuickActionsCallback:
                 await adapter._handle_callback_query(update, MagicMock())
 
         query.answer.assert_called_once_with(text="✅ Promoted tok123 → cortex_todo")
-        query.edit_message_reply_markup.assert_called_once_with(reply_markup=None)
-        adapter._bot.send_message.assert_called_once()
+        query.edit_message_text.assert_called_once()
+        refreshed = query.edit_message_text.call_args.kwargs["text"]
+        assert "Still queued" in refreshed
+        assert "Candidate title" not in refreshed
+        assert query.edit_message_text.call_args.kwargs["reply_markup"] is not None
+        query.edit_message_reply_markup.assert_not_called()
+        adapter._bot.send_message.assert_not_called()
         rows = [json.loads(line) for line in (qa_dir / "routing_candidates.jsonl").read_text().splitlines()]
         assert rows[0]["status"] == "promoted"
+        assert rows[1]["status"] == "candidate"
         assert rows[0]["promoted_to"] == "cortex_todo"
         assert rows[0]["promoted_by"] == "telegram:Joohyun"
         promotions = [json.loads(line) for line in (qa_dir / "promotions.jsonl").read_text().splitlines()]

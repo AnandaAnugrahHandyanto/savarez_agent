@@ -57,10 +57,10 @@ async def test_qa_list_shows_candidates(monkeypatch, tmp_path):
 
     output = await runner._handle_qa_command(event)
 
-    assert "Quick Actions review" in output
-    assert "`tok123` · save · memory" in output
+    assert "Quick Actions" in output
+    assert "**save** -> **memory** · `tok123`" in output
     assert "Candidate title" in output
-    assert "/qa promote tok123 --to cortex_memory" in output
+    assert "/qa promote tok123 --to cortex_memory" not in output
     assert "id\tstatus\taction" not in output
 
 
@@ -87,7 +87,7 @@ async def test_qa_list_sends_telegram_inline_review_buttons_when_adapter_availab
         reply_to="msg123",
         metadata={"thread_id": "3220", "telegram_reply_markup": markup},
     )
-    assert "Quick Actions review" in adapter.send.call_args.kwargs["content"]
+    assert "Quick Actions" in adapter.send.call_args.kwargs["content"]
 
 
 @pytest.mark.asyncio
@@ -106,6 +106,23 @@ async def test_qa_promote_marks_candidate_without_downstream_mutation(monkeypatc
     promotions = [json.loads(line) for line in (_qa_dir(tmp_path) / "promotions.jsonl").read_text().splitlines()]
     assert promotions[0]["candidate_id"] == "tok123"
     assert promotions[0]["target"] == "cortex_memory"
+    assert promotions[0]["status"] == "pending_execution"
+
+
+@pytest.mark.asyncio
+async def test_qa_execute_dry_run_reports_pending_promotions_without_mutation(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_candidate(tmp_path, token="tok123")
+    runner, event = _runner_and_event("promote tok123 --to brain_sync_wiki_candidate")
+    await runner._handle_qa_command(event)
+
+    runner, event = _runner_and_event("execute --dry-run --limit 5")
+    output = await runner._handle_qa_command(event)
+
+    assert '"selected": 1' in output
+    assert '"dry_run": 1' in output
+    assert not (_qa_dir(tmp_path) / "executions.jsonl").exists()
+    promotions = [json.loads(line) for line in (_qa_dir(tmp_path) / "promotions.jsonl").read_text().splitlines()]
     assert promotions[0]["status"] == "pending_execution"
 
 

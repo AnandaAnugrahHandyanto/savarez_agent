@@ -8552,6 +8552,7 @@ class GatewayRunner:
             _candidate_id,
             _find_candidate,
             discard_candidate,
+            execute_promotions,
             format_candidate_digest,
             list_candidates,
             promote_candidate,
@@ -8563,6 +8564,7 @@ class GatewayRunner:
             "`/qa list [--status candidate|promoted|discarded|all] [--limit N] [-v]`\n"
             "`/qa show <id>`\n"
             "`/qa promote <id> --to cortex|wiki|kanban|cortex_memory|cortex_todo|brain_sync_wiki_candidate|kanban_candidate`\n"
+            "`/qa execute [--limit N] [--target <target>] [--dry-run]`\n"
             "`/qa discard <id> [--reason text]`\n"
             "`/qa prune-active [--older-than-days N] [--drop-undated]`"
         )
@@ -8594,8 +8596,8 @@ class GatewayRunner:
         def _positional() -> list[str]:
             out: list[str] = []
             skip_next = False
-            value_opts = {"--status", "--limit", "--to", "--reason", "--older-than-days"}
-            flag_opts = {"-v", "--verbose", "--drop-undated"}
+            value_opts = {"--status", "--limit", "--to", "--target", "--reason", "--older-than-days"}
+            flag_opts = {"-v", "--verbose", "--dry-run", "--drop-undated"}
             for item in args:
                 if skip_next:
                     skip_next = False
@@ -8647,6 +8649,22 @@ class GatewayRunner:
                         return "⚠️ --to must be one of: " + ", ".join(sorted(allowed)), None
                     row = promote_candidate(pos[0], target=target, actor=actor)
                     return f"✅ Promoted `{_candidate_id(row)}` -> `{target}`\nQueued as `pending_execution`; no downstream mutation was performed.", None
+
+                if action == "execute":
+                    try:
+                        limit = int(_get_opt("--limit", "20") or "20")
+                    except ValueError:
+                        return "⚠️ --limit must be an integer", None
+                    limit = max(1, min(limit, 50))
+                    target = _get_opt("--target")
+                    allowed = {"cortex", "wiki", "kanban", "cortex_memory", "cortex_todo", "brain_sync_wiki_candidate", "kanban_candidate"}
+                    if target and target not in allowed:
+                        return "⚠️ --target must be one of: " + ", ".join(sorted(allowed)), None
+                    result = execute_promotions(limit=limit, target=target, dry_run="--dry-run" in args)
+                    output = json.dumps(result, ensure_ascii=False, indent=2)
+                    if len(output) > 3800:
+                        output = output[:3800] + "\n… (truncated; use terminal `hermes qa execute` for full JSON)"
+                    return "```json\n" + output + "\n```", None
 
                 if action == "discard":
                     pos = _positional()
