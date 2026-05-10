@@ -772,6 +772,18 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_allow_from"] = platform_cfg["group_allow_from"]
                 if plat in (Platform.DISCORD, Platform.SLACK) and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
+                # Per-guild overrides for Discord (nested mapping: guild_id → settings dict)
+                if plat == Platform.DISCORD and "guilds" in platform_cfg:
+                    guilds_raw = platform_cfg["guilds"]
+                    if isinstance(guilds_raw, dict):
+                        # Normalize guild ID keys to strings (YAML parses
+                        # bare numbers as int; guild IDs can overflow 64-bit)
+                        bridged["guilds"] = {str(k): v for k, v in guilds_raw.items()}
+                    else:
+                        logger.warning(
+                            "discord.guilds must be a mapping, got %s — ignoring",
+                            type(guilds_raw).__name__,
+                        )
                 if "channel_prompts" in platform_cfg:
                     channel_prompts = platform_cfg["channel_prompts"]
                     if isinstance(channel_prompts, dict):
