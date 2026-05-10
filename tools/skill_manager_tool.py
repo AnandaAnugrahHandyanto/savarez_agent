@@ -274,15 +274,16 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
 # because completion bias causes models to write despite soft instructions.
 # ---------------------------------------------------------------------------
 
-# Matches date stamps the agent commonly self-injects, e.g.:
+# Matches the self-injected changelog-style date stamps the agent commonly
+# produces, e.g.:
 #   "Updated 2026-05-10", "NEW — Session 2026-05-10", "Added 2026-05",
-#   "<!-- Session 2026-05-10 -->", "added 2026-05-09"
-# The pattern is intentionally simple: a bare YYYY-MM(-DD) is almost never
-# legitimate in a skill guideline, whereas 2-digit minor versions (1.2.3) don't
-# match because they lack 4-digit years.
+#   "# Added 2026-05", "<!-- Session 2026-05-10 -->"
+# Do NOT match arbitrary bare dates — skill content can legitimately include
+# ISO date examples, version pins, or API payload samples.
 _DATE_STAMP_RE = re.compile(
-    r'(?:(?:Updated|NEW[^\w\n]*Session|Added|added)\s+)?\b\d{4}-\d{2}(?:-\d{2})?\b'
-    r'|<!--[^>]*\d{4}-\d{2}[^>]*-->',
+    r'(?im)^[ \t>*#-]*(?:updated|added|new(?:[^\w\n]+session)?)\s*:?\s*'
+    r'\d{4}-\d{2}(?:-\d{2})?\s*$'
+    r'|<!--[^>]*(?:updated|added|session)[^>]*\d{4}-\d{2}(?:-\d{2})?[^>]*-->',
     re.IGNORECASE,
 )
 
@@ -314,21 +315,52 @@ def _extract_headings(content: str) -> list:
     ]
 
 
-def _check_duplicate_headings(new_content: str) -> Optional[str]:
-    """Return an error if *new_content* contains the same heading twice.
+def _check_duplicate_headings(
+    new_content: str,
+    existing_content: Optional[str] = None,
+    *,
+    introduced_only: bool = False,
+) -> Optional[str]:
+    """Return an error if *new_content* contains duplicate headings.
 
-    Only catches exact-text duplicates within the new content being written.
-    Near-duplicate detection would require semantic embeddings and is out of
-    scope here; it is addressed at the prompt level instead.
+    Only catches exact-text duplicates, not semantic near-duplicates.
+
+    When ``introduced_only`` is true, only block duplicates newly introduced by
+    the current write compared to ``existing_content``. This lets targeted
+    patches clean up or edit legacy files that already contain duplicate
+    headings, instead of freezing them in place.
     """
-    seen: dict = {}
+    new_counts: Dict[str, int] = {}
     for heading in _extract_headings(new_content):
-        if heading in seen:
+        new_counts[heading] = new_counts.get(heading, 0) + 1
+
+    existing_counts: Dict[str, int] = {}
+    if introduced_only and existing_content is not None:
+        for heading in _extract_headings(existing_content):
+            existing_counts[heading] = existing_counts.get(heading, 0) + 1
+
+    for heading, new_count in new_counts.items():
+        if new_count <= 1:
+            continue
+        old_count = existing_counts.get(heading, 0)
+        if introduced_only and new_count <= old_count:
+            continue
+        if introduced_only and old_count == 0:
             return (
-                f"Duplicate heading '{heading}' appears more than once in the "
-                "new content. Merge the two sections rather than creating a copy."
+                f"Patch introduces duplicate heading '{heading}' more than once "
+                "in the resulting content. Merge the sections rather than "
+                "adding the same heading repeatedly."
             )
-        seen[heading] = True
+        if introduced_only:
+            return (
+                f"Patch introduces another '{heading}' heading even though that "
+                "heading already exists. Update the existing section instead of "
+                "creating a duplicate."
+            )
+        return (
+            f"Duplicate heading '{heading}' appears more than once in the "
+            "new content. Merge the two sections rather than creating a copy."
+        )
     return None
 
 
@@ -366,6 +398,7 @@ def _run_write_hygiene(
     check_date_stamps: bool = True,
     check_duplicates: bool = True,
     check_growth: bool = True,
+    introduced_duplicates_only: bool = False,
 ) -> Optional[str]:
     """Run all write-hygiene checks and return the first error found, or None.
 
@@ -378,7 +411,11 @@ def _run_write_hygiene(
         if err:
             return err
     if check_duplicates:
-        err = _check_duplicate_headings(new_content)
+        err = _check_duplicate_headings(
+            new_content,
+            existing_content,
+            introduced_only=introduced_duplicates_only,
+        )
         if err:
             return err
     if check_growth:
@@ -507,6 +544,10 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         return {"success": False, "error": err}
 
     err = _validate_content_size(content)
+    if err:
+        return {"success": False, "error": err}
+
+    err = _run_write_hygiene(content)
     if err:
         return {"success": False, "error": err}
 
@@ -665,15 +706,20 @@ def _patch_skill(
                 "success": False,
                 "error": f"Patch would break SKILL.md structure: {err}",
             }
-        # Only check date stamps in new_string (not the whole file), and only
-        # check growth/duplicates on the resulting file so a single targeted
-        # patch that adds one heading near an existing one isn't over-blocked.
+        # Only check date stamps in the newly inserted fragment, not the whole
+        # file, so legacy content does not freeze future maintenance. Duplicate
+        # heading detection on patches only blocks duplicates introduced by the
+        # current patch.
+        err = _check_date_stamps(new_string)
+        if err:
+            return {"success": False, "error": err}
         err = _run_write_hygiene(
             new_content,
             existing_content=content,
-            check_date_stamps=True,
+            check_date_stamps=False,
             check_duplicates=True,
             check_growth=False,   # patch is already targeted; growth guard is for full rewrites
+            introduced_duplicates_only=True,
         )
         if err:
             return {"success": False, "error": err}
