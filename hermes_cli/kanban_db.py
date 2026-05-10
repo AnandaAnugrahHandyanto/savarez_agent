@@ -2099,7 +2099,17 @@ def check_worker_startup_guard(
             current_run_id=current_run_id,
             claim_lock=claim_lock,
         )
-    if expected_claim_lock and claim_lock != expected_claim_lock:
+    if expected_claim_lock is None:
+        return WorkerStartupGuard(
+            False,
+            reason="missing_claim_lock",
+            task_id=task_id,
+            run_id=expected_run_id,
+            status=status,
+            current_run_id=current_run_id,
+            claim_lock=claim_lock,
+        )
+    if claim_lock != expected_claim_lock:
         return WorkerStartupGuard(
             False,
             reason="claim_mismatch",
@@ -2490,11 +2500,20 @@ def edit_task_recovery_fields(
                 return True
             run_id = row["current_run_id"]
             if run_id is not None:
-                _end_run(
-                    conn, task_id,
-                    outcome="reclaimed", status="reclaimed",
-                    error="operator_clear_claim",
-                )
+                run_row = conn.execute(
+                    "SELECT status, outcome FROM task_runs WHERE id = ?",
+                    (int(run_id),),
+                ).fetchone()
+                if (
+                    run_row is not None
+                    and run_row["status"] == "running"
+                    and run_row["outcome"] is None
+                ):
+                    _end_run(
+                        conn, task_id,
+                        outcome="reclaimed", status="reclaimed",
+                        error="operator_clear_claim",
+                    )
             conn.execute(
                 "UPDATE tasks SET claim_lock = NULL, claim_expires = NULL, "
                 "worker_pid = NULL, last_heartbeat_at = NULL, "

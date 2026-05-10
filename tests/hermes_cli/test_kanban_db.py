@@ -520,6 +520,33 @@ def test_edit_task_recovery_fields_clear_claim_on_non_running_task(kanban_home):
     assert events[-1].payload["claim_cleared"] is True
 
 
+def test_edit_task_recovery_fields_clear_claim_keeps_terminal_run_terminal(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="done-stale", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        assert run_id is not None
+        assert kb.complete_task(conn, tid, summary="done")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET claim_lock = ?, claim_expires = ?, worker_pid = ?, "
+                "last_heartbeat_at = ?, current_run_id = ? WHERE id = ?",
+                ("lock-1", 1234567890, 9999, 1234567000, run_id, tid),
+            )
+        assert kb.edit_task_recovery_fields(conn, tid, clear_claim=True) is True
+        task = kb.get_task(conn, tid)
+        run_row = conn.execute(
+            "SELECT status, outcome, summary FROM task_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+    assert task.claim_lock is None
+    assert task.current_run_id is None
+    assert run_row["status"] == "done"
+    assert run_row["outcome"] == "completed"
+    assert run_row["summary"] == "done"
+
+
 def test_has_spawnable_ready_false_when_only_terminal_lanes(kanban_home, monkeypatch):
     """``has_spawnable_ready`` returns False when every ready task is
     assigned to a control-plane lane — used by gateway/CLI dispatchers

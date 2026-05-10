@@ -95,17 +95,30 @@ def _kanban_worker_startup_env() -> Optional[dict[str, Any]]:
     if not task_id:
         return None
     run_raw = os.environ.get("HERMES_KANBAN_RUN_ID", "").strip()
-    run_id: Optional[int] = None
-    if run_raw:
-        try:
-            run_id = int(run_raw)
-        except ValueError:
-            run_id = None
+    if not run_raw:
+        return {
+            "task_id": task_id,
+            "run_id": None,
+            "claim_lock": os.environ.get("HERMES_KANBAN_CLAIM_LOCK", "").strip() or None,
+            "db_path": os.environ.get("HERMES_KANBAN_DB", "").strip() or None,
+            "env_error": "missing_run_id",
+        }
+    try:
+        run_id: Optional[int] = int(run_raw)
+    except ValueError:
+        return {
+            "task_id": task_id,
+            "run_id": None,
+            "claim_lock": os.environ.get("HERMES_KANBAN_CLAIM_LOCK", "").strip() or None,
+            "db_path": os.environ.get("HERMES_KANBAN_DB", "").strip() or None,
+            "env_error": "invalid_run_id",
+        }
     return {
         "task_id": task_id,
         "run_id": run_id,
         "claim_lock": os.environ.get("HERMES_KANBAN_CLAIM_LOCK", "").strip() or None,
         "db_path": os.environ.get("HERMES_KANBAN_DB", "").strip() or None,
+        "env_error": None,
     }
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
@@ -10878,6 +10891,37 @@ class AIAgent:
         # archived, or superseded by a newer run in the claim->spawn gap.
         _kanban_startup = _kanban_worker_startup_env()
         if _kanban_startup is not None:
+            if _kanban_startup.get("env_error"):
+                reason = str(_kanban_startup["env_error"])
+                return {
+                    "final_response": (
+                        "Kanban worker startup skipped because worker ownership "
+                        f"metadata is invalid ({reason})."
+                    ),
+                    "last_reasoning": None,
+                    "messages": [],
+                    "api_calls": 0,
+                    "completed": False,
+                    "turn_exit_reason": f"kanban_startup_guard:{reason}",
+                    "partial": False,
+                    "interrupted": False,
+                    "response_previewed": False,
+                    "model": self.model,
+                    "provider": self.provider,
+                    "base_url": self.base_url,
+                    "input_tokens": self.session_input_tokens,
+                    "output_tokens": self.session_output_tokens,
+                    "cache_read_tokens": self.session_cache_read_tokens,
+                    "cache_write_tokens": self.session_cache_write_tokens,
+                    "reasoning_tokens": self.session_reasoning_tokens,
+                    "prompt_tokens": self.session_prompt_tokens,
+                    "completion_tokens": self.session_completion_tokens,
+                    "total_tokens": self.session_total_tokens,
+                    "last_prompt_tokens": 0,
+                    "estimated_cost_usd": self.session_estimated_cost_usd,
+                    "cost_status": self.session_cost_status,
+                    "cost_source": self.session_cost_source,
+                }
             try:
                 from hermes_cli import kanban_db as _kanban_db
 

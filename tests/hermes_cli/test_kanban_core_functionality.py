@@ -1524,6 +1524,27 @@ def test_worker_startup_guard_rejects_superseded_run_without_failure(kanban_home
         conn.close()
 
 
+def test_worker_startup_guard_requires_claim_lock(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="startup-guard", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        assert run_id is not None
+
+        verdict = kb.check_worker_startup_guard(
+            conn,
+            task_id=tid,
+            expected_run_id=run_id,
+            expected_claim_lock=None,
+        )
+        assert verdict.allowed is False
+        assert verdict.reason == "missing_claim_lock"
+    finally:
+        conn.close()
+
+
 def test_run_on_block_with_reason(kanban_home):
     conn = kb.connect()
     try:

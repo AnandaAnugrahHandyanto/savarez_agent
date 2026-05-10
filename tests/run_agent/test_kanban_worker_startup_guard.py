@@ -56,3 +56,85 @@ def test_run_conversation_skips_stale_kanban_worker_before_api(tmp_path, monkeyp
     assert result["turn_exit_reason"] == "kanban_startup_guard:task_not_running:ready"
     assert "no longer belongs to this worker" in result["final_response"]
     assert not agent.client.chat.completions.create.called
+
+
+def test_run_conversation_skips_kanban_worker_with_invalid_run_id(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    tid = "t_demo1234"
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "not-an-int")
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "host:lock")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(kb.kanban_db_path()))
+
+    with (
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("hermes_logging.setup_logging"),
+    ):
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://example.invalid/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            platform="cli",
+        )
+    agent.client = MagicMock()
+
+    result = agent.run_conversation("work kanban task")
+
+    assert result["api_calls"] == 0
+    assert result["turn_exit_reason"] == "kanban_startup_guard:invalid_run_id"
+    assert "metadata is invalid" in result["final_response"]
+    assert not agent.client.chat.completions.create.called
+
+
+def test_run_conversation_skips_kanban_worker_with_missing_claim_lock(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="missing-claim-lock", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        assert run_id is not None
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.delenv("HERMES_KANBAN_CLAIM_LOCK", raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(kb.kanban_db_path()))
+
+    with (
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("hermes_logging.setup_logging"),
+    ):
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://example.invalid/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            platform="cli",
+        )
+    agent.client = MagicMock()
+
+    result = agent.run_conversation("work kanban task")
+
+    assert result["api_calls"] == 0
+    assert result["turn_exit_reason"] == "kanban_startup_guard:missing_claim_lock"
+    assert not agent.client.chat.completions.create.called
