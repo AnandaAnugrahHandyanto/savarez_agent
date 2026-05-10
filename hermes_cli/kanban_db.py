@@ -3805,7 +3805,7 @@ def _default_spawn(
     env["HERMES_PROFILE"] = profile_arg
 
     cmd = [
-        "hermes",
+        sys.executable, "-m", "hermes",
         "--no-gui",
         "-p", profile_arg,
         # Auto-load the kanban-worker skill so every dispatched worker

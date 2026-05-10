@@ -10528,16 +10528,75 @@ class HermesCLI:
             ] if item is not None
         ]
 
+    def _run_headless_loop(self, stdin=None):
+        input_stream = sys.stdin if stdin is None else stdin
+        for line in input_stream:
+            line = line.rstrip("\r\n")
+            if not line:
+                continue
+            self.chat(line)
+
+    def _finalize_run(self):
+        self._should_exit = True
+        # Interrupt the agent immediately so its daemon thread stops making
+        # API calls and exits promptly (agent_thread is daemon, so the
+        # process will exit once the main thread finishes, but interrupting
+        # avoids wasted API calls and lets run_conversation clean up).
+        if self.agent and getattr(self, '_agent_running', False):
+            try:
+                self.agent.interrupt()
+            except Exception:
+                pass
+        # Shut down voice recorder (release persistent audio stream)
+        if hasattr(self, '_voice_recorder') and self._voice_recorder:
+            try:
+                self._voice_recorder.shutdown()
+            except Exception:
+                pass
+            self._voice_recorder = None
+        # Clean up old temp voice recordings
+        try:
+            from tools.voice_mode import cleanup_temp_recordings
+            cleanup_temp_recordings()
+        except Exception:
+            pass
+        # Unregister callbacks to avoid dangling references
+        set_sudo_password_callback(None)
+        set_approval_callback(None)
+        set_secret_capture_callback(None)
+        # Close session in SQLite
+        if hasattr(self, '_session_db') and self._session_db and self.agent:
+            try:
+                self._session_db.end_session(self.agent.session_id, "cli_close")
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug("Could not close session in DB: %s", e)
+        # Plugin hook: on_session_end — safety net for interrupted exits.
+        # run_conversation() already fires this per-turn on normal completion,
+        # so only fire here if the agent was mid-turn (_agent_running) when
+        # the exit occurred, meaning run_conversation's hook didn't fire.
+        if self.agent and getattr(self, '_agent_running', False):
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "on_session_end",
+                    session_id=self.agent.session_id,
+                    completed=False,
+                    interrupted=True,
+                    model=getattr(self.agent, 'model', None),
+                    platform=getattr(self.agent, 'platform', None) or "cli",
+                )
+            except Exception:
+                pass
+        _run_cleanup()
+        self._print_exit_summary()
+
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
         if getattr(self, "headless", False):
-            print("Running in headless mode...")
-            import sys
-            for line in sys.stdin:
-                line = line.strip()
-                if not line:
-                    continue
-                self.chat(line)
+            try:
+                self._run_headless_loop()
+            finally:
+                self._finalize_run()
             return
 
         # Push the entire TUI to the bottom of the terminal so the banner,
@@ -12615,58 +12674,7 @@ class HermesCLI:
             else:
                 raise
         finally:
-            self._should_exit = True
-            # Interrupt the agent immediately so its daemon thread stops making
-            # API calls and exits promptly (agent_thread is daemon, so the
-            # process will exit once the main thread finishes, but interrupting
-            # avoids wasted API calls and lets run_conversation clean up).
-            if self.agent and getattr(self, '_agent_running', False):
-                try:
-                    self.agent.interrupt()
-                except Exception:
-                    pass
-            # Shut down voice recorder (release persistent audio stream)
-            if hasattr(self, '_voice_recorder') and self._voice_recorder:
-                try:
-                    self._voice_recorder.shutdown()
-                except Exception:
-                    pass
-                self._voice_recorder = None
-            # Clean up old temp voice recordings
-            try:
-                from tools.voice_mode import cleanup_temp_recordings
-                cleanup_temp_recordings()
-            except Exception:
-                pass
-            # Unregister callbacks to avoid dangling references
-            set_sudo_password_callback(None)
-            set_approval_callback(None)
-            set_secret_capture_callback(None)
-            # Close session in SQLite
-            if hasattr(self, '_session_db') and self._session_db and self.agent:
-                try:
-                    self._session_db.end_session(self.agent.session_id, "cli_close")
-                except (Exception, KeyboardInterrupt) as e:
-                    logger.debug("Could not close session in DB: %s", e)
-            # Plugin hook: on_session_end — safety net for interrupted exits.
-            # run_conversation() already fires this per-turn on normal completion,
-            # so only fire here if the agent was mid-turn (_agent_running) when
-            # the exit occurred, meaning run_conversation's hook didn't fire.
-            if self.agent and getattr(self, '_agent_running', False):
-                try:
-                    from hermes_cli.plugins import invoke_hook as _invoke_hook
-                    _invoke_hook(
-                        "on_session_end",
-                        session_id=self.agent.session_id,
-                        completed=False,
-                        interrupted=True,
-                        model=getattr(self.agent, 'model', None),
-                        platform=getattr(self.agent, 'platform', None) or "cli",
-                    )
-                except Exception:
-                    pass
-            _run_cleanup()
-            self._print_exit_summary()
+            self._finalize_run()
 
 
 # ============================================================================
