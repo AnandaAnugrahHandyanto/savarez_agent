@@ -71,6 +71,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
+        "session_id": t.session_id,
     }
 
 
@@ -304,6 +305,9 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_list.add_argument("--status", default=None,
                         choices=sorted(kb.VALID_STATUSES))
     p_list.add_argument("--tenant", default=None)
+    p_list.add_argument("--session", default=None,
+                        help="Filter by originating chat/agent session id "
+                             "(set on tasks created from inside an ACP loop)")
     p_list.add_argument("--archived", action="store_true",
                         help="Include archived tasks")
     p_list.add_argument("--json", action="store_true")
@@ -1088,6 +1092,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
             assignee=assignee,
             status=args.status,
             tenant=args.tenant,
+            session_id=args.session,
             include_archived=args.archived,
         )
     if getattr(args, "json", False):

@@ -1215,9 +1215,10 @@ class HermesACPAgent(acp.Agent):
         # which requires a notify_cb registered in _gateway_notify_cbs.
         previous_approval_cb = None
         previous_interactive = None
+        previous_session_id = None
 
         def _run_agent() -> dict:
-            nonlocal previous_approval_cb, previous_interactive
+            nonlocal previous_approval_cb, previous_interactive, previous_session_id
             # Bind HERMES_SESSION_KEY for this session so per-session caches
             # (e.g. the interactive sudo password cache in tools.terminal_tool)
             # scope to the ACP session rather than leaking across sessions
@@ -1245,6 +1246,13 @@ class HermesACPAgent(acp.Agent):
             # and the non-interactive auto-approve path must not fire.
             previous_interactive = os.environ.get("HERMES_INTERACTIVE")
             os.environ["HERMES_INTERACTIVE"] = "1"
+            # Propagate the originating ACP session id to tools that want to
+            # tag side-effects with it (e.g. ``kanban_create`` stamps it on
+            # the new task so clients can render a per-session board). Save
+            # and restore around the agent call so a re-used executor thread
+            # never leaks one session's id into the next session's tools.
+            previous_session_id = os.environ.get("HERMES_SESSION_ID")
+            os.environ["HERMES_SESSION_ID"] = session_id
             try:
                 result = agent.run_conversation(
                     user_message=user_content,
@@ -1262,6 +1270,11 @@ class HermesACPAgent(acp.Agent):
                     os.environ.pop("HERMES_INTERACTIVE", None)
                 else:
                     os.environ["HERMES_INTERACTIVE"] = previous_interactive
+                # Restore HERMES_SESSION_ID symmetrically.
+                if previous_session_id is None:
+                    os.environ.pop("HERMES_SESSION_ID", None)
+                else:
+                    os.environ["HERMES_SESSION_ID"] = previous_session_id
                 if approval_cb:
                     try:
                         from tools import terminal_tool as _terminal_tool
