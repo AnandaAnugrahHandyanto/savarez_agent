@@ -2310,10 +2310,44 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         }
 
     if not configured_provider:
-        # No provider override — child inherits everything from parent
+        # No explicit provider — try smart-route's family map so the child
+        # gets the "simple" model for the parent's model family (e.g.
+        # deepseek-v4-pro parent → deepseek-v4-flash child) instead of
+        # forcing the parent's exact model on the subagent.
+        _child_model = configured_model
+        _child_provider = None
+
+        if configured_model is None and parent_agent is not None:
+            _parent_model = getattr(parent_agent, "model", None) or ""
+            _parent_provider = getattr(parent_agent, "provider", None) or ""
+            if _parent_model:
+                try:
+                    # smart-route registers as hermes_plugins.smart_route during
+                    # gateway/plugin discovery.  If the agent is running in a
+                    # context where that hasn't happened (e.g. CLI without gateway),
+                    # this raises ImportError and we fall back to parent's exact model.
+                    from hermes_plugins.smart_route.routing import resolve_child_model
+
+                    _resolved = resolve_child_model(_parent_model, _parent_provider)
+                    if _resolved is not None:
+                        _child_model = _resolved.get("model") or _child_model
+                        _child_provider = _resolved.get("provider") or _child_provider
+                        logger.info(
+                            "delegation: smart-route family: parent=%s → child=%s provider=%s",
+                            _parent_model, _child_model, _child_provider,
+                        )
+                except Exception as exc:
+                    # ImportError (namespace not registered) or resolution failure
+                    # — degrade silently to inheriting parent's exact model.
+                    logger.debug(
+                        "delegation: smart-route family resolution unavailable "
+                        "(parent=%s): %s",
+                        _parent_model, exc,
+                    )
+
         return {
-            "model": configured_model,
-            "provider": None,
+            "model": _child_model,
+            "provider": _child_provider,
             "base_url": None,
             "api_key": None,
             "api_mode": None,
