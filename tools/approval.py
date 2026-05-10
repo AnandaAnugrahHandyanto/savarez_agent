@@ -927,7 +927,12 @@ def check_all_command_guards(command: str, env_type: str,
 
             choice = entry.result
             if not resolved or choice is None or choice == "deny":
-                reason = "timed out" if not resolved else "denied by user"
+                if not resolved:
+                    reason = "timed out"
+                elif choice is None:
+                    reason = "approval callback unavailable"
+                else:
+                    reason = "denied by user"
                 return {
                     "approved": False,
                     "message": f"BLOCKED: Command {reason}. Do NOT retry this command.",

@@ -328,3 +328,64 @@ class TestProgrammingErrorsPropagateFromWrapper:
         os.environ["HERMES_INTERACTIVE"] = "1"
         with pytest.raises(AttributeError, match="bug in wrapper"):
             check_all_command_guards("echo hello", "local")
+
+
+# ---------------------------------------------------------------------------
+# Gateway approval: unregister without resolving → "callback unavailable"
+# ---------------------------------------------------------------------------
+
+class TestGatewayApprovalCallbackUnavailable:
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("block", summary="danger"))
+    def test_unregister_notify_reports_callback_unavailable(self, mock_tirith):
+        """When unregister_gateway_notify() is called before the user responds,
+        the message should say 'approval callback unavailable' — NOT 'denied by user'."""
+        import threading
+        from tools.approval import (
+            register_gateway_notify,
+            unregister_gateway_notify,
+        )
+
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        session_key = "test-unregister-session"
+
+        # Register a notify callback that does nothing (simulates gateway
+        # delivering the approval prompt to the platform)
+        notify_called = threading.Event()
+
+        def fake_notify(data):
+            notify_called.set()
+
+        register_gateway_notify(session_key, fake_notify)
+
+        # Run check_all_command_guards in a background thread so we can
+        # simulate the gateway tearing down while it's blocking.
+        # NOTE: ContextVar is per-thread, so set_current_session_key
+        # must be called inside the background thread.
+        result_holder = {}
+
+        def run_guard():
+            set_current_session_key(session_key)
+            result_holder["result"] = check_all_command_guards(
+                "rm -rf /tmp", "local"
+            )
+
+        t = threading.Thread(target=run_guard, daemon=True)
+        t.start()
+
+        # Wait until the notify callback fires (guard is now blocking)
+        assert notify_called.wait(timeout=5), "notify callback was never called"
+
+        # Simulate gateway teardown — unregister without resolving
+        unregister_gateway_notify(session_key)
+
+        t.join(timeout=5)
+        assert not t.is_alive(), "guard thread did not exit after unregister"
+
+        result = result_holder["result"]
+        assert result["approved"] is False
+        assert "callback unavailable" in result["message"].lower(), \
+            f"Expected 'callback unavailable' in message, got: {result['message']}"
+        assert "denied by user" not in result["message"].lower(), \
+            f"Should NOT say 'denied by user': {result['message']}"
+        assert "timed out" not in result["message"].lower(), \
+            f"Should NOT say 'timed out': {result['message']}"
