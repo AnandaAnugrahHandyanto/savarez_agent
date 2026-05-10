@@ -907,7 +907,19 @@ _PROVIDER_ALIASES = {
     "lm_studio": "lmstudio",
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
+    "telnyx-ai": "telnyx",
+    "telnyx-intelligence": "telnyx",
 }
+
+# Auto-extend aliases from ProviderProfile declarations.  This keeps the
+# provider plugin system authoritative for simple API-key providers.
+try:
+    from providers import list_providers as _list_providers_for_aliases
+    for _pp in _list_providers_for_aliases():
+        for _alias in _pp.aliases:
+            _PROVIDER_ALIASES.setdefault(_alias, _pp.name)
+except Exception:
+    pass
 
 
 def get_default_model_for_provider(provider: str) -> str:

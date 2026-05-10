@@ -1,0 +1,5 @@
+name: telnyx-provider
+kind: model-provider
+version: 1.0.0
+description: Telnyx AI direct OpenAI-compatible provider
+author: Telnyx
