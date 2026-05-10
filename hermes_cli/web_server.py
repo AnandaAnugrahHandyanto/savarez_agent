@@ -4195,6 +4195,25 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     return FileResponse(target, media_type=media_type)
 
 
+def _purge_dashboard_plugin_http_routes(application: FastAPI) -> None:
+    """Remove flattened ``/api/plugins/...`` routes from *application*.
+
+    ``FastAPI.include_router`` **copies** route objects onto the app router.
+    Clearing and refilling the aggregate :class:`fastapi.APIRouter` afterwards
+    does not update those copies, so full remounts must drop the stale HTTP
+    routes first (see dashboard plugin tests + rescan/install paths).
+    """
+    kept: List = []
+    for route in application.router.routes:
+        path = getattr(route, "path", None)
+        if isinstance(path, str) and (
+            path == "/api/plugins" or path.startswith("/api/plugins/")
+        ):
+            continue
+        kept.append(route)
+    application.router.routes[:] = kept
+
+
 def _mount_plugin_api_routes() -> None:
     """Import dashboard plugin API modules into the aggregate plugin router.
 
@@ -4203,8 +4222,10 @@ def _mount_plugin_api_routes() -> None:
     ``/api/plugins/<name>/``.
 
     Callable multiple times — for example after a disk re-scan or plugin
-    install — without duplicating mounts on ``app``.
+    install.  Stale flattened routes are purged then the aggregate router is
+    re-attached via :func:`FastAPI.include_router`.
     """
+    _purge_dashboard_plugin_http_routes(app)
     plugins = _get_dashboard_plugins()
 
     _dashboard_plugin_api_router.routes.clear()
@@ -4247,10 +4268,37 @@ def _mount_plugin_api_routes() -> None:
         except Exception as exc:
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)
 
+    # Flatten onto *app* at the splice index — **not** ``app.include_router`` last.
+    #
+    # ``include_router`` appends routes.  On first load (before ``mount_spa``)
+    # that preserves ``/api/plugins/*`` ahead of ``/{full_path:path}``, but after
+    # a reload the SPA catch-all already exists earlier in ``app.router.routes``
+    # and naive appends leave new plugin endpoints *after* the catch-all, so
+    # every ``/api/plugins/...`` request hits the SPA 404.
+    routes_ref = app.router.routes
+    insert_at = next(
+        (
+            i
+            for i, route in enumerate(routes_ref)
+            if getattr(route, "path", None) == "/{full_path:path}"
+        ),
+        len(routes_ref),
+    )
+    probe = FastAPI()
+    probe.include_router(_dashboard_plugin_api_router, prefix="/api/plugins")
+    fresh = [
+        route
+        for route in probe.router.routes
+        if isinstance(getattr(route, "path", None), str)
+        and (
+            getattr(route, "path") == "/api/plugins"
+            or getattr(route, "path").startswith("/api/plugins/")
+        )
+    ]
+    routes_ref[insert_at:insert_at] = fresh
 
-# Single include on ``app``; refresh by repopulating ``_dashboard_plugin_api_router``.
+
 _mount_plugin_api_routes()
-app.include_router(_dashboard_plugin_api_router, prefix="/api/plugins")
 
 mount_spa(app)
 
