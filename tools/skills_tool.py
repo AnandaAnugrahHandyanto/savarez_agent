@@ -809,35 +809,52 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         skill_dir = None
         skill_md = None
 
+        candidate_names = [name]
+        if ":" in name:
+            prefix, suffix = name.split(":", 1)
+            if prefix and suffix:
+                candidate_names.append(f"{prefix}/{suffix}")
+                candidate_names.append(suffix)
+        candidate_names = list(dict.fromkeys(candidate_names))
+
         # Search all dirs: local first, then external (first match wins)
-        for search_dir in all_dirs:
-            # Try direct path first (e.g., "mlops/axolotl")
-            direct_path = search_dir / name
-            if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
-                skill_dir = direct_path
-                skill_md = direct_path / "SKILL.md"
-                break
-            elif direct_path.with_suffix(".md").exists():
-                skill_md = direct_path.with_suffix(".md")
+        for candidate_name in candidate_names:
+            for search_dir in all_dirs:
+                # Try direct path first (e.g., "mlops/axolotl")
+                direct_path = search_dir / candidate_name
+                if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
+                    skill_dir = direct_path
+                    skill_md = direct_path / "SKILL.md"
+                    break
+                elif direct_path.with_suffix(".md").exists():
+                    skill_md = direct_path.with_suffix(".md")
+                    break
+            if skill_md:
                 break
 
         # Search by directory name across all dirs
         if not skill_md:
-            for search_dir in all_dirs:
-                for found_skill_md in search_dir.rglob("SKILL.md"):
-                    if found_skill_md.parent.name == name:
-                        skill_dir = found_skill_md.parent
-                        skill_md = found_skill_md
+            for candidate_name in candidate_names:
+                for search_dir in all_dirs:
+                    for found_skill_md in search_dir.rglob("SKILL.md"):
+                        if found_skill_md.parent.name == candidate_name:
+                            skill_dir = found_skill_md.parent
+                            skill_md = found_skill_md
+                            break
+                    if skill_md:
                         break
                 if skill_md:
                     break
 
         # Legacy: flat .md files
         if not skill_md:
-            for search_dir in all_dirs:
-                for found_md in search_dir.rglob(f"{name}.md"):
-                    if found_md.name != "SKILL.md":
-                        skill_md = found_md
+            for candidate_name in candidate_names:
+                for search_dir in all_dirs:
+                    for found_md in search_dir.rglob(f"{candidate_name}.md"):
+                        if found_md.name != "SKILL.md":
+                            skill_md = found_md
+                            break
+                    if skill_md:
                         break
                 if skill_md:
                     break

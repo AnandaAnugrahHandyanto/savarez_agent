@@ -4092,7 +4092,7 @@ def _coalesce_session_name_args(argv: list) -> list:
     _SUBCOMMANDS = {
         "chat", "model", "gateway", "setup", "whatsapp", "login", "logout", "auth",
         "status", "cron", "doctor", "config", "pairing", "skills", "tools",
-        "mcp", "sessions", "insights", "version", "update", "uninstall",
+        "mcp", "sessions", "insights", "codex", "version", "update", "uninstall",
         "profile",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
@@ -5593,6 +5593,31 @@ For more help on a command:
             print(f"Error generating insights: {e}")
 
     insights_parser.set_defaults(func=cmd_insights)
+
+    # =========================================================================
+    # codex command
+    # =========================================================================
+    codex_parser = subparsers.add_parser(
+        "codex",
+        help="Show rolling Codex usage windows",
+        description="Summarize Hermes Codex usage over rolling 5h, 7d, and 30d windows"
+    )
+    codex_parser.add_argument("--source", help="Filter by platform (cli, telegram, discord, etc.)")
+
+    def cmd_codex(args):
+        try:
+            from hermes_state import SessionDB
+            from agent.codex_usage import CodexUsageTracker
+
+            db = SessionDB()
+            tracker = CodexUsageTracker(db)
+            report = tracker.generate(source=args.source)
+            print(tracker.format_terminal(report))
+            db.close()
+        except Exception as e:
+            print(f"Error generating Codex usage: {e}")
+
+    codex_parser.set_defaults(func=cmd_codex)
 
     # =========================================================================
     # claw command (OpenClaw migration)
