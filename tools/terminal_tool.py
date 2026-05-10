@@ -325,6 +325,34 @@ def _check_all_guards(command: str, env_type: str) -> dict:
                                   approval_callback=_get_approval_callback())
 
 
+_GATEWAY_INLINE_SERVICE_CONTROL_RE = re.compile(
+    r"(?:^|[;&|\n])\s*"
+    r"(?:env\s+(?:\w+=\S+\s+)*)?"
+    r"(?:python[\w.\-/]*\s+-m\s+hermes_cli\.main\s+|(?:\S*/)?hermes\s+)"
+    r"gateway\s+(?:install|uninstall|start|stop|restart|migrate-legacy)\b"
+    r"|(?:^|[;&|\n])\s*(?:sudo\s+)?launchctl\s+"
+    r"(?:kickstart|bootout|bootstrap)\b[^\n;]*\bhermes(?:-gateway|\.gateway)\b",
+    re.IGNORECASE,
+)
+
+
+def _gateway_inline_service_control_block(command: str, env_type: str) -> str | None:
+    """Hard-block gateway service-control from gateway-origin local commands."""
+    if env_type != "local":
+        return None
+    if not _GATEWAY_INLINE_SERVICE_CONTROL_RE.search(command or ""):
+        return None
+    try:
+        from gateway.restart import require_no_gateway_inline_service_control
+
+        require_no_gateway_inline_service_control(command="gateway inline service-control command")
+    except PermissionError as exc:
+        return str(exc)
+    except Exception:
+        return None
+    return None
+
+
 # Allowlist: characters that can legitimately appear in directory paths.
 # Covers alphanumeric, path separators, Windows drive/UNC separators, tilde,
 # dot, hyphen, underscore, space, plus, at, equals, and comma.  Everything
@@ -1831,6 +1859,15 @@ def terminal_tool(
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
 
         # Pre-exec security checks (tirith + dangerous command detection)
+        gateway_service_control_error = _gateway_inline_service_control_block(command, env_type)
+        if gateway_service_control_error:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": gateway_service_control_error,
+                "status": "blocked",
+            }, ensure_ascii=False)
+
         # Skip check if force=True (user has confirmed they want to run it)
         approval_note = None
         if not force:

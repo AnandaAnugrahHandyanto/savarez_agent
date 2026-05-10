@@ -62,7 +62,11 @@ _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
-_TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+# Shutdown/restart notifications are best-effort UX only. Keep the whole
+# notification phase bounded so a Telegram flood-control/network stall cannot
+# block the actual service-manager restart/stop path.
+_SHUTDOWN_NOTIFICATION_TIMEOUT_SECS = 5.0
+_TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
@@ -4880,7 +4884,20 @@ class GatewayRunner:
 
             # Notify all chats with active agents BEFORE draining.
             # Adapters are still connected here, so messages can be sent.
-            await self._notify_active_sessions_of_shutdown()
+            # This is intentionally bounded: notification delivery is helpful
+            # but must never prevent launchd/systemd from completing an
+            # approved restart or stop.
+            try:
+                await asyncio.wait_for(
+                    self._notify_active_sessions_of_shutdown(),
+                    timeout=_SHUTDOWN_NOTIFICATION_TIMEOUT_SECS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Shutdown notification phase timed out after %.1fs; continuing gateway %s",
+                    _SHUTDOWN_NOTIFICATION_TIMEOUT_SECS,
+                    self._status_action_label(),
+                )
             logger.info(
                 "Shutdown phase: notify_active_sessions done at +%.2fs",
                 _phase_elapsed(),
@@ -16853,7 +16870,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     def restart_signal_handler():
         try:
             from gateway.restart import require_gateway_restart_approval
-            require_gateway_restart_approval(source="gateway SIGUSR1 restart")
+            require_gateway_restart_approval(source="gateway SIGUSR1 restart", consume_once=True)
         except PermissionError as exc:
             logger.warning("Blocked gateway SIGUSR1 restart: %s", exc)
             return

@@ -143,6 +143,28 @@ async def test_gateway_stop_service_restart_sets_named_exit_code():
 
 
 @pytest.mark.asyncio
+async def test_gateway_stop_bounds_shutdown_notification_phase(monkeypatch):
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+
+    notify_started = asyncio.Event()
+
+    async def blocked_notification():
+        notify_started.set()
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr("gateway.run._SHUTDOWN_NOTIFICATION_TIMEOUT_SECS", 0.01)
+    runner._notify_active_sessions_of_shutdown = blocked_notification
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop(restart=True, service_restart=True)
+
+    assert notify_started.is_set()
+    adapter.disconnect.assert_awaited_once()
+    assert runner._shutdown_event.is_set() is True
+
+
+@pytest.mark.asyncio
 async def test_drain_active_agents_throttles_status_updates():
     runner, _adapter = make_restart_runner()
     runner._update_runtime_status = MagicMock()

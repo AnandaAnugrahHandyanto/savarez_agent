@@ -4,7 +4,9 @@ from gateway.restart import (
     GATEWAY_RESTART_APPROVAL_REQUIRED_ENV,
     GATEWAY_RESTART_APPROVED_ENV,
     GATEWAY_RESTART_APPROVAL_REQUIRED_MARKER,
+    GATEWAY_RESTART_APPROVED_ONCE_MARKER,
     gateway_restart_approval_required,
+    mark_gateway_restart_approved_once,
     require_gateway_restart_approval,
 )
 
@@ -46,3 +48,29 @@ def test_restart_approval_accepts_single_command_env_override(tmp_path, monkeypa
     monkeypatch.setenv(GATEWAY_RESTART_APPROVED_ENV, "1")
 
     require_gateway_restart_approval(hermes_home=tmp_path)
+
+
+def test_restart_approval_once_marker_bridges_service_signal_and_is_consumed(tmp_path, monkeypatch):
+    monkeypatch.setenv(GATEWAY_RESTART_APPROVAL_REQUIRED_ENV, "1")
+    monkeypatch.delenv(GATEWAY_RESTART_APPROVED_ENV, raising=False)
+
+    mark_gateway_restart_approved_once(tmp_path)
+    marker = tmp_path / GATEWAY_RESTART_APPROVED_ONCE_MARKER
+    assert marker.exists()
+
+    require_gateway_restart_approval(hermes_home=tmp_path, consume_once=True)
+    assert not marker.exists()
+
+    with pytest.raises(PermissionError, match="explicit approval is required"):
+        require_gateway_restart_approval(hermes_home=tmp_path, consume_once=True)
+
+
+def test_restart_approval_once_marker_expires(tmp_path, monkeypatch):
+    monkeypatch.setenv(GATEWAY_RESTART_APPROVAL_REQUIRED_ENV, "1")
+    monkeypatch.delenv(GATEWAY_RESTART_APPROVED_ENV, raising=False)
+    marker = tmp_path / GATEWAY_RESTART_APPROVED_ONCE_MARKER
+    marker.write_text(str(0.0), encoding="utf-8")
+
+    with pytest.raises(PermissionError, match="explicit approval is required"):
+        require_gateway_restart_approval(hermes_home=tmp_path, consume_once=True)
+    assert not marker.exists()

@@ -13,6 +13,7 @@ import hermes_cli.gateway as gateway_cli
 from gateway import status
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+    GATEWAY_PROCESS_ENV,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
 )
 
@@ -38,6 +39,10 @@ class TestUserSystemdPrivateSocketPreflight:
 
 
 class TestSystemdServiceRefresh:
+    @pytest.fixture(autouse=True)
+    def _allow_user_systemd_preflight(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *args, **kwargs: None)
+
     def test_systemd_install_repairs_outdated_unit_without_force(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
@@ -233,6 +238,20 @@ class TestSystemdServiceRefresh:
 
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
         assert ["systemctl", "--user", "daemon-reload"] in calls
+        assert os.environ.get(GATEWAY_PROCESS_ENV) is None
+
+
+class TestGatewayInlineServiceControlGuard:
+    def test_gateway_command_refuses_service_control_from_gateway_process(self, monkeypatch, capsys):
+        monkeypatch.setenv(GATEWAY_PROCESS_ENV, "1")
+
+        with pytest.raises(SystemExit) as exc_info:
+            gateway_cli.gateway_command(SimpleNamespace(gateway_command="start", system=False))
+
+        assert exc_info.value.code == 2
+        out = capsys.readouterr().out
+        assert "gateway-origin sessions" in out
+        assert "out-of-band" in out
 
     def test_refresh_refuses_to_bake_pytest_tmpdir_into_real_user_unit(
         self, tmp_path, monkeypatch
@@ -554,14 +573,16 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", target],
         ]
 
-    def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch):
+    def test_launchd_restart_drains_running_gateway_via_launchctl_signal_before_kickstart(self, monkeypatch):
         calls = []
         target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
 
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
-        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
-        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: calls.append(("term", pid, force)))
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: calls.append(("wait", timeout, force_after)) or True)
+        monkeypatch.setattr("gateway.restart.gateway_restart_approval_required", lambda: True)
+        monkeypatch.setattr("gateway.restart.gateway_restart_approved", lambda approved=False: approved)
+        monkeypatch.setattr("gateway.restart.mark_gateway_restart_approved_once", lambda: calls.append("approved-once"))
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
             lambda: 321,
@@ -573,10 +594,36 @@ class TestLaunchdServiceRecovery:
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
+        gateway_cli.launchd_restart(approved=True)
+        assert calls == [
+            "approved-once",
+            ["launchctl", "kill", "SIGUSR1", target],
+            ("wait", 12.0, None),
+            ["launchctl", "kickstart", target],
+        ]
+
+
+    def test_launchd_restart_force_kills_via_launchctl_when_drain_times_out(self, monkeypatch):
+        calls = []
+        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
+
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 7.0)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: calls.append(("wait", timeout, force_after)) or False)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
         gateway_cli.launchd_restart()
 
         assert calls == [
-            ("term", 321, False),
+            ["launchctl", "kill", "SIGUSR1", target],
+            ("wait", 7.0, None),
+            ["launchctl", "kill", "SIGKILL", target],
             ["launchctl", "kickstart", "-k", target],
         ]
 
@@ -737,6 +784,10 @@ class TestGatewayServiceDetection:
         assert gateway_cli._is_service_running() is False
 
 class TestGatewaySystemServiceRouting:
+    @pytest.fixture(autouse=True)
+    def _allow_user_systemd_preflight(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *args, **kwargs: None)
+
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []
 

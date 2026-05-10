@@ -19,9 +19,12 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 from gateway.status import terminate_pid
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+    GATEWAY_INLINE_SERVICE_CONTROL_COMMANDS,
+    GATEWAY_PROCESS_ENV,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     parse_restart_drain_timeout,
     require_gateway_restart_approval,
+    require_no_gateway_inline_service_control,
 )
 from hermes_cli.config import (
     get_env_value,
@@ -2989,11 +2992,23 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
     return True
 
 
-def launchd_restart():
+def launchd_restart(*, approved: bool = False):
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
     drain_timeout = _get_restart_drain_timeout()
+    from gateway.restart import (
+        gateway_restart_approval_required,
+        gateway_restart_approved,
+        mark_gateway_restart_approved_once,
+    )
     from gateway.status import get_running_pid
+
+    def _bootstrap_unloaded_job() -> None:
+        print("↻ launchd job was unloaded; reloading")
+        plist_path = get_launchd_plist_path()
+        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+        subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+        print("✓ Service restarted")
 
     try:
         pid = get_running_pid()
@@ -3002,24 +3017,38 @@ def launchd_restart():
             return
         if pid is not None:
             try:
-                terminate_pid(pid, force=False)
-            except (ProcessLookupError, PermissionError, OSError):
-                pid = None
-            if pid is not None:
-                exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
-                if not exited:
-                    print(f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart")
+                # Ask the launchd-owned service process to take the same
+                # drain-aware SIGUSR1 path as systemd ExecReload. This keeps
+                # restart orchestration supervisor-scoped instead of sending a
+                # raw SIGTERM from the CLI into the gateway PID that may be
+                # carrying active Telegram work.
+                if gateway_restart_approval_required() and gateway_restart_approved(approved=approved):
+                    mark_gateway_restart_approved_once()
+                subprocess.run(["launchctl", "kill", "SIGUSR1", target], check=True, timeout=10)
+            except subprocess.CalledProcessError as e:
+                if e.returncode in (3, 113):
+                    _bootstrap_unloaded_job()
+                    return
+                raise
+            exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
+            if exited:
+                # KeepAlive should relaunch after the gateway exits with the
+                # restart code, but kickstart is a safe supervisor-level nudge
+                # when launchd has not spawned the replacement yet.
+                subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+                print("✓ Service restarted")
+                return
+
+            print(f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart")
+            subprocess.run(["launchctl", "kill", "SIGKILL", target], check=False, timeout=10)
+
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
         if e.returncode not in {3, 113}:
             raise
         # Job not loaded — bootstrap and start fresh
-        print("↻ launchd job was unloaded; reloading")
-        plist_path = get_launchd_plist_path()
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
-        print("✓ Service restarted")
+        _bootstrap_unloaded_job()
 
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
@@ -3111,155 +3140,134 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
                  hasn't fully exited yet.
     """
     _guard_official_docker_root_gateway()
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-    # Detached Windows gateway runs must ignore console-control broadcasts
-    # from sibling CLI processes, but foreground `hermes gateway run` still
-    # needs to obey the banner's "Press Ctrl+C to stop" contract.
-    # Service-style launchers set HERMES_GATEWAY_DETACHED=1; older wrappers
-    # without the marker are handled by the non-TTY fallback.
+    previous_gateway_process = os.environ.get(GATEWAY_PROCESS_ENV)
+    os.environ[GATEWAY_PROCESS_ENV] = "1"
     try:
-        _stdin_is_tty = bool(sys.stdin and sys.stdin.isatty())
-    except (ValueError, OSError):
-        _stdin_is_tty = False
-    _absorb_windows_console_controls = _windows_gateway_should_absorb_console_controls()
-    if _absorb_windows_console_controls:
-        try:
-            signal.signal(signal.SIGINT, signal.SIG_IGN)
-            if hasattr(signal, "SIGBREAK"):
-                signal.signal(signal.SIGBREAK, signal.SIG_IGN)
-        except (OSError, ValueError):
-            # SetConsoleCtrlHandler not available (rare on Windows) —
-            # best-effort, proceed either way.
-            pass
-        # Python's signal module only hooks SIGINT/SIGBREAK. To also
-        # absorb CTRL_CLOSE_EVENT / CTRL_LOGOFF_EVENT and any other
-        # console control signals Windows may broadcast to the console
-        # process group, call the native SetConsoleCtrlHandler(NULL, TRUE)
-        # — this tells the kernel to IGNORE all console control events
-        # for this process entirely, which is what background services
-        # are supposed to do. Belt-and-braces over the Python-level
-        # handlers above.
-        try:
-            import ctypes
-            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-            # BOOL SetConsoleCtrlHandler(NULL, Add)  —  Add=TRUE means
-            # "install the NULL handler", which has the documented
-            # effect of ignoring Ctrl+C. Called twice for defense in
-            # depth: once before any Python import could have flipped
-            # our disposition, once as our last word.
-            kernel32.SetConsoleCtrlHandler(None, 1)
-        except (OSError, AttributeError):
-            pass
+        sys.path.insert(0, str(PROJECT_ROOT))
 
-    # Refresh the systemd unit definition on every boot so that restart
-    # settings (RestartSec, StartLimitIntervalSec, etc.) stay current even
-    # when the process was respawned via exit-code-75 (stale-code or
-    # /restart) rather than through `hermes gateway restart` which already
-    # calls refresh_systemd_unit_if_needed().  Without this, a code update
-    # that ships new unit settings won't take effect until the next manual
-    # `hermes gateway start/restart` — leaving the gateway vulnerable to
-    # the exact failure mode the new settings were meant to prevent.
-    if supports_systemd_services():
+        # Detached Windows gateway runs must ignore console-control broadcasts
+        # from sibling CLI processes, but foreground `hermes gateway run` still
+        # needs to obey the banner's "Press Ctrl+C to stop" contract.
+        # Service-style launchers set HERMES_GATEWAY_DETACHED=1; older wrappers
+        # without the marker are handled by the non-TTY fallback.
         try:
-            refresh_systemd_unit_if_needed(system=False)
-        except Exception:
-            pass  # best-effort; don't block gateway startup
-    
-    from gateway.run import start_gateway
-    
-    print("┌─────────────────────────────────────────────────────────┐")
-    print("│           ⚕ Hermes Gateway Starting...                 │")
-    print("├─────────────────────────────────────────────────────────┤")
-    print("│  Messaging platforms + cron scheduler                    │")
-    print("│  Press Ctrl+C to stop                                   │")
-    print("└─────────────────────────────────────────────────────────┘")
-    print()
-    
-    # Exit with code 1 if gateway fails to connect any platform,
-    # so systemd Restart=always will retry on transient errors
-    verbosity = None if quiet else verbose
+            _stdin_is_tty = bool(sys.stdin and sys.stdin.isatty())
+        except (ValueError, OSError):
+            _stdin_is_tty = False
+        _absorb_windows_console_controls = _windows_gateway_should_absorb_console_controls()
+        if _absorb_windows_console_controls:
+            try:
+                signal.signal(signal.SIGINT, signal.SIG_IGN)
+                if hasattr(signal, "SIGBREAK"):
+                    signal.signal(signal.SIGBREAK, signal.SIG_IGN)
+            except (OSError, ValueError):
+                pass
+            try:
+                import ctypes
+                kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+                kernel32.SetConsoleCtrlHandler(None, 1)
+            except (OSError, AttributeError):
+                pass
 
-    # ── Exit-path diagnostics ────────────────────────────────────────────
-    # When the gateway dies silently on Windows (no shutdown log, no
-    # traceback in gateway.log / errors.log), we're usually blind to the
-    # cause. The code below captures *every* way the asyncio.run() call
-    # below can return, with full context dumped to a dedicated log so
-    # the next silent death yields evidence instead of a mystery. This
-    # is diagnostic scaffolding; cheap to keep on, costs nothing during
-    # normal operation, and the emitted lines are opt-in via the
-    # HERMES_GATEWAY_EXIT_DIAG env var (default: on while we're still
-    # chasing the Windows lifecycle bug).
-    import atexit as _atexit
-    import traceback as _traceback
-    from datetime import datetime as _dt, timezone as _tz
+        # Refresh the systemd unit definition on every boot so that restart
+        # settings (RestartSec, StartLimitIntervalSec, etc.) stay current even
+        # when the process was respawned via exit-code-75 (stale-code or
+        # /restart) rather than through `hermes gateway restart` which already
+        # calls refresh_systemd_unit_if_needed().  Without this, a code update
+        # that ships new unit settings won't take effect until the next manual
+        # `hermes gateway start/restart` — leaving the gateway vulnerable to
+        # the exact failure mode the new settings were meant to prevent.
+        if supports_systemd_services():
+            try:
+                refresh_systemd_unit_if_needed(system=False)
+            except Exception:
+                pass  # best-effort; don't block gateway startup
 
-    def _exit_diag(tag: str, **extra: object) -> None:
-        if os.environ.get("HERMES_GATEWAY_EXIT_DIAG", "1") != "1":
+        from gateway.run import start_gateway
+
+        print("┌─────────────────────────────────────────────────────────┐")
+        print("│           ⚕ Hermes Gateway Starting...                 │")
+        print("├─────────────────────────────────────────────────────────┤")
+        print("│  Messaging platforms + cron scheduler                    │")
+        print("│  Press Ctrl+C to stop                                   │")
+        print("└─────────────────────────────────────────────────────────┘")
+        print()
+
+        # Exit with code 1 if gateway fails to connect any platform,
+        # so systemd Restart=always will retry on transient errors
+        verbosity = None if quiet else verbose
+
+        # ── Exit-path diagnostics ────────────────────────────────────────────
+        import atexit as _atexit
+        import traceback as _traceback
+        from datetime import datetime as _dt, timezone as _tz
+
+        def _exit_diag(tag: str, **extra: object) -> None:
+            if os.environ.get("HERMES_GATEWAY_EXIT_DIAG", "1") != "1":
+                return
+            try:
+                from hermes_constants import get_hermes_home as _ghh
+                log_dir = _ghh() / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                ts = _dt.now(_tz.utc).isoformat()
+                line = {
+                    "ts": ts,
+                    "tag": tag,
+                    "pid": os.getpid(),
+                    "python": sys.version.split()[0],
+                    "platform": sys.platform,
+                    **extra,
+                }
+                import json as _json
+                with open(log_dir / "gateway-exit-diag.log", "a", encoding="utf-8") as f:
+                    f.write(_json.dumps(line, default=str) + "\\n")
+            except Exception:
+                pass
+
+        _exit_diag(
+            "gateway.start",
+            replace=replace,
+            argv=sys.argv,
+            stdin_is_tty=_stdin_is_tty,
+            absorb_windows_console_controls=_absorb_windows_console_controls,
+        )
+
+        def _atexit_hook() -> None:
+            _exit_diag("atexit.hook", sys_exc=repr(sys.exc_info()))
+
+        _atexit.register(_atexit_hook)
+
+        success = False
+        try:
+            success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
+            _exit_diag("asyncio.run.returned", success=success)
+        except KeyboardInterrupt:
+            _exit_diag(
+                "asyncio.run.KeyboardInterrupt",
+                traceback=_traceback.format_exc(),
+            )
+            print("\\nGateway stopped.")
             return
-        try:
-            from hermes_constants import get_hermes_home as _ghh
-            log_dir = _ghh() / "logs"
-            log_dir.mkdir(parents=True, exist_ok=True)
-            ts = _dt.now(_tz.utc).isoformat()
-            line = {
-                "ts": ts,
-                "tag": tag,
-                "pid": os.getpid(),
-                "python": sys.version.split()[0],
-                "platform": sys.platform,
-                **extra,
-            }
-            import json as _json
-            with open(log_dir / "gateway-exit-diag.log", "a", encoding="utf-8") as f:
-                f.write(_json.dumps(line, default=str) + "\n")
-        except Exception:
-            pass  # never let the diagnostic itself crash the gateway
-
-    _exit_diag(
-        "gateway.start",
-        replace=replace,
-        argv=sys.argv,
-        stdin_is_tty=_stdin_is_tty,
-        absorb_windows_console_controls=_absorb_windows_console_controls,
-    )
-
-    def _atexit_hook() -> None:
-        _exit_diag("atexit.hook", sys_exc=repr(sys.exc_info()))
-
-    _atexit.register(_atexit_hook)
-
-    success = False
-    try:
-        success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
-        _exit_diag("asyncio.run.returned", success=success)
-    except KeyboardInterrupt:
-        # On Windows-detached runs this shouldn't fire (we absorb SIGINT above),
-        # but keep the handler for console runs.
-        _exit_diag(
-            "asyncio.run.KeyboardInterrupt",
-            traceback=_traceback.format_exc(),
-        )
-        print("\nGateway stopped.")
-        return
-    except SystemExit as e:
-        _exit_diag("asyncio.run.SystemExit", code=getattr(e, "code", None),
-                   traceback=_traceback.format_exc())
-        raise
-    except BaseException as e:
-        # Absolutely everything else: Exception, asyncio.CancelledError,
-        # even exotic BaseException subclasses. We want the cause logged.
-        _exit_diag(
-            "asyncio.run.exception",
-            exc_type=type(e).__name__,
-            exc_repr=repr(e),
-            traceback=_traceback.format_exc(),
-        )
-        raise
-    if not success:
-        _exit_diag("gateway.exit_nonzero")
-        sys.exit(1)
-    _exit_diag("gateway.exit_clean")
+        except SystemExit as e:
+            _exit_diag("asyncio.run.SystemExit", code=getattr(e, "code", None), traceback=_traceback.format_exc())
+            raise
+        except BaseException as e:
+            _exit_diag(
+                "asyncio.run.exception",
+                exc_type=type(e).__name__,
+                exc_repr=repr(e),
+                traceback=_traceback.format_exc(),
+            )
+            raise
+        if not success:
+            _exit_diag("gateway.exit_nonzero")
+            sys.exit(1)
+        _exit_diag("gateway.exit_clean")
+    finally:
+        if previous_gateway_process is None:
+            os.environ.pop(GATEWAY_PROCESS_ENV, None)
+        else:
+            os.environ[GATEWAY_PROCESS_ENV] = previous_gateway_process
 
 
 # =============================================================================
@@ -4990,6 +4998,12 @@ def gateway_command(args):
 
 def _gateway_command_inner(args):
     subcmd = getattr(args, 'gateway_command', None)
+    if subcmd in GATEWAY_INLINE_SERVICE_CONTROL_COMMANDS:
+        try:
+            require_no_gateway_inline_service_control(command=f"hermes gateway {subcmd}")
+        except PermissionError as exc:
+            print_error(str(exc))
+            sys.exit(2)
     
     # Default to run if no subcommand
     if subcmd is None or subcmd == "run":
@@ -5259,7 +5273,7 @@ def _gateway_command_inner(args):
         elif is_macos() and get_launchd_plist_path().exists():
             service_configured = True
             try:
-                launchd_restart()
+                launchd_restart(approved=approved)
                 service_available = True
             except subprocess.CalledProcessError:
                 pass
