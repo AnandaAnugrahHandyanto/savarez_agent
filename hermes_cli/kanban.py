@@ -2242,7 +2242,7 @@ def _cmd_gc(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 _SLASH_KANBAN_HELP = """\
-|**/kanban** — manage the shared task board.
+**/kanban** — manage the shared task board.
 
 Common subcommands:
   `list` (alias `ls`)   List tasks on the current board
