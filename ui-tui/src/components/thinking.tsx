@@ -534,7 +534,7 @@ function SubagentAccordion({
           open={openKids}
           suffix={`d${item.depth + 1} · ${aggregate.descendantCount} total`}
           t={t}
-          title="Spawned"
+          title={ti('section.spawned')}
         />
       ),
       key: 'subagents',
@@ -1117,7 +1117,7 @@ export const ToolTrail = memo(function ToolTrail({
           open={openSubagents}
           suffix={suffix}
           t={t}
-          title="Spawn tree"
+          title={ti('section.spawnTree')}
         />
       ),
       key: 'subagents',

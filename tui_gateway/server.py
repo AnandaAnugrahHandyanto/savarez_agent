@@ -5119,22 +5119,22 @@ def _(rid, params: dict) -> dict:
             {
                 "text": "/compact",
                 "display": "/compact",
-                "meta": "Toggle compact display mode",
+                "meta": "切换紧凑显示模式",
             },
             {
                 "text": "/details",
                 "display": "/details",
-                "meta": "Control agent detail visibility",
+                "meta": "控制 Agent 详情可见性",
             },
             {
                 "text": "/logs",
                 "display": "/logs",
-                "meta": "Show recent gateway log lines",
+                "meta": "显示最近的网关日志",
             },
             {
                 "text": "/mouse",
                 "display": "/mouse",
-                "meta": "Toggle mouse/wheel tracking [on|off|toggle]",
+                "meta": "切换鼠标/滚轮追踪 [on|off|toggle]",
             },
         ]
         for extra in extras:

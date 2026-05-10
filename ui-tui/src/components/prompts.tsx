@@ -1,6 +1,7 @@
 import { Box, Text, useInput } from '@hermes/ink'
 import { useState } from 'react'
 
+import { useI18n } from '../i18n.js'
 import { isMac } from '../lib/platform.js'
 import type { Theme } from '../theme.js'
 import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
@@ -13,6 +14,7 @@ const CMD_PREVIEW_LINES = 10
 
 export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
   const [sel, setSel] = useState(0)
+  const { t: ti } = useI18n()
 
   useInput((ch, key) => {
     if (key.upArrow && sel > 0) {
@@ -71,7 +73,7 @@ export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
         </Text>
       ))}
 
-      <Text color={t.color.muted}>↑/↓ select · Enter confirm · 1-4 quick pick · Ctrl+C deny</Text>
+      <Text color={t.color.muted}>{ti('prompt.selectHint', { n: '4' })}</Text>
     </Box>
   )
 }
@@ -81,6 +83,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
   const [custom, setCustom] = useState('')
   const [typing, setTyping] = useState(false)
   const choices = req.choices ?? []
+  const { t: ti } = useI18n()
 
   const heading = (
     <Text bold>
@@ -130,8 +133,8 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
         </Box>
 
         <Text color={t.color.muted}>
-          Enter send · Esc {choices.length ? 'back' : 'cancel'} ·{' '}
-          {isMac ? 'Cmd+C copy · Cmd+V paste · Ctrl+C cancel' : 'Ctrl+C cancel'}
+          {ti('prompt.typeHint', { action: choices.length ? ti('prompt.typeHintBack') : ti('prompt.typeHintCancel') })}{' · '}
+          {isMac ? 'Cmd+C copy · Cmd+V paste · Ctrl+C cancel' : ti('input.interruptHintMac')}
         </Text>
       </Box>
     )
@@ -141,7 +144,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
     <Box flexDirection="column">
       {heading}
 
-      {[...choices, 'Other (type your answer)'].map((c, i) => (
+      {[...choices, ti('input.typeOther')].map((c, i) => (
         <Text key={i}>
           <Text bold={sel === i} color={sel === i ? t.color.label : t.color.muted} inverse={sel === i}>
             {sel === i ? '▸ ' : '  '}
@@ -150,13 +153,14 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
         </Text>
       ))}
 
-      <Text color={t.color.muted}>↑/↓ select · Enter confirm · 1-{choices.length} quick pick · Esc/Ctrl+C cancel</Text>
+      <Text color={t.color.muted}>{ti('prompt.selectHintEsc', { n: String(choices.length) })}</Text>
     </Box>
   )
 }
 
 export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProps) {
   const [sel, setSel] = useState(0)
+  const { t: ti } = useI18n()
 
   useInput((ch, key) => {
     const lower = ch.toLowerCase()
@@ -212,7 +216,7 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
         </Text>
       ))}
 
-      <Text color={t.color.muted}>↑/↓ select · Enter confirm · Y/N quick · Esc cancel</Text>
+      <Text color={t.color.muted}>{ti('prompt.confirmHint')}</Text>
     </Box>
   )
 }

@@ -8,7 +8,7 @@ import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { fmtCwdBranch, shortCwd } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
-import { useI18n } from '../i18n.js'
+import { translate, useI18n, type TranslationKey } from '../i18n.js'
 import type {
   ClarifyRespondResponse,
   ClipboardPasteResponse,
@@ -113,6 +113,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const ui = useStore($uiState)
   const i18n = useI18n()
+  const ti = (key: TranslationKey, vars?: Record<string, string | number>) => translate(ui.locale, key, vars)
   const overlay = useStore($overlayState)
 
   const turnLiveTailActive = useTurnSelector(state =>
@@ -355,7 +356,7 @@ export function useMainApp(gw: GatewayClient) {
           return result
         }
 
-        sys(`error: invalid response: ${method}`)
+        sys(ti('errors.invalidResponse', { method }))
       } catch (e) {
         sys(`error: ${rpcErrorMessage(e)}`)
       }
@@ -466,7 +467,7 @@ export function useMainApp(gw: GatewayClient) {
           appendMessage({ role: 'user', text: answer })
           patchUiState({ status: 'running…' })
         } else {
-          sys('prompt cancelled')
+          sys(ti('input.promptCancelled'))
         }
 
         patchOverlayState({ clarify: null })
@@ -485,11 +486,11 @@ export function useMainApp(gw: GatewayClient) {
         if (r.attached) {
           const meta = imageTokenMeta(r)
 
-          return sys(`📎 Image #${r.count} attached from clipboard${meta ? ` · ${meta}` : ''}`)
+          return sys(ti('image.attached', { count: String(r.count), meta: meta ? ` · ${meta}` : '' }))
         }
 
         if (!quiet) {
-          sys(r.message || 'No image found in clipboard')
+          sys(r.message || ti('paste.noImage'))
         }
       }),
     [rpc, sys]
@@ -607,7 +608,7 @@ export function useMainApp(gw: GatewayClient) {
       turnController.reset()
       patchUiState({ busy: false, sid: null, status: 'gateway exited' })
       turnController.pushActivity('gateway exited · /logs to inspect', 'error')
-      sys('error: gateway exited')
+      sys(ti('errors.gatewayExited'))
     }
 
     gw.on('event', handler)

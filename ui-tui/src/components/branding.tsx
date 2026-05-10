@@ -4,6 +4,7 @@ import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
 import { flat } from '../lib/text.js'
+import { useI18n } from '../i18n.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
 
@@ -97,6 +98,7 @@ const SKILLS_MAX = 8
 const TOOLSETS_MAX = 8
 
 export function SessionPanel({ info, sid, t }: SessionPanelProps) {
+  const { t: ti } = useI18n()
   const cols = useStdout().stdout?.columns ?? 100
   const heroLines = caduceus(t.color, t.bannerHero || undefined)
   const leftW = Math.min((artWidth(heroLines) || CADUCEUS_WIDTH) + 4, Math.floor(cols * 0.4))
@@ -255,7 +257,7 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
             onToggle={() => setToolsOpen(v => !v)}
             open={toolsOpen}
             t={t}
-            title="Available Tools"
+            title={ti('branding.availableTools')}
           />
           {toolsOpen && toolsBody()}
         </Box>
@@ -268,7 +270,7 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
             open={skillsOpen}
             suffix={skillsCatCount > 0 ? `in ${skillsCatCount} categor${skillsCatCount === 1 ? 'y' : 'ies'}` : undefined}
             t={t}
-            title="Available Skills"
+            title={ti('branding.availableSkills')}
           />
           {skillsOpen && skillsBody()}
         </Box>
@@ -281,7 +283,7 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
               open={systemOpen}
               suffix={`— ${sysPromptLen.toLocaleString()} chars`}
               t={t}
-              title="System Prompt"
+              title={ti('branding.systemPrompt')}
             />
             {systemOpen && systemBody()}
           </Box>

@@ -27,6 +27,7 @@ import { MessageLine } from './messageLine.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { TextInput, type TextInputMouseApi } from './textInput.js'
+import { useI18n } from '../i18n.js'
 
 const PromptPrefix = memo(function PromptPrefix({
   bold = false,
@@ -168,6 +169,7 @@ const ComposerPane = memo(function ComposerPane({
   status
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'status'>) {
   const ui = useStore($uiState)
+  const i18n = useI18n()
   const isBlocked = useStore($isBlocked)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
   const promptText = sh ? '$' : ui.theme.brand.prompt
@@ -301,7 +303,7 @@ const ComposerPane = memo(function ComposerPane({
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
-                  placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
+                  placeholder={composer.empty ? PLACEHOLDER : ui.busy ? i18n.t('input.interruptHint') : ''}
                   value={composer.input}
                   voiceRecordKey={composer.voiceRecordKey}
                 />

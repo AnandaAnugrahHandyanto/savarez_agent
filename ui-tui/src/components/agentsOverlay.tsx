@@ -14,6 +14,7 @@ import { useTurnSelector } from '../app/turnStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterruptResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
+import { useI18n } from '../i18n.js'
 import {
   buildSubagentTree,
   descendantIds,
@@ -390,6 +391,7 @@ function Field({ name, t, value }: { name: string; t: Theme; value: ReactNode })
 
 function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) {
   const { aggregate: agg, item } = node
+  const { t: ti } = useI18n()
   const { color, glyph } = statusGlyph(item, t)
 
   const inputTokens = item.inputTokens ?? 0
@@ -432,7 +434,7 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
       </Box>
 
       {localTokens > 0 || localCost > 0 ? (
-        <OverlaySection defaultOpen t={t} title="Budget">
+        <OverlaySection defaultOpen t={t} title={ti('section.budget')}>
           {localTokens > 0 ? (
             <Field
               name="tokens"
@@ -464,7 +466,7 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
       ) : null}
 
       {filesRead.length > 0 || filesWritten.length > 0 ? (
-        <OverlaySection count={filesRead.length + filesWritten.length} t={t} title="Files">
+        <OverlaySection count={filesRead.length + filesWritten.length} t={t} title={ti('section.files')}>
           {filesWritten.slice(0, 8).map((p, i) => (
             <Text color={t.color.statusGood} key={`w-${i}`} wrap="truncate-end">
               +{p}
@@ -482,7 +484,7 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
       ) : null}
 
       {toolLines.length > 0 ? (
-        <OverlaySection count={toolLines.length} defaultOpen t={t} title="Tool calls">
+        <OverlaySection count={toolLines.length} defaultOpen t={t} title={ti('section.toolCalls')}>
           {toolLines.map((line, i) => (
             <Text color={t.color.text} key={i} wrap="wrap">
               <Text color={t.color.muted}>·</Text> {line}
@@ -492,7 +494,7 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
       ) : null}
 
       {outputTail.length > 0 ? (
-        <OverlaySection count={outputTail.length} defaultOpen t={t} title="Output">
+        <OverlaySection count={outputTail.length} defaultOpen t={t} title={ti('section.output')}>
           {outputTail.map((entry, i) => (
             <Text color={entry.isError ? t.color.error : t.color.text} key={i} wrap="wrap">
               <Text bold color={entry.isError ? t.color.error : t.color.accent}>
@@ -505,7 +507,7 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
       ) : null}
 
       {item.notes.length ? (
-        <OverlaySection count={item.notes.length} t={t} title="Progress">
+        <OverlaySection count={item.notes.length} t={t} title={ti('section.progress')}>
           {item.notes.slice(-6).map((line, i) => (
             <Text color={t.color.text} key={i} wrap="wrap">
               <Text color={t.color.label}>·</Text> {line}
@@ -515,7 +517,7 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
       ) : null}
 
       {item.summary ? (
-        <OverlaySection defaultOpen t={t} title="Summary">
+        <OverlaySection defaultOpen t={t} title={ti('section.summary')}>
           <Text color={t.color.text} wrap="wrap">
             {item.summary}
           </Text>

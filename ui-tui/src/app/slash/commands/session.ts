@@ -1,5 +1,6 @@
 import { attachedImageNotice, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
 import { TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
+import { translate, type TranslationKey } from '../../../i18n.js'
 import type {
   BackgroundStartResponse,
   ConfigGetValueResponse,
@@ -230,6 +231,7 @@ export const sessionCommands: SlashCommand[] = [
           ? normalized
           : 'status'
 
+      const ti = (key: TranslationKey, vars?: Record<string, string | number>) => translate('zh', key, vars)
       ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action }).then(
         ctx.guarded<VoiceToggleResponse>(r => {
           ctx.voice.setVoiceEnabled(!!r.enabled)
@@ -264,17 +266,17 @@ export const sessionCommands: SlashCommand[] = [
           if (action === 'status') {
             const mode = r.enabled ? 'ON' : 'OFF'
             const tts = r.tts ? 'ON' : 'OFF'
-            ctx.transcript.sys('Voice Mode Status')
-            ctx.transcript.sys(`  Mode:       ${mode}`)
-            ctx.transcript.sys(`  TTS:        ${tts}`)
-            ctx.transcript.sys(`  Record key: ${recordKeyLabel}`)
+            ctx.transcript.sys(ti('voice.statusTitle'))
+            ctx.transcript.sys(`  ${ti('voice.modeLabel')}:       ${mode}`)
+            ctx.transcript.sys(`  ${ti('voice.ttsLabel')}:        ${tts}`)
+            ctx.transcript.sys(`  ${ti('voice.recordKeyLabel')}: ${recordKeyLabel}`)
 
             // CLI's "Requirements:" block — surfaces STT/audio setup issues
             // so the user sees "STT provider: MISSING ..." instead of
             // silently failing on every record-key press.
             if (r.details) {
               ctx.transcript.sys('')
-              ctx.transcript.sys('  Requirements:')
+              ctx.transcript.sys(`  ${ti('voice.requirements')}:`)
 
               for (const line of r.details.split('\n')) {
                 if (line.trim()) {
@@ -287,7 +289,7 @@ export const sessionCommands: SlashCommand[] = [
           }
 
           if (action === 'tts') {
-            ctx.transcript.sys(`Voice TTS ${r.tts ? 'enabled' : 'disabled'}.`)
+            ctx.transcript.sys(`${r.tts ? ti('voice.ttsEnabled') : ti('voice.ttsDisabled')}`)
 
             return
           }
@@ -295,12 +297,12 @@ export const sessionCommands: SlashCommand[] = [
           // on/off — mirror cli.py:_enable_voice_mode's 3-line output
           if (r.enabled) {
             const tts = r.tts ? ' (TTS enabled)' : ''
-            ctx.transcript.sys(`Voice mode enabled${tts}`)
-            ctx.transcript.sys(`  ${recordKeyLabel} to start/stop recording`)
-            ctx.transcript.sys('  /voice tts  to toggle speech output')
-            ctx.transcript.sys('  /voice off  to disable voice mode')
+            ctx.transcript.sys(ti('voice.modeEnabled', { tts }))
+            ctx.transcript.sys(ti('voice.recordHint', { key: recordKeyLabel }))
+            ctx.transcript.sys(ti('voice.ttsToggleHint'))
+            ctx.transcript.sys(ti('voice.disableHint'))
           } else {
-            ctx.transcript.sys('Voice mode disabled.')
+            ctx.transcript.sys(ti('voice.modeDisabled'))
           }
         })
       )
