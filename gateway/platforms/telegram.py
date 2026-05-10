@@ -2699,7 +2699,12 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             from hermes_cli.quick_actions import format_candidate_digest, list_candidates
 
-            rows = await asyncio.to_thread(list_candidates, status="candidate", limit=10)
+            rows = await asyncio.to_thread(
+                list_candidates,
+                status="candidate",
+                limit=10,
+                home=get_hermes_home(),
+            )
             notice = resolved.replace("\n", " · ")
             if rows:
                 refreshed = format_candidate_digest(rows, status="candidate", limit=10, verbose=False, notice=notice)
