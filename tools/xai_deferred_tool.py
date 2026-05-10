@@ -269,11 +269,9 @@ def _poll(
 # Tool registration
 # ---------------------------------------------------------------------------
 
-def check_xai_deferred_requirements() -> "tuple[bool, str]":
+def check_xai_deferred_requirements() -> bool:
     """Tool gate: only available when XAI_API_KEY is set."""
-    if os.environ.get("XAI_API_KEY", "").strip():
-        return True, ""
-    return False, "XAI_API_KEY environment variable is not set"
+    return bool(os.environ.get("XAI_API_KEY", "").strip())
 
 
 XAI_DEFERRED_SCHEMA = {
@@ -344,5 +342,6 @@ registry.register(
     schema=XAI_DEFERRED_SCHEMA,
     handler=_handle_xai_deferred_tool_call,
     check_fn=check_xai_deferred_requirements,
+    requires_env=["XAI_API_KEY"],
     emoji="⏳",
 )
