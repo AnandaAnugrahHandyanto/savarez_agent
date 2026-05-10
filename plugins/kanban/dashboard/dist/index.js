@@ -445,6 +445,10 @@
     // showing stale data.
     const [taskEventTick, setTaskEventTick] = useState({});
 
+    // Available skills for the InlineCreate form's skills select.
+    // Fetched once on mount and whenever the board slug changes.
+    const [availableSkills, setAvailableSkills] = useState([]);
+
     const cursorRef = useRef(0);
     const reloadTimerRef = useRef(null);
     const wsRef = useRef(null);
@@ -465,6 +469,17 @@
         })
         .catch(function () { setConfig({ render_markdown: true }); });
     }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+
+    // --- load available skills for InlineCreate -------------------------
+    useEffect(function () {
+      SDK.fetchJSON(withBoard(`${API}/available-skills`, board))
+        .then(function (data) {
+          setAvailableSkills((data && data.skills) || []);
+        })
+        .catch(function () {
+          setAvailableSkills([]);
+        });
+    }, [board]);  // eslint-disable-line react-hooks/exhaustive-deps
 
     // --- fetch full board ---------------------------------------------------
     const loadBoard = useCallback(() => {
@@ -791,6 +806,8 @@
           onOpen: setSelectedTaskId,
           onCreate: createTask,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
+          assignees: (boardData && boardData.assignees) || [],
+          availableSkills: availableSkills,
         }),
         selectedTaskId ? h(TaskDrawer, {
           taskId: selectedTaskId,
@@ -1585,6 +1602,8 @@
           onOpen: props.onOpen,
           onCreate: props.onCreate,
           allTasks: props.allTasks,
+          assignees: props.assignees,
+          availableSkills: props.availableSkills,
         });
       }),
     );
@@ -1668,6 +1687,8 @@
       showCreate ? h(InlineCreate, {
         columnName: props.column.name,
         allTasks: props.allTasks,
+        assignees: props.assignees,
+        availableSkills: props.availableSkills,
         onSubmit: function (body) {
           props.onCreate(body).then(function () { setShowCreate(false); });
         },
@@ -1852,9 +1873,11 @@
     const { t } = useI18n();
     const [title, setTitle] = useState("");
     const [assignee, setAssignee] = useState("");
+    const [otherAssignee, setOtherAssignee] = useState("");
     const [priority, setPriority] = useState(0);
     const [parent, setParent] = useState("");
-    const [skills, setSkills] = useState("");
+    const [selectedSkills, setSelectedSkills] = useState([]);
+    const [customSkills, setCustomSkills] = useState("");
     // Workspace controls. `scratch` (default) ignores path; `worktree` optionally
     // takes a path (dispatcher derives one from the assignee profile otherwise);
     // `dir` requires a path. Backend enforces the rule — we only hide/show the
@@ -1867,18 +1890,25 @@
       if (!trimmed) return;
       const body = {
         title: trimmed,
-        assignee: assignee.trim() || null,
+        assignee: null,
         priority: Number(priority) || 0,
         triage: props.columnName === "triage",
       };
+      // Resolve assignee: Select value or "Other…" free-text.
+      if (assignee === "__other__") {
+        body.assignee = otherAssignee.trim() || null;
+      } else if (assignee && assignee !== "__none__") {
+        body.assignee = assignee;
+      }
       if (parent) body.parents = [parent];
-      // Parse comma-separated skills into a clean list. Blank = no
-      // extras (omit key so backend leaves it null). The dispatcher
-      // always auto-loads kanban-worker; these are extras on top.
-      const skillList = skills
-        .split(",")
-        .map(function (s) { return s.trim(); })
-        .filter(function (s) { return s.length > 0; });
+      // Combine selected skills (from the additive Select) with custom
+      // comma-separated skills. The dispatcher always auto-loads
+      // kanban-worker; these are extras on top.
+      const skillList = [].concat(selectedSkills).concat(
+        customSkills.split(",")
+          .map(function (s) { return s.trim(); })
+          .filter(function (s) { return s.length > 0; })
+      );
       if (skillList.length > 0) body.skills = skillList;
       // Only send workspace_kind when it's non-default. Keeps the request
       // shape small and interoperable with older dispatcher versions.
@@ -1888,7 +1918,8 @@
       const wpTrim = workspacePath.trim();
       if (wpTrim) body.workspace_path = wpTrim;
       props.onSubmit(body);
-      setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
+      setTitle(""); setAssignee(""); setOtherAssignee("");
+      setPriority(0); setParent(""); setSelectedSkills([]); setCustomSkills("");
       setWorkspaceKind("scratch"); setWorkspacePath("");
     };
 
@@ -1913,22 +1944,32 @@
         className: "text-sm min-h-[2rem] max-h-32 resize-y w-full border border-input bg-transparent px-2 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-ring",
         rows: 2,
       }),
+      // Assignee select + priority
       h("div", { className: "flex gap-2" },
-        h(Input, {
-          value: assignee,
-          onChange: function (e) { setAssignee(e.target.value); },
-          placeholder: props.columnName === "triage"
-            ? tx(t, "specifier", "specifier")
-            : tx(t, "assigneePlaceholder", "assignee"),
-          className: "h-7 text-xs flex-1",
-          title: props.columnName === "triage"
-            ? "Hermes profile that will spec this task (default: the dispatcher's configured specifier). Leave blank to let the dispatcher pick."
-            : "Hermes profile to assign. Leave blank and the dispatcher will pick from available profiles when the task is Ready.",
-          style: { textTransform: "none" },
-          autoCapitalize: "none",
-          autoCorrect: "off",
-          spellCheck: false,
-        }),
+        h("div", { className: "flex-1" },
+          h(Select, {
+            value: assignee,
+            onChange: function (e) { setAssignee(e.target.value); },
+            className: "h-7 text-xs w-full",
+            title: "Hermes profile to assign. Leave blank for unassigned (triage tasks will be picked by the specifier).",
+          },
+            h(SelectOption, { value: "" },
+              tx(t, "assigneePlaceholder", "assignee") + "…"),
+            h(SelectOption, { value: "__none__" }, "(unassigned)"),
+            (props.assignees || []).map(function (a) {
+              return h(SelectOption, { key: a, value: a }, a);
+            }),
+            h(SelectOption, { value: "__other__" }, tx(t, "other", "Other…")),
+          ),
+          // When "Other…" is selected, show a free-text input for custom profile.
+          assignee === "__other__" ? h(Input, {
+            value: otherAssignee,
+            onChange: function (e) { setOtherAssignee(e.target.value); },
+            placeholder: "type profile name…",
+            className: "h-7 text-xs w-full mt-1",
+            autoFocus: true,
+          }) : null,
+        ),
         h(Input, {
           type: "number",
           value: priority,
@@ -1938,14 +1979,54 @@
           title: "Priority. Higher-priority tasks are claimed first by the dispatcher. 0 = default.",
         }),
       ),
-      h(Input, {
-        value: skills,
-        onChange: function (e) { setSkills(e.target.value); },
-        placeholder: tx(t, "skillsPlaceholder",
-          "skills (optional, comma-separated): translation, github-code-review"),
-        title: "Force-load these skills into the worker (in addition to the built-in kanban-worker).",
-        className: "h-7 text-xs",
-      }),
+      // Skills: additive Select + tags + custom input
+      h("div", { className: "flex flex-col gap-1" },
+        h("div", { className: "flex gap-2 items-center" },
+          h(Select, {
+            value: "__placeholder__",
+            onChange: function (e) {
+              const val = e.target.value;
+              if (val && val !== "__placeholder__") {
+                setSelectedSkills(function (prev) {
+                  if (prev.indexOf(val) === -1) {
+                    return prev.concat([val]);
+                  }
+                  return prev;
+                });
+              }
+            },
+            className: "h-7 text-xs flex-1",
+          },
+            h(SelectOption, { value: "__placeholder__", disabled: true },
+              tx(t, "addSkill", "+ add skill…")),
+            (props.availableSkills || []).map(function (s) {
+              return h(SelectOption, { key: s, value: s }, s);
+            }),
+          ),
+          h(Input, {
+            value: customSkills,
+            onChange: function (e) { setCustomSkills(e.target.value); },
+            placeholder: tx(t, "customSkill", "+ custom"),
+            className: "h-7 text-xs w-28",
+            title: "Comma-separated custom skills not in the list",
+          }),
+        ),
+        // Tags for selected skills (removable)
+        selectedSkills.length > 0 ? h("div", { className: "flex flex-wrap gap-1 mt-1" },
+          selectedSkills.map(function (s) {
+            return h("span", {
+              key: s,
+              className: "inline-flex items-center gap-1 text-xs bg-muted px-1.5 py-0.5 rounded cursor-pointer",
+              onClick: function () {
+                setSelectedSkills(function (prev) {
+                  return prev.filter(function (x) { return x !== s; });
+                });
+              },
+              title: "Click to remove",
+            }, s + " ×");
+          }),
+        ) : null,
+      ),
       h("div", { className: "flex gap-2" },
         h(Select, {
           value: workspaceKind,

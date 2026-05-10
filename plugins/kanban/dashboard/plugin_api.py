@@ -442,13 +442,16 @@ def get_board(
             )
         ]
         # List of distinct assignees for the lane-by-profile sub-grouping.
-        assignees = [
-            r["assignee"]
-            for r in conn.execute(
-                "SELECT DISTINCT assignee FROM tasks WHERE assignee IS NOT NULL "
-                "AND status != 'archived' ORDER BY assignee"
-            )
-        ]
+        # Union of board assignees + on-disk profiles so freshly-created
+        # profiles appear in the UI picker even without any tasks yet.
+        board_assignees = set()
+        for r in conn.execute(
+            "SELECT DISTINCT assignee FROM tasks WHERE assignee IS NOT NULL "
+            "AND status != 'archived'"
+        ):
+            board_assignees.add(r["assignee"])
+        disk_profiles = set(kanban_db.list_profiles_on_disk())
+        assignees = sorted(board_assignees | disk_profiles)
 
         return {
             "columns": [
@@ -1332,6 +1335,36 @@ def get_assignees(board: Optional[str] = Query(None)):
         return {"assignees": kanban_db.known_assignees(conn)}
     finally:
         conn.close()
+
+
+@router.get("/available-skills")
+def get_available_skills(board: Optional[str] = Query(None)):
+    """Return the list of skill names available in the system.
+
+    Scans every configured skill directory for SKILL.md files. Used by
+    the InlineCreate form in the dashboard to populate the skills select
+    dropdown.
+
+    ``board`` is accepted for consistency with other endpoints but does
+    not affect the result — skills are global, not per-board.
+    """
+    try:
+        from agent.skill_utils import get_all_skills_dirs, EXCLUDED_SKILL_DIRS
+        all_dirs = get_all_skills_dirs()
+        skills: set[str] = set()
+        for sd in all_dirs:
+            if not sd.is_dir():
+                continue
+            for entry in sd.iterdir():
+                if not entry.is_dir():
+                    continue
+                if entry.name in EXCLUDED_SKILL_DIRS:
+                    continue
+                if (entry / "SKILL.md").is_file():
+                    skills.add(entry.name)
+        return {"skills": sorted(skills)}
+    except Exception:
+        return {"skills": []}
 
 
 # ---------------------------------------------------------------------------
