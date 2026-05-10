@@ -23,7 +23,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
@@ -46,8 +46,20 @@ jobs:
       - name: Run tests
         run: |
           source .venv/bin/activate
-          python -m pytest tests/ -q --ignore=tests/integration --ignore=tests/e2e --tb=short -n auto
+          # Mirror scripts/run_tests.sh: clear pyproject addopts (-n auto on huge
+          # local machines diverges); pin xdist workers; hermetic locale/time.
+          python -m pytest tests/ -q \
+            --ignore=tests/integration \
+            --ignore=tests/e2e \
+            --tb=short \
+            -o addopts= \
+            -n 4 \
+            -m "not integration"
         env:
+          LANG: C.UTF-8
+          LC_ALL: C.UTF-8
+          TZ: UTC
+          PYTHONHASHSEED: "0"
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
@@ -75,7 +87,8 @@ jobs:
       - name: Run e2e tests
         run: |
           source .venv/bin/activate
-          python -m pytest tests/e2e/ -v --tb=short
+          # Override pyproject addopts (-n auto breaks asyncio e2e under xdist).
+          python -m pytest tests/e2e/ -v --tb=short --override-ini addopts= -n 0
         env:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""

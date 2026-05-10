@@ -12,6 +12,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+import gateway.status as gateway_status
 import hermes_cli.gateway as gateway_cli
 import hermes_cli.main as cli_main
 from hermes_cli.main import cmd_update
@@ -1066,15 +1067,34 @@ class TestGetServicePids:
 class TestFindGatewayPidsExclude:
     """find_gateway_pids respects exclude_pids."""
 
+    @staticmethod
+    def _force_ps_scan(monkeypatch):
+        """Linux hosts have ``/proc`` — real scan bypasses mocked ``ps``.
+
+        These unit tests only stub ``subprocess.run``; pretend ``/proc`` is
+        absent so ``_scan_gateway_pids`` uses the ``ps -A eww`` fallback.
+        """
+        _orig_isdir = gateway_cli.os.path.isdir
+
+        def _isdir(path):
+            if path == "/proc":
+                return False
+            return _orig_isdir(path)
+
+        monkeypatch.setattr(gateway_cli.os.path, "isdir", _isdir)
+        monkeypatch.setattr(gateway_status, "get_running_pid", lambda *a, **kw: None)
+
     def test_excludes_specified_pids(self, monkeypatch):
+        self._force_ps_scan(monkeypatch)
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
 
         def fake_run(cmd, **kwargs):
             return subprocess.CompletedProcess(
                 cmd, 0,
                 stdout=(
-                    "user  100  0.0  0.0  0  0  ?  S  00:00  0:00  python gateway/run.py\n"
-                    "user  200  0.0  0.0  0  0  ?  S  00:00  0:00  python gateway/run.py\n"
+                    "100 python gateway/run.py\n"
+                    "200 python gateway/run.py\n"
                 ),
                 stderr="",
             )
@@ -1087,14 +1107,16 @@ class TestFindGatewayPidsExclude:
         assert 200 in pids
 
     def test_no_exclude_returns_all(self, monkeypatch):
+        self._force_ps_scan(monkeypatch)
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
 
         def fake_run(cmd, **kwargs):
             return subprocess.CompletedProcess(
                 cmd, 0,
                 stdout=(
-                    "user  100  0.0  0.0  0  0  ?  S  00:00  0:00  python gateway/run.py\n"
-                    "user  200  0.0  0.0  0  0  ?  S  00:00  0:00  python gateway/run.py\n"
+                    "100 python gateway/run.py\n"
+                    "200 python gateway/run.py\n"
                 ),
                 stderr="",
             )
@@ -1107,6 +1129,7 @@ class TestFindGatewayPidsExclude:
         assert 200 in pids
 
     def test_filters_to_current_profile(self, monkeypatch, tmp_path):
+        self._force_ps_scan(monkeypatch)
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
         profile_dir.mkdir(parents=True)
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)

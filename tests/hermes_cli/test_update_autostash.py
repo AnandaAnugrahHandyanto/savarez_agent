@@ -8,6 +8,17 @@ from hermes_cli import config as hermes_config
 from hermes_cli import main as hermes_main
 
 
+def _git_cmd_suffix_matches(cmd, *suffix_parts):
+    """Match ``subprocess.run([...])`` argv tails.
+
+    ``cmd_update`` uses ``git_cmd + subcommand`` where ``git_cmd`` is plain
+    ``["git"]`` on Linux but ``["git", "-c", "windows.appendAtomically=false"]``
+    on Windows — tests must not pin the full argv.
+    """
+    suf = list(suffix_parts)
+    return len(cmd) >= len(suf) and list(cmd[-len(suf) :]) == suf
+
+
 def test_stash_local_changes_if_needed_returns_none_when_tree_clean(monkeypatch, tmp_path):
     calls = []
 
@@ -318,13 +329,13 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
-        if cmd == ["git", "fetch", "origin"]:
+        if _git_cmd_suffix_matches(cmd, "fetch", "origin"):
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+        if _git_cmd_suffix_matches(cmd, "rev-parse", "--abbrev-ref", "HEAD"):
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+        if _git_cmd_suffix_matches(cmd, "rev-list", "HEAD..origin/main", "--count"):
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+        if _git_cmd_suffix_matches(cmd, "pull", "--ff-only", "origin", "main"):
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
@@ -367,13 +378,13 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
-        if cmd == ["git", "fetch", "origin"]:
+        if _git_cmd_suffix_matches(cmd, "fetch", "origin"):
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+        if _git_cmd_suffix_matches(cmd, "rev-parse", "--abbrev-ref", "HEAD"):
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+        if _git_cmd_suffix_matches(cmd, "rev-list", "HEAD..origin/main", "--count"):
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+        if _git_cmd_suffix_matches(cmd, "pull", "--ff-only", "origin", "main"):
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -491,7 +502,7 @@ def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path
 
     reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
     assert len(reset_calls) == 1
-    assert reset_calls[0] == ["git", "reset", "--hard", "origin/main"]
+    assert _git_cmd_suffix_matches(reset_calls[0], "reset", "--hard", "origin/main")
 
     out = capsys.readouterr().out
     assert "Fast-forward not possible" in out

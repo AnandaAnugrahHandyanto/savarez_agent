@@ -50,6 +50,21 @@ def _event(thread_id=None):
     )
 
 
+def _streaming_runner_stub():
+    """Minimal runner for ``_deliver_media_from_response`` — production uses
+    ``_thread_metadata_for_source`` / ``_reply_anchor_for_event`` (see run.py).
+    """
+    r = SimpleNamespace()
+
+    def _thread_metadata_for_source(source, reply_anchor):
+        tid = getattr(source, "thread_id", None)
+        return {"thread_id": str(tid)} if tid else None
+
+    r._thread_metadata_for_source = _thread_metadata_for_source
+    r._reply_anchor_for_event = lambda event: None
+    return r
+
+
 @pytest.mark.asyncio
 async def test_base_adapter_routes_telegram_flac_media_tag_to_document_sender():
     adapter = _MediaRoutingAdapter()
@@ -121,7 +136,7 @@ async def test_streaming_delivery_routes_telegram_flac_media_tag_to_document_sen
     )
 
     await GatewayRunner._deliver_media_from_response(
-        object(),
+        _streaming_runner_stub(),
         "MEDIA:/tmp/speech.flac",
         event,
         adapter,
@@ -150,7 +165,7 @@ async def test_streaming_delivery_routes_non_voice_telegram_ogg_media_tag_to_doc
     )
 
     await GatewayRunner._deliver_media_from_response(
-        object(),
+        _streaming_runner_stub(),
         "MEDIA:/tmp/speech.ogg",
         event,
         adapter,
@@ -181,7 +196,7 @@ async def test_streaming_delivery_routes_telegram_mp3_media_tag_to_voice_sender(
     )
 
     await GatewayRunner._deliver_media_from_response(
-        object(),
+        _streaming_runner_stub(),
         "MEDIA:/tmp/speech.mp3",
         event,
         adapter,
