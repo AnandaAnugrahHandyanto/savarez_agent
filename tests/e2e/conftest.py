@@ -226,6 +226,12 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     runner.pairing_store._is_rate_limited = MagicMock(return_value=False)
     runner.pairing_store.generate_code = MagicMock(return_value="ABC123")
 
+    # Destructive slash commands (/new, /reset, …) normally wait for inline
+    # confirm; e2e stubs no adapter button flow, so gate off like "always approve".
+    runner._read_user_config = lambda: {
+        "approvals": {"destructive_slash_confirm": False},
+    }
+
     return runner
 
 
