@@ -640,7 +640,7 @@ headers={
     "User-Agent": "railway-cli/4.44.0",  # or "hermes-agent/1.0"
 }
 ```
-See `self-restart/references/cloudflare-403-urllib.md` for full details.
+See `references/gateway-request-tracking.md` for the gateway cost tracking architecture. See `references/publish-html-tool.md` for the Cloudflare Pages direct deploy tool, Node.js v22 fix, and token debugging.
 
 ---
 
@@ -773,6 +773,10 @@ The daily cost report (`scripts/cost_report.py`) sends balance + spend + request
 ### Source Watcher Broken-Code Gate
 
 `scripts/source_watcher.py` gates every commit before push by running `ruff check --select F821 --no-fix` only on staged Python files; current Ruff still reports parser failures (`invalid-syntax`) under this command, while `E999` is no longer selectable in Ruff 0.15+. This catches undefined names (`F821`, e.g. `NameError` from an out-of-scope variable) and syntax errors without broad style rules that could create false positives. If ruff fails, the watcher skips commit+push, leaves the changes in place, appends full details plus the staged diff to `/opt/data/logs/watcher-blocked.log`, and sends a Telegram alert to `$TELEGRAM_HOME_CHANNEL`; temporarily bypass only with `HERMES_WATCHER_SKIP_LINT=1`.
+
+### Gordon's Wiki
+
+See `references/gordon-wiki-architecture.md` for Gordon's wiki layout, Cloudflare Pages direct deploy setup, and publishing workflow. Key: Cloudflare token invalid → 401 from API → get fresh token from Cloudflare Dashboard → update Railway env var.
 
 ### Key Rules
 
