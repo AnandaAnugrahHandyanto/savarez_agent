@@ -406,12 +406,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
 
     p_edit = sub.add_parser(
         "edit",
-        help="Edit recovery fields on an already-completed task",
+        help="Edit recovery fields on a task",
     )
     p_edit.add_argument("task_id")
     p_edit.add_argument(
         "--result",
-        required=True,
+        default=None,
         help="Backfilled task result text for a done task",
     )
     p_edit.add_argument(
@@ -423,6 +423,21 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--metadata",
         default=None,
         help="JSON dict of structured facts to store on the latest completed run.",
+    )
+    p_edit.add_argument(
+        "--clear-skills",
+        action="store_true",
+        help="Clear persisted task skills on a non-running task.",
+    )
+    p_edit.add_argument(
+        "--reset-failures",
+        action="store_true",
+        help="Reset consecutive failure counter and last failure error.",
+    )
+    p_edit.add_argument(
+        "--clear-claim",
+        action="store_true",
+        help="Clear persisted claim fields on a non-running task.",
     )
 
     p_block = sub.add_parser("block", help="Mark one or more tasks blocked")
@@ -1555,6 +1570,81 @@ def _cmd_complete(args: argparse.Namespace) -> int:
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:
+    recovery_flags = sum(bool(x) for x in [
+        getattr(args, "clear_skills", False),
+        getattr(args, "reset_failures", False),
+        getattr(args, "clear_claim", False),
+    ])
+    if recovery_flags > 1:
+        print(
+            "kanban: edit accepts at most one recovery action flag "
+            "(--clear-skills, --reset-failures, or --clear-claim)",
+            file=sys.stderr,
+        )
+        return 2
+    if getattr(args, "clear_skills", False) and any([
+        args.result is not None,
+        getattr(args, "summary", None) is not None,
+        getattr(args, "metadata", None) is not None,
+    ]):
+        print(
+            "kanban: edit --clear-skills cannot be combined with "
+            "--result/--summary/--metadata",
+            file=sys.stderr,
+        )
+        return 2
+    if getattr(args, "reset_failures", False) and any([
+        args.result is not None,
+        getattr(args, "summary", None) is not None,
+        getattr(args, "metadata", None) is not None,
+    ]):
+        print(
+            "kanban: edit --reset-failures cannot be combined with "
+            "--result/--summary/--metadata",
+            file=sys.stderr,
+        )
+        return 2
+    if getattr(args, "clear_claim", False) and any([
+        args.result is not None,
+        getattr(args, "summary", None) is not None,
+        getattr(args, "metadata", None) is not None,
+    ]):
+        print(
+            "kanban: edit --clear-claim cannot be combined with "
+            "--result/--summary/--metadata",
+            file=sys.stderr,
+        )
+        return 2
+    if not (
+        getattr(args, "clear_skills", False)
+        or getattr(args, "reset_failures", False)
+        or getattr(args, "clear_claim", False)
+    ) and args.result is None:
+        print("kanban: edit requires --result or a recovery action flag", file=sys.stderr)
+        return 2
+    if getattr(args, "reset_failures", False):
+        with kb.connect() as conn:
+            if not kb.reset_task_failures(conn, args.task_id):
+                print(f"cannot edit {args.task_id} (unknown id)", file=sys.stderr)
+                return 1
+        print(f"Edited {args.task_id}")
+        return 0
+    if getattr(args, "clear_claim", False):
+        with kb.connect() as conn:
+            ok = kb.edit_task_recovery_fields(
+                conn,
+                args.task_id,
+                clear_claim=True,
+            )
+            if not ok:
+                print(
+                    f"cannot clear claim on {args.task_id} "
+                    f"(unknown id or task is running)",
+                    file=sys.stderr,
+                )
+                return 1
+        print(f"Edited {args.task_id}")
+        return 0
     raw_meta = getattr(args, "metadata", None)
     metadata = None
     if raw_meta:
@@ -1566,13 +1656,29 @@ def _cmd_edit(args: argparse.Namespace) -> int:
             print(f"kanban: --metadata: {exc}", file=sys.stderr)
             return 2
     with kb.connect() as conn:
-        if not kb.edit_completed_task_result(
+        if not kb.edit_task_recovery_fields(
             conn,
             args.task_id,
             result=args.result,
             summary=getattr(args, "summary", None),
             metadata=metadata,
+            clear_skills=bool(getattr(args, "clear_skills", False)),
+            clear_claim=bool(getattr(args, "clear_claim", False)),
         ):
+            if getattr(args, "clear_skills", False):
+                print(
+                    f"cannot clear skills on {args.task_id} "
+                    f"(unknown id or task is running)",
+                    file=sys.stderr,
+                )
+                return 1
+            if getattr(args, "clear_claim", False):
+                print(
+                    f"cannot clear claim on {args.task_id} "
+                    f"(unknown id or task is running)",
+                    file=sys.stderr,
+                )
+                return 1
             print(
                 f"cannot edit {args.task_id} (unknown id or task is not done)",
                 file=sys.stderr,
@@ -1675,6 +1781,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             ],
             "skipped_unassigned": res.skipped_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
+            "skipped_invalid_skills": res.skipped_invalid_skills,
         }, indent=2))
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -1698,6 +1805,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
+        )
+    if res.skipped_invalid_skills:
+        print(
+            f"Skipped (invalid task skills): "
+            f"{', '.join(res.skipped_invalid_skills)}"
         )
     return 0
 

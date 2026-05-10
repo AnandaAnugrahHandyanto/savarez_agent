@@ -1464,6 +1464,87 @@ def test_stale_run_cannot_block_or_heartbeat_new_attempt(kanban_home, monkeypatc
         conn.close()
 
 
+def test_worker_startup_guard_rejects_reclaimed_run(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="startup-guard", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        lock = claimed.claim_lock
+        assert run_id is not None and lock is not None
+
+        assert kb.reclaim_task(conn, tid, reason="operator reclaim")
+
+        verdict = kb.check_worker_startup_guard(
+            conn,
+            task_id=tid,
+            expected_run_id=run_id,
+            expected_claim_lock=lock,
+        )
+        assert verdict.allowed is False
+        assert verdict.reason == "task_not_running:ready"
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+    finally:
+        conn.close()
+
+
+def test_worker_startup_guard_rejects_superseded_run_without_failure(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="startup-guard", assignee="worker")
+        first = kb.claim_task(conn, tid)
+        assert first is not None
+        run1 = first.current_run_id
+        lock1 = first.claim_lock
+        assert run1 is not None and lock1 is not None
+
+        assert kb.reclaim_task(conn, tid, reason="retry")
+        second = kb.claim_task(conn, tid)
+        assert second is not None
+        run2 = second.current_run_id
+        lock2 = second.claim_lock
+        assert run2 is not None and lock2 is not None and run2 != run1
+
+        verdict = kb.check_worker_startup_guard(
+            conn,
+            task_id=tid,
+            expected_run_id=run1,
+            expected_claim_lock=lock1,
+        )
+        assert verdict.allowed is False
+        assert verdict.reason == "run_mismatch"
+        task = kb.get_task(conn, tid)
+        assert task.status == "running"
+        assert task.current_run_id == run2
+        assert task.consecutive_failures == 0
+    finally:
+        conn.close()
+
+
+def test_worker_startup_guard_requires_claim_lock(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="startup-guard", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        assert run_id is not None
+
+        verdict = kb.check_worker_startup_guard(
+            conn,
+            task_id=tid,
+            expected_run_id=run_id,
+            expected_claim_lock=None,
+        )
+        assert verdict.allowed is False
+        assert verdict.reason == "missing_claim_lock"
+    finally:
+        conn.close()
+
+
 def test_run_on_block_with_reason(kanban_home):
     conn = kb.connect()
     try:
@@ -1738,6 +1819,128 @@ def test_cli_edit_rejects_non_done_task(kanban_home):
 
     assert "not done" in out
 
+
+def test_cli_edit_clear_skills_on_non_running_task(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker", skills=["translation"])
+    finally:
+        conn.close()
+
+    out = run_slash(f"edit {tid} --clear-skills")
+
+    assert "Edited" in out
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+    finally:
+        conn.close()
+    assert task.skills is None
+    assert events[-1].kind == "edited"
+    assert events[-1].payload["skills_cleared"] is True
+
+
+def test_cli_edit_clear_skills_rejects_running_task(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker", skills=["translation"])
+        kb.claim_task(conn, tid)
+    finally:
+        conn.close()
+
+    out = run_slash(f"edit {tid} --clear-skills")
+
+    assert "cannot clear skills" in out
+
+def test_cli_edit_clear_skills_rejects_result_fields(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker", skills=["translation"])
+    finally:
+        conn.close()
+    out = run_slash(f"edit {tid} --clear-skills --result nope")
+
+    assert "--clear-skills cannot be combined" in out
+
+def test_cli_edit_reset_failures(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET consecutive_failures = 3, "
+                "last_failure_error = 'bad run' WHERE id = ?",
+                (tid,),
+            )
+    finally:
+        conn.close()
+
+    out = run_slash(f"edit {tid} --reset-failures")
+
+    assert "Edited" in out
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+    finally:
+        conn.close()
+    assert task.consecutive_failures == 0
+    assert task.last_failure_error is None
+    assert events[-1].kind == "edited"
+    assert events[-1].payload["failures_reset"] is True
+
+
+def test_cli_edit_reset_failures_rejects_result_fields(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+    finally:
+        conn.close()
+
+    out = run_slash(f"edit {tid} --reset-failures --result nope")
+
+    assert "--reset-failures cannot be combined" in out
+
+
+def test_cli_edit_clear_claim(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='ready', claim_lock=?, "
+                "claim_expires=?, worker_pid=? WHERE id=?",
+                ("lock-1", 1234567890, 9999, tid),
+            )
+    finally:
+        conn.close()
+
+    out = run_slash(f"edit {tid} --clear-claim")
+
+    assert "Edited" in out
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+    finally:
+        conn.close()
+    assert task.claim_lock is None
+    assert task.claim_expires is None
+    assert task.worker_pid is None
+    assert events[-1].payload["claim_cleared"] is True
+
+
+def test_cli_edit_clear_claim_rejects_result_fields(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+    finally:
+        conn.close()
+
+    out = run_slash(f"edit {tid} --clear-claim --result nope")
+
+    assert "--clear-claim cannot be combined" in out
 
 def test_cli_complete_bad_metadata_exits_nonzero(kanban_home):
     conn = kb.connect()
@@ -2838,7 +3041,6 @@ def test_cli_create_without_skill_flag_leaves_none(kanban_home):
     with kb.connect() as conn:
         task = kb.get_task(conn, tid)
     assert task.skills is None
-
 
 def test_cli_show_renders_skills(kanban_home):
     """`hermes kanban show <id>` prints a skills row when present."""
