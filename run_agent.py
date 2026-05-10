@@ -14560,7 +14560,14 @@ class AIAgent:
                 
                 else:
                     # No tool calls - this is the final response
+                    # Fix for Issue #22949: Kimi K2-6 returns content:null with reasoning_content
+                    # when chat_template_kwargs.thinking is enabled. Fall back to reasoning content
+                    # when the primary content field is empty.
                     final_response = assistant_message.content or ""
+                    if not final_response:
+                        reasoning = self._extract_reasoning(assistant_message)
+                        if reasoning:
+                            final_response = reasoning
                     
                     # Fix: unmute output when entering the no-tool-call branch
                     # so the user can see empty-response warnings and recovery
