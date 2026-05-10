@@ -437,8 +437,10 @@ class SignalAdapter(BasePlatformAdapter):
         envelope_data = envelope.get("envelope", envelope)
 
         # Handle syncMessage: extract "Note to Self" messages (sent to own account)
-        # while still filtering other sync events (read receipts, typing, etc.)
+        # AND group messages from linked devices.  All other sync events (read
+        # receipts, typing indicators, etc.) are still filtered out.
         is_note_to_self = False
+        is_linked_device_group_msg = False
         if "syncMessage" in envelope_data:
             sync_msg = envelope_data.get("syncMessage")
             if sync_msg and isinstance(sync_msg, dict):
@@ -446,6 +448,7 @@ class SignalAdapter(BasePlatformAdapter):
                 if sent_msg and isinstance(sent_msg, dict):
                     dest = sent_msg.get("destinationNumber") or sent_msg.get("destination")
                     sent_ts = sent_msg.get("timestamp")
+                    sent_group_id = (sent_msg.get("groupInfo") or {}).get("groupId")
                     if dest == self._account_normalized:
                         # Check if this is an echo of our own outbound reply
                         if sent_ts and sent_ts in self._recent_sent_timestamps:
@@ -454,7 +457,18 @@ class SignalAdapter(BasePlatformAdapter):
                         # Genuine user Note to Self — promote to dataMessage
                         is_note_to_self = True
                         envelope_data = {**envelope_data, "dataMessage": sent_msg}
-            if not is_note_to_self:
+                    elif sent_group_id:
+                        # Group message from a linked device (fixes #23064).
+                        # The sourceNumber is the bot's own number (the linked
+                        # device that sent it), but the message originated from
+                        # the user — promote to dataMessage and bypass the
+                        # self-loop filter below with is_linked_device_group_msg.
+                        if sent_ts and sent_ts in self._recent_sent_timestamps:
+                            self._recent_sent_timestamps.discard(sent_ts)
+                            return
+                        is_linked_device_group_msg = True
+                        envelope_data = {**envelope_data, "dataMessage": sent_msg}
+            if not is_note_to_self and not is_linked_device_group_msg:
                 return
 
         # Extract sender info
@@ -471,8 +485,9 @@ class SignalAdapter(BasePlatformAdapter):
             logger.debug("Signal: ignoring envelope with no sender")
             return
 
-        # Self-message filtering — prevent reply loops (but allow Note to Self)
-        if self._account_normalized and sender == self._account_normalized and not is_note_to_self:
+        # Self-message filtering — prevent reply loops (but allow Note to Self
+        # and group messages forwarded from linked devices).
+        if self._account_normalized and sender == self._account_normalized and not is_note_to_self and not is_linked_device_group_msg:
             return
 
         # Filter stories

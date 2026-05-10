@@ -1794,3 +1794,70 @@ class TestSignalContentlessEnvelope:
 
         assert "event" in captured, "Normal message should NOT be skipped"
         assert captured["event"].text == "hello world"
+
+
+class TestSignalSyncGroupMessages:
+    """Group messages from linked devices via syncMessage must not be silently dropped (#23064)."""
+
+    @pytest.mark.asyncio
+    async def test_sync_group_message_from_linked_device_is_delivered(self, monkeypatch):
+        """A syncMessage.sentMessage with groupInfo.groupId must reach handle_message."""
+        # Use group_allowed='*' so the group-authorization gate doesn't filter first.
+        # account must match sourceNumber so the self-loop guard is what we're testing.
+        adapter = _make_signal_adapter(monkeypatch, account="+15551234567", group_allowed="*")
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                # Linked-device sync: sourceNumber is the bot's own number.
+                "sourceNumber": "+15551234567",
+                "sourceUuid": "aaaaaaaa-0000-0000-0000-000000000001",
+                "sourceName": "My Linked Phone",
+                "timestamp": 1777600696000,
+                "syncMessage": {
+                    "sentMessage": {
+                        "timestamp": 1777600696000,
+                        "message": "hello from group via linked device",
+                        "groupInfo": {
+                            "groupId": "abc123groupId==",
+                            "type": "DELIVER",
+                        },
+                    }
+                },
+            }
+        })
+
+        assert "event" in captured, (
+            "Group message from linked device was silently dropped — "
+            "syncMessage.sentMessage with groupInfo must reach handle_message (fix #23064)"
+        )
+        assert captured["event"].text == "hello from group via linked device"
+
+    @pytest.mark.asyncio
+    async def test_sync_non_group_non_note_to_self_is_still_filtered(self, monkeypatch):
+        """A syncMessage with no sentMessage (e.g. read receipt) must still be dropped."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15550000000",
+                "sourceUuid": "aaaaaaaa-0000-0000-0000-000000000001",
+                "timestamp": 1777600696000,
+                "syncMessage": {
+                    "readMessages": [{"sender": "+15551111111", "timestamp": 1777600000000}],
+                },
+            }
+        })
+
+        assert "event" not in captured, "Read receipts and non-sentMessage syncs must still be filtered"
