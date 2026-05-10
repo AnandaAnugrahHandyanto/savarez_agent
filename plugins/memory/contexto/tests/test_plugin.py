@@ -89,6 +89,45 @@ def test_primary_ingests(primary: ContextoMemoryProvider):
     assert not primary._sync_thread.is_alive()
 
 
+def test_failures_route_to_logger_not_stderr(slug: str, caplog):
+    """Daemon-thread failures must land in the logger, not pollute the chat UI.
+
+    Regression for: previously, sync_turn / queue_prefetch failures printed
+    raw tracebacks to stderr (visible in the user's terminal mid-chat) and
+    never made it to agent.log. Now they go through the logger.
+    """
+    import io
+    import sys
+    from contexto import ContextoClient
+
+    p = ContextoMemoryProvider()
+    p.initialize(session_id="t", agent_context="primary",
+                 agent_identity=slug, user_id="alex")
+    # Point at a closed port to force ConnectError without touching the live host.
+    p._client = ContextoClient(base_url="http://127.0.0.1:9", timeout=2.0)
+
+    captured_stderr = io.StringIO()
+    old_stderr = sys.stderr
+    sys.stderr = captured_stderr
+    try:
+        with caplog.at_level("WARNING", logger="plugins.memory.contexto"):
+            p.sync_turn("hi", "hello")
+            p._sync_thread.join(timeout=5)
+            p.queue_prefetch("anything")
+            p._prefetch_thread.join(timeout=5)
+    finally:
+        sys.stderr = old_stderr
+    p.shutdown()
+
+    assert "Traceback" not in captured_stderr.getvalue(), \
+        "daemon-thread traceback leaked to stderr"
+    msgs = [rec.getMessage() for rec in caplog.records]
+    assert any("contexto sync failed" in m for m in msgs), \
+        f"sync failure not logged; got: {msgs}"
+    assert any("contexto prefetch failed" in m for m in msgs), \
+        f"prefetch failure not logged; got: {msgs}"
+
+
 def test_on_delegation_captures_subagent_result(primary: ContextoMemoryProvider, slug: str):
     primary.on_delegation(
         task="research how the rate limiter handles clock skew",

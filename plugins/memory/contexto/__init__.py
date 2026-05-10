@@ -119,11 +119,17 @@ class ContextoMemoryProvider(MemoryProvider):
             return
 
         def _run():
-            block = self._client.get_context_for_turn(
-                query, agent=self._agent_slug, user_id=self._user_id, max_results=5
-            )
-            with self._prefetch_lock:
-                self._prefetch_result = block
+            # Daemon-thread errors print to stderr by default and pollute the
+            # chat UI. Route them through the logger instead — error info still
+            # lands in agent.log, just not in the user's terminal mid-stream.
+            try:
+                block = self._client.get_context_for_turn(
+                    query, agent=self._agent_slug, user_id=self._user_id, max_results=5
+                )
+                with self._prefetch_lock:
+                    self._prefetch_result = block
+            except Exception as e:
+                logger.warning("contexto prefetch failed: %s: %s", type(e).__name__, e)
 
         self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="contexto-prefetch")
         self._prefetch_thread.start()
@@ -138,7 +144,14 @@ class ContextoMemoryProvider(MemoryProvider):
         ]
 
         def _sync():
-            self._client.ingest(messages, agent=self._agent_slug, user_id=self._user_id)
+            # Same logger redirection as _run above — keep daemon-thread
+            # tracebacks out of the user's terminal. The error message
+            # (including the response body, thanks to _raise_with_body in
+            # the client) still surfaces in agent.log under "contexto sync".
+            try:
+                self._client.ingest(messages, agent=self._agent_slug, user_id=self._user_id)
+            except Exception as e:
+                logger.warning("contexto sync failed: %s: %s", type(e).__name__, e)
 
         if self._sync_thread and self._sync_thread.is_alive():
             # Give the previous extraction up to 60s before kicking off a new one;
