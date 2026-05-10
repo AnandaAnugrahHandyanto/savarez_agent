@@ -3782,12 +3782,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Check if supported
                 if ext not in SUPPORTED_DOCUMENT_TYPES:
                     supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
-                    event.text = (
+                    reply_text = (
                         f"Unsupported document type '{ext or 'unknown'}'. "
                         f"Supported types: {supported_list}"
                     )
                     logger.info("[Telegram] Unsupported document type: %s", ext or "unknown")
-                    await self.handle_message(event)
+                    await self.send_message(
+                        chat_id=event.source.chat_id,
+                        text=reply_text,
+                        reply_to=event.source.message_id,
+                    )
                     return
 
                 # Download and cache
@@ -3820,6 +3824,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache document: %s", e, exc_info=True)
+                await self.send_message(
+                    chat_id=event.source.chat_id,
+                    text="Sorry, I couldn't download that attachment. Please try again.",
+                    reply_to=event.source.message_id,
+                )
+                return
 
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:
