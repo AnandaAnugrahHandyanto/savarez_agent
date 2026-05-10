@@ -5859,6 +5859,7 @@ class HermesCLI:
 
     def _prompt_text_input(self, prompt_text: str) -> str | None:
         """Prompt for free-text input safely inside or outside prompt_toolkit."""
+        import threading
         result = [None]
 
         def _ask():
@@ -5867,7 +5868,12 @@ class HermesCLI:
             except (KeyboardInterrupt, EOFError):
                 pass
 
-        if self._app:
+        # run_in_terminal requires an asyncio event loop — only exists in the
+        # main prompt_toolkit thread.  If we're in a background thread (e.g.
+        # process_loop), fall back to direct input() call.
+        in_main_thread = threading.current_thread() is threading.main_thread()
+
+        if self._app and in_main_thread:
             from prompt_toolkit.application import run_in_terminal
             was_visible = self._status_bar_visible
             self._status_bar_visible = False
