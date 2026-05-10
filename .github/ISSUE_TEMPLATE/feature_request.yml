@@ -34,6 +34,52 @@ body:
       required: true
 
   - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance Criteria
+      description: What must be true for this feature to be done? Include observable behavior, tests, docs, and non-goals.
+      placeholder: |
+        - [ ] Given ..., when ..., then ...
+        - [ ] Tests cover ...
+        - [ ] Non-goals / out of scope: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: tdd-plan
+    attributes:
+      label: TDD / Validation Plan
+      description: For implementation work, list planned failing tests before code changes and broader validation commands. Use N/A for pure discussion requests.
+      placeholder: |
+        Planned RED tests:
+        1. ...
+
+        GREEN / regression validation:
+        - `scripts/run_tests.sh ...`
+
+  - type: textarea
+    id: durable-context
+    attributes:
+      label: Durable Context / Evidence Requirements
+      description: For long-running or autonomous work, link the PRD/plan/control doc, run ledger, state capsule, evidence manifest, required evidence, or explain why N/A.
+      placeholder: |
+        PRD / plan:
+        Control doc / resume capsule:
+        Run ledger / state capsule:
+        Evidence manifest:
+
+  - type: textarea
+    id: worker-contract
+    attributes:
+      label: Worker Contract / Dependencies / Stop Conditions
+      description: If an agent or contributor will implement this, define scope, dependencies, stop conditions, and what evidence must be returned.
+      placeholder: |
+        Scope:
+        Dependencies / blockers:
+        Stop and ask if:
+        Required handoff evidence:
+
+  - type: textarea
     id: alternatives
     attributes:
       label: Alternatives Considered
