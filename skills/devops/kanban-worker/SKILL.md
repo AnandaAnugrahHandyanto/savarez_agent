@@ -120,7 +120,7 @@ The block message is what appears in the dashboard / gateway notifier. The comme
 
 ## Posting progress notes (the heartbeat note)
 
-`kanban_heartbeat(note=...)` is the lightweight mid-run progress channel — call it after each meaningful step (file written, test run, API call made, decision reached). The `kanban_slack_bridge` mirrors any non-empty note as a reply in the task's #tasks Slack thread (prefixed with 🫀), so Max can follow what you're doing without opening the dashboard.
+`kanban_heartbeat(note=...)` is the lightweight mid-run progress channel — call it after each meaningful step (file written, test run, API call made, decision reached). If your deployment has a chat-bridge integration configured (Slack, Discord, Telegram, etc.), it will mirror any non-empty note as a reply in the task's notification thread, so humans can follow progress without opening the dashboard.
 
 Rules:
 
