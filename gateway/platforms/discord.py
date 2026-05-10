@@ -14,6 +14,8 @@ import hashlib
 import json
 import logging
 import os
+import re
+import shlex
 import struct
 import subprocess
 import tempfile
@@ -30,6 +32,104 @@ _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+
+
+def _discord_field_value(value: object, *, limit: int = 1024) -> str:
+    text = str(value or "").strip() or "unknown"
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _discord_inline_code(value: object) -> str:
+    """Render user/command-derived text safely inside Discord inline code."""
+    text = str(value or "unknown").replace("`", "ˋ")
+    text = text.replace("@", "@\u200b")
+    return f"`{text}`"
+
+
+def _format_targets(label: str, targets: list[str]) -> str:
+    if not targets:
+        return f"{label}: unspecified"
+    return f"{label}: " + ", ".join(_discord_inline_code(target) for target in targets[:6])
+
+
+def _git_branch_delete_targets(command: str) -> list[str]:
+    targets: list[str] = []
+    for match in re.finditer(r"\bgit\s+branch\s+-D\s+([^;&|\n]+)", command):
+        try:
+            parts = shlex.split(match.group(1), posix=True)
+        except ValueError:
+            parts = match.group(1).split()
+        targets.extend(part for part in parts if part and not part.startswith("-"))
+    return targets
+
+
+def _git_reset_hard_target(command: str) -> str | None:
+    match = re.search(r"\bgit\s+reset\s+--hard(?:\s+([^;&|\n]+))?", command)
+    if not match:
+        return None
+    target = (match.group(1) or "HEAD").strip()
+    try:
+        parts = shlex.split(target, posix=True)
+    except ValueError:
+        parts = target.split()
+    return parts[0] if parts else "HEAD"
+
+
+def _summarize_command_target(command: str, cwd: str | None = None) -> str:
+    """Best-effort user-facing summary of what a flagged shell command may change."""
+    command_l = command.lower()
+    workdir = cwd or "current working directory"
+    try:
+        parts = shlex.split(command, posix=True)
+    except ValueError:
+        parts = command.split()
+    targets: list[str] = []
+    if "git reset --hard" in command_l:
+        targets.append(f"Git working tree and index in {_discord_inline_code(workdir)}")
+    if "git clean" in command_l:
+        targets.append(f"Untracked files in Git working tree {_discord_inline_code(workdir)}")
+    branch_targets = _git_branch_delete_targets(command)
+    if branch_targets:
+        targets.append(_format_targets(f"Local Git branch refs in {_discord_inline_code(workdir)}", branch_targets))
+    if parts and parts[0] in {"rm", "unlink", "rmdir"}:
+        fs_targets = [p for p in parts[1:] if not p.startswith("-")]
+        targets.append(_format_targets("Filesystem path(s)", fs_targets))
+    if parts and parts[0] in {"mv", "cp"} and len(parts) >= 3:
+        targets.append(f"Filesystem destination {_discord_inline_code(parts[-1])}")
+    if "curl" in parts or "wget" in parts:
+        targets.append("Network-fetched content may be executed or written locally")
+    return "\n".join(targets) if targets else f"Shell command in {_discord_inline_code(workdir)}"
+
+
+def _summarize_command_change(command: str) -> str:
+    """Best-effort user-facing summary of the actual requested state change."""
+    command_l = command.lower()
+    try:
+        parts = shlex.split(command, posix=True)
+    except ValueError:
+        parts = command.split()
+    changes: list[str] = []
+    reset_target = _git_reset_hard_target(command)
+    if reset_target:
+        changes.append(
+            f"Reset local Git worktree/index to {_discord_inline_code(reset_target)}, discarding uncommitted changes."
+        )
+    if "git clean" in command_l:
+        changes.append("Delete untracked files from the Git worktree.")
+    branch_targets = _git_branch_delete_targets(command)
+    if branch_targets:
+        changes.append(_format_targets("Force-delete local Git branch(es)", branch_targets) + ".")
+    if parts and parts[0] in {"rm", "unlink", "rmdir"}:
+        fs_targets = [p for p in parts[1:] if not p.startswith("-")]
+        changes.append(_format_targets("Delete filesystem path(s)", fs_targets) + ".")
+    if parts and parts[0] == "mv" and len(parts) >= 3:
+        changes.append(f"Move/rename {_discord_inline_code(parts[-2])} to {_discord_inline_code(parts[-1])}.")
+    if parts and parts[0] == "cp" and len(parts) >= 3:
+        changes.append(f"Copy data to {_discord_inline_code(parts[-1])}.")
+    if "curl" in parts or "wget" in parts:
+        changes.append("Fetch remote content that may be executed or written locally.")
+    return "\n".join(changes) if changes else "Run the exact shell command shown below."
+
 
 try:
     import discord
@@ -48,7 +148,6 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-import re
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
 from utils import atomic_json_write
@@ -3721,7 +3820,19 @@ class DiscordAdapter(BasePlatformAdapter):
                 description=f"```\n{cmd_display}\n```",
                 color=discord.Color.orange(),
             )
-            embed.add_field(name="Reason", value=description, inline=False)
+            embed.add_field(
+                name="Requested change",
+                value=_discord_field_value(_summarize_command_change(command)),
+                inline=False,
+            )
+            embed.add_field(
+                name="Affected target(s)",
+                value=_discord_field_value(
+                    _summarize_command_target(command, (metadata or {}).get("cwd"))
+                ),
+                inline=False,
+            )
+            embed.add_field(name="Reason", value=_discord_field_value(description), inline=False)
 
             view = ExecApprovalView(
                 session_key=session_key,

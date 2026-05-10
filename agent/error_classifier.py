@@ -56,6 +56,7 @@ class FailoverReason(enum.Enum):
     long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
     oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth subscription rejects 1M context beta — disable beta and retry
     llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"  # llama.cpp json-schema-to-grammar rejects regex escapes in `pattern` / `format` — strip from tools and retry
+    cyber_policy = "cyber_policy"              # Codex cyber-policy false positive on large agent contexts
 
     # Catch-all
     unknown = "unknown"                  # Unclassifiable — retry with backoff
@@ -508,6 +509,39 @@ def classify_api_error(
             FailoverReason.llama_cpp_grammar_pattern,
             retryable=True,
             should_compress=False,
+        )
+
+    # OpenAI Codex cyber-policy false positives can be triggered by large
+    # accumulated Hermes/agent context even when the user's current request is
+    # not cyber work. Do NOT route small/current cyber-policy refusals around
+    # provider policy. For large contexts only, treat it as recoverable by
+    # compressing/resetting context first. Do not provider-fallback this
+    # classifier result: if compression does not clear the policy refusal, the
+    # post-compression request should be classified on its own merits rather
+    # than routed around a provider policy block.
+    is_codex_cyber_policy = (
+        provider_lower == "openai-codex"
+        and status_code == 400
+        and (
+            error_code.lower() == "cyber_policy"
+            or "flagged for possible cybersecurity risk" in error_msg
+            or "trusted access for cyber" in error_msg
+        )
+    )
+    if is_codex_cyber_policy:
+        is_large_context = approx_tokens > 50000 or num_messages > 80
+        if is_large_context:
+            return _result(
+                FailoverReason.cyber_policy,
+                retryable=True,
+                should_compress=True,
+                should_fallback=False,
+            )
+        return _result(
+            FailoverReason.provider_policy_blocked,
+            retryable=False,
+            should_compress=False,
+            should_fallback=False,
         )
 
     # ── 2. HTTP status code classification ──────────────────────────

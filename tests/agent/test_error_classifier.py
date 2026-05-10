@@ -57,6 +57,7 @@ class TestFailoverReason:
             "context_overflow", "payload_too_large", "image_too_large",
             "model_not_found", "format_error",
             "provider_policy_blocked",
+            "cyber_policy",
             "thinking_signature", "long_context_tier",
             "oauth_long_context_beta_forbidden",
             "llama_cpp_grammar_pattern",
@@ -230,6 +231,43 @@ class TestClassifyApiError:
         e = MockAPIError("spending limit reached", status_code=403)
         result = classify_api_error(e, provider="openrouter")
         assert result.reason == FailoverReason.billing
+
+    def test_codex_cyber_policy_large_context_compresses_without_fallback(self):
+        e = MockAPIError(
+            "Request flagged for possible cybersecurity risk; trusted access for cyber required",
+            status_code=400,
+            body={"error": {"code": "cyber_policy"}},
+        )
+
+        result = classify_api_error(
+            e,
+            provider="openai-codex",
+            approx_tokens=50001,
+        )
+
+        assert result.reason == FailoverReason.cyber_policy
+        assert result.retryable is True
+        assert result.should_compress is True
+        assert result.should_fallback is False
+
+    def test_codex_cyber_policy_small_context_is_policy_blocked(self):
+        e = MockAPIError(
+            "Request flagged for possible cybersecurity risk; trusted access for cyber required",
+            status_code=400,
+            body={"error": {"code": "cyber_policy"}},
+        )
+
+        result = classify_api_error(
+            e,
+            provider="openai-codex",
+            approx_tokens=2000,
+            num_messages=8,
+        )
+
+        assert result.reason == FailoverReason.provider_policy_blocked
+        assert result.retryable is False
+        assert result.should_compress is False
+        assert result.should_fallback is False
 
     # ── Billing ──
 
