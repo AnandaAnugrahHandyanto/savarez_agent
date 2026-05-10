@@ -1206,6 +1206,14 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         except Exception as e:
                             print(f"[{self.name}] Failed to read document text: {e}", flush=True)
 
+            chat_id = data.get("chatId", "")
+
+            # Resolve per-channel ephemeral prompt and auto-loaded skills
+            # (same mechanism as Discord/Telegram adapters).
+            from gateway.platforms.base import resolve_channel_prompt, resolve_channel_skills
+            _channel_prompt = resolve_channel_prompt(self.config.extra, chat_id)
+            _auto_skills = resolve_channel_skills(self.config.extra, chat_id)
+
             return MessageEvent(
                 text=body,
                 message_type=msg_type,
@@ -1214,6 +1222,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 message_id=data.get("messageId"),
                 media_urls=cached_urls,
                 media_types=media_types,
+                channel_prompt=_channel_prompt,
+                auto_skill=_auto_skills,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")
