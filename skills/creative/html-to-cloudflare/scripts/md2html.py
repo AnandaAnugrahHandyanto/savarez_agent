@@ -1,264 +1,201 @@
 #!/usr/bin/env python3
-"""
-Convert a directory of markdown files to auth-protected HTML wiki pages.
+"""Convert markdown wiki to HTML with auth check, with WIKI_PATH_MAP for link/label resolution."""
 
-Usage:
-  python3 md2html.py WIKI_DIR [--dest DIR]
+import sys, os, re
 
-Auth flow:
-  - index.html = hub page (auth check + page links), entry point at /wiki/
-  - login.html = login form (email + password), accessible without auth
-  - Other pages = content pages with inline auth check
+# ─────────────────────────────────────────────────────────────
+# WIKI_PATH_MAP: short_name → (url_path, display_label)
+# Every page in /opt/data/wiki/ must have an entry here.
+# Missing entries = broken links and garbled labels in generated HTML.
+# ─────────────────────────────────────────────────────────────
+WIKI_PATH_MAP = {
+    'gordon-rouse':           ('entities/gordon-rouse',           'Gordon Rouse'),
+    'kla':                    ('entities/kla',                     'KLA'),
+    'ventura-relocation':    ('concepts/ventura-relocation',      'Ventura Relocation'),
+    'sidekick-studio':       ('projects/sidekick-studio',         'Sidekick Studio'),
+    'hobbies/backcountry-fishing': ('hobbies/backcountry-fishing', 'Backcountry Fishing'),
+    'hobbies/backpacking':    ('hobbies/backpacking',              'Backpacking'),
+    'hobbies/hiking':         ('hobbies/hiking',                   'Hiking'),
+    'hobbies/fitness':        ('hobbies/fitness',                  'Fitness'),
+    'hobbies/personal-style':('hobbies/personal-style',           'Personal Style'),
+    'hobbies/london-trip':    ('hobbies/london-trip',              'London Trip'),
+    'log':                   ('log',                              'Log'),
+}
 
-Cookie: wiki_auth=GW2026 (set by login on success, checked by all other pages)
+def wiki_link(name):
+    """Convert [[short_name]] markdown to a proper /wiki/ URL with display label."""
+    name = name.replace('.md', '').replace('.html', '')
+    if name in WIKI_PATH_MAP:
+        path, label = WIKI_PATH_MAP[name]
+    else:
+        path = name
+        label = name.split('/')[-1].replace('-', ' ').title()
+    return f'<a href="/wiki/{path}">{label}</a>'
 
-Known quirks:
-  - Cloudflare Pages strips .html from URLs (307 redirect to no-ext). Link targets
-    must NOT include .html in hrefs used in nav or hub. The .html files still exist
-    and load fine once reached, but the extension in hrefs causes a redirect loop.
-"""
-
-import os, re, sys, argparse
-
-COOKIE_NAME  = 'wiki_auth'
-COOKIE_VALUE = 'GW2026'
-
-# Hub page links — hrefs MUST NOT have .html (CF strips it, causes 307 + loop)
-NAV_ITEMS = [
-    ('/wiki/',                              'Home'),
-    ('/wiki/entities/gordon-rouse',         'Gordon Rouse'),
-    ('/wiki/entities/kla',                  'KLA'),
-    ('/wiki/concepts/ventura-relocation',   'Ventura'),
-    ('/wiki/log',                           'Log'),
-]
-
-# ─── Markdown → HTML ────────────────────────────────────────────────────────────
-
+# ─────────────────────────────────────────────────────────────
+# Markdown → HTML converter
+# ─────────────────────────────────────────────────────────────
 def md_to_html(text):
     lines = text.split('\n')
-    out, in_code = [], False
+    html_lines = []
+    in_code = False
+    table_buf = []
+    in_table = False
+
+    def flush_table():
+        if not table_buf:
+            return ''
+        rows = []
+        for i, row in enumerate(table_buf):
+            cells = [c.strip() for c in row.split('|') if c.strip()]
+            tag = 'th' if (i == 0) else 'td'
+            rows.append('<tr>' + ''.join(f'<{tag}>{c}</{tag}>' for c in cells) + '</tr>')
+        table_buf.clear()
+        return '<table>' + ''.join(rows) + '</table>'
+
     for line in lines:
         if line.strip().startswith('```'):
-            if not in_code: out.append('<pre><code>')
-            else: out.append('</code></pre>')
-            in_code = not in_code
+            if in_table:
+                html_lines.append(flush_table())
+                in_table = False
+            if not in_code:
+                html_lines.append('<pre><code>')
+                in_code = True
+            else:
+                html_lines.append('</code></pre>')
+                in_code = False
             continue
         if in_code:
-            out.append(line); continue
+            html_lines.append(line)
+            continue
+
+        # Table rows
+        if '|' in line and line.strip().startswith('|'):
+            if line.strip() == '|' or set(line.strip().replace('-','').replace(':','').replace(' ','')) <= {'|'}:
+                continue
+            if not in_table:
+                in_table = True
+            table_buf.append(line)
+            continue
+        else:
+            if in_table:
+                html_lines.append(flush_table())
+                in_table = False
 
         m = re.match(r'^(#{1,6})\s+(.*)', line)
         if m:
-            out.append(f'<h{len(m.group(1))}>{m.group(2)}</h{len(m.group(1))}>'); continue
-
-        if '|' in line and line.strip().startswith('|'):
-            if set(line.strip().replace('-','').replace(':','').replace(' ','')) <= {'|'}:
-                continue
-            cells = [c.strip() for c in line.split('|') if c.strip()]
-            out.append('<table><tr>' + ''.join(f'<td>{c}</td>' for c in cells) + '</tr></table>'); continue
+            html_lines.append(f'<h{len(m.group(1))}>{m.group(2)}</h{len(m.group(1))}>')
+            continue
 
         m = re.match(r'^[-*+]\s+(.*)', line)
         if m:
-            out.append(f'<li>{m.group(1)}</li>'); continue
+            html_lines.append(f'<li>{m.group(1)}</li>')
+            continue
 
         line = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', line)
-        line = re.sub(r'\*(.+?)\*',      r'<em>\1</em>',         line)
-        line = re.sub(r'`(.+?)`',        r'<code>\1</code>',    line)
+        line = re.sub(r'\*(.+?)\*', r'<em>\1</em>', line)
+        line = re.sub(r'`(.+?)`', r'<code>\1</code>', line)
         line = re.sub(r'\[([^\]]+)\]\(([^\)]+)\)', r'<a href="\2">\1</a>', line)
-        line = re.sub(r'\[\[([^\]]+)\]\]',
-                      lambda m: f'<a href="{m.group(1).replace(" ","-")}">{m.group(1)}</a>', line)
-        if line.strip() in ('---','***','___'):
-            out.append('<hr>')
-        elif line.strip():
-            out.append(f'<p>{line}</p>')
-    return '\n'.join(out)
+        line = re.sub(r'\[\[([^\]]+)\]\]', lambda m: wiki_link(m.group(1)), line)
+        if line.strip() in ('---', '***', '___'):
+            html_lines.append('<hr>')
+            continue
+        if line.strip():
+            html_lines.append(f'<p>{line}</p>')
 
-# ─── Shared CSS ────────────────────────────────────────────────────────────────
+    if in_table:
+        html_lines.append(flush_table())
 
-CSS = """
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; background: #0d1117; color: #e6edf3; line-height: 1.7; }
-a { color: #58a6ff; text-decoration: none; } a:hover { text-decoration: underline; }
-.topbar { background: #161b22; border-bottom: 1px solid #30363d; padding: 0 24px; position: sticky; top: 0; z-index: 10; }
-.topbar nav { max-width: 900px; margin: 0 auto; display: flex; align-items: center; gap: 4px; height: 52px; }
-.topbar ul { display: flex; list-style: none; gap: 4px; }
-.topbar a { display: block; padding: 6px 14px; border-radius: 6px; color: #8b949e; font-size: 14px; }
-.topbar a:hover { color: #e6edf3; text-decoration: none; background: #21262d; }
-.topbar a.active { color: #e6edf3; background: #30363d; }
-.topbar .wiki-label { margin-left: auto; color: #30363d; font-size: 13px; }
-.content { max-width: 900px; margin: 0 auto; padding: 40px 24px; }
-h1 { font-size: 28px; font-weight: 700; margin-bottom: 24px; border-bottom: 1px solid #30363d; padding-bottom: 16px; color: #58a6ff; }
-h2 { font-size: 20px; font-weight: 600; margin: 28px 0 12px; }
-h3 { font-size: 16px; font-weight: 600; margin: 20px 0 10px; color: #c9d1d9; }
-p { margin: 0 0 14px; }
-table { border-collapse: collapse; margin: 16px 0; width: 100%; font-size: 14px; display: block; overflow-x: auto; }
-td,th { border: 1px solid #30363d; padding: 10px 14px; text-align: left; }
-th { background: #161b22; color: #8b949e; font-weight: 600; }
-tr:nth-child(even) td { background: #161b22; }
-code { background: #161b22; border: 1px solid #30363d; border-radius: 4px; padding: 1px 6px; font-size: 13px; font-family: monospace; }
-pre { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; overflow-x: auto; margin: 16px 0; }
-pre code { border: none; padding: 0; background: none; }
-ul { margin: 0 0 14px 24px; } li { margin: 4px 0; }
-hr { border: none; border-top: 1px solid #30363d; margin: 28px 0; }
-blockquote { border-left: 3px solid #58a6ff; padding-left: 16px; color: #8b949e; margin: 16px 0; }
-"""
+    return '\n'.join(html_lines)
 
-def nav_html(active):
-    return '\n'.join(
-        f'<li><a href="{href}" class="{"active" if active==href or (href!="/wiki/" and active.startswith(href)) else ""}">{label}</a></li>'
-        for href, label in NAV_ITEMS
-    )
-
-# ─── Auth check (injected into every non-login page) ──────────────────────────
-AUTH_CHECK = f"""
-<script>
-(function(){{
-  var c=document.cookie.match(/{COOKIE_NAME}=([^;]+)/);
-  if(!c||c[1]!=='{COOKIE_VALUE}'){{
-    window.location.href='/wiki/login?dst='+encodeURIComponent(window.location.pathname);
-  }}
-}})();
-</script>"""
-
-# ─── Hub page (auth-required index of wiki pages) ──────────────────────────────
-def build_hub():
-    pages = [
-        ('entities/gordon-rouse',         'Gordon Rouse'),
-        ('entities/kla',                  'KLA Corporation'),
-        ('concepts/ventura-relocation',   'Ventura Relocation'),
-        ('log',                           'Wiki Log'),
-        ('schema',                        'Schema'),
+# ─────────────────────────────────────────────────────────────
+# HTML page builder with auth check
+# ─────────────────────────────────────────────────────────────
+def build_page(title, content_html, page_path):
+    nav_items = [
+        ('/wiki/',                 'Home'),
+        ('/wiki/entities/gordon-rouse', 'Gordon'),
+        ('/wiki/entities/kla',          'KLA'),
+        ('/wiki/concepts/ventura-relocation', 'Ventura'),
+        ('/wiki/projects/sidekick-studio',   'Sidekick'),
+        ('/wiki/hobbies/backcountry-fishing', 'Fishing'),
+        ('/wiki/hobbies/hiking',           'Hiking'),
+        ('/wiki/hobbies/backpacking',      'Backpacking'),
+        ('/wiki/hobbies/fitness',         'Fitness'),
+        ('/wiki/hobbies/personal-style',   'Style'),
+        ('/wiki/hobbies/london-trip',      'London'),
+        ('/wiki/log',                     'Log'),
     ]
-    links_html = '\n'.join(
-        f'<a href="/wiki/{href}" class="page"><span class="name">{label}</span><span class="arrow">→</span></a>'
-        for href, label in pages
+    active = '/' + page_path
+    nav_html = '\n'.join(
+        f'<li><a href="{href}" class="{"active" if active == href or (active.startswith(href) and href != "/wiki/") else ""}">{label}</a></li>'
+        for href, label in nav_items
     )
-    return f'''<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Gordon's Wiki</title>
-  <style>
-    {CSS}
-    .hub {{ max-width: 500px; margin: 0 auto; padding: 40px 24px; text-align: center; }}
-    .hub h1 {{ color: #58a6ff; border: none; margin-bottom: 8px; }}
-    .hub .subtitle {{ color: #8b949e; font-size: 14px; margin-bottom: 32px; }}
-    .pages {{ display: flex; flex-direction: column; gap: 10px; text-align: left; }}
-    a.page {{ display: flex; align-items: center; justify-content: space-between; padding: 14px 20px;
-              background: #161b22; border: 1px solid #30363d; border-radius: 10px; color: #e6edf3;
-              font-size: 14px; font-weight: 500; }}
-    a.page:hover {{ border-color: #58a6ff; background: #1c2128; text-decoration: none; }}
-    .arrow {{ color: #58a6ff; }}
-    footer {{ margin-top: 40px; padding-top: 24px; border-top: 1px solid #30363d; }}
-    footer a {{ color: #8b949e; font-size: 13px; }}
-  </style>
-  {AUTH_CHECK}
-</head>
-<body>
-  <div class="hub">
-    <h1>Gordon's Wiki</h1>
-    <p class="subtitle">Your personal knowledge base</p>
-    <div class="pages">{links_html}</div>
-    <footer><a href="/">← Back to home</a></footer>
-  </div>
-</body>
-</html>'''
 
-# ─── Login page (email + password) ────────────────────────────────────────────
-def build_login():
-    return f'''<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Login — Gordon's Wiki</title>
-  <style>
-    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-            background: #0d1117; color: #e6edf3; min-height: 100vh;
-            display: flex; align-items: center; justify-content: center; }}
-    .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 16px; padding: 40px;
-             width: 100%; max-width: 400px; }}
-    h1 {{ font-size: 24px; margin-bottom: 8px; color: #e6edf3; text-align: center; }}
-    p {{ font-size: 14px; color: #8b949e; margin-bottom: 32px; text-align: center; }}
-    label {{ display: block; font-size: 13px; color: #8b949e; margin-bottom: 6px; }}
-    input {{ width: 100%; padding: 12px 16px; background: #0d1117; border: 1px solid #30363d;
-             border-radius: 8px; color: #e6edf3; font-size: 16px; outline: none; margin-bottom: 16px;
-             box-sizing: border-box; }}
-    input:focus {{ border-color: #58a6ff; }}
-    .pw-row {{ margin-bottom: 24px; }}
-    button {{ width: 100%; padding: 12px; background: #1f6feb; color: white; border: none;
-              border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; }}
-    button:hover {{ background: #388bfd; }}
-    .error {{ color: #f85149; font-size: 13px; margin-top: 12px; min-height: 20px; text-align: center; }}
-    .hint {{ font-size: 12px; color: #484f58; margin-top: 24px; text-align: center; }}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>Gordon's Wiki</h1>
-    <p>Sign in to continue</p>
-    <label for="email">Email</label>
-    <input type="email" id="email" placeholder="you@example.com"
-           onkeydown="if(event.key==='Enter')login()" />
-    <div class="pw-row">
-      <label for="pw">Password</label>
-      <input type="password" id="pw" placeholder="Password"
-             onkeydown="if(event.key==='Enter')login()" />
-    </div>
-    <button onclick="login()">Sign In</button>
-    <div class="error" id="err"></div>
-    <div class="hint">Access is by invitation only</div>
-  </div>
-  <script>
-    // If already logged in, go straight to hub
-    (function() {{
-      var c = document.cookie.match(/{COOKIE_NAME}=([^;]+)/);
-      if (c && c[1] === '{COOKIE_VALUE}') {{
-        window.location.href = '/wiki/';
-      }}
-    }})();
-    function login() {{
-      var email = document.getElementById('email').value.trim().toLowerCase();
-      var pw = document.getElementById('pw').value;
-      if (email === 'rouse.gordon@gmail.com' && pw === '{COOKIE_VALUE}') {{
-        document.cookie = '{COOKIE_NAME}={COOKIE_VALUE}; path=/wiki; max-age=31536000; SameSite=Strict';
-        var dst = new URLSearchParams(window.location.search).get('dst') || '/wiki/';
-        window.location.href = dst;
-      }} else {{
-        var err = document.getElementById('err');
-        if (email !== 'rouse.gordon@gmail.com') {{
-          err.textContent = 'Email not recognized';
-        }} else {{
-          err.textContent = 'Incorrect password';
-        }}
-        document.getElementById('pw').value = '';
-      }}
-    }}
-  </script>
-</body>
-</html>'''
+    # Build the style block with PROPERLY DOUBLED BRACES for Python 3.13 f-string compatibility
+    # All { and } in CSS must be {{ }} inside an f-string
+    css_styles = """
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; background: #0d1117; color: #e6edf3; line-height: 1.7; }
+    a { color: #58a6ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .topbar { display: none; }
+    .content { max-width: 900px; margin: 0 auto; padding: 40px 24px; }
+    h1 { font-size: 28px; font-weight: 700; margin-bottom: 24px; border-bottom: 1px solid #30363d; padding-bottom: 16px; color: #58a6ff; }
+    h2 { font-size: 20px; font-weight: 600; margin: 28px 0 12px; }
+    h3 { font-size: 16px; font-weight: 600; margin: 20px 0 10px; color: #c9d1d9; }
+    p { margin: 0 0 14px; }
+    table { border-collapse: separate; border-spacing: 0; margin: 20px 0; width: 100%; font-size: 14px; border-radius: 8px; overflow: hidden; border: 1px solid #30363d; }
+    th { background: #161b22; color: #8b949e; font-weight: 600; padding: 10px 14px; text-align: left; border-bottom: 1px solid #30363d; }
+    td { padding: 10px 14px; border-bottom: 1px solid #21262d; }
+    tr:last-child td { border-bottom: none; }
+    tr:nth-child(even) td { background: #161b22; }
+    tr:hover td { background: #1c2128; }
+    code { background: #161b22; border: 1px solid #30363d; border-radius: 4px; padding: 1px 6px; font-size: 13px; font-family: monospace; }
+    pre { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; overflow-x: auto; margin: 16px 0; }
+    pre code { border: none; padding: 0; background: none; }
+    ul { margin: 0 0 14px 24px; }
+    li { margin: 6px 0; }
+    hr { border: none; border-top: 1px solid #30363d; margin: 28px 0; }
+    blockquote { border-left: 3px solid #58a6ff; padding-left: 16px; color: #8b949e; margin: 16px 0; }
+    """.replace('{', '{{').replace('}', '}}')
 
-# ─── Content page ──────────────────────────────────────────────────────────────
-def build_page(title, body, path):
     return f'''<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{title} — Gordon's Wiki</title>
-  <style>{CSS}</style>
+  <style>
+{css_styles}
+  </style>
+  <script>
+    (function() {{
+      var c = document.cookie.match(/wiki_auth=([^;]+)/);
+      if (!c || c[1] !== 'GW2026') {{
+        var dst = window.location.pathname;
+        window.location.href = '/wiki/login?dst=' + encodeURIComponent(dst);
+      }}
+    }})();
+  </script>
 </head>
 <body>
-  <div class="topbar"><nav><ul>{nav_html('/'+path)}</ul><span class="wiki-label">Gordon's Wiki</span></nav></div>
-  <div class="content">{body}</div>
-  {AUTH_CHECK}
+  <div class="topbar">
+    <nav>
+      <ul>
+        {nav_html}
+      </ul>
+      <span class="wiki-label">Gordon's Wiki</span>
+    </nav>
+  </div>
+  <div class="content">
+    {content_html}
+  </div>
 </body>
 </html>'''
 
-# ─── Main ──────────────────────────────────────────────────────────────────────
-def convert(md_path, dest, rel):
-    with open(md_path) as f:
+def convert_file(md_path, base_dir, rel_path):
+    with open(md_path, 'r', encoding='utf-8') as f:
         content = f.read()
     if content.startswith('---'):
         end = content.find('\n---', 3)
@@ -268,38 +205,22 @@ def convert(md_path, dest, rel):
     for line in content.split('\n'):
         m = re.match(r'^#\s+(.*)', line)
         if m:
-            title = m.group(1); break
+            title = m.group(1)
+            break
     html = md_to_html(content)
-    # Route: index.md → skip (hub is separate), SCHEMA.md → schema, log.md → log
-    if rel == 'index.md':
-        return
-    rel = rel.replace('SCHEMA.md','schema.html').replace('log.md','log.html').replace('.md','.html')
-    out = os.path.join(dest, rel)
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-    with open(out, 'w') as f:
-        f.write(build_page(title, html, rel))
-    print(f'  {out}')
+    out_path = os.path.join(base_dir, rel_path)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, 'w', encoding='utf-8') as f:
+        f.write(build_page(title, html, rel_path.replace('\\','/').replace('.md','.html')))
+    print(f'  {out_path}')
 
 if __name__ == '__main__':
-    ap = argparse.ArgumentParser()
-    ap.add_argument('wiki_dir')
-    ap.add_argument('--dest', default='/opt/data/hermes-pages-repo/wiki')
-    args = ap.parse_args()
-
-    dest = args.dest
-    os.makedirs(dest, exist_ok=True)
-
-    # Write hub (entry point at /wiki/) and login (at /wiki/login)
-    with open(os.path.join(dest, 'index.html'), 'w') as f:
-        f.write(build_hub())
-    print(f'  {dest}/index.html (hub — auth required)')
-
-    with open(os.path.join(dest, 'login.html'), 'w') as f:
-        f.write(build_login())
-    print(f'  {dest}/login.html (login — no auth)')
-
-    for root, _, files in os.walk(args.wiki_dir):
+    wiki_dir = sys.argv[1] if len(sys.argv) > 1 else '/opt/data/wiki'
+    base_out = '/opt/data/hermes-pages-repo/wiki'
+    for root, dirs, files in os.walk(wiki_dir):
         for fn in files:
             if fn.endswith('.md'):
-                convert(os.path.join(root, fn), dest,
-                        os.path.relpath(os.path.join(root, fn), args.wiki_dir))
+                md = os.path.join(root, fn)
+                rel = os.path.relpath(md, wiki_dir)
+                rel = rel.replace('index.md', 'index.html').replace('SCHEMA.md', 'schema.html').replace('log.md', 'log.html').replace('.md', '.html')
+                convert_file(md, base_out, rel)

@@ -275,3 +275,19 @@ Current nav order: Home → Gordon → KLA → Ventura → Sidekick → Fishing 
   subprocess.run(['git', 'push', 'origin', 'main'])
   ```
 - **`rousegordon-ops` is a GitHub USER, not an org** — `https://api.github.com/users/rousegordon-ops/repos` works; `https://api.github.com/orgs/rousegordon-ops/repos` returns 404. The PAT only has read access to that user's repos (hermes-agent public, gordonclaw/hermes-pages/parts-finder/SidekickStudio private).
+
+- **Python 3.13 f-string brace collision — CRITICAL** — Literal `{` and `}` in CSS inside f-strings must be doubled to `{{` and `}}`. Python 3.13 added dict unpacking syntax `{**}` as a reserved pattern, making bare `{` in f-strings a syntax error. The script appears to run (compiles OK) but fails at runtime inside `build_page()` with `NameError: name 'border' is not defined` (or whichever CSS property word comes first after the unparsed brace). The error occurs AFTER the truncated HTML has been written to disk — so the file exists with wrong content and `git status` shows "nothing to commit." **Verification:** After running md2html.py, ALWAYS grep the actual output file for expected content before committing. Example failure: `table { border-collapse: ... }` → `NameError: name 'border'`. **Fix:** Identify the `<style>` block in the f-string and replace ALL `{` with `{{` and all `}` with `}}`:
+  ```python
+  style_start = content.find('  <style>\n')
+  style_end = content.find('\n  </style>')
+  style_block_fixed = style_block.replace('{', '{{').replace('}', '}}')
+  content = before + style_block_fixed + after
+  ```
+
+- **Script sync between `/opt/data/scripts/` and `/opt/data/hermes-pages-repo/scripts/`** — Edit `/opt/data/scripts/md2html.py` first (canonical). Then `shutil.copy('/opt/data/scripts/md2html.py', '/opt/data/hermes-pages-repo/scripts/md2html.py')`. Always copy before running, and always run from the repo directory (`python3 /opt/data/hermes-pages-repo/scripts/md2html.py`). The two copies diverge over time — assume the repo copy is stale until just synced.
+
+- **Always verify generated HTML before committing** — md2html.py may run without crashing but produce wrong output (e.g. "8 sidekicks" when source says "9 sidekicks"). `git status` shows "nothing to commit" while the file is wrong. Grep the actual output file: `grep "9 sidekicks" wiki/entities/gordon-rouse.html`. If wrong, the script errored after writing truncated output — fix script, re-sync, re-run, verify again.
+
+- **Git clone private repos works with the PAT** — `GIT_TERMINAL_PROMPT=0 git clone https://github.com/rousegordon-ops/SidekickStudio.git` succeeds. Don't assume a repo is inaccessible without trying.
+
+- **Source repo is ground truth over session memory** — When Gordon says "get the latest info from the source repo," clone it and read actual files. Don't rely on wiki pages that may be stale. The source repo is authoritative.
