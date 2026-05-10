@@ -138,6 +138,14 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment."
+            },
+            "slack_blocks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": True
+                },
+                "description": "Optional Slack Block Kit blocks for Slack targets only. Always provide normal fallback text in 'message'. Invalid or oversized blocks are ignored and text is sent normally."
             }
         },
         "required": []
@@ -168,6 +176,7 @@ def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
+    slack_blocks = args.get("slack_blocks")
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
 
@@ -284,6 +293,7 @@ def _handle_send(args):
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document_attachments,
+                slack_blocks=slack_blocks if platform_name == "slack" else None,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -511,7 +521,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, slack_blocks=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -574,6 +584,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         chunks = BasePlatformAdapter.truncate_message(message, max_len, len_fn=_len_fn)
     else:
         chunks = [message]
+    if platform == Platform.SLACK and slack_blocks and len(chunks) > 1:
+        logger.debug("Ignoring Slack Block Kit blocks because message was split into %d chunks", len(chunks))
+        slack_blocks = None
 
     # --- Telegram: special handling for media attachments ---
     if platform == Platform.TELEGRAM:
@@ -699,7 +712,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     last_result = None
     for chunk in chunks:
         if platform == Platform.SLACK:
-            result = await _send_slack(pconfig.token, chat_id, chunk)
+            result = await _send_slack(pconfig.token, chat_id, chunk, blocks=slack_blocks)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
@@ -1120,7 +1133,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
         return _error(f"Discord send failed: {e}")
 
 
-async def _send_slack(token, chat_id, message):
+async def _send_slack(token, chat_id, message, blocks=None):
     """Send via Slack Web API."""
     try:
         import aiohttp
@@ -1128,12 +1141,16 @@ async def _send_slack(token, chat_id, message):
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+        from gateway.platforms.slack import normalize_slack_blocks
         _proxy = resolve_proxy_url()
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
         url = "https://slack.com/api/chat.postMessage"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             payload = {"channel": chat_id, "text": message, "mrkdwn": True}
+            normalized_blocks = normalize_slack_blocks(blocks)
+            if normalized_blocks:
+                payload["blocks"] = normalized_blocks
             async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
                 data = await resp.json()
                 if data.get("ok"):
