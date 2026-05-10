@@ -157,6 +157,7 @@ class TestBranchCommandCLI:
 
         # Agent should have been updated
         assert agent.session_id == cli_instance.session_id
+        agent._reset_run_ledger_for_session.assert_called_once_with(cli_instance.session_id)
         assert agent.reset_session_state.called
         assert agent._last_flushed_db_idx == 4  # len(conversation_history)
 

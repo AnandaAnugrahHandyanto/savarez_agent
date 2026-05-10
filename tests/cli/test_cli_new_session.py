@@ -35,6 +35,7 @@ class _FakeAgent:
         )
         self.commit_memory_session = MagicMock()
         self._invalidate_system_prompt = MagicMock()
+        self._reset_run_ledger_for_session = MagicMock()
 
         # Token counters (non-zero to verify reset)
         self.session_total_tokens = 1000
@@ -157,6 +158,7 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
     cli._session_db.append_message(cli.session_id, role="user", content="next turn")
 
     assert cli.agent.session_id == cli.session_id
+    cli.agent._reset_run_ledger_for_session.assert_called_once_with(cli.session_id)
     assert cli.agent._last_flushed_db_idx == 0
     assert cli.agent._todo_store.read() == []
     assert cli.session_start > old_session_start

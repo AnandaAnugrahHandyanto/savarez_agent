@@ -1869,6 +1869,20 @@ class AIAgent:
             _agent_cfg = _load_agent_config()
         except Exception:
             _agent_cfg = {}
+        self._run_ledger = None
+        try:
+            _ledger_cfg = (_agent_cfg.get("sessions", {}) or {}).get("run_ledger", {})
+            if not isinstance(_ledger_cfg, dict):
+                _ledger_cfg = {}
+            self._run_ledger_config = dict(_ledger_cfg)
+            self._reset_run_ledger_for_session(self.session_id)
+        except Exception as _ledger_err:
+            logger.warning("Run ledger initialization failed; continuing without ledger: %s", _ledger_err)
+            try:
+                from agent.run_ledger import NullRunLedger
+                self._run_ledger = NullRunLedger()
+            except Exception:
+                self._run_ledger = None
         try:
             self._tool_guardrails = ToolCallGuardrailController(
                 ToolCallGuardrailConfig.from_mapping(
@@ -9671,6 +9685,229 @@ class AIAgent:
         """
         return self.api_mode != "codex_responses"
 
+    def _run_ledger_root_id_for_session(self, session_id: str) -> str:
+        """Return the compression-root run id for ``session_id`` when known."""
+        run_id = session_id
+        session_db = getattr(self, "_session_db", None)
+        if not session_db or not session_id:
+            return run_id
+        current = session_id
+        for _ in range(100):
+            try:
+                current_meta = session_db.get_session(current)
+            except Exception:
+                break
+            if not current_meta:
+                break
+            parent_id = current_meta.get("parent_session_id")
+            if not parent_id:
+                break
+            try:
+                parent_meta = session_db.get_session(parent_id)
+            except Exception:
+                break
+            if not parent_meta or parent_meta.get("end_reason") != "compression":
+                break
+            try:
+                parent_ended_at = parent_meta.get("ended_at")
+                child_started_at = current_meta.get("started_at")
+                if parent_ended_at is None or child_started_at is None:
+                    break
+                if float(child_started_at) < float(parent_ended_at):
+                    break
+            except (TypeError, ValueError):
+                break
+            run_id = parent_id
+            current = parent_id
+        return run_id
+
+    def _reset_run_ledger_for_session(
+        self,
+        session_id: str,
+        *,
+        run_id: Optional[str] = None,
+    ) -> None:
+        """Recreate the run ledger after a session-id switch.
+
+        Compression continuation sessions share the root compression parent's
+        run id. Fresh and branch sessions use their own session id.
+        """
+        try:
+            from agent.run_ledger import NullRunLedger, RunLedger
+
+            config = getattr(self, "_run_ledger_config", {}) or {}
+            if not isinstance(config, dict):
+                config = {}
+            if not config.get("enabled", True):
+                self._run_ledger = NullRunLedger()
+                return
+            target_session_id = str(session_id or "")
+            target_run_id = run_id or self._run_ledger_root_id_for_session(target_session_id)
+            self._run_ledger = RunLedger(
+                run_id=target_run_id,
+                session_id=target_session_id,
+                config=config,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Run ledger retarget failed for session %s; continuing without ledger: %s",
+                session_id,
+                exc,
+            )
+            try:
+                from agent.run_ledger import NullRunLedger
+
+                self._run_ledger = NullRunLedger()
+            except Exception:
+                self._run_ledger = None
+
+    def _ledger_tool_started(
+        self,
+        tool_name: str,
+        function_args: dict,
+        tool_call_id: Optional[str],
+    ) -> None:
+        ledger = getattr(self, "_run_ledger", None)
+        if not ledger:
+            return
+        try:
+            ledger.append_event(
+                "tool.started",
+                session_id=self.session_id or "",
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                status="started",
+                input=function_args,
+            )
+        except Exception as exc:
+            logger.warning("Run ledger tool start write failed for %s: %s", tool_name, exc)
+
+    def _ledger_tool_terminal(
+        self,
+        event_type: str,
+        tool_name: str,
+        function_args: dict,
+        tool_call_id: Optional[str],
+        function_result,
+        *,
+        duration: float = 0.0,
+        status: str = "ok",
+        ok: bool = True,
+        metadata: Optional[dict] = None,
+    ) -> None:
+        ledger = getattr(self, "_run_ledger", None)
+        if not ledger:
+            return
+        try:
+            ledger.append_event(
+                event_type,
+                session_id=self.session_id or "",
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                status=status,
+                duration_ms=max(0, int(duration * 1000)),
+                input=function_args,
+                output={"content": function_result},
+                metadata={"ok": ok, **(metadata or {})},
+            )
+        except Exception as exc:
+            logger.warning("Run ledger tool terminal write failed for %s: %s", tool_name, exc)
+
+    def _ledger_tool_finished(
+        self,
+        tool_name: str,
+        function_args: dict,
+        tool_call_id: Optional[str],
+        function_result,
+        *,
+        duration: float = 0.0,
+    ) -> None:
+        self._ledger_tool_terminal(
+            "tool.finished",
+            tool_name,
+            function_args,
+            tool_call_id,
+            function_result,
+            duration=duration,
+            status="ok",
+            ok=True,
+        )
+
+    def _ledger_tool_failed(
+        self,
+        tool_name: str,
+        function_args: dict,
+        tool_call_id: Optional[str],
+        function_result,
+        *,
+        duration: float = 0.0,
+    ) -> None:
+        self._ledger_tool_terminal(
+            "tool.failed",
+            tool_name,
+            function_args,
+            tool_call_id,
+            function_result,
+            duration=duration,
+            status="error",
+            ok=False,
+        )
+
+    def _ledger_tool_skipped(
+        self,
+        tool_name: str,
+        function_args: Optional[dict],
+        tool_call_id: Optional[str],
+        reason: str,
+        *,
+        blocked: bool = False,
+    ) -> None:
+        self._ledger_tool_terminal(
+            "tool.skipped",
+            tool_name,
+            function_args or {},
+            tool_call_id,
+            {"reason": reason},
+            duration=0.0,
+            status="blocked" if blocked else "skipped",
+            ok=False,
+            metadata={"reason": reason, "blocked": blocked},
+        )
+
+    def _write_compression_capsule(
+        self,
+        compressed: list,
+        *,
+        parent_session_id: Optional[str],
+        child_session_id: Optional[str],
+    ) -> None:
+        ledger = getattr(self, "_run_ledger", None)
+        if not ledger:
+            return
+        try:
+            if child_session_id and hasattr(ledger, "update_session_id"):
+                ledger.update_session_id(child_session_id)
+            span = ledger.current_event_span()
+            capsule = ledger.write_state_capsule(
+                session_id=child_session_id or self.session_id or "",
+                parent_session_id=parent_session_id,
+                child_session_id=child_session_id,
+                event_span=span,
+            )
+            rel_path = capsule.get("relative_path")
+            section = (
+                "\n\n## Durable Context References\n"
+                f"- Source event span: {ledger.run_id}:{span.get('start_event_id')}..{span.get('end_event_id')}\n"
+                f"- State capsule: {rel_path}"
+            )
+            for msg in compressed:
+                if isinstance(msg, dict) and isinstance(msg.get("content"), str):
+                    msg["content"] = msg["content"].rstrip() + section
+                    return
+            compressed.insert(0, {"role": "user", "content": section.lstrip()})
+        except Exception as exc:
+            logger.warning("Run ledger compression capsule write failed: %s", exc)
+
     def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None) -> tuple:
         """Compress conversation context and split the session in SQLite.
 
@@ -9755,6 +9992,9 @@ class AIAgent:
         if todo_snapshot:
             compressed.append({"role": "user", "content": todo_snapshot})
 
+        _ledger_capsule_written = False
+        _compression_parent_session_id = self.session_id
+
         self._invalidate_system_prompt()
         new_system_prompt = self._build_system_prompt(system_message)
         self._cached_system_prompt = new_system_prompt
@@ -9793,12 +10033,25 @@ class AIAgent:
                 self._session_db.update_system_prompt(self.session_id, new_system_prompt)
                 # Reset flush cursor — new session starts with no messages written
                 self._last_flushed_db_idx = 0
+                self._write_compression_capsule(
+                    compressed,
+                    parent_session_id=old_session_id,
+                    child_session_id=self.session_id,
+                )
+                _ledger_capsule_written = True
                 try:
                     self._persist_session(compressed, None)
                 except Exception as e:
                     logger.warning("Compressed session persistence after split failed: %s", e)
             except Exception as e:
                 logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
+
+        if not _ledger_capsule_written:
+            self._write_compression_capsule(
+                compressed,
+                parent_session_id=_compression_parent_session_id,
+                child_session_id=self.session_id,
+            )
 
         # Notify the context engine that the session_id rotated because of
         # compression (not a fresh /new). Plugin engines (e.g. hermes-lcm) use
@@ -10077,6 +10330,12 @@ class AIAgent:
         if self._interrupt_requested:
             print(f"{self.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
             for tc in tool_calls:
+                self._ledger_tool_skipped(
+                    tc.function.name,
+                    {},
+                    tc.id,
+                    "user interrupt before concurrent batch",
+                )
                 messages.append({
                     "role": "tool",
                     "name": tc.function.name,
@@ -10183,6 +10442,17 @@ class AIAgent:
         for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
             if block_result is not None:
                 results[i] = (name, args, block_result, 0.0, True, True)
+                self._ledger_tool_terminal(
+                    "tool.skipped",
+                    name,
+                    args,
+                    tc.id,
+                    block_result,
+                    duration=0.0,
+                    status="blocked",
+                    ok=False,
+                    metadata={"blocked": True, "guardrail": blocked_by_guardrail},
+                )
 
         # Touch activity before launching workers so the gateway knows
         # we're executing tools (not stuck).
@@ -10236,6 +10506,7 @@ class AIAgent:
                 except Exception:
                     pass
             start = time.time()
+            self._ledger_tool_started(function_name, function_args, tool_call.id)
             try:
                 result = self._invoke_tool(
                     function_name,
@@ -10250,6 +10521,22 @@ class AIAgent:
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
             duration = time.time() - start
             is_error, _ = _detect_tool_failure(function_name, result)
+            if is_error:
+                self._ledger_tool_failed(
+                    function_name,
+                    function_args,
+                    tool_call.id,
+                    result,
+                    duration=duration,
+                )
+            else:
+                self._ledger_tool_finished(
+                    function_name,
+                    function_args,
+                    tool_call.id,
+                    result,
+                    duration=duration,
+                )
             if is_error:
                 logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
             else:
@@ -10356,8 +10643,21 @@ class AIAgent:
                 # Tool was cancelled (interrupt) or thread didn't return
                 if self._interrupt_requested:
                     function_result = f"[Tool execution cancelled — {name} was skipped due to user interrupt]"
+                    self._ledger_tool_skipped(
+                        name,
+                        args,
+                        tc.id,
+                        "user interrupt during concurrent batch",
+                    )
                 else:
                     function_result = f"Error executing tool '{name}': thread did not return a result"
+                    self._ledger_tool_failed(
+                        name,
+                        args,
+                        tc.id,
+                        function_result,
+                        duration=0.0,
+                    )
                 tool_duration = 0.0
             else:
                 function_name, function_args, function_result, tool_duration, is_error, blocked = r
@@ -10477,6 +10777,12 @@ class AIAgent:
                     self._vprint(f"{self.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)", force=True)
                 for skipped_tc in remaining_calls:
                     skipped_name = skipped_tc.function.name
+                    self._ledger_tool_skipped(
+                        skipped_name,
+                        {},
+                        skipped_tc.id,
+                        "user interrupt before tool start",
+                    )
                     skip_msg = {
                         "role": "tool",
                         "name": skipped_name,
@@ -10537,6 +10843,7 @@ class AIAgent:
             if not _execution_blocked:
                 self._current_tool = function_name
                 self._touch_activity(f"executing tool: {function_name}")
+                self._ledger_tool_started(function_name, function_args, tool_call.id)
 
             # Set activity callback for long-running tool execution (terminal
             # commands, etc.) so the gateway's inactivity monitor doesn't kill
@@ -10797,6 +11104,34 @@ class AIAgent:
                 result_preview = function_result if self.verbose_logging else (
                     function_result[:200] if len(function_result) > 200 else function_result
                 )
+            if _execution_blocked:
+                self._ledger_tool_terminal(
+                    "tool.skipped",
+                    function_name,
+                    function_args,
+                    tool_call.id,
+                    function_result,
+                    duration=tool_duration,
+                    status="blocked",
+                    ok=False,
+                    metadata={"blocked": True},
+                )
+            elif _is_error_result:
+                self._ledger_tool_failed(
+                    function_name,
+                    function_args,
+                    tool_call.id,
+                    function_result,
+                    duration=tool_duration,
+                )
+            else:
+                self._ledger_tool_finished(
+                    function_name,
+                    function_args,
+                    tool_call.id,
+                    function_result,
+                    duration=tool_duration,
+                )
             if _is_error_result:
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
             else:
@@ -10875,6 +11210,12 @@ class AIAgent:
                 self._vprint(f"{self.log_prefix}⚡ Interrupt: skipping {remaining} remaining tool call(s)", force=True)
                 for skipped_tc in assistant_message.tool_calls[i:]:
                     skipped_name = skipped_tc.function.name
+                    self._ledger_tool_skipped(
+                        skipped_name,
+                        {},
+                        skipped_tc.id,
+                        "user interrupt after previous tool",
+                    )
                     skip_msg = {
                         "role": "tool",
                         "name": skipped_name,

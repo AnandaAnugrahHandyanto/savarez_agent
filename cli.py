@@ -5410,6 +5410,8 @@ class HermesCLI:
 
         if self.agent:
             self.agent.session_id = self.session_id
+            if hasattr(self.agent, "_reset_run_ledger_for_session"):
+                self.agent._reset_run_ledger_for_session(self.session_id)
             self.agent.session_start = self.session_start
             self.agent.reset_session_state()
             if hasattr(self.agent, "_last_flushed_db_idx"):
@@ -5558,6 +5560,8 @@ class HermesCLI:
         # Sync the agent if already initialised
         if self.agent:
             self.agent.session_id = target_id
+            if hasattr(self.agent, "_reset_run_ledger_for_session"):
+                self.agent._reset_run_ledger_for_session(target_id)
             self.agent.reset_session_state()
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = len(self.conversation_history)
@@ -5688,6 +5692,8 @@ class HermesCLI:
         # Sync the agent
         if self.agent:
             self.agent.session_id = new_session_id
+            if hasattr(self.agent, "_reset_run_ledger_for_session"):
+                self.agent._reset_run_ledger_for_session(new_session_id)
             self.agent.session_start = now
             # Redirect the JSON session log to the new branch session file so
             # messages written after branching land in the correct file.
