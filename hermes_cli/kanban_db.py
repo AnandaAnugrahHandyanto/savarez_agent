@@ -3806,6 +3806,7 @@ def _default_spawn(
 
     cmd = [
         "hermes",
+        "--no-gui",
         "-p", profile_arg,
         # Auto-load the kanban-worker skill so every dispatched worker
         # has the pattern library (good summary/metadata shapes, retry

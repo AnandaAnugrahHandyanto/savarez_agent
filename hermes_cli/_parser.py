@@ -225,6 +225,15 @@ def build_top_level_parser():
         default=False,
         help="With --tui: run TypeScript sources via tsx (skip dist build)",
     )
+    _inherited_flag(
+        parser,
+        "-y",
+        "--no-gui",
+        action="store_true",
+        default=False,
+        help="Run in headless mode, bypassing TUI elements. Useful for background execution.",
+    )
+
 
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 

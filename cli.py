@@ -1445,7 +1445,11 @@ def _replay_output_history() -> None:
         _OUTPUT_HISTORY_REPLAYING = False
 
 
-def _cprint(text: str):
+def is_interactive():
+    import sys
+    return sys.stdout.isatty()
+
+def _cprint(text: str, force_plain: bool = False):
     """Print ANSI-colored text through prompt_toolkit's native renderer.
 
     Raw ANSI escapes written via print() are swallowed by patch_stdout's
@@ -1461,12 +1465,22 @@ def _cprint(text: str):
     ``loop.call_soon_threadsafe``, which pauses the input area, prints
     the line above it, and redraws the prompt cleanly.
     """
+    if force_plain or not is_interactive():
+        print(text)
+        return
+
     _record_output_history(text)
+
+    def _safe_print():
+        try:
+            _pt_print(_PT_ANSI(text))
+        except Exception:
+            print(text)
 
     try:
         from prompt_toolkit.application import get_app_or_none, run_in_terminal
     except Exception:
-        _pt_print(_PT_ANSI(text))
+        _safe_print()
         return
 
     app = None
@@ -1479,7 +1493,7 @@ def _cprint(text: str):
     # direct prompt_toolkit print is safe and matches existing behavior
     # (spinner frames, streamed tokens, tool activity prefixes, …).
     if app is None or not getattr(app, "_is_running", False):
-        _pt_print(_PT_ANSI(text))
+        _safe_print()
         return
 
     try:
@@ -1487,7 +1501,7 @@ def _cprint(text: str):
     except Exception:
         loop = None
     if loop is None:
-        _pt_print(_PT_ANSI(text))
+        _safe_print()
         return
 
     import asyncio as _asyncio
@@ -1503,29 +1517,23 @@ def _cprint(text: str):
         current_loop = None
     # Same thread as the app's loop → safe to print directly.
     if current_loop is loop and loop.is_running():
-        _pt_print(_PT_ANSI(text))
+        _safe_print()
         return
 
     # Cross-thread emission: ask the app's event loop to schedule a
-    # ``run_in_terminal`` that wraps ``_pt_print``.  This hides the
+    # ``run_in_terminal`` that wraps ``_safe_print``.  This hides the
     # prompt, prints, and redraws.  Fire-and-forget — if scheduling
     # fails we fall back to a direct print so the line isn't lost.
     def _schedule():
         try:
-            run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            run_in_terminal(lambda: _safe_print())
         except Exception:
-            try:
-                _pt_print(_PT_ANSI(text))
-            except Exception:
-                pass
+            _safe_print()
 
     try:
         loop.call_soon_threadsafe(_schedule)
     except Exception:
-        try:
-            _pt_print(_PT_ANSI(text))
-        except Exception:
-            pass
+        _safe_print()
 
 
 # ---------------------------------------------------------------------------
@@ -2251,6 +2259,7 @@ class HermesCLI:
         checkpoints: bool = False,
         pass_session_id: bool = False,
         ignore_rules: bool = False,
+        headless: bool = False,
     ):
         """
         Initialize the Hermes CLI.
@@ -2270,6 +2279,7 @@ class HermesCLI:
         # Initialize Rich console
         self.console = Console()
         self.config = CLI_CONFIG
+        self.headless = headless
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
         # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
         # YAML 1.1 parses bare `off` as boolean False — normalise to string.
@@ -4086,6 +4096,8 @@ class HermesCLI:
     
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
+        if getattr(self, "headless", False):
+            return
         self.console.clear()
 
         # Get context length for display before branching so it remains
@@ -10513,6 +10525,16 @@ class HermesCLI:
 
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
+        if getattr(self, "headless", False):
+            print("Running in headless mode...")
+            import sys
+            for line in sys.stdin:
+                line = line.strip()
+                if not line:
+                    continue
+                self.chat(line)
+            return
+
         # Push the entire TUI to the bottom of the terminal so the banner,
         # responses, and prompt all appear pinned to the bottom — empty
         # space stays above, not below.  This prints enough blank lines to
@@ -12670,6 +12692,7 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    headless: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -12789,6 +12812,7 @@ def main(
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
         ignore_rules=ignore_rules,
+        headless=headless,
     )
 
     if parsed_skills:
