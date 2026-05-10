@@ -311,4 +311,52 @@ describe('createGatewayEventHandler', () => {
 
     expect(getTurnState().activity).toMatchObject([{ text: 'boom', tone: 'error' }])
   })
+
+  it('omits thinking from final message when showReasoning is false', () => {
+    patchUiState({ showReasoning: false })
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: { text: 'secret reasoning' }, type: 'reasoning.available' } as any)
+    onEvent({ payload: { text: ' extra thought' }, type: 'reasoning.delta' } as any)
+    onEvent({ payload: { text: 'final answer' }, type: 'message.complete' } as any)
+
+    expect(appended).toHaveLength(1)
+    expect(appended[0]?.text).toBe('final answer')
+    expect(appended[0]?.thinking).toBeUndefined()
+    expect(appended[0]?.thinkingTokens).toBeUndefined()
+  })
+
+  it('omits thinking from final message when showReasoning is false even with payload reasoning', () => {
+    patchUiState({ showReasoning: false })
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: { reasoning: 'server-side reasoning', text: 'final answer' },
+      type: 'message.complete'
+    } as any)
+
+    expect(appended).toHaveLength(1)
+    expect(appended[0]?.text).toBe('final answer')
+    expect(appended[0]?.thinking).toBeUndefined()
+    expect(appended[0]?.thinkingTokens).toBeUndefined()
+  })
+
+  it('strips inline think tags from final message when showReasoning is false', () => {
+    patchUiState({ showReasoning: false })
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    // message.delta with inline think tags triggers flushStreamingSegment
+    onEvent({
+      payload: { text: '<think>embedded reasoning</think>visible text' },
+      type: 'message.delta'
+    } as any)
+    onEvent({ payload: { text: 'more text' }, type: 'message.complete' } as any)
+
+    expect(appended).toHaveLength(1)
+    expect(appended[0]?.thinking).toBeUndefined()
+  })
+
 })

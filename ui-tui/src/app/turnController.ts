@@ -168,7 +168,7 @@ class TurnController {
 
     const split = hasReasoningTag(raw) ? splitReasoning(raw) : { reasoning: '', text: raw }
 
-    if (split.reasoning && !this.reasoningText.trim()) {
+    if (split.reasoning && getUiState().showReasoning && !this.reasoningText.trim()) {
       this.reasoningText = split.reasoning
       patchTurnState({ reasoning: this.reasoningText, reasoningTokens: estimateTokensRough(this.reasoningText) })
     }
@@ -275,7 +275,9 @@ class TurnController {
     const finalText = split.text
     const existingReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
     const savedReasoning = [existingReasoning, existingReasoning ? '' : split.reasoning].filter(Boolean).join('\n\n')
-    const savedReasoningTokens = savedReasoning ? estimateTokensRough(savedReasoning) : 0
+    const show = getUiState().showReasoning
+    const finalReasoning = show ? savedReasoning : ''
+    const savedReasoningTokens = finalReasoning ? estimateTokensRough(finalReasoning) : 0
     const savedToolTokens = this.toolTokenAcc
     const tools = this.pendingSegmentTools
 
@@ -298,8 +300,8 @@ class TurnController {
       finalMessages.push({
         role: 'assistant',
         text: finalText,
-        thinking: savedReasoning || undefined,
-        thinkingTokens: savedReasoning ? savedReasoningTokens : undefined,
+        thinking: finalReasoning || undefined,
+        thinkingTokens: finalReasoning ? savedReasoningTokens : undefined,
         toolTokens: savedToolTokens || undefined,
         ...(tools.length && { tools })
       })
