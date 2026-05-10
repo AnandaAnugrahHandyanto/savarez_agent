@@ -113,3 +113,10 @@ class TestLintWorkflow:
             pytest.fail(f"lint.yml is not valid YAML: {exc}")
         assert isinstance(parsed, dict)
         assert "jobs" in parsed
+
+    def test_pr_comment_step_handles_fork_permission_403(self):
+        """Fork PRs must not fail the advisory diff job just because the token cannot comment."""
+        content = self.WORKFLOW_PATH.read_text(encoding="utf-8")
+        assert "error.status === 403" in content
+        assert "Resource not accessible by integration" in content
+        assert "core.warning(" in content
