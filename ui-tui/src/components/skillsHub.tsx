@@ -1,6 +1,7 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
+import { useI18n } from '../i18n.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
@@ -12,6 +13,7 @@ const MIN_WIDTH = 40
 const MAX_WIDTH = 90
 
 export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
+  const { t: ti } = useI18n()
   const [skillsByCat, setSkillsByCat] = useState<Record<string, string[]>>({})
   const [selectedCat, setSelectedCat] = useState('')
   const [catIdx, setCatIdx] = useState(0)
@@ -186,7 +188,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
     return (
       <Box flexDirection="column" width={width}>
         <Text color={t.color.label}>error: {err}</Text>
-        <OverlayHint t={t}>Esc/q cancel</OverlayHint>
+        <OverlayHint t={t}>{ti('picker.cancel')}</OverlayHint>
       </Box>
     )
   }
@@ -195,7 +197,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
     return (
       <Box flexDirection="column" width={width}>
         <Text color={t.color.muted}>no skills available</Text>
-        <OverlayHint t={t}>Esc/q cancel</OverlayHint>
+        <OverlayHint t={t}>{ti('picker.cancel')}</OverlayHint>
       </Box>
     )
   }
@@ -231,7 +233,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
         })}
 
         {offset + VISIBLE < rows.length && <Text color={t.color.muted}> ↓ {rows.length - offset - VISIBLE} more</Text>}
-        <OverlayHint t={t}>↑/↓ select · Enter open · 1-9,0 quick · Esc/q cancel</OverlayHint>
+        <OverlayHint t={t}>{ti('picker.skillHint')}</OverlayHint>
       </Box>
     )
   }

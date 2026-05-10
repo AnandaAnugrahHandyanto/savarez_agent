@@ -683,6 +683,7 @@ function DiffView({
 // ── Main overlay ─────────────────────────────────────────────────────
 
 export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: AgentsOverlayProps) {
+  const { t: ti } = useI18n()
   const liveSubagents = useTurnSelector(state => state.subagents)
   const delegation = useStore($delegationState)
   const history = useStore($spawnHistory)
@@ -967,7 +968,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
       ? `${historyIndex > 0 ? `Replay ${historyIndex}/${history.length}` : 'Last turn'} · finished ${new Date(
           effectiveSnapshot.finishedAt
         ).toLocaleTimeString()}`
-      : `Spawn tree${delegation.paused ? ' · ⏸ paused' : ''}`
+      : `${ti('section.spawnTree')}${delegation.paused ? ' · ⏸ paused' : ''}`
 
   const metaLine = [formatSummary(totals), spark, capsLabel, mix ? `· ${mix}` : ''].filter(Boolean).join('  ')
 

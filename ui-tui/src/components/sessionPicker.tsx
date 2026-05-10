@@ -1,6 +1,7 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
+import { useI18n } from '../i18n.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SessionDeleteResponse, SessionListItem, SessionListResponse } from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
@@ -35,6 +36,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
   // a second `d`/`D` to confirm deletion.  Any other key cancels the prompt.
   const [confirmDelete, setConfirmDelete] = useState<null | number>(null)
   const [deleting, setDeleting] = useState(false)
+  const { t: ti } = useI18n()
 
   const { stdout } = useStdout()
   const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
@@ -149,7 +151,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
     return (
       <Box flexDirection="column">
         <Text color={t.color.label}>error: {err}</Text>
-        <OverlayHint t={t}>Esc/q cancel</OverlayHint>
+        <OverlayHint t={t}>{ti('picker.cancel')}</OverlayHint>
       </Box>
     )
   }
@@ -158,7 +160,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
     return (
       <Box flexDirection="column">
         <Text color={t.color.muted}>no previous sessions</Text>
-        <OverlayHint t={t}>Esc/q cancel</OverlayHint>
+        <OverlayHint t={t}>{ti('picker.cancel')}</OverlayHint>
       </Box>
     )
   }
@@ -213,7 +215,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
       {deleting ? (
         <OverlayHint t={t}>deleting…</OverlayHint>
       ) : (
-        <OverlayHint t={t}>↑/↓ select · Enter resume · 1-9 quick · d delete · Esc/q cancel</OverlayHint>
+        <OverlayHint t={t}>{ti('picker.sessionHint')}</OverlayHint>
       )}
     </Box>
   )

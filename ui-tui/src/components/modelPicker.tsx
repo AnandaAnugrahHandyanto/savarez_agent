@@ -1,6 +1,7 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useMemo, useState } from 'react'
 
+import { useI18n } from '../i18n.js'
 import { providerDisplayNames } from '../domain/providers.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
@@ -17,6 +18,7 @@ const MAX_WIDTH = 90
 type Stage = 'provider' | 'key' | 'model' | 'disconnect'
 
 export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPickerProps) {
+  const { t: ti } = useI18n()
   const [providers, setProviders] = useState<ModelOptionProvider[]>([])
   const [currentModel, setCurrentModel] = useState('')
   const [err, setErr] = useState('')
@@ -274,7 +276,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
     return (
       <Box flexDirection="column">
         <Text color={t.color.label}>error: {err}</Text>
-        <OverlayHint t={t}>Esc/q cancel</OverlayHint>
+        <OverlayHint t={t}>{ti('picker.cancel')}</OverlayHint>
       </Box>
     )
   }
@@ -283,7 +285,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
     return (
       <Box flexDirection="column">
         <Text color={t.color.muted}>no providers available</Text>
-        <OverlayHint t={t}>Esc/q cancel</OverlayHint>
+        <OverlayHint t={t}>{ti('picker.cancel')}</OverlayHint>
       </Box>
     )
   }
@@ -354,7 +356,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         {keySaving ? (
           <Text color={t.color.muted} wrap="truncate-end">disconnecting…</Text>
         ) : (
-          <OverlayHint t={t}>y/Enter confirm · n/Esc cancel</OverlayHint>
+          <OverlayHint t={t}>{ti('picker.confirmHint')}</OverlayHint>
         )}
       </Box>
     )
@@ -427,7 +429,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         <Text color={t.color.muted} wrap="truncate-end">
           persist: {persistGlobal ? 'global' : 'session'} · g toggle
         </Text>
-        <OverlayHint t={t}>↑/↓ select · Enter choose · d disconnect · Esc/q cancel</OverlayHint>
+        <OverlayHint t={t}>{ti('picker.selectHint')}</OverlayHint>
       </Box>
     )
   }

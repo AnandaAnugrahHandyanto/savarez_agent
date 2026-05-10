@@ -1005,11 +1005,11 @@ export const ToolTrail = memo(function ToolTrail({
             <Text color={t.color.accent}>{openThinking ? '▾ ' : '▸ '}</Text>
             {thinkingLive ? (
               <Text bold color={t.color.text}>
-                Thinking
+                {ti('section.thinking')}
               </Text>
             ) : (
               <Text color={t.color.muted} dim>
-                Thinking
+                {ti('section.thinking')}
               </Text>
             )}
             {thinkingTokensLabel ? (
