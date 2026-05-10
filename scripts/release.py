@@ -62,6 +62,7 @@ AUTHOR_MAP = {
     "abdielv@proton.me": "AJV20",
     "mason@growagainorchids.com": "masonjames",
     "ytchen0719@gmail.com": "liquidchen",
+    "mehmet.kar@std.yildiz.edu.tr": "mehmetkr-31",
     "am@studio1.tailb672fe.ts.net": "subtract0",
     "axmaiqiu@gmail.com": "qWaitCrypto",
     "44045911+kidonng@users.noreply.github.com": "kidonng",
