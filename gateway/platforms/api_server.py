@@ -63,6 +63,16 @@ MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 
 
+def _sse_queue_poll_timeout() -> float:
+    """Return queue poll timeout bounded by the configured SSE keepalive.
+
+    Tests may lower ``CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS`` below the
+    production 30s value. Polling must then wake at least that often so both
+    Chat Completions and Responses streams can emit keepalives on time.
+    """
+    return min(0.5, max(0.01, CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS))
+
+
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
     """Parse a listen port without letting malformed env/config values crash startup."""
     try:
@@ -1357,7 +1367,8 @@ class APIServerAdapter(BasePlatformAdapter):
             loop = asyncio.get_running_loop()
             while True:
                 try:
-                    delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
+                    timeout = _sse_queue_poll_timeout()
+                    delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=timeout))
                 except _q.Empty:
                     if agent_task.done():
                         # Drain any remaining items
@@ -1806,7 +1817,8 @@ class APIServerAdapter(BasePlatformAdapter):
             loop = asyncio.get_running_loop()
             while True:
                 try:
-                    item = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
+                    timeout = _sse_queue_poll_timeout()
+                    item = await loop.run_in_executor(None, lambda: stream_q.get(timeout=timeout))
                 except _q.Empty:
                     if agent_task.done():
                         # Drain remaining

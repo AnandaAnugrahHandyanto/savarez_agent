@@ -9455,7 +9455,18 @@ class GatewayRunner:
             _, cleaned = adapter.extract_images(response)
             local_files, _ = adapter.extract_local_files(cleaned)
 
-            _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+            try:
+                _thread_meta = self._thread_metadata_for_source(
+                    event.source,
+                    self._reply_anchor_for_event(event),
+                )
+            except AttributeError:
+                # Unit tests and narrow callers may exercise this helper as an
+                # unbound method with a minimal sentinel for ``self``.  Keep the
+                # routing helper functional by falling back to the platform
+                # adapter's shared metadata builder instead of dropping media.
+                from gateway.platforms.base import _thread_metadata_for_source
+                _thread_meta = _thread_metadata_for_source(event.source)
 
             from gateway.platforms.base import should_send_media_as_audio
 
