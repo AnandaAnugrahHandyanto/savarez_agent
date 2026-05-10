@@ -491,6 +491,9 @@ class SessionEntry:
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
 
+    # Optional behavioral overlay set by /9010, /transparency, cleared by /normal.
+    interaction_mode: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -518,6 +521,7 @@ class SessionEntry:
                 else None
             ),
             "is_fresh_reset": self.is_fresh_reset,
+            "interaction_mode": self.interaction_mode,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -544,6 +548,12 @@ class SessionEntry:
             except (TypeError, ValueError):
                 last_resume_marked_at = None
 
+        try:
+            from hermes_cli.interaction_modes import normalize_mode
+            interaction_mode = normalize_mode(data.get("interaction_mode"))
+        except Exception:
+            interaction_mode = None
+
         return cls(
             session_key=data["session_key"],
             session_id=data["session_id"],
@@ -567,6 +577,7 @@ class SessionEntry:
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
             is_fresh_reset=data.get("is_fresh_reset", False),
+            interaction_mode=interaction_mode,
         )
 
 
@@ -963,6 +974,18 @@ class SessionStore:
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
                 self._save()
+
+    def set_interaction_mode(self, session_key: str, mode: Optional[str]) -> bool:
+        """Set or clear a session's interaction mode."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            if session_key in self._entries:
+                entry = self._entries[session_key]
+                entry.interaction_mode = mode
+                entry.updated_at = _now()
+                self._save()
+                return True
+        return False
 
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.
