@@ -4009,7 +4009,10 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_to_text = None
         if message.reply_to_message:
             reply_to_id = str(message.reply_to_message.message_id)
-            reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
+            if message.quote and message.quote.text:
+                reply_to_text = message.quote.text
+            else:
+                reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
 
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt
