@@ -125,6 +125,21 @@ class TestWebServerEndpoints:
         assert "hermes_home" in data
         assert "active_sessions" in data
 
+    def test_plugin_api_routes_require_session_token(self):
+        from hermes_cli.web_server import _SESSION_HEADER_NAME
+
+        self.client.headers.pop(_SESSION_HEADER_NAME, None)
+
+        resp = self.client.get("/api/plugins/kanban/boards")
+
+        assert resp.status_code == 401
+
+    def test_plugin_api_routes_accept_valid_session_token(self):
+        resp = self.client.get("/api/plugins/kanban/boards")
+
+        assert resp.status_code == 200
+        assert "boards" in resp.json()
+
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
         import hermes_cli.web_server as web_server
