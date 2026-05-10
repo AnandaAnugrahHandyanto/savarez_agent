@@ -38,8 +38,8 @@ Gordon wants the wiki maintained **passively** — he reads it in a browser at `
 
 **To update Gordon's wiki:**
 1. Edit/add static HTML in `/opt/data/hermes-pages/wiki/`
-2. Keep parent index/hub pages linked manually
-3. For deep dives, create semantic child pages under the parent hub (e.g. `/wiki/business-opportunities/acquire-local-service-business`) and link parent ↔ child
+2. Keep parent index/hub pages linked manually; root wiki index should list top-level hubs only, not every child page
+3. For deep dives, create semantic child pages under the parent hub (e.g. `/wiki/business-opportunities/acquire-local-service-business`) and link parent ↔ child from the relevant parent item/section
 4. Copy wiki into deploy mirror: `rm -rf /opt/data/hermes-pages-files/wiki && cp -a /opt/data/hermes-pages/wiki /opt/data/hermes-pages-files/wiki`
 5. Run the direct Cloudflare Pages deploy command above — project name is `hermes-pages`, not the domain suffix `hermes-pages-d55`
 6. Verify with browser-like curl: `curl -L -A 'Mozilla/5.0' -H 'Cookie: wiki_auth=GW2026' <live-url>` because Python `urllib` can get Cloudflare 403s
@@ -331,8 +331,10 @@ When the user provides a source (URL, file, paste), integrate it into the wiki:
      claim is well-supported across multiple sources.
 
 ⑤ **Update navigation:**
-   - Add new pages to `index.md` under the correct section, alphabetically
-   - Update the "Total pages" count and "Last updated" date in index header
+   - First classify the page as **root-level hub**, **child/deep-dive**, or **leaf/source note**.
+   - Add only root-level hubs to the root `index.md`.
+   - For child/deep-dive pages, do **not** add them as peers in the root index; link them from the relevant parent hub section/item and add a breadcrumb/back-link from child to parent.
+   - Update the "Total pages" count and "Last updated" date in index header when using markdown index files.
    - Append to `log.md`: `## [YYYY-MM-DD] ingest | Source Title`
    - List every file created or updated in the log entry
 
