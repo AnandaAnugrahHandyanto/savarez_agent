@@ -3109,6 +3109,13 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
                  This prevents systemd restart loops when the old process
                  hasn't fully exited yet.
     """
+    # When running under systemd, ignore --replace to avoid conflicts with
+    # systemd's own process management (Restart=always, ExecStopPost) that
+    # can create an infinite restart loop (#23272).
+    if replace and (os.environ.get("INVOCATION_ID") or os.environ.get("SYSTEMD_EXEC_PID")):
+        logger.info("Running under systemd; ignoring --replace to avoid restart loops.")
+        replace = False
+
     _guard_official_docker_root_gateway()
     sys.path.insert(0, str(PROJECT_ROOT))
 
