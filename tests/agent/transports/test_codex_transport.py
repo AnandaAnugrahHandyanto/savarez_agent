@@ -218,3 +218,73 @@ class TestCodexNormalizeResponse:
         tc = nr.tool_calls[0]
         assert tc.name == "terminal"
         assert '"command"' in tc.arguments
+
+
+class TestCodexIncludeParameterGating:
+    """Tests for gating include parameter per backend type.
+
+    Issue #23450: OpenAI Chat Completions API does not support include
+    parameter, causing HTTP 400 errors when Hermes sends it.
+    """
+
+    def test_openai_chat_completions_no_include_when_enabled(self, transport):
+        """Standard OpenAI API should not receive include parameter even when reasoning is enabled."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o",
+            messages=messages,
+            tools=[],
+            reasoning_config={"effort": "high", "enabled": True},
+            # Simulates standard OpenAI Chat Completions (not xAI, not GitHub)
+            is_github_responses=False,
+            is_xai_responses=False,
+        )
+        # Standard OpenAI API does not support include parameter
+        assert "include" not in kw
+        # But reasoning parameter is still sent (OpenAI supports it)
+        assert kw.get("reasoning", {}).get("effort") == "high"
+
+    def test_xai_include_with_reasoning_enabled(self, transport):
+        """xAI backend should receive include parameter when reasoning is enabled (pre-existing behavior)."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="grok-4.3",
+            messages=messages,
+            tools=[],
+            reasoning_config={"effort": "high", "enabled": True},
+            is_xai_responses=True,
+        )
+        # xAI supports include parameter (will be gated by model in #23106)
+        assert kw.get("include") == ["reasoning.encrypted_content"]
+
+    def test_github_responses_no_include_without_extra(self, transport):
+        """GitHub Responses should not receive include parameter without github_reasoning_extra."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4.1",
+            messages=messages,
+            tools=[],
+            reasoning_config={"effort": "high", "enabled": True},
+            is_github_responses=True,
+            # No github_reasoning_extra provided
+        )
+        assert "include" not in kw
+        assert "reasoning" not in kw
+
+    def test_github_responses_reasoning_without_include(self, transport):
+        """GitHub Responses can use reasoning parameter but not include."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4.1",
+            messages=messages,
+            tools=[],
+            reasoning_config={"effort": "high", "enabled": True},
+            is_github_responses=True,
+            github_reasoning_extra={"max_completion_tokens": 4096},
+        )
+        # GitHub Responses uses reasoning parameter from github_reasoning_extra
+        assert "reasoning" in kw
+        assert kw["reasoning"] == {"max_completion_tokens": 4096}
+        # But does not use include parameter
+        assert "include" not in kw
+

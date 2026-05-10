@@ -111,8 +111,9 @@ class ResponsesApiTransport(ProviderTransport):
                 if github_reasoning is not None:
                     kwargs["reasoning"] = github_reasoning
             else:
+                # General backends (non-xAI, non-GitHub Responses) don't support
+                # the include parameter, but may support reasoning
                 kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
-                kwargs["include"] = ["reasoning.encrypted_content"]
         elif not is_github_responses and not is_xai_responses:
             kwargs["include"] = []
 
