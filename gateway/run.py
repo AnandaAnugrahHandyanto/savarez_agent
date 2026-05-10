@@ -8491,73 +8491,93 @@ class GatewayRunner:
                 out.append(item)
             return out
 
-        def _run() -> str:
+        def _run() -> tuple[str, list[dict] | None]:
             try:
                 if action in ("list", "ls"):
                     status = _get_opt("--status", "candidate") or "candidate"
                     if status not in {"candidate", "promoted", "discarded", "all"}:
-                        return "⚠️ --status must be one of: candidate, promoted, discarded, all"
+                        return "⚠️ --status must be one of: candidate, promoted, discarded, all", None
                     try:
                         limit = int(_get_opt("--limit", "10") or "10")
                     except ValueError:
-                        return "⚠️ --limit must be an integer"
+                        return "⚠️ --limit must be an integer", None
                     limit = max(1, min(limit, 25))
                     verbose = "-v" in args or "--verbose" in args
                     rows = list_candidates(status=status, limit=limit)
                     output = format_candidate_digest(rows, status=status, limit=limit, verbose=verbose)
                     if len(output) > 3800:
                         output = output[:3800] + "\n… (truncated; use `/qa list --limit 25` or terminal `hermes qa list` for full output)"
-                    return output
+                    review_rows = rows if status == "candidate" and rows else None
+                    return output, review_rows
 
                 if action == "show":
                     pos = _positional()
                     if not pos:
-                        return "Usage: `/qa show <id>`"
+                        return "Usage: `/qa show <id>`", None
                     _, row, _ = _find_candidate(pos[0])
                     output = json.dumps(row, ensure_ascii=False, indent=2)
                     if len(output) > 3800:
                         output = output[:3800] + "\n… (truncated; use terminal `hermes qa show <id>` for full JSON)"
-                    return f"```json\n{output}\n```"
+                    return f"```json\n{output}\n```", None
 
                 if action == "promote":
                     pos = _positional()
                     target = _get_opt("--to")
                     if not pos or not target:
-                        return "Usage: `/qa promote <id> --to <target>`"
+                        return "Usage: `/qa promote <id> --to <target>`", None
                     allowed = {"cortex", "wiki", "kanban", "cortex_memory", "cortex_todo", "brain_sync_wiki_candidate", "kanban_candidate"}
                     if target not in allowed:
-                        return "⚠️ --to must be one of: " + ", ".join(sorted(allowed))
+                        return "⚠️ --to must be one of: " + ", ".join(sorted(allowed)), None
                     row = promote_candidate(pos[0], target=target, actor=actor)
-                    return f"✅ Promoted `{_candidate_id(row)}` -> `{target}`\nQueued as `pending_execution`; no downstream mutation was performed."
+                    return f"✅ Promoted `{_candidate_id(row)}` -> `{target}`\nQueued as `pending_execution`; no downstream mutation was performed.", None
 
                 if action == "discard":
                     pos = _positional()
                     if not pos:
-                        return "Usage: `/qa discard <id> [--reason text]`"
+                        return "Usage: `/qa discard <id> [--reason text]`", None
                     reason = _get_opt("--reason", "") or ""
                     row = discard_candidate(pos[0], reason=reason, actor=actor)
                     suffix = f" reason={reason!r}" if reason else ""
-                    return f"🗑️ Discarded `{_candidate_id(row)}`{suffix}"
+                    return f"🗑️ Discarded `{_candidate_id(row)}`{suffix}", None
 
                 if action == "prune-active":
                     try:
                         older = int(_get_opt("--older-than-days", "14") or "14")
                     except ValueError:
-                        return "⚠️ --older-than-days must be an integer"
+                        return "⚠️ --older-than-days must be an integer", None
                     drop_undated = "--drop-undated" in args
                     result = prune_active_actions(older_than_days=older, drop_undated=drop_undated)
-                    return "```json\n" + json.dumps(result, ensure_ascii=False) + "\n```"
+                    return "```json\n" + json.dumps(result, ensure_ascii=False) + "\n```", None
 
-                return usage
+                return usage, None
             except SystemExit as exc:
-                return f"⚠️ {exc}"
+                return f"⚠️ {exc}", None
             except ValueError as exc:
-                return f"⚠️ {exc}"
+                return f"⚠️ {exc}", None
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning("/qa command failed: %s", exc)
-                return f"⚠️ qa error: {exc}"
+                return f"⚠️ qa error: {exc}", None
 
-        return await asyncio.to_thread(_run)
+        output, review_rows = await asyncio.to_thread(_run)
+        if review_rows:
+            try:
+                adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+                markup_builder = getattr(adapter, "_quick_action_review_keyboard", None) if adapter else None
+                if adapter and callable(markup_builder) and source.chat_id:
+                    markup = markup_builder(review_rows)
+                    if markup is not None:
+                        metadata = {"thread_id": source.thread_id} if source.thread_id else {}
+                        metadata["telegram_reply_markup"] = markup
+                        await adapter.send(
+                            chat_id=source.chat_id,
+                            content=output,
+                            reply_to=event.message_id,
+                            metadata=metadata,
+                        )
+                        return None
+            except Exception as exc:
+                logger.warning("/qa Telegram review buttons failed: %s", exc)
+        return output
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""

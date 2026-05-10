@@ -149,6 +149,26 @@ class TestTelegramQuickActionsSend:
         assert adapter._quick_action_state == {}
 
     @pytest.mark.asyncio
+    async def test_send_honors_explicit_telegram_reply_markup_metadata(self, tmp_path):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 891
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+        custom_markup = MagicMock(name="custom_markup")
+
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            result = await adapter.send(
+                chat_id="12345",
+                content="review candidates",
+                metadata={"thread_id": "3220", "telegram_reply_markup": custom_markup},
+            )
+
+        assert result.success is True
+        kwargs = adapter._bot.send_message.call_args.kwargs
+        assert kwargs["reply_markup"] is custom_markup
+        assert adapter._quick_action_state == {}
+
+    @pytest.mark.asyncio
     async def test_background_assistant_reply_injects_quick_action_metadata_for_telegram(self, tmp_path):
         adapter = _make_adapter()
         mock_msg = MagicMock()
@@ -304,6 +324,96 @@ class TestTelegramQuickActionsCallback:
         assert routing[0]["todo"]["project"] == "hermes"
         assert routing[0]["todo"]["category"] == "dev"
         assert routing[0]["todo"]["source_type"] == "manual"
+
+    @pytest.mark.asyncio
+    async def test_review_callback_promotes_candidate_by_line_number(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        qa_dir = tmp_path / "telegram_quick_actions"
+        qa_dir.mkdir(parents=True)
+        candidate = {
+            "token": "tok123",
+            "action": "save",
+            "status": "candidate",
+            "title": "Candidate title",
+            "content": "Useful content",
+            "recommended_targets": ["cortex_memory"],
+            "captured_at": "2026-05-09T00:00:00+00:00",
+        }
+        (qa_dir / "routing_candidates.jsonl").write_text(json.dumps(candidate) + "\n", encoding="utf-8")
+
+        adapter = _make_adapter()
+        query = MagicMock()
+        query.data = "qcp:1:m"
+        query.from_user.id = 111
+        query.from_user.first_name = "Joohyun"
+        query.message.chat_id = 12345
+        query.message.message_thread_id = 3220
+        query.message.chat.type = "supergroup"
+        query.answer = AsyncMock()
+        query.edit_message_reply_markup = AsyncMock()
+        update = MagicMock(callback_query=query)
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": ""}):
+            await adapter._handle_callback_query(update, MagicMock())
+
+        query.answer.assert_called_once()
+        assert "Promoted tok123" in query.answer.call_args.kwargs["text"]
+        query.edit_message_reply_markup.assert_called_once_with(reply_markup=None)
+        adapter._bot.send_message.assert_called_once()
+        rows = [json.loads(line) for line in (qa_dir / "routing_candidates.jsonl").read_text().splitlines()]
+        assert rows[0]["status"] == "promoted"
+        assert rows[0]["promoted_to"] == "cortex_memory"
+        promotions = [json.loads(line) for line in (qa_dir / "promotions.jsonl").read_text().splitlines()]
+        assert promotions[0]["candidate_id"] == "tok123"
+        assert promotions[0]["status"] == "pending_execution"
+
+    @pytest.mark.asyncio
+    async def test_review_callback_promotes_candidate_from_inline_button(self, tmp_path):
+        adapter = _make_adapter()
+        qa_dir = tmp_path / "telegram_quick_actions"
+        qa_dir.mkdir(parents=True, exist_ok=True)
+        (qa_dir / "routing_candidates.jsonl").write_text(
+            json.dumps(
+                {
+                    "token": "tok123",
+                    "action": "todo",
+                    "status": "candidate",
+                    "title": "Candidate title",
+                    "recommended_targets": ["cortex_todo", "kanban_candidate"],
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        query = MagicMock()
+        query.data = "qcp:1:t"
+        query.from_user.id = 111
+        query.from_user.first_name = "Joohyun"
+        query.message.chat_id = 12345
+        query.message.message_thread_id = 3220
+        query.message.chat.type = "supergroup"
+        query.answer = AsyncMock()
+        query.edit_message_reply_markup = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "TELEGRAM_ALLOWED_USERS": ""}):
+                await adapter._handle_callback_query(update, MagicMock())
+
+        query.answer.assert_called_once_with(text="✅ Promoted tok123 → cortex_todo")
+        query.edit_message_reply_markup.assert_called_once_with(reply_markup=None)
+        adapter._bot.send_message.assert_called_once()
+        rows = [json.loads(line) for line in (qa_dir / "routing_candidates.jsonl").read_text().splitlines()]
+        assert rows[0]["status"] == "promoted"
+        assert rows[0]["promoted_to"] == "cortex_todo"
+        assert rows[0]["promoted_by"] == "telegram:Joohyun"
+        promotions = [json.loads(line) for line in (qa_dir / "promotions.jsonl").read_text().splitlines()]
+        assert promotions[0]["candidate_id"] == "tok123"
+        assert promotions[0]["target"] == "cortex_todo"
 
     @pytest.mark.asyncio
     async def test_callback_rejects_unauthorized_user(self, tmp_path):

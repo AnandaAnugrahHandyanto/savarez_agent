@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
@@ -32,12 +32,20 @@ def _write_candidate(tmp_path, **overrides):
 
 
 def _runner_and_event(args: str):
+    from gateway.config import Platform
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     event = MagicMock()
     event.get_command_args.return_value = args
-    event.source = MagicMock(user_name="Joohyun", user_id="u123")
+    event.message_id = "msg123"
+    event.source = MagicMock(
+        platform=Platform.TELEGRAM,
+        user_name="Joohyun",
+        user_id="u123",
+        chat_id="12345",
+        thread_id="3220",
+    )
     return runner, event
 
 
@@ -54,6 +62,32 @@ async def test_qa_list_shows_candidates(monkeypatch, tmp_path):
     assert "Candidate title" in output
     assert "/qa promote tok123 --to cortex_memory" in output
     assert "id\tstatus\taction" not in output
+
+
+@pytest.mark.asyncio
+async def test_qa_list_sends_telegram_inline_review_buttons_when_adapter_available(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_candidate(tmp_path, token="tok123", title="Candidate title")
+    runner, event = _runner_and_event("list --limit 5")
+    adapter = MagicMock()
+    markup = object()
+    adapter._quick_action_review_keyboard.return_value = markup
+    adapter.send = AsyncMock()
+    runner.adapters = {event.source.platform: adapter}
+
+    output = await runner._handle_qa_command(event)
+
+    assert output is None
+    adapter._quick_action_review_keyboard.assert_called_once()
+    rows = adapter._quick_action_review_keyboard.call_args.args[0]
+    assert rows[0]["_line_no"] == 1
+    adapter.send.assert_awaited_once_with(
+        chat_id="12345",
+        content=ANY,
+        reply_to="msg123",
+        metadata={"thread_id": "3220", "telegram_reply_markup": markup},
+    )
+    assert "Quick Actions review" in adapter.send.call_args.kwargs["content"]
 
 
 @pytest.mark.asyncio

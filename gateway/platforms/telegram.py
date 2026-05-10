@@ -1752,7 +1752,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 effective_thread_id = thread_kwargs.get("message_thread_id")
                 quick_action_token = ""
                 quick_action_markup = None
-                if self._should_attach_quick_actions(metadata, i, len(chunks)):
+                metadata_reply_markup = None
+                if isinstance(metadata, dict):
+                    metadata_reply_markup = metadata.get("telegram_reply_markup")
+                if metadata_reply_markup is not None and i == len(chunks) - 1:
+                    quick_action_markup = metadata_reply_markup
+                elif self._should_attach_quick_actions(metadata, i, len(chunks)):
                     quick_action_token = uuid.uuid4().hex[:10]
                     quick_action_markup = self._quick_action_keyboard(quick_action_token)
 
@@ -2541,6 +2546,49 @@ class TelegramAdapter(BasePlatformAdapter):
             ],
         ])
 
+    @staticmethod
+    def _quick_action_review_keyboard(rows: list[Dict[str, Any]]):
+        """Build one-tap Promote/Discard controls for ``/qa list`` output.
+
+        Callback payloads use the JSONL line number rather than the candidate
+        title/id so they stay well under Telegram's 64-byte callback_data cap
+        and remain resolvable after a gateway restart.
+        """
+        target_codes = {
+            "cortex_memory": "m",
+            "cortex_todo": "t",
+            "brain_sync_wiki_candidate": "w",
+            "kanban_candidate": "k",
+            "cortex": "c",
+            "wiki": "W",
+            "kanban": "K",
+        }
+        target_labels = {
+            "cortex_memory": "memory",
+            "cortex_todo": "todo",
+            "brain_sync_wiki_candidate": "wiki",
+            "kanban_candidate": "kanban",
+            "cortex": "cortex",
+            "wiki": "wiki",
+            "kanban": "kanban",
+        }
+        buttons = []
+        for idx, row in enumerate(rows, start=1):
+            if str(row.get("status") or "candidate") != "candidate":
+                continue
+            line_no = str(row.get("_line_no") or row.get("token") or row.get("id") or "").strip()
+            if not line_no:
+                continue
+            targets = [str(t) for t in (row.get("recommended_targets") or []) if t]
+            target = targets[0] if targets else "cortex_memory"
+            code = target_codes.get(target, "m")
+            label = target_labels.get(target, target)
+            buttons.append([
+                InlineKeyboardButton(f"⬆️ {idx} → {label}", callback_data=f"qcp:{line_no}:{code}"),
+                InlineKeyboardButton(f"✕ {idx}", callback_data=f"qcd:{line_no}"),
+            ])
+        return InlineKeyboardMarkup(buttons) if buttons else None
+
     def _build_quick_action_payload(self, *, token: str, chat_id: str, content: str, metadata: Optional[Dict[str, Any]], message_id: Optional[str] = None) -> Dict[str, Any]:
         """Build the persisted payload for a sent assistant-response Quick Action."""
         metadata = metadata or {}
@@ -2562,6 +2610,97 @@ class TelegramAdapter(BasePlatformAdapter):
         if not isinstance(metadata, dict):
             return False
         return isinstance(metadata.get("quick_actions"), dict)
+
+    async def _handle_quick_action_review_callback(self, query: Any, data: str) -> None:
+        """Handle one-tap Promote/Discard buttons rendered by ``/qa list``."""
+        query_message = getattr(query, "message", None)
+        query_chat_id = getattr(query_message, "chat_id", None)
+        query_chat = getattr(query_message, "chat", None)
+        query_chat_type = getattr(query_chat, "type", None)
+        query_thread_id = getattr(query_message, "message_thread_id", None)
+        query_user_name = getattr(query.from_user, "first_name", None)
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ You are not authorized to review quick actions.")
+            return
+
+        target_by_code = {
+            "m": "cortex_memory",
+            "t": "cortex_todo",
+            "w": "brain_sync_wiki_candidate",
+            "k": "kanban_candidate",
+            "c": "cortex",
+            "W": "wiki",
+            "K": "kanban",
+        }
+        user_display = getattr(query.from_user, "first_name", "User")
+        actor = f"telegram:{user_display or caller_id or 'unknown'}"
+
+        try:
+            if data.startswith("qcp:"):
+                parts = data.split(":", 2)
+                if len(parts) != 3:
+                    await query.answer(text="Invalid promote action.")
+                    return
+                _, identifier, code = parts
+                target = target_by_code.get(code)
+                if not target:
+                    await query.answer(text="Unknown promote target.")
+                    return
+                from hermes_cli.quick_actions import _candidate_id, promote_candidate
+
+                row = await asyncio.to_thread(
+                    promote_candidate,
+                    identifier,
+                    target=target,
+                    actor=actor,
+                )
+                cid = _candidate_id(row)
+                await query.answer(text=f"✅ Promoted {cid} → {target}")
+                resolved = f"✅ Promoted `{cid}` → `{target}` by {user_display}\nQueued as `pending_execution`; no downstream mutation was performed."
+            else:
+                parts = data.split(":", 1)
+                if len(parts) != 2:
+                    await query.answer(text="Invalid discard action.")
+                    return
+                _, identifier = parts
+                from hermes_cli.quick_actions import _candidate_id, discard_candidate
+
+                row = await asyncio.to_thread(
+                    discard_candidate,
+                    identifier,
+                    reason="telegram_review_button",
+                    actor=actor,
+                )
+                cid = _candidate_id(row)
+                await query.answer(text=f"🗑️ Discarded {cid}")
+                resolved = f"🗑️ Discarded `{cid}` by {user_display}"
+        except Exception as exc:
+            logger.warning("[%s] Quick Actions review callback failed: %s", self.name, exc)
+            await query.answer(text=f"⚠️ Quick Actions review failed: {exc}")
+            return
+
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        try:
+            if query_message:
+                await self._bot.send_message(
+                    chat_id=int(query_chat_id),
+                    text=resolved,
+                    parse_mode=ParseMode.MARKDOWN,
+                    message_thread_id=self._message_thread_id_for_send(query_thread_id),
+                    **self._link_preview_kwargs(),
+                )
+        except Exception:
+            pass
 
     async def _handle_quick_action_callback(self, query: Any, data: str) -> None:
         """Handle one-tap Telegram Quick Actions for a prior assistant reply."""
@@ -3572,6 +3711,11 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Quick Actions review callbacks from /qa list (qcp:<line>:<target>, qcd:<line>) ---
+        if data.startswith(("qcp:", "qcd:")):
+            await self._handle_quick_action_review_callback(query, data)
+            return
 
         # --- Quick Action callbacks (qa:token:action) ---
         if data.startswith("qa:"):
