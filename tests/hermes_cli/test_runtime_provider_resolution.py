@@ -1364,6 +1364,25 @@ def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch
     assert resolved["api_mode"] == "anthropic_messages"
 
 
+def test_kimi_coding_anthropic_mode_strips_trailing_v1(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "kimi-coding")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda _provider: {
+            "api_key": "test-kimi-key",
+            "base_url": "https://api.kimi.com/coding/v1",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="kimi-coding")
+
+    assert resolved["provider"] == "kimi-coding"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://api.kimi.com/coding"
+
+
 def test_named_custom_provider_anthropic_api_mode(monkeypatch):
     """Custom providers should accept api_mode: anthropic_messages."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-anthropic-proxy")
