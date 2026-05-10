@@ -1078,6 +1078,41 @@ def get_auth_provider_display_name(provider_id: str) -> str:
     return SERVICE_PROVIDER_NAMES.get(normalized, provider_id)
 
 
+_STATELESS_GLOBAL_FALLBACK_PROVIDERS = {"openai-codex", "nous"}
+
+
+def _profile_pool_should_defer_to_global(
+    provider_id: str,
+    profile_entries: Any,
+    auth_store: Dict[str, Any],
+    global_pool: Dict[str, Any],
+) -> bool:
+    """Return True when a profile-local OAuth pool is only a stale shadow.
+
+    OAuth singleton providers such as openai-codex and nous need matching
+    providers.<id> state in the same auth store so refresh/resync paths can
+    work. If a profile has only credential_pool.<id>[] but no provider state,
+    those entries can outlive a global re-auth and incorrectly shadow the fresh
+    global pool. In that case, prefer the global pool instead of treating the
+    profile slice as authoritative.
+    """
+    normalized = (provider_id or "").strip().lower()
+    if normalized not in _STATELESS_GLOBAL_FALLBACK_PROVIDERS:
+        return False
+    if not isinstance(profile_entries, list) or not profile_entries:
+        return False
+    global_entries = global_pool.get(normalized)
+    if not isinstance(global_entries, list) or not global_entries:
+        return False
+    state = _load_provider_state(auth_store, normalized)
+    if isinstance(state, dict) and state:
+        return False
+    return all(
+        isinstance(entry, dict) and str(entry.get("source") or "") == "device_code"
+        for entry in profile_entries
+    )
+
+
 def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Return the persisted credential pool, or one provider slice.
 
@@ -1113,15 +1148,21 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
             # Per-provider shadowing: profile wins whenever it has ANY entries.
             existing = merged.get(gp_key)
             if isinstance(existing, list) and existing:
+                if _profile_pool_should_defer_to_global(gp_key, existing, auth_store, global_pool):
+                    merged[gp_key] = list(gp_entries)
                 continue
             merged[gp_key] = list(gp_entries)
         return merged
 
-    provider_entries = pool.get(provider_id)
+    normalized_provider = (provider_id or "").strip().lower()
+    provider_entries = pool.get(normalized_provider)
     if isinstance(provider_entries, list) and provider_entries:
+        if _profile_pool_should_defer_to_global(normalized_provider, provider_entries, auth_store, global_pool):
+            global_entries = global_pool.get(normalized_provider)
+            return list(global_entries) if isinstance(global_entries, list) else []
         return list(provider_entries)
     # Profile has no entries for this provider — fall back to global.
-    global_entries = global_pool.get(provider_id)
+    global_entries = global_pool.get(normalized_provider)
     return list(global_entries) if isinstance(global_entries, list) else []
 
 
