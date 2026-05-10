@@ -4470,6 +4470,49 @@ def _get_webhook_secret_by_id(conn: sqlite3.Connection, webhook_id: int) -> Opti
 VALID_WEBHOOK_EVENTS = {"done", "blocked", "crashed", "timed_out", "gave_up"}
 
 
+def _is_safe_webhook_url(url: str) -> tuple[bool, str]:
+    """Validate that ``url`` is a safe webhook target.
+
+    Returns ``(True, "")`` when the URL is acceptable, otherwise
+    ``(False, reason)``.  Blocks non-HTTP(S) schemes, localhost,
+    loopback, link-local, and private IP addresses.
+
+    Local URLs are permitted when the environment variable
+    ``HERMES_KANBAN_WEBHOOK_ALLOW_LOCAL`` is set (used in tests).
+    """
+    import ipaddress
+    import os
+    from urllib.parse import urlparse
+
+    allow_local = os.getenv("HERMES_KANBAN_WEBHOOK_ALLOW_LOCAL")
+
+    try:
+        parsed = urlparse(url)
+    except Exception as exc:
+        return False, f"Invalid URL: {exc}"
+
+    if parsed.scheme not in ("http", "https"):
+        return False, "URL scheme must be http or https"
+
+    hostname = parsed.hostname
+    if not hostname:
+        return False, "URL must have a valid hostname"
+
+    if not allow_local:
+        hostname_lo = hostname.lower()
+        if hostname_lo in ("localhost", "127.0.0.1", "::1"):
+            return False, "localhost URLs are not allowed"
+
+        try:
+            ip = ipaddress.ip_address(hostname_lo)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
+                return False, "Private/link-local IP addresses are not allowed"
+        except ValueError:
+            pass  # hostname is not an IP, that's fine
+
+    return True, ""
+
+
 def add_webhook(
     conn: sqlite3.Connection,
     url: str,
@@ -4477,6 +4520,9 @@ def add_webhook(
     secret: Optional[str] = None,
 ) -> int:
     """Register a new webhook. Returns the webhook id."""
+    ok, reason = _is_safe_webhook_url(url)
+    if not ok:
+        raise ValueError(f"Invalid webhook URL: {reason}")
     now = int(time.time())
     if events is None:
         events = ["done", "blocked", "crashed", "timed_out"]

@@ -3,10 +3,17 @@
 Fired from kanban_db task-transition hooks after the DB transaction
 commits.  Each delivery runs in a daemon ``threading.Thread`` so the
 dispatcher / CLI never blocks on HTTP.
+
+Best-effort semantics: delivery is attempted in the background.
+Short-lived processes (e.g. CLI commands) register an ``atexit``
+handler that waits up to 5 seconds for in-flight deliveries before
+exiting, but there is no durable outbox — undelivered payloads are
+lost if the process exits early.
 """
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import hmac
 import json
@@ -20,6 +27,10 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 _KANBAN_WEBHOOK_LOG = logging.getLogger("kanban_webhooks")
+
+# Active webhook delivery threads — tracked so short-lived processes
+# can wait for them at exit.
+_WEBHOOK_THREADS: list[threading.Thread] = []
 
 
 def _build_signature(payload_bytes: bytes, secret: Optional[str]) -> str:
@@ -106,7 +117,26 @@ def _fire_webhooks_async(
                 logger.exception("Unhandled exception delivering webhook")
 
     t = threading.Thread(target=_deliver, daemon=True)
+    _WEBHOOK_THREADS.append(t)
     t.start()
+
+
+def _wait_for_pending_webhooks(timeout: float = 5.0) -> None:
+    """Join all active webhook delivery threads with a bounded wait.
+
+    Registered automatically via ``atexit`` so CLI commands and
+    short-lived worker processes don't drop in-flight notifications.
+    """
+    deadline = time.time() + timeout
+    for t in _WEBHOOK_THREADS[:]:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        if t.is_alive():
+            t.join(timeout=remaining)
+
+
+atexit.register(_wait_for_pending_webhooks)
 
 
 def build_payload(

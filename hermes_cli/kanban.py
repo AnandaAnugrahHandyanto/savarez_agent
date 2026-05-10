@@ -542,7 +542,9 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Comma-separated events to subscribe to (default: done,blocked,crashed,timed_out)",
     )
     wh_add.add_argument("--secret", default=None,
-                        help="Shared secret for HMAC-SHA256 signature")
+                        help="Shared secret for HMAC-SHA256 signature (prefer --secret-file)")
+    wh_add.add_argument("--secret-file", default=None,
+                        help="Path to a file containing the shared secret")
 
     wh_list = wh_sub.add_parser("list", help="List registered webhooks")
     wh_list.add_argument("--json", action="store_true")
@@ -1997,10 +1999,17 @@ def _cmd_webhook(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
-        with kb.connect() as conn:
-            wh_id = kb.add_webhook(
-                conn, url=args.url, events=events, secret=args.secret,
-            )
+        secret = args.secret
+        if args.secret_file:
+            secret = Path(args.secret_file).read_text().strip()
+        try:
+            with kb.connect() as conn:
+                wh_id = kb.add_webhook(
+                    conn, url=args.url, events=events, secret=secret,
+                )
+        except ValueError as exc:
+            print(f"kanban webhook add: {exc}", file=sys.stderr)
+            return 2
         print(f"Webhook {wh_id} registered for {', '.join(events)}")
         return 0
     if sub == "list":
