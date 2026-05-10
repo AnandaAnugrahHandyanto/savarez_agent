@@ -12,6 +12,7 @@ import json
 import hashlib
 import re
 import time
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -392,6 +393,238 @@ def _save_ledger(ledger: Dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def _preferences_path() -> Path:
+    return get_hermes_home() / "proactive" / "preferences.json"
+
+
+def _replay_evals_path() -> Path:
+    return get_hermes_home() / "proactive" / "replay_evals.jsonl"
+
+
+def _safe_metric_label(value: Any, fallback: str = "unknown") -> str:
+    text = str(value or fallback).strip().lower()
+    text = re.sub(r"[^a-z0-9_.:-]+", "_", text).strip("_")
+    return _clip(text or fallback, 80)
+
+
+def _default_preferences() -> Dict[str, Any]:
+    return {
+        "version": 1,
+        "updated_at": None,
+        "kind_weights": {},
+        "area_weights": {},
+        "mode_weights": {},
+        "guardrails": {
+            "allow_auto_code_edits": False,
+            "allow_auto_prompt_edits": False,
+            "allow_external_actions": False,
+            "export_raw_text": False,
+        },
+    }
+
+
+def load_proactive_preferences() -> Dict[str, Any]:
+    """Load profile-local adaptive proactive preferences.
+
+    This file is deliberately local/profile-scoped. It learns a user's nudge
+    preferences from button feedback without turning private text into global
+    training data.
+    """
+
+    path = _preferences_path()
+    prefs = _default_preferences()
+    if not path.exists():
+        return prefs
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("preferences root is not an object")
+    except Exception:
+        corrupt = path.with_suffix(f".corrupt-{int(time.time())}.json")
+        try:
+            path.replace(corrupt)
+        except Exception:
+            pass
+        return prefs
+    for key, value in data.items():
+        prefs[key] = value
+    for key in ("kind_weights", "area_weights", "mode_weights"):
+        if not isinstance(prefs.get(key), dict):
+            prefs[key] = {}
+    if not isinstance(prefs.get("guardrails"), dict):
+        prefs["guardrails"] = _default_preferences()["guardrails"]
+    else:
+        merged_guardrails = _default_preferences()["guardrails"]
+        merged_guardrails.update(prefs["guardrails"])
+        prefs["guardrails"] = merged_guardrails
+    prefs["version"] = 1
+    return prefs
+
+
+def _save_proactive_preferences(prefs: Dict[str, Any]) -> None:
+    path = _preferences_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    prefs = dict(prefs)
+    prefs["updated_at"] = datetime.fromtimestamp(time.time(), tz=timezone.utc).isoformat()
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(prefs, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _preference_entry(prefs: Dict[str, Any], namespace: str, key: Any) -> Dict[str, Any]:
+    store = prefs.setdefault(namespace, {})
+    safe_key = _safe_metric_label(key)
+    entry = store.setdefault(
+        safe_key,
+        {
+            "shown": 0,
+            "accepted": 0,
+            "more": 0,
+            "later": 0,
+            "not_useful": 0,
+            "muted": 0,
+            "score_adjustment": 0,
+            "cooldown_hours": DEFAULT_COOLDOWN_HOURS,
+        },
+    )
+    if not isinstance(entry, dict):
+        entry = {}
+        store[safe_key] = entry
+    entry.setdefault("shown", 0)
+    entry.setdefault("accepted", 0)
+    entry.setdefault("more", 0)
+    entry.setdefault("later", 0)
+    entry.setdefault("not_useful", 0)
+    entry.setdefault("muted", 0)
+    entry.setdefault("score_adjustment", 0)
+    entry.setdefault("cooldown_hours", DEFAULT_COOLDOWN_HOURS)
+    return entry
+
+
+def _feedback_delta(action: str) -> int:
+    return {
+        "do": 12,
+        "more": 4,
+        "later": -2,
+        "not": -14,
+        "dont": -18,
+    }.get(action, 0)
+
+
+def _clamp_int(value: Any, low: int, high: int) -> int:
+    try:
+        number = int(value)
+    except Exception:
+        number = 0
+    return max(low, min(high, number))
+
+
+def update_proactive_preferences_from_feedback(
+    nudge: Dict[str, Any],
+    action: str,
+    *,
+    now: float | None = None,
+) -> Dict[str, Any]:
+    """Update local adaptive weights from one feedback event."""
+
+    action = str(action or "").lower().strip()
+    if action not in {"do", "more", "later", "not", "dont"}:
+        return load_proactive_preferences()
+    now = time.time() if now is None else float(now)
+    signal = nudge.get("signal") or {}
+    prefs = load_proactive_preferences()
+    delta = _feedback_delta(action)
+    targets = (
+        ("kind_weights", signal.get("kind") or "unknown"),
+        ("area_weights", signal.get("area") or "unknown"),
+        ("mode_weights", signal.get("mode") or "unknown"),
+    )
+    for namespace, key in targets:
+        entry = _preference_entry(prefs, namespace, key)
+        entry["shown"] = int(entry.get("shown") or 0) + 1
+        if action == "do":
+            entry["accepted"] = int(entry.get("accepted") or 0) + 1
+            entry["cooldown_hours"] = max(12, int(entry.get("cooldown_hours") or DEFAULT_COOLDOWN_HOURS) - 12)
+        elif action == "more":
+            entry["more"] = int(entry.get("more") or 0) + 1
+        elif action == "later":
+            entry["later"] = int(entry.get("later") or 0) + 1
+            entry["cooldown_hours"] = min(336, int(entry.get("cooldown_hours") or DEFAULT_COOLDOWN_HOURS) + 12)
+        elif action == "not":
+            entry["not_useful"] = int(entry.get("not_useful") or 0) + 1
+            entry["cooldown_hours"] = min(336, int(entry.get("cooldown_hours") or DEFAULT_COOLDOWN_HOURS) + 24)
+        elif action == "dont":
+            entry["muted"] = int(entry.get("muted") or 0) + 1
+            entry["cooldown_hours"] = min(720, int(entry.get("cooldown_hours") or DEFAULT_COOLDOWN_HOURS) + 72)
+        entry["score_adjustment"] = _clamp_int(int(entry.get("score_adjustment") or 0) + delta, -40, 40)
+        entry["last_feedback"] = action
+        entry["last_feedback_at"] = now
+    _save_proactive_preferences(prefs)
+    return prefs
+
+
+def _preference_adjustment(prefs: Dict[str, Any], signal: Dict[str, Any]) -> int:
+    adjustment = 0
+    for namespace, key in (
+        ("kind_weights", signal.get("kind")),
+        ("area_weights", signal.get("area")),
+        ("mode_weights", signal.get("mode")),
+    ):
+        entry = (prefs.get(namespace) or {}).get(_safe_metric_label(key)) or {}
+        try:
+            adjustment += int(entry.get("score_adjustment") or 0)
+        except Exception:
+            pass
+    return _clamp_int(adjustment, -60, 60)
+
+
+def apply_adaptive_preferences(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply learned local preferences to signal scores without mutating input."""
+
+    adapted = json.loads(json.dumps(report or {}))
+    prefs = load_proactive_preferences()
+    ranked: List[tuple[int, Dict[str, Any]]] = []
+    for idx, signal in enumerate(adapted.get("signals") or []):
+        if not isinstance(signal, dict):
+            continue
+        base = _signal_score(signal)
+        adjustment = _preference_adjustment(prefs, signal)
+        item = dict(signal)
+        item["base_score"] = base
+        if adjustment:
+            item["adaptive_score_adjustment"] = adjustment
+        item["score"] = _clamp_int(base + adjustment, 0, 120)
+        ranked.append((idx, item))
+    ranked.sort(key=lambda pair: (-int(pair[1].get("score") or 0), pair[0]))
+    adapted["signals"] = [item for _idx, item in ranked]
+    adapted["adaptive_preferences"] = {
+        "version": prefs.get("version", 1),
+        "applied": True,
+    }
+    adapted["wakeAgent"] = bool(adapted.get("signals") or adapted.get("scan_errors"))
+    return adapted
+
+
+def _append_replay_eval(nudge: Dict[str, Any], action: str, *, now: float | None = None) -> None:
+    """Append a sanitized replay-eval example for future quality checks."""
+
+    now = time.time() if now is None else float(now)
+    signal = nudge.get("signal") or {}
+    row = {
+        "timestamp": now,
+        "kind": _safe_metric_label(signal.get("kind")),
+        "area": _safe_metric_label(signal.get("area")),
+        "mode": _safe_metric_label(signal.get("mode")),
+        "action": _safe_metric_label(action),
+        "outcome": "helpful" if action in {"do", "more"} else "negative" if action in {"not", "dont"} else "defer",
+        "score": _clamp_int(signal.get("score") or _signal_score(signal), 0, 120),
+    }
+    path = _replay_evals_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, sort_keys=True) + "\n")
+
+
 def _signal_fingerprint(signal: Dict[str, Any]) -> str:
     basis = "|".join(
         [
@@ -578,6 +811,13 @@ def handle_proactive_feedback(
     else:
         result = {"ok": False, "ack": "Unknown proactive action."}
 
+    if result.get("ok") and action in {"do", "more", "later", "not", "dont"}:
+        try:
+            update_proactive_preferences_from_feedback(nudge, action, now=now)
+            _append_replay_eval(nudge, action, now=now)
+        except Exception as exc:
+            result["learning_warning"] = _clip(exc, 180)
+
     _save_ledger(ledger)
     return result
 
@@ -615,6 +855,208 @@ def prepare_delivery_controls(
         return None
     nudge = record_proactive_nudge(job=job, message=message, scan_report=scan_report, now=now)
     return proactive_controls_for_nudge(nudge)
+
+
+def _feedback_events_with_nudges(ledger: Dict[str, Any]) -> List[tuple[Dict[str, Any], Dict[str, Any]]]:
+    by_id = {
+        str(nudge.get("id")): nudge
+        for nudge in ledger.get("nudges", [])
+        if isinstance(nudge, dict) and nudge.get("id")
+    }
+    pairs: List[tuple[Dict[str, Any], Dict[str, Any]]] = []
+    for event in ledger.get("feedback", []) or []:
+        if not isinstance(event, dict):
+            continue
+        nudge = by_id.get(str(event.get("nudge_id")))
+        if nudge:
+            pairs.append((event, nudge))
+    return pairs
+
+
+def export_privacy_safe_learning(*, now: float | None = None) -> Dict[str, Any]:
+    """Export anonymized aggregate feedback only — no messages, excerpts, IDs, or paths."""
+
+    now = time.time() if now is None else float(now)
+    ledger = _load_ledger()
+    totals = {"nudges": len([n for n in ledger.get("nudges", []) if isinstance(n, dict)]), "feedback": 0}
+    by_kind: Dict[str, Counter] = defaultdict(Counter)
+    by_area: Dict[str, Counter] = defaultdict(Counter)
+    by_mode: Dict[str, Counter] = defaultdict(Counter)
+    by_action: Counter = Counter()
+    for event, nudge in _feedback_events_with_nudges(ledger):
+        action = _safe_metric_label(event.get("action"))
+        signal = nudge.get("signal") or {}
+        totals["feedback"] += 1
+        by_action[action] += 1
+        by_kind[_safe_metric_label(signal.get("kind"))][action] += 1
+        by_area[_safe_metric_label(signal.get("area"))][action] += 1
+        by_mode[_safe_metric_label(signal.get("mode"))][action] += 1
+    return {
+        "version": 1,
+        "privacy_safe": True,
+        "generated_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+        "redaction_policy": "aggregate counts only; no raw messages, excerpts, session IDs, nudge IDs, paths, or customer data",
+        "totals": totals,
+        "by_action": dict(by_action),
+        "by_kind": {k: dict(v) for k, v in sorted(by_kind.items())},
+        "by_area": {k: dict(v) for k, v in sorted(by_area.items())},
+        "by_mode": {k: dict(v) for k, v in sorted(by_mode.items())},
+    }
+
+
+def validate_self_evolution_change(change: Dict[str, Any]) -> Dict[str, Any]:
+    """Guardrail self-evolution changes before any automated application."""
+
+    if not isinstance(change, dict):
+        return {"ok": False, "reason": "change must be an object", "requires_user_approval": True}
+    raw_private_keys = {"raw_text", "message", "excerpt", "session_id", "nudge_id", "private_data", "customer_data"}
+    if any(key in change for key in raw_private_keys):
+        return {"ok": False, "reason": "change contains raw/private fields", "requires_user_approval": True}
+    change_type = str(change.get("type") or "").strip().lower()
+    if change_type in {"code_edit", "prompt_edit", "external_action", "send", "post", "email", "delete", "buy", "schedule"}:
+        return {"ok": False, "reason": "self-evolution cannot perform code/prompt/external actions silently", "requires_user_approval": True}
+    if change_type in {"kind_weight", "area_weight", "mode_weight"}:
+        delta = change.get("delta", change.get("score_adjustment", 0))
+        try:
+            delta_int = int(delta)
+        except Exception:
+            return {"ok": False, "reason": "weight change needs an integer delta", "requires_user_approval": True}
+        if -40 <= delta_int <= 40:
+            return {"ok": True, "reason": "bounded local preference tuning", "requires_user_approval": False}
+        return {"ok": False, "reason": "weight delta outside safe bounds", "requires_user_approval": True}
+    if change_type == "cooldown":
+        try:
+            hours = int(change.get("hours"))
+        except Exception:
+            return {"ok": False, "reason": "cooldown needs integer hours", "requires_user_approval": True}
+        if 0 <= hours <= 720:
+            return {"ok": True, "reason": "bounded local cooldown tuning", "requires_user_approval": False}
+        return {"ok": False, "reason": "cooldown outside safe bounds", "requires_user_approval": True}
+    if change_type in {"skill_proposal", "propose_skill"}:
+        return {"ok": False, "reason": "skill creation requires user approval", "requires_user_approval": True}
+    return {"ok": False, "reason": "unknown self-evolution change type", "requires_user_approval": True}
+
+
+def build_self_evolution_report(*, now: float | None = None) -> Dict[str, Any]:
+    """Review feedback and propose safe local improvements without editing code/prompts."""
+
+    now = time.time() if now is None else float(now)
+    ledger = _load_ledger()
+    prefs = load_proactive_preferences()
+    action_counts: Counter = Counter()
+    accepted_by_kind: Counter = Counter()
+    negative_by_kind: Counter = Counter()
+    accepted_by_workflow: Counter = Counter()
+    for event, nudge in _feedback_events_with_nudges(ledger):
+        action = _safe_metric_label(event.get("action"))
+        action_counts[action] += 1
+        signal = nudge.get("signal") or {}
+        kind = _safe_metric_label(signal.get("kind"))
+        area = _safe_metric_label(signal.get("area"))
+        workflow = f"{kind}:{area}"
+        if action in {"do", "more"}:
+            accepted_by_kind[kind] += 1
+            accepted_by_workflow[workflow] += 1
+        elif action in {"not", "dont"}:
+            negative_by_kind[kind] += 1
+
+    recommendations: List[Dict[str, Any]] = []
+    for kind, count in accepted_by_kind.items():
+        if count >= 2:
+            change = {"type": "kind_weight", "kind": kind, "delta": min(12, count * 3)}
+            verdict = validate_self_evolution_change(change)
+            recommendations.append({**change, **verdict, "reason": f"accepted {count} recent nudges of this kind"})
+    for kind, count in negative_by_kind.items():
+        if count >= 1:
+            change = {"type": "kind_weight", "kind": kind, "delta": -min(18, count * 6)}
+            verdict = validate_self_evolution_change(change)
+            recommendations.append({**change, **verdict, "reason": f"negative feedback on {count} recent nudges of this kind"})
+            cooldown = {"type": "cooldown", "kind": kind, "hours": min(336, DEFAULT_COOLDOWN_HOURS + count * 24)}
+            recommendations.append({**cooldown, **validate_self_evolution_change(cooldown), "reason": "increase cooldown after negative feedback"})
+
+    skill_proposals: List[Dict[str, Any]] = []
+    for workflow, count in accepted_by_workflow.items():
+        if count < 3:
+            continue
+        kind, area = workflow.split(":", 1)
+        skill_proposals.append(
+            {
+                "action": "propose_skill",
+                "type": "skill_proposal",
+                "requires_user_approval": True,
+                "trigger_kind": kind,
+                "area": area,
+                "accepted_count": count,
+                "title": f"Proactive workflow: {kind}",
+                "draft_outline": [
+                    "Trigger when this signal kind appears repeatedly and the user accepts help.",
+                    "Gather only the minimum local evidence needed.",
+                    "Draft or analyze internally first; ask before external action.",
+                    "Verify output before messaging the user.",
+                ],
+            }
+        )
+
+    return {
+        "version": 1,
+        "generated_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+        "summary": {
+            "nudges": len([n for n in ledger.get("nudges", []) if isinstance(n, dict)]),
+            "feedback": sum(action_counts.values()),
+            "accepted": action_counts.get("do", 0),
+            "more_info": action_counts.get("more", 0),
+            "snoozed": action_counts.get("later", 0),
+            "not_useful": action_counts.get("not", 0),
+            "muted": action_counts.get("dont", 0),
+        },
+        "privacy": {
+            "raw_text_included": False,
+            "safe_for_global_aggregate": True,
+            "note": "Report uses aggregate counts and sanitized signal labels only.",
+        },
+        "preferences": {
+            "version": prefs.get("version", 1),
+            "kinds_tracked": len(prefs.get("kind_weights") or {}),
+            "areas_tracked": len(prefs.get("area_weights") or {}),
+            "modes_tracked": len(prefs.get("mode_weights") or {}),
+        },
+        "recommendations": recommendations,
+        "skill_proposals": skill_proposals,
+        "global_learning_export": export_privacy_safe_learning(now=now),
+    }
+
+
+def render_self_evolution_report(report: Dict[str, Any]) -> str:
+    summary = report.get("summary") or {}
+    lines = [
+        "## Proactive self-evolution report",
+        f"Generated: {report.get('generated_at')}",
+        "",
+        f"Feedback: {summary.get('feedback', 0)} | Accepted: {summary.get('accepted', 0)} | Not useful: {summary.get('not_useful', 0)} | Muted: {summary.get('muted', 0)}",
+        "",
+    ]
+    recs = report.get("recommendations") or []
+    if recs:
+        lines.append("### Safe local tuning")
+        for rec in recs[:8]:
+            lines.append(f"- {rec.get('type')}: {rec.get('kind') or rec.get('area') or rec.get('mode')} ({rec.get('reason')})")
+        lines.append("")
+    proposals = report.get("skill_proposals") or []
+    if proposals:
+        lines.append("### Skill proposals requiring approval")
+        for proposal in proposals[:5]:
+            lines.append(f"- {proposal.get('title')} — accepted {proposal.get('accepted_count')} times")
+        lines.append("")
+    lines.append("Privacy: aggregate labels only; no raw messages/excerpts/session IDs included.")
+    return "\n".join(lines).strip()
+
+
+def write_self_evolution_report(report: Dict[str, Any] | None = None) -> Path:
+    report = build_self_evolution_report() if report is None else report
+    path = get_hermes_home() / "proactive" / "self-evolution-report.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(render_self_evolution_report(report), encoding="utf-8")
+    return path
 
 
 def build_reflection_prompt(
@@ -892,7 +1334,9 @@ def collect_proactive_signals(
 
     # Keep prompt injection compact and stable.
     report["recent_sessions"] = report["recent_sessions"][:10]
-    report["signals"] = _rank_signals(report["signals"])[:12]
+    report["signals"] = _rank_signals(report["signals"])
+    report = apply_adaptive_preferences(report)
+    report["signals"] = report["signals"][:12]
     report["suppressed_topics"] = report["suppressed_topics"][:5]
     report["wakeAgent"] = bool(report["signals"] or report["scan_errors"])
     return report
@@ -1062,6 +1506,23 @@ def cmd_proactive(args) -> int:
             print(render_signal_scan(report, include_wake_gate=False))
         return 0
 
+    if subcmd == "evolve":
+        report = build_self_evolution_report()
+        if getattr(args, "write", False):
+            path = write_self_evolution_report(report)
+            report["written_to"] = str(path)
+        if getattr(args, "json", False):
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print(render_self_evolution_report(report))
+            if report.get("written_to"):
+                print(f"\nWritten to: {report['written_to']}")
+        return 0
+
+    if subcmd == "export-learning":
+        print(json.dumps(export_privacy_safe_learning(), indent=2, sort_keys=True))
+        return 0
+
     if subcmd == "install":
         report = install_proactive_job(
             schedule=getattr(args, "schedule", DEFAULT_SCHEDULE),
@@ -1074,5 +1535,5 @@ def cmd_proactive(args) -> int:
         _print_report(report, as_json=getattr(args, "json", False))
         return 0
 
-    print("Usage: hermes proactive [prompt|scan|install]")
+    print("Usage: hermes proactive [prompt|scan|evolve|export-learning|install]")
     return 2

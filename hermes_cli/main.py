@@ -9670,6 +9670,23 @@ def main():
     proactive_scan.add_argument("--max-sessions", type=int, default=30)
     proactive_scan.add_argument("--json", action="store_true", help="Print JSON output")
 
+    proactive_evolve = proactive_subparsers.add_parser(
+        "evolve",
+        help="Review feedback and propose safe self-evolution changes",
+    )
+    proactive_evolve.add_argument("--json", action="store_true", help="Print JSON output")
+    proactive_evolve.add_argument(
+        "--write",
+        action="store_true",
+        help="Write a markdown self-evolution report under ~/.hermes/proactive/",
+    )
+
+    proactive_export = proactive_subparsers.add_parser(
+        "export-learning",
+        help="Print privacy-safe aggregate proactive feedback for upstream learning",
+    )
+    proactive_export.add_argument("--json", action="store_true", default=True, help="Print JSON output")
+
     proactive_install = proactive_subparsers.add_parser(
         "install",
         help="Create or update the safe proactive synthesis cron job",

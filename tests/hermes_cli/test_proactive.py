@@ -439,3 +439,162 @@ def test_cli_prompt_outputs_json_when_requested(capsys):
     assert payload["lookback_days"] == 2
     assert payload["max_sessions"] == 9
     assert "medium confidence" in payload["prompt"]
+
+
+def test_feedback_updates_adaptive_preferences_and_reranks_future_signals(tmp_path, monkeypatch):
+    monkeypatch.setattr(proactive, "get_hermes_home", lambda: tmp_path)
+    now = 1_700_000_000.0
+    nudge = proactive.record_proactive_nudge(
+        job={"id": "job-a", "name": proactive.DEFAULT_JOB_NAME},
+        message="Want me to turn the meeting notes into a short coaching draft?",
+        scan_report={
+            "signals": [
+                {
+                    "kind": "content_opportunity",
+                    "area": "content",
+                    "mode": "offer_to_produce",
+                    "reason": "accepted content draft pattern",
+                    "source": "telegram",
+                    "excerpt": "private meeting notes should not become global training text",
+                    "score": 50,
+                }
+            ]
+        },
+        now=now,
+    )
+
+    proactive.handle_proactive_feedback(nudge["id"], "do", now=now + 1)
+    prefs = proactive.load_proactive_preferences()
+
+    assert prefs["kind_weights"]["content_opportunity"]["score_adjustment"] > 0
+    assert prefs["kind_weights"]["content_opportunity"]["accepted"] == 1
+
+    report = {
+        "wakeAgent": True,
+        "signals": [
+            {"kind": "content_opportunity", "area": "content", "mode": "offer_to_produce", "excerpt": "content", "score": 50},
+            {"kind": "decision_needed", "area": "decisions", "mode": "ask_smart_question", "excerpt": "decision", "score": 52},
+        ],
+    }
+    adapted = proactive.apply_adaptive_preferences(report)
+
+    assert adapted["signals"][0]["kind"] == "content_opportunity"
+    assert adapted["signals"][0]["adaptive_score_adjustment"] > 0
+
+
+def test_negative_feedback_tunes_down_future_signals_without_mutating_raw_report(tmp_path, monkeypatch):
+    monkeypatch.setattr(proactive, "get_hermes_home", lambda: tmp_path)
+    now = 1_700_000_000.0
+    nudge = proactive.record_proactive_nudge(
+        job={"id": "job-b", "name": proactive.DEFAULT_JOB_NAME},
+        message="Want me to draft content from this?",
+        scan_report={
+            "signals": [
+                {
+                    "kind": "content_opportunity",
+                    "area": "content",
+                    "mode": "offer_to_produce",
+                    "reason": "weak content idea",
+                    "source": "telegram",
+                    "excerpt": "private draft context",
+                    "score": 80,
+                }
+            ]
+        },
+        now=now,
+    )
+
+    proactive.handle_proactive_feedback(nudge["id"], "not", now=now + 1)
+    report = {"wakeAgent": True, "signals": [{"kind": "content_opportunity", "area": "content", "excerpt": "new item", "score": 80}]}
+    adapted = proactive.apply_adaptive_preferences(report)
+
+    assert report["signals"][0]["score"] == 80
+    assert adapted["signals"][0]["score"] < 80
+    assert adapted["signals"][0]["adaptive_score_adjustment"] < 0
+
+
+def test_self_evolution_report_proposes_bounded_changes_and_skill_candidates(tmp_path, monkeypatch):
+    monkeypatch.setattr(proactive, "get_hermes_home", lambda: tmp_path)
+    now = 1_700_000_000.0
+    for idx in range(3):
+        nudge = proactive.record_proactive_nudge(
+            job={"id": f"job-{idx}", "name": proactive.DEFAULT_JOB_NAME},
+            message=f"Want me to prepare the WFG call-quality sample #{idx}?",
+            scan_report={
+                "signals": [
+                    {
+                        "kind": "source_quality_watch",
+                        "area": "sales_ops",
+                        "mode": "ask_to_investigate",
+                        "reason": "accepted repeat workflow",
+                        "source": "profile-local",
+                        "excerpt": f"Sensitive WFG transcript detail #{idx}",
+                        "suggested_action": "pull a transcript sample and classify source quality",
+                        "score": 90,
+                    }
+                ]
+            },
+            now=now + idx,
+        )
+        proactive.handle_proactive_feedback(nudge["id"], "do", now=now + idx + 10)
+
+    report = proactive.build_self_evolution_report(now=now + 86_400)
+
+    assert report["summary"]["accepted"] == 3
+    assert report["recommendations"]
+    assert report["skill_proposals"]
+    assert report["skill_proposals"][0]["action"] == "propose_skill"
+    dumped = json.dumps(report)
+    assert "Sensitive WFG transcript detail" not in dumped
+    assert "Want me to prepare" not in dumped
+    assert all(item["requires_user_approval"] for item in report["skill_proposals"])
+
+
+def test_privacy_safe_learning_export_contains_only_aggregates(tmp_path, monkeypatch):
+    monkeypatch.setattr(proactive, "get_hermes_home", lambda: tmp_path)
+    nudge = proactive.record_proactive_nudge(
+        job={"id": "job-private", "name": proactive.DEFAULT_JOB_NAME},
+        message="Private TestFlight blocker for Charles involving internal paths",
+        scan_report={
+            "signals": [
+                {
+                    "kind": "blocker_or_waiting",
+                    "area": "projects",
+                    "mode": "ask_to_investigate",
+                    "reason": "private blocker",
+                    "source": "telegram",
+                    "session_id": "secret-session-id",
+                    "excerpt": "/Users/bots/private/path and customer detail",
+                }
+            ]
+        },
+        now=1_700_000_000.0,
+    )
+    proactive.handle_proactive_feedback(nudge["id"], "do", now=1_700_000_001.0)
+
+    export = proactive.export_privacy_safe_learning()
+    dumped = json.dumps(export)
+
+    assert export["privacy_safe"] is True
+    assert export["totals"]["feedback"] == 1
+    assert export["by_kind"]["blocker_or_waiting"]["do"] == 1
+    assert "TestFlight" not in dumped
+    assert "/Users/bots" not in dumped
+    assert "secret-session-id" not in dumped
+    assert "Private" not in dumped
+
+
+def test_self_evolution_guardrails_reject_unsafe_or_private_changes():
+    assert proactive.validate_self_evolution_change({"type": "kind_weight", "kind": "content_opportunity", "delta": 3})["ok"] is True
+    assert proactive.validate_self_evolution_change({"type": "cooldown", "kind": "content_opportunity", "hours": 96})["ok"] is True
+
+    unsafe = [
+        {"type": "code_edit", "path": "run_agent.py"},
+        {"type": "prompt_edit", "text": "silently change the live prompt"},
+        {"type": "external_action", "target": "email"},
+        {"type": "kind_weight", "kind": "content", "raw_text": "private user text"},
+    ]
+    for change in unsafe:
+        result = proactive.validate_self_evolution_change(change)
+        assert result["ok"] is False
+        assert result["requires_user_approval"] is True
