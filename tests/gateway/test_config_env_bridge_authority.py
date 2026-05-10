@@ -64,6 +64,8 @@ def _run_gateway_import(hermes_home: Path, initial_env: dict[str, str]) -> dict[
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
     )
     if result.returncode != 0:
