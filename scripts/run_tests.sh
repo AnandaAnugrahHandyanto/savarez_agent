@@ -88,9 +88,9 @@ export LC_ALL=C.UTF-8
 export PYTHONHASHSEED=0
 
 # ── Worker count ────────────────────────────────────────────────────────────
-# CI uses `-n auto` on ubuntu-latest which gives 4 workers. A 20-core
-# workstation with `-n auto` gets 20 workers and exposes test-ordering
-# flakes that CI will never see. Pin to 4 so local matches CI.
+# GHA ``Tests / test`` job uses ``-n 4`` (see .github/workflows/tests.yml).
+# A 20-core workstation with pyproject's default ``-n auto`` gets 20 workers
+# and exposes ordering flakes CI never sees — pin to 4 so local matches CI.
 WORKERS="${HERMES_TEST_WORKERS:-4}"
 
 # ── Run pytest ──────────────────────────────────────────────────────────────
