@@ -8346,7 +8346,7 @@ class GatewayRunner:
                             custom_providers=custom_provs,
                         )
                         if not result.success:
-                            return f"Error: {result.error_message}"
+                            return t("gateway.model.error_prefix", error=result.error_message)
 
                         # Update cached agent in-place
                         cached_entry = None
@@ -8390,8 +8390,8 @@ class GatewayRunner:
 
                         # Build confirmation text
                         plabel = result.provider_label or result.target_provider
-                        lines = [f"Model switched to `{result.new_model}`"]
-                        lines.append(f"Provider: {plabel}")
+                        lines = [t("gateway.model.switched", model=result.new_model)]
+                        lines.append(t("gateway.model.provider_label", provider=plabel))
                         mi = result.model_info
                         from hermes_cli.model_switch import resolve_display_context_length
                         _sw_config_ctx = None
@@ -8414,14 +8414,14 @@ class GatewayRunner:
                             config_context_length=_sw_config_ctx,
                         )
                         if ctx:
-                            lines.append(f"Context: {ctx:,} tokens")
+                            lines.append(t("gateway.model.context_label", tokens=f"{ctx:,}"))
                         if mi:
                             if mi.max_output:
-                                lines.append(f"Max output: {mi.max_output:,} tokens")
+                                lines.append(t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}"))
                             if mi.has_cost_data():
-                                lines.append(f"Cost: {mi.format_cost()}")
-                            lines.append(f"Capabilities: {mi.format_capabilities()}")
-                        lines.append("_(session only — use `/model <name> --global` to persist)_")
+                                lines.append(t("gateway.model.cost_label", cost=mi.format_cost()))
+                            lines.append(t("gateway.model.capabilities_label", capabilities=mi.format_capabilities()))
+                        lines.append(t("gateway.model.session_only_hint"))
                         return "\n".join(lines)
 
                     metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
@@ -8439,7 +8439,7 @@ class GatewayRunner:
 
             # Fallback: text list (for platforms without picker or if picker failed)
             provider_label = get_label(current_provider)
-            lines = [f"Current: `{current_model or 'unknown'}` on {provider_label}", ""]
+            lines = [t("gateway.model.current_label", model=current_model or "unknown", provider=provider_label), ""]
 
             try:
                 providers = list_authenticated_providers(
@@ -8451,11 +8451,11 @@ class GatewayRunner:
                     max_models=5,
                 )
                 for p in providers:
-                    tag = " (current)" if p["is_current"] else ""
+                    tag = t("gateway.model.current_tag") if p["is_current"] else ""
                     lines.append(f"**{p['name']}** `--provider {p['slug']}`{tag}:")
                     if p["models"]:
                         model_strs = ", ".join(f"`{m}`" for m in p["models"])
-                        extra = f" (+{p['total_models'] - len(p['models'])} more)" if p["total_models"] > len(p["models"]) else ""
+                        extra = t("gateway.model.more_models_suffix", count=p["total_models"] - len(p["models"])) if p["total_models"] > len(p["models"]) else ""
                         lines.append(f"  {model_strs}{extra}")
                     elif p.get("api_url"):
                         lines.append(f"  `{p['api_url']}`")
@@ -8463,9 +8463,9 @@ class GatewayRunner:
             except Exception:
                 pass
 
-            lines.append("`/model <name>` — switch model")
-            lines.append("`/model <name> --provider <slug>` — switch provider")
-            lines.append("`/model <name> --global` — persist")
+            lines.append(t("gateway.model.usage_switch_model"))
+            lines.append(t("gateway.model.usage_switch_provider"))
+            lines.append(t("gateway.model.usage_persist"))
             return "\n".join(lines)
 
         # Perform the switch
@@ -8482,7 +8482,7 @@ class GatewayRunner:
         )
 
         if not result.success:
-            return f"Error: {result.error_message}"
+            return t("gateway.model.error_prefix", error=result.error_message)
 
         # If there's a cached agent, update it in-place
         cached_entry = None
@@ -8547,8 +8547,8 @@ class GatewayRunner:
 
         # Build confirmation message with full metadata
         provider_label = result.provider_label or result.target_provider
-        lines = [f"Model switched to `{result.new_model}`"]
-        lines.append(f"Provider: {provider_label}")
+        lines = [t("gateway.model.switched", model=result.new_model)]
+        lines.append(t("gateway.model.provider_label", provider=provider_label))
 
         # Context: always resolve via the provider-aware chain so Codex OAuth,
         # Copilot, and Nous-enforced caps win over the raw models.dev entry.
@@ -8574,13 +8574,13 @@ class GatewayRunner:
             config_context_length=_sw2_config_ctx,
         )
         if ctx:
-            lines.append(f"Context: {ctx:,} tokens")
+            lines.append(t("gateway.model.context_label", tokens=f"{ctx:,}"))
         if mi:
             if mi.max_output:
-                lines.append(f"Max output: {mi.max_output:,} tokens")
+                lines.append(t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}"))
             if mi.has_cost_data():
-                lines.append(f"Cost: {mi.format_cost()}")
-            lines.append(f"Capabilities: {mi.format_capabilities()}")
+                lines.append(t("gateway.model.cost_label", cost=mi.format_cost()))
+            lines.append(t("gateway.model.capabilities_label", capabilities=mi.format_capabilities()))
 
         # Cache notice
         cache_enabled = (
@@ -8588,15 +8588,15 @@ class GatewayRunner:
             or result.api_mode == "anthropic_messages"
         )
         if cache_enabled:
-            lines.append("Prompt caching: enabled")
+            lines.append(t("gateway.model.prompt_caching_enabled"))
 
         if result.warning_message:
-            lines.append(f"Warning: {result.warning_message}")
+            lines.append(t("gateway.model.warning_prefix", warning=result.warning_message))
 
         if persist_global:
-            lines.append("Saved to config.yaml (`--global`)")
+            lines.append(t("gateway.model.saved_global"))
         else:
-            lines.append("_(session only -- add `--global` to persist)_")
+            lines.append(t("gateway.model.session_only_hint"))
 
         return "\n".join(lines)
 

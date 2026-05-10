@@ -33,3 +33,26 @@ gateway:
   no_active_goal:   "No active goal."
   config_read_failed: "⚠️ Could not read config.yaml: {error}"
   config_save_failed: "⚠️ Could not save config: {error}"
+
+  # /model command output -- shown after a model switch or when listing models.
+  # Provider names, model IDs, capability strings, and cost figures are NOT
+  # translated -- they're identifiers/values, not prose.  Only the labels
+  # ("Provider:", "Context:", etc.) and the help/footer lines are localized.
+  model:
+    error_prefix:           "Error: {error}"
+    switched:               "Model switched to `{model}`"
+    provider_label:         "Provider: {provider}"
+    context_label:          "Context: {tokens} tokens"
+    max_output_label:       "Max output: {tokens} tokens"
+    cost_label:             "Cost: {cost}"
+    capabilities_label:     "Capabilities: {capabilities}"
+    prompt_caching_enabled: "Prompt caching: enabled"
+    warning_prefix:         "Warning: {warning}"
+    saved_global:           "Saved to config.yaml (`--global`)"
+    session_only_hint:      "_(session only — add `--global` to persist)_"
+    current_label:          "Current: `{model}` on {provider}"
+    current_tag:            " (current)"
+    more_models_suffix:     " (+{count} more)"
+    usage_switch_model:     "`/model <name>` — switch model"
+    usage_switch_provider:  "`/model <name> --provider <slug>` — switch provider"
+    usage_persist:          "`/model <name> --global` — persist"
