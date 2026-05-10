@@ -6920,6 +6920,12 @@ class HermesCLI:
             ) is None:
                 return
             self.new_session(title=title)
+        elif canonical == "sessions":
+            # Browse recent sessions in classic CLI mode (fixes #22951).
+            # The TUI has its own handler; here we reuse _show_recent_sessions
+            # which prints a formatted table and reminds the user to /resume.
+            if not self._show_recent_sessions(reason="sessions"):
+                _cprint("  No previous sessions found.")
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
         elif canonical == "model":
