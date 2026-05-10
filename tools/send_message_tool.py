@@ -6,6 +6,7 @@ human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
 import asyncio
+import importlib
 import json
 import logging
 import os
@@ -1536,7 +1537,7 @@ async def _send_matrix(token, extra, chat_id, message):
         # Build message payload with optional HTML formatted_body.
         payload = {"msgtype": "m.text", "body": message}
         try:
-            import markdown as _md
+            _md = importlib.import_module("markdown")
             html = _md.markdown(message, extensions=["fenced_code", "tables"])
             # Convert h1-h6 to bold for Element X compatibility.
             html = re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html)
