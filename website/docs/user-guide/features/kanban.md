@@ -754,17 +754,17 @@ Two nullable columns on `tasks` are reserved for v2 workflow routing: `workflow_
 
 ## Webhook Notifications
 
-The board can fire outbound HTTP webhooks when tasks reach terminal states (`done`, `blocked`, `crashed`, `timed_out`).  This is a generic, platform-agnostic alternative to the gateway's built-in Telegram/Discord notifier — any system that can receive a POST request can subscribe.
+The board can fire outbound HTTP webhooks when tasks reach terminal states (`done`, `blocked`, `crashed`, `timed_out`, `gave_up`).  This is a generic, platform-agnostic alternative to the gateway's built-in Telegram/Discord notifier — any system that can receive a POST request can subscribe.
 
 ### Registering a webhook
 
 ```bash
-hermes kanban webhook add https://example.com/kanban-hook \
-    --events done,blocked,crashed,timed_out \
+hermes kanban webhook add https://example.com/kanban-hook \\
+    --events done,blocked,crashed,timed_out,gave_up \\
     --secret my-shared-secret
 ```
 
-* `--events` — comma-separated subset of `done`, `blocked`, `crashed`, `timed_out`.
+* `--events` — comma-separated subset of `done`, `blocked`, `crashed`, `timed_out`, `gave_up`.
 * `--secret` — optional shared secret used to sign the payload with `HMAC-SHA256`.  The receiver validates the `X-Kanban-Signature: sha256=<hex>` header.
 
 Webhooks are **per-board** (stored in the same SQLite DB as the tasks).  Switching boards with `hermes kanban boards switch <slug>` shows a different webhook list.
@@ -808,11 +808,10 @@ Sends a synthetic `"event": "test"` payload to webhook id 3 so you can verify co
 ### Delivery semantics
 
 * **Async** — fired in a daemon `threading.Thread` after the DB transaction commits.  Slow receivers cannot block the dispatcher.
-* **Retry** — up to 3 attempts with exponential backoff (1 s, 2 s, 4 s).  Only HTTP 2xx counts as success.
+* **Retry** — initial delivery plus up to 3 retries with exponential backoff (1 s, 2 s, 4 s).  Only HTTP 2xx counts as success.
 * **Logging** — failures are written to the `kanban_webhooks` Python logger (captured in `~/.hermes/logs/agent.log` by default).
 * **Best-effort, at-least-once** — webhooks may be delivered more than once (e.g., a slow receiver times out after already processing the request, triggering a retry).  Every payload includes a `delivery_id` (UUID v4) so consumers can deduplicate.
 * **No shutdown guarantee** — because deliveries run in daemon threads, an in-flight webhook may be abruptly dropped if the Hermes process exits.  For critical workflows, pair webhooks with `hermes kanban watch` or poll `task_events` directly.
-* **No guarantee** — webhooks are best-effort.  For critical workflows, pair them with `hermes kanban watch` or poll `task_events` directly.
 
 ### Configuring in `config.yaml`
 

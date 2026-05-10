@@ -33,6 +33,13 @@ _KANBAN_WEBHOOK_LOG = logging.getLogger("kanban_webhooks")
 _WEBHOOK_THREADS: list[threading.Thread] = []
 
 
+def _redact_url(url: str) -> str:
+    """Return scheme+host (with port) for logging, dropping path/query/fragment."""
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
 def _build_signature(payload_bytes: bytes, secret: Optional[str]) -> str:
     if not secret:
         return ""
@@ -84,7 +91,7 @@ def send_webhook_notification(
                 if 200 <= resp.status < 300:
                     return True
                 last_exc = RuntimeError(
-                    f"HTTP {resp.status} from webhook {url}"
+                    f"HTTP {resp.status} from webhook {_redact_url(url)}"
                 )
         except Exception as exc:
             last_exc = exc
@@ -92,7 +99,7 @@ def send_webhook_notification(
     # All retries exhausted
     err_msg = (
         f"Webhook delivery failed after {max_retries + 1} attempts: "
-        f"url={url} event={payload.get('event')} "
+        f"url={_redact_url(url)} event={payload.get('event')} "
         f"task={payload.get('task', {}).get('id')} error={last_exc}"
     )
     _KANBAN_WEBHOOK_LOG.warning(err_msg)
@@ -134,6 +141,9 @@ def _wait_for_pending_webhooks(timeout: float = 5.0) -> None:
             break
         if t.is_alive():
             t.join(timeout=remaining)
+        # Prune finished threads so the list doesn't grow without bound
+        if not t.is_alive():
+            _WEBHOOK_THREADS.remove(t)
 
 
 atexit.register(_wait_for_pending_webhooks)

@@ -397,6 +397,62 @@ def test_webhook_fires_on_gave_up_via_record_spawn_failure(kanban_home, echo_ser
     assert received[0]["body"]["task"]["id"] == tid
 
 
+def test_default_webhook_receives_gave_up(kanban_home, echo_server):
+    """Default webhook subscription (no explicit events) must include gave_up."""
+    url, received = echo_server
+    conn = kb.connect()
+    try:
+        kb.add_webhook(conn, url, secret="sekrit")
+        tid = kb.create_task(conn, title="default gave_up test", assignee="x")
+        kb._record_task_failure(
+            conn, tid, error="spawn failed",
+            outcome="spawn_failed", failure_limit=1,
+            release_claim=True, end_run=True,
+        )
+    finally:
+        conn.close()
+
+    for _ in range(50):
+        if received:
+            break
+        time.sleep(0.05)
+
+    assert len(received) == 1
+    req = received[0]
+    assert req["body"]["event"] == "gave_up"
+    assert req["body"]["task"]["id"] == tid
+    assert req["body"]["task"]["status"] == "blocked"
+    sig_header = req["headers"].get("X-Kanban-Signature", "")
+    assert sig_header.startswith("sha256=")
+
+
+def test_webhook_payload_uses_correct_board_for_non_default(kanban_home, echo_server):
+    """When connect(board=...) is used, the payload must reflect that board, not default."""
+    url, received = echo_server
+    # Create a non-default board
+    conn = kb.connect(board="test-project")
+    try:
+        kb.add_webhook(conn, url, events=["done"], secret="sekrit")
+        tid = kb.create_task(conn, title="board-correctness test", assignee="x")
+        kb.complete_task(conn, tid, result="shipped!")
+    finally:
+        conn.close()
+
+    for _ in range(50):
+        if received:
+            break
+        time.sleep(0.05)
+
+    assert len(received) == 1
+    req = received[0]
+    assert req["body"]["event"] == "done"
+    assert req["body"]["board"] == "test-project"
+    assert req["body"]["task"]["id"] == tid
+    assert req["body"]["task"]["url"] == f"hermes://kanban/test-project/{tid}"
+    sig_header = req["headers"].get("X-Kanban-Signature", "")
+    assert sig_header.startswith("sha256=")
+
+
 def test_webhook_fires_on_timeout(kanban_home, echo_server):
     """enforce_max_runtime must fire a timed_out webhook."""
     url, received = echo_server

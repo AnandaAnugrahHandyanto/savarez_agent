@@ -538,8 +538,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     wh_add.add_argument("url", help="Webhook endpoint URL")
     wh_add.add_argument(
         "--events",
-        default="done,blocked,crashed,timed_out",
-        help="Comma-separated events to subscribe to (default: done,blocked,crashed,timed_out)",
+        default="done,blocked,crashed,timed_out,gave_up",
+        help="Comma-separated events to subscribe to (default: done,blocked,crashed,timed_out,gave_up)",
     )
     wh_add.add_argument("--secret", default=None,
                         help="Shared secret for HMAC-SHA256 signature (prefer --secret-file)")
@@ -2001,7 +2001,7 @@ def _cmd_webhook(args: argparse.Namespace) -> int:
             return 2
         secret = args.secret
         if args.secret_file:
-            secret = Path(args.secret_file).read_text().strip()
+            secret = Path(args.secret_file).read_text(encoding="utf-8").strip()
         try:
             with kb.connect() as conn:
                 wh_id = kb.add_webhook(

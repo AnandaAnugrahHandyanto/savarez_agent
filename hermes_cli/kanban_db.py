@@ -877,7 +877,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE TABLE IF NOT EXISTS kanban_webhooks (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     url        TEXT NOT NULL,
-    events     TEXT NOT NULL DEFAULT 'done,blocked,crashed,timed_out',
+    events     TEXT NOT NULL DEFAULT 'done,blocked,crashed,timed_out,gave_up',
     secret     TEXT,
     created_at INTEGER NOT NULL
 );
@@ -1170,7 +1170,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "CREATE TABLE kanban_webhooks ("
             "    id         INTEGER PRIMARY KEY AUTOINCREMENT,"
             "    url        TEXT NOT NULL,"
-            "    events     TEXT NOT NULL DEFAULT 'done,blocked,crashed,timed_out',"
+            "    events     TEXT NOT NULL DEFAULT 'done,blocked,crashed,timed_out,gave_up',"
             "    secret     TEXT,"
             "    created_at INTEGER NOT NULL"
             ")"
@@ -1203,6 +1203,58 @@ def write_txn(conn: sqlite3.Connection):
 # ID generation
 # ---------------------------------------------------------------------------
 
+def _board_from_conn(conn: sqlite3.Connection) -> str:
+    """Resolve the board slug that owns this SQLite connection.
+
+    Uses ``PRAGMA database_list`` to discover the on-disk DB path, then
+    reverse-maps it against the standard per-board layout:
+
+    * ``<root>/kanban.db`` → ``default``
+    * ``<root>/kanban/boards/<slug>/kanban.db`` → ``<slug>``
+
+    Falls back to :func:`get_current_board` (with a warning) when the
+    path does not match the expected layout, e.g. a ``HERMES_KANBAN_DB``
+    override pointing outside the kanban home.
+    """
+    import logging
+
+    row = conn.execute("PRAGMA database_list").fetchone()
+    db_file = Path(row[2]) if row and row[2] else None
+    if not db_file:
+        return get_current_board()
+
+    try:
+        db_file = db_file.resolve()
+    except OSError:
+        pass
+
+    # Default board back-compat path
+    default_path = kanban_home() / "kanban.db"
+    try:
+        if db_file == default_path.resolve():
+            return DEFAULT_BOARD
+    except OSError:
+        pass
+
+    # Named boards under kanban/boards/<slug>/kanban.db
+    br = boards_root()
+    try:
+        br = br.resolve()
+        if db_file.parent.parent == br and db_file.name == "kanban.db":
+            slug = db_file.parent.name
+            if _BOARD_SLUG_RE.match(slug):
+                return slug
+    except OSError:
+        pass
+
+    # Unusual path (HERMES_KANBAN_DB override, symlink, etc.) — fall back
+    logging.getLogger(__name__).warning(
+        "Cannot reverse-map DB path %s to a board slug; falling back to get_current_board()",
+        db_file,
+    )
+    return get_current_board()
+
+
 def _maybe_fire_webhooks(
     conn: sqlite3.Connection,
     event: str,
@@ -1212,7 +1264,7 @@ def _maybe_fire_webhooks(
 ) -> None:
     """Lazy-import and fire webhooks for a terminal transition."""
     from hermes_cli import kanban_webhooks as kwh
-    board = get_current_board()
+    board = _board_from_conn(conn)
     task_row = conn.execute(
         "SELECT id, title, assignee, status FROM tasks WHERE id = ?",
         (task_id,),
@@ -4525,7 +4577,7 @@ def add_webhook(
         raise ValueError(f"Invalid webhook URL: {reason}")
     now = int(time.time())
     if events is None:
-        events = ["done", "blocked", "crashed", "timed_out"]
+        events = ["done", "blocked", "crashed", "timed_out", "gave_up"]
     ev_str = ",".join(events)
     encrypted_secret = _encrypt_webhook_secret(secret) if secret else None
     with write_txn(conn):
