@@ -76,6 +76,7 @@ CONFIGURABLE_TOOLSETS = [
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
     ("computer_use",     "🖱️  Computer Use (macOS)",     "background desktop control via cua-driver"),
+    ("xai_deferred",     "⏳ xAI deferred chat",        "long-running completions via submit + poll"),
 ]
 
 # Toolsets that are OFF by default for new installs.
