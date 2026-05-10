@@ -1883,6 +1883,65 @@ class TestReactions:
         """SLACK_REACTIONS defaults to true (matches existing behavior)."""
         assert adapter._reactions_enabled() is True
 
+    def test_resolve_reaction_emoji_default(self, adapter, monkeypatch):
+        """Without env override, the default name is returned."""
+        monkeypatch.delenv("SLACK_REACTION_PROCESSING", raising=False)
+        assert adapter._resolve_reaction_emoji("processing", "eyes") == "eyes"
+
+    def test_resolve_reaction_emoji_env_override(self, adapter, monkeypatch):
+        """SLACK_REACTION_<NAME> overrides the default."""
+        monkeypatch.setenv("SLACK_REACTION_PROCESSING", "writing_hand")
+        monkeypatch.setenv("SLACK_REACTION_SUCCESS", "tada")
+        monkeypatch.setenv("SLACK_REACTION_FAILURE", "boom")
+        assert adapter._resolve_reaction_emoji("processing", "eyes") == "writing_hand"
+        assert adapter._resolve_reaction_emoji("success", "white_check_mark") == "tada"
+        assert adapter._resolve_reaction_emoji("failure", "x") == "boom"
+
+    def test_resolve_reaction_emoji_strips_colons(self, adapter, monkeypatch):
+        """Colons in the env value are stripped (operator-friendly input)."""
+        monkeypatch.setenv("SLACK_REACTION_PROCESSING", ":writing_hand:")
+        assert adapter._resolve_reaction_emoji("processing", "eyes") == "writing_hand"
+
+    def test_resolve_reaction_emoji_empty_falls_back(self, adapter, monkeypatch):
+        """Empty or whitespace env value falls back to the default."""
+        monkeypatch.setenv("SLACK_REACTION_PROCESSING", "   ")
+        assert adapter._resolve_reaction_emoji("processing", "eyes") == "eyes"
+
+    @pytest.mark.asyncio
+    async def test_reactions_use_env_overrides_in_message_flow(self, adapter, monkeypatch):
+        """Configured emojis flow through processing_start and processing_complete."""
+        monkeypatch.setenv("SLACK_REACTION_PROCESSING", "hourglass")
+        monkeypatch.setenv("SLACK_REACTION_SUCCESS", "tada")
+        monkeypatch.setenv("SLACK_REACTION_FAILURE", "boom")
+
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource, ProcessingOutcome
+        from gateway.config import Platform
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="dm",
+            user_id="U_USER",
+        )
+        adapter._reacting_message_ids.add("1234567890.000999")
+        msg_event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="1234567890.000999",
+        )
+        await adapter.on_processing_start(msg_event)
+        await adapter.on_processing_complete(msg_event, ProcessingOutcome.SUCCESS)
+
+        add_calls = adapter._app.client.reactions_add.call_args_list
+        remove_calls = adapter._app.client.reactions_remove.call_args_list
+        # processing add → custom hourglass; success add → custom tada
+        assert [c.kwargs["name"] for c in add_calls] == ["hourglass", "tada"]
+        # remove must use the SAME custom processing emoji that was added
+        assert [c.kwargs["name"] for c in remove_calls] == ["hourglass"]
+
 
 # ---------------------------------------------------------------------------
 # TestThreadReplyHandling
