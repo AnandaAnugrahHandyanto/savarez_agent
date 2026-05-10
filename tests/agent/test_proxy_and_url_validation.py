@@ -45,8 +45,13 @@ def test_proxy_env_normalizes_socks_alias(monkeypatch):
 ])
 def test_proxy_env_rejects_malformed_port(monkeypatch, key):
     monkeypatch.setenv(key, "http://127.0.0.1:6153export")
-    with pytest.raises(RuntimeError, match=rf"Malformed proxy environment variable {key}=.*6153export"):
+    with pytest.raises(RuntimeError) as exc_info:
         _validate_proxy_env_urls()
+    msg = str(exc_info.value)
+    assert "Malformed proxy environment variable" in msg
+    # Port typo must appear (do not pin env var casing: Windows folds http_proxy ↔ HTTP_PROXY
+    # and the loop raises on whichever spelling is read first).
+    assert "6153export" in msg
 
 
 # -- base URL validation -------------------------------------------------

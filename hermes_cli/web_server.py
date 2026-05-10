@@ -50,7 +50,7 @@ from hermes_cli.config import (
 from gateway.status import get_running_pid, read_runtime_status
 
 try:
-    from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+    from fastapi import APIRouter, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
@@ -65,6 +65,10 @@ WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.enviro
 _log = logging.getLogger(__name__)
 
 app = FastAPI(title="Hermes Agent", version=__version__)
+
+# Aggregates dashboard plugin backends under ``/api/plugins/<name>/...`` so
+# routes can be rebuilt after installs / re-scans without a process restart.
+_dashboard_plugin_api_router = APIRouter()
 
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
@@ -3024,8 +3028,10 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
 # the chat tab generates on mount; entries auto-evict when the last subscriber
 # drops AND the publisher has disconnected.
-_event_channels: dict[str, set] = {}
-_event_lock = asyncio.Lock()
+# Store (websocket, event_loop) pairs so publisher sockets running on a
+# different event loop/thread can still fan out safely.
+_event_channels: dict[str, set[tuple[WebSocket, asyncio.AbstractEventLoop]]] = {}
+_event_lock = threading.Lock()
 
 
 def _resolve_chat_argv(
@@ -3088,16 +3094,34 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
 
 async def _broadcast_event(channel: str, payload: str) -> None:
     """Fan out one publisher frame to every subscriber on `channel`."""
-    async with _event_lock:
+    with _event_lock:
         subs = list(_event_channels.get(channel, ()))
 
-    for sub in subs:
+    current_loop = asyncio.get_running_loop()
+    for sub, sub_loop in subs:
         try:
-            await sub.send_text(payload)
+            if sub_loop is current_loop:
+                await sub.send_text(payload)
+            else:
+                fut = asyncio.run_coroutine_threadsafe(sub.send_text(payload), sub_loop)
+                # Keep a tight timeout — this is best-effort fanout and should
+                # never block the publisher loop indefinitely.
+                fut.result(timeout=0.5)
         except Exception:
-            # Subscriber went away mid-send; the /api/events finally clause
-            # will remove it from the registry on its next iteration.
-            pass
+            # Rare race on CI: subscriber connection can be accepted but not
+            # fully ready for the first write. Yield once and retry before
+            # dropping the frame.
+            try:
+                await asyncio.sleep(0.01)
+                if sub_loop is current_loop:
+                    await sub.send_text(payload)
+                else:
+                    fut = asyncio.run_coroutine_threadsafe(sub.send_text(payload), sub_loop)
+                    fut.result(timeout=0.5)
+            except Exception:
+                # Subscriber went away mid-send; the /api/events finally clause
+                # will remove it from the registry on its next iteration.
+                pass
 
 
 def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
@@ -3309,10 +3333,13 @@ async def events_ws(ws: WebSocket) -> None:
         await ws.close(code=4400)
         return
 
-    await ws.accept()
+    # Register before accept so clients that open /api/pub immediately after
+    # connect cannot race ahead of subscriber registration (CI / xdist).
+    loop = asyncio.get_running_loop()
+    with _event_lock:
+        _event_channels.setdefault(channel, set()).add((ws, loop))
 
-    async with _event_lock:
-        _event_channels.setdefault(channel, set()).add(ws)
+    await ws.accept()
 
     try:
         while True:
@@ -3323,11 +3350,12 @@ async def events_ws(ws: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        async with _event_lock:
+        with _event_lock:
             subs = _event_channels.get(channel)
 
             if subs is not None:
-                subs.discard(ws)
+                subs = {(sub, sub_loop) for (sub, sub_loop) in subs if sub is not ws}
+                _event_channels[channel] = subs
 
                 if not subs:
                     _event_channels.pop(channel, None)
@@ -3860,6 +3888,7 @@ async def get_dashboard_plugins():
 async def rescan_dashboard_plugins():
     """Force re-scan of dashboard plugins."""
     plugins = _get_dashboard_plugins(force_rescan=True)
+    _mount_plugin_api_routes()
     return {"ok": True, "count": len(plugins)}
 
 
@@ -4015,6 +4044,7 @@ async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallB
             detail=result.get("error") or "Install failed.",
         )
     _get_dashboard_plugins(force_rescan=True)
+    _mount_plugin_api_routes()
     # Strip internal paths from the response
     result.pop("after_install_path", None)
     return result
@@ -4061,6 +4091,7 @@ async def post_agent_plugin_update(request: Request, name: str):
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error") or "Update failed.")
     _get_dashboard_plugins(force_rescan=True)
+    _mount_plugin_api_routes()
     return result
 
 
@@ -4074,6 +4105,7 @@ async def delete_agent_plugin(request: Request, name: str):
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error") or "Remove failed.")
     _get_dashboard_plugins(force_rescan=True)
+    _mount_plugin_api_routes()
     return result
 
 
@@ -4163,14 +4195,45 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     return FileResponse(target, media_type=media_type)
 
 
-def _mount_plugin_api_routes():
-    """Import and mount backend API routes from plugins that declare them.
+def _purge_dashboard_plugin_http_routes(application: FastAPI) -> None:
+    """Remove flattened ``/api/plugins/...`` routes from *application*.
 
-    Each plugin's ``api`` field points to a Python file that must expose
-    a ``router`` (FastAPI APIRouter).  Routes are mounted under
-    ``/api/plugins/<name>/``.
+    ``FastAPI.include_router`` **copies** route objects onto the app router.
+    Clearing and refilling the aggregate :class:`fastapi.APIRouter` afterwards
+    does not update those copies, so full remounts must drop the stale HTTP
+    routes first (see dashboard plugin tests + rescan/install paths).
     """
-    for plugin in _get_dashboard_plugins():
+    kept: List = []
+    for route in application.router.routes:
+        path = getattr(route, "path", None)
+        if isinstance(path, str) and (
+            path == "/api/plugins" or path.startswith("/api/plugins/")
+        ):
+            continue
+        kept.append(route)
+    application.router.routes[:] = kept
+
+
+def _mount_plugin_api_routes() -> None:
+    """Import dashboard plugin API modules into the aggregate plugin router.
+
+    Each plugin's ``api`` manifest field names a Python file that must expose a
+    ``router`` (:class:`fastapi.APIRouter`).  Routes appear under
+    ``/api/plugins/<name>/``.
+
+    Callable multiple times — for example after a disk re-scan or plugin
+    install.  Stale flattened routes are purged then the aggregate router is
+    re-attached via :func:`FastAPI.include_router`.
+    """
+    _purge_dashboard_plugin_http_routes(app)
+    plugins = _get_dashboard_plugins()
+
+    _dashboard_plugin_api_router.routes.clear()
+    for mod_key in list(sys.modules):
+        if mod_key.startswith("hermes_dashboard_plugin_"):
+            sys.modules.pop(mod_key, None)
+
+    for plugin in plugins:
         api_file_name = plugin.get("_api_file")
         if not api_file_name:
             continue
@@ -4200,13 +4263,41 @@ def _mount_plugin_api_routes():
             if router is None:
                 _log.warning("Plugin %s api file has no 'router' attribute", plugin["name"])
                 continue
-            app.include_router(router, prefix=f"/api/plugins/{plugin['name']}")
+            _dashboard_plugin_api_router.include_router(router, prefix=f"/{plugin['name']}")
             _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
         except Exception as exc:
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)
 
+    # Flatten onto *app* at the splice index — **not** ``app.include_router`` last.
+    #
+    # ``include_router`` appends routes.  On first load (before ``mount_spa``)
+    # that preserves ``/api/plugins/*`` ahead of ``/{full_path:path}``, but after
+    # a reload the SPA catch-all already exists earlier in ``app.router.routes``
+    # and naive appends leave new plugin endpoints *after* the catch-all, so
+    # every ``/api/plugins/...`` request hits the SPA 404.
+    routes_ref = app.router.routes
+    insert_at = next(
+        (
+            i
+            for i, route in enumerate(routes_ref)
+            if getattr(route, "path", None) == "/{full_path:path}"
+        ),
+        len(routes_ref),
+    )
+    probe = FastAPI()
+    probe.include_router(_dashboard_plugin_api_router, prefix="/api/plugins")
+    fresh = [
+        route
+        for route in probe.router.routes
+        if isinstance(getattr(route, "path", None), str)
+        and (
+            getattr(route, "path") == "/api/plugins"
+            or getattr(route, "path").startswith("/api/plugins/")
+        )
+    ]
+    routes_ref[insert_at:insert_at] = fresh
 
-# Mount plugin API routes before the SPA catch-all.
+
 _mount_plugin_api_routes()
 
 mount_spa(app)

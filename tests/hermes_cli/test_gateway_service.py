@@ -2209,19 +2209,27 @@ class TestMigrateLegacyCommand:
 
 class TestGatewayStatusParser:
     def test_gateway_status_subparser_accepts_full_flag(self):
-        import subprocess
+        """Exercise ``gateway status -l --help`` in-process.
+
+        A subprocess can receive SIGTERM (-15) from the outer runner under
+        load (e.g. large xdist CI jobs) even when ``--help`` is otherwise
+        correct; ``main()`` already rebuilds the parser each call.
+        """
+        import importlib
         import sys
+        from io import StringIO
+        from unittest.mock import patch
 
-        result = subprocess.run(
-            [sys.executable, "-m", "hermes_cli.main", "gateway", "status", "-l", "--help"],
-            cwd=str(gateway_cli.PROJECT_ROOT),
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
+        stderr = StringIO()
+        argv = ["hermes", "gateway", "status", "-l", "--help"]
+        with patch.object(sys, "argv", argv):
+            with patch.object(sys, "stderr", stderr):
+                main_mod = importlib.import_module("hermes_cli.main")
+                with pytest.raises(SystemExit) as excinfo:
+                    main_mod.main()
 
-        assert result.returncode == 0
-        assert "unrecognized arguments" not in result.stderr
+        assert excinfo.value.code in (0, None)
+        assert "unrecognized arguments" not in stderr.getvalue()
 
     def test_gateway_command_migrate_legacy_dry_run_passes_through(
         self, monkeypatch

@@ -130,7 +130,8 @@ class TestBasePlatformTopicSessions:
             {
                 "chat_id": "-1001",
                 "content": "ack",
-                "reply_to": None,
+                # Telegram topics: gateway anchors replies to the triggering message.
+                "reply_to": "1",
                 "metadata": {"thread_id": "17585", "notify": True},
             }
         ]

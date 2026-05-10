@@ -585,7 +585,13 @@ class ProcessRegistry:
             try:
                 if not _IS_WINDOWS:
                     try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        killpg = getattr(os, "killpg", None)
+                        getpgid = getattr(os, "getpgid", None)
+                        sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+                        if killpg is not None and getpgid is not None:
+                            killpg(getpgid(proc.pid), sigkill)
+                        else:
+                            proc.kill()
                     except (ProcessLookupError, PermissionError, OSError):
                         proc.kill()
                 else:

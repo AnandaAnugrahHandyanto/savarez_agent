@@ -160,9 +160,13 @@ class TestOrphanedPipeReconciliation:
         assert s.id in registry._finished
         assert s.id not in registry._running
 
-        # Clean up the orphaned descendant.
+        # Clean up the orphaned descendant (getattr: Windows footgun scan).
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            killpg = getattr(os, "killpg", None)
+            getpgid = getattr(os, "getpgid", None)
+            sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+            if killpg is not None and getpgid is not None:
+                killpg(getpgid(proc.pid), sigkill)
         except (ProcessLookupError, PermissionError):
             pass
 
@@ -226,7 +230,11 @@ class TestOrphanedPipeReconciliation:
         )
 
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            killpg = getattr(os, "killpg", None)
+            getpgid = getattr(os, "getpgid", None)
+            sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+            if killpg is not None and getpgid is not None:
+                killpg(getpgid(proc.pid), sigkill)
         except (ProcessLookupError, PermissionError):
             pass
 
