@@ -1564,6 +1564,17 @@ def _cmd_complete(args: argparse.Namespace) -> int:
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:
+    if getattr(args, "clear_skills", False) and any([
+        args.result is not None,
+        getattr(args, "summary", None) is not None,
+        getattr(args, "metadata", None) is not None,
+    ]):
+        print(
+            "kanban: edit --clear-skills cannot be combined with "
+            "--result/--summary/--metadata",
+            file=sys.stderr,
+        )
+        return 2
     if not getattr(args, "clear_skills", False) and args.result is None:
         print(
             "kanban: edit requires --result unless --clear-skills is used",
@@ -1581,7 +1592,7 @@ def _cmd_edit(args: argparse.Namespace) -> int:
             print(f"kanban: --metadata: {exc}", file=sys.stderr)
             return 2
     with kb.connect() as conn:
-        if not kb.edit_completed_task_result(
+        if not kb.edit_task_recovery_fields(
             conn,
             args.task_id,
             result=args.result,

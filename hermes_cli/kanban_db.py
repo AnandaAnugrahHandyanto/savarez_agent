@@ -2385,7 +2385,7 @@ def complete_task(
     return True
 
 
-def edit_completed_task_result(
+def edit_task_recovery_fields(
     conn: sqlite3.Connection,
     task_id: str,
     *,
@@ -2483,6 +2483,26 @@ def edit_completed_task_result(
             run_id=run_id,
         )
     return True
+
+
+def edit_completed_task_result(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    result: Optional[str] = None,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    clear_skills: bool = False,
+) -> bool:
+    """Back-compat wrapper for the broader recovery-field editor."""
+    return edit_task_recovery_fields(
+        conn,
+        task_id,
+        result=result,
+        summary=summary,
+        metadata=metadata,
+        clear_skills=clear_skills,
+    )
 
 
 def block_task(

@@ -1773,6 +1773,18 @@ def test_cli_edit_clear_skills_rejects_running_task(kanban_home):
     assert "cannot clear skills" in out
 
 
+def test_cli_edit_clear_skills_rejects_result_fields(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker", skills=["translation"])
+    finally:
+        conn.close()
+
+    out = run_slash(f"edit {tid} --clear-skills --result nope")
+
+    assert "--clear-skills cannot be combined" in out
+
+
 def test_cli_complete_bad_metadata_exits_nonzero(kanban_home):
     conn = kb.connect()
     try:
