@@ -2480,8 +2480,9 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     # config.yaml (auxiliary.<task>.provider) still win over this.
     main_provider = runtime_provider or _read_main_provider()
     main_model = runtime_model or _read_main_model()
-    if (main_provider and main_model
-            and main_provider not in ("auto", "")):
+    if (main_provider
+            and main_provider not in ("auto", "")
+            and main_model):
         resolved_provider = main_provider
         explicit_base_url = None
         explicit_api_key = None
@@ -2510,6 +2511,24 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
                             main_provider, resolved or main_model)
                 return client, resolved or main_model
 
+        # Step 1 with "custom" failed (no OPENAI_API_KEY or bad endpoint).
+        # Retry using the named main provider — it may have its own key
+        # (e.g. MINIMAX_API_KEY for "minimax") even though the custom
+        # endpoint did not respond.
+        if (resolved_provider == "custom"
+                and main_provider != "custom"
+                and not main_provider.startswith("custom:")):
+            client, resolved = resolve_provider_client(
+                main_provider,
+                main_model,
+                api_mode=runtime_api_mode or None,
+            )
+            if client is not None:
+                logger.info("Auxiliary auto-detect: using main provider %s (%s) "
+                            "after custom endpoint failed",
+                            main_provider, resolved or main_model)
+                return client, resolved or main_model
+
     # ── Step 2: aggregator / fallback chain ──────────────────────────────
     tried = []
     for label, try_fn in _get_provider_chain():
@@ -2526,10 +2545,13 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
                 logger.info("Auxiliary auto-detect: using %s (%s)", label, model or "default")
             return client, model
         tried.append(label)
-    logger.warning("Auxiliary auto-detect: no provider available (tried: %s). "
-                   "Compression, summarization, and memory flush will not work. "
-                   "Set OPENROUTER_API_KEY or configure a local model in config.yaml.",
-                   ", ".join(tried))
+    logger.warning(
+        "Auxiliary auto-detect: no provider available (tried: %s). "
+        "Compression, summarization, and memory flush will not work. "
+        "Fix: set auxiliary.<task>.provider: main in config.yaml to use "
+        "your main chat model for side tasks, or configure OPENROUTER_API_KEY "
+        "for the fallback chain.",
+        ", ".join(tried))
     return None, None
 
 
