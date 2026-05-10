@@ -1393,6 +1393,17 @@ DEFAULT_CONFIG = {
         # the sweep on every CLI invocation).  Tracked via state_meta in
         # state.db itself, so it's shared across all processes.
         "min_interval_hours": 24,
+        "run_ledger": {
+            "enabled": True,
+            "preview_chars": 4096,
+            "blob_threshold_chars": 16384,
+            "max_blob_bytes": 10000000,
+            "max_capsule_events": 200,
+            "lock_timeout_seconds": 30,
+            "fsync": False,
+            "retention_days": 90,
+            "max_run_bytes": 268435456,
+        },
     },
 
     # Contextual first-touch onboarding hints (see agent/onboarding.py).

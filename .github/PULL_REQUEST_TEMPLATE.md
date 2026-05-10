@@ -4,11 +4,18 @@
 
 
 
-## Related Issue
+## Related Issue / Plan / Control Doc
 
 <!-- Link the issue this PR addresses. If no issue exists, consider creating one first. -->
 
 Fixes #
+
+<!-- For long-running, autonomous, or session-continuity work, link the PRD/plan/control doc and any run-ledger/capsule/evidence handles. Use N/A for simple one-off changes. -->
+
+- PRD / implementation plan:
+- Long-task control doc / resume capsule:
+- Run ledger / state capsule handles:
+- Evidence or artifact manifest:
 
 ## Type of Change
 
@@ -36,6 +43,25 @@ Fixes #
 2. 
 3. 
 
+## TDD / Review Evidence
+
+<!-- For code changes, include the tests planned before implementation, RED evidence, GREEN evidence, and any independent/second-review result. Use N/A only for docs-only or non-code changes. -->
+
+- Planned tests vs. acceptance criteria:
+- RED evidence (failing tests observed before implementation):
+- GREEN evidence (focused tests passing after implementation):
+- Broader validation / regression checks:
+- Independent review / second opinion:
+
+## Operational / Safety Impact
+
+<!-- Note config changes, migrations, storage/retention impact, privacy/redaction impact, rollback plan, or user-visible behavior. -->
+
+- Config or migration impact:
+- Storage / retention / privacy impact:
+- Rollback plan:
+- Not authorized / out of scope:
+
 ## Checklist
 
 <!-- Complete these before requesting review. -->
@@ -48,7 +74,10 @@ Fixes #
 - [ ] My PR contains **only** changes related to this fix/feature (no unrelated commits)
 - [ ] I've run `pytest tests/ -q` and all tests pass
 - [ ] I've added tests for my changes (required for bug fixes, strongly encouraged for features)
-- [ ] I've tested on my platform: <!-- e.g. Ubuntu 24.04, macOS 15.2, Windows 11 -->
+- [ ] For behavioral code changes, I followed TDD or documented why it was not applicable
+- [ ] For long-running/autonomous work, I updated the control doc/resume capsule and evidence manifest, or marked them N/A
+- [ ] I resolved or explicitly triaged reviewer/second-review comments
+- [ ] I've tested on my platform (e.g. Ubuntu 24.04, macOS 15.2, Windows 11):
 
 ### Documentation & Housekeeping
 

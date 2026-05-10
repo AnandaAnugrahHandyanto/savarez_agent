@@ -1,0 +1,201 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/docs/templates/evidence-manifest.schema.json",
+  "title": "Hermes long-task evidence manifest",
+  "description": "Schema for artifacts collected during long-running, autonomous, or session-continuity-sensitive work.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "manifest_id",
+    "title",
+    "created_at",
+    "updated_at",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "manifest_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "project": {
+      "type": "string",
+      "description": "Project, repository, product, or operational area this manifest belongs to."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "owner": {
+      "type": "string",
+      "description": "Person, team, or agent responsible for maintaining this manifest."
+    },
+    "extensions": {
+      "type": "object",
+      "description": "Optional custom metadata. Use namespaced keys such as team.example/key when possible.",
+      "additionalProperties": true
+    },
+    "related": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "issues": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "pull_requests": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "sessions": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "runs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "control_docs": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "type",
+          "location",
+          "summary",
+          "safe_to_publish",
+          "redaction_status"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:-]+$"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "command_output",
+              "ci_run",
+              "code_review",
+              "config_snapshot",
+              "database_snapshot",
+              "deployment_log",
+              "document",
+              "git_diff",
+              "git_commit",
+              "issue_or_pr_comment",
+              "log_excerpt",
+              "run_ledger_event",
+              "run_ledger_capsule",
+              "screenshot",
+              "test_report",
+              "other"
+            ]
+          },
+          "location": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Local path, repository path, URL, CI run URL, or run-ledger event/capsule handle."
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-fA-F0-9]{64}$"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "mime_type": {
+            "type": "string",
+            "description": "Media type for file artifacts, if known."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "collected_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "source": {
+            "type": "string",
+            "description": "Command, tool, system, or person that produced the artifact."
+          },
+          "actor": {
+            "type": "string",
+            "description": "Human, agent, service, or workflow that collected or generated the artifact."
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "redaction_status": {
+            "type": "string",
+            "enum": ["not_needed", "redacted", "contains_sensitive", "unknown"]
+          },
+          "safe_to_publish": {
+            "type": "boolean"
+          },
+          "related": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "acceptance_criteria": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "issues": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "pull_requests": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "sessions": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "runs": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "tasks": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            }
+          },
+          "notes": {
+            "type": "string"
+          },
+          "extensions": {
+            "type": "object",
+            "description": "Optional custom artifact metadata. Use namespaced keys when possible.",
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  }
+}
