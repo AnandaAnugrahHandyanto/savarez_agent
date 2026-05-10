@@ -360,3 +360,55 @@ def test_adapter_unavailable_returns_none():
 
         result = asyncio.run(adapter.get_connections(active_topics=["anything"]))
         assert result is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# last_seen_ts fidelity (Grok's fix — mtime not build time)
+# ──────────────────────────────────────────────────────────────────────
+
+def test_build_graph_last_seen_ts_matches_file_mtime():
+    """Nodes must carry the source file's mtime, not the build timestamp."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "notes.md")
+        with open(path, "w") as f:
+            f.write("# Soil Carbon\n\n**Regenerative Agriculture** is the mission.\n")
+
+        # Set mtime to a known value 10 days ago
+        target_mtime = time.time() - 10 * 86400
+        os.utime(path, (target_mtime, target_mtime))
+
+        graph = build_graph(tmpdir, layer="knowledge")
+
+        # Every node from this file should have last_seen_ts ≈ target_mtime
+        assert len(graph.nodes) > 0
+        for node in graph.nodes.values():
+            assert abs(node.last_seen_ts - target_mtime) < 5, (
+                f"Node '{node.label}' has last_seen_ts={node.last_seen_ts}, "
+                f"expected ~{target_mtime} (file mtime). "
+                "build_graph must use file mtime, not time.time()."
+            )
+
+
+def test_build_graph_last_seen_ts_30_days_old():
+    """A file modified 30 days ago must produce nodes with last_seen_ts ~30 days ago."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "old-notes.md")
+        with open(path, "w") as f:
+            f.write("# Old Concept\n\n**Deep Work** archive from long ago.\n")
+
+        thirty_days_ago = time.time() - 30 * 86400
+        os.utime(path, (thirty_days_ago, thirty_days_ago))
+
+        graph = build_graph(tmpdir, layer="knowledge")
+
+        assert len(graph.nodes) > 0
+        for node in graph.nodes.values():
+            age_days = (time.time() - node.last_seen_ts) / 86400
+            assert age_days > 25, (
+                f"Node '{node.label}' appears to be only {age_days:.1f} days old — "
+                "expected ~30 days (file mtime). Not time.time()."
+            )
+            assert age_days < 35, (
+                f"Node '{node.label}' appears {age_days:.1f} days old — "
+                "mtime was set to exactly 30 days ago."
+            )

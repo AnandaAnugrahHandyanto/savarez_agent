@@ -138,8 +138,8 @@ _MAX_FILE_BYTES = 500 * 1024  # 500 KB
 _MAX_WALK_DEPTH = 8
 
 
-def walk_files(directory: str, depth: int = 0) -> Iterator[str]:
-    """Yield file paths under directory, respecting skip rules."""
+def walk_files(directory: str, depth: int = 0) -> Iterator[Tuple[str, float]]:
+    """Yield (file_path, mtime) tuples under directory, respecting skip rules."""
     if depth > _MAX_WALK_DEPTH:
         return
     try:
@@ -153,10 +153,11 @@ def walk_files(directory: str, depth: int = 0) -> Iterator[str]:
                         yield from walk_files(entry.path, depth + 1)
                 elif entry.is_file(follow_symlinks=False):
                     try:
-                        if entry.stat().st_size < _MAX_FILE_BYTES:
+                        stat = entry.stat()
+                        if stat.st_size < _MAX_FILE_BYTES:
                             ext = os.path.splitext(name)[1].lower()
                             if ext not in _SKIP_EXTENSIONS:
-                                yield entry.path
+                                yield entry.path, stat.st_mtime
                     except OSError:
                         pass
     except OSError:
@@ -273,7 +274,7 @@ class GraphNode:
     sources: List[str] = field(default_factory=list)
     layer: str = "knowledge"
     person: Optional[str] = None
-    last_seen_ts: float = field(default_factory=time.time)
+    last_seen_ts: float = 0.0
     source_path: str = ""
 
 
@@ -307,6 +308,7 @@ class KnowledgeGraph:
         source: str = "",
         weight: float = 1.0,
         person: Optional[str] = None,
+        last_seen_ts: Optional[float] = None,
     ) -> Optional[str]:
         node_id = self._normalize(label)
         if not node_id or len(node_id) <= 2:
@@ -315,7 +317,7 @@ class KnowledgeGraph:
             node = self.nodes[node_id]
             node.count += weight
             node.weight += weight
-            node.last_seen_ts = time.time()
+            node.last_seen_ts = last_seen_ts if last_seen_ts is not None else time.time()
             if source and source not in node.sources:
                 node.sources.append(source[-50:])
         else:
@@ -328,7 +330,7 @@ class KnowledgeGraph:
                 sources=[source[-50:]] if source else [],
                 layer=self.layer,
                 person=person,
-                last_seen_ts=time.time(),
+                last_seen_ts=last_seen_ts if last_seen_ts is not None else time.time(),
                 source_path=source,
             )
         return node_id
@@ -489,7 +491,7 @@ _STYLE_RE = re.compile(r"<style[^>]*>[\s\S]*?</style>", re.IGNORECASE)
 _HTML_TITLE_RE = re.compile(r"<(?:title|h1)[^>]*>([^<]{3,80})<", re.IGNORECASE)
 
 
-def extract_knowledge(content: str, source: str, graph: KnowledgeGraph, weight: float = 1.0) -> None:
+def extract_knowledge(content: str, source: str, graph: KnowledgeGraph, weight: float = 1.0, file_mtime: Optional[float] = None) -> None:
     """Extract concepts from prose (markdown, text). Direct port of extractKnowledge."""
     clean = redact_credentials(content)
 
@@ -497,11 +499,11 @@ def extract_knowledge(content: str, source: str, graph: KnowledgeGraph, weight: 
     bold_items = [b.strip() for b in _BOLD_RE.findall(clean)]
     rules = _RULE_RE.findall(clean)
 
-    header_ids = [graph.add_node(h.strip(), "concept", source, weight) for h in headers]
-    bold_ids = [graph.add_node(b, "concept", source, weight * 0.7) for b in bold_items]
+    header_ids = [graph.add_node(h.strip(), "concept", source, weight, last_seen_ts=file_mtime) for h in headers]
+    bold_ids = [graph.add_node(b, "concept", source, weight * 0.7, last_seen_ts=file_mtime) for b in bold_items]
 
     for name, _desc in rules:
-        graph.add_node(name.strip(), "rule", source, weight * 0.5)
+        graph.add_node(name.strip(), "rule", source, weight * 0.5, last_seen_ts=file_mtime)
 
     all_ids = [i for i in header_ids + bold_ids if i]
     for i in range(len(all_ids)):
@@ -509,15 +511,15 @@ def extract_knowledge(content: str, source: str, graph: KnowledgeGraph, weight: 
             graph.add_edge(all_ids[i], all_ids[j], "RELATES_TO", "EXTRACTED", weight * 0.5)
 
 
-def extract_code(content: str, file_path: str, source: str, graph: KnowledgeGraph) -> None:
+def extract_code(content: str, file_path: str, source: str, graph: KnowledgeGraph, file_mtime: Optional[float] = None) -> None:
     """Extract code structure. Direct port of extractCode."""
     ext = os.path.splitext(file_path)[1].lower()
     file_label = os.path.splitext(os.path.basename(file_path))[0]
-    file_id = graph.add_node(file_label, "file", source, 1.0)
+    file_id = graph.add_node(file_label, "file", source, 1.0, last_seen_ts=file_mtime)
 
     for m in _FN_RE.finditer(content):
         label = m.group(1)
-        node_id = graph.add_node(label, "function", source, 1.0)
+        node_id = graph.add_node(label, "function", source, 1.0, last_seen_ts=file_mtime)
         if file_id and node_id:
             graph.add_edge(file_id, node_id, "IMPLEMENTS", "EXTRACTED", 1.0)
 
@@ -527,7 +529,7 @@ def extract_code(content: str, file_path: str, source: str, graph: KnowledgeGrap
         if not raw:
             continue
         dep = os.path.splitext(os.path.basename(raw.strip()))[0]
-        dep_id = graph.add_node(dep, "module", source, 0.5)
+        dep_id = graph.add_node(dep, "module", source, 0.5, last_seen_ts=file_mtime)
         if file_id and dep_id:
             graph.add_edge(file_id, dep_id, "IMPORTS", "EXTRACTED", 1.0)
 
@@ -535,22 +537,22 @@ def extract_code(content: str, file_path: str, source: str, graph: KnowledgeGrap
     for c in comments[:10]:
         text = re.sub(r"^//\s*|^#\s*", "", c).strip()
         if len(text) > 10:
-            concept_id = graph.add_node(text, "concept", source, 0.3)
+            concept_id = graph.add_node(text, "concept", source, 0.3, last_seen_ts=file_mtime)
             if file_id and concept_id:
                 graph.add_edge(file_id, concept_id, "IS_ABOUT", "INFERRED", 0.3)
 
 
-def extract_html(content: str, file_path: str, source: str, graph: KnowledgeGraph, weight: float = 1.0) -> None:
+def extract_html(content: str, file_path: str, source: str, graph: KnowledgeGraph, weight: float = 1.0, file_mtime: Optional[float] = None) -> None:
     """Extract from HTML. Direct port of extractHTML."""
     text = _SCRIPT_RE.sub("", content)
     text = _STYLE_RE.sub("", text)
     text = _HTML_STRIP_RE.sub(" ", text)
     text = re.sub(r"\s+", " ", text).strip()
     if text:
-        extract_knowledge(text, source, graph, weight)
+        extract_knowledge(text, source, graph, weight, file_mtime)
     m = _HTML_TITLE_RE.search(content)
     if m:
-        graph.add_node(m.group(1).strip(), "project", source, weight * 2)
+        graph.add_node(m.group(1).strip(), "project", source, weight * 2, last_seen_ts=file_mtime)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -585,7 +587,7 @@ def build_graph(
 
     logger.info("BartokGraph: building layer=%s person=%s path=%s", layer, person or "all", workspace_path)
 
-    for file_path in walk_files(workspace_path):
+    for file_path, file_mtime in walk_files(workspace_path):
         # Person filter
         if person and not file_matches_person(file_path, workspace_path, person, person_filters):
             skipped += 1
@@ -601,20 +603,20 @@ def build_graph(
 
             if layer == "code":
                 if ext in {".ts", ".tsx", ".js", ".mjs", ".jsx", ".py", ".sh", ".sql"}:
-                    extract_code(content, file_path, source, graph)
+                    extract_code(content, file_path, source, graph, file_mtime)
                     processed += 1
                 else:
                     skipped += 1
 
             else:  # knowledge / person
                 if ext in {".md", ".txt", ".vtt"}:
-                    extract_knowledge(content, source, graph, weight)
+                    extract_knowledge(content, source, graph, weight, file_mtime)
                     processed += 1
                 elif ext in {".html", ".htm"}:
-                    extract_html(content, file_path, source, graph, weight)
+                    extract_html(content, file_path, source, graph, weight, file_mtime)
                     processed += 1
                 elif ext in {".json", ".jsonl"}:
-                    _extract_json(content, source, graph, weight)
+                    _extract_json(content, source, graph, weight, file_mtime)
                     processed += 1
                 elif ext in {".ts", ".tsx", ".js", ".mjs", ".jsx", ".py"}:
                     # Code in knowledge layer — concepts from comments only, low weight
@@ -622,14 +624,14 @@ def build_graph(
                     for c in comments[:5]:
                         text = re.sub(r"^//\s*|^#\s*", "", c).strip()
                         if len(text) > 15:
-                            graph.add_node(text, "concept", source, 0.2)
+                            graph.add_node(text, "concept", source, 0.2, last_seen_ts=file_mtime)
                     processed += 1
                 elif ext == ".pdf":
                     # Best-effort text extraction from PDF bytes
                     cleaned = re.sub(r"[^\x20-\x7E\n\r]", " ", content)
                     cleaned = re.sub(r"\s+", " ", cleaned).strip()
                     if len(cleaned) > 100:
-                        extract_knowledge(cleaned, source, graph, weight)
+                        extract_knowledge(cleaned, source, graph, weight, file_mtime)
                     processed += 1
                 else:
                     skipped += 1
@@ -646,7 +648,7 @@ def build_graph(
     return graph
 
 
-def _extract_json(content: str, source: str, graph: KnowledgeGraph, weight: float) -> None:
+def _extract_json(content: str, source: str, graph: KnowledgeGraph, weight: float, file_mtime: Optional[float] = None) -> None:
     """Extract title/name fields from JSON. Direct port of the JSON branch."""
     try:
         data = json.loads(content)
@@ -664,7 +666,7 @@ def _extract_json(content: str, source: str, graph: KnowledgeGraph, weight: floa
             if isinstance(item, dict):
                 label = (item.get("title") or item.get("name") or "")[:60]
                 if len(label) > 3:
-                    graph.add_node(redact_credentials(label), "concept", source, weight)
+                    graph.add_node(redact_credentials(label), "concept", source, weight, last_seen_ts=file_mtime)
     except (json.JSONDecodeError, TypeError):
         pass
 
