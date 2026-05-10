@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict
 
 from tools.web_providers.base import WebSearchProvider
@@ -37,8 +36,8 @@ class MiniMaxSearchProvider(WebSearchProvider):
         try:
             creds = resolve_minimax_oauth_runtime_credentials()
             api_key = creds["api_key"]
-            # Extract root URL from inference_base_url (usually api.minimax.io)
-            root_url = creds["base_url"].split("/anthropic")[0].rstrip("/") if "/anthropic" in creds["base_url"] else creds["base_url"].rstrip("/")
+            from agent.minimax_client import _parse_root_url
+            root_url = _parse_root_url(creds["base_url"])
         except Exception as exc:
             return {"success": False, "error": f"Failed to resolve MiniMax credentials: {exc}"}
 
