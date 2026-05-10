@@ -8,6 +8,7 @@ import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { fmtCwdBranch, shortCwd } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
+import { useI18n } from '../i18n.js'
 import type {
   ClarifyRespondResponse,
   ClipboardPasteResponse,
@@ -111,6 +112,7 @@ export function useMainApp(gw: GatewayClient) {
   const [bellOnComplete, setBellOnComplete] = useState(false)
 
   const ui = useStore($uiState)
+  const i18n = useI18n()
   const overlay = useStore($overlayState)
 
   const turnLiveTailActive = useTurnSelector(state =>
@@ -821,7 +823,11 @@ export function useMainApp(gw: GatewayClient) {
       turnStartedAt: ui.sid ? turnStartedAt : null,
       // CLI parity: the classic prompt_toolkit status bar shows a red dot
       // on REC (cli.py:_get_voice_status_fragments line 2344).
-      voiceLabel: voiceRecording ? '● REC' : voiceProcessing ? '◉ STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
+      voiceLabel: voiceRecording
+        ? '● REC'
+        : voiceProcessing
+          ? '◉ STT'
+          : i18n.t('voice.idle', { state: voiceEnabled ? i18n.t('voice.on') : i18n.t('voice.off') })
     }),
     [
       cwd,
@@ -833,7 +839,8 @@ export function useMainApp(gw: GatewayClient) {
       ui,
       voiceEnabled,
       voiceProcessing,
-      voiceRecording
+      voiceRecording,
+      i18n
     ]
   )
 

@@ -768,6 +768,15 @@ def resolve_skin() -> dict:
         return {}
 
 
+def resolve_language() -> str:
+    """返回 TUI 应使用的语言代码。优先级：HERMES_LANGUAGE 环境变量 > display.language 配置 > 'en' 默认值。"""
+    try:
+        from agent.i18n import get_language
+        return get_language()
+    except Exception:
+        return "en"
+
+
 def _resolve_model() -> str:
     env = (
         os.environ.get("HERMES_MODEL", "")

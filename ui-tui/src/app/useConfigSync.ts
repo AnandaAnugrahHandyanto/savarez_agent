@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
+import { normalizeLocale } from '../i18n.js'
 import type {
   ConfigFullResponse,
   ConfigMtimeResponse,
@@ -142,6 +143,7 @@ export const applyDisplay = (
     detailsModeCommandOverride: false,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
+    locale: normalizeLocale(d.language),
     mouseTracking: normalizeMouseTracking(d),
     sections: resolveSections(d.sections),
     showCost: !!d.show_cost,

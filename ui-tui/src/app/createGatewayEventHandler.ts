@@ -1,6 +1,6 @@
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
-import { SETUP_REQUIRED_TITLE, buildSetupRequiredSections } from '../content/setup.js'
+import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
 import type {
   CommandsCatalogResponse,
   ConfigFullResponse,
@@ -9,6 +9,7 @@ import type {
   GatewaySkin,
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
+import { normalizeLocale } from '../i18n.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatToolCall, stripAnsi } from '../lib/text.js'
@@ -185,9 +186,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
   const keepTerminalElseRunning = (s: SubagentProgress['status']) => (isTerminalStatus(s) ? s : 'running')
 
-  const handleReady = (skin?: GatewaySkin) => {
-    if (skin) {
-      applySkin(skin)
+  const handleReady = (payload?: { language?: string; skin?: GatewaySkin }) => {
+    if (payload?.language) {
+      patchUiState({ locale: normalizeLocale(payload.language) })
+    }
+
+    if (payload?.skin) {
+      applySkin(payload.skin)
     }
 
     rpc<CommandsCatalogResponse>('commands.catalog', {})
@@ -266,7 +271,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
     switch (ev.type) {
       case 'gateway.ready':
-        handleReady(ev.payload?.skin)
+        handleReady(ev.payload)
 
         return
 
@@ -690,7 +695,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           turnController.pushActivity(message, 'error')
 
           if (NO_PROVIDER_RE.test(message)) {
-            panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
+            const { locale } = getUiState()
+            panel(setupRequiredTitle(locale), buildSetupRequiredSections(locale))
             setStatus('setup required')
 
             return

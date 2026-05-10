@@ -2,17 +2,37 @@ import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useI18n } from "@/i18n";
+import { SCHEMA_ZH_LABEL, SCHEMA_ZH_DESC } from "@/i18n/schemaZh";
 
-function FieldHint({ schema, schemaKey }: { schema: Record<string, unknown>; schemaKey: string }) {
+function FieldHint({
+  schema,
+  schemaKey,
+  locale,
+}: {
+  schema: Record<string, unknown>;
+  schemaKey: string;
+  locale: string;
+}) {
   const keyPath = schemaKey.includes(".") ? schemaKey : "";
-  const description = schema.description ? String(schema.description) : "";
+  const rawDesc = schema.description ? String(schema.description) : "";
+  const description =
+    locale === "zh" && SCHEMA_ZH_DESC[schemaKey]
+      ? SCHEMA_ZH_DESC[schemaKey]
+      : rawDesc;
 
   if (!keyPath && !description) return null;
 
   return (
     <div className="flex flex-col gap-0.5">
-      {keyPath && <span className="text-[10px] font-mono text-muted-foreground/50">{keyPath}</span>}
-      {description && <span className="text-xs text-muted-foreground/70">{description}</span>}
+      {keyPath && (
+        <span className="text-[10px] font-mono text-muted-foreground/50">
+          {keyPath}
+        </span>
+      )}
+      {description && (
+        <span className="text-xs text-muted-foreground/70">{description}</span>
+      )}
     </div>
   );
 }
@@ -23,15 +43,22 @@ export function AutoField({
   value,
   onChange,
 }: AutoFieldProps) {
+  const { locale } = useI18n();
   const rawLabel = schemaKey.split(".").pop() ?? schemaKey;
-  const label = rawLabel.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const enLabel = rawLabel
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+  const label =
+    locale === "zh" && SCHEMA_ZH_LABEL[schemaKey]
+      ? SCHEMA_ZH_LABEL[schemaKey]
+      : enLabel;
 
   if (schema.type === "boolean") {
     return (
       <div className="flex items-center justify-between gap-4">
         <div className="flex flex-col gap-0.5">
           <Label className="text-sm">{label}</Label>
-          <FieldHint schema={schema} schemaKey={schemaKey} />
+          <FieldHint schema={schema} schemaKey={schemaKey} locale={locale} />
         </div>
         <Switch checked={!!value} onCheckedChange={onChange} />
       </div>
@@ -43,7 +70,7 @@ export function AutoField({
     return (
       <div className="grid gap-1.5">
         <Label className="text-sm">{label}</Label>
-        <FieldHint schema={schema} schemaKey={schemaKey} />
+        <FieldHint schema={schema} schemaKey={schemaKey} locale={locale} />
         <Select value={String(value ?? "")} onValueChange={(v) => onChange(v)}>
           {options.map((opt) => (
             <SelectOption key={opt} value={opt}>
@@ -59,7 +86,7 @@ export function AutoField({
     return (
       <div className="grid gap-1.5">
         <Label className="text-sm">{label}</Label>
-        <FieldHint schema={schema} schemaKey={schemaKey} />
+        <FieldHint schema={schema} schemaKey={schemaKey} locale={locale} />
         <Input
           type="number"
           value={value === undefined || value === null ? "" : String(value)}
@@ -83,7 +110,7 @@ export function AutoField({
     return (
       <div className="grid gap-1.5">
         <Label className="text-sm">{label}</Label>
-        <FieldHint schema={schema} schemaKey={schemaKey} />
+        <FieldHint schema={schema} schemaKey={schemaKey} locale={locale} />
         <textarea
           className="flex min-h-[80px] w-full border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           value={String(value ?? "")}
@@ -97,7 +124,7 @@ export function AutoField({
     return (
       <div className="grid gap-1.5">
         <Label className="text-sm">{label}</Label>
-        <FieldHint schema={schema} schemaKey={schemaKey} />
+        <FieldHint schema={schema} schemaKey={schemaKey} locale={locale} />
         <Input
           value={Array.isArray(value) ? value.join(", ") : String(value ?? "")}
           onChange={(e) =>
@@ -119,7 +146,7 @@ export function AutoField({
     return (
       <div className="grid gap-3 border border-border p-3">
         <Label className="text-xs font-medium">{label}</Label>
-        <FieldHint schema={schema} schemaKey={schemaKey} />
+        <FieldHint schema={schema} schemaKey={schemaKey} locale={locale} />
         {Object.entries(obj).map(([subKey, subVal]) => (
           <div key={subKey} className="grid gap-1">
             <Label className="text-xs text-muted-foreground">{subKey}</Label>
@@ -137,7 +164,7 @@ export function AutoField({
   return (
     <div className="grid gap-1.5">
       <Label className="text-sm">{label}</Label>
-      <FieldHint schema={schema} schemaKey={schemaKey} />
+      <FieldHint schema={schema} schemaKey={schemaKey} locale={locale} />
       <Input value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} />
     </div>
   );

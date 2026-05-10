@@ -15,6 +15,7 @@ import {
   treeTotals,
   widthByDepth
 } from '../lib/subagentTree.js'
+import { useI18n } from '../i18n.js'
 import {
   boundedLiveRenderText,
   compactPreview,
@@ -293,6 +294,7 @@ function SubagentAccordion({
   rails?: TreeRails
   t: Theme
 }) {
+  const { t: ti } = useI18n()
   const [open, setOpen] = useState(expanded)
   const [deep, setDeep] = useState(expanded)
   const [openThinking, setOpenThinking] = useState(expanded)
@@ -417,7 +419,7 @@ function SubagentAccordion({
           }}
           open={openThinking}
           t={t}
-          title="Thinking"
+          title={ti('section.thinking')}
         />
       ),
       key: 'thinking',
@@ -450,7 +452,7 @@ function SubagentAccordion({
           }}
           open={openTools}
           t={t}
-          title="Tool calls"
+          title={ti('section.toolCalls')}
         />
       ),
       key: 'tools',
@@ -491,7 +493,7 @@ function SubagentAccordion({
           }}
           open={openNotes}
           t={t}
-          title="Progress"
+          title={ti('section.progress')}
           tone={statusTone}
         />
       ),
@@ -725,6 +727,7 @@ export const ToolTrail = memo(function ToolTrail({
     [commandOverride, detailsMode, sections]
   )
 
+  const { t: ti } = useI18n()
   const [now, setNow] = useState(() => Date.now())
   // Local toggles own the open state once mounted.  Init from the resolved
   // section visibility so default-expanded sections (thinking/tools) render
@@ -1049,7 +1052,7 @@ export const ToolTrail = memo(function ToolTrail({
           open={openTools}
           suffix={toolTokensLabel}
           t={t}
-          title="Tool calls"
+          title={ti('section.toolCalls')}
         />
       ),
       key: 'tools',
@@ -1137,7 +1140,7 @@ export const ToolTrail = memo(function ToolTrail({
           }}
           open={openMeta}
           t={t}
-          title="Activity"
+          title={ti('section.activity')}
           tone={metaTone}
         />
       ),
