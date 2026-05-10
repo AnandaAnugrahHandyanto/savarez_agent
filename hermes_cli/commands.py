@@ -109,6 +109,12 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
+    CommandDef("handoff", "Generate a structured session handoff prompt", "Session",
+               args_hint="[focus]"),
+    CommandDef("handoff-save", "Generate a session handoff and ask the agent to save it", "Session",
+               aliases=("handoff_save",), args_hint="[focus]"),
+    CommandDef("handoff-new", "Generate a handoff package for starting a fresh session", "Session",
+               aliases=("handoff_new",), args_hint="[focus]"),
 
     # Configuration
     CommandDef("sessions", "Browse and resume previous sessions", "Session"),
@@ -240,12 +246,19 @@ def _build_description(cmd: CommandDef) -> str:
     return cmd.description
 
 
+def _is_internal_alias(cmd: CommandDef, alias: str) -> bool:
+    """Return True for aliases kept for platform compatibility, not help display."""
+    return alias.replace("-", "_") == cmd.name.replace("-", "_") and alias != cmd.name
+
+
 # Backwards-compatible flat dict: "/command" -> description
 COMMANDS: dict[str, str] = {}
 for _cmd in COMMAND_REGISTRY:
     if not _cmd.gateway_only:
         COMMANDS[f"/{_cmd.name}"] = _build_description(_cmd)
         for _alias in _cmd.aliases:
+            if _is_internal_alias(_cmd, _alias):
+                continue
             COMMANDS[f"/{_alias}"] = f"{_cmd.description} (alias for /{_cmd.name})"
 
 # Backwards-compatible categorized dict
@@ -255,6 +268,8 @@ for _cmd in COMMAND_REGISTRY:
         _cat = COMMANDS_BY_CATEGORY.setdefault(_cmd.category, {})
         _cat[f"/{_cmd.name}"] = COMMANDS[f"/{_cmd.name}"]
         for _alias in _cmd.aliases:
+            if _is_internal_alias(_cmd, _alias):
+                continue
             _cat[f"/{_alias}"] = COMMANDS[f"/{_alias}"]
 
 
@@ -325,6 +340,9 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "commands",
         "deny",
         "help",
+        "handoff",
+        "handoff-save",
+        "handoff-new",
         "new",
         "profile",
         "queue",
@@ -421,7 +439,7 @@ def gateway_help_lines() -> list[str]:
         alias_parts: list[str] = []
         for a in cmd.aliases:
             # Skip internal aliases like reload_mcp (underscore variant)
-            if a.replace("-", "_") == cmd.name.replace("-", "_") and a != cmd.name:
+            if _is_internal_alias(cmd, a):
                 continue
             alias_parts.append(f"`/{a}`")
         alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""

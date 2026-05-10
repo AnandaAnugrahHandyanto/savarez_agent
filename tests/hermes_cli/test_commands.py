@@ -142,13 +142,18 @@ class TestDerivedDicts:
                 assert f"/{cmd.name}" in COMMANDS, \
                     f"/{cmd.name} missing from COMMANDS dict"
 
-    def test_commands_dict_includes_aliases(self):
+    def test_commands_dict_includes_user_facing_aliases(self):
         assert "/bg" in COMMANDS
         assert "/reset" in COMMANDS
         assert "/q" in COMMANDS
         assert "/exit" in COMMANDS
-        assert "/reload_mcp" in COMMANDS
         assert "/gateway" in COMMANDS
+
+    def test_commands_dict_hides_internal_underscore_aliases(self):
+        # Underscore variants support gateway/platform compatibility but should
+        # not duplicate hyphenated commands in CLI /help.
+        assert resolve_command("reload_mcp").name == "reload-mcp"
+        assert "/reload_mcp" not in COMMANDS
 
     def test_commands_by_category_covers_all_categories(self):
         registry_categories = {cmd.category for cmd in COMMAND_REGISTRY if not cmd.gateway_only}
