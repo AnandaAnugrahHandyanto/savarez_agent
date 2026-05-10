@@ -116,14 +116,11 @@ def _results_resp(items: List[Dict[str, Any]], page_token: Optional[str] = None)
 class TestRequirements:
     def test_unavailable_without_key(self, monkeypatch):
         monkeypatch.delenv("XAI_API_KEY", raising=False)
-        ok, why = check_xai_batch_requirements()
-        assert ok is False
-        assert "XAI_API_KEY" in why
+        assert check_xai_batch_requirements() is False
 
     def test_available_with_key(self, monkeypatch):
         monkeypatch.setenv("XAI_API_KEY", "sk")
-        ok, _ = check_xai_batch_requirements()
-        assert ok is True
+        assert check_xai_batch_requirements() is True
 
 
 class TestSchema:
@@ -176,7 +173,7 @@ class TestSubmit:
         ])
         # Add poll + results scripted entries:
         router.scripted.append({"match": ("GET", "/batches/batch-1/results"), "resp": _results_resp([
-            {"custom_id": "req-00000-aaa", "response": {"choices": [{"message": {"content": "ok"}}]}}
+            {"batch_request_id": "req-00000-aaa", "response": {"choices": [{"message": {"content": "ok"}}]}}
         ])})
 
         out = xai_batch_chat([{"prompt": "hello", "request_id": "req-00000-aaa"}])
@@ -190,7 +187,9 @@ class TestSubmit:
         sent = add_call["kw"]["json"]
         assert "batch_requests" in sent
         assert sent["batch_requests"][0]["batch_request_id"] == "req-00000-aaa"
-        assert sent["batch_requests"][0]["batch_request"]["url"] == "/v1/chat/completions"
+        assert "chat_get_completion" in sent["batch_requests"][0]["batch_request"]
+        assert "method" not in sent["batch_requests"][0]["batch_request"]
+        assert "url" not in sent["batch_requests"][0]["batch_request"]
 
     def test_submit_uses_default_model(self, api_key, fake_http):
         router = fake_http([
@@ -201,7 +200,8 @@ class TestSubmit:
         ])
         xai_batch_chat([{"prompt": "hi", "request_id": "r1"}])
         sent = router.calls[1]["kw"]["json"]
-        assert sent["batch_requests"][0]["batch_request"]["body"]["model"] == "grok-4.3"
+        body = sent["batch_requests"][0]["batch_request"]["chat_get_completion"]
+        assert body["model"] == "grok-4.3"
 
     def test_submit_per_request_model_override(self, api_key, fake_http):
         router = fake_http([
@@ -214,7 +214,7 @@ class TestSubmit:
             [{"prompt": "hi", "model": "grok-4.20-multi-agent-0309", "request_id": "r1"}],
             model="grok-4.3",
         )
-        body = router.calls[1]["kw"]["json"]["batch_requests"][0]["batch_request"]["body"]
+        body = router.calls[1]["kw"]["json"]["batch_requests"][0]["batch_request"]["chat_get_completion"]
         assert body["model"] == "grok-4.20-multi-agent-0309"
 
     def test_submit_messages_overrides_prompt(self, api_key, fake_http):
@@ -228,7 +228,8 @@ class TestSubmit:
             "messages": [{"role": "user", "content": "X"}, {"role": "assistant", "content": "Y"}],
             "request_id": "r1",
         }])
-        msgs = router.calls[1]["kw"]["json"]["batch_requests"][0]["batch_request"]["body"]["messages"]
+        body = router.calls[1]["kw"]["json"]["batch_requests"][0]["batch_request"]["chat_get_completion"]
+        msgs = body["messages"]
         assert len(msgs) == 2
         assert msgs[0]["content"] == "X"
 
@@ -278,8 +279,8 @@ class TestPoll:
             {"match": ("GET", "/batches/batch-abc"), "resp": _state_resp(num_pending=0, num_success=2)},
             # results
             {"match": ("GET", "/results"), "resp": _results_resp([
-                {"custom_id": "r0", "response": {"choices": [{"message": {"content": "first"}}]}},
-                {"custom_id": "r1", "response": {"choices": [{"message": {"content": "second"}}]}},
+                {"batch_request_id": "r0", "response": {"choices": [{"message": {"content": "first"}}]}},
+                {"batch_request_id": "r1", "response": {"choices": [{"message": {"content": "second"}}]}},
             ])},
         ])
         out = xai_batch_chat([
@@ -312,12 +313,12 @@ class TestResults:
             {"match": ("GET", "/batches/batch-abc"), "resp": _state_resp(num_pending=0, num_success=3)},
             # Page 1 with token
             {"match": ("GET", "/results"), "resp": _results_resp(
-                [{"custom_id": "r0", "response": {"x": 1}}, {"custom_id": "r1", "response": {"x": 2}}],
+                [{"batch_request_id": "r0", "response": {"x": 1}}, {"batch_request_id": "r1", "response": {"x": 2}}],
                 page_token="next-page",
             )},
             # Page 2 final
             {"match": ("GET", "/results"), "resp": _results_resp(
-                [{"custom_id": "r2", "response": {"x": 3}}],
+                [{"batch_request_id": "r2", "response": {"x": 3}}],
             )},
         ])
         out = xai_batch_chat([
@@ -334,7 +335,7 @@ class TestResults:
             _resp_add(),
             {"match": ("GET", "/batches/batch-abc"), "resp": _state_resp(num_pending=0, num_success=1)},
             {"match": ("GET", "/results"), "resp": _results_resp([
-                {"custom_id": "r0", "response": {"x": 1}},
+                {"batch_request_id": "r0", "response": {"x": 1}},
                 # r1 missing from results entirely
             ])},
         ])

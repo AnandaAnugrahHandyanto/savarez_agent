@@ -164,10 +164,10 @@ def xai_batch_chat(
         request_ids.append(rid)
         body = _build_chat_body(req, default_model=resolved_model)
         submission.append({
-            "custom_id": rid,
-            "method": "POST",
-            "url": "/v1/chat/completions",
-            "body": body,
+            "batch_request_id": rid,
+            "batch_request": {
+                "chat_get_completion": body,
+            },
         })
 
     # ------- 2. Create the empty batch + add requests inline -------
@@ -189,7 +189,7 @@ def xai_batch_chat(
 
     # ------- 4. Retrieve paginated results, sort by submission order -------
     raw_results = _fetch_all_results(base_url, headers, batch_id)
-    by_id = {r.get("custom_id") or r.get("batch_request_id"): r for r in raw_results}
+    by_id = {r.get("batch_request_id") or r.get("custom_id"): r for r in raw_results}
     ordered: List[Dict[str, Any]] = []
     for rid in request_ids:
         item = by_id.get(rid, {})
@@ -266,22 +266,11 @@ def _add_requests(
 ) -> None:
     """Add inline requests to a batch.
 
-    Wrap each tool-level submission entry in the ``batch_request`` envelope
-    expected by the API.
+    Use the inline ``batch_request`` envelope expected by xAI. Chat
+    completions are represented by the ``chat_get_completion`` request type,
+    not by OpenAI-style method/url/body triples.
     """
-    payload = {
-        "batch_requests": [
-            {
-                "batch_request_id": entry["custom_id"],
-                "batch_request": {
-                    "method": entry["method"],
-                    "url": entry["url"],
-                    "body": entry["body"],
-                },
-            }
-            for entry in submission
-        ]
-    }
+    payload = {"batch_requests": submission}
     _request(
         "POST",
         f"{base_url}/batches/{batch_id}/requests",
@@ -350,11 +339,9 @@ def _fetch_all_results(
 # Tool registration
 # ---------------------------------------------------------------------------
 
-def check_xai_batch_requirements() -> "tuple[bool, str]":
+def check_xai_batch_requirements() -> bool:
     """Tool gate: only available when XAI_API_KEY is set."""
-    if os.environ.get("XAI_API_KEY", "").strip():
-        return True, ""
-    return False, "XAI_API_KEY environment variable is not set"
+    return bool(os.environ.get("XAI_API_KEY", "").strip())
 
 
 XAI_BATCH_SCHEMA = {
@@ -438,5 +425,6 @@ registry.register(
     schema=XAI_BATCH_SCHEMA,
     handler=_handle_xai_batch_tool_call,
     check_fn=check_xai_batch_requirements,
+    requires_env=["XAI_API_KEY"],
     emoji="📦",
 )
