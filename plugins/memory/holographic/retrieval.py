@@ -29,6 +29,7 @@ class FactRetriever:
         fts_weight: float = 0.4,
         jaccard_weight: float = 0.3,
         hrr_weight: float = 0.3,
+        vec_weight: float = 0.0,  # sqlite-vec dense vector (4th channel)
         hrr_dim: int = 1024,
     ):
         self.store = store
@@ -44,6 +45,8 @@ class FactRetriever:
         self.fts_weight = fts_weight
         self.jaccard_weight = jaccard_weight
         self.hrr_weight = hrr_weight
+        self.vec_weight = vec_weight
+        self._vec_available = getattr(store, "_vec_available", False)
 
     def search(
         self,
@@ -53,7 +56,7 @@ class FactRetriever:
         limit: int = 10,
         rrf_k: int = 60,
     ) -> list[dict]:
-        """Three-channel RRF fusion: FTS5 + Jaccard + HRR.
+        """) Three-channel RRF fusion: FTS5 + Jaccard + HRR (+ sqlite-vec optional).
 
         RRF (Reciprocal Rank Fusion): Each channel produces a ranked list.
         A result at rank r in any channel gets score 1/(k+r). Sum across
@@ -63,11 +66,12 @@ class FactRetriever:
         1. FTS5: rank by BM25 score (already normalized 0-1)
         2. Jaccard: rank by token overlap
         3. HRR: rank by vector similarity
-        4. RRF fuse → apply trust weighting → optional temporal decay
+        4. sqlite-vec: dense KNN (if vec_weight > 0 and extension available)
+        5. RRF fuse → apply trust weighting → optional temporal decay
 
         Returns list of dicts with fact data + 'score' field, sorted by score desc.
         """
-        # Stage 1: Get candidates from all three channels
+        # Stage 1: Get candidates from FTS5 (always needed as base pool)
         fts_candidates = self._fts_candidates(query, category, min_trust, limit * 4)
         if not fts_candidates:
             return []
@@ -75,7 +79,25 @@ class FactRetriever:
         query_tokens = self._tokenize(query)
         query_vec = hrr.encode_text(query, self.hrr_dim) if self.hrr_weight > 0 else None
 
-        # Score all candidates with all three channels
+        # Stage 2: sqlite-vec KNN query (if enabled and available)
+        vec_ranks: dict[int, float] = {}  # fact_id → normalized vec score [0,1]
+        if self.vec_weight > 0 and self._vec_available:
+            try:
+                import numpy as np
+                qv = query_vec if query_vec is not None else hrr.encode_text(query, self.hrr_dim)
+                q_list = qv.tolist() if hasattr(qv, 'tolist') else list(qv)
+                q_str = '[' + ','.join(str(x) for x in q_list) + ']'
+                rows = self.store._conn.execute(
+                    "SELECT fact_id FROM fact_vectors WHERE embedding MATCH ? LIMIT ?",
+                    (q_str, limit * 4),
+                ).fetchall()
+                # Results ordered by distance (closest first)
+                for rank, row in enumerate(rows):
+                    vec_ranks[row["fact_id"]] = 1.0 / (1.0 + rank)
+            except Exception:
+                pass
+
+        # Stage 3: Score all candidates with all three/four channels
         scored: dict[int, dict] = {}  # fact_id → enriched fact
 
         for fact in fts_candidates:
@@ -97,9 +119,13 @@ class FactRetriever:
             else:
                 hrr_sim = 0.5
 
+            # Channel 4: sqlite-vec (defaults to 0.5 neutral if not ranked)
+            vec_score = vec_ranks.get(fid, 0.5)
+
             fact["_fts_s"] = fts_score
             fact["_jac_s"] = jaccard
             fact["_hrr_s"] = hrr_sim
+            fact["_vec_s"] = vec_score
             fact.pop("hrr_vector", None)
             scored[fid] = fact
 
@@ -107,6 +133,7 @@ class FactRetriever:
         fts_ranked = sorted(scored.values(), key=lambda x: x["_fts_s"], reverse=True)
         jac_ranked = sorted(scored.values(), key=lambda x: x["_jac_s"], reverse=True)
         hrr_ranked = sorted(scored.values(), key=lambda x: x["_hrr_s"], reverse=True)
+        vec_ranked = sorted(scored.values(), key=lambda x: x["_vec_s"], reverse=True)
 
         rrf_scores: dict[int, float] = {fid: 0.0 for fid in scored}
 
@@ -116,6 +143,9 @@ class FactRetriever:
             rrf_scores[fact["fact_id"]] += 1.0 / (rrf_k + rank + 1) * self.jaccard_weight
         for rank, fact in enumerate(hrr_ranked):
             rrf_scores[fact["fact_id"]] += 1.0 / (rrf_k + rank + 1) * self.hrr_weight
+        if self.vec_weight > 0:
+            for rank, fact in enumerate(vec_ranked):
+                rrf_scores[fact["fact_id"]] += 1.0 / (rrf_k + rank + 1) * self.vec_weight
 
         # Apply trust weighting + optional temporal decay, then finalize
         for fid, fact in scored.items():
@@ -132,6 +162,7 @@ class FactRetriever:
             fact.pop("_fts_s", None)
             fact.pop("_jac_s", None)
             fact.pop("_hrr_s", None)
+            fact.pop("_vec_s", None)
 
         return results
 

@@ -112,13 +112,23 @@ class MemoryStore:
         self.default_trust = _clamp_trust(default_trust)
         self.hrr_dim = hrr_dim
         self._hrr_available = hrr._HAS_NUMPY
+        self._lock = threading.RLock()
         self._conn: sqlite3.Connection = sqlite3.connect(
             str(self.db_path),
             check_same_thread=False,
             timeout=10.0,
         )
-        self._lock = threading.RLock()
         self._conn.row_factory = sqlite3.Row
+        # Load sqlite-vec extension for dense-vector similarity search (RRF 4th channel)
+        self._vec_available = False
+        try:
+            self._conn.enable_load_extension(True)
+            import sqlite_vec as _sv
+            _vec_so = str(Path(__file__).parent / "vec0.so")
+            self._conn.execute(f"SELECT load_extension('{_vec_so}')")
+            self._vec_available = True
+        except Exception:
+            pass
         self._init_db()
 
     # ------------------------------------------------------------------
@@ -137,6 +147,18 @@ class MemoryStore:
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
+        # Create sqlite-vec dense-vector table (only if extension loaded)
+        if self._vec_available:
+            try:
+                self._conn.execute("""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS fact_vectors USING vec0(
+                        fact_id INTEGER PRIMARY KEY,
+                        description TEXT,
+                        embedding FLOAT[1024]
+                    )
+                """)
+            except Exception:
+                pass
         self._conn.commit()
 
     # ------------------------------------------------------------------
