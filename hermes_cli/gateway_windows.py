@@ -13,7 +13,7 @@ Design notes
   ``schtasks /Run`` immediately after install so the gateway starts right
   away without waiting for the next logon.
 * We write two files: a shared ``gateway.cmd`` wrapper script (cwd + env + the
-  actual ``python -m hermes_cli.main gateway run --replace`` invocation) and
+  actual ``python -m hermes_cli.main gateway run`` invocation) and
   EITHER a schtasks entry pointing at it OR a Startup-folder ``.cmd`` that
   spawns it detached.
 * Status = merge of "is the schtasks entry registered?" + "is the startup
@@ -206,7 +206,7 @@ def _build_gateway_cmd_script(
     The script:
       - cd's into the project directory
       - exports HERMES_HOME, PYTHONIOENCODING, VIRTUAL_ENV
-      - invokes ``python -m hermes_cli.main [--profile X] gateway run --replace``
+      - invokes ``python -m hermes_cli.main [--profile X] gateway run``
 
     We intentionally do NOT inline PATH overrides here — cmd.exe inherits
     the per-user PATH the Scheduled Task was created with, and forcibly
@@ -225,7 +225,7 @@ def _build_gateway_cmd_script(
     prog_args = [python_path, "-m", "hermes_cli.main"]
     if profile_arg:
         prog_args.extend(profile_arg.split())
-    prog_args.extend(["gateway", "run", "--replace"])
+    prog_args.extend(["gateway", "run"])
     lines.append(" ".join(_quote_cmd_script_arg(a) for a in prog_args))
     return "\r\n".join(lines) + "\r\n"
 
@@ -367,7 +367,7 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
     argv = [python_exe, "-m", "hermes_cli.main"]
     if profile_arg:
         argv.extend(profile_arg.split())
-    argv.extend(["gateway", "run", "--replace"])
+    argv.extend(["gateway", "run"])
 
     env_overlay = {
         "HERMES_HOME": hermes_home,
@@ -381,7 +381,7 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
 def _spawn_detached(script_path: Path | None = None) -> int:
     """Launch the gateway as a fully detached background process.
 
-    We spawn ``pythonw.exe -m hermes_cli.main gateway run --replace``
+    We spawn ``pythonw.exe -m hermes_cli.main gateway run``
     directly — NOT through a cmd.exe shim — because on Windows a cmd.exe
     child inherits the parent session's console handle and tends to get
     reaped when the spawning shell exits. pythonw.exe has no console, and

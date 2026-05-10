@@ -129,23 +129,19 @@ class TestLaunchdPlistReplace:
 
     def test_plist_contains_replace_flag(self):
         plist = gateway_cli.generate_launchd_plist()
-        assert "--replace" in plist
+        assert "--replace" not in plist
 
     def test_plist_program_arguments_order(self):
-        """--replace comes after 'run' in the ProgramArguments."""
+        """'run' must be the final argument in ProgramArguments."""
         plist = gateway_cli.generate_launchd_plist()
         lines = [line.strip() for line in plist.splitlines()]
-        # Find 'run' and '--replace' in the string entries
         string_values = [
             line.replace("<string>", "").replace("</string>", "")
             for line in lines
             if "<string>" in line and "</string>" in line
         ]
         assert "run" in string_values
-        assert "--replace" in string_values
-        run_idx = string_values.index("run")
-        replace_idx = string_values.index("--replace")
-        assert replace_idx == run_idx + 1
+        assert "--replace" not in string_values
 
 
 class TestLaunchdPlistPath:
@@ -249,8 +245,8 @@ class TestLaunchdPlistRefresh:
         result = gateway_cli.refresh_launchd_plist_if_needed()
 
         assert result is True
-        # Plist should now contain the generated content (which includes --replace)
-        assert "--replace" in plist_path.read_text()
+        # Plist should now contain the generated content (no longer includes --replace)
+        assert "--replace" not in plist_path.read_text()
         # Should have booted out then bootstrapped
         assert any("bootout" in str(c) for c in calls)
         assert any("bootstrap" in str(c) for c in calls)
@@ -318,7 +314,7 @@ class TestLaunchdPlistRefresh:
 
         # Should have created the plist
         assert plist_path.exists()
-        assert "--replace" in plist_path.read_text()
+        assert "--replace" not in plist_path.read_text()
 
         cmd_strs = [" ".join(c) for c in calls]
         # Should bootstrap the new plist, then kickstart

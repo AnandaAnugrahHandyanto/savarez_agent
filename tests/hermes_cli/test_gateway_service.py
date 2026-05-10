@@ -493,7 +493,7 @@ class TestLaunchdServiceRecovery:
 
         label = gateway_cli.get_launchd_label()
         domain = gateway_cli._launchd_domain()
-        assert "--replace" in plist_path.read_text(encoding="utf-8")
+        assert "--replace" not in plist_path.read_text(encoding="utf-8")
         assert calls[:2] == [
             ["launchctl", "bootout", f"{domain}/{label}"],
             ["launchctl", "bootstrap", domain, str(plist_path)],
@@ -1636,7 +1636,8 @@ class TestProfileArg:
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
         unit = gateway_cli.generate_systemd_unit(system=False)
         assert "--profile mybot" in unit
-        assert "gateway run --replace" in unit
+        assert "gateway run" in unit
+        assert "--replace" not in unit
 
     def test_launchd_plist_includes_profile(self, tmp_path, monkeypatch):
         """generate_launchd_plist should include --profile in ProgramArguments for named profiles."""
@@ -1832,7 +1833,7 @@ class TestLegacyHermesUnitDetection:
     # Minimal ExecStart that looks like our gateway
     _OUR_UNIT_TEXT = (
         "[Unit]\nDescription=Hermes Gateway\n[Service]\n"
-        "ExecStart=/usr/bin/python -m hermes_cli.main gateway run --replace\n"
+        "ExecStart=/usr/bin/python -m hermes_cli.main gateway run\n"
     )
 
     @staticmethod
@@ -1948,9 +1949,9 @@ class TestLegacyHermesUnitDetection:
         """
         user_dir, _ = self._setup_search_paths(tmp_path, monkeypatch)
         variants = [
-            "ExecStart=/venv/bin/python -m hermes_cli.main gateway run --replace",
+            "ExecStart=/venv/bin/python -m hermes_cli.main gateway run",
             "ExecStart=/venv/bin/python /opt/hermes/hermes_cli/main.py gateway run",
-            "ExecStart=/usr/local/bin/hermes gateway run --replace",
+            "ExecStart=/usr/local/bin/hermes gateway run",
             "ExecStart=/venv/bin/python /opt/hermes/gateway/run.py",
         ]
         for i, execstart in enumerate(variants):
@@ -2007,7 +2008,7 @@ class TestRemoveLegacyHermesUnits:
 
     _OUR_UNIT_TEXT = (
         "[Unit]\nDescription=Hermes Gateway\n[Service]\n"
-        "ExecStart=/usr/bin/python -m hermes_cli.main gateway run --replace\n"
+        "ExecStart=/usr/bin/python -m hermes_cli.main gateway run\n"
     )
 
     @staticmethod
