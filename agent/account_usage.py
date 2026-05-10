@@ -7,7 +7,7 @@ from typing import Any, Optional
 import httpx
 
 from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
-from hermes_cli.auth import _read_codex_tokens, resolve_codex_runtime_credentials
+from hermes_cli.auth import DEFAULT_CODEX_BASE_URL, _read_codex_tokens, resolve_codex_runtime_credentials
 from hermes_cli.runtime_provider import resolve_runtime_provider
 
 
@@ -124,11 +124,49 @@ def _resolve_codex_usage_url(base_url: str) -> str:
     return normalized + "/api/codex/usage"
 
 
+def _resolve_codex_usage_credentials() -> dict[str, Any]:
+    """Resolve Codex usage credentials from singleton auth or the credential pool.
+
+    ``resolve_codex_runtime_credentials`` only reads the singleton
+    ``providers.openai-codex`` auth state. Joohyun/Mina often uses only pooled
+    Codex OAuth credentials, so account usage needs the same pool fallback as
+    runtime model calls.
+    """
+    try:
+        creds = dict(resolve_codex_runtime_credentials(refresh_if_expiring=True))
+        token_data = _read_codex_tokens()
+        tokens = token_data.get("tokens") or {}
+        creds["account_id"] = str(tokens.get("account_id", "") or "").strip() or None
+        return creds
+    except Exception as singleton_exc:
+        try:
+            from agent.credential_pool import load_pool
+
+            pool = load_pool("openai-codex")
+            # For monitoring, prefer the fill-first credential even if it is
+            # currently marked exhausted: ChatGPT's usage endpoint can still
+            # return the 5h/weekly windows and reset time for exhausted accounts.
+            # ``select()`` would skip it and hide the account we most need to
+            # observe.
+            entry = next((candidate for candidate in pool.entries() if candidate.runtime_api_key), None)
+            if entry is None:
+                entry = pool.select()
+            if entry is None or not entry.runtime_api_key:
+                raise singleton_exc
+            return {
+                "provider": "openai-codex",
+                "base_url": entry.runtime_base_url or DEFAULT_CODEX_BASE_URL,
+                "api_key": entry.runtime_api_key,
+                "source": f"credential-pool:{entry.label or entry.id}",
+                "account_id": None,
+            }
+        except Exception:
+            raise singleton_exc
+
+
 def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
-    creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
-    token_data = _read_codex_tokens()
-    tokens = token_data.get("tokens") or {}
-    account_id = str(tokens.get("account_id", "") or "").strip() or None
+    creds = _resolve_codex_usage_credentials()
+    account_id = str(creds.get("account_id", "") or "").strip() or None
     headers = {
         "Authorization": f"Bearer {creds['api_key']}",
         "Accept": "application/json",
@@ -140,20 +178,34 @@ def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
         response = client.get(_resolve_codex_usage_url(creds.get("base_url", "")), headers=headers)
         response.raise_for_status()
     payload = response.json() or {}
-    rate_limit = payload.get("rate_limit") or {}
-    windows: list[AccountUsageWindow] = []
-    for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
-        window = rate_limit.get(key) or {}
-        used = window.get("used_percent")
-        if used is None:
-            continue
-        windows.append(
-            AccountUsageWindow(
-                label=label,
-                used_percent=float(used),
-                reset_at=_parse_dt(window.get("reset_at")),
+    def append_rate_limit_windows(rate_limit: Any, *, prefix: str = "") -> None:
+        if not isinstance(rate_limit, dict):
+            return
+        for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
+            window = rate_limit.get(key) or {}
+            if not isinstance(window, dict):
+                continue
+            used = window.get("used_percent")
+            if used is None:
+                continue
+            windows.append(
+                AccountUsageWindow(
+                    label=f"{prefix} {label}".strip(),
+                    used_percent=float(used),
+                    reset_at=_parse_dt(window.get("reset_at")),
+                )
             )
-        )
+
+    windows: list[AccountUsageWindow] = []
+    append_rate_limit_windows(payload.get("rate_limit"))
+    code_review_rate_limit = payload.get("code_review_rate_limit")
+    if code_review_rate_limit:
+        append_rate_limit_windows(code_review_rate_limit, prefix="Code review")
+    for item in payload.get("additional_rate_limits") or []:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("limit_name") or item.get("metered_feature") or "Additional").strip()
+        append_rate_limit_windows(item.get("rate_limit"), prefix=label)
     details: list[str] = []
     credits = payload.get("credits") or {}
     if credits.get("has_credits"):
@@ -206,7 +258,10 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
         util = window.get("utilization")
         if util is None:
             continue
-        used = float(util) * 100 if float(util) <= 1 else float(util)
+        # Anthropic OAuth usage `utilization` is already a percentage value, not a
+        # 0..1 fraction. Example: extra_usage reports 29 / 2000 USD as 1.45, and
+        # five_hour can report 1.0 for ~1% used. Do not multiply values <= 1 by 100.
+        used = float(util)
         windows.append(
             AccountUsageWindow(
                 label=label,

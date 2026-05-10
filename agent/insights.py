@@ -135,6 +135,7 @@ class InsightsEngine:
                 "overview": {},
                 "models": [],
                 "platforms": [],
+                "credentials": [],
                 "tools": [],
                 "skills": {
                     "summary": {
@@ -153,6 +154,7 @@ class InsightsEngine:
         overview = self._compute_overview(sessions, message_stats)
         models = self._compute_model_breakdown(sessions)
         platforms = self._compute_platform_breakdown(sessions)
+        credentials = self._compute_credential_breakdown(sessions)
         tools = self._compute_tool_breakdown(tool_usage)
         skills = self._compute_skill_breakdown(skill_usage)
         activity = self._compute_activity_patterns(sessions)
@@ -166,6 +168,7 @@ class InsightsEngine:
             "overview": overview,
             "models": models,
             "platforms": platforms,
+            "credentials": credentials,
             "tools": tools,
             "skills": skills,
             "activity": activity,
@@ -180,8 +183,8 @@ class InsightsEngine:
     _SESSION_COLS = ("id, source, model, started_at, ended_at, "
                      "message_count, tool_call_count, input_tokens, output_tokens, "
                      "cache_read_tokens, cache_write_tokens, billing_provider, "
-                     "billing_base_url, billing_mode, estimated_cost_usd, "
-                     "actual_cost_usd, cost_status, cost_source")
+                     "billing_base_url, billing_mode, credential_id, credential_label, "
+                     "estimated_cost_usd, actual_cost_usd, cost_status, cost_source")
 
     # Pre-computed query strings — f-string evaluated once at class definition,
     # not at runtime, so no user-controlled value can alter the query structure.
@@ -550,6 +553,46 @@ class InsightsEngine:
         result.sort(key=lambda x: x["sessions"], reverse=True)
         return result
 
+    def _compute_credential_breakdown(self, sessions: List[Dict]) -> List[Dict]:
+        """Break down usage by selected credential/account label."""
+        credential_data = defaultdict(lambda: {
+            "sessions": 0, "input_tokens": 0, "output_tokens": 0,
+            "cache_read_tokens": 0, "cache_write_tokens": 0,
+            "total_tokens": 0, "providers": set(),
+        })
+
+        for s in sessions:
+            credential_id = s.get("credential_id")
+            credential_label = s.get("credential_label")
+            if not credential_id and not credential_label:
+                continue
+            label = credential_label or credential_id or "unknown"
+            key = (s.get("billing_provider") or "unknown", credential_id or "", label)
+            d = credential_data[key]
+            d["sessions"] += 1
+            inp = s.get("input_tokens") or 0
+            out = s.get("output_tokens") or 0
+            cache_read = s.get("cache_read_tokens") or 0
+            cache_write = s.get("cache_write_tokens") or 0
+            d["input_tokens"] += inp
+            d["output_tokens"] += out
+            d["cache_read_tokens"] += cache_read
+            d["cache_write_tokens"] += cache_write
+            d["total_tokens"] += inp + out + cache_read + cache_write
+            d["providers"].add(s.get("billing_provider") or "unknown")
+
+        result = []
+        for (provider, credential_id, label), data in credential_data.items():
+            result.append({
+                "provider": provider,
+                "credential_id": credential_id or None,
+                "credential_label": label,
+                "providers": sorted(data.pop("providers")),
+                **data,
+            })
+        result.sort(key=lambda x: (x["total_tokens"], x["sessions"]), reverse=True)
+        return result
+
     def _compute_tool_breakdown(self, tool_usage: List[Dict]) -> List[Dict]:
         """Process tool usage data into a ranked list with percentages."""
         total_calls = sum(t["count"] for t in tool_usage) if tool_usage else 0
@@ -778,6 +821,17 @@ class InsightsEngine:
                 lines.append(f"  {model_name:<30} {m['sessions']:>8} {m['total_tokens']:>12,}")
             lines.append("")
 
+        # Credential/account breakdown
+        if report.get("credentials"):
+            lines.append("  🔐 Credentials")
+            lines.append("  " + "─" * 56)
+            lines.append(f"  {'Provider':<16} {'Credential':<24} {'Sessions':>8} {'Tokens':>10}")
+            for c in report["credentials"][:10]:
+                provider = (c.get("provider") or "unknown")[:16]
+                label = (c.get("credential_label") or c.get("credential_id") or "unknown")[:24]
+                lines.append(f"  {provider:<16} {label:<24} {c['sessions']:>8} {c['total_tokens']:>10,}")
+            lines.append("")
+
         # Platform breakdown
         if len(report["platforms"]) > 1 or (report["platforms"] and report["platforms"][0]["platform"] != "cli"):
             lines.append("  📱 Platforms")
@@ -887,6 +941,14 @@ class InsightsEngine:
             lines.append("**🤖 Models:**")
             for m in report["models"][:5]:
                 lines.append(f"  {m['model'][:25]} — {m['sessions']} sessions, {m['total_tokens']:,} tokens")
+            lines.append("")
+
+        if report.get("credentials"):
+            lines.append("**🔐 Credentials:**")
+            for c in report["credentials"][:5]:
+                label = c.get("credential_label") or c.get("credential_id") or "unknown"
+                provider = c.get("provider") or "unknown"
+                lines.append(f"  {provider}/{label[:25]} — {c['sessions']} sessions, {c['total_tokens']:,} tokens")
             lines.append("")
 
         # Platforms (if multi-platform)

@@ -1109,6 +1109,8 @@ class AIAgent:
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
         credential_pool=None,
+        credential_id: str = None,
+        credential_label: str = None,
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 20,
         checkpoint_max_total_size_mb: int = 500,
@@ -1193,6 +1195,8 @@ class AIAgent:
         self.load_soul_identity = load_soul_identity
         self.pass_session_id = pass_session_id
         self._credential_pool = credential_pool
+        self._credential_id = credential_id
+        self._credential_label = credential_label
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -7142,6 +7146,8 @@ class AIAgent:
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
+        self._credential_id = getattr(entry, "id", None)
+        self._credential_label = getattr(entry, "label", None)
 
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
@@ -13056,6 +13062,8 @@ class AIAgent:
                                     billing_base_url=self.base_url,
                                     billing_mode="subscription_included"
                                     if cost_result.status == "included" else None,
+                                    credential_id=getattr(self, "_credential_id", None),
+                                    credential_label=getattr(self, "_credential_label", None),
                                     model=self.model,
                                     api_call_count=1,
                                 )

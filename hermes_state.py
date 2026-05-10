@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -208,6 +208,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     billing_provider TEXT,
     billing_base_url TEXT,
     billing_mode TEXT,
+    credential_id TEXT,
+    credential_label TEXT,
     estimated_cost_usd REAL,
     actual_cost_usd REAL,
     cost_status TEXT,
@@ -767,6 +769,8 @@ class SessionDB:
         billing_provider: Optional[str] = None,
         billing_base_url: Optional[str] = None,
         billing_mode: Optional[str] = None,
+        credential_id: Optional[str] = None,
+        credential_label: Optional[str] = None,
         api_call_count: int = 0,
         absolute: bool = False,
     ) -> None:
@@ -802,6 +806,8 @@ class SessionDB:
                    billing_provider = COALESCE(billing_provider, ?),
                    billing_base_url = COALESCE(billing_base_url, ?),
                    billing_mode = COALESCE(billing_mode, ?),
+                   credential_id = COALESCE(credential_id, ?),
+                   credential_label = COALESCE(credential_label, ?),
                    model = COALESCE(model, ?),
                    api_call_count = ?
                    WHERE id = ?"""
@@ -823,6 +829,8 @@ class SessionDB:
                    billing_provider = COALESCE(billing_provider, ?),
                    billing_base_url = COALESCE(billing_base_url, ?),
                    billing_mode = COALESCE(billing_mode, ?),
+                   credential_id = COALESCE(credential_id, ?),
+                   credential_label = COALESCE(credential_label, ?),
                    model = COALESCE(model, ?),
                    api_call_count = COALESCE(api_call_count, 0) + ?
                    WHERE id = ?"""
@@ -841,6 +849,8 @@ class SessionDB:
             billing_provider,
             billing_base_url,
             billing_mode,
+            credential_id,
+            credential_label,
             model,
             api_call_count,
             session_id,

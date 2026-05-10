@@ -95,6 +95,90 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert "Credits balance: $12.50" in snapshot.details
 
 
+def test_fetch_account_usage_codex_falls_back_to_credential_pool(monkeypatch):
+    class _Entry:
+        id = "pool1"
+        label = "company"
+        runtime_api_key = "pool-token"
+        runtime_base_url = "https://chatgpt.com/backend-api/codex"
+
+    class _Pool:
+        def entries(self):
+            return [_Entry()]
+
+        def select(self):
+            raise AssertionError("usage monitor should inspect pool entries before selecting")
+
+    def _missing_singleton(refresh_if_expiring=True):
+        raise RuntimeError("missing singleton auth")
+
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        _missing_singleton,
+    )
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "plan_type": "pro",
+                "rate_limit": {
+                    "primary_window": {"used_percent": 20, "reset_at": 1_900_000_000},
+                    "secondary_window": {"used_percent": 55, "reset_at": 1_900_500_000},
+                },
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert snapshot.plan == "Pro"
+    assert [(w.label, w.used_percent) for w in snapshot.windows] == [
+        ("Session", 20.0),
+        ("Weekly", 55.0),
+    ]
+
+def test_fetch_account_usage_anthropic_utilization_is_percent_not_fraction(monkeypatch):
+    monkeypatch.setattr("agent.account_usage.resolve_anthropic_token", lambda: "oauth-token")
+    monkeypatch.setattr("agent.account_usage._is_oauth_token", lambda token: True)
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "five_hour": {
+                    "utilization": 1.0,
+                    "resets_at": "2030-01-01T00:00:00+00:00",
+                },
+                "seven_day": {
+                    "utilization": 0.0,
+                    "resets_at": "2030-01-07T00:00:00+00:00",
+                },
+                "seven_day_sonnet": {"utilization": 0.5, "resets_at": None},
+                "extra_usage": {
+                    "is_enabled": True,
+                    "used_credits": 29.0,
+                    "monthly_limit": 2000.0,
+                    "currency": "USD",
+                    "utilization": 1.45,
+                },
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("anthropic")
+
+    assert snapshot is not None
+    assert [(w.label, w.used_percent) for w in snapshot.windows] == [
+        ("Current session", 1.0),
+        ("Current week", 0.0),
+        ("Sonnet week", 0.5),
+    ]
+    rendered = render_account_usage_lines(snapshot)
+    assert "Current session: 99% remaining (1% used)" in rendered[2]
+    assert "Extra usage: 29.00 / 2000.00 USD" in snapshot.details
+
+
 def test_render_account_usage_lines_includes_reset_and_provider():
     snapshot = AccountUsageSnapshot(
         provider="openai-codex",

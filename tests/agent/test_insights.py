@@ -646,6 +646,37 @@ class TestEdgeCases:
         # Should be JSON-serializable
         _json.dumps(report["overview"])  # would raise if sets present
 
+    def test_credential_breakdown_separates_pooled_accounts(self, db):
+        db.create_session(session_id="company", source="telegram", model="gpt-5.5")
+        db.update_token_counts(
+            "company",
+            input_tokens=100,
+            output_tokens=50,
+            billing_provider="openai-codex",
+            credential_id="cred-company",
+            credential_label="company Business",
+        )
+        db.create_session(session_id="personal", source="telegram", model="gpt-5.5")
+        db.update_token_counts(
+            "personal",
+            input_tokens=25,
+            output_tokens=25,
+            billing_provider="openai-codex",
+            credential_id="cred-personal",
+            credential_label="personal Plus",
+        )
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+
+        labels = {c["credential_label"]: c for c in report["credentials"]}
+        assert labels["company Business"]["total_tokens"] == 150
+        assert labels["personal Plus"]["total_tokens"] == 50
+        formatted = engine.format_gateway(report)
+        assert "company Business" in formatted
+        assert "personal Plus" in formatted
+
     def test_mixed_commercial_and_custom_models(self, db):
         """Mix of commercial and custom models: only commercial ones get costs."""
         db.create_session(session_id="s1", source="cli", model="anthropic/claude-sonnet-4-20250514")
