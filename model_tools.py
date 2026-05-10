@@ -535,6 +535,27 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
             continue
         expected = prop_schema.get("type")
 
+        # Resolve anyOf/oneOf union types so array-wrapping and coercion
+        # also work for MCP tools that declare parameters as
+        # anyOf: [{type: string}, {type: array}] (issue #23129).
+        if not expected:
+            for union_key in ("anyOf", "oneOf"):
+                variants = prop_schema.get(union_key)
+                if isinstance(variants, list):
+                    types = [v.get("type") for v in variants if isinstance(v, dict)]
+                    if "array" in types and "string" in types:
+                        expected = ["string", "array"]
+                        break
+                    elif "array" in types:
+                        expected = "array"
+                        break
+                    elif "string" in types:
+                        expected = "string"
+                        break
+                    elif types:
+                        expected = types[0]
+                        break
+
         # Wrap bare non-list values when the schema declares ``array``.
         # Strings still go through _coerce_value first so JSON-encoded
         # arrays (``'["a","b"]'``) get parsed and nullable ``"null"``
@@ -542,9 +563,13 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         # ``None`` itself is preserved — we don't know whether the model
         # meant "omit" or "empty list", and tools with sensible defaults
         # (e.g. read_file's normalize_read_pagination) already handle it.
-        if expected == "array" and value is not None and not isinstance(value, (list, tuple)):
+        _expected_is_array = (
+            expected == "array"
+            or (isinstance(expected, list) and "array" in expected)
+        )
+        if _expected_is_array and value is not None and not isinstance(value, (list, tuple)):
             if isinstance(value, str):
-                coerced = _coerce_value(value, expected, schema=prop_schema)
+                coerced = _coerce_value(value, "array", schema=prop_schema)
                 if coerced is not value:
                     # _coerce_value handled it (JSON-parsed list or
                     # nullable "null" → None).
