@@ -5897,11 +5897,18 @@ class HermesCLI:
 
         if self._app:
             from prompt_toolkit.application import run_in_terminal
+            import threading
             was_visible = self._status_bar_visible
             self._status_bar_visible = False
             self._app.invalidate()
             try:
-                run_in_terminal(_ask)
+                # Fix for Issue #22970: RuntimeWarning when slash commands run
+                # from background threads. run_in_terminal() returns a coroutine
+                # that can't be scheduled when not on the main thread.
+                if threading.current_thread() is threading.main_thread():
+                    run_in_terminal(_ask)
+                else:
+                    _ask()
             finally:
                 self._status_bar_visible = was_visible
                 self._app.invalidate()
