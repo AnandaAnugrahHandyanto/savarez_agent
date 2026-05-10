@@ -383,7 +383,13 @@ class EventBridge:
             if not session_id:
                 continue
 
-            last_seen = self._last_poll_timestamps.get(session_key, 0.0)
+            # _last_poll_timestamps is shared with foreground bridge methods
+            # (_enqueue, poll_events, wait_for_event, list_pending_approvals,
+            # respond_to_approval) and must be touched under self._lock — see
+            # issue #23096. Hold the lock only for the dict access; never for
+            # db.get_messages, which performs blocking I/O.
+            with self._lock:
+                last_seen = self._last_poll_timestamps.get(session_key, 0.0)
 
             try:
                 messages = db.get_messages(session_id)
@@ -435,12 +441,16 @@ class EventBridge:
                     },
                 ))
 
-            # Update last seen to the most recent message timestamp
+            # Update last seen to the most recent message timestamp.
+            # See note on the read above — write under the lock for the same
+            # reason. The latest timestamp is computed without the lock so
+            # _ts_float and max() do not block other bridge methods.
             all_ts = [_ts_float(m.get("timestamp", 0)) for m in messages]
             if all_ts:
                 latest = max(all_ts)
                 if latest > last_seen:
-                    self._last_poll_timestamps[session_key] = latest
+                    with self._lock:
+                        self._last_poll_timestamps[session_key] = latest
 
 
 # ---------------------------------------------------------------------------
