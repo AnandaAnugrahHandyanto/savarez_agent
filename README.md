@@ -185,6 +185,7 @@ scripts/run_tests.sh
 - 📚 [Skills Hub](https://agentskills.io)
 - 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
 - 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
+- 🔌 [hermes-basic-memory](https://github.com/basicmachines-co/hermes-basic-memory) — Memory Provider plugin backed by [Basic Memory](https://github.com/basicmachines-co/basic-memory)'s knowledge graph. Per-turn capture, end-of-session summaries, local or cloud routing.
 
 ---
 
