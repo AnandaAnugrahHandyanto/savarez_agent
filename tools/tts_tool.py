@@ -152,7 +152,6 @@ DEFAULT_MISTRAL_TTS_VOICE_ID = "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - 
 DEFAULT_MURF_MODEL = "GEN2"
 DEFAULT_MURF_VOICE_ID = "en-US-natalie"
 DEFAULT_MURF_LOCALE = "en-US"
-DEFAULT_MURF_OUTPUT_FORMAT = "MP3"
 DEFAULT_XAI_VOICE_ID = "eve"
 DEFAULT_XAI_LANGUAGE = "en"
 DEFAULT_XAI_SAMPLE_RATE = 24000
@@ -1270,19 +1269,23 @@ def _generate_murf_tts(text: str, output_path: str, tts_config: Dict[str, Any]) 
     locale = str(murf_config.get("locale", DEFAULT_MURF_LOCALE)).strip() or DEFAULT_MURF_LOCALE
     region_name = str(murf_config.get("region") or get_env_value("MURF_REGION") or "default").strip().upper()
     region = getattr(MurfRegion, region_name, MurfRegion.DEFAULT)
+    # Gen2 only supports DEFAULT region
+    if model != "FALCON" :
+        region = MurfRegion.DEFAULT
     client = Murf(api_key=api_key, region=region)
 
-    configured_format = str(
-        murf_config.get("output_format", DEFAULT_MURF_OUTPUT_FORMAT)
-    ).strip().upper()
-    if output_path.lower().endswith(".wav"):
-        output_format = "WAV"
-    elif output_path.lower().endswith(".ogg"):
-        output_format = "OGG"
-    else:
-        output_format = "MP3"
-    if configured_format in {"MP3", "WAV", "OGG", "PCM"}:
-        output_format = configured_format
+    ext = output_path.lower().rsplit('.', 1)[-1]
+    format_map = {
+        "mp3": "MP3",
+        "wav": "WAV",
+        "flac": "FLAC",
+        "alaw": "ALAW",
+        "ulaw": "ULAW",
+        "pcm": "PCM",
+        "ogg": "OGG",
+    }
+    output_format = format_map.get(ext, "MP3")
+   
 
     rate = murf_config.get("rate", murf_config.get("speed"))
     sample_rate = murf_config.get("sample_rate", murf_config.get("sampleRate"))

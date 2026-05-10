@@ -77,7 +77,6 @@ tts:
     style: "Conversational"
     speed: 0                    # -50 to 50
     pitch: 0                    # -50 to 50
-    output_format: "MP3"        # MP3, WAV, OGG, PCM
   xai:
     voice_id: "eve"             # or a custom voice ID — see docs below
     language: "en"              # ISO 639-1 code

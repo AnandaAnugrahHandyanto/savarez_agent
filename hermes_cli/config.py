@@ -952,7 +952,6 @@ DEFAULT_CONFIG = {
             "style": "Conversational",   # Optional speaking style
             "speed": 0,                  # -50 to 50
             "pitch": 0,                  # -50 to 50
-            "output_format": "MP3",      # MP3 | WAV | OGG | PCM
         },
         "neutts": {
             "ref_audio": "",  # Path to reference voice audio (empty = bundled default)
