@@ -1979,12 +1979,21 @@ def release_stale_claims(
     """
     now = int(time.time())
     reclaimed = 0
+    # Grace window: if the worker heartbeated within the last 5 minutes,
+    # the claim is still considered alive even if claim_expires has passed.
+    # This prevents reclaiming slow-model workers (e.g. kimi-k2.6) that are
+    # actively processing but whose claim TTL expired between heartbeats.
+    HEARTBEAT_GRACE_SECONDS = 5 * 60
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid FROM tasks "
+        "SELECT id, claim_lock, worker_pid, last_heartbeat_at FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL AND claim_expires < ?",
         (now,),
     ).fetchall()
     for row in stale:
+        # Skip if worker heartbeated recently — it's alive, just slow.
+        last_hb = row["last_heartbeat_at"] or 0
+        if now - last_hb < HEARTBEAT_GRACE_SECONDS:
+            continue
         termination = _terminate_reclaimed_worker(
             row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
         )
