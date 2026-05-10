@@ -2146,6 +2146,93 @@ class TelegramAdapter(BasePlatformAdapter):
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
 
+    async def _handle_gptprof_callback(
+        self, query, slug: str, model: str
+    ) -> None:
+        """Handle GPT profile switcher button clicks (gptprof:slug:model)."""
+        HCP_DIR = Path.home() / ".hermes" / "skills" / "chip" / "hcp"
+        AUTH_PATH = Path.home() / ".hermes" / "auth.json"
+        CONFIG_PATH = Path.home() / ".hermes" / "config.yaml"
+
+        slug = slug.strip().lower()
+        profile_path = HCP_DIR / f"{slug}.json"
+
+        # Load profile tokens
+        if not profile_path.exists():
+            await query.answer(text=f"Profile {slug} not found.")
+            return
+        try:
+            profile_data = json.loads(profile_path.read_text())
+        except Exception:
+            await query.answer(text=f"Failed to read profile {slug}.")
+            return
+
+        access_token = profile_data.get("access_token")
+        refresh_token = profile_data.get("refresh_token")
+        if not access_token:
+            await query.answer(text=f"No access token for {slug}.")
+            return
+
+        # Update auth.json — copy tokens to codex section
+        try:
+            auth = json.loads(AUTH_PATH.read_text()) if AUTH_PATH.exists() else {}
+            codex = auth.get("codex", {})
+            codex["access_token"] = access_token
+            codex["refresh_token"] = refresh_token
+            codex["profile"] = slug
+            auth["codex"] = codex
+            AUTH_PATH.write_text(json.dumps(auth, indent=2))
+        except Exception as exc:
+            logger.error("[Telegram] Failed to update auth.json: %s", exc)
+            await query.answer(text="Failed to update auth.")
+            return
+
+        # Update config.yaml — persist model + provider globally
+        try:
+            import yaml
+            cfg = yaml.safe_load(CONFIG_PATH.read_text()) if CONFIG_PATH.exists() else {}
+            if not isinstance(cfg, dict):
+                cfg = {}
+            cfg["model"] = model
+            cfg["provider"] = "openai-codex"
+            CONFIG_PATH.write_text(yaml.safe_dump(cfg, default_flow_style=False))
+        except Exception as exc:
+            logger.error("[Telegram] Failed to update config.yaml: %s", exc)
+            await query.answer(text="Failed to persist model.")
+            return
+
+        # Evict cached agent so next turn picks up new model
+        try:
+            session_key = f"telegram:{query.message.chat_id}"
+            if hasattr(self, "_agent_cache") and session_key in self._agent_cache:
+                del self._agent_cache[session_key]
+        except Exception:
+            pass
+
+        plan_label = profile_data.get("plan", "")
+        await query.answer(text=f"✅ Switched to {slug} ({plan_label}) — {model}")
+
+        # Edit message to confirm, remove buttons
+        try:
+            from telegram import InlineKeyboardMarkup
+            from telegram import InlineKeyboardButton
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Switch again", callback_data=f"gptprof:{slug}:{model}")],
+            ])
+            await query.edit_message_text(
+                text=(
+                    f"✅ *Profile activated*\n\n"
+                    f"`{slug}` ({plan_label})\n"
+                    f"Model: `{model}`\n\n"
+                    f"📦 Saved globally to `config.yaml`.\n"
+                    f"Press `/new` for a fresh session."
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+            )
+        except Exception as exc:
+            logger.warning("[Telegram] Failed to edit gptprof message: %s", exc)
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -2161,11 +2248,169 @@ class TelegramAdapter(BasePlatformAdapter):
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
 
+        # --- SUBCONSCIOUS pending-intent callbacks (subc:y|n:token) ---
+        if data.startswith("subc:"):
+            parts = data.split(":", 2)
+            if len(parts) != 3 or parts[1] not in {"y", "n"}:
+                await query.answer(text="Invalid SUBCONSCIOUS button data.")
+                return
+
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to decide this intent.")
+                return
+
+            choice = parts[1]
+            token = parts[2]
+            room = _Path("/home/hermes/.hermes/profiles/subc/room")
+            project = _Path("/home/hermes/workspace/chip-subconscious")
+            state_path = room / "posted_pending_intents.json"
+            try:
+                state = json.loads(state_path.read_text()) if state_path.exists() else {}
+                intent_id = state.get("tokens", {}).get(token, token)
+                decision = "approved" if choice == "y" else "rejected"
+                user_display = getattr(query.from_user, "first_name", "User") or "User"
+                # Approved intents are intentionally limited by subc_transition.py
+                # to Chip/Main.  A Telegram button click is a Chip-facing UX, not
+                # SUBCONSCIOUS self-approval, so use the canonical approver label.
+                approver = 'Evgeny "Chip"' if decision == "approved" else user_display
+                message_id = getattr(query_message, "message_id", None)
+                cmd = [
+                    "python3", "scripts/subc_transition.py",
+                    "--room", str(room),
+                    "--intent-id", intent_id,
+                    "--decision", decision,
+                    "--approver", approver,
+                    "--note", f"Telegram button {choice} by {user_display} ({caller_id})",
+                ]
+                if message_id is not None:
+                    cmd.extend(["--source-message-id", str(message_id)])
+
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    cwd=str(project),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await proc.communicate()
+                if proc.returncode != 0:
+                    err = (stderr or stdout).decode(errors="replace").strip()
+                    logger.error("SUBCONSCIOUS intent transition failed: %s", err)
+                    await query.answer(text="Не получилось записать решение. Смотри gateway.log.")
+                    return
+
+                packet_path = None
+                shaw_run_path = None
+                if decision == "approved":
+                    packet_proc = await asyncio.create_subprocess_exec(
+                        "python3", "scripts/subc_build_packet.py",
+                        "--room", str(room),
+                        "--intent-id", intent_id,
+                        cwd=str(project),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    packet_stdout, packet_stderr = await packet_proc.communicate()
+                    if packet_proc.returncode == 0:
+                        try:
+                            packet_payload = json.loads(packet_stdout.decode(errors="replace"))
+                            packet_path = packet_payload.get("build_packet")
+                        except Exception:
+                            packet_path = None
+                    else:
+                        logger.error(
+                            "SUBCONSCIOUS build packet failed: %s",
+                            (packet_stderr or packet_stdout).decode(errors="replace").strip(),
+                        )
+
+                    if packet_path:
+                        shaw_proc = await asyncio.create_subprocess_exec(
+                            "python3", "scripts/subc_shaw_enqueue.py",
+                            "--room", str(room),
+                            "--intent-id", intent_id,
+                            cwd=str(project),
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                        )
+                        shaw_stdout, shaw_stderr = await shaw_proc.communicate()
+                        if shaw_proc.returncode == 0:
+                            try:
+                                shaw_payload = json.loads(shaw_stdout.decode(errors="replace"))
+                                shaw_run_path = shaw_payload.get("shaw_run")
+                            except Exception:
+                                shaw_run_path = None
+                        else:
+                            logger.error(
+                                "SUBCONSCIOUS Shaw enqueue failed: %s",
+                                (shaw_stderr or shaw_stdout).decode(errors="replace").strip(),
+                            )
+
+                posted = state.setdefault("posted", {}).setdefault(intent_id, {})
+                posted["decision"] = decision
+                posted["decided_by"] = user_display
+                posted["decided_by_id"] = caller_id
+                if packet_path:
+                    posted["build_packet"] = packet_path
+                if shaw_run_path:
+                    posted["shaw_run"] = shaw_run_path
+                try:
+                    tmp = state_path.with_suffix(".tmp")
+                    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n")
+                    tmp.replace(state_path)
+                except Exception as exc:
+                    logger.warning("Failed to update SUBCONSCIOUS posted state: %s", exc)
+
+                label = "✅ Одобрено" if decision == "approved" else "❌ Отклонено"
+                await query.answer(text=label)
+                original = getattr(query_message, "text", "") or ""
+                suffix = f"\n\n{label} — {user_display}."
+                if packet_path:
+                    suffix += f"\nBuild packet: {packet_path}"
+                if shaw_run_path:
+                    suffix += f"\n🥷 Shaw build: started"
+                try:
+                    await query.edit_message_text(
+                        text=(original[:3400] + suffix) if original else f"{label}: {intent_id}",
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+            except Exception as exc:
+                logger.error("SUBCONSCIOUS intent callback failed: %s", exc, exc_info=True)
+                await query.answer(text="Ошибка обработки кнопки SUBCONSCIOUS.")
+            return
+
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mm:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)
+            return
+
+        # --- GPT profile switcher callbacks (gptprof:slug:model) ---
+        if data.startswith("gptprof:"):
+            parts = data.split(":")
+            if len(parts) >= 3:
+                _, slug, model = parts[0], parts[1], parts[2]
+                caller_id = str(getattr(query.from_user, "id", ""))
+                if not self._is_callback_user_authorized(
+                    caller_id,
+                    chat_id=query_chat_id,
+                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                    user_name=query_user_name,
+                ):
+                    await query.answer(text="⛔ Not authorized.")
+                    return
+                await self._handle_gptprof_callback(query, slug, model)
+            else:
+                await query.answer(text="Invalid profile data.")
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---
