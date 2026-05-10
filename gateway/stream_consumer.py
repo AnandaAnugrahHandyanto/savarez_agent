@@ -411,7 +411,7 @@ class GatewayStreamConsumer:
                     # path below so we don't finalize here for it.
                     current_update_visible = await self._send_or_edit(
                         display_text,
-                        finalize=got_segment_break,
+                        finalize=(got_done or got_segment_break),
                     )
                     self._last_edit_time = time.monotonic()
 
@@ -640,6 +640,7 @@ class GatewayStreamConsumer:
         safe_limit = max(500, raw_limit - 100)
         chunks = self._split_text_chunks(continuation, safe_limit)
 
+        stale_message_id = self._message_id  # partial message to clean up
         last_message_id: Optional[str] = None
         last_successful_chunk = ""
         sent_any_chunk = False
@@ -686,6 +687,22 @@ class GatewayStreamConsumer:
             # Each fallback chunk is a fresh platform message — notify
             # so any stale tool-progress bubble gets closed off.
             self._notify_new_message()
+
+        # Remove the frozen partial message so the user only sees the
+        # complete fallback response.  Best-effort — if the platform doesn't
+        # implement ``delete_message``, the delete fails (flood control still
+        # active, bot lacks permission, message too old to delete), the
+        # partial remains but at least the full answer was delivered.
+        if stale_message_id and stale_message_id != last_message_id:
+            delete_fn = getattr(self.adapter, "delete_message", None)
+            if delete_fn is not None:
+                try:
+                    await delete_fn(self.chat_id, stale_message_id)
+                except Exception as e:
+                    logger.debug(
+                        "Fallback partial cleanup failed (%s): %s",
+                        stale_message_id, e,
+                    )
 
         self._message_id = last_message_id
         self._already_sent = True
