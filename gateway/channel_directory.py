@@ -73,13 +73,15 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
                 platforms["discord"] = _build_discord(adapter)
             elif platform == Platform.SLACK:
                 platforms["slack"] = await _build_slack(adapter)
+            elif platform == Platform.BLUEBUBBLES:
+                platforms["bluebubbles"] = await _build_bluebubbles(adapter)
         except Exception as e:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
     # Platforms that don't support direct channel enumeration get session-based
     # discovery automatically.  Skip infrastructure entries that aren't messaging
     # platforms — everything else falls through to _build_from_sessions().
-    _SKIP_SESSION_DISCOVERY = frozenset({"local", "api_server", "webhook"})
+    _SKIP_SESSION_DISCOVERY = frozenset({"local", "api_server", "webhook", "bluebubbles"})
     for plat in Platform:
         plat_name = plat.value
         if plat_name in _SKIP_SESSION_DISCOVERY or plat_name in platforms:
@@ -206,6 +208,66 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
             seen_ids.add(entry.get("id"))
 
     return channels
+
+
+async def _build_bluebubbles(adapter) -> List[Dict[str, Any]]:
+    """List BlueBubbles chats (DMs and groups) for channel directory.
+
+    Queries the BlueBubbles server's /api/v1/chat/query endpoint to
+    discover known chats and includes them in the channel directory so
+    send_message(action=list) shows BlueBubbles targets.
+
+    Each entry maps to either a chat GUID or an email/phone address that
+    can be used as a send_message target.
+    """
+    try:
+        payload = await adapter._api_post(
+            "/api/v1/chat/query",
+            {"limit": 200, "offset": 0, "with": ["participants"]},
+        )
+    except Exception as e:
+        logger.warning("Channel directory: failed to query BlueBubbles chats: %s", e)
+        return _build_from_sessions("bluebubbles")
+
+    chats: List[Dict[str, Any]] = []
+    seen_ids: set = set()
+
+    for chat in payload.get("data", []) or []:
+        guid = chat.get("guid") or chat.get("chatGuid")
+        identifier = chat.get("chatIdentifier") or chat.get("identifier")
+        if not guid:
+            continue
+
+        # Build display name from participants or identifier
+        participants = chat.get("participants", []) or []
+        if len(participants) == 1:
+            # DM: use participant address as name
+            name = participants[0].get("address", identifier or guid)
+            chat_type = "dm"
+        else:
+            # Group: use first few participant names
+            names = ", ".join(
+                [p.get("address", "unknown") for p in participants[:3]]
+            )
+            name = f"Group ({names})"
+            chat_type = "group"
+
+        if guid in seen_ids:
+            continue
+        seen_ids.add(guid)
+        chats.append({
+            "id": guid,
+            "name": name,
+            "type": chat_type,
+        })
+
+    # Merge in session-based entries (fallback)
+    for entry in _build_from_sessions("bluebubbles"):
+        if entry.get("id") not in seen_ids:
+            chats.append(entry)
+            seen_ids.add(entry.get("id"))
+
+    return chats
 
 
 def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
