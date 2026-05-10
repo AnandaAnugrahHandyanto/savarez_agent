@@ -1438,7 +1438,12 @@ def _replay_output_history() -> None:
             else:
                 lines = [entry]
             for line in lines:
-                _pt_print(_PT_ANSI(str(line)))
+                try:
+                    _pt_print(_PT_ANSI(str(line)))
+                except Exception:
+                    # Fallback for environments without a console buffer (Windows
+                    # workers with redirected stdout, headless CI, etc.)
+                    print(str(line))
     except Exception:
         pass
     finally:
