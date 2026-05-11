@@ -1049,3 +1049,212 @@
 .hd-app ::-webkit-scrollbar-thumb:hover {
   background: var(--hd-muted);
 }
+
+/* ─── Rail comment badge ──────────────────────────────────────────────────── */
+
+.hd-rail__badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  background: var(--hd-brand-error);
+  color: #ffffff;
+  border-radius: 7px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+
+/* ─── Editor select hint ─────────────────────────────────────────────────── */
+
+.hd-editor-select-hint {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--hd-muted);
+  margin-left: auto;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+/* ─── Selection bubble ───────────────────────────────────────────────────── */
+
+.hd-sel-bubble {
+  position: fixed;
+  z-index: 300;
+  display: flex;
+  background: var(--hd-charcoal);
+  border-radius: var(--hd-r-md);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+  animation: hd-pop-in 120ms ease;
+}
+
+@keyframes hd-pop-in {
+  from { opacity: 0; transform: scale(0.9) translateY(4px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.hd-sel-bubble__btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  color: var(--hd-on-dark);
+  font-size: 12px;
+  font-family: var(--hd-font-ui);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 100ms;
+}
+
+.hd-sel-bubble__btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ─── Comment form ───────────────────────────────────────────────────────── */
+
+.hd-comment-form {
+  position: fixed;
+  z-index: 299;
+  width: 280px;
+  background: var(--hd-canvas);
+  border: 1px solid var(--hd-hairline);
+  border-radius: var(--hd-r-lg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: hd-pop-in 120ms ease;
+}
+
+.hd-comment-form__quote {
+  margin: 0;
+  padding: 6px 8px;
+  background: var(--hd-surface);
+  border-left: 3px solid var(--hd-brand-green);
+  border-radius: var(--hd-r-xs);
+  font-size: 11px;
+  color: var(--hd-steel);
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hd-comment-form__textarea {
+  width: 100%;
+  resize: none;
+  padding: 7px 9px;
+  font-family: var(--hd-font-ui);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--hd-ink);
+  background: var(--hd-canvas);
+  border: 1px solid var(--hd-hairline);
+  border-radius: var(--hd-r-sm);
+  outline: none;
+  transition: border-color 150ms;
+}
+
+.hd-comment-form__textarea:focus {
+  border-color: var(--hd-brand-green);
+  box-shadow: 0 0 0 2px rgba(0, 212, 164, 0.15);
+}
+
+.hd-comment-form__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ─── Comments panel ─────────────────────────────────────────────────────── */
+
+.hd-commentspanel {
+  width: 260px;
+}
+
+.hd-commentspanel__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  margin-left: 6px;
+  background: var(--hd-brand-error);
+  color: #ffffff;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  vertical-align: middle;
+}
+
+.hd-commentspanel__list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+}
+
+/* ─── Comment item ───────────────────────────────────────────────────────── */
+
+.hd-comment-item {
+  background: var(--hd-surface-soft);
+  border: 1px solid var(--hd-hairline);
+  border-radius: var(--hd-r-md);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: opacity 200ms;
+}
+
+.hd-comment-item--resolved {
+  opacity: 0.5;
+}
+
+.hd-comment-item__quote {
+  margin: 0;
+  padding: 4px 6px;
+  background: var(--hd-surface);
+  border-left: 2px solid var(--hd-brand-green);
+  border-radius: var(--hd-r-xs);
+  font-size: 11px;
+  color: var(--hd-steel);
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hd-comment-item__text {
+  margin: 0;
+  font-size: 12px;
+  color: var(--hd-charcoal);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.hd-comment-item__footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hd-comment-item__date {
+  font-size: 10px;
+  color: var(--hd-stone);
+  flex: 1;
+}

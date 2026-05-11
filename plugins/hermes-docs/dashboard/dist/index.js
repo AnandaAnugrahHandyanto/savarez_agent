@@ -1,5 +1,5 @@
 /* Hermes Docs — dashboard plugin frontend bundle
-   Version: 0.1.0
+   Version: 0.2.0
    Design: Mintlify (see DESIGN.md)
 
    Uses window.__HERMES_PLUGIN_SDK__ exclusively — no npm imports.
@@ -51,6 +51,7 @@
       warn:       "M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z",
       home:       "M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z",
       "arrow-back": "M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z",
+      comment:    "M21 15c0 1.1-.9 2-2 2H5l-4 4V5c0-1.1.9-2 2-2h16c1.1 0 2 .9 2 2v10z",
     };
 
     return h("svg", {
@@ -197,14 +198,14 @@
       ),
       h("div", { className: "hd-launcher__body" },
         loading
-          ? h("div", { style: { color: "var(--hd-muted)", fontSize: 13, padding: "24px 0" } }, "Loading workspaces…")
+          ? h("div", { style: { color: "var(--hd-muted)", fontSize: 13, padding: "24px 0" } }, "Loading workspaces\u2026")
           : workspaces.length === 0 && !adding
             ? h("div", { style: { color: "var(--hd-steel)", fontSize: 13, padding: "16px 0" } },
                 "No workspaces yet. Register a local folder to get started."
               )
             : workspaces.map(function(ws) {
                 return h("div", { key: ws.id, className: "hd-workspace-card", onClick: function() { onOpen(ws); } },
-                  h("div", { className: "hd-workspace-card__icon" }, "📁"),
+                  h("div", { className: "hd-workspace-card__icon" }, "\uD83D\uDCC1"),
                   h("div", { className: "hd-workspace-card__info" },
                     h("div", { className: "hd-workspace-card__name" }, ws.name),
                     h("div", { className: "hd-workspace-card__path" }, ws.path)
@@ -226,7 +227,7 @@
                   ref: nameRef,
                   className: "hd-input",
                   type: "text",
-                  placeholder: "Workspace name (optional — defaults to folder name)",
+                  placeholder: "Workspace name (optional \u2014 defaults to folder name)",
                 }),
                 h("div", { className: "hd-add-workspace__row" },
                   h("input", {
@@ -238,7 +239,7 @@
                     autoFocus: true,
                   }),
                   h("button", { type: "submit", className: "hd-btn hd-btn--primary", disabled: submitting },
-                    submitting ? "Adding…" : "Add"
+                    submitting ? "Adding\u2026" : "Add"
                   ),
                   h("button", { type: "button", className: "hd-btn hd-btn--ghost",
                     onClick: function() { setAdding(false); setAddError(""); } }, "Cancel")
@@ -394,10 +395,11 @@
     var mode       = props.mode;
     var onChange   = props.onChange;
     var activeFile = props.activeFile;
+    var onSelection = props.onSelection || function() {};
 
     if (!activeFile) {
       return h("div", { className: "hd-editor-empty" },
-        h("div", { className: "hd-editor-empty__icon" }, "📄"),
+        h("div", { className: "hd-editor-empty__icon" }, "\uD83D\uDCC4"),
         h("div", { className: "hd-editor-empty__text" },
           "Select a file from the workspace drawer to start editing."
         )
@@ -408,6 +410,25 @@
       return h("div", {
         className: "hd-editor-preview",
         dangerouslySetInnerHTML: { __html: renderMarkdown(content) },
+        onMouseUp: function(e) {
+          var sel = window.getSelection();
+          if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+            onSelection(null);
+            return;
+          }
+          var text = sel.toString();
+          var range = sel.getRangeAt(0);
+          var rect  = range.getBoundingClientRect();
+          // approximate character offset by searching in raw content
+          var idx = content ? content.indexOf(text) : -1;
+          onSelection({
+            anchorText:  text,
+            anchorStart: idx >= 0 ? idx : 0,
+            anchorEnd:   idx >= 0 ? idx + text.length : text.length,
+            x: Math.round((rect.left + rect.right) / 2 - 48),
+            y: Math.round(rect.top - 44),
+          });
+        },
       });
     }
 
@@ -416,7 +437,22 @@
       value: content,
       onChange: function(e) { onChange(e.target.value); },
       spellCheck: mode !== "source",
-      placeholder: "Start writing Markdown…",
+      placeholder: "Start writing Markdown\u2026",
+      onMouseUp: function(e) {
+        var ta = e.currentTarget;
+        if (ta.selectionStart === ta.selectionEnd) {
+          onSelection(null);
+          return;
+        }
+        var text = ta.value.substring(ta.selectionStart, ta.selectionEnd);
+        onSelection({
+          anchorText:  text,
+          anchorStart: ta.selectionStart,
+          anchorEnd:   ta.selectionEnd,
+          x: e.clientX - 48,
+          y: e.clientY - 44,
+        });
+      },
     });
   }
 
@@ -475,19 +511,19 @@
         h("textarea", {
           ref: inputRef,
           className: "hd-sidechat__textarea",
-          placeholder: "Ask the Docs Agent…",
+          placeholder: "Ask the Docs Agent\u2026",
           onKeyDown: handleKeyDown,
           disabled: sending,
           rows: 3,
         }),
         h("div", { className: "hd-sidechat__actions" },
-          h("span", { className: "hd-sidechat__hint" }, "⌘↵ to send"),
+          h("span", { className: "hd-sidechat__hint" }, "\u2318\u21a9 to send"),
           h("button", {
             className: "hd-btn hd-btn--accent",
             onClick: handleSend,
             disabled: sending,
             style: { height: 28, padding: "0 12px", fontSize: 12 },
-          }, sending ? "…" : h(Icon, { name: "send", size: 13 }), " Send")
+          }, sending ? "\u2026" : h(Icon, { name: "send", size: 13 }), " Send")
         )
       )
     );
@@ -533,13 +569,13 @@
     }
 
     return h("div", { className: "hd-commandbar" },
-      h("span", { className: "hd-commandbar__label" }, "⌘K"),
+      h("span", { className: "hd-commandbar__label" }, "\u2318K"),
       h("div", { style: { flex: 1, position: "relative" } },
         h("input", {
           className: "hd-commandbar__input",
           type: "text",
           placeholder: activeFile
-            ? "Type : for commands (e.g. :save, :preview) or describe a doc action…"
+            ? "Type : for commands (e.g. :save, :preview) or describe a doc action\u2026"
             : "Open a file to start editing",
           value: input,
           onChange: handleChange,
@@ -594,7 +630,7 @@
           h("div", { className: "hd-settings-row__label" },
             h("div", { className: "hd-settings-row__key" }, "Codex OAuth"),
             h("div", { className: "hd-settings-row__hint" },
-              "Provides the Docs Agent with Codex-backed reasoning. Brokered locally — browser never receives raw tokens."
+              "Provides the Docs Agent with Codex-backed reasoning. Brokered locally \u2014 browser never receives raw tokens."
             )
           ),
           h("span", { className: "hd-badge hd-badge--setup" }, "Set up in Hermes config")
@@ -614,7 +650,7 @@
           h("div", { className: "hd-settings-row__label" },
             h("div", { className: "hd-settings-row__key" }, "Kordoc Document Conversion"),
             h("div", { className: "hd-settings-row__hint" },
-              "HWP/HWPX/DOCX/XLSX/PDF → Markdown conversion via local Kordoc broker."
+              "HWP/HWPX/DOCX/XLSX/PDF \u2192 Markdown conversion via local Kordoc broker."
             )
           ),
           h("span", { className: "hd-badge hd-badge--setup" }, "Coming in next slice")
@@ -624,7 +660,7 @@
           h("div", { className: "hd-settings-row__label" },
             h("div", { className: "hd-settings-row__key" }, "Storage"),
             h("div", { className: "hd-settings-row__hint" },
-              "Workspace metadata stored in ~/.hermes/docs-workspaces/ — workspace source folders stay clean."
+              "Workspace metadata stored in ~/.hermes/docs-workspaces/ \u2014 workspace source folders stay clean."
             )
           ),
           h("span", { className: "hd-badge hd-badge--ok" }, "Local")
@@ -653,6 +689,158 @@
             h(Icon, { name: "check", size: 13 }), " Write file"
           )
         )
+      )
+    );
+  }
+
+  // --------------------------------------------------------------------------
+  // SelectionBubble — floats near selected text, offers "Add comment"
+  // --------------------------------------------------------------------------
+
+  function SelectionBubble(props) {
+    var x     = props.x;
+    var y     = props.y;
+    var onAdd = props.onAdd;
+
+    return h("div", {
+      className: "hd-sel-bubble",
+      style: { left: x + "px", top: y + "px" },
+      // prevent mousedown from clearing the browser selection
+      onMouseDown: function(e) { e.preventDefault(); e.stopPropagation(); },
+    },
+      h("button", {
+        className: "hd-sel-bubble__btn",
+        onClick: onAdd,
+      },
+        h(Icon, { name: "comment", size: 12 }),
+        "\u00a0Comment"
+      )
+    );
+  }
+
+  // --------------------------------------------------------------------------
+  // CommentForm — small floating form to write and submit a comment
+  // --------------------------------------------------------------------------
+
+  function CommentForm(props) {
+    var x          = props.x;
+    var y          = props.y;
+    var anchorText = props.anchorText;
+    var onSubmit   = props.onSubmit;   // (text) => Promise
+    var onCancel   = props.onCancel;
+
+    var textareaRef  = useRef(null);
+    var submittingArr = useState(false); var submitting = submittingArr[0]; var setSubmitting = submittingArr[1];
+    var errorArr     = useState(""); var formError = errorArr[0]; var setFormError = errorArr[1];
+
+    useEffect(function() {
+      if (textareaRef.current) textareaRef.current.focus();
+    }, []); // eslint-disable-line
+
+    function doSubmit() {
+      var val = textareaRef.current ? textareaRef.current.value.trim() : "";
+      if (!val) { setFormError("Comment text is required."); return; }
+      setSubmitting(true); setFormError("");
+      onSubmit(val)
+        .then(function() { setSubmitting(false); })
+        .catch(function(err) {
+          setFormError(err.message || "Failed to submit.");
+          setSubmitting(false);
+        });
+    }
+
+    return h("div", {
+      className: "hd-comment-form",
+      style: { left: x + "px", top: (y + 48) + "px" },
+      onMouseDown: function(e) { e.stopPropagation(); },
+    },
+      anchorText && h("blockquote", { className: "hd-comment-form__quote" },
+        "\u201c" + anchorText.slice(0, 80) + (anchorText.length > 80 ? "\u2026" : "") + "\u201d"
+      ),
+      h("textarea", {
+        ref: textareaRef,
+        className: "hd-comment-form__textarea",
+        placeholder: "Add a comment\u2026",
+        rows: 3,
+        disabled: submitting,
+        onKeyDown: function(e) {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); doSubmit(); }
+          if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+        },
+      }),
+      formError && h("div", {
+        style: { fontSize: 11, color: "var(--hd-brand-error)", marginBottom: 4 },
+      }, formError),
+      h("div", { className: "hd-comment-form__actions" },
+        h("span", { style: { fontSize: 11, color: "var(--hd-stone)", flex: 1 } }, "\u2318\u21a9 submit"),
+        h("button", {
+          className: "hd-btn hd-btn--ghost",
+          onClick: onCancel,
+          disabled: submitting,
+        }, "Cancel"),
+        h("button", {
+          className: "hd-btn hd-btn--accent",
+          onClick: doSubmit,
+          disabled: submitting,
+        }, submitting ? "\u2026" : "Submit")
+      )
+    );
+  }
+
+  // --------------------------------------------------------------------------
+  // CommentsPanel — side panel listing document annotations
+  // --------------------------------------------------------------------------
+
+  function CommentsPanel(props) {
+    var comments  = props.comments;
+    var visible   = props.visible;
+    var onToggle  = props.onToggle;
+    var onResolve = props.onResolve;
+
+    var activeCount = useMemo(function() {
+      return comments.filter(function(c) { return !c.resolved; }).length;
+    }, [comments]);
+
+    return h("div", { className: "hd-sidechat hd-commentspanel" + (visible ? "" : " hd-sidechat--hidden") },
+      h("div", { className: "hd-sidechat__header" },
+        h("span", { className: "hd-sidechat__title" },
+          "Comments",
+          activeCount > 0 && h("span", { className: "hd-commentspanel__badge" }, activeCount)
+        ),
+        h("button", {
+          className: "hd-btn hd-btn--icon",
+          title: "Close comments",
+          onClick: onToggle,
+        }, h(Icon, { name: "close", size: 14 }))
+      ),
+      h("div", { className: "hd-commentspanel__list" },
+        comments.length === 0
+          ? h("div", { className: "hd-sidechat__empty" },
+              "Select text in the editor and click Comment to annotate."
+            )
+          : comments.map(function(c) {
+              return h("div", {
+                key: c.id,
+                className: "hd-comment-item" + (c.resolved ? " hd-comment-item--resolved" : ""),
+              },
+                c.anchor_text && h("blockquote", { className: "hd-comment-item__quote" },
+                  c.anchor_text.slice(0, 80) + (c.anchor_text.length > 80 ? "\u2026" : "")
+                ),
+                h("p", { className: "hd-comment-item__text" }, c.text),
+                h("div", { className: "hd-comment-item__footer" },
+                  c.created_at && h("span", { className: "hd-comment-item__date" },
+                    c.created_at.slice(0, 10)
+                  ),
+                  c.resolved
+                    ? h("span", { style: { fontSize: 11, color: "var(--hd-stone)" } }, "Resolved")
+                    : h("button", {
+                        className: "hd-btn hd-btn--ghost",
+                        style: { fontSize: 11, height: 22, padding: "0 8px" },
+                        onClick: function() { onResolve(c.id); },
+                      }, "Resolve")
+                )
+              );
+            })
       )
     );
   }
@@ -692,6 +880,14 @@
     // Diff preview
     var diffState        = useState(null); var diff = diffState[0]; var setDiff = diffState[1];
 
+    // Comments
+    var commentsArr   = useState([]); var comments = commentsArr[0]; var setComments = commentsArr[1];
+    var showCmtArr    = useState(false); var showComments = showCmtArr[0]; var setShowComments = showCmtArr[1];
+
+    // Selection bubble
+    var selInfoArr    = useState(null); var selInfo = selInfoArr[0]; var setSelInfo = selInfoArr[1];
+    var showCFormArr  = useState(false); var showCForm = showCFormArr[0]; var setShowCForm = showCFormArr[1];
+
     var dirty = useMemo(function() { return content !== savedContent; }, [content, savedContent]);
 
     // ── Load workspaces on mount ──
@@ -718,12 +914,33 @@
         .catch(function() {});
     }, [activeWs && activeWs.id]); // eslint-disable-line
 
+    // ── Load comments when active file changes ──
+    useEffect(function() {
+      if (!activeWs || !activeFile) { setComments([]); return; }
+      apiGet("/workspaces/" + activeWs.id + "/comments?document=" + encodeURIComponent(activeFile))
+        .then(function(data) { setComments(Array.isArray(data) ? data : []); })
+        .catch(function() { setComments([]); });
+    }, [activeWs && activeWs.id, activeFile]); // eslint-disable-line
+
+    // ── Dismiss selection bubble on click outside ──
+    useEffect(function() {
+      if (!selInfo) return;
+      function dismiss(e) {
+        if (!e.target.closest(".hd-sel-bubble") && !e.target.closest(".hd-comment-form")) {
+          setSelInfo(null); setShowCForm(false);
+        }
+      }
+      document.addEventListener("mousedown", dismiss);
+      return function() { document.removeEventListener("mousedown", dismiss); };
+    }, [selInfo]); // eslint-disable-line
+
     // ── Workspace actions ──
     function handleOpenWorkspace(ws) {
       apiPost("/workspaces/" + ws.id + "/open").catch(function() {});
       setActiveWs(ws);
       setActiveFile(null); setContent(""); setSavedContent("");
       setMessages([]); setShowSettings(false);
+      setComments([]); setSelInfo(null); setShowCForm(false); setShowComments(false);
     }
 
     function handleAddWorkspace(name, path) {
@@ -744,6 +961,7 @@
         if (!window.confirm("You have unsaved changes. Discard and open this file?")) return;
       }
       setActiveFile(rel);
+      setSelInfo(null); setShowCForm(false);
       apiGet("/workspaces/" + activeWs.id + "/file?rel=" + encodeURIComponent(rel))
         .then(function(data) { setContent(data.content || ""); setSavedContent(data.content || ""); })
         .catch(function(err) { setContent(""); setSavedContent(""); setError(err.message || "Failed to read file"); });
@@ -792,6 +1010,41 @@
         });
     }
 
+    // ── Selection detected ──
+    function handleSelectionDetected(info) {
+      setSelInfo(info);
+      setShowCForm(false);
+    }
+
+    // ── Comment CRUD ──
+    function handleCreateComment(text) {
+      if (!activeWs || !activeFile || !selInfo) {
+        return Promise.reject(new Error("No active selection"));
+      }
+      return apiPost("/workspaces/" + activeWs.id + "/comments", {
+        document:     activeFile,
+        text:         text,
+        anchor_start: selInfo.anchorStart,
+        anchor_end:   selInfo.anchorEnd,
+        anchor_text:  selInfo.anchorText,
+      }).then(function(c) {
+        setComments(function(prev) { return prev.concat([c]); });
+        setSelInfo(null); setShowCForm(false);
+        setShowComments(true); // auto-open comments panel
+      });
+    }
+
+    function handleResolveComment(cid) {
+      if (!activeWs) return;
+      apiPatch("/workspaces/" + activeWs.id + "/comments/" + cid, { resolved: true })
+        .then(function(updated) {
+          setComments(function(prev) {
+            return prev.map(function(c) { return c.id === cid ? updated : c; });
+          });
+        })
+        .catch(function(err) { setError(err.message || "Failed to resolve comment"); });
+    }
+
     // ── Command bar ──
     function handleCommand(cmd) {
       if (cmd === ":preview")   { setEditorMode(function(m) { return m === "preview" ? "edit" : "preview"; }); return; }
@@ -805,6 +1058,11 @@
 
     // ── Determine dark theme ──
     var themeAttr = "auto";
+
+    // active unresolved comment count (for rail badge)
+    var activeCommentCount = useMemo(function() {
+      return comments.filter(function(c) { return !c.resolved; }).length;
+    }, [comments]);
 
     // ─── Render ───
     if (!activeWs) {
@@ -838,6 +1096,16 @@
             title: "Side Chat",
             onClick: function() { setSideChatOpen(function(v) { return !v; }); },
           }, h(Icon, { name: "docs", size: 15 })),
+
+          h("button", {
+            className: "hd-rail__btn hd-rail__btn--comment" + (showComments ? " hd-active" : ""),
+            title: "Comments" + (activeCommentCount > 0 ? " (" + activeCommentCount + ")" : ""),
+            onClick: function() { setShowComments(function(v) { return !v; }); },
+            style: { position: "relative" },
+          },
+            h(Icon, { name: "comment", size: 15 }),
+            activeCommentCount > 0 && h("span", { className: "hd-rail__badge" }, activeCommentCount)
+          ),
 
           h("div", { className: "hd-rail__spacer" }),
 
@@ -896,6 +1164,11 @@
                     onClick: function() { setEditorMode(m); },
                   }, m.charAt(0).toUpperCase() + m.slice(1));
                 })
+              ),
+              // quiet hint when no selection is active
+              activeFile && !selInfo && h("span", { className: "hd-editor-select-hint" },
+                h(Icon, { name: "comment", size: 11, color: "var(--hd-muted)" }),
+                "\u00a0Select text to comment"
               )
             ),
 
@@ -908,6 +1181,7 @@
                     mode: editorMode,
                     onChange: setContent,
                     activeFile: activeFile,
+                    onSelection: handleSelectionDetected,
                   })
                 ),
 
@@ -926,6 +1200,14 @@
             visible: sideChatOpen,
             onToggle: function() { setSideChatOpen(function(v) { return !v; }); },
             sending: sending,
+          }),
+
+          // Comments panel
+          h(CommentsPanel, {
+            comments: comments,
+            visible: showComments,
+            onToggle: function() { setShowComments(function(v) { return !v; }); },
+            onResolve: handleResolveComment,
           })
         )
       ),
@@ -946,7 +1228,23 @@
           cursor: "pointer",
         },
         onClick: function() { setError(""); },
-      }, h(Icon, { name: "warn", size: 13 }), " ", error, " ✕")
+      }, h(Icon, { name: "warn", size: 13 }), " ", error, " \u2715"),
+
+      // Selection bubble (fixed-position, outside shell)
+      selInfo && !showCForm && h(SelectionBubble, {
+        x: selInfo.x,
+        y: selInfo.y,
+        onAdd: function() { setShowCForm(true); },
+      }),
+
+      // Comment form (fixed-position, outside shell)
+      selInfo && showCForm && h(CommentForm, {
+        x: selInfo.x,
+        y: selInfo.y,
+        anchorText: selInfo.anchorText,
+        onSubmit: handleCreateComment,
+        onCancel: function() { setSelInfo(null); setShowCForm(false); },
+      })
     );
   }
 
