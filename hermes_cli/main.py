@@ -1289,15 +1289,22 @@ def _launch_tui(
     # user-supplied --max-old-space-size (they may have set it higher) and
     # avoid duplicating --expose-gc.
     _tokens = env.get("NODE_OPTIONS", "").split()
+    # --expose-gc is rejected by modern Node.js when passed via NODE_OPTIONS;
+    # we inject it directly into the node argv later. Make sure nothing in the
+    # inherited environment leaks it here.
+    _tokens = [t for t in _tokens if t != "--expose-gc"]
     if not any(t.startswith("--max-old-space-size=") for t in _tokens):
         _tokens.append("--max-old-space-size=8192")
-    if "--expose-gc" not in _tokens:
-        _tokens.append("--expose-gc")
     env["NODE_OPTIONS"] = " ".join(_tokens)
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
 
     argv, cwd = _make_tui_argv(tui_dir, tui_dev)
+    # Inject --expose-gc directly into the node argv when running node
+    # directly (production path). Modern Node rejects it via NODE_OPTIONS.
+    bin_name = os.path.basename(argv[0]).lower()
+    if bin_name.startswith("node") and "--expose-gc" not in argv:
+        argv.insert(1, "--expose-gc")
     code: Optional[int] = None
     try:
         try:
