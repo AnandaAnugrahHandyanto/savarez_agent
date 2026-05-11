@@ -1,126 +1,65 @@
 # AntSeed Setup Guide
 
-AntSeed is a P2P AI inference network. You run a **buyer proxy** that connects to seller nodes offering models. This requires a funded wallet.
-
-## 1. Install AntSeed CLI
+## 1. Install CLI
 
 ```bash
 npm install -g @antseed/cli
 ```
 
-Verify: `antseed --version`
-
 ## 2. Start Buyer Proxy
-
-The proxy is an OpenAI-compatible endpoint on `http://127.0.0.1:8377/v1/`.
 
 ```bash
 antseed buyer start
 ```
 
-Persistent state is stored in `~/.antseed/buyer.state.json` (survives restarts).
+OpenAI-compatible endpoint on `http://127.0.0.1:8377/v1/`. State persisted in `~/.antseed/`.
 
-For systemd deployment, see the official [hermes-antseed skill](https://github.com/AntSeed/antseed/blob/main/skills/hermes-antseed/SKILL.md).
-
-## 3. Configure Chain
+## 3. Wallet
 
 ```bash
-# Default chain is Base. AntSeed CLI resolves contracts automatically from chainId.
-# No need to hardcode contract addresses.
-antseed buyer config set chain base
+antseed buyer wallet import <private-key>   # or: antseed buyer wallet create
+antseed buyer deposit 1                      # $1 USDC on Base minimum
+antseed buyer status                         # verify balance
 ```
 
-## 4. Wallet Setup
+**Never move `identity.key` between hosts.**
 
-You need a wallet funded with USDC on Base. **Buyer wallet does NOT need ETH for gas** — the seller pays on-chain tx fees.
-
-```bash
-# Import existing wallet
-antseed buyer wallet import <private-key>
-
-# Or create new
-antseed buyer wallet create
-```
-
-**CRITICAL:** Never move `identity.key` from the host it was created on.
-
-## 5. Fund Wallet
-
-Deposit USDC into the buyer contract:
+## 4. Pin a Peer
 
 ```bash
-antseed buyer deposit 1   # $1 USDC minimum recommended
-```
-
-Check balance: `antseed buyer status`
-
-## 6. Pin a Peer
-
-```bash
-# List peers on the network
 antseed network browse --top 15
-
-# Pin a peer by ID
 antseed buyer connection set --peer <peer-id>
 ```
 
-Verify pin: `antseed buyer status` — look for "Pinned peer" field.
+Or use smart selection: `bash ${HERMES_SKILL_DIR}/scripts/discover.sh best <task>`
 
-Or use the smart peer selector: `bash ${HERMES_SKILL_DIR}/scripts/best-peer.sh <task_type>`
+## 5. Hermes Config
 
-## 7. Wire Hermes Config
-
-Add AntSeed as a custom provider in `~/.hermes/config.yaml`:
+Add to `~/.hermes/config.yaml`:
 
 ```yaml
-model:
-  default: deepseek-v4-flash
-  provider: antseed
-
 custom_providers:
   - name: antseed
     base_url: http://127.0.0.1:8377/v1
     api_key: antseed-p2p
     api_mode: chat_completions
     models:
-      - deepseek-v4-flash
-      - claude-sonnet-4-6
-      - minimax-m2.7
-      # Discover live models: bash ${HERMES_SKILL_DIR}/scripts/models.sh --json | jq '.categories[].models[].model' -r
-
-auxiliary:
-  title_generation:
-    provider: antseed
-    model: minimax-m2.7
-  compression:
-    provider: antseed
-    model: minimax-m2.7
+      # Discover available models:
+      # bash ${HERMES_SKILL_DIR}/scripts/discover.sh models --json | jq '.categories[].models[].model' -r
 
 delegation:
-  model: deepseek-v4-flash
   provider: antseed
+  # Pick a model from discover.sh output:
+  model: <model-id>
   reasoning_effort: minimal
 ```
 
-Key settings:
+**`api_mode: chat_completions`** is mandatory — `openai-responses` requires streaming and breaks auxiliaries.
 
-| Setting | Value | Why |
-|---------|-------|-----|
-| `api_mode` | `chat_completions` | Mandatory. `openai-responses` requires streaming — breaks auxiliaries |
-| `api_key` | `antseed-p2p` | Convention — proxy ignores the key |
-| `model` | AntSeed service ID | NOT OpenAI model name — use the ID from `models.sh` or proxy `/v1/models` |
-
-The `@antseed/api-adapter` handles automatic protocol translation (e.g., `chat_completions` → `anthropic-messages`).
-
-## 8. Verify
+## 6. Verify
 
 ```bash
-# Test proxy
-curl -s http://127.0.0.1:8377/v1/models -H "Authorization: Bearer antseed-p2p" | head
-
-# List live models grouped by category
-bash ${HERMES_SKILL_DIR}/scripts/models.sh
-
-# Find best peer for a task
-bash ${HERMES_SKILL_DIR}/scripts/best-peer.sh any
+curl -sf http://127.0.0.1:8377/v1/models -H "Authorization: Bearer antseed-p2p" | head
+bash ${HERMES_SKILL_DIR}/scripts/discover.sh models
+bash ${HERMES_SKILL_DIR}/scripts/discover.sh best any
 ```

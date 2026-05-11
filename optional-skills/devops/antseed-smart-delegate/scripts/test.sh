@@ -1,99 +1,63 @@
 #!/usr/bin/env bash
-# antseed-smart-delegate/test.sh — Verify skill integrity
+# test.sh — Integrity checks for antseed-smart-delegate skill
 set -uo pipefail
 
-SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PASS=0
-FAIL=0
-TOTAL=0
+SDIR="$(cd "$(dirname "$0")/.." && pwd)"
+P=0; F=0; T=0
 
-check() {
-  local desc="$1"
-  local result="$2"
-  TOTAL=$((TOTAL + 1))
-  if [[ "$result" == "ok" ]]; then
-    PASS=$((PASS + 1))
-    echo "  ✅ $desc"
-  else
-    FAIL=$((FAIL + 1))
-    echo "  ❌ $desc — $result"
-  fi
-}
+ok() { T=$((T+1)); P=$((P+1)); echo "  ✅ $1"; }
+no() { T=$((T+1)); F=$((F+1)); echo "  ❌ $1 — $2"; }
 
-echo "🧪 AntSeed Smart Delegate — Skill Integrity Checks"
-echo ""
+echo "🧪 antseed-smart-delegate"
 
-# --- File structure ---
-echo "📂 File structure"
-for f in SKILL.md references/setup.md scripts/models.sh scripts/best-peer.sh; do
-  [[ -f "$SKILL_DIR/$f" ]] && check "$f exists" "ok" || check "$f exists" "MISSING"
+# Structure
+for f in SKILL.md references/setup.md scripts/discover.sh; do
+  [[ -f "$SDIR/$f" ]] && ok "$f" || no "$f" "missing"
 done
+[[ ! -f "$SDIR/references/model-catalog.md" ]] && ok "no static catalog" || no "model-catalog.md" "should be removed"
+[[ ! -f "$SDIR/scripts/models.sh" ]] && ok "no old models.sh" || no "models.sh" "superseded by discover.sh"
+[[ ! -f "$SDIR/scripts/best-peer.sh" ]] && ok "no old best-peer.sh" || no "best-peer.sh" "superseded by discover.sh"
 
-# model-catalog.md should NOT exist (replaced by dynamic models.sh)
-[[ ! -f "$SKILL_DIR/references/model-catalog.md" ]] && check "model-catalog.md removed (dynamic)" "ok" || check "model-catalog.md should be removed" "still exists"
+# Permissions
+[[ -x "$SDIR/scripts/discover.sh" ]] && ok "discover.sh executable" || no "discover.sh" "not executable"
 
-# --- SKILL.md frontmatter ---
-echo ""
-echo "📋 SKILL.md frontmatter"
+# No hardcoded paths
+if grep -q '/home/' "$SDIR/scripts/discover.sh" 2>/dev/null; then
+  no "no hardcoded paths" "found /home/ in discover.sh"
+else
+  ok "no hardcoded paths"
+fi
+
+# No hardcoded model names
+if grep -qE '(deepseek|claude-opus|claude-sonnet|gpt-[0-9]|minimax|qwen3|llama-|gemini-)' "$SDIR/scripts/discover.sh" 2>/dev/null; then
+  no "no hardcoded models" "found specific model names in discover.sh"
+else
+  ok "no hardcoded models"
+fi
+
+# Tag-driven design
+grep -q 'TASK_TAGS' "$SDIR/scripts/discover.sh" && ok "tag-driven scoring" || no "tag-driven" "no TASK_TAGS"
+grep -q 'TAG_CATEGORIES' "$SDIR/scripts/discover.sh" && ok "tag-based categories" || no "categories" "no TAG_CATEGORIES"
+
+# Live network queries
+grep -q 'network.*browse' "$SDIR/scripts/discover.sh" && ok "queries network" || no "network browse" "missing"
+grep -q 'network.*peer' "$SDIR/scripts/discover.sh" && ok "fetches peer details" || no "network peer" "missing"
+grep -q 'v1/models' "$SDIR/scripts/discover.sh" && ok "proxy fallback" || no "proxy fallback" "missing"
+
+# SKILL.md references discover.sh, not old scripts
+grep -q 'discover.sh' "$SDIR/SKILL.md" && ok "SKILL.md refs discover.sh" || no "discover.sh ref" "missing"
+if grep -q 'models.sh\|best-peer.sh' "$SDIR/SKILL.md"; then
+  no "no old script refs" "SKILL.md still references models.sh or best-peer.sh"
+else
+  ok "no old script refs in SKILL.md"
+fi
+
+# Frontmatter
 for field in name description version prerequisites; do
-  grep -q "^${field}:" "$SKILL_DIR/SKILL.md" && check "frontmatter: $field" "ok" || check "frontmatter: $field" "MISSING"
+  grep -q "^${field}:" "$SDIR/SKILL.md" && ok "frontmatter: $field" || no "frontmatter: $field" "missing"
 done
 
-# --- Scripts executable ---
 echo ""
-echo "⚙️ Script permissions"
-for s in scripts/models.sh scripts/best-peer.sh; do
-  [[ -x "$SKILL_DIR/$s" ]] && check "$s executable" "ok" || check "$s executable" "not executable"
-done
-
-# --- No hardcoded model names in scripts ---
-echo ""
-echo "🔍 Hardcoded model check (should be 0)"
-for s in scripts/models.sh scripts/best-peer.sh; do
-  count=$(grep -cE '(deepseek|claude|gpt|minimax|qwen|llama|gemini|glm)' "$SKILL_DIR/$s" 2>/dev/null | head -1 || echo 0)
-  count=$(echo "$count" | tr -d '[:space:]' | grep -oE '^[0-9]+' || echo 0)
-  if [[ "$count" -eq 0 ]]; then
-    check "$s: no hardcoded model names" "ok"
-  else
-    check "$s: hardcoded model names found" "$count occurrences"
-  fi
-done
-
-# --- SKILL.md references ---
-echo ""
-echo "🔗 SKILL.md reference integrity"
-# Should NOT reference model-catalog.md
-if grep -q 'model-catalog' "$SKILL_DIR/SKILL.md"; then
-  check "SKILL.md: no model-catalog.md reference" "still referenced"
-else
-  check "SKILL.md: no model-catalog.md reference" "ok"
-fi
-
-# Should reference models.sh and best-peer.sh
-grep -q 'models.sh' "$SKILL_DIR/SKILL.md" && check "SKILL.md: references models.sh" "ok" || check "SKILL.md: references models.sh" "MISSING"
-grep -q 'best-peer.sh' "$SKILL_DIR/SKILL.md" && check "SKILL.md: references best-peer.sh" "ok" || check "SKILL.md: references best-peer.sh" "MISSING"
-
-# --- Dynamic tag-driven design ---
-echo ""
-echo "🏷️ Tag-driven design"
-grep -q 'TASK_TAGS\|desired.*tags\|tag_match' "$SKILL_DIR/scripts/best-peer.sh" && check "best-peer.sh: uses tag-based scoring" "ok" || check "best-peer.sh: uses tag-based scoring" "MISSING"
-grep -q 'categorize\|TAG_CATEGORIES\|detect_category' "$SKILL_DIR/scripts/models.sh" && check "models.sh: tag-based categorization" "ok" || check "models.sh: tag-based categorization" "MISSING"
-
-# --- Live network queries ---
-echo ""
-echo "🌐 Live network queries"
-grep -q "network.*browse\|'network'.*'browse'" "$SKILL_DIR/scripts/best-peer.sh" && check "best-peer.sh: queries network" "ok" || check "best-peer.sh: queries network" "MISSING"
-grep -q "network.*peer\|'network'.*'peer'" "$SKILL_DIR/scripts/best-peer.sh" && check "best-peer.sh: fetches peer details" "ok" || check "best-peer.sh: fetches peer details" "MISSING"
-grep -q 'v1/models' "$SKILL_DIR/scripts/models.sh" && check "models.sh: proxy fallback" "ok" || check "models.sh: proxy fallback" "MISSING"
-
-# --- Summary ---
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "Results: $PASS/$TOTAL passed, $FAIL failed"
-if [[ $FAIL -gt 0 ]]; then
-  echo "❌ SOME CHECKS FAILED"
-  exit 1
-else
-  echo "✅ ALL CHECKS PASSED"
-  exit 0
-fi
+echo "━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "$P/$T passed"
+[[ $F -eq 0 ]] && exit 0 || exit 1
