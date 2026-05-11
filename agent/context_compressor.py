@@ -1420,6 +1420,35 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 self._previous_summary = summary_body
             turns_to_summarize = messages[summary_idx + 1:compress_end]
 
+        # Apply FILTER stage: classify messages before summarization
+        # Chitchat is excluded from LLM call; errors are preserved verbatim
+        filter_chitchat = []
+        filter_errors = []
+        try:
+            from session_search.message_filter import filter_turns
+            turns_to_summarize, filter_chitchat, filter_errors = filter_turns(
+                turns_to_summarize
+            )
+            if filter_chitchat and not self.quiet_mode:
+                logger.debug(
+                    "FILTER: excluded %d chitchat messages from summarization",
+                    len(filter_chitchat),
+                )
+            if filter_errors and not self.quiet_mode:
+                logger.debug(
+                    "FILTER: preserved %d error messages verbatim",
+                    len(filter_errors),
+                )
+        except Exception as e:
+            logger.debug("FILTER stage skipped: %s", e)
+
+        # Record compression event for health monitoring
+        try:
+            from session_search.agent_health import record_compression
+            record_compression(len(messages))
+        except Exception:
+            pass
+
         if not self.quiet_mode:
             logger.info(
                 "Context compression triggered (%d tokens >= %d threshold)",
@@ -1444,6 +1473,16 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         # Phase 3: Generate structured summary
         summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+
+        # Enrich summary with FILTER results (errors preserved verbatim)
+        if summary and (filter_errors or filter_chitchat):
+            try:
+                from session_search.message_filter import enrich_summary_with_filter_results
+                summary = enrich_summary_with_filter_results(
+                    summary, filter_chitchat, filter_errors
+                )
+            except Exception:
+                pass
 
         # Phase 4: Assemble compressed message list
         compressed = []
