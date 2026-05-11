@@ -16,7 +16,8 @@ import re
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, get_default_hermes_root
+from dataclasses import dataclass
 from typing import Optional, Dict, List, Any, Union
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,66 @@ _jobs_file_lock = threading.Lock()
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
+# =============================================================================
+# CronStore — scope-aware storage abstraction (global cron v1)
+# =============================================================================
+
+@dataclass(frozen=True)
+class CronStore:
+    scope: str
+    root: Path
+    cron_dir: Path
+    jobs_file: Path
+    output_dir: Path
+    lock_file: Path
+
+
+def _store_for_root(scope: str, root: Path) -> CronStore:
+    cron_dir = root.resolve() / "cron"
+    return CronStore(
+        scope=scope,
+        root=root.resolve(),
+        cron_dir=cron_dir,
+        jobs_file=cron_dir / "jobs.json",
+        output_dir=cron_dir / "output",
+        lock_file=cron_dir / ".tick.lock",
+    )
+
+
+def current_profile_store() -> CronStore:
+    return _store_for_root("profile", get_hermes_home())
+
+
+def global_store() -> CronStore:
+    return _store_for_root("global", get_default_hermes_root())
+
+
+def store_from_root(scope: str, root: Path) -> CronStore:
+    return _store_for_root(scope, Path(root))
+
+
+def resolve_store(scope: str | None = None, *, store: CronStore | None = None) -> CronStore:
+    if store is not None:
+        return store
+    if scope == "global":
+        return global_store()
+    return current_profile_store()
+
+
+# Store-keyed locks — replaces the old single _jobs_file_lock for profile+global isolation.
+_store_locks: dict = {}
+_store_locks_guard = threading.Lock()
+
+
+def store_lock(store: CronStore | None = None) -> threading.Lock:
+    resolved = resolve_store(store=store)
+    key = resolved.jobs_file.resolve()
+    with _store_locks_guard:
+        lock = _store_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _store_locks[key] = lock
+        return lock
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
     """Normalize legacy/single-skill and multi-skill inputs into a unique ordered list."""
@@ -148,12 +209,13 @@ def _secure_file(path: Path):
         pass
 
 
-def ensure_dirs():
+def ensure_dirs(store: CronStore | None = None):
     """Ensure cron directories exist with secure permissions."""
-    CRON_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    _secure_dir(CRON_DIR)
-    _secure_dir(OUTPUT_DIR)
+    resolved = resolve_store(store=store)
+    resolved.cron_dir.mkdir(parents=True, exist_ok=True)
+    resolved.output_dir.mkdir(parents=True, exist_ok=True)
+    _secure_dir(resolved.cron_dir)
+    _secure_dir(resolved.output_dir)
 
 
 # =============================================================================
@@ -398,25 +460,26 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 # Job CRUD Operations
 # =============================================================================
 
-def load_jobs() -> List[Dict[str, Any]]:
+def load_jobs(store: CronStore | None = None) -> List[Dict[str, Any]]:
     """Load all jobs from storage."""
-    ensure_dirs()
-    if not JOBS_FILE.exists():
+    resolved = resolve_store(store=store)
+    ensure_dirs(store=resolved)
+    if not resolved.jobs_file.exists():
         return []
     
     try:
-        with open(JOBS_FILE, 'r', encoding='utf-8') as f:
+        with open(resolved.jobs_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
             return data.get("jobs", [])
     except json.JSONDecodeError:
         # Retry with strict=False to handle bare control chars in string values
         try:
-            with open(JOBS_FILE, 'r', encoding='utf-8') as f:
+            with open(resolved.jobs_file, 'r', encoding='utf-8') as f:
                 data = json.loads(f.read(), strict=False)
                 jobs = data.get("jobs", [])
                 if jobs:
                     # Auto-repair: rewrite with proper escaping
-                    save_jobs(jobs)
+                    save_jobs(jobs, store=resolved)
                     logger.warning("Auto-repaired jobs.json (had invalid control characters)")
                 return jobs
         except Exception as e:
@@ -427,17 +490,18 @@ def load_jobs() -> List[Dict[str, Any]]:
         raise RuntimeError(f"Failed to read cron database: {e}") from e
 
 
-def save_jobs(jobs: List[Dict[str, Any]]):
+def save_jobs(jobs: List[Dict[str, Any]], store: CronStore | None = None):
     """Save all jobs to storage."""
-    ensure_dirs()
-    fd, tmp_path = tempfile.mkstemp(dir=str(JOBS_FILE.parent), suffix='.tmp', prefix='.jobs_')
+    resolved = resolve_store(store=store)
+    ensure_dirs(store=resolved)
+    fd, tmp_path = tempfile.mkstemp(dir=str(resolved.jobs_file.parent), suffix='.tmp', prefix='.jobs_')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        atomic_replace(tmp_path, JOBS_FILE)
-        _secure_file(JOBS_FILE)
+        atomic_replace(tmp_path, resolved.jobs_file)
+        _secure_file(resolved.jobs_file)
     except BaseException:
         try:
             os.unlink(tmp_path)
