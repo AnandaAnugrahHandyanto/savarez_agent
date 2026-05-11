@@ -1,101 +1,82 @@
 #!/usr/bin/env bash
-# antseed-smart-delegate/scripts/status-bar.sh
-# One-line AntSeed status: balance | model | tokens | peer | channel
-# Usage: bash status-bar.sh [--json] [--icon]
 set -euo pipefail
-
 PROXY_URL="http://127.0.0.1:8377"
 JSON_MODE=false; SHOW_ICON=false
+for arg in "$@"; do case "$arg" in --json) JSON_MODE=true;; --icon) SHOW_ICON=true;; esac; done
 
-for arg in "$@"; do
-    case "$arg" in --json) JSON_MODE=true;; --icon) SHOW_ICON=true;; esac
-done
-
-parse_table() {
+tbl_val() {
     python3 -c "
-import sys, re
-text = sys.stdin.read()
-key = sys.argv[1]
-for line in text.splitlines():
-    if key.lower() in line.lower():
-        parts = line.split('\u2502')
-        if len(parts) >= 3:
-            val = parts[2].strip()
-            print(val)
+import sys
+text=sys.stdin.read(); key=sys.argv[1].lower()
+for L in text.splitlines():
+    if key.lower() in L.lower():
+        parts=L.split('\u2502')
+        if len(parts)>=3:
+            print(parts[2].strip())
             break
 " "$1"
 }
 
-STATUS_OUTPUT=$(antseed buyer status 2>/dev/null || echo "")
-METERING_OUTPUT=$(antseed buyer metering 2>/dev/null || echo "")
+STATUS=$(antseed buyer status 2>/dev/null || true)
+METER=$(antseed buyer metering 2>/dev/null || true)
+proxy_up=false
+curl -s --max-time 3 "$PROXY_URL/v1/models" >/dev/null 2>&1 && proxy_up=true
 
-proxy_up=false; wallet="unknown"; deposits="0"; reserved="0"; channels="0"
-pinned_peer="none"; pinned_service="none"; conn_state="disconnected"
-signed_usd="0"; requests="0"; channel_status="none"
+wallet=$(tbl_val "Wallet address" <<< "$STATUS" 2>/dev/null || echo "?")
+da=$(tbl_val "Deposits available" <<< "$STATUS" 2>/dev/null | grep -oP '[\d.]+' || echo "0")
+dr=$(tbl_val "Deposits reserved" <<< "$STATUS" 2>/dev/null | grep -oP '[\d.]+' || echo "0")
+ch=$(tbl_val "Active channels" <<< "$STATUS" 2>/dev/null | grep -oP '\d+' || echo "0")
+peer=$(tbl_val "Pinned peer" <<< "$STATUS" 2>/dev/null | cut -c1-10 || echo "?")
+svc=$(tbl_val "Pinned service" <<< "$STATUS" 2>/dev/null || echo "?")
+cn=$(tbl_val "Connection state" <<< "$STATUS" 2>/dev/null || echo "?")
 
-if [ -n "$STATUS_OUTPUT" ]; then
-    if curl -s --max-time 3 "$PROXY_URL/v1/models" > /dev/null 2>&1; then
-        proxy_up=true
-    fi
-    wallet=$(parse_table "Wallet address" "$STATUS_OUTPUT" 2>/dev/null || echo "unknown")
-    deposits=$(parse_table "Deposits available" "$STATUS_OUTPUT" 2>/dev/null | grep -oP '[\d.]+' || echo "0")
-    reserved=$(parse_table "Deposits reserved" "$STATUS_OUTPUT" 2>/dev/null | grep -oP '[\d.]+' || echo "0")
-    channels=$(parse_table "Active channels" "$STATUS_OUTPUT" 2>/dev/null | grep -oP '\d+' || echo "0")
-    pinned_peer=$(parse_table "Pinned peer" "$STATUS_OUTPUT" 2>/dev/null | head -c 10 || echo "none")
-    pinned_service=$(parse_table "Pinned service" "$STATUS_OUTPUT" 2>/dev/null || echo "none")
-    conn_state=$(parse_table "Connection state" "$STATUS_OUTPUT" 2>/dev/null || echo "unknown")
-fi
+signed=$(grep -oiP 'Signed:\s*[\d.]+' <<< "$METER" 2>/dev/null | grep -oP '[\d.]+' || echo "0")
+reqs_raw=$(grep -oiP 'Requests:\s*\d+' <<< "$METER" 2>/dev/null | grep -oP '\d+' || echo "0")
+reqs=$(echo "$reqs_raw" | tr -d '\n')
+chst=$(grep -oiP 'Status:\s*\w+' <<< "$METER" 2>/dev/null | tr -d '\n' | sed 's/Status:\s*//' || echo "?")
 
-if [ -n "$METERING_OUTPUT" ]; then
-    signed_usd=$(echo "$METERING_OUTPUT" | grep -oiP 'Signed:\s*[\d.]+' | grep -oP '[\d.]+' || echo "0")
-    requests=$(echo "$METERING_OUTPUT" | grep -oiP 'Requests:\s*\d+' | grep -oP '\d+' || echo "0")
-    channel_status=$(echo "$METERING_OUTPUT" | grep -oiP 'Status:\s*\w+' | grep -oP '(?<=Status:\s*)\w+' || echo "none")
-fi
-
-current_model=$(bash "$(dirname "$0")/best-peer.sh" code --json 2>/dev/null | python3 -c "
+# Get current model from proxy models list (faster than best-peer)
+model=$(curl -s --max-time 5 "$PROXY_URL/v1/models" -H "Authorization: Bearer antseed-p2p" 2>/dev/null | python3 -c "
 import json,sys
-try:
-    d=json.load(sys.stdin)
-    print(d.get('best',{}).get('model','?'))
-except: print('?')
+d=json.load(sys.stdin)
+models=[m['id'] for m in d.get('data',[])]
+# Pick first interesting model
+for prefer in ['step-3.5-flash','qwen3.5','glm-5.1','deepseek','minimax']:
+    for m in models:
+        if prefer in m.lower():
+            print(m); sys.exit(0)
+print(models[0] if models else '?')
 " 2>/dev/null || echo "?")
 
-total_deposits=$(python3 -c "print(float($deposits) + float($reserved))" 2>/dev/null || echo "0")
+total=$(python3 -c "print(f'{float($da)+float($dr):.2f}')")
 
 if $JSON_MODE; then
-    python3 -c "
+    python3 <<PYEOF
 import json
 print(json.dumps({
-    'antseed': {
-        'proxy_up': $proxy_up,
-        'connected': '$conn_state' == 'connected',
-        'wallet': '${wallet:0:10}...',
-        'deposits_available': float('$deposits'),
-        'deposits_reserved': float('$reserved'),
-        'deposits_total': float('$total_deposits'),
-        'channels': int('$channels'),
-        'peer': '$pinned_peer...',
-        'service': '$pinned_service',
-        'model': '$current_model',
-        'channel_status': '$channel_status',
-        'requests_served': int('$requests'),
-        'usd_signed': float('$signed_usd')
+    "antseed": {
+        "proxy_up": ("$proxy_up" == "True"),
+        "connected": "$cn" == "connected",
+        "wallet": "${wallet:0:10}...",
+        "deposits_available": float("$da"),
+        "deposits_reserved": float("$dr"),
+        "deposits_total": float("$total"),
+        "channels": int("${ch:-0}"),
+        "peer": "${peer:0:10}",
+        "service": "$svc",
+        "model": "$model",
+        "channel_status": "$chst",
+        "requests_served": int("${reqs:-0}"),
+        "usd_signed": float("$signed")
     }
 }, indent=2))
-"
+PYEOF
 else
     ICON=""
-    $SHOW_ICON && ICON="\xF0\x9F\x90\x9D "  # 🐝 UTF-8 bytes
-    
-    if [ "$conn_state" = "connected" ] && $proxy_up; then
-        C="\033[32m"  # green
-    elif $proxy_up; then
-        C="\033[33m"  # yellow
-    else
-        C="\033[31m"  # red
-    fi
-    R="\033[0m"
-    
-    printf "${C}${ICON}AntSeed${R} | \$%.2f | %s | req:%d ch:%d | %s... | %s\n" \
-        "$total_deposits" "$current_model" "$requests" "$channels" "$pinned_peer" "$channel_status" >&2
+    $SHOW_ICON && ICON=$'\U1F41D '
+    if [ "$cn" = "connected" ] && $proxy_up; then C=$'\033[32m'
+    elif $proxy_up; then C=$'\033[33m'
+    else C=$'\033[31m'; fi
+    R=$'\033[0m'
+    echo -e "${C}${ICON}AntSeed${R} | \$${total} | ${model} | req:${reqs:-?} ch:${ch:-?} | ${peer:0:8}... | ${chst}" >&2
 fi
