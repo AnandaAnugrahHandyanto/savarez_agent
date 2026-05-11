@@ -26,9 +26,15 @@ class TestManifest:
         assert data["name"] == "openclaw_telemetry"
         assert data["version"]
         assert set(data["hooks"]) == {"post_api_request"}
-        assert "TELEMETRY_BASE_URL" in data["requires_env"]
-        assert "HERMES_OPENCLAW_TELEMETRY_BASE_URL" in data["requires_env"]
-        assert "HERMES_OPENCLAW_TELEMETRY_TOKEN" in data["requires_env"]
+        assert data["requires_env"] == [
+            "HERMES_OPENCLAW_TELEMETRY_BASE_URL",
+            "HERMES_OPENCLAW_TELEMETRY_TOKEN",
+        ]
+        assert set(data["optional_env"]) == {
+            "TELEMETRY_BASE_URL",
+            "TELEMETRY_TOKEN",
+            "TELEMETRY_WRITE_TOKEN",
+        }
 
 
 class TestRuntimeGate:

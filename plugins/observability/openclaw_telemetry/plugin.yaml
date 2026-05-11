@@ -4,7 +4,10 @@ description: "Optional OpenClaw token-usage telemetry for Hermes/Spark LLM API c
 author: NousResearch
 requires_env:
   - HERMES_OPENCLAW_TELEMETRY_BASE_URL
-  - TELEMETRY_BASE_URL
   - HERMES_OPENCLAW_TELEMETRY_TOKEN
+optional_env:
+  - TELEMETRY_BASE_URL
+  - TELEMETRY_TOKEN
+  - TELEMETRY_WRITE_TOKEN
 hooks:
   - post_api_request
