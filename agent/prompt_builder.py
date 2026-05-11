@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -84,6 +85,98 @@ def _find_git_root(start: Path) -> Optional[Path]:
         if (parent / ".git").exists():
             return parent
     return None
+
+
+def _build_git_context(cwd: Path) -> str:
+    """Build a compact git status summary for injection into the system prompt.
+
+    Uses *cwd* to find the git root, then gathers:
+      - Current branch
+      - Working tree status (ahead/behind upstream, dirty/clean)
+      - Staged, unstaged, and untracked files (capped at 40 entries)
+      - Last 5 commit messages
+
+    Returns empty string when not in a git repository or on error.
+    """
+    try:
+        git_root = _find_git_root(cwd)
+        if not git_root:
+            return ""
+    except Exception:
+        return ""
+
+    def _git(args: list, timeout: float = 2.0) -> str:
+        """Run git with a timeout. Return stripped output or empty string."""
+        try:
+            result = subprocess.run(
+                ["git"] + args,
+                capture_output=True, text=True, timeout=timeout,
+                cwd=str(git_root),
+            )
+            return result.stdout.strip() if result.returncode == 0 else ""
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            return ""
+
+    branch = _git(["branch", "--show-current"])
+    if not branch:
+        return ""  # detached HEAD or no commits yet — skip
+
+    lines = [f"Git repo: {git_root.name}", f"Branch: {branch}"]
+
+    # Upstream tracking
+    upstream = _git(["rev-parse", "--abbrev-ref", "@{u}"])
+    if upstream:
+        behind = _git(["rev-list", "--count", f"HEAD..{upstream}"])
+        ahead = _git(["rev-list", "--count", f"{upstream}..HEAD"])
+        if behind and behind != "0":
+            lines.append(f"Behind {upstream} by {behind} commit(s)")
+        if ahead and ahead != "0":
+            lines.append(f"Ahead of {upstream} by {ahead} commit(s)")
+
+    # Working tree status
+    dirty = _git(["status", "--porcelain"])
+    staged = []
+    unstaged = []
+    untracked = []
+    for line_raw in dirty.split("\n"):
+        if not line_raw.strip():
+            continue
+        code = line_raw[:2]
+        file_path = line_raw[3:]
+        if code[0] in "MRC" or code == "D ":
+            staged.append((code, file_path))
+        elif code[1] in "MD":
+            unstaged.append((code, file_path))
+        elif code == "??":
+            untracked.append(file_path)
+
+    if not staged and not unstaged and not untracked:
+        lines.append("Working tree: clean")
+    else:
+        total = len(staged) + len(unstaged) + len(untracked)
+        lines.append(f"Working tree: dirty ({total} file(s))")
+        if staged:
+            shown = staged[:15]
+            entries = " ".join(f"[{c}]{f}" for c, f in shown)
+            more = f" +{len(staged)-15} more" if len(staged) > 15 else ""
+            lines.append(f"  Staged: {entries}{more}")
+        if unstaged:
+            shown = unstaged[:15]
+            entries = " ".join(f"[{c}]{f}" for c, f in shown)
+            more = f" +{len(unstaged)-15} more" if len(unstaged) > 15 else ""
+            lines.append(f"  Modified: {entries}{more}")
+        if untracked:
+            shown = untracked[:10]
+            entries = " ".join(shown)
+            more = f" +{len(untracked)-10} more" if len(untracked) > 10 else ""
+            lines.append(f"  Untracked: {entries}{more}")
+
+    # Recent commits
+    log = _git(["log", "--oneline", "-5"])
+    if log:
+        lines.append(f"Recent commits:\n  {log}")
+
+    return "\n".join(lines)
 
 
 _HERMES_MD_NAMES = (".hermes.md", "HERMES.md")
@@ -1353,34 +1446,58 @@ def _load_hermes_md(cwd_path: Path) -> str:
 
 
 def _load_agents_md(cwd_path: Path) -> str:
-    """AGENTS.md — top-level only (no recursive walk)."""
-    for name in ["AGENTS.md", "agents.md"]:
-        candidate = cwd_path / name
-        if candidate.exists():
-            try:
-                content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(result, "AGENTS.md")
-            except Exception as e:
-                logger.debug("Could not read %s: %s", candidate, e)
+    """AGENTS.md — walk from cwd up to git root."""
+    stop_at = _find_git_root(cwd_path)
+    current = cwd_path.resolve()
+
+    for directory in [current, *current.parents]:
+        for name in ["AGENTS.md", "agents.md"]:
+            candidate = directory / name
+            if candidate.is_file():
+                try:
+                    content = candidate.read_text(encoding="utf-8").strip()
+                    if content:
+                        content = _scan_context_content(content, name)
+                        rel = name
+                        try:
+                            rel = str(candidate.relative_to(cwd_path))
+                        except ValueError:
+                            pass
+                        result = f"## {rel}\n\n{content}"
+                        return _truncate_content(result, "AGENTS.md")
+                except Exception as e:
+                    logger.debug("Could not read %s: %s", candidate, e)
+        # Stop walking at the git root (or filesystem root)
+        if stop_at and directory == stop_at:
+            break
     return ""
 
 
 def _load_claude_md(cwd_path: Path) -> str:
-    """CLAUDE.md / claude.md — cwd only."""
-    for name in ["CLAUDE.md", "claude.md"]:
-        candidate = cwd_path / name
-        if candidate.exists():
-            try:
-                content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(result, "CLAUDE.md")
-            except Exception as e:
-                logger.debug("Could not read %s: %s", candidate, e)
+    """CLAUDE.md / claude.md — walk from cwd up to git root."""
+    stop_at = _find_git_root(cwd_path)
+    current = cwd_path.resolve()
+
+    for directory in [current, *current.parents]:
+        for name in ["CLAUDE.md", "claude.md"]:
+            candidate = directory / name
+            if candidate.is_file():
+                try:
+                    content = candidate.read_text(encoding="utf-8").strip()
+                    if content:
+                        content = _scan_context_content(content, name)
+                        rel = name
+                        try:
+                            rel = str(candidate.relative_to(cwd_path))
+                        except ValueError:
+                            pass
+                        result = f"## {rel}\n\n{content}"
+                        return _truncate_content(result, "CLAUDE.md")
+                except Exception as e:
+                    logger.debug("Could not read %s: %s", candidate, e)
+        # Stop walking at the git root (or filesystem root)
+        if stop_at and directory == stop_at:
+            break
     return ""
 
 
@@ -1444,6 +1561,11 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     )
     if project_context:
         sections.append(project_context)
+
+    # Git context — inject current branch, dirty files, recent commits
+    git_context = _build_git_context(cwd_path)
+    if git_context:
+        sections.append(f"# Git Status\n\nThe repository is in a git working tree with the following state:\n\n{git_context}")
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:
