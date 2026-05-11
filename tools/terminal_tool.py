@@ -916,6 +916,7 @@ Do NOT use vim/nano/interactive tools without pty=true — they hang without a p
 # Global state for environment lifecycle management
 _active_environments: Dict[str, Any] = {}
 _last_activity: Dict[str, float] = {}
+_environment_signatures: Dict[str, str] = {}
 _env_lock = threading.Lock()
 _creation_locks: Dict[str, threading.Lock] = {}  # Per-task locks for sandbox creation
 _creation_locks_lock = threading.Lock()  # Protects _creation_locks dict itself
@@ -1099,6 +1100,143 @@ def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
     )
 
 
+def _build_environment_request(
+    task_id: str,
+    config: Dict[str, Any],
+    timeout: int,
+) -> Dict[str, Any]:
+    """Build the concrete environment creation request for a task."""
+    env_type = config["env_type"]
+    overrides = _task_env_overrides.get(task_id, {})
+
+    if env_type == "docker":
+        image = overrides.get("docker_image") or config["docker_image"]
+    elif env_type == "singularity":
+        image = overrides.get("singularity_image") or config["singularity_image"]
+    elif env_type == "modal":
+        image = overrides.get("modal_image") or config["modal_image"]
+    elif env_type == "daytona":
+        image = overrides.get("daytona_image") or config["daytona_image"]
+    else:
+        image = ""
+
+    cwd = overrides.get("cwd") or config["cwd"]
+
+    ssh_config = None
+    if env_type == "ssh":
+        ssh_config = {
+            "host": config.get("ssh_host", ""),
+            "user": config.get("ssh_user", ""),
+            "port": config.get("ssh_port", 22),
+            "key": config.get("ssh_key", ""),
+            "persistent": config.get("ssh_persistent", False),
+        }
+
+    container_config = None
+    if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
+        container_config = {
+            "container_cpu": config.get("container_cpu", 1),
+            "container_memory": config.get("container_memory", 5120),
+            "container_disk": config.get("container_disk", 51200),
+            "container_persistent": config.get("container_persistent", True),
+            "modal_mode": config.get("modal_mode", "auto"),
+            "vercel_runtime": config.get("vercel_runtime", ""),
+            "docker_volumes": config.get("docker_volumes", []),
+            "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
+            "docker_forward_env": config.get("docker_forward_env", []),
+            "docker_env": config.get("docker_env", {}),
+            "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+        }
+
+    local_config = None
+    if env_type == "local":
+        local_config = {
+            "persistent": config.get("local_persistent", False),
+        }
+
+    return {
+        "env_type": env_type,
+        "image": image,
+        "cwd": cwd,
+        "timeout": timeout,
+        "ssh_config": ssh_config,
+        "container_config": container_config,
+        "local_config": local_config,
+        "task_id": task_id,
+        "host_cwd": config.get("host_cwd"),
+    }
+
+
+def _build_environment_signature(request: Dict[str, Any]) -> str:
+    """Serialize the environment identity so stale backends can be detected."""
+    signature_payload = {
+        "env_type": request.get("env_type"),
+        "image": request.get("image"),
+        "cwd": request.get("cwd"),
+        "host_cwd": request.get("host_cwd"),
+        "ssh_config": request.get("ssh_config"),
+        "container_config": request.get("container_config"),
+        "local_config": request.get("local_config"),
+    }
+    return json.dumps(signature_payload, sort_keys=True, separators=(",", ":"))
+
+
+def _environment_signature_matches_locked(task_id: str, expected_signature: str) -> bool:
+    """Return True when the tracked environment matches the requested identity.
+
+    Signature-less environments can still exist in tests or long-lived
+    processes created before this metadata was introduced. Adopt the requested
+    signature in that case so we preserve existing reuse behavior.
+    """
+    if task_id not in _active_environments:
+        return False
+    tracked_signature = _environment_signatures.get(task_id)
+    if tracked_signature is None:
+        _environment_signatures[task_id] = expected_signature
+        return True
+    return tracked_signature == expected_signature
+
+
+def _detach_tracked_environment_locked(task_id: str):
+    """Remove a tracked environment from the live registries.
+
+    Must be called while holding ``_env_lock``.
+    """
+    env = _active_environments.pop(task_id, None)
+    _last_activity.pop(task_id, None)
+    _environment_signatures.pop(task_id, None)
+    return env
+
+
+def _clear_related_file_ops_cache(task_id: str):
+    try:
+        from tools.file_tools import clear_file_ops_cache
+        clear_file_ops_cache(task_id)
+    except ImportError:
+        pass
+
+
+def _stop_environment_instance(task_id: str, env: Any, action: str):
+    """Stop a detached environment without raising cleanup errors."""
+    if env is None:
+        return
+    try:
+        if hasattr(env, 'cleanup'):
+            env.cleanup()
+        elif hasattr(env, 'stop'):
+            env.stop()
+        elif hasattr(env, 'terminate'):
+            env.terminate()
+
+        logger.info("%s environment for task: %s", action, task_id)
+    except Exception as e:
+        error_str = str(e)
+        if "404" in error_str or "not found" in error_str.lower():
+            logger.info("Environment for task %s already cleaned up", task_id)
+        else:
+            logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
+
+
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         ssh_config: dict = None, container_config: dict = None,
                         local_config: dict = None,
@@ -1271,8 +1409,7 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     with _env_lock:
         for task_id, last_time in list(_last_activity.items()):
             if current_time - last_time > lifetime_seconds:
-                env = _active_environments.pop(task_id, None)
-                _last_activity.pop(task_id, None)
+                env = _detach_tracked_environment_locked(task_id)
                 if env is not None:
                     envs_to_stop.append((task_id, env))
 
@@ -1286,28 +1423,8 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     for task_id, env in envs_to_stop:
         # Invalidate stale file_ops cache entry (Bug fix: prevents
         # ShellFileOperations from referencing a dead sandbox)
-        try:
-            from tools.file_tools import clear_file_ops_cache
-            clear_file_ops_cache(task_id)
-        except ImportError:
-            pass
-
-        try:
-            if hasattr(env, 'cleanup'):
-                env.cleanup()
-            elif hasattr(env, 'stop'):
-                env.stop()
-            elif hasattr(env, 'terminate'):
-                env.terminate()
-
-            logger.info("Cleaned up inactive environment for task: %s", task_id)
-
-        except Exception as e:
-            error_str = str(e)
-            if "404" in error_str or "not found" in error_str.lower():
-                logger.info("Environment for task %s already cleaned up", task_id)
-            else:
-                logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
+        _clear_related_file_ops_cache(task_id)
+        _stop_environment_instance(task_id, env, "Cleaned up inactive")
 
 
 def _cleanup_thread_worker():
@@ -1407,39 +1524,19 @@ def cleanup_vm(task_id: str):
     # so other tool calls aren't blocked.
     env = None
     with _env_lock:
-        env = _active_environments.pop(task_id, None)
-        _last_activity.pop(task_id, None)
+        env = _detach_tracked_environment_locked(task_id)
 
     # Clean up per-task creation lock
     with _creation_locks_lock:
         _creation_locks.pop(task_id, None)
 
     # Invalidate stale file_ops cache entry
-    try:
-        from tools.file_tools import clear_file_ops_cache
-        clear_file_ops_cache(task_id)
-    except ImportError:
-        pass
+    _clear_related_file_ops_cache(task_id)
 
     if env is None:
         return
 
-    try:
-        if hasattr(env, 'cleanup'):
-            env.cleanup()
-        elif hasattr(env, 'stop'):
-            env.stop()
-        elif hasattr(env, 'terminate'):
-            env.terminate()
-
-        logger.info("Manually cleaned up environment for task: %s", task_id)
-
-    except Exception as e:
-        error_str = str(e)
-        if "404" in error_str or "not found" in error_str.lower():
-            logger.info("Environment for task %s already cleaned up", task_id)
-        else:
-            logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
+    _stop_environment_instance(task_id, env, "Manually cleaned up")
 
 
 def _atexit_cleanup():
@@ -1689,26 +1786,15 @@ def terminal_tool(
         # every delegate_task child share one container; only task_ids with
         # a registered env override (RL benchmarks) get isolated sandboxes.
         effective_task_id = _resolve_container_task_id(task_id)
-
-        # Check per-task overrides (set by environments like TerminalBench2Env)
-        # before falling back to global env var config
-        overrides = _task_env_overrides.get(effective_task_id, {})
-        
-        # Select image based on env type, with per-task override support
-        if env_type == "docker":
-            image = overrides.get("docker_image") or config["docker_image"]
-        elif env_type == "singularity":
-            image = overrides.get("singularity_image") or config["singularity_image"]
-        elif env_type == "modal":
-            image = overrides.get("modal_image") or config["modal_image"]
-        elif env_type == "daytona":
-            image = overrides.get("daytona_image") or config["daytona_image"]
-        else:
-            image = ""
-
-        cwd = overrides.get("cwd") or config["cwd"]
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
+        env_request = _build_environment_request(
+            effective_task_id,
+            config,
+            effective_timeout,
+        )
+        expected_signature = _build_environment_signature(env_request)
+        cwd = env_request["cwd"]
 
         # Reject foreground commands where the model explicitly requests
         # a timeout above FOREGROUND_MAX_TIMEOUT — nudge it toward background.
@@ -1741,7 +1827,7 @@ def terminal_tool(
         # task_id wait for the first one to finish creating the sandbox,
         # instead of each creating their own (wasting Modal resources).
         with _env_lock:
-            if effective_task_id in _active_environments:
+            if _environment_signature_matches_locked(effective_task_id, expected_signature):
                 _last_activity[effective_task_id] = time.time()
                 env = _active_environments[effective_task_id]
                 needs_creation = False
@@ -1757,60 +1843,29 @@ def terminal_tool(
 
             with task_lock:
                 # Double-check after acquiring the per-task lock
+                stale_env = None
                 with _env_lock:
-                    if effective_task_id in _active_environments:
+                    if _environment_signature_matches_locked(effective_task_id, expected_signature):
                         _last_activity[effective_task_id] = time.time()
                         env = _active_environments[effective_task_id]
                         needs_creation = False
+                    elif effective_task_id in _active_environments:
+                        stale_env = _detach_tracked_environment_locked(effective_task_id)
+
+                if stale_env is not None:
+                    _clear_related_file_ops_cache(effective_task_id)
+                    _stop_environment_instance(
+                        effective_task_id,
+                        stale_env,
+                        "Discarded stale",
+                    )
 
                 if needs_creation:
                     if env_type == "singularity":
                         _check_disk_usage_warning()
                     logger.info("Creating new %s environment for task %s...", env_type, effective_task_id[:8])
                     try:
-                        ssh_config = None
-                        if env_type == "ssh":
-                            ssh_config = {
-                                "host": config.get("ssh_host", ""),
-                                "user": config.get("ssh_user", ""),
-                                "port": config.get("ssh_port", 22),
-                                "key": config.get("ssh_key", ""),
-                                "persistent": config.get("ssh_persistent", False),
-                            }
-
-                        container_config = None
-                        if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
-                            container_config = {
-                                "container_cpu": config.get("container_cpu", 1),
-                                "container_memory": config.get("container_memory", 5120),
-                                "container_disk": config.get("container_disk", 51200),
-                                "container_persistent": config.get("container_persistent", True),
-                                "modal_mode": config.get("modal_mode", "auto"),
-                                "vercel_runtime": config.get("vercel_runtime", ""),
-                                "docker_volumes": config.get("docker_volumes", []),
-                                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
-                                "docker_forward_env": config.get("docker_forward_env", []),
-                                "docker_env": config.get("docker_env", {}),
-                                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                            }
-
-                        local_config = None
-                        if env_type == "local":
-                            local_config = {
-                                "persistent": config.get("local_persistent", False),
-                            }
-
-                        new_env = _create_environment(
-                            env_type=env_type,
-                            image=image,
-                            cwd=cwd,
-                            timeout=effective_timeout,
-                            ssh_config=ssh_config,
-                            container_config=container_config,
-                            local_config=local_config,
-                            task_id=effective_task_id,
-                            host_cwd=config.get("host_cwd"),
-                        )
+                        new_env = _create_environment(**env_request)
                     except ImportError as e:
                         return json.dumps({
                             "output": "",
@@ -1821,6 +1876,7 @@ def terminal_tool(
 
                     with _env_lock:
                         _active_environments[effective_task_id] = new_env
+                        _environment_signatures[effective_task_id] = expected_signature
                         _last_activity[effective_task_id] = time.time()
                         env = new_env
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])

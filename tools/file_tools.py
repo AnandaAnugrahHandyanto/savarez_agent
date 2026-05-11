@@ -320,6 +320,13 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     from tools.terminal_tool import (
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
+        _environment_signatures,
+        _build_environment_request,
+        _build_environment_signature,
+        _environment_signature_matches_locked,
+        _detach_tracked_environment_locked,
+        _clear_related_file_ops_cache,
+        _stop_environment_instance,
         _creation_locks,
         _creation_locks_lock,
         _resolve_container_task_id,
@@ -327,6 +334,10 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     import time
 
     task_id = _resolve_container_task_id(task_id)
+    config = _get_env_config()
+    env_request = _build_environment_request(task_id, config, config["timeout"])
+    expected_signature = _build_environment_signature(env_request)
+    env_type = env_request["env_type"]
 
     # Fast path: check cache -- but also verify the underlying environment
     # is still alive (it may have been killed by the cleanup thread).
@@ -334,7 +345,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         cached = _file_ops_cache.get(task_id)
     if cached is not None:
         with _env_lock:
-            if task_id in _active_environments:
+            if _environment_signature_matches_locked(task_id, expected_signature):
                 _last_activity[task_id] = time.time()
                 return cached
             else:
@@ -351,78 +362,28 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
 
     with task_lock:
         # Double-check: another thread may have created it while we waited
+        stale_env = None
         with _env_lock:
-            if task_id in _active_environments:
+            if _environment_signature_matches_locked(task_id, expected_signature):
                 _last_activity[task_id] = time.time()
                 terminal_env = _active_environments[task_id]
+            elif task_id in _active_environments:
+                stale_env = _detach_tracked_environment_locked(task_id)
+                terminal_env = None
             else:
                 terminal_env = None
 
+        if stale_env is not None:
+            _clear_related_file_ops_cache(task_id)
+            _stop_environment_instance(task_id, stale_env, "Discarded stale")
+
         if terminal_env is None:
-            from tools.terminal_tool import _task_env_overrides
-
-            config = _get_env_config()
-            env_type = config["env_type"]
-            overrides = _task_env_overrides.get(task_id, {})
-
-            if env_type == "docker":
-                image = overrides.get("docker_image") or config["docker_image"]
-            elif env_type == "singularity":
-                image = overrides.get("singularity_image") or config["singularity_image"]
-            elif env_type == "modal":
-                image = overrides.get("modal_image") or config["modal_image"]
-            elif env_type == "daytona":
-                image = overrides.get("daytona_image") or config["daytona_image"]
-            else:
-                image = ""
-
-            cwd = overrides.get("cwd") or config["cwd"]
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
-
-            container_config = None
-            if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
-                container_config = {
-                    "container_cpu": config.get("container_cpu", 1),
-                    "container_memory": config.get("container_memory", 5120),
-                    "container_disk": config.get("container_disk", 51200),
-                    "container_persistent": config.get("container_persistent", True),
-                    "vercel_runtime": config.get("vercel_runtime", ""),
-                    "docker_volumes": config.get("docker_volumes", []),
-                    "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
-                    "docker_forward_env": config.get("docker_forward_env", []),
-                    "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                }
-
-            ssh_config = None
-            if env_type == "ssh":
-                ssh_config = {
-                    "host": config.get("ssh_host", ""),
-                    "user": config.get("ssh_user", ""),
-                    "port": config.get("ssh_port", 22),
-                    "key": config.get("ssh_key", ""),
-                    "persistent": config.get("ssh_persistent", False),
-                }
-
-            local_config = None
-            if env_type == "local":
-                local_config = {
-                    "persistent": config.get("local_persistent", False),
-                }
-
-            terminal_env = _create_environment(
-                env_type=env_type,
-                image=image,
-                cwd=cwd,
-                timeout=config["timeout"],
-                ssh_config=ssh_config,
-                container_config=container_config,
-                local_config=local_config,
-                task_id=task_id,
-                host_cwd=config.get("host_cwd"),
-            )
+            terminal_env = _create_environment(**env_request)
 
             with _env_lock:
                 _active_environments[task_id] = terminal_env
+                _environment_signatures[task_id] = expected_signature
                 _last_activity[task_id] = time.time()
 
             _start_cleanup_thread()
