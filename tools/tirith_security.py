@@ -691,7 +691,11 @@ def check_command_security(command: str) -> dict:
     fail_open = cfg["tirith_fail_open"]
 
     if tirith_path is None:
-        logger.warning("tirith path resolved to None; scanning disabled")
+        _log_unavailable_once(
+            f"<none>:{cfg['tirith_path']}",
+            f"tirith path resolved to None for configured_path="
+            f"{cfg['tirith_path']!r}; scanning disabled",
+        )
         if fail_open:
             return {"action": "allow", "findings": [], "summary": "tirith path unavailable"}
         return {"action": "block", "findings": [], "summary": "tirith path unavailable (fail-closed)"}
@@ -705,8 +709,13 @@ def check_command_security(command: str) -> dict:
             timeout=timeout,
         )
     except OSError as exc:
-        # Covers FileNotFoundError, PermissionError, exec format error
-        logger.warning("tirith spawn failed: %s", exc)
+        # Covers FileNotFoundError, PermissionError, exec format error.
+        # `_log_unavailable_once` keeps this from spamming once per command
+        # when the binary is persistently missing (#23845).
+        _log_unavailable_once(
+            tirith_path,
+            f"tirith spawn failed for {tirith_path!r}: {exc}",
+        )
         if fail_open:
             return {"action": "allow", "findings": [], "summary": f"tirith unavailable: {exc}"}
         return {"action": "block", "findings": [], "summary": f"tirith spawn failed (fail-closed): {exc}"}
@@ -715,6 +724,12 @@ def check_command_security(command: str) -> dict:
         if fail_open:
             return {"action": "allow", "findings": [], "summary": f"tirith timed out ({timeout}s)"}
         return {"action": "block", "findings": [], "summary": "tirith timed out (fail-closed)"}
+
+    # subprocess.run succeeded — binary is healthy for this path right now.
+    # Clear any prior unavailable-log marker so a later regression for the
+    # same path (e.g. binary uninstalled mid-session) emits one fresh
+    # warning instead of being silenced by an earlier suppression.
+    _clear_unavailable_log(tirith_path)
 
     # Map exit code to action
     exit_code = result.returncode
