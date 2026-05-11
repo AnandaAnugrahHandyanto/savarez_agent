@@ -140,6 +140,7 @@ DEFAULT_WORKER_POLICY = "standard"
 DEFAULT_CHECKPOINT_POLICY = "auto"
 WORKSPACE_EVIDENCE_MAX_TEXT_BYTES = 16 * 1024
 WORKSPACE_EVIDENCE_MAX_FILES = 200
+WORKSPACE_EVIDENCE_MAX_DIRS = 200
 WORKSPACE_EVIDENCE_MAX_TOTAL_BYTES = 64 * 1024
 
 # A running task's claim is valid for 15 minutes; after that the next
@@ -3092,10 +3093,24 @@ def collect_workspace_evidence(
     files: list[dict[str, Any]] = []
     total_bytes = 0
     omitted = 0
+    dir_count = 0
     stop = False
     skip_dirs = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__"}
     for root, dirs, names in os.walk(path):
-        dirs[:] = [d for d in sorted(dirs) if d not in skip_dirs]
+        filtered_dirs = [d for d in sorted(dirs) if d not in skip_dirs]
+        remaining_dirs = WORKSPACE_EVIDENCE_MAX_DIRS - dir_count
+        if remaining_dirs <= 0:
+            omitted += len(filtered_dirs)
+            dirs[:] = []
+            stop = True
+        elif len(filtered_dirs) > remaining_dirs:
+            omitted += len(filtered_dirs) - remaining_dirs
+            dirs[:] = filtered_dirs[:remaining_dirs]
+            dir_count += len(dirs)
+            stop = True
+        else:
+            dirs[:] = filtered_dirs
+            dir_count += len(dirs)
         for name in sorted(names):
             child = Path(root) / name
             try:
@@ -3128,6 +3143,7 @@ def collect_workspace_evidence(
         "available": True,
         "files": files,
         "file_count": len(files),
+        "dir_count": dir_count,
         "omitted_count": omitted,
     }
 
@@ -3216,7 +3232,7 @@ def workspace_rollback_plan(task: Task, checkpoint: dict[str, Any]) -> dict[str,
         try:
             workspace_path = Path(workspace).expanduser().resolve()
             managed_root = workspaces_root().expanduser().resolve()
-            is_managed = workspace_path == managed_root or managed_root in workspace_path.parents
+            is_managed = managed_root in workspace_path.parents
         except Exception:
             is_managed = False
         if is_managed:
