@@ -1305,7 +1305,7 @@ def _launch_tui(
         except KeyboardInterrupt:
             code = 130
 
-        if code in (0, 130):
+        if code is not None and code in (0, 130):
             _print_tui_exit_summary(resume_session_id, active_session_file)
     finally:
         try:
