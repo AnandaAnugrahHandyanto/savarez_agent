@@ -50,6 +50,12 @@ def test_session_search_defaults_include_extra_body_and_concurrency():
     assert ss["max_concurrency"] == 3
 
 
+def test_compression_default_timeout_is_generous_for_large_sessions():
+    compression = DEFAULT_CONFIG["auxiliary"]["compression"]
+
+    assert compression["timeout"] == 300
+
+
 def test_aux_tasks_keys_all_exist_in_default_config():
     """Every task the menu offers must be defined in DEFAULT_CONFIG."""
     aux_keys = {k for k, _name, _desc in _AUX_TASKS}
@@ -224,7 +230,7 @@ def test_reset_aux_to_auto_clears_routing_preserves_timeouts(tmp_path, monkeypat
     # User-tuned timeout survives reset
     assert cfg["auxiliary"]["vision"]["timeout"] == 300
     # Default compression timeout preserved
-    assert cfg["auxiliary"]["compression"]["timeout"] == 120
+    assert cfg["auxiliary"]["compression"]["timeout"] == 300
 
 
 def test_reset_aux_to_auto_idempotent(tmp_path, monkeypatch):

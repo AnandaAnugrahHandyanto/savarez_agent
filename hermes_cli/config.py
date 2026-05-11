@@ -817,7 +817,7 @@ DEFAULT_CONFIG = {
             "model": "",
             "base_url": "",
             "api_key": "",
-            "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
+            "timeout": 300,        # seconds — compression often runs over large contexts and slower OAuth/cloud backends
             "extra_body": {},
         },
         "session_search": {
