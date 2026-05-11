@@ -151,24 +151,18 @@ def bootstrap_docs_profile() -> dict[str, Any]:
     """
     profile_dir = _docs_profile_dir()
 
-    if _profile_exists(profile_dir):
-        log.debug("docs profile already exists at %s — skipping bootstrap", profile_dir)
-        return {
-            "status": "already_exists",
-            "profile_dir": str(profile_dir),
-            "created_files": [],
-        }
-
     created: list[str] = []
 
     # 1. Create profile directory and standard sub-directories
     profile_dir.mkdir(parents=True, exist_ok=True)
-    created.append(str(profile_dir))
+    if not _profile_exists(profile_dir):
+        created.append(str(profile_dir))
 
     for subdir in _PROFILE_DIRS:
         subdir_path = profile_dir / subdir
-        subdir_path.mkdir(parents=True, exist_ok=True)
-        created.append(str(subdir_path))
+        if not subdir_path.exists():
+            subdir_path.mkdir(parents=True, exist_ok=True)
+            created.append(str(subdir_path))
 
     # 2. Write config.yaml if absent (idempotent after first run)
     config_path = profile_dir / "config.yaml"
@@ -188,7 +182,7 @@ def bootstrap_docs_profile() -> dict[str, Any]:
         len(created),
     )
     return {
-        "status": "created",
+        "status": "already_exists" if _profile_exists(profile_dir) and str(config_path) not in created else "created",
         "profile_dir": str(profile_dir),
         "created_files": created,
     }

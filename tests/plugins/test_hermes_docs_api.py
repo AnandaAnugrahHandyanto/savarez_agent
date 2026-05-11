@@ -626,6 +626,7 @@ def test_profile_bootstrap_preserves_existing_config(client, docs_home):
 
     # config.yaml content must be unchanged
     assert (profile_dir / "config.yaml").read_text(encoding="utf-8") == custom_config
+    assert (profile_dir / "SOUL.md").exists()
 
 
 def test_profile_bootstrap_preserves_existing_soul(client, docs_home):
