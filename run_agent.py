@@ -11952,12 +11952,23 @@ class AIAgent:
             except Exception:
                 pass
 
-        while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) or self._budget_grace_call:
+        # ── AgentLoop integration (Phase 2) ─────────────────────────────
+        # Build a LoopContext that syncs with the existing IterationBudget
+        # and interrupt signal, then drive the loop through AgentLoop.
+        # The body is unchanged — only the control flow is delegated.
+        from agent.loop import AgentLoop as _AgentLoop, LoopContext as _LoopContext
+        _loop_ctx = _LoopContext(max_iterations=self.max_iterations)
+        # Sync already-consumed iterations from the budget object.
+        _loop_ctx._consumed = self.iteration_budget.used
+        _agent_loop = _AgentLoop(_loop_ctx)
+
+        while _agent_loop.context.should_continue() or self._budget_grace_call:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot
             self._checkpoint_mgr.new_turn()
 
             # Check for interrupt request (e.g., user sent new message)
             if self._interrupt_requested:
+                _agent_loop.context.request_interrupt()
                 interrupted = True
                 _turn_exit_reason = "interrupted_by_user"
                 if not self.quiet_mode:
@@ -11966,6 +11977,7 @@ class AIAgent:
             
             api_call_count += 1
             self._api_call_count = api_call_count
+            _agent_loop.iteration = api_call_count
             self._touch_activity(f"starting API call #{api_call_count}")
 
             # Grace call: the budget is exhausted but we gave the model one
@@ -11973,11 +11985,14 @@ class AIAgent:
             # this iteration regardless of outcome.
             if self._budget_grace_call:
                 self._budget_grace_call = False
+                _agent_loop.context.enable_grace_call()
             elif not self.iteration_budget.consume():
+                _loop_ctx._consumed = self.iteration_budget.used
                 _turn_exit_reason = "budget_exhausted"
                 if not self.quiet_mode:
                     self._safe_print(f"\n⚠️  Iteration budget exhausted ({self.iteration_budget.used}/{self.iteration_budget.max_total} iterations used)")
                 break
+            _loop_ctx._consumed = self.iteration_budget.used
 
             # Fire step_callback for gateway hooks (agent:step event)
             if self.step_callback is not None:
@@ -15122,13 +15137,15 @@ class AIAgent:
 
         _diag_msg = (
             "Turn ended: reason=%s model=%s api_calls=%d/%d budget=%d/%d "
-            "tool_turns=%d last_msg_role=%s response_len=%d session=%s"
+            "tool_turns=%d last_msg_role=%s response_len=%d session=%s "
+            "agent_loop(iter=%d,interrupted=%s)"
         )
         _diag_args = (
             _turn_exit_reason, self.model, api_call_count, self.max_iterations,
             _budget_used, _budget_max,
             _turn_tool_count, _last_msg_role, _resp_len,
             self.session_id or "none",
+            _agent_loop.iteration, _agent_loop.interrupted,
         )
 
         if _last_msg_role == "tool" and not interrupted:
