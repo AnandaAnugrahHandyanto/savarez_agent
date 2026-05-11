@@ -3,10 +3,15 @@ import pytest
 from agent import backpack_advisor
 from agent.backpack_advisor import (
     BACKPACK_ADVISOR_STRATEGY_VERSION,
+    BACKPACK_SYSTEM_VERSION,
     build_backpack_candidate_hints,
     build_candidate_hints,
     should_build_backpack_candidate_hints,
 )
+
+
+def test_backpack_system_has_formal_version():
+    assert BACKPACK_SYSTEM_VERSION == "v0"
 
 
 def test_grouped_strategy_has_formal_version():

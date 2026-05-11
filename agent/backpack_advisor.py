@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 
+BACKPACK_SYSTEM_VERSION = "v0"
 BACKPACK_ADVISOR_STRATEGY_VERSION = "grouped-hints-v1"
 
 BACKPACK_GATEWAY_GUIDANCE = (
@@ -364,7 +365,7 @@ def _fallback_reason_lines(items: list[dict[str, Any]]) -> list[str]:
 
 def _format_grouped_hints(groups: list[dict[str, Any]]) -> str:
     lines = [
-        f"Backpack candidate hints ({BACKPACK_ADVISOR_STRATEGY_VERSION}):",
+        f"Backpack candidate hints ({BACKPACK_SYSTEM_VERSION}; {BACKPACK_ADVISOR_STRATEGY_VERSION}):",
         "Hints only; select explicitly through tool_backpack or skill_backpack.",
     ]
     for index, group in enumerate(groups, start=1):
