@@ -106,14 +106,29 @@ hermes chat -q "Hello"
 
 ### Run tests
 
-```bash
-# Preferred — matches CI (hermetic env, 4 xdist workers); see AGENTS.md
-scripts/run_tests.sh
+Always use the wrapper — it pins the hermetic env (unset provider keys,
+temp `HERMES_HOME`, `TZ=UTC`, `LANG=C.UTF-8`, 4 xdist workers) that
+GitHub Actions uses, and `tests/conftest.py` enforces the same
+invariants for any pytest invocation. Calling `pytest` directly on a
+workstation with provider keys set or `-n auto` workers has caused
+multiple "passes locally, fails in CI" incidents (and the reverse).
 
-# Alternative (activate the venv first). The wrapper is still recommended
-# for parity with GitHub Actions before you open a PR:
-pytest tests/ -v
+```bash
+scripts/run_tests.sh                                  # full suite, CI-parity
+scripts/run_tests.sh tests/test_hermes_constants.py   # one file
+scripts/run_tests.sh -v --tb=long                     # extra pytest flags
 ```
+
+If you genuinely cannot use the wrapper (e.g. on Windows or inside an
+IDE that shells `pytest` directly), activate the venv and pin the
+worker count to 4 so you don't surface ordering flakes CI never sees:
+
+```bash
+source .venv/bin/activate
+python -m pytest tests/ -q -n 4
+```
+
+See `AGENTS.md` (section **Testing**) for the full rationale.
 
 ---
 
@@ -754,7 +769,7 @@ refactor/description   # Code restructuring
 
 ### Before submitting
 
-1. **Run tests**: `scripts/run_tests.sh` (recommended; same as CI) or `pytest tests/ -v` with the project venv activated
+1. **Run tests**: `scripts/run_tests.sh` — the canonical CI-parity runner. Direct `pytest` is a fallback only; see [Run tests](#run-tests) for the venv + `-n 4` recipe and why the wrapper exists.
 2. **Test manually**: Run `hermes` and exercise the code path you changed
 3. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
 4. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.
