@@ -387,47 +387,72 @@ def session_search(
                 "message": "No matching sessions found.",
             }, ensure_ascii=False)
 
-        # Resolve child sessions to their parent — delegation stores detailed
-        # content in child sessions, but the user's conversation is the parent.
-        def _resolve_to_parent(session_id: str) -> str:
-            """Walk delegation chain to find the root parent session ID."""
+        def _get_session_meta(session_id: str) -> Dict[str, Any]:
+            try:
+                return db.get_session(session_id) or {}
+            except Exception as e:
+                logging.debug(
+                    "Error loading session metadata for %s: %s",
+                    session_id,
+                    e,
+                    exc_info=True,
+                )
+                return {}
+
+        def _is_compression_continuation(
+            child_session: Dict[str, Any],
+            parent_session: Dict[str, Any],
+        ) -> bool:
+            """Return True when a parent link represents context compression."""
+            if parent_session.get("end_reason") != "compression":
+                return False
+            parent_ended = parent_session.get("ended_at")
+            child_started = child_session.get("started_at")
+            if parent_ended is None or child_started is None:
+                return True
+            try:
+                return float(child_started) >= float(parent_ended)
+            except (TypeError, ValueError):
+                return True
+
+        # Resolve child sessions to their logical parent. Delegation stores
+        # detailed content in child sessions, but the user's conversation is
+        # the parent. Compression continuations are different: older fragments
+        # may no longer be in the live context, so keep each compressed
+        # fragment searchable as its own result.
+        def _resolve_to_search_session(session_id: str) -> str:
+            """Walk non-compression parent links to find the searchable session."""
             visited = set()
             sid = session_id
             while sid and sid not in visited:
                 visited.add(sid)
-                try:
-                    session = db.get_session(sid)
-                    if not session:
-                        break
-                    parent = session.get("parent_session_id")
-                    if parent:
-                        sid = parent
-                    else:
-                        break
-                except Exception as e:
-                    logging.debug(
-                        "Error resolving parent for session %s: %s",
-                        sid,
-                        e,
-                        exc_info=True,
-                    )
+                session = _get_session_meta(sid)
+                if not session:
                     break
+                parent = session.get("parent_session_id")
+                if not parent:
+                    break
+                parent_session = _get_session_meta(parent)
+                if _is_compression_continuation(session, parent_session):
+                    break
+                sid = parent
             return sid
 
-        current_lineage_root = (
-            _resolve_to_parent(current_session_id) if current_session_id else None
+        current_search_session = (
+            _resolve_to_search_session(current_session_id) if current_session_id else None
         )
 
-        # Group by resolved (parent) session_id, dedup, skip the current
-        # session lineage. Compression and delegation create child sessions
-        # that still belong to the same active conversation.
+        # Group by resolved session_id, dedup, skip the current logical
+        # session. Compression history remains searchable because it may have
+        # been replaced by a summary and dropped from the live context.
         seen_sessions = {}
         for result in raw_results:
             raw_sid = result["session_id"]
-            resolved_sid = _resolve_to_parent(raw_sid)
-            # Skip the current session lineage — the agent already has that
-            # context, even if older turns live in parent fragments.
-            if current_lineage_root and resolved_sid == current_lineage_root:
+            resolved_sid = _resolve_to_search_session(raw_sid)
+            # Skip the current logical session — the agent already has that
+            # context. Do not skip older compression fragments; those are
+            # often exactly what cross-turn recall needs to recover.
+            if current_search_session and resolved_sid == current_search_session:
                 continue
             if current_session_id and raw_sid == current_session_id:
                 continue

@@ -429,6 +429,54 @@ class TestSessionSearch:
         assert result["results"] == []
         assert result["sessions_searched"] == 0
 
+    def test_compressed_parent_fragment_remains_searchable(self):
+        """Current compression lineage history should stay searchable after context split."""
+        from unittest.mock import AsyncMock, MagicMock, patch as _patch
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        parent_sid = "20260304_153631_parent"
+        current_sid = "20260304_220841_child"
+
+        mock_db.search_messages.return_value = [
+            {"session_id": parent_sid, "content": "We chose the roadmap option", "source": "slack",
+             "session_started": 1778484991.0, "model": "test"},
+        ]
+
+        def _get_session(session_id):
+            if session_id == current_sid:
+                return {
+                    "parent_session_id": parent_sid,
+                    "started_at": 1778508521.0,
+                    "ended_at": None,
+                }
+            if session_id == parent_sid:
+                return {
+                    "parent_session_id": None,
+                    "started_at": 1778484991.0,
+                    "ended_at": 1778508521.0,
+                    "end_reason": "compression",
+                }
+            return None
+
+        mock_db.get_session.side_effect = _get_session
+        mock_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "Which roadmap option should we choose?"},
+            {"role": "assistant", "content": "We chose the roadmap option"},
+        ]
+
+        with _patch("tools.session_search_tool.async_call_llm",
+                    new_callable=AsyncMock,
+                    side_effect=RuntimeError("no provider")):
+            result = json.loads(session_search(
+                query="roadmap option", db=mock_db, current_session_id=current_sid,
+            ))
+
+        assert result["success"] is True
+        assert result["sessions_searched"] == 1
+        assert result["count"] == 1
+        assert result["results"][0]["session_id"] == parent_sid
+
     def test_limit_none_coerced_to_default(self):
         """Model sends limit=null → should fall back to 3, not TypeError."""
         from unittest.mock import MagicMock
