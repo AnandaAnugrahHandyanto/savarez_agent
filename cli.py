@@ -3924,6 +3924,9 @@ class HermesCLI:
         self.acp_args = resolved_acp_args
         self._credential_pool = resolved_credential_pool
         self._provider_source = runtime.get("source")
+        self._runtime_max_tokens = runtime.get("max_tokens")
+        self._runtime_request_overrides = runtime.get("request_overrides")
+        self._runtime_extra_body = runtime.get("extra_body")
         self.api_key = api_key
         self.base_url = base_url
 
@@ -3990,6 +3993,12 @@ class HermesCLI:
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
         }
+        if getattr(self, "_runtime_max_tokens", None) is not None:
+            runtime["max_tokens"] = self._runtime_max_tokens
+        if isinstance(getattr(self, "_runtime_request_overrides", None), dict):
+            runtime["request_overrides"] = self._runtime_request_overrides
+        if isinstance(getattr(self, "_runtime_extra_body", None), dict):
+            runtime["extra_body"] = self._runtime_extra_body
         route = {
             "model": self.model,
             "runtime": runtime,
@@ -4003,16 +4012,26 @@ class HermesCLI:
             ),
         }
 
+        provider_overrides = dict(runtime.get("request_overrides") or {})
+        if isinstance(runtime.get("extra_body"), dict):
+            existing_extra = provider_overrides.get("extra_body")
+            merged_extra = dict(existing_extra) if isinstance(existing_extra, dict) else {}
+            merged_extra.update(runtime["extra_body"])
+            provider_overrides["extra_body"] = merged_extra
+
         service_tier = getattr(self, "service_tier", None)
         if not service_tier:
-            route["request_overrides"] = None
+            route["request_overrides"] = provider_overrides or None
             return route
 
         try:
-            overrides = resolve_fast_mode_overrides(route["model"])
+            fast_overrides = resolve_fast_mode_overrides(route["model"])
         except Exception:
-            overrides = None
-        route["request_overrides"] = overrides
+            fast_overrides = None
+        overrides = provider_overrides
+        if isinstance(fast_overrides, dict):
+            overrides.update(fast_overrides)
+        route["request_overrides"] = overrides or None
         return route
 
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
@@ -4112,6 +4131,7 @@ class HermesCLI:
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
+                max_tokens=runtime.get("max_tokens"),
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 disabled_toolsets=self.disabled_toolsets,

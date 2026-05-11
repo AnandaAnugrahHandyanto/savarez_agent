@@ -349,6 +349,19 @@ def _try_resolve_from_custom_pool(
         return None
 
 
+def _copy_custom_provider_runtime_options(target: Dict[str, Any], source: Dict[str, Any]) -> None:
+    """Copy safe per-provider request options from config into runtime metadata."""
+    max_tokens = source.get("max_tokens")
+    if isinstance(max_tokens, int) and max_tokens > 0:
+        target["max_tokens"] = max_tokens
+    request_overrides = source.get("request_overrides")
+    if isinstance(request_overrides, dict):
+        target["request_overrides"] = request_overrides
+    extra_body = source.get("extra_body")
+    if isinstance(extra_body, dict):
+        target["extra_body"] = extra_body
+
+
 def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
     if not requested_norm or requested_norm == "custom":
@@ -413,6 +426,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                     if api_mode:
                         result["api_mode"] = api_mode
+                    _copy_custom_provider_runtime_options(result, entry)
                     return result
             # Also check the 'name' field if present
             display_name = entry.get("name", "")
@@ -431,6 +445,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
                             result["api_mode"] = api_mode
+                        _copy_custom_provider_runtime_options(result, entry)
                         return result
 
     # Fall back to custom_providers: list (legacy format)
@@ -477,6 +492,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         model_name = str(entry.get("model", "") or "").strip()
         if model_name:
             result["model"] = model_name
+        _copy_custom_provider_runtime_options(result, entry)
         return result
 
     return None
@@ -538,6 +554,7 @@ def _resolve_named_custom_runtime(
         model_name = custom_provider.get("model")
         if model_name:
             pool_result["model"] = model_name
+        _copy_custom_provider_runtime_options(pool_result, custom_provider)
         return pool_result
 
     api_key_candidates = [
@@ -562,6 +579,7 @@ def _resolve_named_custom_runtime(
     # provider name differs from the actual model string the API expects.
     if custom_provider.get("model"):
         result["model"] = custom_provider["model"]
+    _copy_custom_provider_runtime_options(result, custom_provider)
     return result
 
 

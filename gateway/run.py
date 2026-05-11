@@ -702,6 +702,13 @@ def _resolve_runtime_agent_kwargs() -> dict:
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
+    request_overrides = dict(runtime.get("request_overrides") or {})
+    if isinstance(runtime.get("extra_body"), dict):
+        existing_extra = request_overrides.get("extra_body")
+        merged_extra = dict(existing_extra) if isinstance(existing_extra, dict) else {}
+        merged_extra.update(runtime["extra_body"])
+        request_overrides["extra_body"] = merged_extra
+
     return {
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
@@ -710,6 +717,8 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "max_tokens": runtime.get("max_tokens"),
+        "request_overrides": request_overrides or None,
     }
 
 
@@ -1889,6 +1898,11 @@ class GatewayRunner:
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
+        # Keep this dict limited to AIAgent constructor kwargs that are
+        # expanded with ``**turn_route["runtime"]`` below.  Provider-level
+        # request overrides are passed separately as ``request_overrides``;
+        # including them here as well raises:
+        # ``AIAgent() got multiple values for keyword argument 'request_overrides'``.
         runtime = {
             "api_key": runtime_kwargs.get("api_key"),
             "base_url": runtime_kwargs.get("base_url"),
@@ -1897,6 +1911,7 @@ class GatewayRunner:
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
+            "max_tokens": runtime_kwargs.get("max_tokens"),
         }
         route = {
             "model": model,
@@ -1911,16 +1926,26 @@ class GatewayRunner:
             ),
         }
 
+        provider_overrides = dict(runtime_kwargs.get("request_overrides") or {})
+        if isinstance(runtime_kwargs.get("extra_body"), dict):
+            existing_extra = provider_overrides.get("extra_body")
+            merged_extra = dict(existing_extra) if isinstance(existing_extra, dict) else {}
+            merged_extra.update(runtime_kwargs["extra_body"])
+            provider_overrides["extra_body"] = merged_extra
+
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
-            route["request_overrides"] = {}
+            route["request_overrides"] = provider_overrides
             return route
 
         try:
-            overrides = resolve_fast_mode_overrides(route["model"])
+            fast_overrides = resolve_fast_mode_overrides(route["model"])
         except Exception:
-            overrides = None
-        route["request_overrides"] = overrides or {}
+            fast_overrides = None
+        overrides = provider_overrides
+        if isinstance(fast_overrides, dict):
+            overrides.update(fast_overrides)
+        route["request_overrides"] = overrides
         return route
 
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
