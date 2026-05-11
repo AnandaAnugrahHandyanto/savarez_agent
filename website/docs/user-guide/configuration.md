@@ -87,7 +87,7 @@ Hermes supports seven terminal backends. Each determines where the agent's shell
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
+  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | agentrun | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   timeout: 180      # Per-command timeout in seconds
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
@@ -108,6 +108,7 @@ For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persi
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
 | **vercel_sandbox** | Vercel Sandbox | Full (cloud microVM) | Cloud execution with snapshot-backed filesystem persistence |
+| **agentrun** | Alibaba Cloud AgentRun Code Interpreter sandbox | Full (cloud microVM) | China-region cloud execution with idle-billed sandboxes |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
 
 ### Local Backend
@@ -270,6 +271,45 @@ OIDC tokens are short-lived and should not be used as the documented deployment 
 
 **Disk sizing:** Vercel Sandbox does not currently support Hermes' `container_disk` resource knob. Leave `container_disk` unset or at the shared default `51200`; non-default values fail diagnostics and backend creation instead of being silently ignored.
 
+### AgentRun Backend
+
+Runs commands in an [Alibaba Cloud AgentRun](https://help.aliyun.com/zh/functioncompute/fc/what-is-agentrun) Code Interpreter sandbox — a managed microVM on Function Compute v3 with idle-billed sandboxes (vCPU is billed only while a command is actually executing; the rest is memory-only).
+
+```yaml
+terminal:
+  backend: agentrun
+  agentrun_template_name: "hermes-default"   # Optional; defaults to "hermes-{task_id}"
+  agentrun_idle_timeout_seconds: 300         # Sandbox idle TTL (server-side reaps after this)
+  container_persistent: true                 # Reconnect to the same sandbox across calls
+```
+
+**Required install:** Install the SDK:
+
+```bash
+pip install agentrun-sdk
+```
+
+**Required authentication:** Set the SDK's documented environment variables before launching Hermes. These are picked up automatically by the `agentrun` Python package:
+
+```bash
+export AGENTRUN_ACCESS_KEY_ID="<RAM AccessKey ID>"
+export AGENTRUN_ACCESS_KEY_SECRET="<RAM AccessKey secret>"
+export AGENTRUN_ACCOUNT_ID="<Aliyun account ID>"
+export AGENTRUN_REGION="cn-hangzhou"            # Any AgentRun-enabled region
+```
+
+Create a dedicated RAM sub-account (rather than the root key) with the `AliyunAgentRunFullAccess` managed policy, or a tighter custom policy if you do not need template/sandbox management at runtime.
+
+**Persistence model:** AgentRun does not expose a snapshot API. With `container_persistent: true` Hermes stores the live `sandbox_id` in `~/.hermes/agentrun_sandboxes.json`, keyed by `task_id`, and reconnects to that sandbox via `Sandbox.connect(sandbox_id)` on the next call. The sandbox stays alive across calls as long as it is reused within `agentrun_idle_timeout_seconds` (default 5 minutes); after that the control plane reaps it and the next construction transparently allocates a new one. With `container_persistent: false` Hermes deletes the sandbox at the end of every session.
+
+**Templates:** AgentRun sandboxes are launched from server-side *templates*. Hermes materialises one named `hermes-{task_id}` on first use (idempotent — concurrent constructions resolve to the existing template). Override `agentrun_template_name` to share a single curated template across tasks (useful if you customise the runtime image in the AgentRun console).
+
+**Command timeout:** AgentRun caps a single Code Interpreter command at 30 s server-side. Hermes clamps caller-supplied timeouts to that ceiling and emits a warning when it does. Longer-running shell workflows should be split into multiple commands (the sandbox itself stays alive across them).
+
+**Background commands:** `terminal(background=true)` uses Hermes' generic non-local background flow on top of the SDK's `process.cmd` endpoint. The 30-second command ceiling applies; for genuinely long-running work prefer detaching to `nohup ... &` and polling status via subsequent commands.
+
+**Region note:** AgentRun is currently an Alibaba Cloud product and runs in China + Singapore regions only. Outbound network from the sandbox follows the chosen region's egress.
+
 ### Singularity/Apptainer Backend
 
 Runs commands in a [Singularity/Apptainer](https://apptainer.org) container. Designed for HPC clusters and shared machines where Docker isn't available.
@@ -300,6 +340,7 @@ If terminal commands fail immediately or the terminal tool is reported as disabl
 - **SSH** — Both `TERMINAL_SSH_HOST` and `TERMINAL_SSH_USER` must be set. Hermes logs a clear error if either is missing.
 - **Modal** — Needs `MODAL_TOKEN_ID` env var or `~/.modal.toml`. Run `hermes doctor` to check.
 - **Daytona** — Needs `DAYTONA_API_KEY`. The Daytona SDK handles server URL configuration.
+- **AgentRun** — Needs `AGENTRUN_ACCESS_KEY_ID`, `AGENTRUN_ACCESS_KEY_SECRET`, and `AGENTRUN_ACCOUNT_ID`; `AGENTRUN_REGION` defaults to `cn-hangzhou`. Install `agentrun-sdk`. See the AgentRun Backend section above.
 - **Singularity** — Needs `apptainer` or `singularity` in `$PATH`. Common on HPC clusters.
 
 When in doubt, set `terminal.backend` back to `local` and verify that commands run there first.

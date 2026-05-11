@@ -3,18 +3,19 @@
 Terminal Tool Module
 
 A terminal tool that executes commands in local, Docker, Modal, SSH,
-Singularity, Daytona, and Vercel Sandbox environments. Supports local
-execution, containerized backends, and cloud sandboxes, including managed
-Modal mode.
+Singularity, Daytona, Vercel Sandbox, and Alibaba Cloud AgentRun
+environments. Supports local execution, containerized backends, and
+cloud sandboxes, including managed Modal mode.
 
 Environment Selection (via TERMINAL_ENV environment variable):
 - "local": Execute directly on the host machine (default, fastest)
 - "docker": Execute in Docker containers (isolated, requires Docker)
 - "modal": Execute in Modal cloud sandboxes (direct Modal or managed gateway)
 - "vercel_sandbox": Execute in Vercel Sandbox cloud sandboxes
+- "agentrun": Execute in Alibaba Cloud AgentRun Code Interpreter sandboxes
 
 Features:
-- Multiple execution backends (local, docker, modal, vercel_sandbox)
+- Multiple execution backends (local, docker, modal, vercel_sandbox, agentrun)
 - Background task support
 - VM/container lifecycle management
 - Automatic cleanup after inactivity
@@ -1041,7 +1042,7 @@ def _get_env_config() -> Dict[str, Any]:
         ):
             host_cwd = candidate
             cwd = "/workspace"
-    elif env_type in ("modal", "docker", "singularity", "daytona", "vercel_sandbox") and cwd:
+    elif env_type in ("modal", "docker", "singularity", "daytona", "vercel_sandbox", "agentrun") and cwd:
         # Host paths and relative paths that won't work inside containers
         is_host_path = any(cwd.startswith(p) for p in host_prefixes)
         is_relative = not os.path.isabs(cwd)  # e.g. "." or "src/"
@@ -1110,7 +1111,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     
     Args:
         env_type: One of "local", "docker", "singularity", "modal",
-            "daytona", "vercel_sandbox", "ssh"
+            "daytona", "vercel_sandbox", "agentrun", "ssh"
         image: Docker/Singularity/Modal image name (ignored for local/ssh/vercel)
         cwd: Working directory
         timeout: Default command timeout
@@ -1244,10 +1245,24 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             timeout=timeout,
         )
 
+    elif env_type == "agentrun":
+        # Lazy import so agentrun-sdk is only required when this backend
+        # is selected.
+        from tools.environments.agentrun import AgentRunEnvironment as _AgentRunEnvironment
+        return _AgentRunEnvironment(
+            cwd=cwd,
+            timeout=timeout,
+            task_id=task_id,
+            template_name=cc.get("agentrun_template_name"),
+            idle_timeout_seconds=int(cc.get("agentrun_idle_timeout_seconds", 300)),
+            persistent_filesystem=persistent,
+        )
+
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', "
+            f"'agentrun', or 'ssh'"
         )
 
 
@@ -2215,10 +2230,40 @@ def check_terminal_requirements() -> bool:
             from daytona import Daytona  # noqa: F401 — SDK presence check
             return os.getenv("DAYTONA_API_KEY") is not None
 
+        elif env_type == "agentrun":
+            # SDK is published as ``agentrun-sdk`` on PyPI but imports as
+            # ``agentrun``. Credentials are taken from environment
+            # variables (AGENTRUN_ACCESS_KEY_ID / AGENTRUN_ACCESS_KEY_SECRET
+            # / AGENTRUN_ACCOUNT_ID / AGENTRUN_REGION), matching the SDK
+            # default config loader.
+            if importlib.util.find_spec("agentrun") is None:
+                logger.error(
+                    "agentrun-sdk is required for the agentrun terminal "
+                    "backend: pip install agentrun-sdk"
+                )
+                return False
+            missing = [
+                name for name in (
+                    "AGENTRUN_ACCESS_KEY_ID",
+                    "AGENTRUN_ACCESS_KEY_SECRET",
+                    "AGENTRUN_ACCOUNT_ID",
+                )
+                if not os.getenv(name)
+            ]
+            if missing:
+                logger.error(
+                    "AgentRun backend selected but the following environment "
+                    "variables are not set: %s. Configure them or switch "
+                    "TERMINAL_ENV to a different value.",
+                    ", ".join(missing),
+                )
+                return False
+            return True
+
         else:
             logger.error(
                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, vercel_sandbox, ssh.",
+                "modal, daytona, vercel_sandbox, agentrun, ssh.",
                 env_type,
             )
             return False
@@ -2261,7 +2306,7 @@ if __name__ == "__main__":
     print(
         "  TERMINAL_ENV: "
         f"{os.getenv('TERMINAL_ENV', 'local')} "
-        "(local/docker/singularity/modal/daytona/vercel_sandbox/ssh)"
+        "(local/docker/singularity/modal/daytona/vercel_sandbox/agentrun/ssh)"
     )
     print(f"  TERMINAL_DOCKER_IMAGE: {os.getenv('TERMINAL_DOCKER_IMAGE', default_img)}")
     print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")
