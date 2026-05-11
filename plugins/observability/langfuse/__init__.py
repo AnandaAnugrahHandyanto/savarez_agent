@@ -158,6 +158,33 @@ def _get_langfuse() -> Optional[Langfuse]:
         _LANGFUSE_CLIENT = _INIT_FAILED
         return None
 
+    # Reject placeholder credentials with a one-shot warning so the
+    # operator sees the misconfiguration instead of silently shipping a
+    # broken observability stack (#23823).  The SDK does not validate
+    # keys at construction time — it queues traces in memory and only
+    # discovers the auth failure when the background flush thread tries
+    # to post them, by which point the warning is buried under whatever
+    # else the process is logging.  Catch it here, surface it once, and
+    # short-circuit via the same _INIT_FAILED path as the empty case.
+    placeholder_issues = [
+        msg
+        for msg in (
+            _validate_langfuse_key("HERMES_LANGFUSE_PUBLIC_KEY", public_key),
+            _validate_langfuse_key("HERMES_LANGFUSE_SECRET_KEY", secret_key),
+        )
+        if msg
+    ]
+    if placeholder_issues:
+        logger.warning(
+            "Langfuse plugin: credentials look like placeholders, traces will "
+            "NOT be emitted (%s). Set real Langfuse keys (pk-lf-... / sk-lf-...) "
+            "or unset HERMES_LANGFUSE_PUBLIC_KEY / HERMES_LANGFUSE_SECRET_KEY to "
+            "silence this warning.",
+            "; ".join(placeholder_issues),
+        )
+        _LANGFUSE_CLIENT = _INIT_FAILED
+        return None
+
     base_url = _env("HERMES_LANGFUSE_BASE_URL") or _env("LANGFUSE_BASE_URL") or "https://cloud.langfuse.com"
     environment = _env("HERMES_LANGFUSE_ENV") or _env("LANGFUSE_ENV")
     release = _env("HERMES_LANGFUSE_RELEASE") or _env("LANGFUSE_RELEASE")
