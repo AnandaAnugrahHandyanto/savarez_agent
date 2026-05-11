@@ -748,6 +748,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
+                    "default_headers": runtime.get("default_headers"),
                     "model": entry.get("model"),
                 }
             except Exception as fb_exc:

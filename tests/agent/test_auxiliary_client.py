@@ -26,6 +26,7 @@ from agent.auxiliary_client import (
     _normalize_aux_provider,
     _try_payment_fallback,
     _resolve_auto,
+    _to_async_client,
     _CodexCompletionsAdapter,
 )
 
@@ -81,6 +82,54 @@ class TestNormalizeAuxProvider:
     def test_maps_github_copilot_acp_aliases(self):
         assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
+
+
+def test_resolve_auto_passes_main_runtime_headers_to_main_provider(monkeypatch):
+    captured = {}
+
+    def fake_resolve(provider, model=None, **kwargs):
+        captured.update({"provider": provider, "model": model, **kwargs})
+        return object(), model
+
+    monkeypatch.setattr("agent.auxiliary_client.resolve_provider_client", fake_resolve)
+
+    client, model = _resolve_auto(
+        main_runtime={
+            "provider": "custom",
+            "model": "custom-model",
+            "base_url": "https://relay.example.com/v1",
+            "api_key": "relay-key",
+            "api_mode": "chat_completions",
+            "default_headers": {"X-Relay-Key": "relay-secret"},
+        }
+    )
+
+    assert client is not None
+    assert model == "custom-model"
+    assert captured["main_runtime"]["default_headers"] == {"X-Relay-Key": "relay-secret"}
+    assert captured["explicit_base_url"] == "https://relay.example.com/v1"
+
+
+def test_to_async_client_preserves_sync_client_custom_headers(monkeypatch):
+    captured = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    sync_client = SimpleNamespace(
+        api_key="relay-key",
+        base_url="https://relay.example.com/v1",
+        _custom_headers={"X-Relay-Key": "relay-secret"},
+    )
+    monkeypatch.setattr("openai.AsyncOpenAI", FakeAsyncOpenAI)
+    monkeypatch.setattr("agent.auxiliary_client.get_model_custom_headers", lambda: {})
+
+    async_client, model = _to_async_client(sync_client, "relay-model")
+
+    assert isinstance(async_client, FakeAsyncOpenAI)
+    assert model == "relay-model"
+    assert captured["default_headers"] == {"X-Relay-Key": "relay-secret"}
 
 
 class TestReadCodexAccessToken:
@@ -2568,7 +2617,7 @@ class TestAnthropicExplicitApiKey:
              patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
             from agent.auxiliary_client import _try_anthropic
-            client, model = _try_anthropic("explicit-pool-key")
+            client, model = _try_anthropic(explicit_api_key="explicit-pool-key")
         assert client is not None
         assert mock_build.call_args.args[0] == "explicit-pool-key", (
             f"Expected explicit_api_key to be passed, got: {mock_build.call_args.args[0]}"

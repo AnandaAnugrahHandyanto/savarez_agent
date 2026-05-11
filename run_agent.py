@@ -2627,6 +2627,7 @@ class AIAgent:
             _sm_timeout = get_provider_request_timeout(self.provider, self.model)
             if _sm_timeout is not None:
                 self._client_kwargs["timeout"] = _sm_timeout
+            self._apply_client_headers_for_base_url(str(effective_base or ""))
             self.client = self._create_openai_client(
                 dict(self._client_kwargs),
                 reason="switch_model",

@@ -389,6 +389,35 @@ _AI_GATEWAY_HEADERS = {
 def _headers_with_config(base_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     return merge_default_headers(base_headers, get_model_custom_headers())
 
+
+def _client_default_headers(client: Any) -> Dict[str, str]:
+    """Best-effort extraction of headers already baked into an SDK client."""
+    for attr in ("_custom_headers", "_default_headers", "default_headers"):
+        raw = getattr(client, attr, None)
+        if not raw:
+            continue
+        try:
+            items = raw.items()
+        except Exception:
+            continue
+        headers: Dict[str, str] = {}
+        for key, value in items:
+            key_s = str(key).strip() if key else ""
+            value_s = str(value).strip() if value is not None else ""
+            if key_s and value_s:
+                headers[key_s] = value_s
+        if headers:
+            return headers
+    return {}
+
+
+def _headers_with_config_and_client(
+    base_headers: Optional[Dict[str, str]],
+    client_headers: Optional[Dict[str, str]],
+) -> Dict[str, str]:
+    """Merge URL/profile headers, model.custom_headers, then client/provider headers."""
+    return merge_default_headers(_headers_with_config(base_headers), client_headers)
+
 # Nous Portal extra_body for product attribution.
 # Callers should pass this as extra_body in chat.completions.create()
 # when the auxiliary client is backed by Nous Portal.
@@ -2379,6 +2408,8 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     runtime_base_url = runtime.get("base_url", "")
     runtime_api_key = runtime.get("api_key", "")
     runtime_api_mode = runtime.get("api_mode", "")
+    _prev_headers = _resolution_default_headers
+    _resolution_default_headers = runtime.get("default_headers")  # type: ignore[assignment]
 
     # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
     #    provider (not 'custom').  This catches the common "env poisoning"
@@ -2417,22 +2448,25 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
             resolved_provider = "custom"
             explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
-        client, resolved = resolve_provider_client(
-            resolved_provider,
-            main_model,
-            explicit_base_url=explicit_base_url,
-            explicit_api_key=explicit_api_key,
-            api_mode=runtime_api_mode or None,
-        )
-        if client is not None:
-            logger.info("Auxiliary auto-detect: using main provider %s (%s)",
-                        main_provider, resolved or main_model)
-            return client, resolved or main_model
+        try:
+            client, resolved = resolve_provider_client(
+                resolved_provider,
+                main_model,
+                explicit_base_url=explicit_base_url,
+                explicit_api_key=explicit_api_key,
+                api_mode=runtime_api_mode or None,
+                main_runtime=runtime,
+            )
+            if client is not None:
+                logger.info("Auxiliary auto-detect: using main provider %s (%s)",
+                            main_provider, resolved or main_model)
+                return client, resolved or main_model
+        finally:
+            _resolution_default_headers = _prev_headers
 
     # ── Step 2: aggregator / fallback chain ──────────────────────────────
     # Propagate default_headers from main_runtime through the chain so
     # _try_anthropic() can include them when building the Anthropic client.
-    _prev_headers = _resolution_default_headers
     _resolution_default_headers = runtime.get("default_headers")  # type: ignore[assignment]
     try:
         tried = []
@@ -2499,18 +2533,23 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         "base_url": str(sync_client.base_url),
     }
     sync_base_url = str(sync_client.base_url)
+    sync_headers = _client_default_headers(sync_client)
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
-        async_kwargs["default_headers"] = _headers_with_config(build_or_headers())
+        async_kwargs["default_headers"] = _headers_with_config_and_client(build_or_headers(), sync_headers)
     elif base_url_host_matches(sync_base_url, "api.githubcopilot.com"):
         from hermes_cli.copilot_auth import copilot_request_headers
 
-        async_kwargs["default_headers"] = _headers_with_config(
-            copilot_request_headers(is_agent_turn=True, is_vision=is_vision)
+        async_kwargs["default_headers"] = _headers_with_config_and_client(
+            copilot_request_headers(is_agent_turn=True, is_vision=is_vision),
+            sync_headers,
         )
     elif base_url_host_matches(sync_base_url, "api.kimi.com"):
-        async_kwargs["default_headers"] = _headers_with_config({"User-Agent": "claude-code/0.1.0"})
+        async_kwargs["default_headers"] = _headers_with_config_and_client(
+            {"User-Agent": "claude-code/0.1.0"},
+            sync_headers,
+        )
     else:
-        _cfg = _headers_with_config()
+        _cfg = _headers_with_config_and_client(None, sync_headers)
         if _cfg:
             async_kwargs["default_headers"] = _cfg
         else:
@@ -2524,7 +2563,10 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
                 if _inferred:
                     _ph_async = _gpf_async(_inferred)
                     if _ph_async and _ph_async.default_headers:
-                        async_kwargs["default_headers"] = dict(_ph_async.default_headers)
+                        async_kwargs["default_headers"] = _headers_with_config_and_client(
+                            dict(_ph_async.default_headers),
+                            sync_headers,
+                        )
             except Exception:
                 pass
     return AsyncOpenAI(**async_kwargs), model
@@ -2977,8 +3019,7 @@ def resolve_provider_client(
             headers.update(copilot_request_headers(
                 is_agent_turn=True, is_vision=is_vision
             ))
-        _merged = _headers_with_config(headers if headers else None)
-        if not _merged:
+        if not headers:
             # Fall back to profile.default_headers for providers that declare
             # client-level attribution headers on their profile (e.g. GMI
             # User-Agent for traffic identification, Vercel AI Gateway
@@ -2990,6 +3031,12 @@ def resolve_provider_client(
                     headers.update(_ph_main.default_headers)
             except Exception:
                 pass
+        _merged = _headers_with_config(headers if headers else None)
+        _mr_headers = None
+        if isinstance(main_runtime, dict):
+            _mr_headers = main_runtime.get("default_headers")
+        if _mr_headers:
+            _merged = merge_default_headers(_merged, _mr_headers)
         client = OpenAI(api_key=api_key, base_url=base_url,
                         **({"default_headers": _merged} if _merged else {}))
 
