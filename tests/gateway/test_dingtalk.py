@@ -205,6 +205,79 @@ class TestSend:
         assert mock_client.post.call_args[0][0] == "https://cached.example/webhook"
 
     @pytest.mark.asyncio
+    async def test_send_prefers_robot_group_message_api_when_message_context_present(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._message_contexts["chat-123"] = SimpleNamespace(
+            conversation_id="cid123",
+            conversation_type="2",
+            robot_code="robot-123",
+        )
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.content = b'{"processQueryKey":"msg-key"}'
+        mock_response.json.return_value = {"processQueryKey": "msg-key"}
+        mock_response.text = '{"processQueryKey":"msg-key"}'
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+        adapter._stream_client = object()
+        adapter._get_access_token = AsyncMock(return_value="token123")
+
+        result = await adapter.send("chat-123", "Hello!")
+
+        assert result.success is True
+        call_args = mock_client.post.call_args
+        assert call_args.args[0] == "https://api.dingtalk.com/v1.0/robot/groupMessages/send"
+        payload = call_args.kwargs["json"]
+        assert payload["robotCode"] == "robot-123"
+        assert payload["openConversationId"] == "cid123"
+        assert payload["msgKey"] == "sampleMarkdown"
+        assert json.loads(payload["msgParam"]) == {"title": "Hermes", "text": "Hello!"}
+
+    @pytest.mark.asyncio
+    async def test_send_robot_api_falls_back_to_webhook(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._message_contexts["chat-123"] = SimpleNamespace(
+            conversation_id="cid123",
+            conversation_type="2",
+            robot_code="robot-123",
+        )
+
+        robot_response = MagicMock()
+        robot_response.status_code = 400
+        robot_response.content = b'{"code":"invalidParameter.msgKey.invalid"}'
+        robot_response.json.return_value = {"code": "invalidParameter.msgKey.invalid"}
+        robot_response.text = '{"code":"invalidParameter.msgKey.invalid"}'
+
+        webhook_response = MagicMock()
+        webhook_response.status_code = 200
+        webhook_response.text = "OK"
+        webhook_response.content = b""
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(
+            side_effect=[robot_response, robot_response, webhook_response]
+        )
+        adapter._http_client = mock_client
+        adapter._stream_client = object()
+        adapter._get_access_token = AsyncMock(return_value="token123")
+
+        result = await adapter.send(
+            "chat-123",
+            "Hello!",
+            metadata={"session_webhook": "https://dingtalk.example/webhook"},
+        )
+
+        assert result.success is True
+        assert mock_client.post.call_args_list[-1].args[0] == "https://dingtalk.example/webhook"
+
+    @pytest.mark.asyncio
     async def test_send_handles_http_error(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
@@ -224,8 +297,41 @@ class TestSend:
         assert "400" in result.error
 
     @pytest.mark.asyncio
-    async def test_send_image_renders_markdown_image(self):
+    async def test_send_image_uses_robot_group_message_api(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._message_contexts["chat-123"] = SimpleNamespace(
+            conversation_id="cid123",
+            conversation_type="2",
+        )
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.content = b'{"processQueryKey":"img-key"}'
+        mock_response.json.return_value = {"processQueryKey": "img-key"}
+        mock_response.text = '{"processQueryKey":"img-key"}'
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+        adapter._stream_client = object()
+        adapter._get_access_token = AsyncMock(return_value="token123")
+
+        result = await adapter.send_image("chat-123", "https://example.com/image.png")
+
+        assert result.success is True
+        call_args = mock_client.post.call_args
+        assert call_args.args[0] == "https://api.dingtalk.com/v1.0/robot/groupMessages/send"
+        payload = call_args.kwargs["json"]
+        assert payload["openConversationId"] == "cid123"
+        assert payload["msgKey"] == "sampleImageMsg"
+        assert json.loads(payload["msgParam"])["photoURL"] == "https://example.com/image.png"
+
+    @pytest.mark.asyncio
+    async def test_send_image_renders_markdown_image_without_send_target(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
 
         mock_response = MagicMock()
@@ -249,14 +355,79 @@ class TestSend:
         assert payload["markdown"]["text"] == "Screenshot\n\n![image](https://example.com/demo.png)"
 
     @pytest.mark.asyncio
-    async def test_send_image_file_returns_explicit_unsupported_error(self):
+    async def test_send_image_file_uploads_then_sends(self, tmp_path):
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._message_contexts["chat-123"] = SimpleNamespace(
+            conversation_id="cid123",
+            conversation_type="2",
+        )
 
-        result = await adapter.send_image_file("chat-123", "/tmp/demo.png")
+        image_path = tmp_path / "sample.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\nfake")
 
-        assert result.success is False
-        assert result.error and "do not support local image uploads" in result.error
+        upload_response = MagicMock()
+        upload_response.status_code = 200
+        upload_response.content = b'{"media_id":"@media123"}'
+        upload_response.json.return_value = {"media_id": "@media123"}
+        upload_response.text = '{"media_id":"@media123"}'
+
+        send_response = MagicMock()
+        send_response.status_code = 200
+        send_response.content = b'{"processQueryKey":"img-key"}'
+        send_response.json.return_value = {"processQueryKey": "img-key"}
+        send_response.text = '{"processQueryKey":"img-key"}'
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=[upload_response, send_response])
+        adapter._http_client = mock_client
+        adapter._stream_client = object()
+        adapter._get_access_token = AsyncMock(return_value="token123")
+        adapter._get_oapi_access_token = AsyncMock(return_value="oapi123")
+
+        result = await adapter.send_image_file("chat-123", str(image_path))
+
+        assert result.success is True
+        first_call = mock_client.post.call_args_list[0]
+        assert first_call.args[0] == "https://oapi.dingtalk.com/media/upload"
+        assert first_call.kwargs["params"]["access_token"] == "oapi123"
+
+        second_call = mock_client.post.call_args_list[1]
+        assert second_call.args[0] == "https://api.dingtalk.com/v1.0/robot/groupMessages/send"
+        payload = second_call.kwargs["json"]
+        assert json.loads(payload["msgParam"])["photoURL"] == "@media123"
+
+    @pytest.mark.asyncio
+    async def test_send_image_prefers_inbound_robot_code(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        adapter = DingTalkAdapter(
+            PlatformConfig(enabled=True, extra={"client_id": "cfg-client-id"})
+        )
+        adapter._message_contexts["chat-123"] = SimpleNamespace(
+            conversation_id="cid123",
+            conversation_type="2",
+            robot_code="callback-robot-code",
+        )
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.content = b'{"processQueryKey":"img-key"}'
+        mock_response.json.return_value = {"processQueryKey": "img-key"}
+        mock_response.text = '{"processQueryKey":"img-key"}'
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+        adapter._stream_client = object()
+        adapter._get_access_token = AsyncMock(return_value="token123")
+
+        result = await adapter.send_image("chat-123", "https://example.com/image.png")
+
+        assert result.success is True
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert payload["robotCode"] == "callback-robot-code"
 
     @pytest.mark.asyncio
     async def test_send_document_returns_explicit_unsupported_error(self):
@@ -266,7 +437,7 @@ class TestSend:
         result = await adapter.send_document("chat-123", "/tmp/demo.pdf")
 
         assert result.success is False
-        assert result.error and "do not support local file attachments" in result.error
+        assert result.error and "not supported by this adapter path yet" in result.error
 
 
 # ---------------------------------------------------------------------------

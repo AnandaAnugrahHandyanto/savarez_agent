@@ -34,6 +34,7 @@ import re
 import traceback
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 try:
@@ -94,6 +95,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    resolve_proxy_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -108,6 +110,26 @@ DINGTALK_TYPE_MAPPING = {
     "picture": "image",
     "voice": "audio",
 }
+
+
+def _env_truthy(name: str) -> bool:
+    return str(os.getenv(name, "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def build_dingtalk_http_client_kwargs() -> Dict[str, Any]:
+    """Build HTTP client kwargs shared by gateway and proactive send paths."""
+    client_kwargs: Dict[str, Any] = {
+        "timeout": 30.0,
+        "follow_redirects": True,
+    }
+    proxy_url = resolve_proxy_url("DINGTALK_PROXY")
+    if proxy_url:
+        client_kwargs["proxy"] = proxy_url
+    elif _env_truthy("DINGTALK_FORCE_IPV4"):
+        client_kwargs["transport"] = httpx.AsyncHTTPTransport(
+            local_address="0.0.0.0"
+        )
+    return client_kwargs
 
 
 def check_dingtalk_requirements() -> bool:
@@ -205,6 +227,8 @@ class DingTalkAdapter(BasePlatformAdapter):
         # Track fire-and-forget emoji/reaction coroutines so Python's GC
         # doesn't drop them mid-flight, and we can cancel them on disconnect.
         self._bg_tasks: Set[asyncio.Task] = set()
+        self._oapi_token: Optional[str] = None
+        self._oapi_token_expiry_ts: float = 0.0
 
     # -- Connection lifecycle -----------------------------------------------
 
@@ -228,11 +252,18 @@ class DingTalkAdapter(BasePlatformAdapter):
             return False
 
         try:
+            client_kwargs = build_dingtalk_http_client_kwargs()
             # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
             from gateway.platforms._http_client_limits import platform_httpx_limits
-            self._http_client = httpx.AsyncClient(
-                timeout=30.0, limits=platform_httpx_limits(),
-            )
+
+            client_kwargs["limits"] = platform_httpx_limits()
+            proxy_url = client_kwargs.get("proxy")
+            if proxy_url:
+                logger.info("[%s] Proxy detected for DingTalk HTTP client: %s", self.name, proxy_url)
+            elif client_kwargs.get("transport") is not None:
+                logger.info("[%s] DingTalk HTTP client forcing IPv4 via env/config", self.name)
+
+            self._http_client = httpx.AsyncClient(**client_kwargs)
 
             credential = dingtalk_stream.Credential(
                 self._client_id, self._client_secret
@@ -280,9 +311,16 @@ class DingTalkAdapter(BasePlatformAdapter):
         while self._running:
             try:
                 logger.debug("[%s] Starting stream client...", self.name)
-                await self._stream_client.start()
+                await asyncio.wait_for(self._stream_client.start(), timeout=300)
             except asyncio.CancelledError:
                 return
+            except asyncio.TimeoutError:
+                if not self._running:
+                    return
+                logger.warning(
+                    "[%s] Stream client timed out after 300s without activity; forcing reconnect",
+                    self.name,
+                )
             except Exception as e:
                 if not self._running:
                     return
@@ -552,6 +590,11 @@ class DingTalkAdapter(BasePlatformAdapter):
         message: "ChatbotMessage",
     ) -> None:
         """Process an incoming DingTalk chatbot message."""
+        from gateway.session_context import (
+            reset_session_env_value,
+            set_session_env_value,
+        )
+
         msg_id = getattr(message, "message_id", None) or uuid.uuid4().hex
         if self._dedup.is_duplicate(msg_id):
             logger.debug("[%s] Duplicate message %s, skipping", self.name, msg_id)
@@ -632,6 +675,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             user_id=sender_id,
             user_name=sender_nick,
             user_id_alt=sender_staff_id if sender_staff_id else None,
+            robot_code=getattr(message, "robot_code", None) or None,
         )
 
         # Parse timestamp
@@ -663,7 +707,19 @@ class DingTalkAdapter(BasePlatformAdapter):
             chat_id[:20] if chat_id else "?",
             text[:80] if text else "(media)",
         )
-        await self.handle_message(event)
+        robot_code_token = None
+        robot_code = str(getattr(message, "robot_code", "") or "").strip()
+        if robot_code:
+            robot_code_token = set_session_env_value(
+                "HERMES_SESSION_DINGTALK_ROBOT_CODE", robot_code
+            )
+        try:
+            await self.handle_message(event)
+        finally:
+            if robot_code_token is not None:
+                reset_session_env_value(
+                    "HERMES_SESSION_DINGTALK_ROBOT_CODE", robot_code_token
+                )
 
     @staticmethod
     def _extract_text(message: "ChatbotMessage") -> str:
@@ -790,21 +846,6 @@ class DingTalkAdapter(BasePlatformAdapter):
             bool(self._card_template_id and self._card_sdk),
         )
 
-        # Check metadata first (for direct webhook sends)
-        session_webhook = metadata.get("session_webhook")
-        if not session_webhook:
-            webhook_info = self._get_valid_webhook(chat_id)
-            if not webhook_info:
-                logger.warning(
-                    "[%s] No valid session_webhook for chat_id=%s",
-                    self.name, chat_id,
-                )
-                return SendResult(
-                    success=False,
-                    error="No valid session_webhook available. Reply must follow an incoming message.",
-                )
-            session_webhook, _ = webhook_info
-
         if not self._http_client:
             return SendResult(success=False, error="HTTP client not initialized")
 
@@ -848,9 +889,51 @@ class DingTalkAdapter(BasePlatformAdapter):
 
             logger.warning("[%s] AI Card send failed, falling back to webhook", self.name)
 
-        logger.debug("[%s] Sending via webhook", self.name)
-        # Normalize markdown for DingTalk
         normalized = self._normalize_markdown(content[: self.MAX_MESSAGE_LENGTH])
+        robot_target = self._resolve_send_target(chat_id)
+
+        # Prefer the official robot send APIs when we have enough context from
+        # the inbound callback. The legacy session webhook path still exists as
+        # a fallback because it can work in some environments, but recent
+        # DingTalk setups appear to reject or silently drop these webhook
+        # replies for normal text responses.
+        if robot_target:
+            robot_result = await self._send_robot_text_payload(
+                target=robot_target,
+                text=normalized,
+                title="Hermes",
+            )
+            if robot_result.success:
+                if is_final_reply:
+                    self._fire_done_reaction(chat_id)
+                return robot_result
+            logger.warning(
+                "[%s] Robot text send failed for chat_id=%s, falling back to session webhook: %s",
+                self.name,
+                chat_id,
+                robot_result.error,
+            )
+
+        # Check metadata first (for direct webhook sends)
+        session_webhook = metadata.get("session_webhook")
+        if not session_webhook:
+            webhook_info = self._get_valid_webhook(chat_id)
+            if not webhook_info:
+                logger.warning(
+                    "[%s] No valid session_webhook for chat_id=%s",
+                    self.name, chat_id,
+                )
+                return SendResult(
+                    success=False,
+                    error=(
+                        robot_result.error
+                        if robot_target and 'robot_result' in locals() and robot_result.error
+                        else "No valid session_webhook available. Reply must follow an incoming message."
+                    ),
+                )
+            session_webhook, _ = webhook_info
+
+        logger.debug("[%s] Sending via webhook", self.name)
 
         payload = {
             "msgtype": "markdown",
@@ -879,7 +962,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                 success=False, error="Timeout sending message to DingTalk"
             )
         except Exception as e:
-            logger.error("[%s] Send error: %s", self.name, e)
+            logger.error("[%s] Send error: %r", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
@@ -894,21 +977,33 @@ class DingTalkAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send an image via DingTalk markdown.
+        del metadata
 
-        DingTalk's session webhook only supports text/markdown payloads, not
-        native image/file attachments. For remote image URLs, render the image
-        inline with markdown so the user still sees the image. Local files need
-        OpenAPI media upload and are handled separately.
-        """
-        image_block = f"![image]({image_url})"
-        content = f"{caption}\n\n{image_block}" if caption else image_block
-        return await self.send(
+        if not self._http_client:
+            return SendResult(success=False, error="HTTP client not initialized")
+
+        from tools.url_safety import is_safe_url
+
+        if not is_safe_url(image_url):
+            logger.warning("[%s] Blocked unsafe DingTalk image URL", self.name)
+            return await super().send_image(chat_id, image_url, caption, reply_to)
+
+        result = await self._send_image_payload(
             chat_id=chat_id,
-            content=content,
+            photo_url=image_url,
+            caption=caption,
             reply_to=reply_to,
-            metadata=metadata,
         )
+        if result.success:
+            return result
+
+        logger.warning(
+            "[%s] Native DingTalk image send failed for %s: %s",
+            self.name,
+            image_url,
+            result.error,
+        )
+        return await super().send_image(chat_id, image_url, caption, reply_to)
 
     async def send_image_file(
         self,
@@ -916,17 +1011,65 @@ class DingTalkAdapter(BasePlatformAdapter):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """DingTalk webhook replies cannot send local image files directly."""
-        return SendResult(
-            success=False,
-            error=(
-                "DingTalk session webhook replies do not support local image uploads. "
-                "Only markdown/text replies are supported without OpenAPI media upload."
-            ),
+        del kwargs
+
+        if not self._http_client:
+            return SendResult(success=False, error="HTTP client not initialized")
+
+        file_path = self._resolve_local_image_path(image_path)
+        if not file_path.exists() or not file_path.is_file():
+            return SendResult(success=False, error=f"Image file not found: {image_path}")
+
+        try:
+            photo_ref = await self._upload_image_file(file_path)
+        except Exception as e:
+            logger.warning(
+                "[%s] DingTalk image upload failed for %s: %s",
+                self.name,
+                file_path,
+                e,
+                exc_info=True,
+            )
+            return await super().send_image_file(chat_id, image_path, caption, reply_to)
+
+        result = await self._send_image_payload(
+            chat_id=chat_id,
+            photo_url=photo_ref,
+            caption=caption,
+            reply_to=reply_to,
         )
+        if result.success:
+            return result
+
+        logger.warning(
+            "[%s] Native DingTalk image-file send failed for %s: %s",
+            self.name,
+            file_path,
+            result.error,
+        )
+        return await super().send_image_file(chat_id, image_path, caption, reply_to)
+
+    def _resolve_local_image_path(self, image_path: str) -> Path:
+        """Resolve local images, tolerating copied sessions with a different home."""
+        file_path = Path(image_path).expanduser()
+        if file_path.exists():
+            return file_path
+
+        parts = file_path.parts
+        if len(parts) > 3 and parts[0] == "/" and parts[1] == "home":
+            mapped = Path.home().joinpath(*parts[3:])
+            if mapped.exists():
+                logger.info(
+                    "[%s] Resolved DingTalk image path from %s to %s",
+                    self.name,
+                    image_path,
+                    mapped,
+                )
+                return mapped
+
+        return file_path
 
     async def send_document(
         self,
@@ -938,12 +1081,13 @@ class DingTalkAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """DingTalk webhook replies cannot send local file attachments directly."""
+        """DingTalk proactive sends do not yet support arbitrary file uploads."""
+        del chat_id, file_path, caption, file_name, reply_to, metadata, kwargs
         return SendResult(
             success=False,
             error=(
-                "DingTalk session webhook replies do not support local file attachments. "
-                "Only markdown/text replies are supported without OpenAPI message send."
+                "DingTalk file attachment delivery is not supported by this adapter path yet. "
+                "Image uploads are supported; other file types must fall back to text/webhook delivery."
             ),
         )
 
@@ -1166,15 +1310,268 @@ class DingTalkAdapter(BasePlatformAdapter):
 
     async def _get_access_token(self) -> Optional[str]:
         """Get access token using SDK's cached token."""
-        if not self._stream_client:
+        if self._stream_client:
+            try:
+                # SDK's get_access_token is sync and uses requests
+                token = await asyncio.to_thread(self._stream_client.get_access_token)
+                return token
+            except Exception as e:
+                logger.error("[%s] Failed to get access token: %s", self.name, e)
+                return None
+
+        if not self._http_client or not self._client_id or not self._client_secret:
             return None
+
         try:
-            # SDK's get_access_token is sync and uses requests
-            token = await asyncio.to_thread(self._stream_client.get_access_token)
-            return token
+            resp = await self._http_client.post(
+                "https://api.dingtalk.com/v1.0/oauth2/accessToken",
+                json={
+                    "appKey": self._client_id,
+                    "appSecret": self._client_secret,
+                },
+                timeout=15.0,
+            )
+            data = resp.json() if resp.content else {}
+            token = data.get("accessToken") or data.get("access_token")
+            if resp.status_code >= 300 or not token:
+                logger.warning("[%s] Failed to fetch DingTalk access token: %s", self.name, data)
+                return None
+            return str(token)
         except Exception as e:
             logger.error("[%s] Failed to get access token: %s", self.name, e)
             return None
+
+    async def _get_oapi_access_token(self) -> Optional[str]:
+        """Get legacy OAPI token for media upload endpoints."""
+        now_ts = datetime.now(tz=timezone.utc).timestamp()
+        if self._oapi_token and now_ts < self._oapi_token_expiry_ts - 60:
+            return self._oapi_token
+        if not self._http_client or not self._client_id or not self._client_secret:
+            return None
+
+        try:
+            resp = await self._http_client.get(
+                "https://oapi.dingtalk.com/gettoken",
+                params={
+                    "appkey": self._client_id,
+                    "appsecret": self._client_secret,
+                },
+                timeout=15.0,
+            )
+            data = resp.json()
+            if resp.status_code >= 300 or data.get("errcode") != 0 or not data.get("access_token"):
+                logger.warning("[%s] Failed to fetch DingTalk OAPI token: %s", self.name, data)
+                return None
+
+            self._oapi_token = str(data["access_token"])
+            expires_in = int(data.get("expires_in", 7200) or 7200)
+            self._oapi_token_expiry_ts = now_ts + expires_in
+            return self._oapi_token
+        except Exception as e:
+            logger.warning("[%s] Error fetching DingTalk OAPI token: %s", self.name, e)
+            return None
+
+    def _resolve_robot_code(self, chat_id: str) -> str:
+        """Resolve the best robot code for this conversation."""
+        message = self._message_contexts.get(chat_id)
+        return str(
+            getattr(message, "robot_code", "") or self._robot_code or self._client_id
+        ).strip()
+
+    def _resolve_send_target(self, chat_id: str) -> Optional[Dict[str, Any]]:
+        """Resolve current conversation into DingTalk proactive-send target fields."""
+        message = self._message_contexts.get(chat_id)
+        if not message:
+            return None
+        robot_code = self._resolve_robot_code(chat_id)
+        if not robot_code:
+            return None
+
+        conversation_id = getattr(message, "conversation_id", "") or ""
+        conversation_type = str(getattr(message, "conversation_type", "1") or "1")
+        if conversation_type == "2" and conversation_id:
+            return {
+                "endpoint": "https://api.dingtalk.com/v1.0/robot/groupMessages/send",
+                "body": {
+                    "robotCode": robot_code,
+                    "openConversationId": conversation_id,
+                },
+            }
+
+        user_id = (
+            getattr(message, "sender_staff_id", "") or
+            getattr(message, "sender_id", "") or
+            ""
+        )
+        if user_id:
+            return {
+                "endpoint": "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend",
+                "body": {
+                    "robotCode": robot_code,
+                    "userIds": [user_id],
+                },
+            }
+        return None
+
+    async def _send_image_payload(
+        self,
+        chat_id: str,
+        photo_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        target = self._resolve_send_target(chat_id)
+        if not target:
+            return SendResult(
+                success=False,
+                error="No DingTalk send target available. Image replies must follow an inbound message.",
+            )
+
+        token = await self._get_access_token()
+        if not token:
+            return SendResult(success=False, error="No access token")
+
+        if caption:
+            caption_result = await self.send(chat_id=chat_id, content=caption, reply_to=reply_to)
+            if not caption_result.success:
+                return caption_result
+
+        body = dict(target["body"])
+        body["msgKey"] = "sampleImageMsg"
+        body["msgParam"] = json.dumps({"photoURL": photo_url}, ensure_ascii=False)
+
+        try:
+            resp = await self._http_client.post(
+                target["endpoint"],
+                json=body,
+                headers={
+                    "x-acs-dingtalk-access-token": token,
+                    "Content-Type": "application/json",
+                },
+                timeout=20.0,
+            )
+            data = resp.json() if resp.content else {}
+            if resp.status_code < 300:
+                message_id = (
+                    data.get("processQueryKey") or
+                    data.get("messageId") or
+                    uuid.uuid4().hex[:12]
+                )
+                return SendResult(success=True, message_id=str(message_id), raw_response=data)
+            return SendResult(
+                success=False,
+                error=f"HTTP {resp.status_code}: {(resp.text or '')[:200]}",
+                raw_response=data,
+            )
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
+    async def _send_robot_text_payload(
+        self,
+        *,
+        target: Dict[str, Any],
+        text: str,
+        title: str = "Hermes",
+    ) -> SendResult:
+        if not self._http_client:
+            return SendResult(success=False, error="HTTP client not initialized")
+
+        token = await self._get_access_token()
+        if not token:
+            return SendResult(success=False, error="No access token")
+
+        attempts = [
+            (
+                "sampleMarkdown",
+                {
+                    "title": title,
+                    "text": text,
+                },
+            ),
+            (
+                "sampleText",
+                {
+                    "content": text,
+                },
+            ),
+        ]
+
+        last_error = ""
+        last_raw_response: Any = None
+        for msg_key, msg_param in attempts:
+            body = dict(target["body"])
+            body["msgKey"] = msg_key
+            body["msgParam"] = json.dumps(msg_param, ensure_ascii=False)
+            try:
+                resp = await self._http_client.post(
+                    target["endpoint"],
+                    json=body,
+                    headers={
+                        "x-acs-dingtalk-access-token": token,
+                        "Content-Type": "application/json",
+                    },
+                    timeout=20.0,
+                )
+                data = resp.json() if resp.content else {}
+                if resp.status_code < 300:
+                    message_id = (
+                        data.get("processQueryKey") or
+                        data.get("messageId") or
+                        uuid.uuid4().hex[:12]
+                    )
+                    return SendResult(
+                        success=True,
+                        message_id=str(message_id),
+                        raw_response=data,
+                    )
+                last_raw_response = data
+                last_error = f"HTTP {resp.status_code}: {(resp.text or '')[:200]}"
+                logger.warning(
+                    "[%s] Robot text send failed via %s: %s",
+                    self.name,
+                    msg_key,
+                    last_error,
+                )
+            except Exception as exc:
+                last_error = str(exc)
+                logger.warning(
+                    "[%s] Robot text send exception via %s: %r",
+                    self.name,
+                    msg_key,
+                    exc,
+                    exc_info=True,
+                )
+
+        return SendResult(
+            success=False,
+            error=last_error or "Robot text send failed",
+            raw_response=last_raw_response,
+        )
+
+    async def _upload_image_file(self, file_path: Path) -> str:
+        """Upload a local image to DingTalk media storage and return raw media_id."""
+        oapi_token = await self._get_oapi_access_token()
+        if not oapi_token:
+            raise RuntimeError("No OAPI token available for image upload")
+
+        suffix = file_path.suffix.lower()
+        content_type = "image/png" if suffix == ".png" else "image/jpeg"
+        with file_path.open("rb") as fh:
+            files = {
+                "media": (file_path.name, fh, content_type),
+            }
+            resp = await self._http_client.post(
+                "https://oapi.dingtalk.com/media/upload",
+                params={"access_token": oapi_token, "type": "image"},
+                files=files,
+                timeout=60.0,
+            )
+
+        data = resp.json() if resp.content else {}
+        media_id = str(data.get("media_id") or "").strip()
+        if resp.status_code >= 300 or not media_id:
+            raise RuntimeError(f"media upload failed: {(resp.text or '')[:200]}")
+        return media_id
 
     async def _send_emotion(
         self,
