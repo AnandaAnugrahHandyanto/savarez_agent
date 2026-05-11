@@ -63,3 +63,22 @@ class TestRetryBackoff:
         import agent.retry_utils as ru
         importlib.reload(ru)
         assert ru._RETRY_MAX_DELAY == 120.0
+
+
+class TestTelegramNetworkTimeouts:
+    def test_default_doh_timeout(self):
+        os.environ.pop("HERMES_TELEGRAM_DOH_TIMEOUT", None)
+        from gateway.platforms.telegram_network import _DOH_TIMEOUT
+        assert _DOH_TIMEOUT == 4.0
+
+
+class TestDiscordTimeouts:
+    def test_default_approval_timeout(self):
+        os.environ.pop("HERMES_DISCORD_APPROVAL_TIMEOUT", None)
+        from gateway.platforms.discord import _DISCORD_APPROVAL_TIMEOUT
+        assert _DISCORD_APPROVAL_TIMEOUT == 300.0
+
+    def test_default_model_picker_timeout(self):
+        os.environ.pop("HERMES_DISCORD_MODEL_PICKER_TIMEOUT", None)
+        from gateway.platforms.discord import _DISCORD_MODEL_PICKER_TIMEOUT
+        assert _DISCORD_MODEL_PICKER_TIMEOUT == 120.0

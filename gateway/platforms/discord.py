@@ -22,6 +22,22 @@ from typing import Callable, Dict, Optional, Any
 
 logger = logging.getLogger(__name__)
 
+
+def _env_float(name: str, default: float) -> float:
+    """Read a float from an environment variable, with fallback."""
+    val = os.environ.get(name)
+    if val is not None:
+        try:
+            return float(val)
+        except ValueError:
+            pass
+    return default
+
+
+_DISCORD_APPROVAL_TIMEOUT = _env_float("HERMES_DISCORD_APPROVAL_TIMEOUT", 300.0)
+_DISCORD_MODEL_PICKER_TIMEOUT = _env_float("HERMES_DISCORD_MODEL_PICKER_TIMEOUT", 120.0)
+_DISCORD_CONNECT_TIMEOUT = _env_float("HERMES_DISCORD_CONNECT_TIMEOUT", 30.0)
+
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 
@@ -643,7 +659,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 # IDs (otherwise on_message's author.id lookup can miss).
                 if not adapter_self._ready_event.is_set():
                     try:
-                        await asyncio.wait_for(adapter_self._ready_event.wait(), timeout=30.0)
+                        await asyncio.wait_for(adapter_self._ready_event.wait(), timeout=_DISCORD_CONNECT_TIMEOUT)
                     except asyncio.TimeoutError:
                         pass
 
@@ -753,7 +769,7 @@ class DiscordAdapter(BasePlatformAdapter):
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
 
             # Wait for ready
-            await asyncio.wait_for(self._ready_event.wait(), timeout=30)
+            await asyncio.wait_for(self._ready_event.wait(), timeout=_DISCORD_CONNECT_TIMEOUT)
 
             self._running = True
             return True
@@ -809,11 +825,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 return
 
             if sync_policy == "bulk":
-                synced = await asyncio.wait_for(self._client.tree.sync(), timeout=30)
+                synced = await asyncio.wait_for(self._client.tree.sync(), timeout=_DISCORD_CONNECT_TIMEOUT)
                 logger.info("[%s] Synced %d slash command(s) via bulk tree sync", self.name, len(synced))
                 return
 
-            summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=30)
+            summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=_DISCORD_CONNECT_TIMEOUT)
             logger.info(
                 "[%s] Safely reconciled %d slash command(s): unchanged=%d updated=%d recreated=%d created=%d deleted=%d",
                 self.name,
@@ -3553,7 +3569,7 @@ if DISCORD_AVAILABLE:
         """
 
         def __init__(self, session_key: str, allowed_user_ids: set):
-            super().__init__(timeout=300)  # 5-minute timeout
+            super().__init__(timeout=_DISCORD_APPROVAL_TIMEOUT)  # 5-minute timeout
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.resolved = False
@@ -3646,7 +3662,7 @@ if DISCORD_AVAILABLE:
         """
 
         def __init__(self, session_key: str, allowed_user_ids: set):
-            super().__init__(timeout=300)
+            super().__init__(timeout=_DISCORD_APPROVAL_TIMEOUT)
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.resolved = False
@@ -3732,7 +3748,7 @@ if DISCORD_AVAILABLE:
             on_model_selected,
             allowed_user_ids: set,
         ):
-            super().__init__(timeout=120)
+            super().__init__(timeout=_DISCORD_MODEL_PICKER_TIMEOUT)
             self.providers = providers
             self.current_model = current_model
             self.current_provider = current_provider
