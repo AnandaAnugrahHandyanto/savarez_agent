@@ -165,6 +165,7 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
     patterns = (
         "hermes_cli.main gateway",
         "hermes_cli/main.py gateway",
+        "hermes_cli\\main.py gateway",
         "hermes gateway",
         "gateway/run.py",
     )
