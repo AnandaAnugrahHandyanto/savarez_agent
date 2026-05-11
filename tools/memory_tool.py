@@ -9,10 +9,10 @@ Provides bounded, SQLite-backed memory that persists across sessions. Two stores
     expectations, workflow habits)
 
 Both are injected into the system prompt as a snapshot at session start.
-Mid-session writes update the DB immediately and refresh the snapshot on next API call.
+Mid-session writes update the DB immediately and refresh the snapshot.
 
 Design:
-- Single `memory` tool with action parameter: add, replace, remove, read
+- Single `memory` tool with action parameter: add, replace, remove
 - replace/remove use short unique substring matching (not full text or IDs)
 - Behavioral guidance lives in the tool schema description
 - DB-backed with auto-eviction: when adding would exceed the char limit, the
@@ -25,7 +25,6 @@ import json
 import logging
 import re
 import uuid
-from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -36,9 +35,9 @@ ENTRY_DELIMITER = "\n§\n"
 _DEFAULT_CATEGORY = "default"
 
 
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 # Memory content scanning — lightweight check for injection/exfiltration
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 
 _MEMORY_THREAT_PATTERNS = [
     # Prompt injection
@@ -99,7 +98,7 @@ class MemoryStore:
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
     # -------------------------------------------------------------------------
-    # Persistence
+    # Persistence (DB-only)
     # -------------------------------------------------------------------------
 
     def load_from_db(self):
@@ -120,64 +119,9 @@ class MemoryStore:
             "user": self._render_block("user", self._live_entries["user"]),
         }
 
-    @staticmethod
-    @contextmanager
-    def _file_lock(path: Path):
-        """Acquire an exclusive file lock for read-modify-write safety.
-
-        Uses a separate .lock file so the memory file itself can still be
-        atomically replaced via os.replace().
-        """
-        lock_path = path.with_suffix(path.suffix + ".lock")
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if fcntl is None and msvcrt is None:
-            yield
-            return
-
-        if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
-            lock_path.write_text(" ", encoding="utf-8")
-
-        fd = open(lock_path, "r+" if msvcrt else "a+", encoding="utf-8")
-        try:
-            if fcntl:
-                fcntl.flock(fd, fcntl.LOCK_EX)
-            else:
-                fd.seek(0)
-                msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
-            yield
-        finally:
-            if fcntl:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            elif msvcrt:
-                try:
-                    fd.seek(0)
-                    msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
-                except (OSError, IOError):
-                    pass
-            fd.close()
-
-    @staticmethod
-    def _path_for(target: str) -> Path:
-        mem_dir = get_memory_dir()
-        if target == "user":
-            return mem_dir / "USER.md"
-        return mem_dir / "MEMORY.md"
-
-    def _reload_target(self, target: str):
-        """Re-read entries from disk into in-memory state.
-
-        Called under file lock to get the latest state before mutating.
-        """
-        fresh = self._read_file(self._path_for(target))
-        fresh = list(dict.fromkeys(fresh))  # deduplicate
-        self._set_entries(target, fresh)
-
-    def save_to_disk(self, target: str):
-        """Persist entries to the appropriate file. Called after every mutation."""
-        get_memory_dir().mkdir(parents=True, exist_ok=True)
-        self._write_file(self._path_for(target), self._entries_for(target))
-
+    # -------------------------------------------------------------------------
+    # Read helpers
+    # -------------------------------------------------------------------------
 
     def _entries_for(self, target: str) -> List[str]:
         return self._live_entries.get(target, [])
@@ -381,9 +325,9 @@ class MemoryStore:
         return f"{separator}\n{header}\n{separator}\n{content}"
 
 
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 # Tool entry point
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 
 def memory_tool(
     action: str,
@@ -425,9 +369,9 @@ def check_memory_requirements() -> bool:
     return True
 
 
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 # OpenAI Function-Calling Schema
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 
 MEMORY_SCHEMA = {
     "name": "memory",
