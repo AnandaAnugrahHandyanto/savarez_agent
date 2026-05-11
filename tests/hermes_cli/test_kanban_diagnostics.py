@@ -33,6 +33,16 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+@pytest.fixture(autouse=True)
+def profiles_resolve_by_default(monkeypatch):
+    """Most rule tests isolate one failure mode at a time.
+
+    Keep profile-existence diagnostics silent unless a test explicitly
+    overrides the helper to exercise that rule.
+    """
+    monkeypatch.setattr(kd, "_profile_exists_safe", lambda _name: True)
+
+
 def _task(**overrides):
     base = {
         "id": "t_demo00",
