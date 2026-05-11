@@ -110,6 +110,47 @@ def test_resolve_auto_passes_main_runtime_headers_to_main_provider(monkeypatch):
     assert captured["explicit_base_url"] == "https://relay.example.com/v1"
 
 
+@pytest.mark.asyncio
+async def test_async_call_llm_passes_main_runtime_headers_to_cached_client(monkeypatch):
+    captured = {}
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+            )
+
+    fake_client = SimpleNamespace(
+        base_url="https://relay.example.com/v1",
+        chat=SimpleNamespace(completions=FakeCompletions()),
+    )
+
+    def fake_get_cached_client(provider, model=None, **kwargs):
+        captured.update({"provider": provider, "model": model, **kwargs})
+        return fake_client, model or "custom-model"
+
+    monkeypatch.setattr("agent.auxiliary_client._get_cached_client", fake_get_cached_client)
+    monkeypatch.setattr(
+        "agent.auxiliary_client._resolve_task_provider_model",
+        lambda task, provider, model, base_url, api_key: ("custom", "custom-model", None, None, "chat_completions"),
+    )
+
+    await async_call_llm(
+        task="session_search",
+        main_runtime={
+            "provider": "custom",
+            "model": "custom-model",
+            "base_url": "https://relay.example.com/v1",
+            "api_key": "relay-key",
+            "api_mode": "chat_completions",
+            "default_headers": {"X-Relay-Key": "relay-secret"},
+        },
+        messages=[{"role": "user", "content": "summarize"}],
+    )
+
+    assert captured["main_runtime"]["default_headers"] == {"X-Relay-Key": "relay-secret"}
+
+
 def test_to_async_client_preserves_sync_client_custom_headers(monkeypatch):
     captured = {}
 

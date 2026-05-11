@@ -2267,6 +2267,7 @@ class AIAgent:
                 config_context_length=_config_context_length,
                 provider=self.provider,
                 api_mode=self.api_mode,
+                default_headers=getattr(self, "_default_headers", None),
             )
         self.compression_enabled = compression_enabled
 
@@ -2537,6 +2538,7 @@ class AIAgent:
                         api_key=getattr(self, "api_key", ""),
                         provider=self.provider,
                         api_mode=self.api_mode,
+                        default_headers=getattr(self, "_default_headers", None),
                     )
         except Exception as err:
             logger.debug("LM Studio preload skipped: %s", err)
@@ -2560,6 +2562,19 @@ class AIAgent:
         # ── Determine api_mode if not provided ──
         if not api_mode:
             api_mode = determine_api_mode(new_provider, base_url)
+
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+            _switch_runtime = resolve_runtime_provider(
+                requested=new_provider,
+                target_model=new_model,
+                explicit_api_key=api_key or None,
+                explicit_base_url=base_url or None,
+            )
+            if "default_headers" in _switch_runtime:
+                self._default_headers = _switch_runtime.get("default_headers")
+        except Exception:
+            pass
 
         # Defense-in-depth: ensure OpenCode base_url doesn't carry a trailing
         # /v1 into the anthropic_messages client, which would cause the SDK to
@@ -2675,6 +2690,7 @@ class AIAgent:
                 api_key=getattr(self, "api_key", ""),
                 provider=self.provider,
                 api_mode=self.api_mode,
+                default_headers=getattr(self, "_default_headers", None),
             )
 
         # ── Invalidate cached system prompt so it rebuilds next turn ──
@@ -2697,6 +2713,7 @@ class AIAgent:
             "compressor_provider": getattr(_cc, "provider", self.provider) if _cc else self.provider,
             "compressor_context_length": _cc.context_length if _cc else 0,
             "compressor_threshold_tokens": _cc.threshold_tokens if _cc else 0,
+            "compressor_default_headers": getattr(_cc, "default_headers", None) if _cc else None,
         }
         if api_mode == "anthropic_messages":
             self._primary_runtime.update({
@@ -4203,6 +4220,7 @@ class AIAgent:
                         api_mode=_parent_runtime.get("api_mode") or None,
                         base_url=_parent_runtime.get("base_url") or None,
                         api_key=_parent_runtime.get("api_key") or None,
+                        default_headers=_parent_runtime.get("default_headers") or None,
                         credential_pool=getattr(self, "_credential_pool", None),
                         parent_session_id=self.session_id,
                         enabled_toolsets=["memory", "skills"],
@@ -8636,6 +8654,7 @@ class AIAgent:
                     base_url=self.base_url,
                     api_key=getattr(self, "api_key", ""),
                     provider=self.provider,
+                    default_headers=getattr(self, "_default_headers", None),
                 )
 
             self._emit_status(
@@ -8716,6 +8735,7 @@ class AIAgent:
                 base_url=rt["compressor_base_url"],
                 api_key=rt["compressor_api_key"],
                 provider=rt["compressor_provider"],
+                default_headers=rt.get("compressor_default_headers"),
             )
 
             # ── Reset fallback chain for the new turn ──
@@ -13542,6 +13562,7 @@ class AIAgent:
                                 base_url=self.base_url,
                                 api_key=getattr(self, "api_key", ""),
                                 provider=self.provider,
+                                default_headers=getattr(self, "_default_headers", None),
                             )
                             # Context probing flags — only set on built-in
                             # compressor (plugin engines manage their own).
@@ -13818,6 +13839,7 @@ class AIAgent:
                                 base_url=self.base_url,
                                 api_key=getattr(self, "api_key", ""),
                                 provider=self.provider,
+                                default_headers=getattr(self, "_default_headers", None),
                             )
                             # Context probing flags — only set on built-in
                             # compressor (plugin engines manage their own).

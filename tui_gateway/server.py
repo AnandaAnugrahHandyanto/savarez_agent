@@ -3305,6 +3305,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             ):
                 try:
                     from agent.title_generator import maybe_auto_title
+                    agent = session.get("agent")
 
                     maybe_auto_title(
                         _get_db(),
@@ -3312,6 +3313,14 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         text,
                         raw,
                         session.get("history", []),
+                        main_runtime={
+                            "model": getattr(agent, "model", None),
+                            "provider": getattr(agent, "provider", None),
+                            "base_url": getattr(agent, "base_url", None),
+                            "api_key": getattr(agent, "api_key", None),
+                            "api_mode": getattr(agent, "api_mode", None),
+                            "default_headers": getattr(agent, "_default_headers", None),
+                        } if agent else None,
                     )
                 except Exception:
                     pass

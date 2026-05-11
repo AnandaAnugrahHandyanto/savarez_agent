@@ -758,7 +758,8 @@ class _CodexCompletionsAdapter:
 
         def _check_cancelled() -> None:
             if deadline is not None and time.monotonic() >= deadline:
-                timed_out.set()
+                if not timed_out.is_set():
+                    _close_client_on_timeout()
                 raise TimeoutError(_timeout_message())
             try:
                 from tools.interrupt import is_interrupted
@@ -1110,6 +1111,7 @@ def _maybe_wrap_anthropic(
     api_key: str,
     base_url: str,
     api_mode: Optional[str] = None,
+    default_headers: Optional[Dict[str, str]] = None,
 ) -> Any:
     """Rewrap a plain OpenAI client in ``AnthropicAuxiliaryClient`` when
     the endpoint actually speaks Anthropic Messages.
@@ -1168,7 +1170,19 @@ def _maybe_wrap_anthropic(
         return client_obj
 
     try:
-        real_client = build_anthropic_client(api_key, base_url)
+        effective_headers = default_headers
+        if effective_headers is None:
+            effective_headers = getattr(client_obj, "_custom_headers", None)
+        if effective_headers is not None and not isinstance(effective_headers, dict):
+            try:
+                effective_headers = dict(effective_headers)
+            except Exception:
+                effective_headers = None
+        real_client = build_anthropic_client(
+            api_key,
+            base_url,
+            default_headers=effective_headers if isinstance(effective_headers, dict) and effective_headers else None,
+        )
     except Exception as exc:
         logger.warning(
             "Failed to build Anthropic client for %s (%s) — falling back to "
@@ -1371,7 +1385,10 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             if extra_headers:
                 extra["default_headers"] = extra_headers
             _client = OpenAI(api_key=api_key, base_url=base_url, **extra)
-            _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
+            _client = _maybe_wrap_anthropic(
+                _client, model, api_key, raw_base_url,
+                default_headers=extra.get("default_headers"),
+            )
             return _client, model
 
         creds = resolve_api_key_provider_credentials(provider_id)
@@ -1409,7 +1426,10 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         if extra_headers:
             extra["default_headers"] = extra_headers
         _client = OpenAI(api_key=api_key, base_url=base_url, **extra)
-        _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
+        _client = _maybe_wrap_anthropic(
+            _client, model, api_key, raw_base_url,
+            default_headers=extra.get("default_headers"),
+        )
         return _client, model
 
     return None, None
@@ -1750,6 +1770,7 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
                               **_extra, **({"default_headers": _hdr} if _hdr else {}))
     _fallback_client = _maybe_wrap_anthropic(
         _fallback_client, model, custom_key, custom_base, custom_mode,
+        default_headers=_hdr,
     )
     return _fallback_client, model
 
@@ -2363,6 +2384,7 @@ async def _retry_same_provider_async(
     tools: Optional[list],
     effective_timeout: float,
     effective_extra_body: dict,
+    main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Any:
     if task == "vision":
         _, retry_client, retry_model = resolve_vision_provider_client(
@@ -2380,6 +2402,7 @@ async def _retry_same_provider_async(
             base_url=resolved_base_url,
             api_key=resolved_api_key,
             api_mode=resolved_api_mode,
+            main_runtime=main_runtime,
         )
     if retry_client is None:
         raise RuntimeError(
@@ -2806,6 +2829,7 @@ def resolve_provider_client(
         # chat.completions.create() is translated to /v1/messages.
         return _maybe_wrap_anthropic(
             client_obj, final_model_str, api_key_str, base_url_str, api_mode,
+            default_headers=_resolution_default_headers,
         )
 
     # ── Auto: try all providers in priority order ────────────────────
@@ -4572,6 +4596,7 @@ async def async_call_llm(
     model: str = None,
     base_url: str = None,
     api_key: str = None,
+    main_runtime: Optional[Dict[str, Any]] = None,
     messages: list,
     temperature: float = None,
     max_tokens: int = None,
@@ -4620,6 +4645,7 @@ async def async_call_llm(
             base_url=resolved_base_url,
             api_key=resolved_api_key,
             api_mode=resolved_api_mode,
+            main_runtime=main_runtime,
         )
         if client is None:
             _explicit = (resolved_provider or "").strip().lower()
@@ -4632,7 +4658,7 @@ async def async_call_llm(
             if not resolved_base_url:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)
-                client, final_model = _get_cached_client("auto", async_mode=True)
+                client, final_model = _get_cached_client("auto", async_mode=True, main_runtime=main_runtime)
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
@@ -4722,6 +4748,7 @@ async def async_call_llm(
                 base_url=resolved_base_url,
                 api_key=resolved_api_key,
                 api_mode=resolved_api_mode,
+                main_runtime=main_runtime,
                 is_vision=(task == "vision"),
             )
             if refreshed_client is not None:
@@ -4755,6 +4782,7 @@ async def async_call_llm(
                     tools=tools,
                     effective_timeout=effective_timeout,
                     effective_extra_body=effective_extra_body,
+                    main_runtime=main_runtime,
                 )
 
         # ── Same-provider credential-pool recovery (mirrors sync) ─────
@@ -4788,6 +4816,7 @@ async def async_call_llm(
                     tools=tools,
                     effective_timeout=effective_timeout,
                     effective_extra_body=effective_extra_body,
+                    main_runtime=main_runtime,
                 )
 
         # ── Payment / connection / rate-limit fallback (mirrors sync call_llm) ──
