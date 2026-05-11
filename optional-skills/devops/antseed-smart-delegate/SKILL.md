@@ -1,43 +1,58 @@
 ---
 name: antseed-smart-delegate
-description: "Smart delegation through AntSeed P2P network — auto peer selection by task type, cost tracking, fallback on failure. Use when user wants to delegate via AntSeed or when delegate_task through antseed provider fails."
+description: "Use when delegating LLM calls through AntSeed P2P network. Auto peer selection by task type, cost-aware routing, fallback on failure. Requires funded wallet + buyer proxy."
 version: 1.3.0
 author: "Hermes Agent"
 license: MIT
 platforms: [linux, macos, windows]
+required_environment_variables:
+  - name: ANTSEED_IDENTITY_HEX
+    prompt: AntSeed buyer identity (64 hex chars, no 0x prefix)
+    help: "Run: antseed buyer wallet create  →  cat ~/.antseed/identity.key"
+    required_for: opening payment channels
+prerequisites:
+  commands: [antseed]
 metadata:
   hermes:
     tags: [antseed, p2p, delegation, smart-routing, peer-selection, fallback]
-    related_skills: [antseed]
+    related_skills: []
     requires_toolsets: [terminal]
 ---
 
 # AntSeed Smart Delegate
 
-> **Important:** This skill requires a funded AntSeed wallet. See `references/setup.md`.
+> **Prerequisite:** Funded AntSeed wallet + running buyer proxy. See `references/setup.md`.
 
 DO NOT read script files. DO NOT patch scripts. Just run them.
-
-## ⚡ Quick Reference — What to Run
-
-| Command | When |
-|---------|------|
-| `bash scripts/best-peer.sh research` | Research/deep-thinking task |
-| `bash scripts/best-peer.sh code` | Code generation task |
-| `bash scripts/best-peer.sh vision` | Image/multimodal task |
-| `bash scripts/best-peer.sh chat` | General conversation |
-| `bash scripts/best-peer.sh cheap` | Minimum cost routing |
-| `bash scripts/best-peer.sh any` | Any available model |
-| `delegate_task(provider="antseed", model="<result.model>", goal="...")` | Delegate with recommended model |
 
 ## When to Use
 
 - User asks to delegate via AntSeed
 - Previous AntSeed delegation failed (502/timeout/402)
-- User wants best peer+model for specific task type
-- Setting up AntSeed on new machine
+- User wants best peer+model for a specific task type
+- Setting up AntSeed delegation on a new machine
 
 **Don't use for:** Direct LLM calls through OpenAI/Anthropic. Tasks not needing model inference.
+
+## Quick Reference
+
+| Command | When |
+|---------|------|
+| `bash ${HERMES_SKILL_DIR}/scripts/best-peer.sh research` | Research/deep-thinking task |
+| `bash ${HERMES_SKILL_DIR}/scripts/best-peer.sh code` | Code generation task |
+| `bash ${HERMES_SKILL_DIR}/scripts/best-peer.sh vision` | Image/multimodal task |
+| `bash ${HERMES_SKILL_DIR}/scripts/best-peer.sh chat` | General conversation |
+| `bash ${HERMES_SKILL_DIR}/scripts/best-peer.sh cheap` | Minimum cost routing |
+| `bash ${HERMES_SKILL_DIR}/scripts/best-peer.sh any` | Any available model |
+| `delegate_task(provider="antseed", model="<result.model>", goal="...")` | Delegate with recommended model |
+
+## Procedure
+
+1. **Check proxy** — `curl -sf http://127.0.0.1:8377/v1/models | head`. If down → `antseed buyer start`
+2. **Find best peer** — Run `best-peer.sh <task_type>`. Read `recommended.model` and `recommended.peer_id` from JSON output.
+3. **Pin peer** — `antseed buyer connection set --peer <peer_id>`
+4. **Delegate** — `delegate_task(provider="antseed", model="<model>", goal="...")`
+5. **On failure** — Use `fallback_chain` from `best-peer.sh` output. Max 3 retries, then alert user.
 
 ## Error Handling
 
@@ -50,8 +65,6 @@ DO NOT read script files. DO NOT patch scripts. Just run them.
 | 400 "model not found" | Model catalog drifted | Re-run `best-peer.sh` |
 | 402 | Insufficient deposits | Alert user — needs more funds |
 
-Max 3 retries across fallback peers. On 3 failures — alert user.
-
 ## Pitfalls
 
 - **Unicode tables:** AntSeed CLI uses `│` (U+2502), NOT ASCII `|`. Parse with `split('\u2502')` in Python.
@@ -62,13 +75,11 @@ Max 3 retries across fallback peers. On 3 failures — alert user.
 - **Subshell variable loss:** `while read` in pipes loses vars. Script uses temp files.
 - **No real data in examples:** Use placeholders only (`0x1234...abcd`, `<peer-id>`).
 
-## Verification Checklist
+## Verification
 
-- [ ] Frontmatter valid: name, description ≤1024, version, author, license, platforms
-- [ ] `scripts/best-peer.sh` passes `bash -n` and is executable
-- [ ] `scripts/test.sh` passes all checks
-- [ ] No hardcoded wallets, IPs, tokens, usernames
-- [ ] `references/setup.md` and `references/model-catalog.md` present
+- [ ] `bash ${HERMES_SKILL_DIR}/scripts/test.sh` passes all 25 checks
+- [ ] `antseed buyer balance` shows available deposits
+- [ ] `curl -sf http://127.0.0.1:8377/v1/models` returns model list
 
 ## References
 
