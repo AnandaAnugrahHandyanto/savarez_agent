@@ -2550,10 +2550,14 @@ class GatewayRunner:
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
 
-        # If not in queue/steer mode, interrupt the running agent immediately.
-        # This aborts in-flight tool calls and causes the agent loop to exit
-        # at the next check point.
-        if effective_mode == "interrupt" and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+        # Queue mode: push to ChatQueue so the agent picks it up at next yield point
+        # (non-blocking, unlike interrupt which is fire-and-forget via the queue)
+        if is_queue_mode and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+            try:
+                running_agent.enqueue_message(event.text, priority="normal")
+            except Exception:
+                pass  # don't let enqueue failure block the ack
+        elif effective_mode == "interrupt" and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             try:
                 # Push to the async queue instead of calling interrupt() directly.
                 # This avoids blocking when the agent is mid-tool-execution.

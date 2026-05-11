@@ -1028,6 +1028,13 @@ def _qwen_portal_headers() -> dict:
 
 
 
+class ToolInvocationAborted(BaseException):
+    """Raised by _invoke_tool when an interrupt is pending before the tool starts.
+    Unlike Exception, this is not caught by _run_tool's generic except — it
+    propagates up and leaves results[index] as None (skipped), not an error."""
+    pass
+
+
 class ChatQueue:
     """Fire-and-forget async message queue — stores messages by priority so the agent
     can pick them up at yield points without the gateway blocking on interrupt()."""
@@ -5638,8 +5645,9 @@ class AIAgent:
     def _check_chat_queue(self) -> bool:
         msg = self._chat_queue.get_immediate()
         if msg:
-            self._interrupt_requested = True
-            self._pending_interrupt_message = msg
+            # Delegate to interrupt() so per-thread signaling and child agent
+            # propagation happen correctly — same path as a direct interrupt().
+            self.interrupt(msg.get("text", ""))
             return True
         return False
 
@@ -10313,7 +10321,7 @@ class AIAgent:
         """
         # Early interrupt check — don't even start if an interrupt is pending
         if self._interrupt_requested or self._check_chat_queue():
-            return "interrupted"
+            raise ToolInvocationAborted("interrupt")
 
         # Check plugin hooks for a block directive before executing anything.
         block_message: Optional[str] = None
@@ -10602,6 +10610,10 @@ class AIAgent:
             except Exception as tool_error:
                 result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
+            except ToolInvocationAborted:
+                # Tool was skipped due to interrupt — leave results[index] as None
+                # so the post-execution loop treats it as cancelled.
+                raise
             duration = time.time() - start
             is_error, _ = _detect_tool_failure(function_name, result)
             if is_error:
