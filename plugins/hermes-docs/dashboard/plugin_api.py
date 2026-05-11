@@ -40,10 +40,11 @@ from hermes_constants import get_hermes_home
 # the relative import resolves normally.  When loaded dynamically by tests
 # via importlib without a package context, we fall back to loading the sibling
 # file directly by path.
+import importlib.util as _ilu
+
 try:
     from .docs_profile import get_docs_profile_status, bootstrap_docs_profile  # type: ignore[import]
 except ImportError:
-    import importlib.util as _ilu
     _dp_path = Path(__file__).parent / "docs_profile.py"
     _dp_name = f"{__name__}_docs_profile"
     if _dp_name not in sys.modules:
@@ -55,6 +56,16 @@ except ImportError:
         _dp_mod = sys.modules[_dp_name]
     get_docs_profile_status = _dp_mod.get_docs_profile_status  # type: ignore[attr-defined]
     bootstrap_docs_profile = _dp_mod.bootstrap_docs_profile  # type: ignore[attr-defined]
+
+# kordoc_helper lives alongside plugin_api.py — use an explicit importlib
+# load so this module works whether invoked as part of a package or loaded
+# directly (as tests do) via spec_from_file_location.
+_kordoc_spec = _ilu.spec_from_file_location(
+    "hermes_docs_kordoc_helper",
+    Path(__file__).parent / "kordoc_helper.py",
+)
+kordoc_helper = _ilu.module_from_spec(_kordoc_spec)
+_kordoc_spec.loader.exec_module(kordoc_helper)  # type: ignore[union-attr]
 
 log = logging.getLogger(__name__)
 
@@ -624,3 +635,50 @@ async def sidechat(workspace_id: str, body: SideChatMessage):
             "document": body.document,
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Kordoc detection and conversion preview
+# ---------------------------------------------------------------------------
+
+
+class ConversionPreviewRequest(BaseModel):
+    rel: str
+    target_format: str = "markdown"  # "markdown" | "json"
+
+
+@router.get("/kordoc/status")
+async def kordoc_status():
+    """Report whether kordoc is available on this machine.
+
+    Returns a JSON object:
+      ``available``  (bool)  — deterministic availability flag
+      ``version``    (str|null) — reported version string, or null
+      ``detail``     (str)   — human-readable status message
+    """
+    return await to_thread.run_sync(kordoc_helper.detect_kordoc)
+
+
+@router.post("/workspaces/{workspace_id}/kordoc/preview")
+async def kordoc_preview(workspace_id: str, body: ConversionPreviewRequest):
+    """Return a conversion preview for a workspace file.
+
+    - Accepts a workspace-relative file path and a target format.
+    - Blocks path traversal (HTTP 403).
+    - Returns a structured stub when kordoc is unavailable (HTTP 200 with
+      ``available: false``) — never raises 5xx for an availability gap.
+    - Does not mutate the source document.
+    """
+    ws = _get_workspace(workspace_id)
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    workspace_base = Path(ws["path"])
+
+    result = await to_thread.run_sync(
+        kordoc_helper.preview_conversion,
+        workspace_base,
+        body.rel,
+        body.target_format,
+    )
+    return result

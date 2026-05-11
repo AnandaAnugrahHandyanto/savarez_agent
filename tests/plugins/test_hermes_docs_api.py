@@ -655,3 +655,212 @@ def test_profile_status_installed_after_bootstrap(client, docs_home):
     assert data["has_config"] is True
     assert data["has_soul"] is True
     assert data["profile_dir"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Kordoc detection endpoint
+# ---------------------------------------------------------------------------
+
+
+def _load_plugin_module_fresh(mod_key="hermes_docs_plugin_api_kordoc_test"):
+    """Load plugin_api.py as a fresh module (for override access)."""
+    repo_root = Path(__file__).resolve().parents[2]
+    plugin_file = repo_root / "plugins" / "hermes-docs" / "dashboard" / "plugin_api.py"
+    sys.modules.pop(mod_key, None)
+    spec = importlib.util.spec_from_file_location(mod_key, plugin_file)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_key] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_kordoc_status_available(docs_home):
+    """When kordoc_helper reports available, the endpoint echoes that."""
+    mod = _load_plugin_module_fresh()
+    mod.kordoc_helper._detect_override = {
+        "available": True,
+        "version": "2.7.1",
+        "detail": "kordoc available",
+    }
+    try:
+        app = FastAPI()
+        app.include_router(mod.router, prefix="/api/plugins/hermes-docs")
+        c = TestClient(app)
+        r = c.get("/api/plugins/hermes-docs/kordoc/status")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["available"] is True
+        assert data["version"] == "2.7.1"
+    finally:
+        mod.kordoc_helper._detect_override = None
+
+
+def test_kordoc_status_unavailable(docs_home):
+    """When no local Kordoc command is available, the endpoint reports False."""
+    mod = _load_plugin_module_fresh()
+    mod.kordoc_helper._detect_override = {
+        "available": False,
+        "version": None,
+        "detail": "kordoc executable not found on PATH",
+    }
+    try:
+        app = FastAPI()
+        app.include_router(mod.router, prefix="/api/plugins/hermes-docs")
+        c = TestClient(app)
+        r = c.get("/api/plugins/hermes-docs/kordoc/status")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["available"] is False
+        assert data["version"] is None
+        assert "kordoc" in data["detail"]
+    finally:
+        mod.kordoc_helper._detect_override = None
+
+
+# ---------------------------------------------------------------------------
+# Kordoc conversion preview endpoint
+# ---------------------------------------------------------------------------
+
+
+def test_kordoc_preview_unavailable_returns_stub(docs_home, sample_folder):
+    """When kordoc is unavailable, preview returns 200 with available=False."""
+    mod = _load_plugin_module_fresh()
+    mod.kordoc_helper._detect_override = {
+        "available": False,
+        "version": None,
+        "detail": "kordoc executable not found on PATH",
+    }
+    try:
+        app = FastAPI()
+        app.include_router(mod.router, prefix="/api/plugins/hermes-docs")
+        c = TestClient(app)
+        ws_id = c.post("/api/plugins/hermes-docs/workspaces", json={
+            "name": "KD", "path": str(sample_folder)
+        }).json()["id"]
+
+        r = c.post(
+            f"/api/plugins/hermes-docs/workspaces/{ws_id}/kordoc/preview",
+            json={"rel": "README.md", "target_format": "markdown"},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["available"] is False
+        assert data["content"] is None
+        assert data["rel"] == "README.md"
+        assert data["target_format"] == "markdown"
+    finally:
+        mod.kordoc_helper._detect_override = None
+
+
+def test_kordoc_preview_available_calls_subprocess(docs_home, sample_folder):
+    """When kordoc is available, preview invokes the local command."""
+    mod = _load_plugin_module_fresh()
+    mod.kordoc_helper._detect_override = {
+        "available": True,
+        "version": "2.7.1",
+        "detail": "kordoc available",
+    }
+
+    def _fake_run(cmd, *, capture_output, text, timeout, check):
+        # Record what was called; return synthetic markdown
+        from types import SimpleNamespace
+        return SimpleNamespace(returncode=0, stdout="# Hello\n\nConverted.", stderr="")
+
+    mod.kordoc_helper._subprocess_run_override = _fake_run
+    try:
+        app = FastAPI()
+        app.include_router(mod.router, prefix="/api/plugins/hermes-docs")
+        c = TestClient(app)
+        ws_id = c.post("/api/plugins/hermes-docs/workspaces", json={
+            "name": "KD2", "path": str(sample_folder)
+        }).json()["id"]
+
+        r = c.post(
+            f"/api/plugins/hermes-docs/workspaces/{ws_id}/kordoc/preview",
+            json={"rel": "README.md", "target_format": "markdown"},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["available"] is True
+        assert "Converted" in (data["content"] or "")
+        assert data["message"] == "ok"
+        # Source file must not be mutated
+        assert "Hello" in (sample_folder / "README.md").read_text()
+    finally:
+        mod.kordoc_helper._detect_override = None
+        mod.kordoc_helper._subprocess_run_override = None
+
+
+def test_kordoc_preview_path_traversal_blocked(docs_home, sample_folder):
+    """Traversal attempts in rel must return HTTP 403."""
+    mod = _load_plugin_module_fresh()
+    mod.kordoc_helper._detect_override = {
+        "available": True,
+        "version": "2.7.1",
+        "detail": "kordoc available",
+    }
+    try:
+        app = FastAPI()
+        app.include_router(mod.router, prefix="/api/plugins/hermes-docs")
+        c = TestClient(app)
+        ws_id = c.post("/api/plugins/hermes-docs/workspaces", json={
+            "name": "KDTRV", "path": str(sample_folder)
+        }).json()["id"]
+
+        r = c.post(
+            f"/api/plugins/hermes-docs/workspaces/{ws_id}/kordoc/preview",
+            json={"rel": "../../etc/passwd", "target_format": "markdown"},
+        )
+        assert r.status_code == 403
+    finally:
+        mod.kordoc_helper._detect_override = None
+
+
+def test_kordoc_preview_bad_format_returns_400(docs_home, sample_folder):
+    """An unsupported target_format must return HTTP 400."""
+    mod = _load_plugin_module_fresh()
+    mod.kordoc_helper._detect_override = {
+        "available": True,
+        "version": "2.7.1",
+        "detail": "kordoc available",
+    }
+    try:
+        app = FastAPI()
+        app.include_router(mod.router, prefix="/api/plugins/hermes-docs")
+        c = TestClient(app)
+        ws_id = c.post("/api/plugins/hermes-docs/workspaces", json={
+            "name": "KDFMT", "path": str(sample_folder)
+        }).json()["id"]
+
+        r = c.post(
+            f"/api/plugins/hermes-docs/workspaces/{ws_id}/kordoc/preview",
+            json={"rel": "README.md", "target_format": "docx"},
+        )
+        assert r.status_code == 400
+    finally:
+        mod.kordoc_helper._detect_override = None
+
+
+def test_kordoc_preview_missing_file_returns_404(docs_home, sample_folder):
+    """A rel path to a non-existent file must return 404."""
+    mod = _load_plugin_module_fresh()
+    mod.kordoc_helper._detect_override = {
+        "available": True,
+        "version": "2.7.1",
+        "detail": "kordoc available",
+    }
+    try:
+        app = FastAPI()
+        app.include_router(mod.router, prefix="/api/plugins/hermes-docs")
+        c = TestClient(app)
+        ws_id = c.post("/api/plugins/hermes-docs/workspaces", json={
+            "name": "KDMIS", "path": str(sample_folder)
+        }).json()["id"]
+
+        r = c.post(
+            f"/api/plugins/hermes-docs/workspaces/{ws_id}/kordoc/preview",
+            json={"rel": "no-such-file.hwpx", "target_format": "markdown"},
+        )
+        assert r.status_code == 404
+    finally:
+        mod.kordoc_helper._detect_override = None
