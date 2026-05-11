@@ -10,7 +10,7 @@ CI without the SDK installed and without ``AGENTRUN_*`` env vars.
 from __future__ import annotations
 
 import types as _types
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -29,14 +29,24 @@ class _FakeTemplateType:
     CUSTOM = "custom"
 
 
-def _make_fake_sandbox(sandbox_id: str = "sb-fake-123") -> MagicMock:
-    """Build a ``MagicMock`` shaped like a Code Interpreter sandbox."""
+_FAKE_REMOTE_HOME = "/home/code"
+
+
+def _make_fake_sandbox(
+    sandbox_id: str = "sb-fake-123",
+    remote_home: str = _FAKE_REMOTE_HOME,
+) -> MagicMock:
+    """Build a ``MagicMock`` shaped like a Code Interpreter sandbox.
+
+    The default ``process.cmd`` response carries *remote_home* on stdout
+    so the adapter's ``_detect_remote_home`` probe resolves to a
+    realistic non-root directory.
+    """
     sb = MagicMock()
     sb.sandbox_id = sandbox_id
     sb.check_health.return_value = {"status": "ok"}
-    # Default cmd response matches the documented Code Interpreter shape.
     sb.process.cmd.return_value = {
-        "stdout": "",
+        "stdout": remote_home,
         "stderr": "",
         "exit_code": 0,
     }
@@ -62,11 +72,13 @@ def _patch_agentrun_imports(monkeypatch, sandbox: MagicMock):
     fake_sandbox_cls.connect.return_value = sandbox
 
     fake_template_input = MagicMock(name="FakeTemplateInput")
+    fake_container_configuration = MagicMock(name="FakeTemplateContainerConfiguration")
 
     sandbox_mod = _types.ModuleType("agentrun.sandbox")
     sandbox_mod.Sandbox = fake_sandbox_cls
     sandbox_mod.TemplateType = _FakeTemplateType
     sandbox_mod.TemplateInput = fake_template_input
+    sandbox_mod.TemplateContainerConfiguration = fake_container_configuration
 
     # We also expose top-level ``agentrun`` and ``agentrun.utils.log`` in
     # case importlib walks the package; the adapter currently only
@@ -129,8 +141,10 @@ def make_env(agentrun_sdk, fake_sandbox, isolated_store):
     def _factory(*, persistent: bool = True, task_id: str = "test-task", **kwargs):
         from tools.environments.agentrun import AgentRunEnvironment
 
+        # ``cwd`` left to the adapter so that the $HOME probe takes
+        # effect; individual tests pass ``cwd=...`` to override.
+        kwargs.setdefault("cwd", None)
         env = AgentRunEnvironment(
-            cwd="/root",
             timeout=60,
             task_id=task_id,
             persistent_filesystem=persistent,
@@ -179,7 +193,6 @@ class TestCreateSandbox:
         from tools.environments.agentrun import AgentRunEnvironment
 
         AgentRunEnvironment(
-            cwd="/root",
             timeout=60,
             task_id="beta",
             persistent_filesystem=False,
@@ -187,17 +200,73 @@ class TestCreateSandbox:
 
         agentrun_sdk.create_template.assert_called_once()
         # template_name must propagate into the TemplateInput payload.
-        called_input = agentrun_sdk.create_template.call_args.kwargs.get("input")
         # We constructed TemplateInput via a MagicMock — assert the mock
         # was invoked with the right template_name keyword.
-        # MagicMock records call args; the adapter calls TemplateInput(...)
-        # imported from the patched module, so check that mock.
         import agentrun.sandbox as patched_sandbox_mod  # type: ignore[import-not-found]
 
         patched_sandbox_mod.TemplateInput.assert_called_once()
         ti_kwargs = patched_sandbox_mod.TemplateInput.call_args.kwargs
         assert ti_kwargs["template_name"] == "hermes-beta"
         assert ti_kwargs["template_type"] == _FakeTemplateType.CODE_INTERPRETER
+
+    def test_default_image_targets_python_runtime(
+        self, agentrun_sdk, isolated_store, monkeypatch
+    ):
+        """The default ``agentrun_image`` must be a Python-bearing image.
+
+        AgentRun's stock CODE_INTERPRETER template ships with a minimal
+        image; the live e2e on 2026-05-12 reproduced a ``Python 3 is not
+        available`` error from ``execute_code``. The adapter now defaults
+        ``agentrun_image`` to a Python+Node image so that hermes' code
+        tooling works out of the box. This test pins the default by name
+        AND asserts it is forwarded into ``TemplateContainerConfiguration``
+        when a new template is created.
+        """
+        monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
+        agentrun_sdk.get_template.side_effect = RuntimeError("not found")
+
+        from tools.environments.agentrun import (
+            _DEFAULT_IMAGE,
+            AgentRunEnvironment,
+        )
+
+        assert "python" in _DEFAULT_IMAGE.lower(), (
+            "Default agentrun image must include Python; got " + _DEFAULT_IMAGE
+        )
+
+        AgentRunEnvironment(
+            timeout=60, task_id="image-check", persistent_filesystem=False,
+        )
+
+        import agentrun.sandbox as patched_sandbox_mod  # type: ignore[import-not-found]
+
+        # TemplateContainerConfiguration must have been instantiated with
+        # the default image (not None, not a placeholder).
+        patched_sandbox_mod.TemplateContainerConfiguration.assert_called_once()
+        cc_kwargs = patched_sandbox_mod.TemplateContainerConfiguration.call_args.kwargs
+        assert cc_kwargs.get("image") == _DEFAULT_IMAGE
+
+        # And TemplateInput must have received that container_configuration.
+        ti_kwargs = patched_sandbox_mod.TemplateInput.call_args.kwargs
+        assert ti_kwargs.get("container_configuration") is not None
+
+    def test_explicit_image_overrides_default(
+        self, agentrun_sdk, isolated_store, monkeypatch
+    ):
+        monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
+        agentrun_sdk.get_template.side_effect = RuntimeError("not found")
+
+        from tools.environments.agentrun import AgentRunEnvironment
+
+        AgentRunEnvironment(
+            timeout=60, task_id="custom-img", persistent_filesystem=False,
+            image="my-registry.example/custom-python:1.0",
+        )
+
+        import agentrun.sandbox as patched_sandbox_mod  # type: ignore[import-not-found]
+
+        cc_kwargs = patched_sandbox_mod.TemplateContainerConfiguration.call_args.kwargs
+        assert cc_kwargs.get("image") == "my-registry.example/custom-python:1.0"
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +296,9 @@ class TestRunBash:
         assert last_call is not None
         assert "command" in last_call.kwargs
         assert last_call.kwargs["command"]  # non-empty
-        assert last_call.kwargs["cwd"] == "/root"
+        # cwd resolved to the worker user's $HOME (detected via the
+        # mock's process.cmd response).
+        assert last_call.kwargs["cwd"] == _FAKE_REMOTE_HOME
 
     def test_timeout_clamped_to_vendor_limit(self, make_env, caplog):
         env = make_env()
@@ -308,6 +379,73 @@ class TestFileSync:
         env._mock_sandbox.file_system.download.assert_called_once()
         download_kwargs = env._mock_sandbox.file_system.download.call_args.kwargs
         assert download_kwargs["save_path"] == str(dest)
+
+    def test_sync_targets_detected_home_not_root(self, make_env):
+        """File sync MUST honour the probed ``$HOME`` of the worker user.
+
+        AgentRun's CODE_INTERPRETER prebuilt image runs as a non-root
+        user, so the legacy hard-coded ``/root/.hermes`` path triggers a
+        ``permission denied`` on the very first ``mkdir`` (this was the
+        Bug 3 surfaced by the 2026-05-12 live e2e). The adapter now
+        records ``_remote_home`` and every sync helper composes its
+        target path relative to it.
+        """
+        env = make_env()
+        # Probe should have written the mocked ``/home/code`` into the
+        # adapter's _remote_home, and the bulk_download path should use
+        # it rather than /root.
+        assert env._remote_home == _FAKE_REMOTE_HOME
+        assert env.cwd == _FAKE_REMOTE_HOME
+
+        env._mock_sandbox.process.cmd.reset_mock()
+        env._mock_sandbox.process.cmd.return_value = {
+            "stdout": "", "stderr": "", "exit_code": 0,
+        }
+        env._agentrun_bulk_download(env.__class__.__dict__.get(
+            "_throwaway_path", __import__("pathlib").Path("/tmp/throwaway.tar")
+        ))
+        tar_cmds = [
+            c.kwargs.get("command", "")
+            for c in env._mock_sandbox.process.cmd.call_args_list
+            if "tar cf" in c.kwargs.get("command", "")
+        ]
+        assert tar_cmds, "expected a tar command"
+        # Sandbox-side tar target must reference the probed HOME, not /root.
+        joined = " ".join(tar_cmds)
+        assert "home/code/.hermes" in joined
+        assert "/root/.hermes" not in joined
+
+    def test_remote_home_falls_back_when_probe_fails(
+        self, agentrun_sdk, isolated_store, monkeypatch, fake_sandbox
+    ):
+        """If the ``$HOME`` probe blows up we fall back to ``/workspace``.
+
+        Crashing the adapter on home-detection failure would tear every
+        AgentRun session down on transient errors; the fallback keeps
+        the backend usable (and writes still work because /workspace is
+        writable in every prebuilt template).
+        """
+        monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
+
+        # First cmd() call (the $HOME probe) raises; subsequent calls
+        # (init_session, file sync, etc.) return a clean response.
+        clean = {"stdout": "", "stderr": "", "exit_code": 0}
+        fake_sandbox.process.cmd.side_effect = [
+            RuntimeError("network blip"),
+            clean, clean, clean, clean, clean, clean,
+        ]
+
+        from tools.environments.agentrun import (
+            _FALLBACK_CWD,
+            AgentRunEnvironment,
+        )
+
+        env = AgentRunEnvironment(
+            timeout=60, task_id="fallback-task", persistent_filesystem=False,
+        )
+
+        assert env._remote_home == _FALLBACK_CWD
+        assert env.cwd == _FALLBACK_CWD
 
 
 # ---------------------------------------------------------------------------
@@ -406,18 +544,18 @@ class TestResponseNormalisation:
 
 
 class TestPersistence:
-    def test_second_construction_reconnects(self, agentrun_sdk, isolated_store, monkeypatch, fake_sandbox):
+    def test_second_construction_reconnects(
+        self, agentrun_sdk, isolated_store, monkeypatch, fake_sandbox,
+    ):
         # First construction should hit ``create`` and persist the id.
         monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
 
         from tools.environments.agentrun import AgentRunEnvironment
 
         env1 = AgentRunEnvironment(
-            cwd="/root", timeout=60,
+            timeout=60,
             task_id="resume-me", persistent_filesystem=True,
         )
-        first_create_calls = agentrun_sdk.create.call_count
-        first_connect_calls = agentrun_sdk.connect.call_count
         env1.cleanup()
 
         # Second construction with same task_id should reconnect, not
@@ -427,7 +565,7 @@ class TestPersistence:
         agentrun_sdk.connect.return_value = fake_sandbox
 
         env2 = AgentRunEnvironment(
-            cwd="/root", timeout=60,
+            timeout=60,
             task_id="resume-me", persistent_filesystem=True,
         )
 

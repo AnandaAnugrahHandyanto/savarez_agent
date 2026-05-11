@@ -278,16 +278,19 @@ Runs commands in an [Alibaba Cloud AgentRun](https://help.aliyun.com/zh/function
 ```yaml
 terminal:
   backend: agentrun
-  agentrun_template_name: "hermes-default"   # Optional; defaults to "hermes-{task_id}"
-  agentrun_idle_timeout_seconds: 300         # Sandbox idle TTL (server-side reaps after this)
-  container_persistent: true                 # Reconnect to the same sandbox across calls
+  agentrun_image: "nikolaik/python-nodejs:python3.11-nodejs20"   # Container image; default matches Modal/Daytona
+  agentrun_template_name: "hermes-default"                       # Optional; defaults to "hermes-{task_id}"
+  agentrun_idle_timeout_seconds: 300                             # Sandbox idle TTL (server-side reaps after this)
+  container_persistent: true                                     # Reconnect to the same sandbox across calls
 ```
 
-**Required install:** Install the SDK:
+**Required install:** Install the SDK via the optional extra:
 
 ```bash
-pip install agentrun-sdk
+pip install 'hermes-agent[agentrun]'
 ```
+
+This pulls in `agentrun-sdk>=0.0.35,<0.1.0`. The package is intentionally an optional dependency so non-AgentRun users do not have to install the Alibaba Cloud client.
 
 **Required authentication:** Set the SDK's documented environment variables before launching Hermes. These are picked up automatically by the `agentrun` Python package:
 
@@ -300,9 +303,13 @@ export AGENTRUN_REGION="cn-hangzhou"            # Any AgentRun-enabled region
 
 Create a dedicated RAM sub-account (rather than the root key) with the `AliyunAgentRunFullAccess` managed policy, or a tighter custom policy if you do not need template/sandbox management at runtime.
 
+**Container image:** AgentRun's stock CODE_INTERPRETER template ships with a minimal image and runs commands as a non-root worker user. The Hermes adapter defaults `agentrun_image` to the same `nikolaik/python-nodejs:python3.11-nodejs20` image used by the Modal and Daytona backends so `execute_code`, file tools, and skills that shell out to `python3` / `node` work out of the box. Override with any registry image AgentRun can pull (including ACR images keyed via `acr_instance_id` in your template configuration on the AgentRun console).
+
+**Working directory:** AgentRun sandboxes run commands as a non-root user; `/root` is *not* writable. The adapter probes the sandbox's `$HOME` on construction and rewrites the default working directory (and the file-sync target `~/.hermes/`) accordingly. Override with `terminal.cwd` if your image uses a different writable root.
+
 **Persistence model:** AgentRun does not expose a snapshot API. With `container_persistent: true` Hermes stores the live `sandbox_id` in `~/.hermes/agentrun_sandboxes.json`, keyed by `task_id`, and reconnects to that sandbox via `Sandbox.connect(sandbox_id)` on the next call. The sandbox stays alive across calls as long as it is reused within `agentrun_idle_timeout_seconds` (default 5 minutes); after that the control plane reaps it and the next construction transparently allocates a new one. With `container_persistent: false` Hermes deletes the sandbox at the end of every session.
 
-**Templates:** AgentRun sandboxes are launched from server-side *templates*. Hermes materialises one named `hermes-{task_id}` on first use (idempotent — concurrent constructions resolve to the existing template). Override `agentrun_template_name` to share a single curated template across tasks (useful if you customise the runtime image in the AgentRun console).
+**Templates:** AgentRun sandboxes are launched from server-side *templates*. Hermes materialises one named `hermes-{task_id}` on first use (idempotent — concurrent constructions resolve to the existing template). Override `agentrun_template_name` to share a single curated template across tasks (useful if you customise the runtime image in the AgentRun console). Template-level container image is taken from `agentrun_image` when the template does not yet exist; existing templates are re-used as-is.
 
 **Command timeout:** AgentRun caps a single Code Interpreter command at 30 s server-side. Hermes clamps caller-supplied timeouts to that ceiling and emits a warning when it does. Longer-running shell workflows should be split into multiple commands (the sandbox itself stays alive across them).
 

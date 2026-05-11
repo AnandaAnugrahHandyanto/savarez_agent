@@ -1248,7 +1248,10 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     elif env_type == "agentrun":
         # Lazy import so agentrun-sdk is only required when this backend
         # is selected.
-        from tools.environments.agentrun import AgentRunEnvironment as _AgentRunEnvironment
+        from tools.environments.agentrun import (
+            _DEFAULT_IMAGE as _AGENTRUN_DEFAULT_IMAGE,
+            AgentRunEnvironment as _AgentRunEnvironment,
+        )
         return _AgentRunEnvironment(
             cwd=cwd,
             timeout=timeout,
@@ -1256,6 +1259,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             template_name=cc.get("agentrun_template_name"),
             idle_timeout_seconds=int(cc.get("agentrun_idle_timeout_seconds", 300)),
             persistent_filesystem=persistent,
+            image=cc.get("agentrun_image") or _AGENTRUN_DEFAULT_IMAGE,
         )
 
     else:

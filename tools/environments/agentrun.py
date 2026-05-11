@@ -27,11 +27,9 @@ Compared to ``modal.py``:
 
 from __future__ import annotations
 
-import io
 import logging
 import os
 import shlex
-import tarfile
 import threading
 from pathlib import Path
 from typing import Any, Optional
@@ -64,8 +62,20 @@ _AGENTRUN_CMD_MAX_TIMEOUT = 30
 # conversation; short enough to keep the dormant-instance bill negligible.
 _DEFAULT_IDLE_TIMEOUT = 300
 
-# Remote home/working directory inside the Code Interpreter sandbox.
-_REMOTE_HOME = "/root"
+# Fallback working directory inside the sandbox when ``$HOME`` cannot be
+# detected (e.g. the sandbox image does not set HOME for the worker user).
+# AgentRun's Code Interpreter image runs commands as a non-root user, so we
+# can not assume ``/root`` is writable.
+_FALLBACK_CWD = "/workspace"
+
+# Default container image. AgentRun's CODE_INTERPRETER prebuilt template
+# image is minimal and (as of SDK 0.0.35) ships without ``python3`` on
+# PATH for the worker user. We default to the same Python+Node image
+# used by the Modal/Daytona backends so file_tools, execute_code, and the
+# rest of the toolchain just work. Users can override via
+# ``terminal.agentrun_image`` if they have a custom AgentRun container
+# pushed to ACR.
+_DEFAULT_IMAGE = "nikolaik/python-nodejs:python3.11-nodejs20"
 
 # Local store mapping ``task_id -> sandbox_id`` so we can resume across
 # process restarts (parallel to modal_snapshots.json).
@@ -101,7 +111,7 @@ def _delete_stored_sandbox(task_id: str, sandbox_id: str | None = None) -> None:
         _save_sandbox_map(data)
 
 
-def _ensure_template(template_name: str) -> None:
+def _ensure_template(template_name: str, image: str | None = None) -> None:
     """Create the named template if it does not already exist.
 
     AgentRun templates are durable server-side resources. The first time
@@ -110,8 +120,17 @@ def _ensure_template(template_name: str) -> None:
     ``already exists``-shaped errors because the SDK does not expose a
     typed ``AlreadyExists`` exception (it raises ``ServerError`` /
     ``APIError`` with the upstream HTTP message).
+
+    When *image* is provided it is forwarded as the template's
+    ``container_configuration.image``; otherwise AgentRun falls back to
+    its prebuilt CODE_INTERPRETER image.
     """
-    from agentrun.sandbox import Sandbox, TemplateInput, TemplateType
+    from agentrun.sandbox import (
+        Sandbox,
+        TemplateContainerConfiguration,
+        TemplateInput,
+        TemplateType,
+    )
 
     try:
         Sandbox.get_template(template_name)
@@ -124,14 +143,22 @@ def _ensure_template(template_name: str) -> None:
             template_name, exc,
         )
 
+    container_config = (
+        TemplateContainerConfiguration(image=image) if image else None
+    )
+
     try:
         Sandbox.create_template(
             input=TemplateInput(
                 template_name=template_name,
                 template_type=TemplateType.CODE_INTERPRETER,
+                container_configuration=container_config,
             )
         )
-        logger.info("AgentRun: created template %s", template_name)
+        logger.info(
+            "AgentRun: created template %s (image=%s)",
+            template_name, image or "<vendor default>",
+        )
     except Exception as exc:
         # Tolerate race with concurrent creators (e.g. parallel callers
         # with the same task_id). If get_template now succeeds, we are
@@ -160,20 +187,27 @@ class AgentRunEnvironment(BaseEnvironment):
 
     def __init__(
         self,
-        cwd: str = _REMOTE_HOME,
+        cwd: Optional[str] = None,
         timeout: int = 60,
         task_id: str = "default",
         template_name: Optional[str] = None,
         idle_timeout_seconds: int = _DEFAULT_IDLE_TIMEOUT,
         persistent_filesystem: bool = True,
+        image: Optional[str] = _DEFAULT_IMAGE,
     ):
-        super().__init__(cwd=cwd, timeout=timeout)
+        requested_cwd = cwd
+        # ``cwd`` will be re-resolved after we know the sandbox's $HOME.
+        # Pass a temporary placeholder so the base class is happy; we
+        # overwrite ``self.cwd`` after probing the sandbox.
+        super().__init__(cwd=cwd or _FALLBACK_CWD, timeout=timeout)
 
         self._persistent = persistent_filesystem
         self._task_id = task_id
         self._template_name = template_name or f"hermes-{task_id}"
         self._idle_timeout = idle_timeout_seconds
+        self._image = image
         self._sandbox = None
+        self._remote_home: str = _FALLBACK_CWD
         self._lock = threading.Lock()
 
         # Late import: SDK is only required when this backend is selected.
@@ -181,7 +215,7 @@ class AgentRunEnvironment(BaseEnvironment):
 
         self._TemplateType = TemplateType
 
-        _ensure_template(self._template_name)
+        _ensure_template(self._template_name, image=self._image)
 
         # Persistence path: try to resume an existing sandbox first. We
         # only attempt resume when persistent_filesystem=True; otherwise
@@ -233,8 +267,24 @@ class AgentRunEnvironment(BaseEnvironment):
         if self._persistent and self._sandbox.sandbox_id:
             _store_sandbox_id(self._task_id, self._sandbox.sandbox_id)
 
+        # Detect the worker user's $HOME. AgentRun runs commands as a
+        # non-root user; ``/root`` is not writable, so file sync MUST
+        # target the detected home. If detection fails we fall back to
+        # ``/workspace`` which is writable in every prebuilt template.
+        self._remote_home = self._detect_remote_home()
+        container_base = f"{self._remote_home.rstrip('/')}/.hermes"
+
+        # Resolve the user-requested cwd against the discovered home.
+        # Callers that did not pin a cwd land in $HOME by default; ``~``
+        # and the legacy ``/root`` default are remapped onto $HOME so the
+        # adapter behaves the same way regardless of the underlying user.
+        if requested_cwd in (None, "", "~", "/root"):
+            self.cwd = self._remote_home
+        else:
+            self.cwd = requested_cwd
+
         self._sync_manager = FileSyncManager(
-            get_files_fn=lambda: iter_sync_files(f"{_REMOTE_HOME}/.hermes"),
+            get_files_fn=lambda: iter_sync_files(container_base),
             upload_fn=self._agentrun_upload,
             delete_fn=self._agentrun_delete,
             bulk_upload_fn=self._agentrun_bulk_upload,
@@ -276,6 +326,43 @@ class AgentRunEnvironment(BaseEnvironment):
             f"AgentRun: sandbox {self._sandbox.sandbox_id} did not become "
             f"healthy within {retries}s"
         )
+
+    def _detect_remote_home(self) -> str:
+        """Best-effort probe of the sandbox worker user's ``$HOME``.
+
+        AgentRun's prebuilt CODE_INTERPRETER image runs commands as a
+        non-root user (sandbox image-specific; commonly ``code`` or
+        ``user``). Hardcoding ``/root`` for file sync triggers
+        ``permission denied`` on the very first ``mkdir`` and tears the
+        backend down before any user command runs. We instead ask the
+        sandbox where its writable home directory is, mirroring the
+        approach used by ``vercel_sandbox.py``.
+        """
+        try:
+            response = self._sandbox.process.cmd(
+                command='sh -lc \'printf %s "$HOME"\'',
+                cwd="/",
+                timeout=_AGENTRUN_CMD_MAX_TIMEOUT,
+            )
+        except Exception as exc:
+            logger.warning(
+                "AgentRun: home detection failed for task %s; "
+                "falling back to %s: %s",
+                self._task_id, _FALLBACK_CWD, exc,
+            )
+            return _FALLBACK_CWD
+
+        home, _ = _normalise_cmd_response(response)
+        home = home.strip()
+        if home.startswith("/"):
+            return home
+
+        logger.warning(
+            "AgentRun: $HOME probe returned %r (not absolute); "
+            "falling back to %s",
+            home, _FALLBACK_CWD,
+        )
+        return _FALLBACK_CWD
 
     # ------------------------------------------------------------------
     # File sync callbacks
@@ -337,7 +424,7 @@ class AgentRunEnvironment(BaseEnvironment):
         the host PID to avoid collisions when multiple processes share
         the same sandbox by accident.
         """
-        rel_base = f"{_REMOTE_HOME}/.hermes".lstrip("/")
+        rel_base = f"{self._remote_home.rstrip('/')}/.hermes".lstrip("/")
         remote_tar = f"/tmp/.hermes_sync.{os.getpid()}.tar"
 
         self._sandbox.process.cmd(
