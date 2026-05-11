@@ -55,11 +55,21 @@ class HookRegistry:
     def _register_builtin_hooks(self) -> None:
         """Register built-in hooks that are always active.
 
-        Currently empty — no shipped built-in hooks. Kept as the extension
-        point for future always-on gateway hooks so they drop in without
-        re-plumbing discover_and_load().
+        These fire on every gateway startup without requiring a user-created
+        hook directory under ~/.hermes/hooks/.
         """
-        return
+        try:
+            from gateway.builtin_hooks.auto_resume import handle as auto_resume_handle
+            self._handlers.setdefault("gateway:startup", []).append(auto_resume_handle)
+            self._loaded_hooks.append({
+                "name": "auto-resume",
+                "description": "Resume interrupted sessions after gateway restart",
+                "events": ["gateway:startup"],
+                "path": "builtin",
+            })
+        except Exception:
+            logger = logging.getLogger(__name__)
+            logger.warning("Failed to register builtin auto-resume hook", exc_info=True)
 
     def discover_and_load(self) -> None:
         """
