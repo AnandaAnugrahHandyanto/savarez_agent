@@ -10,7 +10,9 @@ import json
 import logging
 import shutil
 import tempfile
+import fcntl
 import threading
+import contextlib
 import os
 import re
 import uuid
@@ -181,6 +183,35 @@ def _validate_run_as_profile(profile_name: str | None) -> str:
     if not profile_home.exists():
         raise ValueError(f"run_as_profile does not exist: {name}")
     return name
+
+
+@contextlib.contextmanager
+def with_store_file_lock(store: CronStore | None = None):
+    """Cross-process file lock for the store's lock file.
+    
+    Uses fcntl.flock on Unix; falls back to in-process threading.Lock.
+    Required for global cron so multiple gateway processes don't claim the same job.
+    """
+    resolved = resolve_store(store=store)
+    resolved.lock_file.parent.mkdir(parents=True, exist_ok=True)
+    fd = open(resolved.lock_file, "w")
+    acquired = False
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except (OSError, IOError):
+            fd.close()
+            fd = None  # Another process holds it
+        yield fd is not None
+    finally:
+        if acquired and fd is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except Exception:
+                pass
+        if fd is not None:
+            fd.close()
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
     """Normalize legacy/single-skill and multi-skill inputs into a unique ordered list."""

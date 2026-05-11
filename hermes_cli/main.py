@@ -9938,6 +9938,16 @@ def main():
     cron_tick = cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
     _add_accept_hooks_flag(cron_tick)
     _add_accept_hooks_flag(cron_parser)
+
+    # cron run-internal (hidden, for subprocess execution only)
+    cron_run_internal = cron_subparsers.add_parser(
+        "run-internal", help=argparse.SUPPRESS
+    )
+    cron_run_internal.add_argument("--scope", choices=["global"], required=True)
+    cron_run_internal.add_argument("--store-root", required=True)
+    cron_run_internal.add_argument("--job-id", required=True)
+    cron_run_internal.set_defaults(func=cmd_cron)
+
     cron_parser.set_defaults(func=cmd_cron)
 
     # =========================================================================

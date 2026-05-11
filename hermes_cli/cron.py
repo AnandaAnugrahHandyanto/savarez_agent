@@ -280,6 +280,20 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
     return 0
 
 
+
+def cron_run_internal(args):
+    """Internal entrypoint for global cron job execution via subprocess."""
+    from cron.jobs import store_from_root, get_job
+    from cron.scheduler import process_job
+
+    store = store_from_root("global", args.store_root)
+    job = get_job(args.job_id, store=store)
+    if not job:
+        print(f"Job not found: {args.job_id}", file=sys.stderr)
+        return 1
+    success = process_job(job, store=store)
+    return 0 if success else 1
+
 def cron_command(args):
     """Handle cron subcommands."""
     subcmd = getattr(args, 'cron_command', None)
@@ -316,6 +330,9 @@ def cron_command(args):
 
     if subcmd in {"remove", "rm", "delete"}:
         return _job_action("remove", args.job_id, "Removed")
+
+    if subcmd == "run-internal":
+        return cron_run_internal(args)
 
     print(f"Unknown cron command: {subcmd}")
     print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick]")

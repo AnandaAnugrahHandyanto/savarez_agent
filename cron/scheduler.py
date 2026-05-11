@@ -14,6 +14,8 @@ import contextvars
 import json
 import logging
 import os
+import subprocess as _sp
+import sys
 import shutil
 import subprocess
 import sys
@@ -1654,6 +1656,75 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
+
+def process_job(job: dict, *, store=None, adapters=None, loop=None, verbose: bool = True) -> bool:
+    """Run one job end-to-end: execute, save output, deliver, mark.
+    
+    Factorised so cron run-internal can call it directly.
+    """
+    try:
+        success, output_doc, final_response, error = run_job(job)
+        output_file = save_job_output(job["id"], output_doc, store=store)
+        # Deliver using runtime profile config
+        delivery_error = None
+        try:
+            _deliver_job_result(
+                job=job,
+                final_response=final_response,
+                output_file=output_file,
+                adapters=adapters,
+                loop=loop,
+            )
+        except Exception as de:
+            delivery_error = str(de)
+            logger.warning("Delivery failed for job %s: %s", job.get("id"), de)
+        mark_job_run(job["id"], success, error, delivery_error=delivery_error, store=store)
+        return success
+    except Exception as e:
+        logger.error("process_job failed for %s: %s", job.get("id"), e)
+        try:
+            mark_job_run(job["id"], False, str(e), store=store)
+        except Exception:
+            pass
+        return False
+
+
+def _run_global_job_subprocess(job: dict, store) -> tuple:
+    """Launch a global cron job in a subprocess with the runtime profile's HERMES_HOME."""
+    from cron.jobs import resolve_profile_home
+    profile = job.get("run_as_profile")
+    if not profile:
+        return False, "", "", "Global job missing run_as_profile"
+    try:
+        profile_home = resolve_profile_home(profile)
+    except ValueError as e:
+        return False, "", "", f"Invalid run_as_profile: {e}"
+    
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(profile_home)
+    for key in list(env):
+        if key.startswith("HERMES_SESSION_"):
+            env.pop(key, None)
+    
+    cmd = [
+        sys.executable, "-m", "hermes_cli.main",
+        "cron", "run-internal",
+        "--scope", "global",
+        "--store-root", str(store.root),
+        "--job-id", job["id"],
+    ]
+    try:
+        proc = _sp.run(cmd, env=env, capture_output=True, text=True, timeout=600)
+        ok = proc.returncode == 0
+        combined = (proc.stdout or "") + (proc.stderr or "")
+        return ok, combined, combined, None if ok else combined[-2000:]
+    except _sp.TimeoutExpired:
+        return False, "", "", "Global job subprocess timed out after 600s"
+    except FileNotFoundError:
+        return False, "", "", f"Python executable not found: {sys.executable}"
+    except Exception as e:
+        return False, "", "", f"Global subprocess error: {e}"
+
 def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     """
     Check and run all due jobs.
@@ -1738,8 +1809,28 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 _max_workers if _max_workers else "unbounded",
             )
 
+        # Split profile vs global jobs — global jobs run via subprocess
+        profile_jobs = [j for j in due_jobs if j.get("scope") != "global"]
+        global_jobs = [j for j in due_jobs if j.get("scope") == "global"]
+        
+        # Run global jobs via subprocess
+        if global_jobs and verbose:
+            logger.info("Running %d global job(s) via subprocess", len(global_jobs))
+        for gj in global_jobs:
+            try:
+                from cron.jobs import global_store as _gs
+                gs = _gs()
+                ok, out, resp, err = _run_global_job_subprocess(gj, gs)
+                if verbose:
+                    if ok:
+                        logger.info("Global job %s completed", gj.get("id"))
+                    else:
+                        logger.warning("Global job %s failed: %s", gj.get("id"), err)
+            except Exception as e:
+                logger.error("Global job %s subprocess error: %s", gj.get("id"), e)
+
         def _process_job(job: dict) -> bool:
-            """Run one due job end-to-end: execute, save, deliver, mark."""
+            """Run one profile job end-to-end: execute, save, deliver, mark."""
             try:
                 success, output, final_response, error = run_job(job)
 
