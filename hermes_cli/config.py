@@ -471,6 +471,15 @@ DEFAULT_CONFIG = {
         # remains available as a tool regardless of this setting — the routing
         # only controls how inbound user images are presented.
         "image_input_mode": "auto",
+        # Context boundary mode controls what happens when a session is split
+        # during compression. Default preserves legacy behavior; set mode to
+        # "market_rollover" to hand exact continuity through Market and keep
+        # the model prompt bounded to the returned handoff contract.
+        "context_boundary": {
+            "mode": "legacy_compression",
+            "project": "home-li",
+            "market_cli": "/opt/openclaw/services/open-memory/services/market/market/cli.py",
+        },
         "disabled_toolsets": [],
     },
     

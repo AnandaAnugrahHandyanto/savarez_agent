@@ -7148,6 +7148,8 @@ class HermesCLI:
             self._handle_fast_command(cmd_original)
         elif canonical == "compress":
             self._manual_compress(cmd_original)
+        elif canonical == "market-rollover":
+            self._manual_market_rollover(cmd_original)
         elif canonical == "usage":
             self._show_usage()
         elif canonical == "insights":
@@ -8326,7 +8328,7 @@ class HermesCLI:
         self._reasoning_preview_buf = getattr(self, "_reasoning_preview_buf", "") + reasoning_text
         self._flush_reasoning_preview(force=False)
 
-    def _manual_compress(self, cmd_original: str = ""):
+    def _manual_compress(self, cmd_original: str = "", *, force_market_rollover: bool = False):
         """Manually trigger context compression on the current conversation.
 
         Accepts an optional focus topic: ``/compress <focus>`` guides the
@@ -8382,12 +8384,18 @@ class HermesCLI:
                 # _build_system_prompt appends system_message to prompt_parts
                 # which already contain the agent identity — resulting in the
                 # identity block appearing twice (issue #15281).
+                _prev_market_rollover_enabled = getattr(self.agent, "_market_rollover_enabled", False)
+                if force_market_rollover:
+                    self.agent._market_rollover_enabled = True
                 compressed, _ = self.agent._compress_context(
                     original_history,
                     None,
                     approx_tokens=approx_tokens,
                     focus_topic=focus_topic or None,
+                    boundary_reason="manual_market_rollover" if force_market_rollover else "manual_compression",
                 )
+                if force_market_rollover:
+                    self.agent._market_rollover_enabled = _prev_market_rollover_enabled
                 self.conversation_history = compressed
                 # _compress_context ends the old session and creates a new child
                 # session on the agent (run_agent.py::_compress_context). Sync the
@@ -8423,7 +8431,23 @@ class HermesCLI:
                     print(f"     {summary['note']}")
 
             except Exception as e:
+                if force_market_rollover and "_prev_market_rollover_enabled" in locals() and self.agent:
+                    self.agent._market_rollover_enabled = _prev_market_rollover_enabled
                 print(f"  ❌ Compression failed: {e}")
+
+    def _manual_market_rollover(self, cmd_original: str = ""):
+        """Manually trigger a Market-backed context boundary.
+
+        Uses the same compression machinery as /compress, but temporarily
+        forces Market rollover mode so a missing/failed Market contract falls
+        back to ordinary compression rather than aborting the session split.
+        """
+        if cmd_original:
+            parts = cmd_original.strip().split(None, 1)
+            compress_cmd = "/compress" + (f" {parts[1].strip()}" if len(parts) > 1 and parts[1].strip() else "")
+        else:
+            compress_cmd = "/compress"
+        self._manual_compress(compress_cmd, force_market_rollover=True)
 
     def _handle_debug_command(self):
         """Handle /debug — upload debug report + logs and print paste URLs."""

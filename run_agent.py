@@ -44,6 +44,7 @@ import os
 import random
 import re
 import ssl
+import subprocess
 import sys
 import tempfile
 import time
@@ -72,6 +73,43 @@ from hermes_constants import get_hermes_home
 
 
 _OPENAI_CLS_CACHE: Optional[type] = None
+
+
+def _sanitize_market_thread_id(value: str) -> str:
+    """Return a Market-safe Hermes thread id slug."""
+    slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(value or "").strip()).strip("-._")
+    return slug.lower() or "default"
+
+
+def default_market_thread_id_for_session(session_id: str) -> str:
+    """Deterministically assign a Market thread id for a Hermes session.
+
+    This gives every default Hermes session an explicit persisted Market lane so
+    boundary rollover can prefer the stored thread over session-id inference.
+    """
+    return "hermes-" + _sanitize_market_thread_id(session_id)
+
+
+def _market_resume_contract_from_env() -> Optional[dict]:
+    raw = os.environ.get("HERMES_MARKET_RESUME_CONTRACT")
+    if not raw:
+        return None
+    try:
+        contract = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("Ignoring invalid HERMES_MARKET_RESUME_CONTRACT JSON")
+        return None
+    return contract if isinstance(contract, dict) else None
+
+
+def _resolve_initial_market_thread_id(session_id: str, resume_contract: Optional[dict] = None) -> str:
+    """Prefer explicit handoff/env thread, otherwise assign a default lane."""
+    explicit = os.environ.get("HERMES_MARKET_THREAD_ID")
+    if explicit:
+        return str(explicit)
+    if isinstance(resume_contract, dict) and resume_contract.get("market_thread_id"):
+        return str(resume_contract["market_thread_id"])
+    return default_market_thread_id_for_session(session_id)
 
 
 def _load_openai_cls() -> type:
@@ -1829,6 +1867,11 @@ class AIAgent:
         self.logs_dir = hermes_home / "sessions"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
+        self._initial_market_resume_contract = _market_resume_contract_from_env()
+        self._market_thread_id = _resolve_initial_market_thread_id(
+            self.session_id,
+            self._initial_market_resume_contract,
+        )
         
         # Track conversation messages for session logging
         self._session_messages: List[Dict[str, Any]] = []
@@ -2246,6 +2289,21 @@ class AIAgent:
                 api_mode=self.api_mode,
             )
         self.compression_enabled = compression_enabled
+        _boundary_cfg = _agent_cfg.get("context_boundary", {})
+        if not isinstance(_boundary_cfg, dict):
+            _boundary_cfg = {}
+        _boundary_mode = str(
+            os.environ.get("HERMES_CONTEXT_BOUNDARY_MODE")
+            or _boundary_cfg.get("mode", "legacy_compression")
+        ).strip().lower()
+        self._market_rollover_enabled = _boundary_mode == "market_rollover"
+        self._market_rollover_project = str(_boundary_cfg.get("project", "home-li"))
+        self._market_rollover_cli = str(
+            _boundary_cfg.get(
+                "market_cli",
+                "/opt/openclaw/services/open-memory/services/market/market/cli.py",
+            )
+        )
 
         # Reject models whose context window is below the minimum required
         # for reliable tool-calling workflows (64K tokens).
@@ -2429,6 +2487,14 @@ class AIAgent:
         if self._session_db_created or not self._session_db:
             return
         try:
+            _market_resume_contract = getattr(self, "_initial_market_resume_contract", None)
+            if _market_resume_contract is None:
+                _market_resume_contract = _market_resume_contract_from_env()
+            _market_thread_id = getattr(self, "_market_thread_id", None) or _resolve_initial_market_thread_id(
+                self.session_id,
+                _market_resume_contract,
+            )
+            self._market_thread_id = _market_thread_id
             self._session_db.create_session(
                 session_id=self.session_id,
                 source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
@@ -2437,6 +2503,8 @@ class AIAgent:
                 system_prompt=self._cached_system_prompt,
                 user_id=None,
                 parent_session_id=self._parent_session_id,
+                market_thread_id=_market_thread_id,
+                market_resume_contract=_market_resume_contract,
             )
             self._session_db_created = True
         except Exception as e:
@@ -4842,6 +4910,19 @@ class AIAgent:
         """Extract structured rate-limit details from provider errors."""
         context: Dict[str, Any] = {}
 
+        # Provider adapters may expose retry metadata directly (e.g. CodeAssistError
+        # from the Google Gemini CLI / Cloud Code path parses google.rpc.RetryInfo
+        # into ``retry_after`` even when Google does not send a Retry-After header).
+        # Preserve it before falling back to opaque message parsing; otherwise a
+        # short Google throttle such as "retry in 6s" is treated as the credential
+        # pool's default 1h exhaustion window.
+        direct_retry_after = getattr(error, "retry_after", None)
+        if direct_retry_after not in (None, ""):
+            try:
+                context["reset_at"] = time.time() + float(direct_retry_after)
+            except (TypeError, ValueError):
+                pass
+
         body = getattr(error, "body", None)
         payload = None
         if isinstance(body, dict):
@@ -4886,14 +4967,14 @@ class AIAgent:
         if "reset_at" not in context:
             message = context.get("message") or ""
             if isinstance(message, str):
-                delay_match = re.search(r"quotaResetDelay[:\s\"]+(\\d+(?:\\.\\d+)?)(ms|s)", message, re.IGNORECASE)
+                delay_match = re.search(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", message, re.IGNORECASE)
                 if delay_match:
                     value = float(delay_match.group(1))
                     seconds = value / 1000.0 if delay_match.group(2).lower() == "ms" else value
                     context["reset_at"] = time.time() + seconds
                 else:
                     sec_match = re.search(
-                        r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)",
+                        r"(?:retry|reset)\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)",
                         message,
                         re.IGNORECASE,
                     )
@@ -5060,6 +5141,7 @@ class AIAgent:
                 "session_start": self.session_start.isoformat(),
                 "last_updated": datetime.now().isoformat(),
                 "system_prompt": self._cached_system_prompt or "",
+                "market_thread_id": getattr(self, "_market_thread_id", None),
                 "tools": self.tools or [],
                 "message_count": len(cleaned),
                 "messages": cleaned,
@@ -7721,12 +7803,17 @@ class AIAgent:
                     _fire_first_delta()
                     self._fire_reasoning_delta(reasoning_text)
 
-                # Accumulate text content — fire callback only when no tool calls
-                if delta and delta.content:
-                    content_parts.append(delta.content)
+                # Accumulate text content — fire callback only when no tool calls.
+                # Some OpenAI-compatible adapters emit sparse delta objects for
+                # reasoning-only / finish-only chunks. Treat missing attributes
+                # as absent instead of raising AttributeError.
+                delta_content = getattr(delta, "content", None) if delta else None
+                delta_tool_calls = getattr(delta, "tool_calls", None) if delta else None
+                if delta and delta_content:
+                    content_parts.append(delta_content)
                     if not tool_calls_acc:
                         _fire_first_delta()
-                        self._fire_stream_delta(delta.content)
+                        self._fire_stream_delta(delta_content)
                         deltas_were_sent["yes"] = True
                     else:
                         # Tool calls suppress regular content streaming (avoids
@@ -7742,14 +7829,14 @@ class AIAgent:
                         # box is already closed (tool boundary flush).
                         if self.stream_delta_callback:
                             try:
-                                self.stream_delta_callback(delta.content)
-                                self._record_streamed_assistant_text(delta.content)
+                                self.stream_delta_callback(delta_content)
+                                self._record_streamed_assistant_text(delta_content)
                             except Exception:
                                 pass
 
                 # Accumulate tool call deltas — notify display on first name
-                if delta and delta.tool_calls:
-                    for tc_delta in delta.tool_calls:
+                if delta and delta_tool_calls:
+                    for tc_delta in delta_tool_calls:
                         raw_idx = tc_delta.index if tc_delta.index is not None else 0
                         delta_id = tc_delta.id or ""
 
@@ -9993,7 +10080,100 @@ class AIAgent:
         """
         return self.api_mode != "codex_responses"
 
-    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None) -> tuple:
+    def _should_retain_legacy_summary_after_rollover(self) -> bool:
+        return str(os.environ.get("HERMES_MARKET_ROLLOVER_KEEP_LEGACY_SUMMARY", "")).lower() in {"1", "true", "yes"}
+
+    def _resolve_market_thread_id_for_rollover(self) -> Optional[str]:
+        """Resolve explicit Market thread id without semantic/session inference."""
+        thread = os.environ.get("HERMES_MARKET_THREAD_ID")
+        if thread:
+            return thread
+        thread = getattr(self, "_market_thread_id", None)
+        if thread:
+            return thread
+        if self._session_db:
+            try:
+                return self._session_db.get_market_thread_id(self.session_id)
+            except Exception as exc:
+                logger.debug("Market thread lookup failed: %s", exc)
+        return None
+
+    def _prepare_market_rollover_contract(
+        self,
+        *,
+        old_session_id: str,
+        new_session_id: str,
+        reason: str = "context_threshold",
+        source_path: Optional[Path] = None,
+    ) -> Optional[dict]:
+        """Call Market dry-run prepare and persist the successor handoff contract.
+
+        Returns None on any failure so callers can fall back to legacy
+        compression without risking continuity loss.
+        """
+        if not getattr(self, "_market_rollover_enabled", False):
+            return None
+        thread = self._resolve_market_thread_id_for_rollover()
+        if not thread:
+            logger.info("Market rollover skipped: no explicit market_thread_id")
+            return None
+        cli = Path(getattr(self, "_market_rollover_cli", ""))
+        if not cli.exists():
+            logger.warning("Market rollover skipped: CLI missing at %s", cli)
+            return None
+        cmd = [
+            sys.executable,
+            str(cli),
+            "market-rollover-prepare",
+            "--agent", "hermes",
+            "--project", getattr(self, "_market_rollover_project", "home-li"),
+            "--thread", thread,
+            "--successor-session-id", new_session_id,
+            "--reason", reason,
+        ]
+        if source_path is not None:
+            cmd.extend(["--source-path", str(source_path)])
+        elif getattr(self, "session_log_file", None):
+            cmd.extend(["--source-path", str(self.session_log_file)])
+        try:
+            proc = subprocess.run(cmd, text=True, capture_output=True, timeout=30, check=True)
+            report = json.loads(proc.stdout)
+            contract = report.get("handoff_contract")
+            if not isinstance(contract, dict):
+                raise ValueError("market-rollover-prepare returned no handoff_contract")
+            if contract.get("market_thread_id") != thread:
+                raise ValueError("market rollover contract thread mismatch")
+            if contract.get("predecessor_session_id") != old_session_id:
+                logger.debug(
+                    "Market rollover predecessor differs from DB session: contract=%s db=%s",
+                    contract.get("predecessor_session_id"), old_session_id,
+                )
+            if self._session_db:
+                try:
+                    self._session_db.set_market_thread_id(new_session_id, thread)
+                    self._session_db.set_market_resume_contract(new_session_id, contract)
+                except Exception as exc:
+                    logger.warning("Market rollover DB contract persistence failed: %s", exc)
+                    return None
+            return contract
+        except Exception as exc:
+            logger.warning("Market rollover prepare failed; falling back to legacy compression: %s", exc)
+            return None
+
+    def _market_rollover_messages(self, contract: dict) -> list:
+        payload = json.dumps(contract, indent=2, sort_keys=True, ensure_ascii=False)
+        return [
+            {
+                "role": "user",
+                "content": (
+                    "[Market rollover handoff contract]\n"
+                    "Resume from the exact Market lane below. Trust market_thread_id/head_uri over session-id inference.\n"
+                    f"{payload}"
+                ),
+            }
+        ]
+
+    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None, boundary_reason: str = "context_threshold") -> tuple:
         """Compress conversation context and split the session in SQLite.
 
         Args:
@@ -10066,9 +10246,14 @@ class AIAgent:
                 old_title = self._session_db.get_session_title(self.session_id)
                 # Trigger memory extraction on the old session before it rotates.
                 self.commit_memory_session(messages)
-                self._session_db.end_session(self.session_id, "compression")
                 old_session_id = self.session_id
+                old_market_thread_id = None
+                try:
+                    old_market_thread_id = self._session_db.get_market_thread_id(old_session_id)
+                except Exception:
+                    old_market_thread_id = os.environ.get("HERMES_MARKET_THREAD_ID")
                 self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+                old_session_log_file = self.session_log_file
                 # Update session_log_file to point to the new session's JSON file
                 self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
                 self._session_db_created = False
@@ -10078,8 +10263,23 @@ class AIAgent:
                     model=self.model,
                     model_config=self._session_init_model_config,
                     parent_session_id=old_session_id,
+                    market_thread_id=old_market_thread_id,
                 )
+                self._market_thread_id = old_market_thread_id
+                self._initial_market_resume_contract = None
                 self._session_db_created = True
+                rollover_contract = self._prepare_market_rollover_contract(
+                    old_session_id=old_session_id,
+                    new_session_id=self.session_id,
+                    reason=boundary_reason,
+                    source_path=old_session_log_file,
+                )
+                if rollover_contract:
+                    self._session_db.end_session(old_session_id, "market_rollover")
+                    if not self._should_retain_legacy_summary_after_rollover():
+                        compressed = self._market_rollover_messages(rollover_contract)
+                else:
+                    self._session_db.end_session(old_session_id, "compression")
                 # Auto-number the title for the continuation session
                 if old_title:
                     try:
@@ -10103,7 +10303,7 @@ class AIAgent:
             if _old_sid and hasattr(self.context_compressor, "on_session_start"):
                 self.context_compressor.on_session_start(
                     self.session_id or "",
-                    boundary_reason="compression",
+                    boundary_reason="market_rollover" if locals().get("rollover_contract") else "compression",
                     old_session_id=_old_sid,
                 )
         except Exception as _ce_err:
@@ -10121,7 +10321,7 @@ class AIAgent:
                     self.session_id or "",
                     parent_session_id=_old_sid,
                     reset=False,
-                    reason="compression",
+                    reason="market_rollover" if locals().get("rollover_contract") else "compression",
                 )
         except Exception as _me_err:
             logger.debug("memory manager on_session_switch (compression): %s", _me_err)
@@ -11770,6 +11970,8 @@ class AIAgent:
                 model=self.model,
                 platform=getattr(self, "platform", None) or "",
                 sender_id=getattr(self, "_user_id", None) or "",
+                market_thread_id=getattr(self, "_market_thread_id", None) or "",
+                market_resume_contract=getattr(self, "_initial_market_resume_contract", None),
             )
             _ctx_parts: list[str] = []
             for r in _pre_results:

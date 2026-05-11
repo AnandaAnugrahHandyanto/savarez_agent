@@ -136,6 +136,91 @@ class TestSessionLifecycle:
         child = db.get_session("child")
         assert child["parent_session_id"] == "parent"
 
+    def test_market_thread_id_round_trip(self, db):
+        db.create_session(session_id="s1", source="cli", market_thread_id="lane-alpha")
+
+        assert db.get_market_thread_id("s1") == "lane-alpha"
+        session = db.get_session("s1")
+        assert session["market_thread_id"] == "lane-alpha"
+
+        assert db.set_market_thread_id("s1", "lane-beta") is True
+        assert db.get_market_thread_id("s1") == "lane-beta"
+        assert db.set_market_thread_id("missing", "lane-gamma") is False
+
+    def test_market_resume_contract_round_trip(self, db):
+        contract = {
+            "boundary_mode": "market_rollover",
+            "market_thread_id": "lane-alpha",
+            "predecessor_session_id": "s1",
+            "successor_session_id": "s2",
+            "next_atomic_action": "run phase 2 tests",
+        }
+        db.create_session(
+            session_id="s1",
+            source="cli",
+            market_thread_id="lane-alpha",
+            market_resume_contract=contract,
+        )
+
+        assert db.get_market_resume_contract("s1") == contract
+        assert db.get_session("s1")["market_resume_contract"] == contract
+
+        replacement = dict(contract, successor_session_id="s3")
+        assert db.set_market_resume_contract("s1", replacement) is True
+        assert db.get_market_resume_contract("s1") == replacement
+        assert db.set_market_resume_contract("missing", replacement) is False
+
+    def test_market_metadata_columns_reconcile_into_existing_db(self, tmp_path):
+        import sqlite3
+
+        db_path = tmp_path / "legacy_state.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+        conn.execute("INSERT INTO schema_version (version) VALUES (11)")
+        conn.execute(
+            """CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT,
+                title TEXT,
+                api_call_count INTEGER DEFAULT 0,
+                FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
+            )"""
+        )
+        conn.execute("CREATE TABLE state_meta (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, timestamp REAL NOT NULL)")
+        conn.commit()
+        conn.close()
+
+        legacy_db = SessionDB(db_path=db_path)
+        try:
+            legacy_db.create_session("s1", "cli", market_thread_id="lane-alpha")
+            assert legacy_db.get_session("s1")["market_thread_id"] == "lane-alpha"
+        finally:
+            legacy_db.close()
+
 
 # =========================================================================
 # Message storage
