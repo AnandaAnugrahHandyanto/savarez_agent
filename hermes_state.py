@@ -2909,7 +2909,133 @@ class SessionDB:
 
         return result
 
-    def memory_upsert(        self,        id: str,        section: str,        category: str,        key: str,        value: str,    ) -> bool:        """Insert or update a memory entry. Returns True if a new row was inserted."""        def _do(conn: sqlite3.Connection) -> bool:            now = int(time.time())            chars = len(value)            # Try UPDATE first            n = conn.execute(                """UPDATE memories                   SET category=?, key=?, value=?, chars=?,                       updated_at=?, is_active=1                   WHERE section=? AND category=? AND key=? AND is_active=1""",                (category, key, value, chars, now, section, category, key),            ).rowcount            if n > 0:                return False            # Not found — INSERT            conn.execute(                """INSERT INTO memories                   (id, section, category, key, value, chars,                    access_count, last_accessed, is_active, created_at, updated_at)                   VALUES (?, ?, ?, ?, ?, ?, 0, 0, 1, ?, ?)""",                (id, section, category, key, value, chars, now, now),            )            return True        return self._execute_write(_do)    def memory_delete(self, section: str, category: str, key: str) -> bool:        """Soft-delete a memory entry by marking it inactive. Returns True if found."""        def _do(conn: sqlite3.Connection) -> bool:            n = conn.execute(                """UPDATE memories SET is_active=0, updated_at=?                   WHERE section=? AND category=? AND key=? AND is_active=1""",                (int(time.time()), section, category, key),            ).rowcount            return n > 0        return self._execute_write(_do)    def memory_get_active(self, section: str) -> List[Dict[str, Any]]:        """Return all active memory entries for a section, ordered by access_count desc."""        with self._lock:            rows = self._conn.execute(                """SELECT id, section, category, key, value, chars,                          access_count, last_accessed, created_at, updated_at                   FROM memories                   WHERE section=? AND is_active=1                   ORDER BY access_count DESC, last_accessed ASC""",                (section,),            ).fetchall()        return [dict(r) for r in rows]    def memory_touch(self, id: str) -> None:        """Increment access_count and update last_accessed for a memory entry."""        def _do(conn: sqlite3.Connection) -> None:            conn.execute(                """UPDATE memories                   SET access_count = access_count + 1,                       last_accessed = ?                   WHERE id=?""",                (int(time.time()), id),            )        self._execute_write(_do)    def memory_evict_for_section(        self,        section: str,        chars_needed: int,        max_chars: int,    ) -> int:        """Evict lowest-value entries from section until total chars <= max_chars.        Returns the number of entries evicted.        """        def _do(conn: sqlite3.Connection) -> int:            # Get current total chars            total = conn.execute(                "SELECT COALESCE(SUM(chars),0) FROM memories WHERE section=? AND is_active=1",                (section,),            ).fetchone()[0]            if total + chars_needed <= max_chars:                return 0  # No eviction needed            evicted = 0            now = int(time.time())            # Evict lowest access_count, then oldest last_accessed            while total + chars_needed > max_chars:                row = conn.execute(                    """SELECT id, chars FROM memories                       WHERE section=? AND is_active=1                       ORDER BY access_count ASC, last_accessed ASC                       LIMIT 1""",                    (section,),                ).fetchone()                if not row:                    break                conn.execute(                    "UPDATE memories SET is_active=0, updated_at=? WHERE id=?",                    (now, row["id"]),                )                total -= row["chars"]                evicted += 1            return evicted        return self._execute_write(_do)    def memory_total_chars(self, section: str) -> int:        """Return total chars of active entries in a section."""        with self._lock:            row = self._conn.execute(                "SELECT COALESCE(SUM(chars),0) FROM memories WHERE section=? AND is_active=1",                (section,),            ).fetchone()        return row[0] if row else 0    def memory_get_all_categories(self, section: str) -> List[str]:        """Return distinct categories for a section."""
+    def memory_upsert(
+        self,
+        id: str,
+        section: str,
+        category: str,
+        key: str,
+        value: str,
+    ) -> bool:
+        """Insert or update a memory entry. Returns True if a new row was inserted."""
+        def _do(conn: sqlite3.Connection) -> bool:
+            now = int(time.time())
+            chars = len(value)
+            # Try UPDATE first
+            n = conn.execute(
+                """UPDATE memories
+                   SET category=?, key=?, value=?, chars=?,
+                       updated_at=?, is_active=1
+                   WHERE section=? AND category=? AND key=? AND is_active=1""",
+                (category, key, value, chars, now, section, category, key),
+            ).rowcount
+            if n > 0:
+                return False
+            # Not found — INSERT
+            conn.execute(
+                """INSERT INTO memories
+                   (id, section, category, key, value, chars,
+                    access_count, last_accessed, is_active, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 0, 0, 1, ?, ?)""",
+                (id, section, category, key, value, chars, now, now),
+            )
+            return True
+        return self._execute_write(_do)
+
+    def memory_delete(self, section: str, category: str, key: str) -> bool:
+        """Soft-delete a memory entry by marking it inactive. Returns True if found."""
+        def _do(conn: sqlite3.Connection) -> bool:
+            n = conn.execute(
+                """UPDATE memories SET is_active=0, updated_at=?
+                   WHERE section=? AND category=? AND key=? AND is_active=1""",
+                (int(time.time()), section, category, key),
+            ).rowcount
+            return n > 0
+        return self._execute_write(_do)
+
+    def memory_get_active(self, section: str) -> List[Dict[str, Any]]:
+        """Return all active memory entries for a section, ordered by access_count desc."""
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT id, section, category, key, value, chars,
+                          access_count, last_accessed, created_at, updated_at
+                   FROM memories
+                   WHERE section=? AND is_active=1
+                   ORDER BY access_count DESC, last_accessed ASC""",
+                (section,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def memory_touch(self, id: str) -> None:
+        """Increment access_count and update last_accessed for a memory entry."""
+        def _do(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                """UPDATE memories
+                   SET access_count = access_count + 1,
+                       last_accessed = ?
+                   WHERE id=?""",
+                (int(time.time()), id),
+            )
+        self._execute_write(_do)
+
+    def memory_evict_for_section(
+        self,
+        section: str,
+        chars_needed: int,
+        max_chars: int,
+    ) -> int:
+        """Evict lowest-value entries from section until total chars <= max_chars.
+        Returns the number of entries evicted.
+        """
+        def _do(conn: sqlite3.Connection) -> int:
+            # Get current total chars
+            total = conn.execute(
+                "SELECT COALESCE(SUM(chars),0) FROM memories WHERE section=? AND is_active=1",
+                (section,),
+            ).fetchone()[0]
+            if total + chars_needed <= max_chars:
+                return 0  # No eviction needed
+            evicted = 0
+            now = int(time.time())
+            # Evict lowest access_count, then oldest last_accessed
+            while total + chars_needed > max_chars:
+                row = conn.execute(
+                    """SELECT id, chars FROM memories
+                       WHERE section=? AND is_active=1
+                       ORDER BY access_count ASC, last_accessed ASC
+                       LIMIT 1""",
+                    (section,),
+                ).fetchone()
+                if not row:
+                    break
+                conn.execute(
+                    "UPDATE memories SET is_active=0, updated_at=? WHERE id=?",
+                    (now, row["id"]),
+                )
+                total -= row["chars"]
+                evicted += 1
+            return evicted
+        return self._execute_write(_do)
+
+    def memory_total_chars(self, section: str) -> int:
+        """Return total chars of active entries in a section."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COALESCE(SUM(chars),0) FROM memories WHERE section=? AND is_active=1",
+                (section,),
+            ).fetchone()
+        return row[0] if row else 0
+
+    def memory_get_all_categories(self, section: str) -> List[str]:
+        """Return distinct categories for a section."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT category FROM memories "
+                "WHERE section=? AND is_active=1 ORDER BY category",
+                (section,),
+            ).fetchall()
+        return [r[0] for r in rows]
+
     # ── Handoff (cross-platform session transfer) ──────────────────────────
     #
     # State machine:
