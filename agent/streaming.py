@@ -18,6 +18,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from agent.memory_manager import sanitize_context
+from tools.interrupt import set_interrupt as _set_interrupt
 
 logger = logging.getLogger(__name__)
 
@@ -337,9 +338,6 @@ class StreamingMixin:
             self._current_streamed_assistant_text = (
                 getattr(self, "_current_streamed_assistant_text", "") + text
             )
-
-    @staticmethod
-
 
     def _interim_content_was_streamed(self, content: str) -> bool:
         visible_content = self._normalize_interim_visible_text(

@@ -6077,6 +6077,7 @@ class AIAgent(StreamingMixin):
 
     # ── Unified streaming API call ─────────────────────────────────────────
 
+    @staticmethod
     def _normalize_interim_visible_text(text: str) -> str:
         if not isinstance(text, str):
             return ""

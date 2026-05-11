@@ -66,6 +66,8 @@ __all__ = [
     "_strip_non_ascii",
     "_trajectory_normalize_msg",
     "_OPENAI_CLS_CACHE",
+    "_set_interrupt",
+    "_codex_derive_responses_function_call_id",
     "logger",
 ]
 
