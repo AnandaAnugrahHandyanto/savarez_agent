@@ -2445,6 +2445,10 @@ class BasePlatformAdapter(ABC):
         know to retry rather than waiting indefinitely.
         """
 
+        # Scrub secrets ONCE up front so every retry, fallback, and notice
+        # below inherits the redacted payload — no second pass needed (#23810).
+        content = self._redact_outbound(content) or ""
+
         result = await self.send(
             chat_id=chat_id,
             content=content,
