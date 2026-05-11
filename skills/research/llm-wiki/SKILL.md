@@ -27,6 +27,18 @@ summarizes, cross-references, files, and maintains consistency.
 
 Gordon wants the wiki maintained **passively** — he reads it in a browser at `https://hermes-pages.rouse-gordon.workers.dev/wiki/`, I file updates during our conversations without prompting. He doesn't want to be asked "should I add this?" every time.
 
+### Public standalone knowledge bases on Hermes Pages
+
+When Gordon asks to create a new "LLM wiki knowledge base" and also says it should appear on the Hermes Pages homepage, treat it as a **public standalone static knowledge base** unless he explicitly asks for the password-protected personal `/wiki/`. Use `/opt/data/hermes-pages/<topic-kb>/` with small interlinked HTML pages plus a homepage card in `/opt/data/hermes-pages/index.html`. This is different from updating the protected personal wiki.
+
+Recommended pattern:
+1. Research broadly first; for deep technical domains, delegate parallel research streams (fundamentals, latest research, applied/commercial context) and synthesize before writing.
+2. Build a hub page (`index.html`) plus 6–10 concise child pages, not one giant article.
+3. Include a `sources.html` reading list with source titles and URLs.
+4. Keep the design high-contrast and navigable with a sticky side nav.
+5. Validate internal links locally before deploying.
+6. Deploy with the direct Cloudflare Pages workflow from `html-to-cloudflare`, then verify homepage card and representative child pages live.
+
 **How it works now for Gordon:**
 - Preferred homepage: `https://hermes-pages-d55.pages.dev/` (links to Wiki and Profession)
 - Static wiki HTML: `/opt/data/hermes-pages/wiki/`
@@ -45,7 +57,7 @@ Gordon wants the wiki maintained **passively** — he reads it in a browser at `
 6. Verify with browser-like curl: `curl -L -A 'Mozilla/5.0' -H 'Cookie: wiki_auth=GW2026' <live-url>` because Python `urllib` can get Cloudflare 403s
 7. Live in ~30 seconds at `https://hermes-pages-d55.pages.dev/wiki/`
 
-Detailed Gordon-specific notes: see `references/gordon-static-html-wiki-maintenance.md`. For reducing duplication by refactoring hub/child topology, see `references/gordon-static-html-wiki-topology-refactors.md`.
+Detailed Gordon-specific notes: see `references/gordon-static-html-wiki-maintenance.md`. For reducing duplication by refactoring hub/child topology, see `references/gordon-static-html-wiki-topology-refactors.md`. For public standalone KBs linked from the Hermes Pages homepage, see `references/public-static-kb-on-hermes-pages.md`.
 
 **To add the wiki to Obsidian later:** Clone `https://github.com/rousegordon-ops/hermes-pages`, point Obsidian at `gordons-llm-wiki/` subdirectory.
 
