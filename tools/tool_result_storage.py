@@ -68,6 +68,26 @@ def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) 
     return truncated, True
 
 
+def _redact_preview(preview: str) -> str:
+    """Apply secret redaction to a persisted-output preview.
+
+    The full content written to the sandbox file is untouched (the model can
+    still read_file the original); only the bounded preview that lands in
+    durable session/transcript state is scrubbed. ``force=True`` because this
+    is a privacy boundary that should fire regardless of the operator's
+    global ``security.redact_secrets`` setting. Any exception falls back to
+    the un-redacted preview rather than breaking tool execution.
+    """
+    if not preview:
+        return preview
+    try:
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text(preview, force=True)
+    except Exception as exc:
+        logger.warning("Preview redaction failed, using raw preview: %s", exc)
+        return preview
+
+
 def _heredoc_marker(content: str) -> str:
     """Return a heredoc delimiter that doesn't collide with content."""
     if HEREDOC_MARKER not in content:
@@ -155,6 +175,7 @@ def maybe_persist_tool_result(
     storage_dir = _resolve_storage_dir(env)
     remote_path = f"{storage_dir}/{tool_use_id}.txt"
     preview, has_more = generate_preview(content, max_chars=config.preview_size)
+    redacted_preview = _redact_preview(preview)
 
     if env is not None:
         try:
@@ -163,7 +184,7 @@ def maybe_persist_tool_result(
                     "Persisted large tool result: %s (%s, %d chars -> %s)",
                     tool_name, tool_use_id, len(content), remote_path,
                 )
-                return _build_persisted_message(preview, has_more, len(content), remote_path)
+                return _build_persisted_message(redacted_preview, has_more, len(content), remote_path)
         except Exception as exc:
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
 
@@ -172,7 +193,7 @@ def maybe_persist_tool_result(
         tool_name, len(content),
     )
     return (
-        f"{preview}\n\n"
+        f"{redacted_preview}\n\n"
         f"[Truncated: tool response was {len(content):,} chars. "
         f"Full output could not be saved to sandbox.]"
     )

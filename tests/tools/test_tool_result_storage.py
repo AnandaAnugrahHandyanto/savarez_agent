@@ -422,6 +422,85 @@ class TestMaybePersistToolResult:
         assert PERSISTED_OUTPUT_TAG in result
 
 
+# ── preview redaction ─────────────────────────────────────────────────
+
+class TestPreviewRedaction:
+    """Inline previews embedded in <persisted-output> blocks must be scrubbed
+    of obvious secrets before they land in durable session/transcript state.
+    The full content written to the sandbox file stays untouched so the model
+    can still read_file the original."""
+
+    def test_canary_secret_redacted_in_preview(self):
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        # Synthetic canary: an OpenAI-style key prefix followed by enough
+        # filler to push past the persistence threshold.
+        secret = "sk-CANARYabcdefghijklmnopqrstuv"
+        content = f"line 0 {secret}\n" + "filler line\n" * 5_000
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="tc_redact",
+            env=env,
+            threshold=30_000,
+        )
+        assert PERSISTED_OUTPUT_TAG in result
+        # Raw secret must not survive into the in-context preview.
+        assert secret not in result
+
+    def test_full_content_to_sandbox_is_not_redacted(self):
+        """The on-disk copy stays verbatim — only the preview is scrubbed."""
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        secret = "sk-CANARYabcdefghijklmnopqrstuv"
+        content = f"{secret}\n" + "x" * 60_000
+        maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="tc_disk",
+            env=env,
+            threshold=30_000,
+        )
+        # stdin payload must be byte-exact — the model needs to recover the
+        # original via read_file.
+        assert env.execute.call_args[1]["stdin_data"] == content
+
+    def test_redaction_failure_falls_back_to_raw_preview(self):
+        """If redact_sensitive_text raises, persistence still succeeds with
+        the un-redacted preview rather than breaking tool execution."""
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        content = "DISTINCTIVE_PREVIEW_TOKEN " + "x" * 60_000
+        with patch(
+            "agent.redact.redact_sensitive_text",
+            side_effect=RuntimeError("regex engine exploded"),
+        ):
+            result = maybe_persist_tool_result(
+                content=content,
+                tool_name="terminal",
+                tool_use_id="tc_fallback",
+                env=env,
+                threshold=30_000,
+            )
+        assert PERSISTED_OUTPUT_TAG in result
+        assert "DISTINCTIVE_PREVIEW_TOKEN" in result
+
+    def test_inline_truncation_path_also_redacts(self):
+        """The no-env / write-failed fallback also has to scrub the preview —
+        it's the same persistence boundary."""
+        secret = "ghp_CANARYabcdefghijklmnop"
+        content = f"{secret}\n" + "y" * 60_000
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="tc_inline_redact",
+            env=None,
+            threshold=30_000,
+        )
+        assert "Truncated" in result
+        assert secret not in result
+
+
 # ── enforce_turn_budget ───────────────────────────────────────────────
 
 class TestEnforceTurnBudget:
