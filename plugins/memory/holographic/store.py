@@ -6,6 +6,7 @@ Single-user Hermes memory store plugin.
 import re
 import sqlite3
 import threading
+import os
 from pathlib import Path
 
 try:
@@ -117,6 +118,7 @@ class MemoryStore:
             check_same_thread=False,
             timeout=10.0,
         )
+        os.chmod(str(self.db_path), 0o600)
         self._lock = threading.RLock()
         self._conn.row_factory = sqlite3.Row
         self._init_db()

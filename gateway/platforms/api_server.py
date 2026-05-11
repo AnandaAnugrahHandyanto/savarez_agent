@@ -312,6 +312,15 @@ class ResponseStore:
             self._conn = sqlite3.connect(db_path, check_same_thread=False)
         except Exception:
             self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+        # Enforce 600 permissions — sqlite3 on macOS creates files with
+        # default umask (0022 → 644), leaking conversation data to other
+        # local users. This also covers profile-specific DB copies under
+        # ~/.hermes/profiles/<name>/.
+        try:
+            if db_path not in (":memory:", None, "") and os.path.exists(db_path):
+                os.chmod(db_path, 0o600)
+        except Exception:
+            pass
         # Use shared WAL-fallback helper so response_store.db degrades
         # gracefully on NFS/SMB/FUSE-mounted HERMES_HOME (same filesystem
         # issue addressed for state.db/kanban.db — see
