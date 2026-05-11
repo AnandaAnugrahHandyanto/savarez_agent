@@ -1199,6 +1199,11 @@ class AIAgent:
         self.base_url = base_url or ""
         provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
         self.provider = provider_name or ""
+        if self.provider == "mlx-local" and not self.base_url:
+            self.base_url = "mlx://local"
+            base_url = self.base_url
+        if self.base_url.startswith("mlx://local") and not api_key:
+            api_key = "mlx-local"
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
         if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}:
@@ -6284,9 +6289,25 @@ class AIAgent:
         # copy locks the contract so future transport/keepalive work can't reintroduce
         # the same class of bug.
         client_kwargs = dict(client_kwargs)
+        base_url = str(client_kwargs.get("base_url", "") or "")
+        if self.provider == "mlx-local" or base_url.startswith("mlx://local"):
+            from agent.mlx_local_client import MLXLocalClient
+
+            safe_kwargs = {
+                k: v for k, v in client_kwargs.items()
+                if k in {"api_key", "base_url", "default_headers", "timeout", "command"}
+            }
+            client = MLXLocalClient(**safe_kwargs)
+            logger.info(
+                "MLX local client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                self._client_log_context(),
+            )
+            return client
         _validate_proxy_env_urls()
         _validate_base_url(client_kwargs.get("base_url"))
-        if self.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
+        if self.provider == "copilot-acp" or base_url.startswith("acp://copilot"):
             from agent.copilot_acp_client import CopilotACPClient
 
             client = CopilotACPClient(**client_kwargs)
