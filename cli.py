@@ -3322,10 +3322,22 @@ class HermesCLI:
         except Exception as exc:
             _primary_exc = exc
 
-        # Primary provider auth failed — try fallback providers before giving up.
+        # Primary provider auth failed OR endpoint unreachable —
+        # try fallback providers before giving up.
         if runtime is None and _primary_exc is not None:
+            import httpx as _httpx
             from hermes_cli.auth import AuthError
-            if isinstance(_primary_exc, AuthError):
+            _NETWORK_ERRORS = (
+                _httpx.ConnectError,
+                _httpx.TimeoutException,
+                ConnectionError,
+            )
+            if isinstance(_primary_exc, (AuthError, *_NETWORK_ERRORS)):
+                _exc_kind = (
+                    "connection/timeout error"
+                    if isinstance(_primary_exc, _NETWORK_ERRORS)
+                    else "auth failed"
+                )
                 _fb_chain = self._fallback_model if isinstance(self._fallback_model, list) else []
                 for _fb in _fb_chain:
                     _fb_provider = (_fb.get("provider") or "").strip().lower()
@@ -3335,10 +3347,10 @@ class HermesCLI:
                     try:
                         runtime = resolve_runtime_provider(requested=_fb_provider)
                         logger.warning(
-                            "Primary provider auth failed (%s). Falling through to fallback: %s/%s",
-                            _primary_exc, _fb_provider, _fb_model,
+                            "Primary provider %s (%s). Falling through to fallback: %s/%s",
+                            _exc_kind, _primary_exc, _fb_provider, _fb_model,
                         )
-                        _cprint(f"⚠️  Primary auth failed — switching to fallback: {_fb_provider} / {_fb_model}")
+                        _cprint(f"⚠️  Primary {_exc_kind} — switching to fallback: {_fb_provider} / {_fb_model}")
                         self.requested_provider = _fb_provider
                         self.model = _fb_model
                         _primary_exc = None

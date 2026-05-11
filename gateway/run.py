@@ -545,15 +545,27 @@ def _resolve_runtime_agent_kwargs() -> dict:
         format_runtime_provider_error,
     )
     from hermes_cli.auth import AuthError
+    import httpx as _httpx
+
+    # Exceptions that indicate the primary endpoint is unreachable or
+    # misbehaving.  All of these should trigger the fallback chain, not
+    # surface as a hard error.
+    _NETWORK_ERRORS = (
+        _httpx.ConnectError,       # connection refused / DNS failure
+        _httpx.TimeoutException,   # ConnectTimeout, ReadTimeout, WriteTimeout, PoolTimeout
+        ConnectionError,           # stdlib (OSError subclass, broad net)
+    )
 
     try:
         runtime = resolve_runtime_provider(
             requested=os.getenv("HERMES_INFERENCE_PROVIDER"),
         )
-    except AuthError as auth_exc:
-        # Primary provider auth failed (expired token, revoked key, etc.).
+    except (AuthError, *_NETWORK_ERRORS) as auth_exc:
+        # Primary provider auth failed (expired token, revoked key, etc.)
+        # OR the endpoint was unreachable (connection refused, timeout).
         # Try the fallback provider chain before raising.
-        logger.warning("Primary provider auth failed: %s — trying fallback", auth_exc)
+        exc_label = "connection/timeout error" if isinstance(auth_exc, _NETWORK_ERRORS) else "auth failed"
+        logger.warning("Primary provider %s: %s — trying fallback", exc_label, auth_exc)
         fb_config = _try_resolve_fallback_provider()
         if fb_config is not None:
             return fb_config
