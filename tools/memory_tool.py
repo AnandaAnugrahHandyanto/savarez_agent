@@ -32,6 +32,12 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# Auto-append to memo.txt for ultra-long-term backup
+try:
+    from tools.memo_append import memo_append_memory
+except ImportError:
+    memo_append_memory = None  # type: ignore
+
 ENTRY_DELIMITER = "\n§\n"
 
 # Default category for entries (used for future multi-category queries)
@@ -124,7 +130,16 @@ class MemoryStore:
         """Load entries from DB, capture system prompt snapshot."""
         for section in ("memory", "user"):
             rows = self._db.memory_get_active(section)
-            self._live_entries[section] = [r["value"] for r in rows]
+            # Deduplicate by value: if the same content exists under different
+            # UUIDs (e.g. from a stray memory_upsert call), keep only the first.
+            seen: set[str] = set()
+            unique: list[str] = []
+            for r in rows:
+                v = r["value"]
+                if v not in seen:
+                    seen.add(v)
+                    unique.append(v)
+            self._live_entries[section] = unique
         self._refresh_snapshot()
 
     def refresh(self):
@@ -190,14 +205,18 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         entries = self._entries_for(target)
-        # Reject exact duplicates
-        if content in entries:
-            return self._success_response(target, "Entry already exists (no duplicate added).")
 
         limit = self._char_limit(target)
         new_chars = len(content)
 
         with self._db_lock():
+            # Deduplicate at DB level: check if an active entry with the same
+            # value already exists before inserting. This guards against
+            # memory_upsert being called directly with duplicate content.
+            existing = self._db.memory_get_active(target)
+            if any(r["value"] == content for r in existing):
+                return self._success_response(target, "Entry already exists (no duplicate added).")
+
             # Evict lowest-value entries until we have room
             evicted = self._db.memory_evict_for_section(target, new_chars, limit)
             if evicted > 0:
@@ -217,6 +236,11 @@ class MemoryStore:
             self._live_entries[target].append(content)
 
         self._refresh_snapshot()
+
+        # Auto-append to memo.txt for ultra-long-term backup
+        if memo_append_memory is not None:
+            memo_append_memory("add", content, target)
+
         return self._success_response(target, "Entry added.")
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
@@ -281,6 +305,11 @@ class MemoryStore:
             self._live_entries[target][idx] = new_content
 
         self._refresh_snapshot()
+
+        # Auto-append to memo.txt for ultra-long-term backup
+        if memo_append_memory is not None:
+            memo_append_memory("replace", new_content, target)
+
         return self._success_response(target, "Entry replaced.")
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
@@ -321,6 +350,11 @@ class MemoryStore:
                     break
 
         self._refresh_snapshot()
+
+        # Auto-append removal to memo.txt for ultra-long-term backup
+        if memo_append_memory is not None:
+            memo_append_memory("remove", old_value, target)
+
         return self._success_response(target, "Entry removed.")
 
     # -------------------------------------------------------------------------
