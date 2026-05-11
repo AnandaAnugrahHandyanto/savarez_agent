@@ -153,6 +153,36 @@
   var apiDelete = function(path)       { return api("DELETE", path); };
 
   // --------------------------------------------------------------------------
+  // File type helpers
+  // --------------------------------------------------------------------------
+
+  var EDITABLE_EXTENSIONS = { ".md": true, ".markdown": true, ".txt": true, ".text": true };
+  var KORDOC_EXTENSIONS = {
+    ".hwp": true, ".hwpx": true, ".pdf": true,
+    ".xlsx": true, ".xls": true, ".docx": true,
+  };
+
+  function fileExtension(rel) {
+    var name = (rel || "").split("/").pop() || "";
+    var idx = name.lastIndexOf(".");
+    return idx >= 0 ? name.slice(idx).toLowerCase() : "";
+  }
+
+  function isEditableFile(rel) {
+    var ext = fileExtension(rel);
+    return !ext || !!EDITABLE_EXTENSIONS[ext];
+  }
+
+  function isKordocSource(rel) {
+    return !!KORDOC_EXTENSIONS[fileExtension(rel)];
+  }
+
+  function fileTypeLabel(rel) {
+    var ext = fileExtension(rel);
+    return ext ? ext.slice(1).toUpperCase() : "File";
+  }
+
+  // --------------------------------------------------------------------------
   // WorkspaceLauncher — initial screen: list workspaces, add new
   // --------------------------------------------------------------------------
 
@@ -396,6 +426,9 @@
     var onChange   = props.onChange;
     var activeFile = props.activeFile;
     var onSelection = props.onSelection || function() {};
+    var editable   = props.editable !== false;
+    var conversion = props.conversion || {};
+    var onPreviewConversion = props.onPreviewConversion || function() {};
 
     if (!activeFile) {
       return h("div", { className: "hd-editor-empty" },
@@ -404,6 +437,14 @@
           "Select a file from the workspace drawer to start editing."
         )
       );
+    }
+
+    if (!editable) {
+      return h(FileViewer, {
+        activeFile: activeFile,
+        conversion: conversion,
+        onPreviewConversion: onPreviewConversion,
+      });
     }
 
     if (mode === "preview") {
@@ -454,6 +495,63 @@
         });
       },
     });
+  }
+
+  // --------------------------------------------------------------------------
+  // FileViewer — non-Markdown documents and Kordoc preview
+  // --------------------------------------------------------------------------
+
+  function FileViewer(props) {
+    var activeFile = props.activeFile;
+    var conversion = props.conversion || {};
+    var status = conversion.status;
+    var preview = conversion.preview;
+    var busy = !!conversion.busy;
+    var error = conversion.error || "";
+    var canConvert = isKordocSource(activeFile);
+    var extLabel = fileTypeLabel(activeFile);
+
+    return h("div", { className: "hd-fileviewer" },
+      h("div", { className: "hd-fileviewer__card" },
+        h("div", { className: "hd-fileviewer__eyebrow" }, extLabel, " document"),
+        h("h2", { className: "hd-fileviewer__title" }, activeFile.split("/").pop()),
+        h("p", { className: "hd-fileviewer__copy" },
+          canConvert
+            ? "This file stays in its original folder. Use Kordoc to preview a Markdown conversion without changing the source file."
+            : "This file type is available in the workspace, but Hermes Docs only edits Markdown-like text files directly."
+        ),
+        canConvert && h("div", { className: "hd-fileviewer__actions" },
+          h("button", {
+            className: "hd-btn hd-btn--primary",
+            disabled: busy,
+            onClick: props.onPreviewConversion,
+          }, busy ? "Previewing\u2026" : "Preview with Kordoc"),
+          status && h("span", { className: "hd-fileviewer__status" },
+            status.available ? "Kordoc available" : "Kordoc unavailable"
+          )
+        ),
+        error && h("div", { className: "hd-banner hd-banner--error" },
+          h(Icon, { name: "warn", size: 13 }), " ", error
+        ),
+        preview && h("div", { className: "hd-conversion" },
+          h("div", { className: "hd-conversion__meta" },
+            h("span", null, preview.available ? "Conversion preview" : "Conversion unavailable"),
+            h("span", null, preview.message || "")
+          ),
+          preview.content
+            ? h("div", {
+                className: "hd-conversion__preview hd-editor-preview",
+                dangerouslySetInnerHTML: { __html: renderMarkdown(preview.content) },
+              })
+            : h("div", { className: "hd-conversion__empty" },
+                preview.message || (status && status.detail) || "No conversion output available."
+              )
+        ),
+        !canConvert && h("div", { className: "hd-fileviewer__note" },
+          "Supported conversion sources: PDF, XLSX, XLS, DOCX, HWP, HWPX."
+        )
+      )
+    );
   }
 
   // --------------------------------------------------------------------------
@@ -535,6 +633,7 @@
 
   var COMMANDS = [
     { cmd: ":preview",  desc: "Toggle preview mode" },
+    { cmd: ":convert",  desc: "Preview conversion with Kordoc" },
     { cmd: ":save",     desc: "Save file" },
     { cmd: ":chat",     desc: "Open side chat" },
     { cmd: ":settings", desc: "Open settings" },
@@ -940,6 +1039,11 @@
     // Diff preview
     var diffState        = useState(null); var diff = diffState[0]; var setDiff = diffState[1];
 
+    // Conversion preview
+    var conversionState  = useState({ status: null, preview: null, busy: false, error: "" });
+    var conversion       = conversionState[0];
+    var setConversion    = conversionState[1];
+
     // Comments
     var commentsArr   = useState([]); var comments = commentsArr[0]; var setComments = commentsArr[1];
     var showCmtArr    = useState(false); var showComments = showCmtArr[0]; var setShowComments = showCmtArr[1];
@@ -948,7 +1052,11 @@
     var selInfoArr    = useState(null); var selInfo = selInfoArr[0]; var setSelInfo = selInfoArr[1];
     var showCFormArr  = useState(false); var showCForm = showCFormArr[0]; var setShowCForm = showCFormArr[1];
 
-    var dirty = useMemo(function() { return content !== savedContent; }, [content, savedContent]);
+    var activeFileEditable = !!activeFile && isEditableFile(activeFile);
+    var activeFileConvertible = !!activeFile && isKordocSource(activeFile);
+    var dirty = useMemo(function() {
+      return activeFileEditable && content !== savedContent;
+    }, [activeFileEditable, content, savedContent]);
 
     // ── Load workspaces on mount ──
     useEffect(function() {
@@ -1008,6 +1116,7 @@
       setActiveFile(null); setContent(""); setSavedContent("");
       setMessages([]); setShowSettings(false);
       setComments([]); setSelInfo(null); setShowCForm(false); setShowComments(false);
+      setConversion({ status: null, preview: null, busy: false, error: "" });
     }
 
     function handleAddWorkspace(name, path) {
@@ -1029,6 +1138,13 @@
       }
       setActiveFile(rel);
       setSelInfo(null); setShowCForm(false);
+      setConversion({ status: null, preview: null, busy: false, error: "" });
+      if (!isEditableFile(rel)) {
+        setContent("");
+        setSavedContent("");
+        setEditorMode("preview");
+        return;
+      }
       apiGet("/workspaces/" + activeWs.id + "/file?rel=" + encodeURIComponent(rel))
         .then(function(data) { setContent(data.content || ""); setSavedContent(data.content || ""); })
         .catch(function(err) { setContent(""); setSavedContent(""); setError(err.message || "Failed to read file"); });
@@ -1036,10 +1152,48 @@
 
     function handleSave() {
       if (!activeFile || !activeWs) return;
+      if (!isEditableFile(activeFile)) {
+        setError("Only Markdown-like text files can be saved directly.");
+        return;
+      }
       apiPut("/workspaces/" + activeWs.id + "/file?rel=" + encodeURIComponent(activeFile),
         { content: content, preview: true })
         .then(function(d) { if (d && d.preview) setDiff(d); })
         .catch(function(err) { setError(err.message || "Preview failed"); });
+    }
+
+    function handlePreviewConversion() {
+      if (!activeWs || !activeFile || !isKordocSource(activeFile)) return;
+      setConversion(function(prev) {
+        return {
+          status: prev.status || null,
+          preview: prev.preview || null,
+          busy: true,
+          error: "",
+        };
+      });
+      apiGet("/kordoc/status")
+        .then(function(status) {
+          setConversion(function(prev) {
+            return { status: status, preview: prev.preview || null, busy: true, error: "" };
+          });
+          return apiPost("/workspaces/" + activeWs.id + "/kordoc/preview", {
+            rel: activeFile,
+            target_format: "markdown",
+          }).then(function(preview) {
+            setConversion({ status: status, preview: preview, busy: false, error: "" });
+          });
+        })
+        .catch(function(err) {
+          setConversion(function(prev) {
+            return {
+              status: prev.status || null,
+              preview: prev.preview || null,
+              busy: false,
+              error: err.message || "Conversion preview failed",
+            };
+          });
+        });
     }
 
     function handleConfirmWrite() {
@@ -1114,7 +1268,11 @@
 
     // ── Command bar ──
     function handleCommand(cmd) {
-      if (cmd === ":preview")   { setEditorMode(function(m) { return m === "preview" ? "edit" : "preview"; }); return; }
+      if (cmd === ":preview")   {
+        if (activeFileEditable) setEditorMode(function(m) { return m === "preview" ? "edit" : "preview"; });
+        return;
+      }
+      if (cmd === ":convert")   { handlePreviewConversion(); return; }
       if (cmd === ":save")      { handleSave(); return; }
       if (cmd === ":chat")      { setSideChatOpen(true); return; }
       if (cmd === ":settings")  { setShowSettings(true); return; }
@@ -1258,7 +1416,7 @@
                   ? h("span", { className: "hd-editor-header__filename" }, activeFile.split("/").pop())
                   : h("span", null, activeWs.name)
               ),
-              activeFile && h("div", { className: "hd-editor-mode-tabs" },
+              activeFile && activeFileEditable && h("div", { className: "hd-editor-mode-tabs" },
                 ["edit", "preview", "source"].map(function(m) {
                   return h("button", {
                     key: m,
@@ -1268,10 +1426,16 @@
                 })
               ),
               // quiet hint when no selection is active
-              activeFile && !selInfo && h("span", { className: "hd-editor-select-hint" },
+              activeFile && activeFileEditable && !selInfo && h("span", { className: "hd-editor-select-hint" },
                 h(Icon, { name: "comment", size: 11, color: "var(--hd-muted)" }),
                 "\u00a0Select text to comment"
-              )
+              ),
+              activeFile && activeFileConvertible && h("button", {
+                className: "hd-btn hd-btn--ghost",
+                style: { height: 28, padding: "0 10px", fontSize: 12 },
+                disabled: conversion.busy,
+                onClick: handlePreviewConversion,
+              }, conversion.busy ? "Previewing\u2026" : "Kordoc preview")
             ),
 
             // Editor body
@@ -1283,6 +1447,9 @@
                     mode: editorMode,
                     onChange: setContent,
                     activeFile: activeFile,
+                    editable: activeFileEditable,
+                    conversion: conversion,
+                    onPreviewConversion: handlePreviewConversion,
                     onSelection: handleSelectionDetected,
                   })
                 ),

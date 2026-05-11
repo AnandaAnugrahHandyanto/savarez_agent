@@ -93,6 +93,8 @@
   line-height: 1.5;
   color: var(--hd-ink);
   background: var(--hd-canvas);
+  text-transform: none;
+  letter-spacing: 0;
   overflow: hidden;
   position: relative;
   box-sizing: border-box;
@@ -100,6 +102,8 @@
 
 .hd-app *, .hd-app *::before, .hd-app *::after {
   box-sizing: inherit;
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 /* ─── Launcher (workspace picker screen) ─────────────────────────────────── */
@@ -693,6 +697,89 @@
 
 .hd-editor-empty__text {
   font-size: 14px;
+  color: var(--hd-steel);
+}
+
+/* ─── File viewer / Kordoc preview ───────────────────────────────────────── */
+
+.hd-fileviewer {
+  min-height: 100%;
+  display: flex;
+  justify-content: center;
+  padding: var(--hd-sp-xxl) var(--hd-sp-xl);
+  background: var(--hd-canvas);
+}
+
+.hd-fileviewer__card {
+  width: min(760px, 100%);
+  align-self: flex-start;
+  border: 1px solid var(--hd-hairline);
+  border-radius: var(--hd-r-md);
+  background: var(--hd-surface);
+  padding: var(--hd-sp-xl);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
+}
+
+.hd-fileviewer__eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--hd-stone);
+  margin-bottom: var(--hd-sp-xs);
+}
+
+.hd-fileviewer__title {
+  margin: 0 0 var(--hd-sp-sm);
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--hd-ink);
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
+.hd-fileviewer__copy,
+.hd-fileviewer__note,
+.hd-fileviewer__status {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--hd-steel);
+}
+
+.hd-fileviewer__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--hd-sp-sm);
+  margin: var(--hd-sp-md) 0;
+}
+
+.hd-conversion {
+  margin-top: var(--hd-sp-lg);
+  border: 1px solid var(--hd-hairline);
+  border-radius: var(--hd-r-md);
+  overflow: hidden;
+  background: var(--hd-canvas);
+}
+
+.hd-conversion__meta {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--hd-sp-md);
+  padding: var(--hd-sp-sm) var(--hd-sp-md);
+  border-bottom: 1px solid var(--hd-hairline-soft);
+  font-size: 12px;
+  color: var(--hd-stone);
+}
+
+.hd-conversion__preview {
+  max-width: none;
+  margin: 0;
+  padding: var(--hd-sp-lg);
+}
+
+.hd-conversion__empty {
+  padding: var(--hd-sp-lg);
+  font-size: 13px;
   color: var(--hd-steel);
 }
 
