@@ -3725,20 +3725,29 @@ def call_llm(
         # When the provider returns a 429 rate-limit (not billing), fall
         # back to an alternative provider instead of exhausting retries
         # against the same rate-limited endpoint.
+        #
+        # ── Auto auth fallback (#23670) ──────────────────────────────
+        # Auto-routed auxiliary calls may inherit the main provider
+        # (including openai-codex). When that auto-selected backend returns
+        # an auth error and provider-specific refresh/recovery did not fix
+        # it, try the next auxiliary backend instead of failing the side task.
+        # Keep explicit auxiliary providers strict: they still refresh/retry
+        # or raise, but do not silently hop providers.
+        is_auto = resolved_provider in ("auto", "", None)
+        auth_fallback = is_auto and _is_auth_error(first_err)
         should_fallback = (
             _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or auth_fallback
         )
-        # Only try alternative providers when the user didn't explicitly
-        # configure this task's provider.  Explicit provider = hard constraint;
-        # auto (the default) = best-effort fallback chain.  (#7559)
-        is_auto = resolved_provider in ("auto", "", None)
         if should_fallback and is_auto:
             if _is_payment_error(first_err):
                 reason = "payment error"
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
+            elif auth_fallback:
+                reason = "auth error"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
@@ -4013,17 +4022,21 @@ async def async_call_llm(
                         await retry_client.chat.completions.create(**retry_kwargs), task)
 
         # ── Payment / connection / rate-limit fallback (mirrors sync call_llm) ──
+        is_auto = resolved_provider in ("auto", "", None)
+        auth_fallback = is_auto and _is_auth_error(first_err)
         should_fallback = (
             _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or auth_fallback
         )
-        is_auto = resolved_provider in ("auto", "", None)
         if should_fallback and is_auto:
             if _is_payment_error(first_err):
                 reason = "payment error"
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
+            elif auth_fallback:
+                reason = "auth error"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",

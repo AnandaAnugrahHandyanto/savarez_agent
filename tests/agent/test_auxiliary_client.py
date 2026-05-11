@@ -932,6 +932,11 @@ class TestCallLlmPaymentFallback:
         exc.status_code = 429
         return exc
 
+    def _make_401_auth_error(self, msg="User not found"):
+        exc = Exception(msg)
+        exc.status_code = 401
+        return exc
+
     def test_non_payment_error_not_caught(self, monkeypatch):
         """Non-payment/non-connection errors (500) should NOT trigger fallback."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -976,6 +981,64 @@ class TestCallLlmPaymentFallback:
             )
         # Fallback client should have been used
         assert fallback_client.chat.completions.create.called
+
+    def test_auto_auth_error_triggers_fallback(self):
+        """Auto-routed auth failures should fall through to the next provider."""
+        primary_client = MagicMock()
+        primary_client.base_url = "https://chatgpt.com/backend-api/codex"
+        primary_client.chat.completions.create.side_effect = self._make_401_auth_error()
+
+        fallback_client = MagicMock()
+        fallback_client.base_url = "https://openrouter.ai/api/v1"
+        fallback_response = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="fallback response"))
+        ])
+        fallback_client.chat.completions.create.return_value = fallback_response
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(primary_client, "gpt-5.4"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "gpt-5.4", None, None, None),
+        ), patch(
+            "agent.auxiliary_client._try_payment_fallback",
+            return_value=(fallback_client, "fallback-model", "openrouter"),
+        ) as mock_fallback:
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is fallback_response
+        mock_fallback.assert_called_once_with("auto", "compression", reason="auth error")
+        assert fallback_client.chat.completions.create.called
+
+    def test_explicit_auth_error_does_not_fallback(self):
+        """Explicit auxiliary providers must keep auth failures strict."""
+        primary_client = MagicMock()
+        primary_client.base_url = "https://chatgpt.com/backend-api/codex"
+        primary_client.chat.completions.create.side_effect = self._make_401_auth_error()
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(primary_client, "gpt-5.4"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("openai-codex", "gpt-5.4", None, None, None),
+        ), patch(
+            "agent.auxiliary_client._refresh_provider_credentials",
+            return_value=False,
+        ), patch(
+            "agent.auxiliary_client._try_payment_fallback",
+        ) as mock_fallback:
+            with pytest.raises(Exception, match="User not found"):
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+
+        mock_fallback.assert_not_called()
 
 # ---------------------------------------------------------------------------
 # Gate: _resolve_api_key_provider must skip anthropic when not configured
@@ -1211,6 +1274,79 @@ class TestKimiTemperatureOmitted:
 # ---------------------------------------------------------------------------
 # async_call_llm payment / connection fallback (#7512 bug 2)
 # ---------------------------------------------------------------------------
+
+
+class TestAsyncCallLlmPaymentFallback:
+    def _make_401_auth_error(self, msg="User not found"):
+        exc = Exception(msg)
+        exc.status_code = 401
+        return exc
+
+    @pytest.mark.asyncio
+    async def test_auto_auth_error_triggers_fallback(self):
+        primary_client = MagicMock()
+        primary_client.base_url = "https://chatgpt.com/backend-api/codex"
+        primary_client.chat.completions.create = AsyncMock(
+            side_effect=self._make_401_auth_error()
+        )
+
+        fallback_client = MagicMock()
+        fallback_client.base_url = "https://openrouter.ai/api/v1"
+        fallback_response = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="fallback response"))
+        ])
+        fallback_async = MagicMock()
+        fallback_async.chat.completions.create = AsyncMock(return_value=fallback_response)
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(primary_client, "gpt-5.4"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "gpt-5.4", None, None, None),
+        ), patch(
+            "agent.auxiliary_client._try_payment_fallback",
+            return_value=(fallback_client, "fallback-model", "openrouter"),
+        ) as mock_fallback, patch(
+            "agent.auxiliary_client._to_async_client",
+            return_value=(fallback_async, "fallback-model"),
+        ):
+            result = await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is fallback_response
+        mock_fallback.assert_called_once_with("auto", "compression", reason="auth error")
+        assert fallback_async.chat.completions.create.called
+
+    @pytest.mark.asyncio
+    async def test_explicit_auth_error_does_not_fallback(self):
+        primary_client = MagicMock()
+        primary_client.base_url = "https://chatgpt.com/backend-api/codex"
+        primary_client.chat.completions.create = AsyncMock(
+            side_effect=self._make_401_auth_error()
+        )
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(primary_client, "gpt-5.4"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("openai-codex", "gpt-5.4", None, None, None),
+        ), patch(
+            "agent.auxiliary_client._refresh_provider_credentials",
+            return_value=False,
+        ), patch(
+            "agent.auxiliary_client._try_payment_fallback",
+        ) as mock_fallback:
+            with pytest.raises(Exception, match="User not found"):
+                await async_call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+
+        mock_fallback.assert_not_called()
 
 
 class TestStaleBaseUrlWarning:
