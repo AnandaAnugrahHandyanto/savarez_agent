@@ -11431,11 +11431,16 @@ class GatewayRunner:
             if choice == "always":
                 try:
                     from cli import save_config_value
-                    save_config_value("approvals.destructive_slash_confirm", False)
-                    logger.info(
-                        "User opted out of destructive slash confirm (session=%s)",
-                        session_key,
-                    )
+                    saved = save_config_value("approvals.destructive_slash_confirm", False)
+                    if saved:
+                        logger.info(
+                            "User opted out of destructive slash confirm (session=%s)",
+                            session_key,
+                        )
+                    else:
+                        logger.warning(
+                            "Failed to persist destructive_slash_confirm=false (save_config_value returned False)"
+                        )
                 except Exception as exc:
                     logger.warning(
                         "Failed to persist destructive_slash_confirm=false: %s", exc,
