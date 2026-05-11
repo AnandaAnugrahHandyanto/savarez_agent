@@ -5,10 +5,24 @@ without risk of circular imports.
 """
 
 import os
+import sysconfig
 from pathlib import Path
 
 
 _profile_fallback_warned: bool = False
+
+
+def _get_packaged_data_dir(name: str) -> Path | None:
+    """Return an installed data-files directory if one exists."""
+    candidates = []
+    for scheme in ("data", "purelib", "platlib"):
+        raw = sysconfig.get_path(scheme)
+        if raw:
+            candidates.append(Path(raw) / name)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def get_hermes_home() -> Path:
@@ -116,9 +130,25 @@ def get_optional_skills_dir(default: Path | None = None) -> Path:
     override = os.getenv("HERMES_OPTIONAL_SKILLS", "").strip()
     if override:
         return Path(override)
+    packaged = _get_packaged_data_dir("optional-skills")
+    if packaged is not None:
+        return packaged
     if default is not None:
         return default
     return get_hermes_home() / "optional-skills"
+
+
+def get_bundled_skills_dir(default: Path | None = None) -> Path:
+    """Return the bundled skills directory for source and packaged installs."""
+    override = os.getenv("HERMES_BUNDLED_SKILLS", "").strip()
+    if override:
+        return Path(override)
+    packaged = _get_packaged_data_dir("skills")
+    if packaged is not None:
+        return packaged
+    if default is not None:
+        return default
+    return get_hermes_home() / "skills"
 
 
 def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
