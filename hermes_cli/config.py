@@ -945,7 +945,8 @@ DEFAULT_CONFIG = {
         "ephemeral_system_ttl": 0,
         # Per-platform display overrides:
         # {"telegram": {"tool_progress": "all"},
-        #  "feishu": {"streaming": true}}
+        # {"slack": {"tool_progress": "off"}}
+        # {"feishu": {"streaming": true}}
         "platforms": {},
         # Gateway runtime-metadata footer appended to the FINAL message of a turn
         # (disabled by default to keep replies minimal). When enabled, renders
