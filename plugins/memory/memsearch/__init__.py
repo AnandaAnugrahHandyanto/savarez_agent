@@ -248,7 +248,11 @@ class MemSearchMemoryProvider(MemoryProvider):
         if provider == "openai":
             return bool(os.environ.get("OPENAI_API_KEY", ""))
         elif provider == "google":
-            return bool(os.environ.get("GOOGLE_API_KEY", ""))
+            # google-genai accepts both GOOGLE_API_KEY and GEMINI_API_KEY
+            return bool(
+                os.environ.get("GOOGLE_API_KEY", "")
+                or os.environ.get("GEMINI_API_KEY", "")
+            )
         elif provider in ("local", "onnx", "ollama"):
             return True  # no API key needed
         # Default: check for OPENAI_API_KEY as fallback
