@@ -1745,6 +1745,10 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
     pool_present, entry = _select_pool_entry("anthropic")
     if pool_present:
         if entry is None:
+            logger.warning(
+                "Anthropic credential pool exists but all entries are exhausted. "
+                "Run `hermes auth reset anthropic` to clear exhaustion state and retry."
+            )
             return None, None
         token = explicit_api_key or _pool_runtime_api_key(entry)
     else:
@@ -4008,6 +4012,15 @@ def call_llm(
             # through OpenRouter (which causes confusing 404s).
             _explicit = (resolved_provider or "").strip().lower()
             if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+                # Check if the failure is due to an exhausted credential pool
+                # rather than a missing API key — the fix is different.
+                _pool_exists, _pool_entry = _select_pool_entry(_explicit)
+                if _pool_exists and _pool_entry is None:
+                    raise RuntimeError(
+                        f"Provider '{_explicit}' credential pool is exhausted "
+                        f"(all entries marked failed). Run `hermes auth reset "
+                        f"{_explicit}` to clear exhaustion state and retry."
+                    )
                 raise RuntimeError(
                     f"Provider '{_explicit}' is set in config.yaml but no API key "
                     f"was found. Set the {_explicit.upper()}_API_KEY environment "
@@ -4370,6 +4383,15 @@ async def async_call_llm(
         if client is None:
             _explicit = (resolved_provider or "").strip().lower()
             if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+                # Check if the failure is due to an exhausted credential pool
+                # rather than a missing API key — the fix is different.
+                _pool_exists, _pool_entry = _select_pool_entry(_explicit)
+                if _pool_exists and _pool_entry is None:
+                    raise RuntimeError(
+                        f"Provider '{_explicit}' credential pool is exhausted "
+                        f"(all entries marked failed). Run `hermes auth reset "
+                        f"{_explicit}` to clear exhaustion state and retry."
+                    )
                 raise RuntimeError(
                     f"Provider '{_explicit}' is set in config.yaml but no API key "
                     f"was found. Set the {_explicit.upper()}_API_KEY environment "
