@@ -172,8 +172,9 @@ EVALUATE_SYSTEM_PROMPT_FREEFORM = (
     "- The response explains the goal is unachievable / blocked / needs "
     "user input (treat this as DONE with reason describing the block).\n\n"
     "Otherwise the goal is NOT done — CONTINUE.\n\n"
-    "Reply ONLY with a single JSON object on one line:\n"
-    '{"done": <true|false>, "reason": "<one-sentence rationale>"}'
+    "Call the ``submit_verdict`` tool with your decision. Do not reply with "
+    "prose or JSON in your message body — the system will not see anything "
+    "written outside the tool call."
 )
 
 EVALUATE_SYSTEM_PROMPT_CHECKLIST = (
@@ -810,6 +811,35 @@ _JUDGE_UPDATE_CHECKLIST_TOOL_SCHEMA: Dict[str, Any] = {
 }
 
 
+_JUDGE_VERDICT_TOOL_SCHEMA: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "submit_verdict",
+        "description": (
+            "Submit your verdict on whether the agent's goal is satisfied. "
+            "Call this exactly once when you are ready to rule."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "done": {
+                    "type": "boolean",
+                    "description": (
+                        "True if the goal is fully satisfied by the agent's "
+                        "most recent response; False if the agent should continue."
+                    ),
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "One-sentence rationale for your verdict.",
+                },
+            },
+            "required": ["done", "reason"],
+        },
+    },
+}
+
+
 def _judge_read_file(
     path: str,
     *,
@@ -1112,29 +1142,49 @@ def judge_goal_freeform(
         response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
     )
 
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": EVALUATE_SYSTEM_PROMPT_FREEFORM},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0,
-            max_tokens=200,
-            timeout=timeout,
-        )
-    except Exception as exc:
-        logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
-        return "continue", f"judge error: {type(exc).__name__}", False
+    resp, err = _call_judge_with_tool_choice(
+        client,
+        model=model,
+        messages=[
+            {"role": "system", "content": EVALUATE_SYSTEM_PROMPT_FREEFORM},
+            {"role": "user", "content": prompt},
+        ],
+        tools=[_JUDGE_VERDICT_TOOL_SCHEMA],
+        forced_tool_name="submit_verdict",
+        timeout=timeout,
+        max_tokens=200,
+    )
+    if resp is None:
+        logger.info("goal judge: API call failed (%s) — falling through to continue", err)
+        return "continue", f"judge error: {err}", False
 
     try:
-        raw = resp.choices[0].message.content or ""
+        msg = resp.choices[0].message
     except Exception:
-        raw = ""
+        return "continue", "judge response malformed", False
 
+    tc = _extract_tool_call(msg, "submit_verdict")
+    if tc is not None:
+        args = tc["arguments"]
+        done_val = args.get("done")
+        if isinstance(done_val, str):
+            done = done_val.strip().lower() in ("true", "yes", "1", "done")
+        else:
+            done = bool(done_val)
+        reason = str(args.get("reason") or "").strip() or "no reason provided"
+        verdict = "done" if done else "continue"
+        logger.info("goal judge (freeform): verdict=%s reason=%s", verdict, _truncate(reason, 120))
+        return verdict, reason, False
+
+    # Provider responded but didn't call the tool — fall back to text parser
+    # for robustness (same backstop pattern as decompose_goal).
+    raw = getattr(msg, "content", "") or ""
     done, reason, parse_failed = _parse_judge_response(raw)
     verdict = "done" if done else "continue"
-    logger.info("goal judge (freeform): verdict=%s reason=%s", verdict, _truncate(reason, 120))
+    logger.info(
+        "goal judge (freeform): no submit_verdict tool call; fell back to text parser: verdict=%s",
+        verdict,
+    )
     return verdict, reason, parse_failed
 
 
