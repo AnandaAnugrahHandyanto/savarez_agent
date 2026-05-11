@@ -1,22 +1,31 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
+  AlertTriangle,
+  Archive,
   ArrowRight,
   Brain,
   Building2,
   CheckCircle2,
   Circle,
+  Clock3,
+  FileText,
   GitBranch,
+  Inbox,
   Loader2,
+  MessageSquare,
   MessageSquarePlus,
   Network,
   RefreshCw,
+  RotateCcw,
+  Search,
   Send,
   Shield,
   Sparkles,
   UserRound,
   Users,
   Wrench,
+  X,
   Zap,
 } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -45,6 +54,9 @@ type OfficeProfileName =
   | "docs"
   | "demo";
 
+type TaskDiagnostic = { severity?: string; message?: string; kind?: string; last_seen_at?: number; count?: number };
+type TaskWarningSummary = { count?: number; highest_severity?: string; kinds?: Record<string, number>; latest_at?: number };
+
 type KanbanTask = {
   id: string;
   title: string;
@@ -57,9 +69,12 @@ type KanbanTask = {
   completed_at?: number | null;
   latest_summary?: string | null;
   office_role?: string | null;
+  comment_count?: number;
+  warnings?: TaskWarningSummary | null;
+  age?: { created_age_seconds?: number | null; started_age_seconds?: number | null; time_to_complete_seconds?: number | null };
   link_counts?: { parents: number; children: number };
   progress?: { done: number; total: number } | null;
-  diagnostics?: Array<{ severity?: string; message?: string; kind?: string }>;
+  diagnostics?: TaskDiagnostic[];
 };
 
 type BoardColumn = { name: string; tasks: KanbanTask[] };
@@ -84,6 +99,11 @@ type BoardResponse = {
   now: number;
   office?: OfficeStatus;
 };
+
+type TaskComment = { id: number; author?: string | null; body: string; created_at?: number | null };
+type TaskEvent = { id: number; kind: string; office_kind?: string; created_at?: number | null; payload?: unknown };
+type TaskRun = { id: number; profile?: string | null; status?: string | null; outcome?: string | null; summary?: string | null; error?: string | null; started_at?: number | null; ended_at?: number | null; last_heartbeat_at?: number | null };
+type TaskDetailResponse = { task: KanbanTask; comments: TaskComment[]; events: TaskEvent[]; links: { parents: string[]; children: string[] }; runs: TaskRun[] };
 
 type OfficeRoom = "front" | "strategy" | "build" | "quality" | "ops";
 
@@ -133,6 +153,8 @@ const STATUS_LABELS: Record<string, string> = {
   done: "done",
 };
 
+const STATUS_ORDER = ["all", "triage", "todo", "ready", "running", "blocked", "done"];
+
 const ROOM_GLOW: Record<OfficeRoom, string> = {
   front: "from-cyan-400/15",
   strategy: "from-violet-400/15",
@@ -158,8 +180,15 @@ function taskStatusTone(status: string): string {
   if (status === "running") return "border-emerald-300/70 bg-emerald-300/10 text-emerald-100";
   if (status === "blocked") return "border-red-300/70 bg-red-300/10 text-red-100";
   if (status === "ready") return "border-sky-300/70 bg-sky-300/10 text-sky-100";
+  if (status === "triage") return "border-violet-300/60 bg-violet-300/10 text-violet-100";
   if (status === "done") return "border-muted-foreground/40 bg-muted/20 text-muted-foreground";
   return "border-border bg-card/50 text-muted-foreground";
+}
+
+function diagnosticTone(severity?: string): string {
+  if (severity === "critical") return "border-red-300/70 bg-red-300/15 text-red-100";
+  if (severity === "error") return "border-orange-300/70 bg-orange-300/15 text-orange-100";
+  return "border-amber-300/70 bg-amber-300/10 text-amber-100";
 }
 
 function miniTaskLabel(task: KanbanTask): string {
@@ -176,6 +205,10 @@ function timeAgo(now: number, seconds?: number | null): string {
   return `${Math.floor(delta / 86400)}d ago`;
 }
 
+function taskAgeSeconds(now: number, task: KanbanTask): number {
+  return Math.max(0, now - (task.started_at || task.created_at || now));
+}
+
 function StatusDot({ status }: { status: string }) {
   return (
     <span
@@ -190,11 +223,38 @@ function StatusDot({ status }: { status: string }) {
   );
 }
 
-function PersonCard({ role, tasks, now }: { role: RoleMeta; tasks: KanbanTask[]; now: number }) {
+function TaskSummaryCard({ task, now, onOpen, compact = false }: { task: KanbanTask; now: number; onOpen: (id: string) => void; compact?: boolean }) {
+  const highestSeverity = task.warnings?.highest_severity ?? task.diagnostics?.[0]?.severity;
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(task.id)}
+      className="w-full border border-border bg-card/40 p-3 text-left transition hover:border-midground/60 hover:bg-card/75 focus:border-midground focus:outline-none"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="line-clamp-2 text-sm normal-case text-foreground">{task.title}</div>
+          <div className="mt-1 text-[10px] normal-case text-muted-foreground">{task.id} · {task.assignee ? `@${task.assignee}` : "unassigned"} · {timeAgo(now, task.started_at || task.created_at)}</div>
+        </div>
+        <Badge className={cn("shrink-0 border px-2 py-0 text-[10px]", taskStatusTone(task.status))}>{STATUS_LABELS[task.status] ?? task.status}</Badge>
+      </div>
+      {!compact && task.latest_summary && <p className="mt-2 line-clamp-2 text-xs normal-case leading-snug text-muted-foreground">{task.latest_summary}</p>}
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        {typeof task.priority === "number" && task.priority > 0 && <Badge className="border border-border bg-muted/20 px-2 py-0 text-[10px] text-muted-foreground">P{task.priority}</Badge>}
+        {task.progress && <Badge className="border border-border bg-muted/20 px-2 py-0 text-[10px] text-muted-foreground">{task.progress.done}/{task.progress.total} children</Badge>}
+        {(task.comment_count ?? 0) > 0 && <Badge className="border border-border bg-muted/20 px-2 py-0 text-[10px] text-muted-foreground">{task.comment_count} comments</Badge>}
+        {highestSeverity && <Badge className={cn("border px-2 py-0 text-[10px]", diagnosticTone(highestSeverity))}>{highestSeverity}</Badge>}
+      </div>
+    </button>
+  );
+}
+
+function PersonCard({ role, tasks, now, onOpenTask }: { role: RoleMeta; tasks: KanbanTask[]; now: number; onOpenTask: (id: string) => void }) {
   const current = activeTask(tasks);
   const busy = Boolean(current && current.status !== "done");
   const status = current?.status ?? "idle";
   const Icon = role.icon;
+  const diagnostics = tasks.reduce((sum, task) => sum + (task.diagnostics?.length ?? task.warnings?.count ?? 0), 0);
 
   return (
     <div className="group relative overflow-hidden border border-border/70 bg-black/35 p-3 shadow-[0_0_0_1px_rgba(255,255,255,0.03)_inset] transition hover:border-midground/50 hover:bg-card/70">
@@ -216,13 +276,14 @@ function PersonCard({ role, tasks, now }: { role: RoleMeta; tasks: KanbanTask[];
           </div>
           <p className="mt-2 line-clamp-2 text-[11px] normal-case leading-snug text-muted-foreground">{role.description}</p>
           {current ? (
-            <div className="mt-3 rounded-sm border border-border/70 bg-background/50 p-2">
+            <button type="button" onClick={() => onOpenTask(current.id)} className="mt-3 w-full rounded-sm border border-border/70 bg-background/50 p-2 text-left transition hover:border-midground/60 hover:bg-card/70 focus:border-midground focus:outline-none">
               <div className="line-clamp-1 text-xs normal-case text-foreground">{miniTaskLabel(current)}</div>
+              {current.latest_summary && <div className="mt-1 line-clamp-1 text-[10px] normal-case text-muted-foreground">{current.latest_summary}</div>}
               <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
-                <span>{tasks.length} task{tasks.length === 1 ? "" : "s"}</span>
+                <span>{tasks.length} task{tasks.length === 1 ? "" : "s"}{diagnostics ? ` · ${diagnostics} alerts` : ""}</span>
                 <span>{timeAgo(now, current.started_at || current.created_at)}</span>
               </div>
-            </div>
+            </button>
           ) : (
             <div className="mt-3 rounded-sm border border-dashed border-border/70 bg-muted/5 p-2 text-[11px] text-muted-foreground">
               No assigned work. Available for dispatch.
@@ -234,9 +295,10 @@ function PersonCard({ role, tasks, now }: { role: RoleMeta; tasks: KanbanTask[];
   );
 }
 
-function OfficeRoomCard({ room, roles, assignments, now }: { room: (typeof ROOMS)[number]; roles: RoleMeta[]; assignments: Map<string, KanbanTask[]>; now: number }) {
+function OfficeRoomCard({ room, roles, assignments, now, onOpenTask }: { room: (typeof ROOMS)[number]; roles: RoleMeta[]; assignments: Map<string, KanbanTask[]>; now: number; onOpenTask: (id: string) => void }) {
   const roomTasks = roles.flatMap((role) => assignments.get(role.name) ?? []);
   const active = roomTasks.filter((task) => task.status === "running").length;
+  const blocked = roomTasks.filter((task) => task.status === "blocked").length;
   return (
     <Card className={cn("relative overflow-hidden bg-gradient-to-br to-transparent", ROOM_GLOW[room.id], room.className)}>
       <div className="absolute inset-0 opacity-[0.08]" style={{ backgroundImage: "linear-gradient(currentColor 1px, transparent 1px), linear-gradient(90deg, currentColor 1px, transparent 1px)", backgroundSize: "24px 24px" }} />
@@ -244,21 +306,21 @@ function OfficeRoomCard({ room, roles, assignments, now }: { room: (typeof ROOMS
         <div className="flex items-center justify-between gap-3">
           <div>
             <CardTitle>{room.label}</CardTitle>
-            <CardDescription>{roles.length} people · {roomTasks.length} assigned · {active} active</CardDescription>
+            <CardDescription>{roles.length} people · {roomTasks.length} assigned · {active} active{blocked ? ` · ${blocked} blocked` : ""}</CardDescription>
           </div>
           <Building2 className="h-5 w-5 text-muted-foreground" />
         </div>
       </CardHeader>
       <CardContent className="relative grid gap-3 md:grid-cols-2">
         {roles.map((role) => (
-          <PersonCard key={role.name} role={role} tasks={assignments.get(role.name) ?? []} now={now} />
+          <PersonCard key={role.name} role={role} tasks={assignments.get(role.name) ?? []} now={now} onOpenTask={onOpenTask} />
         ))}
       </CardContent>
     </Card>
   );
 }
 
-function FlowMap({ tasks }: { tasks: KanbanTask[] }) {
+function FlowMap({ tasks, selectedStatus, onSelectStatus }: { tasks: KanbanTask[]; selectedStatus: string; onSelectStatus: (status: string) => void }) {
   const stages = ["triage", "todo", "ready", "running", "blocked", "done"];
   const counts = Object.fromEntries(stages.map((stage) => [stage, tasks.filter((task) => task.status === stage).length]));
   return (
@@ -268,7 +330,7 @@ function FlowMap({ tasks }: { tasks: KanbanTask[] }) {
           <Network className="h-5 w-5 text-muted-foreground" />
           <div>
             <CardTitle>Information Flow</CardTitle>
-            <CardDescription>How work moves through the physical office.</CardDescription>
+            <CardDescription>Click a lifecycle stage to filter the office.</CardDescription>
           </div>
         </div>
       </CardHeader>
@@ -276,7 +338,11 @@ function FlowMap({ tasks }: { tasks: KanbanTask[] }) {
         <div className="grid gap-2 md:grid-cols-6">
           {stages.map((stage, index) => (
             <div key={stage} className="relative">
-              <div className="min-h-24 border border-border bg-card/45 p-3">
+              <button
+                type="button"
+                onClick={() => onSelectStatus(selectedStatus === stage ? "all" : stage)}
+                className={cn("min-h-24 w-full border bg-card/45 p-3 text-left transition hover:border-midground/60 hover:bg-card/80 focus:border-midground focus:outline-none", selectedStatus === stage ? "border-midground/70" : "border-border")}
+              >
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-bold uppercase tracking-[0.08em] text-foreground">{STATUS_LABELS[stage]}</span>
                   <Badge className="border border-border bg-muted/20 px-2 py-0 text-[10px] text-muted-foreground">{counts[stage]}</Badge>
@@ -292,7 +358,7 @@ function FlowMap({ tasks }: { tasks: KanbanTask[] }) {
                   {stage === "blocked" && "Supervisor attention needed."}
                   {stage === "done" && "Result handed back."}
                 </div>
-              </div>
+              </button>
               {index < stages.length - 1 && (
                 <ArrowRight className="absolute -right-4 top-10 z-10 hidden h-5 w-5 text-muted-foreground md:block" />
               )}
@@ -304,10 +370,105 @@ function FlowMap({ tasks }: { tasks: KanbanTask[] }) {
   );
 }
 
+function AttentionQueue({ tasks, now, office, onOpenTask }: { tasks: KanbanTask[]; now: number; office?: OfficeStatus; onOpenTask: (id: string) => void }) {
+  const diagnosticTasks = tasks.filter((task) => (task.diagnostics?.length ?? task.warnings?.count ?? 0) > 0);
+  const blockedTasks = tasks.filter((task) => task.status === "blocked");
+  const staleRunning = tasks.filter((task) => task.status === "running" && taskAgeSeconds(now, task) > 30 * 60);
+  const readyTasks = tasks.filter((task) => task.status === "ready");
+  const items = [
+    ...diagnosticTasks.slice(0, 3).map((task) => ({ task, label: "diagnostic", tone: diagnosticTone(task.warnings?.highest_severity ?? task.diagnostics?.[0]?.severity), icon: AlertTriangle })),
+    ...blockedTasks.slice(0, 3).map((task) => ({ task, label: "blocked", tone: taskStatusTone("blocked"), icon: AlertTriangle })),
+    ...staleRunning.slice(0, 3).map((task) => ({ task, label: `running ${timeAgo(now, task.started_at || task.created_at)}`, tone: "border-amber-300/70 bg-amber-300/10 text-amber-100", icon: Clock3 })),
+  ].slice(0, 5);
+
+  return (
+    <Card className={cn(!office?.gateway_running && "border-amber-300/40 bg-amber-300/5")}>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className={cn("h-5 w-5", office?.gateway_running ? "text-muted-foreground" : "text-amber-200")} />
+            <div>
+              <CardTitle>Attention Required</CardTitle>
+              <CardDescription>Operator-first view of risk, stuck work, and dispatch readiness.</CardDescription>
+            </div>
+          </div>
+          <Badge className={cn("border px-2 py-0 text-[10px]", items.length || !office?.gateway_running ? "border-amber-300/60 bg-amber-300/10 text-amber-100" : "border-emerald-300/60 bg-emerald-300/10 text-emerald-100")}>{items.length || !office?.gateway_running ? "needs review" : "clear"}</Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {!office?.gateway_running && (
+          <div className="rounded-sm border border-amber-300/40 bg-amber-300/10 p-3 text-sm normal-case text-amber-100">
+            Gateway is not running. New ready tasks may sit idle until the gateway dispatcher is started.
+          </div>
+        )}
+        {items.length === 0 ? (
+          <div className="border border-dashed border-border p-3 text-sm normal-case text-muted-foreground">No blocked, diagnostic, or stale running work detected. {readyTasks.length ? `${readyTasks.length} task${readyTasks.length === 1 ? " is" : "s are"} ready for dispatch.` : ""}</div>
+        ) : (
+          <div className="grid gap-2 xl:grid-cols-2">
+            {items.map(({ task, label, tone, icon: Icon }) => (
+              <button key={`${label}-${task.id}`} type="button" onClick={() => onOpenTask(task.id)} className="flex items-start gap-3 border border-border bg-card/40 p-3 text-left transition hover:border-midground/60 hover:bg-card/75 focus:border-midground focus:outline-none">
+                <Icon className="mt-0.5 h-4 w-4 shrink-0 text-amber-100" />
+                <div className="min-w-0 flex-1">
+                  <div className="line-clamp-1 text-sm normal-case text-foreground">{task.title}</div>
+                  <div className="mt-1 text-[10px] text-muted-foreground">{task.id} · {task.assignee ? `@${task.assignee}` : "unassigned"}</div>
+                </div>
+                <Badge className={cn("shrink-0 border px-2 py-0 text-[10px]", tone)}>{label}</Badge>
+              </button>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function TaskExplorer({ tasks, now, query, setQuery, status, setStatus, assignee, setAssignee, assignees, onOpenTask }: { tasks: KanbanTask[]; now: number; query: string; setQuery: (value: string) => void; status: string; setStatus: (value: string) => void; assignee: string; setAssignee: (value: string) => void; assignees: string[]; onOpenTask: (id: string) => void }) {
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Search className="h-5 w-5 text-muted-foreground" />
+          <div>
+            <CardTitle>Find Work</CardTitle>
+            <CardDescription>Search, filter, and open task details without leaving the office.</CardDescription>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search title, id, assignee, body, summary..."
+          className="w-full border border-border bg-background px-3 py-2 text-sm normal-case text-foreground outline-none placeholder:text-muted-foreground focus:border-midground"
+        />
+        <div className="grid gap-2 sm:grid-cols-2">
+          <select value={status} onChange={(e) => setStatus(e.target.value)} className="border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-midground">
+            {STATUS_ORDER.map((item) => <option key={item} value={item}>{item === "all" ? "All statuses" : STATUS_LABELS[item] ?? item}</option>)}
+          </select>
+          <select value={assignee} onChange={(e) => setAssignee(e.target.value)} className="border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-midground">
+            <option value="all">All assignees</option>
+            <option value="unassigned">Unassigned</option>
+            {assignees.map((person) => <option key={person} value={person}>@{person}</option>)}
+          </select>
+        </div>
+        <div className="max-h-[460px] space-y-2 overflow-auto pr-1">
+          {tasks.length === 0 ? (
+            <div className="border border-dashed border-border p-3 text-sm normal-case text-muted-foreground">No tasks match the current filters.</div>
+          ) : (
+            tasks.slice(0, 20).map((task) => <TaskSummaryCard key={task.id} task={task} now={now} onOpen={onOpenTask} />)
+          )}
+        </div>
+        {tasks.length > 20 && <div className="text-xs normal-case text-muted-foreground">Showing first 20 of {tasks.length}. Refine search to narrow results.</div>}
+      </CardContent>
+    </Card>
+  );
+}
+
 function TaskCreatePanel({ assignees, onCreated }: { assignees: string[]; onCreated: () => void }) {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [assignee, setAssignee] = useState<"office" | string>("office");
+  const [priority, setPriority] = useState(1);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -329,7 +490,7 @@ function TaskCreatePanel({ assignees, onCreated }: { assignees: string[]; onCrea
           body: body.trim() || null,
           assignee: assignee === "office" ? null : assignee,
           triage: assignee === "office",
-          priority: 1,
+          priority,
         }),
       });
       setTitle("");
@@ -349,7 +510,7 @@ function TaskCreatePanel({ assignees, onCreated }: { assignees: string[]; onCrea
           <Send className="h-5 w-5 text-muted-foreground" />
           <div>
             <CardTitle>Assign Work</CardTitle>
-            <CardDescription>Send a task to the office intake, a role, or any known assignee.</CardDescription>
+            <CardDescription>Send a task to intake, a role, or any known assignee.</CardDescription>
           </div>
         </div>
       </CardHeader>
@@ -363,11 +524,11 @@ function TaskCreatePanel({ assignees, onCreated }: { assignees: string[]; onCrea
         <textarea
           value={body}
           onChange={(e) => setBody(e.target.value)}
-          placeholder="What should they do?"
+          placeholder="What should they do? Add acceptance criteria, files, constraints, and definition of done."
           rows={4}
           className="w-full resize-none border border-border bg-background px-3 py-2 text-sm normal-case text-foreground outline-none placeholder:text-muted-foreground focus:border-midground"
         />
-        <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+        <div className="grid gap-3 sm:grid-cols-[1fr_120px]">
           <select
             value={assignee}
             onChange={(e) => setAssignee(e.target.value)}
@@ -378,14 +539,190 @@ function TaskCreatePanel({ assignees, onCreated }: { assignees: string[]; onCrea
               <option key={person} value={person}>@{person}</option>
             ))}
           </select>
-          <Button onClick={submit} disabled={!title.trim() || submitting} className="gap-2">
-            {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-            Assign
-          </Button>
+          <select value={priority} onChange={(e) => setPriority(Number(e.target.value))} className="border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-midground">
+            <option value={0}>P0 normal</option>
+            <option value={1}>P1 high</option>
+            <option value={2}>P2 urgent</option>
+            <option value={3}>P3 now</option>
+          </select>
         </div>
+        <Button onClick={submit} disabled={!title.trim() || submitting} className="w-full gap-2">
+          {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+          Assign to Office
+        </Button>
         {error && <div className="border border-red-300/50 bg-red-300/10 p-2 text-xs normal-case text-red-100">{error}</div>}
       </CardContent>
     </Card>
+  );
+}
+
+function TaskDetailDrawer({ taskId, assignees, now, onClose, onChanged }: { taskId: string | null; assignees: string[]; now: number; onClose: () => void; onChanged: () => void }) {
+  const [detail, setDetail] = useState<TaskDetailResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [comment, setComment] = useState("");
+  const [newAssignee, setNewAssignee] = useState("");
+
+  const loadDetail = useCallback(async () => {
+    if (!taskId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const next = await fetchJSON<TaskDetailResponse>(`/api/plugins/kanban/tasks/${encodeURIComponent(taskId)}`);
+      setDetail(next);
+      setNewAssignee(next.task.assignee ?? "");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [taskId]);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      setDetail(null);
+      setMessage(null);
+      setComment("");
+      void loadDetail();
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [loadDetail]);
+
+  async function runAction(label: string, fn: () => Promise<unknown>) {
+    setActionBusy(label);
+    setMessage(null);
+    setError(null);
+    try {
+      await fn();
+      setMessage(`${label} succeeded`);
+      await loadDetail();
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  if (!taskId) return null;
+  const task = detail?.task;
+  const people = Array.from(new Set([...OFFICE_ROLES.map((role) => role.name), ...assignees])).sort();
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/55 backdrop-blur-sm" onClick={onClose}>
+      <aside className="h-full w-full max-w-3xl overflow-auto border-l border-border bg-background shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-border bg-background/95 p-4 backdrop-blur">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-xs uppercase tracking-[0.16em] text-muted-foreground"><FileText className="h-4 w-4" /> Task Detail</div>
+            <h2 className="mt-1 line-clamp-2 text-xl font-bold tracking-[0.04em] text-foreground">{task?.title ?? taskId}</h2>
+            <div className="mt-1 text-xs normal-case text-muted-foreground">{taskId}{task?.assignee ? ` · @${task.assignee}` : " · unassigned"}</div>
+          </div>
+          <Button ghost onClick={onClose} className="gap-2"><X className="h-4 w-4" /> Close</Button>
+        </div>
+        <div className="space-y-4 p-4">
+          {loading && <div className="flex items-center gap-2 text-sm normal-case text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Loading task detail...</div>}
+          {error && <div className="border border-red-300/50 bg-red-300/10 p-3 text-sm normal-case text-red-100">{error}</div>}
+          {message && <div className="border border-emerald-300/50 bg-emerald-300/10 p-3 text-sm normal-case text-emerald-100">{message}</div>}
+          {task && (
+            <>
+              <div className="grid gap-3 md:grid-cols-4">
+                <Card><CardContent className="p-3"><div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Status</div><Badge className={cn("mt-2 border", taskStatusTone(task.status))}>{STATUS_LABELS[task.status] ?? task.status}</Badge></CardContent></Card>
+                <Card><CardContent className="p-3"><div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Priority</div><div className="mt-2 text-2xl text-foreground">{task.priority ?? 0}</div></CardContent></Card>
+                <Card><CardContent className="p-3"><div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Age</div><div className="mt-2 text-sm normal-case text-foreground">{timeAgo(now, task.started_at || task.created_at)}</div></CardContent></Card>
+                <Card><CardContent className="p-3"><div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Links</div><div className="mt-2 text-sm normal-case text-foreground">{detail?.links.parents.length ?? 0} parents · {detail?.links.children.length ?? 0} children</div></CardContent></Card>
+              </div>
+
+              <Card>
+                <CardHeader><CardTitle>Operator Actions</CardTitle><CardDescription>Use dashboard-native actions instead of dropping to CLI for routine recovery.</CardDescription></CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="flex flex-wrap gap-2">
+                    {task.status === "triage" && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Specify", () => fetchJSON(`/api/plugins/kanban/tasks/${task.id}/specify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ author: "dashboard" }) }))} className="gap-2"><Sparkles className="h-4 w-4" /> Specify</Button>}
+                    {(task.status === "blocked" || task.status === "todo" || task.status === "triage") && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Mark ready", () => fetchJSON(`/api/plugins/kanban/tasks/${task.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "ready" }) }))} className="gap-2"><RotateCcw className="h-4 w-4" /> Ready</Button>}
+                    {task.status === "running" && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Reclaim", () => fetchJSON(`/api/plugins/kanban/tasks/${task.id}/reclaim`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: "dashboard operator reclaim" }) }))} className="gap-2"><RotateCcw className="h-4 w-4" /> Reclaim</Button>}
+                    {task.status !== "done" && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Block", () => fetchJSON(`/api/plugins/kanban/tasks/${task.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "blocked", block_reason: "blocked from dashboard" }) }))} className="gap-2"><AlertTriangle className="h-4 w-4" /> Block</Button>}
+                    {task.status !== "done" && <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Complete", () => fetchJSON(`/api/plugins/kanban/tasks/${task.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "done", summary: "Completed from Office dashboard" }) }))} className="gap-2"><CheckCircle2 className="h-4 w-4" /> Done</Button>}
+                    <Button ghost disabled={Boolean(actionBusy)} onClick={() => runAction("Archive", () => fetchJSON(`/api/plugins/kanban/tasks/${task.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "archived" }) }))} className="gap-2"><Archive className="h-4 w-4" /> Archive</Button>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+                    <select value={newAssignee} onChange={(e) => setNewAssignee(e.target.value)} className="border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-midground">
+                      <option value="">Unassigned / intake</option>
+                      {people.map((person) => <option key={person} value={person}>@{person}</option>)}
+                    </select>
+                    <Button disabled={Boolean(actionBusy)} onClick={() => runAction("Reassign", () => fetchJSON(`/api/plugins/kanban/tasks/${task.id}/reassign`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profile: newAssignee || null, reclaim_first: task.status === "running", reason: "dashboard operator reassign" }) }))}>Reassign</Button>
+                  </div>
+                  {actionBusy && <div className="flex items-center gap-2 text-xs normal-case text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> {actionBusy} in progress...</div>}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader><CardTitle>Brief</CardTitle><CardDescription>Original request and latest worker handoff.</CardDescription></CardHeader>
+                <CardContent className="space-y-3 text-sm normal-case text-muted-foreground">
+                  <div className="whitespace-pre-wrap border border-border bg-card/40 p-3">{task.body || "No body provided."}</div>
+                  {task.latest_summary && <div className="whitespace-pre-wrap border border-border bg-card/40 p-3 text-foreground">{task.latest_summary}</div>}
+                </CardContent>
+              </Card>
+
+              {(task.diagnostics?.length ?? 0) > 0 && (
+                <Card className="border-amber-300/40">
+                  <CardHeader><CardTitle>Diagnostics</CardTitle><CardDescription>Signals that need operator attention.</CardDescription></CardHeader>
+                  <CardContent className="space-y-2">
+                    {task.diagnostics?.map((diag, index) => (
+                      <div key={`${diag.kind}-${index}`} className="border border-amber-300/40 bg-amber-300/10 p-3 text-sm normal-case text-amber-100">
+                        <div className="font-semibold uppercase tracking-[0.08em]">{diag.severity ?? "warning"} · {diag.kind ?? "diagnostic"}</div>
+                        <div className="mt-1">{diag.message ?? "No diagnostic message."}</div>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+              )}
+
+              <Card>
+                <CardHeader><CardTitle>Comments</CardTitle><CardDescription>Add operator notes that future workers can read.</CardDescription></CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="space-y-2">
+                    {detail?.comments.length ? detail.comments.map((entry) => (
+                      <div key={entry.id} className="border border-border bg-card/40 p-3 text-sm normal-case text-muted-foreground">
+                        <div className="mb-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{entry.author || "unknown"} · {timeAgo(now, entry.created_at)}</div>
+                        <div className="whitespace-pre-wrap text-foreground">{entry.body}</div>
+                      </div>
+                    )) : <div className="border border-dashed border-border p-3 text-sm normal-case text-muted-foreground">No comments yet.</div>}
+                  </div>
+                  <textarea value={comment} onChange={(e) => setComment(e.target.value)} rows={3} placeholder="Add a note for the next worker..." className="w-full resize-none border border-border bg-background px-3 py-2 text-sm normal-case text-foreground outline-none placeholder:text-muted-foreground focus:border-midground" />
+                  <Button disabled={!comment.trim() || Boolean(actionBusy)} onClick={() => runAction("Comment", () => fetchJSON(`/api/plugins/kanban/tasks/${task.id}/comments`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ body: comment.trim(), author: "dashboard" }) }).then(() => setComment("")))} className="gap-2"><MessageSquare className="h-4 w-4" /> Add Comment</Button>
+                </CardContent>
+              </Card>
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <Card>
+                  <CardHeader><CardTitle>Run History</CardTitle><CardDescription>Worker attempts and outcomes.</CardDescription></CardHeader>
+                  <CardContent className="space-y-2">
+                    {detail?.runs.length ? detail.runs.slice().reverse().map((run) => (
+                      <div key={run.id} className="border border-border bg-card/40 p-3 text-xs normal-case text-muted-foreground">
+                        <div className="flex items-center justify-between gap-2"><span className="text-foreground">@{run.profile || "unknown"}</span><Badge className="border border-border bg-muted/20 px-2 py-0 text-[10px] text-muted-foreground">{run.outcome || run.status || "running"}</Badge></div>
+                        {run.summary && <div className="mt-2 line-clamp-3 text-foreground">{run.summary}</div>}
+                        {run.error && <div className="mt-2 text-red-100">{run.error}</div>}
+                      </div>
+                    )) : <div className="border border-dashed border-border p-3 text-sm normal-case text-muted-foreground">No run history.</div>}
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader><CardTitle>Event Timeline</CardTitle><CardDescription>Recent state changes.</CardDescription></CardHeader>
+                  <CardContent className="space-y-2">
+                    {detail?.events.length ? detail.events.slice().reverse().slice(0, 12).map((event) => (
+                      <div key={event.id} className="border border-border bg-card/40 p-2 text-xs normal-case text-muted-foreground">
+                        <div className="flex items-center justify-between gap-2"><span className="text-foreground">{event.office_kind || event.kind}</span><span>{timeAgo(now, event.created_at)}</span></div>
+                      </div>
+                    )) : <div className="border border-dashed border-border p-3 text-sm normal-case text-muted-foreground">No events.</div>}
+                  </CardContent>
+                </Card>
+              </div>
+            </>
+          )}
+        </div>
+      </aside>
+    </div>
   );
 }
 
@@ -394,6 +731,11 @@ export default function OfficePage() {
   const [data, setData] = useState<BoardResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [assigneeFilter, setAssigneeFilter] = useState("all");
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [fallbackNow, setFallbackNow] = useState(0);
 
   useEffect(() => {
     setTitle("Office");
@@ -414,18 +756,54 @@ export default function OfficePage() {
   }, []);
 
   useEffect(() => {
-    void load();
+    const first = window.setTimeout(() => void load(), 0);
     const id = window.setInterval(() => void load(), 7000);
-    return () => window.clearInterval(id);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(id);
+    };
   }, [load]);
 
+  useEffect(() => {
+    const tick = () => setFallbackNow(Math.floor(Date.now() / 1000));
+    const first = window.setTimeout(tick, 0);
+    const id = window.setInterval(tick, 30000);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(id);
+    };
+  }, []);
+
   const tasks = useMemo(() => data?.columns.flatMap((column) => column.tasks) ?? [], [data]);
-  const assignments = useMemo(() => roleMap(tasks), [tasks]);
+  const now = data?.now ?? fallbackNow;
+  const assignees = useMemo(() => Array.from(new Set([...(data?.assignees ?? []), ...OFFICE_ROLES.map((role) => role.name)])).sort(), [data?.assignees]);
+  const filteredTasks = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return tasks.filter((task) => {
+      if (statusFilter !== "all" && task.status !== statusFilter) return false;
+      if (assigneeFilter === "unassigned" && task.assignee) return false;
+      if (assigneeFilter !== "all" && assigneeFilter !== "unassigned" && task.assignee !== assigneeFilter) return false;
+      if (!q) return true;
+      const haystack = [task.id, task.title, task.body, task.latest_summary, task.assignee, task.status].filter(Boolean).join(" ").toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [assigneeFilter, query, statusFilter, tasks]);
+  const assignments = useMemo(() => roleMap(filteredTasks), [filteredTasks]);
   const unassigned = assignments.get("unassigned") ?? [];
   const activeCount = tasks.filter((task) => task.status === "running").length;
-  const idleCount = OFFICE_ROLES.filter((role) => (assignments.get(role.name) ?? []).filter((task) => task.status !== "done").length === 0).length;
+  const idleCount = OFFICE_ROLES.filter((role) => (roleMap(tasks).get(role.name) ?? []).filter((task) => task.status !== "done").length === 0).length;
   const blockedCount = tasks.filter((task) => task.status === "blocked").length;
-  const now = data?.now ?? Math.floor(Date.now() / 1000);
+  const diagnosticCount = tasks.filter((task) => (task.diagnostics?.length ?? task.warnings?.count ?? 0) > 0).length;
+
+  async function dispatchNow() {
+    setError(null);
+    try {
+      await fetchJSON("/api/plugins/kanban/dispatch", { method: "POST" });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
 
   return (
     <div className="h-full overflow-auto p-4 lg:p-6">
@@ -435,14 +813,15 @@ export default function OfficePage() {
             <div className="flex items-center gap-2 text-xs uppercase tracking-[0.16em] text-muted-foreground">
               <Building2 className="h-4 w-4" /> Nous Hermes Office
             </div>
-            <h1 className="mt-1 text-2xl font-bold tracking-[0.06em] text-foreground">Agent Office Floor Plan</h1>
+            <h1 className="mt-1 text-2xl font-bold tracking-[0.06em] text-foreground">Agent Office Command Center</h1>
             <p className="mt-1 max-w-3xl text-sm normal-case text-muted-foreground">
-              A graphical operations room: physical role desks, live status lights, queues, blocked work, and how information flows from intake to done.
+              Operate the agent office: find work, inspect handoffs, recover stuck tasks, route assignments, and watch flow from intake to done.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Badge className={cn("border px-3 py-1", data?.office?.enabled ? "border-emerald-300/60 bg-emerald-300/10 text-emerald-100" : "border-red-300/60 bg-red-300/10 text-red-100")}>office {data?.office?.enabled ? "enabled" : "disabled"}</Badge>
             <Badge className={cn("border px-3 py-1", data?.office?.gateway_running ? "border-emerald-300/60 bg-emerald-300/10 text-emerald-100" : "border-amber-300/60 bg-amber-300/10 text-amber-100")}>gateway {data?.office?.gateway_running ? "running" : "not running"}</Badge>
+            <Button ghost onClick={() => void dispatchNow()} className="gap-2"><Zap className="h-4 w-4" /> Dispatch now</Button>
             <Button ghost onClick={load} disabled={loading} className="gap-2">
               <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} /> Refresh
             </Button>
@@ -455,16 +834,19 @@ export default function OfficePage() {
           </Card>
         )}
 
-        <div className="grid gap-3 md:grid-cols-4">
+        <div className="grid gap-3 md:grid-cols-5">
           <Card><CardContent className="p-4"><div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Active workers</div><div className="mt-2 text-3xl text-foreground">{activeCount}</div></CardContent></Card>
           <Card><CardContent className="p-4"><div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Idle people</div><div className="mt-2 text-3xl text-foreground">{idleCount}</div></CardContent></Card>
           <Card><CardContent className="p-4"><div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Blocked</div><div className="mt-2 text-3xl text-foreground">{blockedCount}</div></CardContent></Card>
-          <Card><CardContent className="p-4"><div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Total tasks</div><div className="mt-2 text-3xl text-foreground">{tasks.length}</div></CardContent></Card>
+          <Card><CardContent className="p-4"><div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Diagnostics</div><div className="mt-2 text-3xl text-foreground">{diagnosticCount}</div></CardContent></Card>
+          <Card><CardContent className="p-4"><div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Shown / Total</div><div className="mt-2 text-3xl text-foreground">{filteredTasks.length}/{tasks.length}</div></CardContent></Card>
         </div>
 
-        <div className="grid gap-4 xl:grid-cols-[1fr_420px]">
+        <AttentionQueue tasks={tasks} now={now} office={data?.office} onOpenTask={setSelectedTaskId} />
+
+        <div className="grid gap-4 xl:grid-cols-[1fr_460px]">
           <div className="space-y-4">
-            <FlowMap tasks={tasks} />
+            <FlowMap tasks={tasks} selectedStatus={statusFilter} onSelectStatus={setStatusFilter} />
             <div className="grid gap-4 lg:grid-cols-12">
               {ROOMS.map((room) => (
                 <OfficeRoomCard
@@ -473,37 +855,30 @@ export default function OfficePage() {
                   roles={OFFICE_ROLES.filter((role) => role.room === room.id)}
                   assignments={assignments}
                   now={now}
+                  onOpenTask={setSelectedTaskId}
                 />
               ))}
             </div>
           </div>
           <div className="space-y-4">
+            <TaskExplorer tasks={filteredTasks} now={now} query={query} setQuery={setQuery} status={statusFilter} setStatus={setStatusFilter} assignee={assigneeFilter} setAssignee={setAssigneeFilter} assignees={assignees} onOpenTask={setSelectedTaskId} />
             <TaskCreatePanel assignees={data?.assignees ?? []} onCreated={load} />
             <Card>
               <CardHeader>
-                <CardTitle>Unassigned / Office Intake</CardTitle>
-                <CardDescription>Work not sitting at a named desk yet.</CardDescription>
+                <div className="flex items-center gap-2"><Inbox className="h-5 w-5 text-muted-foreground" /><div><CardTitle>Unassigned / Office Intake</CardTitle><CardDescription>Work not sitting at a named desk yet.</CardDescription></div></div>
               </CardHeader>
               <CardContent className="space-y-2">
                 {unassigned.length === 0 ? (
-                  <div className="border border-dashed border-border p-3 text-sm normal-case text-muted-foreground">No unassigned work. The routing queue is clear.</div>
+                  <div className="border border-dashed border-border p-3 text-sm normal-case text-muted-foreground">No unassigned work in the current filter.</div>
                 ) : (
-                  unassigned.slice(0, 8).map((task) => (
-                    <div key={task.id} className="border border-border bg-card/40 p-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="line-clamp-1 text-sm normal-case text-foreground">{task.title}</div>
-                        <Badge className={cn("border px-2 py-0 text-[10px]", taskStatusTone(task.status))}>{STATUS_LABELS[task.status] ?? task.status}</Badge>
-                      </div>
-                      <div className="mt-1 text-[10px] text-muted-foreground">{task.id}</div>
-                    </div>
-                  ))
+                  unassigned.slice(0, 8).map((task) => <TaskSummaryCard key={task.id} task={task} now={now} onOpen={setSelectedTaskId} compact />)
                 )}
               </CardContent>
             </Card>
             <Card>
               <CardHeader>
                 <CardTitle>Office Health</CardTitle>
-                <CardDescription>Profiles and board presence.</CardDescription>
+                <CardDescription>Profiles, board, and dispatcher prerequisites.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-2 text-sm normal-case text-muted-foreground">
                 <div className="flex justify-between gap-3"><span>Board</span><span className="text-foreground">{data?.office?.board ?? "unknown"}</span></div>
@@ -519,6 +894,7 @@ export default function OfficePage() {
           </div>
         </div>
       </div>
+      <TaskDetailDrawer taskId={selectedTaskId} assignees={assignees} now={now} onClose={() => setSelectedTaskId(null)} onChanged={load} />
     </div>
   );
 }
