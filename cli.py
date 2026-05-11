@@ -3350,6 +3350,7 @@ class HermesCLI:
         if not isinstance(text, str) or "[Pasted text #" not in text:
             return text or ""
         paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
+        max_passes = 32
 
         def _expand_ref(match):
             path = Path(match.group(1))
@@ -3362,7 +3363,15 @@ class HermesCLI:
                 logger.warning("Paste file gone or unreadable, returning placeholder: %s", path)
                 return match.group(0)
 
-        return paste_ref_re.sub(_expand_ref, text)
+        expanded = text
+        for _ in range(max_passes):
+            next_expanded = paste_ref_re.sub(_expand_ref, expanded)
+            if next_expanded == expanded or "[Pasted text #" not in next_expanded:
+                return next_expanded
+            expanded = next_expanded
+
+        logger.warning("Paste reference expansion hit recursion limit; returning partially expanded text")
+        return expanded
 
     def _print_user_message_preview(self, user_input: str) -> None:
         """Render a user message using the normal chat scrollback style."""

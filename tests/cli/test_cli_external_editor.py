@@ -80,6 +80,42 @@ def test_expand_paste_references_replaces_placeholder_with_file_contents(tmp_pat
     assert expanded == "before line one\nline two after"
 
 
+def test_expand_paste_references_recursively_expands_nested_placeholders(tmp_path):
+    cli_obj = _make_cli()
+    paste_a = tmp_path / "paste_a.txt"
+    paste_b = tmp_path / "paste_b.txt"
+    paste_c = tmp_path / "paste_c.txt"
+    paste_a.write_text("alpha", encoding="utf-8")
+    paste_b.write_text(
+        f"[Pasted text #1: 1 lines → {paste_a}]\nbeta",
+        encoding="utf-8",
+    )
+    paste_c.write_text(
+        f"[Pasted text #2: 2 lines → {paste_b}]\ngamma",
+        encoding="utf-8",
+    )
+
+    text = f"before [Pasted text #3: 3 lines → {paste_c}] after"
+    expanded = cli_obj._expand_paste_references(text)
+
+    assert expanded == "before alpha\nbeta\ngamma after"
+
+
+def test_expand_paste_references_stops_on_self_referential_placeholder(tmp_path):
+    cli_obj = _make_cli()
+    paste_file = tmp_path / "self.txt"
+    paste_file.write_text(
+        f"[Pasted text #1: 1 lines → {paste_file}]",
+        encoding="utf-8",
+    )
+
+    expanded = cli_obj._expand_paste_references(
+        f"before [Pasted text #1: 1 lines → {paste_file}] after"
+    )
+
+    assert expanded == f"before [Pasted text #1: 1 lines → {paste_file}] after"
+
+
 def test_open_external_editor_expands_paste_placeholders_before_open(tmp_path):
     cli_obj = _make_cli()
     paste_file = tmp_path / "paste.txt"
