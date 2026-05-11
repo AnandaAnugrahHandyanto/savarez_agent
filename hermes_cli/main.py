@@ -5550,6 +5550,8 @@ def _run_npm_install_deterministic(
             cwd=cwd,
             capture_output=capture_output,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
         if ci_result.returncode == 0:
@@ -5562,6 +5564,8 @@ def _run_npm_install_deterministic(
         cwd=cwd,
         capture_output=capture_output,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
 
@@ -5598,7 +5602,14 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         if fatal:
             print("  Run manually:  cd web && npm install && npm run build")
         return False
-    r2 = subprocess.run([npm, "run", "build"], cwd=web_dir, capture_output=True)
+    r2 = subprocess.run(
+        [npm, "run", "build"],
+        cwd=web_dir,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     if r2.returncode != 0:
         print(
             f"  {'✗' if fatal else '⚠'} Web UI build failed"
