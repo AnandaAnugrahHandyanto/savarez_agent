@@ -126,6 +126,66 @@ def _default_config() -> dict:
     return _expand_paths(cfg)
 
 
+class _MemSearchClient:
+    """Lazy-initialized wrapper around the memsearch Python API.
+
+    Uses Python API for operations it supports (search, index_file, compact).
+    Falls back to CLI subprocess for unsupported operations (expand, stats).
+    """
+
+    def __init__(self, config: dict):
+        self._config = config
+        self._client = None
+
+    def _ensure(self):
+        if self._client is None:
+            from memsearch import MemSearch
+            self._client = MemSearch(
+                embedding_provider=self._config["embedding_provider"],
+                embedding_model=self._config.get("embedding_model") or None,
+                milvus_uri=self._config["milvus_uri"],
+                collection=self._config.get("collection", "hermes_memory"),
+            )
+        return self._client
+
+    def search(self, query: str, top_k: int = 5) -> list:
+        """Search via Python API. Returns list[dict]."""
+        return self._ensure().search(query, top_k=top_k)
+
+    def index_file(self, path: str) -> int:
+        """Index a single file via Python API. Returns indexed count."""
+        return self._ensure().index_file(path)
+
+    def compact(self) -> str:
+        """Compact via Python API. Returns output path."""
+        return self._ensure().compact()
+
+    def close(self) -> None:
+        if self._client:
+            self._client.close()
+            self._client = None
+
+
+def _retry(fn, max_retries: int = 3, base_delay: float = 1.0):
+    """Retry a callable with exponential backoff.
+
+    Only retries on RateLimitError (or generic Exception if provider=google).
+    """
+    for attempt in range(max_retries):
+        try:
+            return fn()
+        except Exception as e:
+            err_str = str(e).lower()
+            if "rate" not in err_str and "429" not in err_str and "quota" not in err_str:
+                raise
+            if attempt == max_retries - 1:
+                raise
+            delay = base_delay * (2 ** attempt)
+            logger.warning("Rate limited (%s), retrying in %.1fs", e, delay)
+            time.sleep(delay)
+    return None
+
+
 class MemSearchMemoryProvider(MemoryProvider):
     """MemSearch-backed semantic memory with hybrid search and auto-ingest."""
 
@@ -135,6 +195,7 @@ class MemSearchMemoryProvider(MemoryProvider):
         self._hermes_home: str = ""
         self._is_primary: bool = True
         self._memsearch_available: bool = False
+        self._client: _MemSearchClient | None = None
         self._daemon_thread: threading.Thread | None = None
         self._pending_turns: list[tuple[str, str]] = []
         self._lock = threading.Lock()
@@ -177,6 +238,7 @@ class MemSearchMemoryProvider(MemoryProvider):
         try:
             import memsearch  # noqa: F401
             self._memsearch_available = True
+            self._client = _MemSearchClient(self._config)
         except ImportError:
             logger.warning("MemSearch not installed — memory disabled")
 
@@ -195,6 +257,8 @@ class MemSearchMemoryProvider(MemoryProvider):
     def shutdown(self) -> None:
         if self._pending_turns:
             self._flush_turns()
+        if self._client:
+            self._client.close()
 
     # ------------------------------------------------------------------
     # Context injection
@@ -371,13 +435,17 @@ class MemSearchMemoryProvider(MemoryProvider):
     def get_config_schema(self) -> List[Dict[str, Any]]:
         from hermes_constants import display_hermes_home
         _db = f"{display_hermes_home()}/.memsearch/milvus.db"
+        provider = self._config.get("embedding_provider", "openai")
+        env_var = {"openai": "OPENAI_API_KEY", "google": "GOOGLE_API_KEY",
+                   "voyage": "VOYAGE_API_KEY", "jina": "JINA_API_KEY",
+                   "mistral": "MISTRAL_API_KEY"}.get(provider, "OPENAI_API_KEY")
         return [
             {"key": "embedding_provider", "description": "Embedding provider", "default": "openai",
              "choices": ["openai", "google", "voyage", "jina", "mistral", "ollama", "local", "onnx"]},
             {"key": "milvus_uri", "description": "Milvus URI (use absolute path)", "default": _db},
             {"key": "collection", "description": "Collection name", "default": "hermes_memory"},
-            {"key": "api_key", "description": "Embedding API key", "secret": True,
-             "required": True, "env_var": "OPENAI_API_KEY", "url": "https://platform.openai.com/api-keys"},
+            {"key": "api_key", "description": f"Embedding API key ({provider})", "secret": True,
+             "required": True, "env_var": env_var, "url": "https://platform.openai.com/api-keys"},
             {"key": "auto_ingest", "description": "Auto-index turns", "default": "true", "choices": ["true", "false"]},
             {"key": "auto_compact", "description": "Compact at session end", "default": "true", "choices": ["true", "false"]},
             {"key": "max_recall_results", "description": "Max search results", "default": "10"},
@@ -413,20 +481,13 @@ class MemSearchMemoryProvider(MemoryProvider):
             cmd.extend(["--model", model])
         return cmd
 
-    def _index_path(self, path: str, force: bool = False) -> None:
-        cmd = self._build_cmd("index", path, "--collection", self._config.get("collection", "hermes_memory"))
-        if force:
-            cmd.append("--force")
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            if result.returncode == 0:
-                logger.info("MemSearch indexed %s", path)
-            else:
-                logger.warning("MemSearch index failed for %s: %s", path, result.stderr.strip()[:200])
-        except Exception as e:
-            logger.warning("MemSearch index error for %s: %s", path, e)
-
     def _search(self, query: str, top_k: int = 5) -> list:
+        """Search via Python API with retry; fall back to CLI subprocess."""
+        if self._client:
+            try:
+                return _retry(lambda: self._client.search(query, top_k=top_k))
+            except Exception:
+                logger.debug("Python API search failed, falling back to CLI")
         cmd = self._build_cmd("search", query, "--top-k", str(top_k),
                               "--collection", self._config.get("collection", "hermes_memory"), "--json-output")
         try:
@@ -438,6 +499,14 @@ class MemSearchMemoryProvider(MemoryProvider):
         return []
 
     def _run_compact(self) -> None:
+        """Compact via Python API; fall back to CLI subprocess."""
+        if self._client:
+            try:
+                _retry(lambda: self._client.compact())
+                logger.info("MemSearch compact completed")
+                return
+            except Exception:
+                logger.debug("Python API compact failed, falling back to CLI")
         cmd = self._build_cmd("compact", "--collection", self._config.get("collection", "hermes_memory"))
         compact_model = self._config.get("compact_model", "")
         if compact_model:
@@ -447,6 +516,27 @@ class MemSearchMemoryProvider(MemoryProvider):
             logger.info("MemSearch compact completed")
         except Exception as e:
             logger.debug("MemSearch compact failed: %s", e)
+
+    def _index_path(self, path: str, force: bool = False) -> None:
+        """Index via Python API with retry; fall back to CLI subprocess."""
+        if self._client:
+            try:
+                _retry(lambda: self._client.index_file(path))
+                logger.info("MemSearch indexed %s", path)
+                return
+            except Exception:
+                logger.debug("Python API index failed, falling back to CLI")
+        cmd = self._build_cmd("index", path, "--collection", self._config.get("collection", "hermes_memory"))
+        if force:
+            cmd.append("--force")
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if result.returncode == 0:
+                logger.info("MemSearch indexed %s", path)
+            else:
+                logger.warning("MemSearch index failed for %s: %s", path, result.stderr.strip()[:200])
+        except Exception as e:
+            logger.warning("MemSearch index error for %s: %s", path, e)
 
 
 def register(ctx) -> None:

@@ -7,8 +7,13 @@ Provides subcommands for managing the MemSearch index:
   hermes memsearch config    — Show MemSearch configuration
 """
 
+import os
+import re
+import shutil
 import subprocess
 import sys
+from datetime import datetime
+from pathlib import Path
 
 
 def memsearch_command(args):
@@ -17,8 +22,16 @@ def memsearch_command(args):
 
     if sub == "status":
         collection = getattr(args, "collection", "hermes_memory")
-        cmd = ["memsearch", "stats", "--collection", collection, "--json-output"]
+        cmd = ["memsearch", "stats", "--collection", collection]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        output = (result.stdout or "") + (result.stderr or "")
+        m = re.search(r"Total indexed chunks:\s*(\d+)", output)
+        count = int(m.group(1)) if m else 0
+        if count == 0:
+            print(f"Collection '{collection}': empty index (0 chunks)")
+        else:
+            print(f"Collection '{collection}': {count} chunks indexed")
+        # Also print raw output for detailed stats
         if result.stdout:
             print(result.stdout)
         if result.stderr and result.returncode != 0:
@@ -49,6 +62,12 @@ def memsearch_command(args):
     elif sub == "reset":
         collection = getattr(args, "collection", "hermes_memory")
         yes = getattr(args, "yes", False)
+        # Backup DB before reset
+        milvus_db = _resolve_milvus_db()
+        if milvus_db and Path(milvus_db).exists() and not yes:
+            backup = f"{milvus_db}.bak.{datetime.now():%Y%m%d_%H%M%S}"
+            shutil.copy2(milvus_db, backup)
+            print(f"Backup created: {backup}")
         cmd = ["memsearch", "reset", "--collection", collection]
         if yes:
             cmd.append("--yes")
@@ -75,6 +94,23 @@ def memsearch_command(args):
         print("  reset    Drop all indexed data")
         print("  config   Show MemSearch configuration")
         sys.exit(1)
+
+
+def _resolve_milvus_db() -> str | None:
+    """Resolve Milvus DB path from memsearch config."""
+    try:
+        result = subprocess.run(
+            ["memsearch", "config", "get", "milvus.uri"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            path = result.stdout.strip().splitlines()[-1].strip()
+            if path:
+                return os.path.expanduser(path)
+    except Exception:
+        pass
+    # Fallback: ~/.memsearch/milvus.db
+    return os.path.expanduser("~/.memsearch/milvus.db")
 
 
 def register_cli(subparser) -> None:
