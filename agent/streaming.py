@@ -16,6 +16,8 @@ import os
 import re
 import threading
 import time
+import uuid
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 from agent.memory_manager import sanitize_context

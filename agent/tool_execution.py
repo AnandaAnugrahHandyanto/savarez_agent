@@ -8,12 +8,12 @@ from __future__ import annotations
 
 from typing import Optional
 import concurrent.futures
+import contextvars
 import json
 import logging
 import re
 import threading
 import time
-import logging
 
 # Re-export utilities for mixin method access
 from agent.utils import *  # noqa: F401,F403
