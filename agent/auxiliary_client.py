@@ -1862,8 +1862,12 @@ def _get_provider_chain() -> List[tuple]:
 # the user might be running two profiles with different OpenRouter keys.
 
 _AUX_UNHEALTHY_TTL_SECONDS = 600  # 10 minutes
+_AUX_NO_FALLBACK_LOG_TTL_SECONDS = 300  # 5 minutes
 _aux_unhealthy_until: Dict[str, float] = {}
 _aux_unhealthy_logged_at: Dict[str, float] = {}
+_aux_unhealthy_reasons: Dict[str, str] = {}
+_aux_no_fallback_logged_at: Dict[str, float] = {}
+_aux_failure_events: Dict[str, Dict[str, Any]] = {}
 
 # Map provider names that show up in resolved_provider / explicit-config
 # back to the chain labels used by _get_provider_chain(). Keep in sync
@@ -1890,23 +1894,39 @@ def _normalize_chain_label(provider: str) -> str:
     return _AUX_UNHEALTHY_LABEL_ALIASES.get(p, p)
 
 
-def _mark_provider_unhealthy(provider: str, ttl: Optional[float] = None) -> None:
-    """Mark ``provider`` as recently-402'd, hidden from chain iteration
-    until the TTL expires. Called from the payment-fallback branches in
-    ``call_llm`` and ``acall_llm`` after a confirmed payment error.
+def _mark_provider_unhealthy(
+    provider: str,
+    ttl: Optional[float] = None,
+    *,
+    reason: str = "payment / credit error",
+    task: Optional[str] = None,
+) -> None:
+    """Temporarily hide an unhealthy auxiliary provider from auto routing.
+
+    The cache is intentionally scoped to auxiliary calls only; main chat model
+    health remains independent.  ``reason`` is compact and user-safe so callers
+    can surface it in logs/status without dumping tracebacks.
     """
     label = _normalize_chain_label(provider)
     if not label:
         return
-    expires_at = time.time() + (ttl if ttl is not None else _AUX_UNHEALTHY_TTL_SECONDS)
+    now = time.time()
+    expires_at = now + (ttl if ttl is not None else _AUX_UNHEALTHY_TTL_SECONDS)
     _aux_unhealthy_until[label] = expires_at
-    logger.warning(
-        "Auxiliary: marking %s unhealthy for %ds (payment / credit error). "
-        "Subsequent auxiliary calls will skip it until %s.",
-        label,
-        int(ttl if ttl is not None else _AUX_UNHEALTHY_TTL_SECONDS),
-        time.strftime("%H:%M:%S", time.localtime(expires_at)),
-    )
+    _aux_unhealthy_reasons[label] = reason
+    _record_auxiliary_failure(task or "call", label, reason, expires_at=expires_at)
+    last = _aux_unhealthy_logged_at.get(f"mark:{label}:{reason}", 0.0)
+    if now - last >= 60:
+        _aux_unhealthy_logged_at[f"mark:{label}:{reason}"] = now
+        logger.warning(
+            "Auxiliary %s: marking %s unhealthy for %ds (%s). "
+            "Subsequent auxiliary calls will skip it until %s.",
+            task or "call",
+            label,
+            int(ttl if ttl is not None else _AUX_UNHEALTHY_TTL_SECONDS),
+            reason,
+            time.strftime("%H:%M:%S", time.localtime(expires_at)),
+        )
 
 
 def _is_provider_unhealthy(label: str) -> bool:
@@ -1921,6 +1941,7 @@ def _is_provider_unhealthy(label: str) -> bool:
     if time.time() >= expires_at:
         _aux_unhealthy_until.pop(label, None)
         _aux_unhealthy_logged_at.pop(label, None)
+        _aux_unhealthy_reasons.pop(label, None)
         return False
     return True
 
@@ -1935,9 +1956,10 @@ def _log_skip_unhealthy(label: str, task: Optional[str] = None) -> None:
     if now - last >= 60:
         _aux_unhealthy_logged_at[label] = now
         expires_at = _aux_unhealthy_until.get(label, now)
+        reason = _aux_unhealthy_reasons.get(label, "recent failure")
         logger.info(
-            "Auxiliary %s: skipping %s (recently returned payment error, retry in %ds)",
-            task or "call", label, max(0, int(expires_at - now)),
+            "Auxiliary %s: skipping %s (%s, retry in %ds)",
+            task or "call", label, reason, max(0, int(expires_at - now)),
         )
 
 
@@ -1946,6 +1968,77 @@ def _reset_aux_unhealthy_cache() -> None:
     user trigger (e.g. ``hermes config aux reset``)."""
     _aux_unhealthy_until.clear()
     _aux_unhealthy_logged_at.clear()
+    _aux_unhealthy_reasons.clear()
+    _aux_no_fallback_logged_at.clear()
+    _aux_failure_events.clear()
+
+
+def _record_auxiliary_failure(
+    task: Optional[str],
+    provider: Optional[str],
+    reason: str,
+    *,
+    expires_at: Optional[float] = None,
+    skipped: bool = True,
+) -> None:
+    """Store compact auxiliary degradation status for logs/UI consumers."""
+    task_key = (task or "call").strip() or "call"
+    provider_label = _normalize_chain_label(provider or "") or str(provider or "auto")
+    _aux_failure_events[task_key] = {
+        "task": task_key,
+        "provider": provider_label,
+        "reason": str(reason or "unknown")[:240],
+        "skipped": bool(skipped),
+        "recorded_at": time.time(),
+        "expires_at": expires_at,
+        "scope": "auxiliary",
+    }
+
+
+def get_auxiliary_health_status() -> Dict[str, Any]:
+    """Return a compact, secret-free snapshot of auxiliary health state.
+
+    This deliberately reports only auxiliary-provider degradation; it does not
+    imply the main chat provider is unhealthy.  Intended for logs and future
+    dashboard/status surfaces.
+    """
+    now = time.time()
+    unhealthy = {}
+    for label in list(_aux_unhealthy_until.keys()):
+        if not _is_provider_unhealthy(label):
+            continue
+        unhealthy[label] = {
+            "reason": _aux_unhealthy_reasons.get(label, "recent failure"),
+            "retry_in_seconds": max(0, int(_aux_unhealthy_until[label] - now)),
+        }
+    return {
+        "scope": "auxiliary",
+        "healthy": not unhealthy,
+        "unhealthy_providers": unhealthy,
+        "recent_failures": dict(_aux_failure_events),
+    }
+
+
+def _log_no_fallback_once(task: Optional[str], provider: str, reason: str, tried: List[str]) -> None:
+    """Throttle persistent no-fallback warnings for the same task/provider/reason."""
+    task_key = task or "call"
+    provider_label = _normalize_chain_label(provider or "") or str(provider or "auto")
+    _record_auxiliary_failure(task_key, provider_label, reason, skipped=True)
+    key = f"{task_key}:{provider_label}:{reason}"
+    now = time.time()
+    last = _aux_no_fallback_logged_at.get(key, 0.0)
+    if now - last < _AUX_NO_FALLBACK_LOG_TTL_SECONDS:
+        logger.debug(
+            "Auxiliary %s: still degraded (%s on %s; tried: %s)",
+            task_key, reason, provider_label, ", ".join(tried),
+        )
+        return
+    _aux_no_fallback_logged_at[key] = now
+    logger.warning(
+        "Auxiliary %s: %s on %s and no fallback available (tried: %s). "
+        "Skipping this auxiliary task; main chat provider health is separate.",
+        task_key, reason, provider_label, ", ".join(tried),
+    )
 
 
 def _is_payment_error(exc: Exception) -> bool:
@@ -2037,6 +2130,16 @@ def _is_connection_error(exc: Exception) -> bool:
     )):
         return True
     return False
+
+
+def _auxiliary_failure_reason(exc: Exception) -> str:
+    if _is_payment_error(exc):
+        return "payment error"
+    if _is_rate_limit_error(exc):
+        return "rate limit"
+    if _is_connection_error(exc):
+        return "connection error"
+    return type(exc).__name__
 
 
 def _is_auth_error(exc: Exception) -> bool:
@@ -2437,10 +2540,7 @@ def _try_payment_fallback(
             return client, model, label
         tried.append(label)
 
-    logger.warning(
-        "Auxiliary %s: %s on %s and no fallback available (tried: %s)",
-        task or "call", reason, failed_provider, ", ".join(tried),
-    )
+    _log_no_fallback_once(task, failed_provider, reason, tried)
     return None, None, ""
 
 
@@ -4360,20 +4460,34 @@ def call_llm(
         # configure this task's provider.  Explicit provider = hard constraint;
         # auto (the default) = best-effort fallback chain.  (#7559)
         is_auto = resolved_provider in {"auto", "", None}
+        reason = _auxiliary_failure_reason(first_err)
         if should_fallback and is_auto:
             if _is_payment_error(first_err):
-                reason = "payment error"
                 # Resolve the actual provider label (resolved_provider may be
                 # "auto"; the client's base_url tells us which backend got the
                 # 402). Mark THAT label unhealthy so subsequent aux calls
                 # skip it instead of paying another doomed RTT.
                 _mark_provider_unhealthy(
-                    _recoverable_pool_provider(resolved_provider, client) or resolved_provider
+                    _recoverable_pool_provider(resolved_provider, client) or resolved_provider,
+                    reason=reason,
+                    task=task,
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
+                _mark_provider_unhealthy(
+                    _recoverable_pool_provider(resolved_provider, client) or resolved_provider,
+                    ttl=60,
+                    reason=reason,
+                    task=task,
+                )
             else:
                 reason = "connection error"
+                _mark_provider_unhealthy(
+                    _recoverable_pool_provider(resolved_provider, client) or resolved_provider,
+                    ttl=60,
+                    reason=reason,
+                    task=task,
+                )
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
             fb_client, fb_model, fb_label = _try_payment_fallback(
@@ -4387,6 +4501,14 @@ def call_llm(
                     base_url=str(getattr(fb_client, "base_url", "") or ""))
                 return _validate_llm_response(
                     fb_client.chat.completions.create(**fb_kwargs), task)
+        if should_fallback:
+            _record_auxiliary_failure(
+                task or "call",
+                _recoverable_pool_provider(resolved_provider, client) or resolved_provider,
+                reason,
+                skipped=True,
+            )
+
         # Connection/timeout errors leave the cached client poisoned (closed
         # httpx transport, half-read stream, dead async loop).  Drop it from
         # the cache regardless of whether we found a fallback above so the
@@ -4689,16 +4811,30 @@ async def async_call_llm(
             or _is_rate_limit_error(first_err)
         )
         is_auto = resolved_provider in {"auto", "", None}
+        reason = _auxiliary_failure_reason(first_err)
         if should_fallback and is_auto:
             if _is_payment_error(first_err):
-                reason = "payment error"
                 _mark_provider_unhealthy(
-                    _recoverable_pool_provider(resolved_provider, client) or resolved_provider
+                    _recoverable_pool_provider(resolved_provider, client) or resolved_provider,
+                    reason=reason,
+                    task=task,
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
+                _mark_provider_unhealthy(
+                    _recoverable_pool_provider(resolved_provider, client) or resolved_provider,
+                    ttl=60,
+                    reason=reason,
+                    task=task,
+                )
             else:
                 reason = "connection error"
+                _mark_provider_unhealthy(
+                    _recoverable_pool_provider(resolved_provider, client) or resolved_provider,
+                    ttl=60,
+                    reason=reason,
+                    task=task,
+                )
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
             fb_client, fb_model, fb_label = _try_payment_fallback(
@@ -4718,6 +4854,14 @@ async def async_call_llm(
                     fb_kwargs["model"] = async_fb_model
                 return _validate_llm_response(
                     await async_fb.chat.completions.create(**fb_kwargs), task)
+        if should_fallback:
+            _record_auxiliary_failure(
+                task or "call",
+                _recoverable_pool_provider(resolved_provider, client) or resolved_provider,
+                reason,
+                skipped=True,
+            )
+
         # Mirror the sync path: drop poisoned clients on connection/timeout
         # so the next aux call rebuilds.  See issue #23432.
         if _is_connection_error(first_err):

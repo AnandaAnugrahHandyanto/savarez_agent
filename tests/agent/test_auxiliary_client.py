@@ -2694,3 +2694,53 @@ class TestAuxUnhealthyCache:
             )
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
+
+class TestAuxiliaryHealthFallback:
+    def test_connection_failure_marks_auxiliary_only_unhealthy_and_falls_back(self):
+        from agent import auxiliary_client as aux
+
+        aux._reset_aux_unhealthy_cache()
+        primary = MagicMock()
+        primary.base_url = "https://openrouter.ai/api/v1"
+        primary.chat.completions.create.side_effect = RuntimeError("connection refused")
+
+        fallback_response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+        )
+        fallback = MagicMock()
+        fallback.base_url = "https://inference-api.nousresearch.com/v1"
+        fallback.chat.completions.create.return_value = fallback_response
+
+        with patch("agent.auxiliary_client._get_cached_client", return_value=(primary, "main-model")), \
+             patch("agent.auxiliary_client._try_payment_fallback", return_value=(fallback, "fallback-model", "nous")), \
+             patch("agent.auxiliary_client._recoverable_pool_provider", return_value="openrouter"):
+            response = call_llm(
+                task="title_generation",
+                provider="auto",
+                messages=[{"role": "user", "content": "title"}],
+            )
+
+        assert response is fallback_response
+        status = aux.get_auxiliary_health_status()
+        assert status["scope"] == "auxiliary"
+        assert status["healthy"] is False
+        assert status["unhealthy_providers"]["openrouter"]["reason"] == "connection error"
+        assert status["recent_failures"]["title_generation"]["scope"] == "auxiliary"
+
+    def test_no_fallback_warning_is_throttled_and_records_skip_reason(self, caplog):
+        from agent import auxiliary_client as aux
+
+        aux._reset_aux_unhealthy_cache()
+        caplog.set_level(logging.WARNING, logger="agent.auxiliary_client")
+
+        with patch("agent.auxiliary_client.time.time", return_value=1000.0):
+            aux._log_no_fallback_once("session_search", "auto", "connection error", ["openrouter"])
+            aux._log_no_fallback_once("session_search", "auto", "connection error", ["openrouter"])
+
+        warning_messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warning_messages) == 1
+        assert "Skipping this auxiliary task" in warning_messages[0]
+        status = aux.get_auxiliary_health_status()
+        failure = status["recent_failures"]["session_search"]
+        assert failure["reason"] == "connection error"
+        assert failure["skipped"] is True
