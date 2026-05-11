@@ -24,7 +24,10 @@ from agent.auxiliary_client import (
     _is_payment_error,
     _is_rate_limit_error,
     _normalize_aux_provider,
+    _OPENROUTER_MODEL,
+    OPENROUTER_BASE_URL,
     _try_payment_fallback,
+    _try_openrouter,
     _resolve_auto,
     _CodexCompletionsAdapter,
 )
@@ -557,6 +560,21 @@ class TestExplicitProviderRouting:
             "OPENROUTER_API_KEY not set" in record.message
             for record in caplog.records
         )
+
+    def test_try_openrouter_pool_exhausted_falls_back_to_env(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env-fallback")
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_client = MagicMock(name="openrouter_client")
+            mock_openai.return_value = mock_client
+
+            client, model = _try_openrouter()
+
+        assert client is mock_client
+        assert model == _OPENROUTER_MODEL
+        mock_openai.assert_called_once()
+        assert mock_openai.call_args.kwargs["api_key"] == "sk-or-env-fallback"
+        assert mock_openai.call_args.kwargs["base_url"] == OPENROUTER_BASE_URL
 
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
