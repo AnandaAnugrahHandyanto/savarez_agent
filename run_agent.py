@@ -51,6 +51,7 @@ import threading
 from types import SimpleNamespace
 import urllib.request
 import uuid
+import queue as queue_module
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
@@ -1025,6 +1026,28 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+
+
+class ChatQueue:
+    """Fire-and-forget async message queue — stores messages by priority so the agent
+    can pick them up at yield points without the gateway blocking on interrupt()."""
+
+    def __init__(self):
+        self._q = {
+            'immediate': queue_module.Queue(),
+            'high': queue_module.Queue(),
+            'normal': queue_module.Queue(),
+        }
+
+    def put(self, message: dict, priority: str = 'normal'):
+        self._q.get(priority, self._q['normal']).put(message)
+
+    def get_immediate(self) -> dict | None:
+        for pq in ['immediate', 'high', 'normal']:
+            if not self._q[pq].empty():
+                return self._q[pq].get()
+        return None
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -1323,6 +1346,7 @@ class AIAgent:
 
         # Interrupt mechanism for breaking out of tool loops
         self._interrupt_requested = False
+        self._chat_queue = ChatQueue()
         self._interrupt_message = None  # Optional message that triggered interrupt
         self._execution_thread_id: int | None = None  # Set at run_conversation() start
         self._interrupt_thread_signal_pending = False
@@ -5147,6 +5171,7 @@ class AIAgent:
     def clear_interrupt(self) -> None:
         """Clear any pending interrupt request and the per-thread tool interrupt signal."""
         self._interrupt_requested = False
+        self._chat_queue = ChatQueue()
         self._interrupt_message = None
         self._interrupt_thread_signal_pending = False
         if self._execution_thread_id is not None:
@@ -5609,6 +5634,19 @@ class AIAgent:
 
 
 
+
+    def _check_chat_queue(self) -> bool:
+        msg = self._chat_queue.get_immediate()
+        if msg:
+            self._interrupt_requested = True
+            self._pending_interrupt_message = msg
+            return True
+        return False
+
+    def enqueue_message(self, message: str, priority: str = "normal"):
+        """Push a message into the async queue for pickup at the next yield point.
+        This is non-blocking — the gateway can enqueue without waiting for the agent."""
+        self._chat_queue.put({"text": message}, priority=priority)
 
     def _build_system_prompt(self, system_message: str = None) -> str:
         """
@@ -10273,6 +10311,10 @@ class AIAgent:
         tools. Used by the concurrent execution path; the sequential path retains
         its own inline invocation for backward-compatible display handling.
         """
+        # Early interrupt check — don't even start if an interrupt is pending
+        if self._interrupt_requested or self._check_chat_queue():
+            return "interrupted"
+
         # Check plugin hooks for a block directive before executing anything.
         block_message: Optional[str] = None
         if not pre_tool_block_checked:
@@ -10616,7 +10658,7 @@ class AIAgent:
                     _interrupt_logged = False
                     while True:
                         done, not_done = concurrent.futures.wait(
-                            futures, timeout=5.0,
+                            futures, timeout=2.0,
                         )
                         if not not_done:
                             break
@@ -10626,7 +10668,7 @@ class AIAgent:
                         # to abort, but tools without interrupt checks (web_search,
                         # read_file) will run to completion. Cancel any futures
                         # that haven't started yet so we don't block on them.
-                        if self._interrupt_requested:
+                        if self._interrupt_requested or self._check_chat_queue():
                             if not _interrupt_logged:
                                 _interrupt_logged = True
                                 self._vprint(
@@ -11861,6 +11903,14 @@ class AIAgent:
                 _turn_exit_reason = "interrupted_by_user"
                 if not self.quiet_mode:
                     self._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
+                break
+
+            # Also check the async message queue
+            if self._check_chat_queue():
+                interrupted = True
+                _turn_exit_reason = "interrupted_by_user"
+                if not self.quiet_mode:
+                    self._safe_print("\n⚡ Breaking out of tool loop due to queued message...")
                 break
             
             api_call_count += 1
