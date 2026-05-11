@@ -468,25 +468,33 @@ def get_display_language() -> str:
     in config.yaml → ``"en"`` (default).  Uses the same lightweight
     config-read pattern as ``get_disabled_skill_names`` to avoid
     importing the full CLI config stack.
+
+    The resolved value is normalised through ``agent.i18n._normalize_lang``
+    so that aliases like ``"chinese"`` → ``"zh"`` and ``"zh-CN"`` → ``"zh"``
+    are handled correctly.
     """
+    raw_lang = ""
     env_lang = os.environ.get("HERMES_LANGUAGE")
     if env_lang:
-        lang = env_lang.strip().lower()
-        if lang:
-            return lang
-    config_path = get_config_path()
-    if config_path.exists():
-        try:
-            parsed = yaml_load(config_path.read_text(encoding="utf-8"))
-            if isinstance(parsed, dict):
-                lang = (parsed.get("display") or {}).get("language")
-                if lang:
-                    val = str(lang).strip().lower()
-                    if val:
-                        return val
-        except Exception:
-            pass
-    return "en"
+        raw_lang = env_lang.strip()
+    if not raw_lang:
+        config_path = get_config_path()
+        if config_path.exists():
+            try:
+                parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+                if isinstance(parsed, dict):
+                    lang = (parsed.get("display") or {}).get("language")
+                    if lang:
+                        raw_lang = str(lang).strip()
+            except Exception:
+                pass
+    if not raw_lang:
+        return "en"
+    try:
+        from agent.i18n import _normalize_lang
+        return _normalize_lang(raw_lang)
+    except Exception:
+        return raw_lang.lower() or "en"
 
 
 # ── Description extraction ────────────────────────────────────────────────

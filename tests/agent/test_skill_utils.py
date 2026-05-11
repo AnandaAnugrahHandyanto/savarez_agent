@@ -56,3 +56,48 @@ def test_metadata_missing_entirely():
         "fallback_for_tools": [],
         "requires_tools": [],
     }
+
+
+# ── Locale-aware description tests ────────────────────────────────────────
+
+from agent.skill_utils import extract_skill_description
+
+
+def test_description_en_fallback():
+    """language='en' always returns 'description', ignoring description_zh."""
+    fm = {"description": "Hello world", "description_zh": "你好世界"}
+    assert extract_skill_description(fm, language="en") == "Hello world"
+
+
+def test_description_zh_selected():
+    """language='zh' prefers description_zh when present."""
+    fm = {"description": "Hello world", "description_zh": "你好世界"}
+    assert extract_skill_description(fm, language="zh") == "你好世界"
+
+
+def test_description_zh_fallback_to_en():
+    """language='zh' falls back to description when description_zh absent."""
+    fm = {"description": "Hello world"}
+    assert extract_skill_description(fm, language="zh") == "Hello world"
+
+
+def test_description_de_selected():
+    """language='de' prefers description_de when present."""
+    fm = {"description": "Hello", "description_de": "Hallo"}
+    assert extract_skill_description(fm, language="de") == "Hallo"
+
+
+def test_description_zh_truncated():
+    """Chinese description over 60 chars is truncated with ellipsis."""
+    long_zh = "这是一个" + "很长" * 30 + "的描述文本"
+    assert len(long_zh) > 60, f"test string must be >60 chars, got {len(long_zh)}"
+    fm = {"description_zh": long_zh}
+    result = extract_skill_description(fm, language="zh")
+    assert result.endswith("...")
+    assert len(result) <= 60
+
+
+def test_description_default_language_en():
+    """Default language=en ignores description_zh."""
+    fm = {"description": "Hello", "description_zh": "你好"}
+    assert extract_skill_description(fm) == "Hello"
