@@ -6384,6 +6384,9 @@ class GatewayRunner:
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
 
+        if canonical == "delegate":
+            return await self._handle_delegate_command(event)
+
         if canonical == "retry":
             return await self._handle_retry_command(event)
         
@@ -8393,6 +8396,69 @@ class GatewayRunner:
         if len(output) > 3800:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
+
+    async def _handle_delegate_command(self, event: MessageEvent) -> str:
+        """Handle /delegate — create Office/Kanban task(s) directly."""
+        import asyncio
+        import re
+        from hermes_cli.office_delegate import run_delegate_slash
+
+        text = (event.text or "").strip()
+        if text.startswith("/"):
+            text = text.lstrip("/")
+        lowered = text.lower()
+        for prefix in ("delegate", "deligate", "office"):
+            if lowered.startswith(prefix):
+                text = text[len(prefix):].lstrip()
+                break
+
+        try:
+            output = await asyncio.to_thread(
+                run_delegate_slash,
+                text,
+                created_by=f"{getattr(event.source.platform, 'value', event.source.platform)}:/delegate",
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            return f"Office delegation error: {exc}"
+
+        # Match the /kanban create UX: subscribe the originating gateway
+        # chat/thread to terminal events for each created Office task so
+        # Telegram remains a status/check-in surface while workers run.
+        task_ids = re.findall(r"\b(t_[0-9a-f]+)\b", output or "")
+        if task_ids:
+            try:
+                source = event.source
+                platform = getattr(source, "platform", None)
+                platform_str = (
+                    platform.value if hasattr(platform, "value") else str(platform or "")
+                ).lower()
+                chat_id = str(getattr(source, "chat_id", "") or "")
+                thread_id = str(getattr(source, "thread_id", "") or "")
+                user_id = str(getattr(source, "user_id", "") or "") or None
+                if platform_str and chat_id:
+                    def _sub_many():
+                        from hermes_cli import kanban_db as _kb
+                        conn = _kb.connect()
+                        try:
+                            for task_id in dict.fromkeys(task_ids):
+                                _kb.add_notify_sub(
+                                    conn,
+                                    task_id=task_id,
+                                    platform=platform_str,
+                                    chat_id=chat_id,
+                                    thread_id=thread_id or None,
+                                    user_id=user_id,
+                                )
+                        finally:
+                            conn.close()
+                    await asyncio.to_thread(_sub_many)
+                    output = output.rstrip() + "\nSubscribed this chat to Office task updates."
+            except Exception as exc:
+                logger.warning("delegate auto-subscribe failed: %s", exc)
+
+        if len(output) > 3800:
+            output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
+        return output or "No Office delegation output."
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
