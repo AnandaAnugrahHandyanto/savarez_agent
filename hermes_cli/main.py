@@ -11007,14 +11007,15 @@ Examples:
             )
             if not sessions:
                 print("No sessions found.")
+                db.close()
                 return
             has_titles = any(s.get("title") for s in sessions)
             if has_titles:
-                print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'Src':<6} {'ID'}")
-                print("─" * 118)
+                header = f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'Src':<6} {'ID'}"
             else:
-                print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
-                print("─" * 95)
+                header = f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}"
+            print(header)
+            print("─" * len(header))
             for s in sessions:
                 last_active = _relative_time(s.get("last_active"))
                 preview = (

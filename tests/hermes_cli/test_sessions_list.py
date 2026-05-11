@@ -29,9 +29,33 @@ def test_sessions_list_titled_layout_shows_source(monkeypatch, capsys):
     main_mod.main()
 
     output = capsys.readouterr().out
-    header = output.splitlines()[0]
+    lines = output.splitlines()
+    assert lines, "expected sessions list output"
+    header = lines[0]
     assert "Title" in header
     assert "Src" in header
     assert "Named chat" in output
     assert "telegram" in output
     assert "20260401_201329_d85961" in output
+
+
+def test_sessions_list_empty_result_closes_db(monkeypatch, capsys):
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    closed = {"value": False}
+
+    class FakeDB:
+        def list_sessions_rich(self, **kwargs):
+            return []
+
+        def close(self):
+            closed["value"] = True
+
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(sys, "argv", ["hermes", "sessions", "list"])
+
+    main_mod.main()
+
+    assert "No sessions found." in capsys.readouterr().out
+    assert closed["value"] is True
