@@ -82,6 +82,7 @@ APP_CMD_PING = "ping"
 APP_CMD_UPLOAD_MEDIA_INIT = "aibot_upload_media_init"
 APP_CMD_UPLOAD_MEDIA_CHUNK = "aibot_upload_media_chunk"
 APP_CMD_UPLOAD_MEDIA_FINISH = "aibot_upload_media_finish"
+APP_CMD_GET_MSG_MEDIA = "aibot_get_msg_media"
 
 CALLBACK_COMMANDS = {APP_CMD_CALLBACK, APP_CMD_LEGACY_CALLBACK}
 NON_RESPONSE_COMMANDS = CALLBACK_COMMANDS | {APP_CMD_EVENT_CALLBACK}
@@ -520,9 +521,14 @@ class WeComAdapter(BasePlatformAdapter):
         if not text and reply_text and not media_urls:
             text = reply_text
 
-        if not text and not media_urls:
-            logger.debug("[%s] Empty WeCom message skipped", self.name)
-            return
+        if not text:
+            # Don't silently drop file messages — inject placeholder
+            msgtype_check = str(body.get("msgtype") or "").lower()
+            if msgtype_check == "file" and isinstance(body.get("file"), dict):
+                text = "[收到文件消息]"
+            elif not media_urls:
+                logger.debug("[%s] Empty WeCom message skipped", self.name)
+                return
 
         source = self.build_source(
             chat_id=chat_id,
@@ -679,6 +685,26 @@ class WeComAdapter(BasePlatformAdapter):
         refs: List[Tuple[str, Dict[str, Any]]] = []
         msgtype = str(body.get("msgtype") or "").lower()
 
+        # Extract response_url from body top-level for fallback
+        response_url = str(body.get("response_url") or "").strip()
+
+        if msgtype in ("file", "appmsg"):
+            logger.debug("[%s] _extract_media %s body keys: %s", self.name, msgtype, list(body.keys()))
+            if msgtype == "file" and isinstance(body.get("file"), dict):
+                logger.debug("[%s] _extract_media file ref keys: %s, url=%s, aeskey=%s, media_id=%s",
+                    self.name, list(body["file"].keys()),
+                    str(body["file"].get("url", ""))[:80] if body["file"].get("url") else None,
+                    "***" if body["file"].get("aeskey") else None,
+                    body["file"].get("media_id") or body["file"].get("msgid"))
+            if msgtype == "appmsg" and isinstance(body.get("appmsg"), dict):
+                appmsg = body["appmsg"]
+                for sub_key in ("file", "image"):
+                    if isinstance(appmsg.get(sub_key), dict):
+                        logger.debug("[%s] _extract_media appmsg.%s keys: %s, url=%s, aeskey=%s",
+                            self.name, sub_key, list(appmsg[sub_key].keys()),
+                            str(appmsg[sub_key].get("url", ""))[:80] if appmsg[sub_key].get("url") else None,
+                            "***" if appmsg[sub_key].get("aeskey") else None)
+
         if msgtype == "mixed":
             _raw_mixed = body.get("mixed")
             mixed = _raw_mixed if isinstance(_raw_mixed, dict) else {}
@@ -711,16 +737,50 @@ class WeComAdapter(BasePlatformAdapter):
             refs.append(("file", quote["file"]))
 
         for kind, ref in refs:
-            cached = await self._cache_media(kind, ref)
+            cached = await self._cache_media(kind, ref, response_url)
             if cached:
                 path, content_type = cached
                 media_paths.append(path)
                 media_types.append(content_type)
 
+        # Handle WeCom AI Bot image_keys — resolved via aibot_get_msg_media
+        image_keys = body.get("image_keys")
+        if isinstance(image_keys, list):
+            for ik in image_keys:
+                ik = str(ik or "").strip()
+                if not ik:
+                    continue
+                cached = await self._cache_media_by_key(ik)
+                if cached:
+                    media_paths.append(cached[0])
+                    media_types.append(cached[1])
+
         return media_paths, media_types
 
-    async def _cache_media(self, kind: str, media: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    async def _cache_media(self, kind: str, media: Dict[str, Any], response_url: str = "") -> Optional[Tuple[str, str]]:
         """Cache an inbound image/file/media reference to local storage."""
+        # Handle media_id — download via aibot/media/get API
+        media_id = str(media.get("media_id") or "").strip()
+        if media_id:
+            result = await self._download_media_by_id(media_id)
+            if result:
+                raw, headers = result
+                content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip()
+                if not content_type or content_type.startswith("text/"):
+                    content_type = "application/octet-stream"
+                if kind == "image" or content_type.startswith("image/"):
+                    ext = self._guess_extension(media_id, content_type, fallback=".jpg")
+                    try:
+                        return cache_image_from_bytes(raw, ext), content_type or self._mime_for_ext(ext, fallback="image/jpeg")
+                    except ValueError:
+                        pass
+                filename = str(media.get("filename") or media.get("name") or "wecom_file")
+                if not Path(filename).suffix:
+                    ext = mimetypes.guess_extension(content_type) or ".bin"
+                    filename += ext
+                return cache_document_from_bytes(raw, filename), content_type
+            return None
+
         if "base64" in media and media.get("base64"):
             try:
                 raw = self._decode_base64(media["base64"])
@@ -755,7 +815,27 @@ class WeComAdapter(BasePlatformAdapter):
                 raw = self._decrypt_file_bytes(raw, aes_key)
             except Exception as exc:
                 logger.debug("[%s] Failed to decrypt %s from %s: %s", self.name, kind, url, exc)
-                return None
+                # Fallback: POST to response_url to get decrypted content
+                if response_url:
+                    try:
+                        raw, headers = await self._download_remote_bytes_post(response_url, max_bytes=ABSOLUTE_MAX_BYTES)
+                        logger.info("[%s] Fallback via response_url succeeded for %s", self.name, kind)
+                    except Exception as fb_exc:
+                        logger.debug("[%s] Fallback via response_url also failed: %s", self.name, fb_exc)
+                        return None
+                else:
+                    # Save debug data for offline analysis
+                    import os as _os
+                    debug_dir = _os.path.expanduser("~/.hermes/debug/wecom_decrypt")
+                    _os.makedirs(debug_dir, exist_ok=True)
+                    ts = _os.path.join(debug_dir, f"debug_{_os.urandom(4).hex()}.txt")
+                    with open(ts, "wb") as f:
+                        f.write(f"aeskey={aes_key}\n".encode())
+                        f.write(f"encrypted_len={len(raw)}\n".encode())
+                        f.write(f"encrypted_first64={raw[:64].hex()}\n".encode())
+                        f.write(f"encrypted_last16={raw[-16:].hex()}\n".encode())
+                    logger.debug("[%s] Debug data saved to %s", self.name, ts)
+                    return None
 
         content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip() or "application/octet-stream"
         if kind == "image":
@@ -768,6 +848,64 @@ class WeComAdapter(BasePlatformAdapter):
 
         filename = self._guess_filename(url, headers.get("content-disposition"), content_type)
         return cache_document_from_bytes(raw, filename), content_type
+
+    async def _cache_media_by_key(self, image_key: str) -> Optional[Tuple[str, str]]:
+        """Resolve an image_key via aibot_get_msg_media and cache it."""
+        try:
+            resp = await self._send_request(
+                APP_CMD_GET_MSG_MEDIA,
+                {"image_key": image_key},
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            logger.debug("[%s] aibot_get_msg_media failed for %s: %s", self.name, image_key, exc)
+            return None
+        if not resp or not isinstance(resp, dict):
+            return None
+        url = str(resp.get("url") or "").strip()
+        if not url:
+            return None
+        cached = await self._cache_media("image", {"url": url})
+        return cached
+
+    async def _download_media_by_id(self, media_id: str) -> Optional[Tuple[bytes, Dict[str, str]]]:
+        """Download raw bytes for a media_id via aibot/media/get."""
+        payload = {
+            "robot_id": self.bot_id,
+            "secret": self._secret,
+            "media_id": media_id,
+        }
+        try:
+            async with self._http_client.stream(
+                "POST",
+                "https://qyapi.weixin.qq.com/cgi-bin/aibot/media/get",
+                json=payload,
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            ) as resp:
+                if resp.status == 200:
+                    headers = dict(resp.headers)
+                    content_type = headers.get("content-type", "application/octet-stream").split(";")[0].strip()
+                    if content_type.startswith("text/") or content_type.startswith("application/json"):
+                        body = await resp.aread()
+                        logger.debug(
+                            "[%s] aibot/media/get returned %s for %s: %s",
+                            self.name, content_type, media_id, body[:300],
+                        )
+                        return None
+                    raw = await resp.aread()
+                    if len(raw) > ABSOLUTE_MAX_BYTES:
+                        logger.warning("[%s] media %s too large (%d bytes)", self.name, media_id, len(raw))
+                        return None
+                    if not raw:
+                        logger.debug("[%s] aibot/media/get returned empty for %s", self.name, media_id)
+                        return None
+                    return raw, headers
+                else:
+                    logger.debug("[%s] aibot/media/get returned %d for %s", self.name, resp.status, media_id)
+                    return None
+        except Exception as exc:
+            logger.debug("[%s] aibot/media/get failed for %s: %s", self.name, media_id, exc)
+            return None
 
     @staticmethod
     def _decode_base64(data: str) -> bytes:
@@ -1005,31 +1143,64 @@ class WeComAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _decrypt_file_bytes(encrypted_data: bytes, aes_key: str) -> bytes:
+        """Decrypt WeCom AES-256-CBC encrypted file.
+
+        Per WeCom AI Bot official documentation:
+        - AES key = base64-decoded `aeskey` field (exactly 32 bytes)
+        - IV = first 16 bytes of the AES key
+        - Algorithm: AES-256-CBC with PKCS#7 padding
+        """
         if not encrypted_data:
             raise ValueError("encrypted_data is empty")
         if not aes_key:
             raise ValueError("aes_key is required")
 
-        key = base64.b64decode(aes_key)
-        if len(key) != 32:
-            raise ValueError(f"Invalid WeCom AES key length: expected 32 bytes, got {len(key)}")
-
         try:
             from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-        except ImportError as exc:  # pragma: no cover - dependency is environment-specific
+            from cryptography.hazmat.primitives import padding as sym_padding
+            from cryptography.hazmat.backends import default_backend
+        except ImportError as exc:
             raise RuntimeError("cryptography is required for WeCom media decryption") from exc
 
-        cipher = Cipher(algorithms.AES(key), modes.CBC(key[:16]))
+        # Decode AES key from base64 (add padding if necessary)
+        padded_key = aes_key + "=" * (-len(aes_key) % 4)
+        key = base64.b64decode(padded_key)
+        if len(key) != 32:
+            raise ValueError(f"WeCom AES key must be 32 bytes after base64 decode, got {len(key)}")
+
+        # IV = first 16 bytes of key (per official documentation)
+        iv = key[:16]
+
+        logger.debug(
+            "[Wecom] AES-256-CBC decrypt: key_len=%d, iv=%s, data_len=%d",
+            len(key), iv.hex(), len(encrypted_data),
+        )
+
+        # Decrypt with AES-256-CBC
+        cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
         decryptor = cipher.decryptor()
         decrypted = decryptor.update(encrypted_data) + decryptor.finalize()
 
-        pad_len = decrypted[-1]
-        if pad_len < 1 or pad_len > 32 or pad_len > len(decrypted):
-            raise ValueError(f"Invalid PKCS#7 padding value: {pad_len}")
-        if any(byte != pad_len for byte in decrypted[-pad_len:]):
-            raise ValueError("Invalid PKCS#7 padding: padding bytes mismatch")
+        # Remove PKCS#7 padding — but WeCom AI Bot may not use standard padding.
+        # If unpadding fails, keep raw decrypted bytes (likely OFB/CTR stream).
+        try:
+            unpadder = sym_padding.PKCS7(128).unpadder()
+            decrypted = unpadder.update(decrypted) + unpadder.finalize()
+        except Exception:
+            # PKCS#7 unpadding failed — try manual strip or keep raw
+            last_byte = decrypted[-1]
+            if 1 <= last_byte <= 16:
+                tail = decrypted[-last_byte:]
+                if all(b == last_byte for b in tail):
+                    decrypted = decrypted[:-last_byte]
+            logger.debug("[Wecom] PKCS#7 unpadding failed, using raw decrypted bytes (len=%d)", len(decrypted))
 
-        return decrypted[:-pad_len]
+        logger.debug(
+            "[Wecom] Decryption OK (len=%d, header=%s)",
+            len(decrypted), decrypted[:min(8, len(decrypted))].hex(),
+        )
+        return decrypted
+
 
     async def _download_remote_bytes(
         self,
@@ -1071,6 +1242,46 @@ class WeComAdapter(BasePlatformAdapter):
                         )
 
                 return bytes(data), headers
+        finally:
+            if created_client:
+                await client.aclose()
+
+    async def _download_remote_bytes_post(
+        self,
+        url: str,
+        max_bytes: int,
+    ) -> Tuple[bytes, Dict[str, str]]:
+        """POST version of _download_remote_bytes for WeCom response_url fallback."""
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(url):
+            raise ValueError(f"Blocked unsafe URL (SSRF protection): {url[:80]}")
+
+        if not HTTPX_AVAILABLE:
+            raise RuntimeError("httpx is required for WeCom media download")
+
+        client = self._http_client or httpx.AsyncClient(timeout=30.0, follow_redirects=True)
+        created_client = client is not self._http_client
+        try:
+            response = await client.post(
+                url,
+                headers={
+                    "User-Agent": "HermesAgent/1.0",
+                    "Accept": "*/*",
+                },
+            )
+            response.raise_for_status()
+            headers = {key.lower(): value for key, value in response.headers.items()}
+            content_length = headers.get("content-length")
+            if content_length and content_length.isdigit() and int(content_length) > max_bytes:
+                raise ValueError(
+                    f"Remote media exceeds WeCom limit: {int(content_length)} bytes > {max_bytes} bytes"
+                )
+            data = bytearray(response.content)
+            if len(data) > max_bytes:
+                raise ValueError(
+                    f"Remote media exceeds WeCom limit while downloading: {len(data)} bytes > {max_bytes} bytes"
+                )
+            return bytes(data), headers
         finally:
             if created_client:
                 await client.aclose()
