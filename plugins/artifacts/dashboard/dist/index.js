@@ -2,7 +2,8 @@
   "use strict";
 
   const SDK = window.__HERMES_PLUGIN_SDK__;
-  if (!SDK) return;
+  const REGISTRY = window.__HERMES_PLUGINS__;
+  if (!SDK || !REGISTRY || typeof REGISTRY.register !== "function") return;
 
   const React = SDK.React;
   const h = React.createElement;
@@ -18,6 +19,9 @@
   const API_BASE = "/api/plugins/artifacts";
 
   function api(path) {
+    if (typeof SDK.fetchJSON === "function") {
+      return SDK.fetchJSON(API_BASE + path);
+    }
     return fetch(API_BASE + path).then(function (res) {
       if (!res.ok) {
         return res.text().then(function (text) {
@@ -146,10 +150,5 @@
     );
   }
 
-  SDK.registerPage({
-    path: "/artifacts",
-    name: "artifacts",
-    label: "Artifacts",
-    component: ArtifactsPage
-  });
+  REGISTRY.register("artifacts", ArtifactsPage);
 })();

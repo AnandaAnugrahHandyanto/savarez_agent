@@ -201,6 +201,15 @@ def test_dashboard_manifest_declares_artifacts_tab_and_api():
     assert data["api"] == "plugin_api.py"
 
 
+def test_dashboard_bundle_uses_real_plugin_registry_and_sdk_fetch_client():
+    js = BUNDLE_FILE.read_text(encoding="utf-8")
+
+    assert "window.__HERMES_PLUGINS__" in js
+    assert 'REGISTRY.register("artifacts", ArtifactsPage)' in js
+    assert "registerPage" not in js
+    assert "SDK.fetchJSON(API_BASE + path)" in js
+
+
 def test_dashboard_bundle_uses_sandboxed_iframe_not_inner_html():
     js = BUNDLE_FILE.read_text(encoding="utf-8")
 
@@ -213,3 +222,11 @@ def test_dashboard_bundle_uses_sandboxed_iframe_not_inner_html():
     assert "dangerouslySetInnerHTML" not in js
     assert "referrerPolicy" in js
     assert "no-referrer" in js
+
+
+def test_dashboard_auth_middleware_allows_artifact_preview_prefix_only():
+    source = (REPO_ROOT / "hermes_cli" / "web_server.py").read_text(encoding="utf-8")
+
+    assert '"/api/plugins/artifacts/preview/"' in source
+    assert "path.startswith(_PUBLIC_API_PREFIXES)" in source
+    assert '"/api/plugins/artifacts/list"' not in source

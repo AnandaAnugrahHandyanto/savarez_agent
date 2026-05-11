@@ -109,6 +109,15 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/dashboard/plugins/rescan",
 })
 
+# Artifact preview files are intentionally renderable in sandboxed iframes.
+# Iframes cannot attach the ephemeral dashboard session header, so the preview
+# route is public while list/detail/control APIs remain protected. The plugin
+# store still validates artifact IDs, version paths, traversal attempts, and
+# secret-looking filenames before serving a file.
+_PUBLIC_API_PREFIXES: tuple[str, ...] = (
+    "/api/plugins/artifacts/preview/",
+)
+
 
 def _has_valid_session_token(request: Request) -> bool:
     """True if the request carries a valid dashboard session token.
@@ -225,7 +234,7 @@ async def host_header_middleware(request: Request, call_next):
 async def auth_middleware(request: Request, call_next):
     """Require the session token on all /api/ routes except the public list."""
     path = request.url.path
-    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
+    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS and not path.startswith(_PUBLIC_API_PREFIXES):
         if not _has_valid_session_token(request):
             return JSONResponse(
                 status_code=401,
