@@ -5858,8 +5858,18 @@ class HermesCLI:
         return result[0]
 
     def _prompt_text_input(self, prompt_text: str) -> str | None:
-        """Prompt for free-text input safely inside or outside prompt_toolkit."""
-        result = [None]
+        """Prompt for free-text input safely inside or outside prompt_toolkit.
+
+        Slash commands are executed by ``process_loop`` in a worker thread while
+        the prompt_toolkit ``Application`` runs on the main thread.  Calling
+        ``run_in_terminal`` directly from that worker thread asks asyncio for a
+        non-existent current loop, leaks the coroutine it just created, and the
+        caller returns before input is read.  Schedule the terminal prompt on
+        the app loop instead, then block the worker until the prompt finishes.
+        """
+        result: list[str | None] = [None]
+        error: list[BaseException | None] = [None]
+        done = threading.Event()
 
         def _ask():
             try:
@@ -5867,18 +5877,75 @@ class HermesCLI:
             except (KeyboardInterrupt, EOFError):
                 pass
 
-        if self._app:
-            from prompt_toolkit.application import run_in_terminal
-            was_visible = self._status_bar_visible
-            self._status_bar_visible = False
-            self._app.invalidate()
-            try:
-                run_in_terminal(_ask)
-            finally:
-                self._status_bar_visible = was_visible
-                self._app.invalidate()
-        else:
+        app = self._app
+        if not app:
             _ask()
+            return result[0]
+
+        was_visible = self._status_bar_visible
+        restored = False
+
+        def _restore_status_bar() -> None:
+            nonlocal restored
+            if restored:
+                return
+            restored = True
+            self._status_bar_visible = was_visible
+            try:
+                app.invalidate()
+            except Exception:
+                pass
+
+        self._status_bar_visible = False
+        try:
+            app.invalidate()
+        except Exception:
+            pass
+
+        loop = getattr(app, "loop", None)
+        loop_running = False
+        try:
+            loop_running = bool(loop and loop.is_running())
+        except Exception:
+            loop_running = False
+
+        in_main_thread = threading.current_thread() is threading.main_thread()
+        if loop_running and not in_main_thread:
+            from prompt_toolkit.application import run_in_terminal
+
+            def _complete(future) -> None:
+                try:
+                    future.result()
+                except BaseException as exc:  # propagate after the worker resumes
+                    error[0] = exc
+                finally:
+                    _restore_status_bar()
+                    done.set()
+
+            def _schedule() -> None:
+                try:
+                    future = run_in_terminal(_ask)
+                    future.add_done_callback(_complete)
+                except BaseException as exc:
+                    error[0] = exc
+                    _restore_status_bar()
+                    done.set()
+
+            try:
+                loop.call_soon_threadsafe(_schedule)
+                done.wait()
+            except BaseException as exc:
+                error[0] = exc
+                _restore_status_bar()
+
+            if error[0] is not None:
+                raise error[0]
+            return result[0]
+
+        try:
+            _ask()
+        finally:
+            _restore_status_bar()
         return result[0]
 
     def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:

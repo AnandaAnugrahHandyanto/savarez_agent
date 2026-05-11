@@ -6,6 +6,7 @@ don't have to construct a full HermesCLI (which requires extensive setup).
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -150,3 +151,76 @@ def test_gate_default_true_when_config_missing():
     # treated as on despite the config error.  If the gate had been off
     # this would have returned 'once' without consulting the prompt.
     assert result is None
+
+
+def test_clear_confirmation_from_worker_thread_schedules_terminal_prompt():
+    """Regression: /clear confirmation runs from process_loop's worker thread.
+
+    prompt_toolkit.application.run_in_terminal must be scheduled on the
+    Application loop and waited for. Calling it directly from the worker thread
+    creates an unawaited coroutine warning and returns before input is read.
+    """
+    from cli import HermesCLI
+
+    scheduled = []
+    invalidations = []
+    run_in_terminal_calls = []
+
+    class FakeLoop:
+        def is_running(self):
+            return True
+
+        def call_soon_threadsafe(self, callback):
+            scheduled.append(True)
+            callback()
+
+    class FakeFuture:
+        def __init__(self, func):
+            self.func = func
+
+        def add_done_callback(self, callback):
+            self.func()
+            callback(self)
+
+        def result(self):
+            return None
+
+    def fake_run_in_terminal(func):
+        run_in_terminal_calls.append(True)
+        return FakeFuture(func)
+
+    self_ = SimpleNamespace(
+        _app=SimpleNamespace(
+            loop=FakeLoop(),
+            invalidate=lambda: invalidations.append(True),
+        ),
+        _status_bar_visible=True,
+    )
+    self_._prompt_text_input = _bound(HermesCLI._prompt_text_input, self_)
+
+    result = {}
+
+    def worker():
+        with patch("builtins.input", return_value="1"), patch(
+            "prompt_toolkit.application.run_in_terminal",
+            side_effect=fake_run_in_terminal,
+        ), patch(
+            "cli.load_cli_config",
+            return_value={"approvals": {"destructive_slash_confirm": True}},
+        ):
+            result["value"] = _bound(HermesCLI._confirm_destructive_slash, self_)(
+                "clear",
+                "This clears the screen and starts a new session.\n"
+                "The current conversation history will be discarded.",
+            )
+
+    thread = threading.Thread(target=worker, name="process_loop", daemon=True)
+    thread.start()
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert result["value"] == "once"
+    assert scheduled == [True]
+    assert run_in_terminal_calls == [True]
+    assert self_._status_bar_visible is True
+    assert invalidations
