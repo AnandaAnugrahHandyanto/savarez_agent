@@ -718,6 +718,72 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
+def _normalize_codex_tools(tools: Any) -> Optional[List[Dict[str, Any]]]:
+    """Validate and normalize the Codex ``tools`` list.
+
+    Returns *None* when *tools* is *None* (no tools supplied).
+    """
+    if tools is None:
+        return None
+    if not isinstance(tools, list):
+        raise ValueError("Codex Responses request 'tools' must be a list when provided.")
+    normalized_tools: List[Dict[str, Any]] = []
+    for idx, tool in enumerate(tools):
+        if not isinstance(tool, dict):
+            raise ValueError(f"Codex Responses tools[{idx}] must be an object.")
+        if tool.get("type") != "function":
+            raise ValueError(f"Codex Responses tools[{idx}] has unsupported type {tool.get('type')!r}.")
+
+        name = tool.get("name")
+        parameters = tool.get("parameters")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"Codex Responses tools[{idx}] is missing a valid name.")
+        if not isinstance(parameters, dict):
+            raise ValueError(f"Codex Responses tools[{idx}] is missing valid parameters.")
+
+        description = tool.get("description", "")
+        if description is None:
+            description = ""
+        if not isinstance(description, str):
+            description = str(description)
+
+        strict = tool.get("strict", False)
+        if not isinstance(strict, bool):
+            strict = bool(strict)
+
+        normalized_tools.append(
+            {
+                "type": "function",
+                "name": name.strip(),
+                "description": description,
+                "strict": strict,
+                "parameters": parameters,
+            }
+        )
+    return normalized_tools
+
+
+def _normalize_codex_extra_headers(
+    extra_headers: Any,
+) -> Optional[Dict[str, str]]:
+    """Validate and normalize extra HTTP headers for a Codex request.
+
+    Returns *None* when no extra headers are supplied.
+    """
+    if extra_headers is None:
+        return None
+    if not isinstance(extra_headers, dict):
+        raise ValueError("Codex Responses request 'extra_headers' must be an object.")
+    normalized_headers: Dict[str, str] = {}
+    for key, value in extra_headers.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("Codex Responses request 'extra_headers' keys must be non-empty strings.")
+        if value is None:
+            continue
+        normalized_headers[key.strip()] = str(value)
+    return normalized_headers or None
+
+
 def _preflight_codex_api_kwargs(
     api_kwargs: Any,
     *,
@@ -745,44 +811,7 @@ def _preflight_codex_api_kwargs(
 
     normalized_input = _preflight_codex_input_items(api_kwargs.get("input"))
 
-    tools = api_kwargs.get("tools")
-    normalized_tools = None
-    if tools is not None:
-        if not isinstance(tools, list):
-            raise ValueError("Codex Responses request 'tools' must be a list when provided.")
-        normalized_tools = []
-        for idx, tool in enumerate(tools):
-            if not isinstance(tool, dict):
-                raise ValueError(f"Codex Responses tools[{idx}] must be an object.")
-            if tool.get("type") != "function":
-                raise ValueError(f"Codex Responses tools[{idx}] has unsupported type {tool.get('type')!r}.")
-
-            name = tool.get("name")
-            parameters = tool.get("parameters")
-            if not isinstance(name, str) or not name.strip():
-                raise ValueError(f"Codex Responses tools[{idx}] is missing a valid name.")
-            if not isinstance(parameters, dict):
-                raise ValueError(f"Codex Responses tools[{idx}] is missing valid parameters.")
-
-            description = tool.get("description", "")
-            if description is None:
-                description = ""
-            if not isinstance(description, str):
-                description = str(description)
-
-            strict = tool.get("strict", False)
-            if not isinstance(strict, bool):
-                strict = bool(strict)
-
-            normalized_tools.append(
-                {
-                    "type": "function",
-                    "name": name.strip(),
-                    "description": description,
-                    "strict": strict,
-                    "parameters": parameters,
-                }
-            )
+    normalized_tools = _normalize_codex_tools(api_kwargs.get("tools"))
 
     store = api_kwargs.get("store", False)
     if store is not False:
@@ -828,19 +857,9 @@ def _preflight_codex_api_kwargs(
         if val is not None:
             normalized[passthrough_key] = val
 
-    extra_headers = api_kwargs.get("extra_headers")
-    if extra_headers is not None:
-        if not isinstance(extra_headers, dict):
-            raise ValueError("Codex Responses request 'extra_headers' must be an object.")
-        normalized_headers: Dict[str, str] = {}
-        for key, value in extra_headers.items():
-            if not isinstance(key, str) or not key.strip():
-                raise ValueError("Codex Responses request 'extra_headers' keys must be non-empty strings.")
-            if value is None:
-                continue
-            normalized_headers[key.strip()] = str(value)
-        if normalized_headers:
-            normalized["extra_headers"] = normalized_headers
+    normalized_headers = _normalize_codex_extra_headers(api_kwargs.get("extra_headers"))
+    if normalized_headers is not None:
+        normalized["extra_headers"] = normalized_headers
 
     if allow_stream:
         stream = api_kwargs.get("stream")
