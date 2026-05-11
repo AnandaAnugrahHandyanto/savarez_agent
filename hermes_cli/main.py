@@ -5597,12 +5597,38 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         if fatal:
             print("  Run manually:  cd web && npm install && npm run build")
         return False
+    # First attempt
     r2 = subprocess.run([npm, "run", "build"], cwd=web_dir, capture_output=True)
     if r2.returncode != 0:
+        # Retry once after a short delay — covers boot-time races (antivirus
+        # scanning Node.js binaries, npm cache not ready, transient I/O).
+        import time as _time
+        _time.sleep(3)
+        r2 = subprocess.run([npm, "run", "build"], cwd=web_dir, capture_output=True)
+
+    if r2.returncode != 0:
+        stderr_preview = (r2.stderr or b"").decode(errors="replace").strip()
+        stderr_lines = "
+  ".join(stderr_preview.splitlines()[-10:]) if stderr_preview else ""
+        dist_dir = web_dir.parent / "hermes_cli" / "web_dist"
+        dist_index = dist_dir / "index.html"
+
+        # If a stale dist exists, serve it as a fallback instead of failing.
+        # A stale UI is far better than no UI (issue #23817).
+        if dist_index.exists() and not fatal:
+            print(
+                f"  ⚠ Web UI build failed — serving stale dist as fallback"
+            )
+            if stderr_lines:
+                print(f"  Build error: {stderr_lines}")
+            return True
+
         print(
             f"  {'✗' if fatal else '⚠'} Web UI build failed"
             + ("" if fatal else " (hermes web will not be available)")
         )
+        if stderr_lines:
+            print(f"  Build error: {stderr_lines}")
         if fatal:
             print("  Run manually:  cd web && npm install && npm run build")
         return False
@@ -9075,7 +9101,7 @@ def cmd_dashboard(args):
         print(f"Import error: {e}")
         sys.exit(1)
 
-    if "HERMES_WEB_DIST" not in os.environ:
+    if "HERMES_WEB_DIST" not in os.environ and not getattr(args, "skip_build", False):
         if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
             sys.exit(1)
 
@@ -11552,6 +11578,15 @@ Examples:
         help=(
             "Expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket). "
             "Alternatively set HERMES_DASHBOARD_TUI=1."
+        ),
+    )
+    dashboard_parser.add_argument(
+        "--skip-build",
+        action="store_true",
+        help=(
+            "Skip the web UI build step and serve the existing dist directly. "
+            "Useful for non-interactive contexts (Windows Scheduled Tasks, CI) "
+            "where npm may not be available. Pre-build with: cd web && npm run build"
         ),
     )
     # Lifecycle flags — mutually exclusive with each other and with the
