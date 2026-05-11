@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import patch
+import threading
 
 
 def _bound(fn, instance):
@@ -20,6 +21,17 @@ def _make_self(prompt_response):
     return SimpleNamespace(
         _app=None,
         _prompt_text_input=lambda _prompt: prompt_response,
+    )
+
+
+def _make_tui_self(approval_response):
+    """Build a minimal TUI stand-in that must not read stdin directly."""
+    return SimpleNamespace(
+        _app=object(),
+        _prompt_text_input=lambda _prompt: (_ for _ in ()).throw(
+            AssertionError("TUI path must not call input/prompt_text_input")
+        ),
+        _approval_callback=lambda **_kwargs: approval_response,
     )
 
 
@@ -132,6 +144,34 @@ def test_gate_on_choice_always_persists_and_returns_always():
 
     assert result == "always"
     assert ("approvals.destructive_slash_confirm", False) in saves
+
+
+def test_tui_background_thread_uses_approval_modal_not_stdin():
+    """In the TUI process_loop thread, use prompt_toolkit modal approval.
+
+    Calling _prompt_text_input/input() from this background thread races the
+    prompt_toolkit main loop and leaves /new unable to receive keyboard input.
+    """
+    from cli import HermesCLI
+
+    self_ = _make_tui_self(approval_response="once")
+    result_holder = []
+
+    def _run():
+        with patch(
+            "cli.load_cli_config",
+            return_value={"approvals": {"destructive_slash_confirm": True}},
+        ):
+            result_holder.append(
+                _bound(HermesCLI._confirm_destructive_slash, self_)("new", "detail")
+            )
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert result_holder == ["once"]
 
 
 def test_gate_default_true_when_config_missing():

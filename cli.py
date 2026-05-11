@@ -8577,8 +8577,32 @@ class HermesCLI:
         if not confirm_required:
             return "once"
 
-        # Render warning + prompt — single-line composer prompt, mirrors
-        # ``_confirm_and_reload_mcp``.
+        # In the TUI, slash commands are processed by the background
+        # ``process_loop`` thread while prompt_toolkit owns stdin on the main
+        # thread. Calling ``input()`` here races prompt_toolkit and leaves the
+        # visible confirmation prompt unable to receive keyboard input. Reuse
+        # the prompt_toolkit approval modal for thread-safe selection.
+        if getattr(self, "_app", None) and threading.current_thread() is not threading.main_thread():
+            verdict = self._approval_callback(
+                command=f"/{command}",
+                description=f"Destroys conversation state. {detail.replace(chr(10), ' ')}",
+                allow_permanent=True,
+            )
+            if verdict == "deny":
+                print(f"🟡 /{command} cancelled. Conversation unchanged.")
+                return None
+            if verdict == "session":
+                verdict = "once"
+            if verdict == "always":
+                if save_config_value("approvals.destructive_slash_confirm", False):
+                    print("🔒 Future /clear, /new, /reset, and /undo will run without confirmation.")
+                    print("   Re-enable via `approvals.destructive_slash_confirm: true` in config.yaml.")
+                else:
+                    print("⚠️  Couldn't persist opt-out — proceeding once.")
+            return verdict if verdict in ("once", "always") else None
+
+        # Non-TUI path: render warning + prompt — single-line composer prompt,
+        # mirrors ``_confirm_and_reload_mcp``.
         print()
         print(f"⚠️  /{command} — destroys conversation state")
         print()
