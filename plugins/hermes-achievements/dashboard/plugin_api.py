@@ -21,15 +21,107 @@ except ImportError:
         return Path(val) if val else Path.home() / ".hermes"
 
 try:
-    from fastapi import APIRouter
+    from fastapi import APIRouter, Request
 except Exception:  # Allows local unit tests without dashboard dependencies.
     class APIRouter:  # type: ignore
         def get(self, *_args, **_kwargs):
             return lambda fn: fn
         def post(self, *_args, **_kwargs):
             return lambda fn: fn
+    class Request:  # type: ignore
+        pass
 
 router = APIRouter()
+
+# ─── Locale / i18n support ─────────────────────────────────
+_LOCALE_DIR = Path(__file__).parent / "locales"
+_LOCALE_CACHE: Dict[str, Any] = {}
+
+def _load_locale(locale_code: str) -> Dict[str, Any]:
+    """Load a locale file from the locales/ directory."""
+    path = _LOCALE_DIR / f"{locale_code}.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+def _resolve_locale_from_request(request: Any) -> str:
+    """Resolve locale from Accept-Language header. Falls back to 'en'."""
+    if request is None:
+        return "en"
+    try:
+        accept = request.headers.get("accept-language", "")
+        if not accept:
+            return "en"
+        # Parse: "zh-CN,zh;q=0.9,en;q=0.8" → try zh-CN first
+        for part in accept.split(","):
+            lang = part.strip().split(";")[0].strip()
+            if lang.startswith("zh") or lang.startswith("cmn"):
+                return "zh-CN"
+    except Exception:
+        pass
+    return "en"
+
+def _apply_locale(achievement: Dict[str, Any], locale_code: str) -> Dict[str, Any]:
+    """Apply translated name/description/category to an achievement dict.
+    Returns the original dict unchanged when locale is 'en' or no translations found."""
+    if locale_code == "en":
+        return achievement
+    locale_data = _load_locale(locale_code)
+    if not locale_data:
+        return achievement
+    aid = achievement.get("id")
+    if not aid:
+        return achievement
+    t = locale_data.get(aid)
+    if not t:
+        return achievement
+    result = dict(achievement)
+    for field in ("name", "description"):
+        if field in t:
+            result[field] = t[field]
+    return result
+
+def _locale_tier_name(name: str, locale_code: str) -> str:
+    """Translate a tier name (Copper/Silver/...) if locale has tier mappings."""
+    if locale_code == "en":
+        return name
+    locale_data = _load_locale(locale_code)
+    if not locale_data:
+        return name
+    tiers = locale_data.get("._tiers")
+    if not isinstance(tiers, list):
+        return name
+    english_tiers = ["Copper", "Silver", "Gold", "Diamond", "Olympian"]
+    try:
+        idx = english_tiers.index(name)
+        if idx < len(tiers):
+            return tiers[idx]
+    except (ValueError, IndexError):
+        pass
+    return name
+
+def _locale_string(key: str, locale_code: str) -> str:
+    """Translate a fixed string key from locale file's ._strings section."""
+    if locale_code == "en":
+        return key
+    locale_data = _load_locale(locale_code)
+    if not locale_data:
+        return ""
+    strings = locale_data.get("._strings", {})
+    return strings.get(key, "")
+
+def _locale_metric_label(metric: str, locale_code: str) -> str:
+    """Translate a metric label using the locale file."""
+    if locale_code == "en":
+        return ""
+    locale_data = _load_locale(locale_code)
+    if not locale_data:
+        return ""
+    metrics = locale_data.get("._metrics", {})
+    return metrics.get(metric, "")
 
 SNAPSHOT_TTL_SECONDS = 120
 _SCAN_LOCK = threading.Lock()
@@ -527,33 +619,55 @@ METRIC_LABELS = {
 }
 
 
-def metric_label(metric: str) -> str:
+def metrics_label(metric: str, locale_code: str = "en") -> str:
+    """Return the metric label, translated if available."""
+    if locale_code != "en":
+        translated = _locale_metric_label(metric, locale_code)
+        if translated:
+            return translated
     return METRIC_LABELS.get(metric, metric.replace("_", " "))
 
 
-def criteria_for(definition: Dict[str, Any]) -> str:
-    if definition.get("secret") and definition.get("state") == "secret":
-        return "Secret: exact requirement hidden until Hermes sees the first matching signal. Keep using Hermes across debugging, tools, memory, skills, plugins, and model workflows to reveal it."
+def criteria_for(definition: Dict[str, Any], locale_code: str = "en") -> str:
     secret_prefix = ""
+    if definition.get("secret"):
+        hint = _locale_string("secret_hint", locale_code)
+        if not hint and definition.get("state") == "secret":
+            hint = "Secret: exact requirement hidden until Hermes sees the first matching signal. Keep using Hermes across debugging, tools, memory, skills, plugins, and model workflows to reveal it."
+        if hint:
+            secret_prefix = hint
     if "threshold_metric" in definition:
         tiers_list = sorted(definition.get("tiers", []), key=lambda t: t["threshold"])
         if not tiers_list:
-            return secret_prefix + "Requirement: use Hermes in the matching workflow."
-        metric = metric_label(definition["threshold_metric"])
-        ladder = ", ".join(f"{t['name']} {t['threshold']}" for t in tiers_list)
-        return secret_prefix + f"Requirement: {metric}. Tier ladder: {ladder}."
+            return secret_prefix + ("Requirement: use Hermes in the matching workflow." if locale_code == "en" else _locale_string("requirement_prefix", locale_code) or "要求: 在匹配的工作流中使用 Hermes。")
+        metric = metrics_label(definition["threshold_metric"], locale_code)
+        ladder_parts = []
+        for t in tiers_list:
+            tn = _locale_tier_name(t["name"], locale_code) if locale_code != "en" else t["name"]
+            ladder_parts.append(f"{tn} {t['threshold']}")
+        ladder = ", ".join(ladder_parts)
+        prefix_text = _locale_string("requirement_prefix", locale_code) or "Requirement"
+        return secret_prefix + f"{prefix_text}: {metric}。等级阶梯: {ladder}。"
     requirements = definition.get("requirements") or []
     if requirements:
-        parts = [f"{metric_label(r['metric'])} ≥ {int(r.get('gte', 1))}" for r in requirements]
-        return secret_prefix + "Requirement: " + "; ".join(parts) + "."
-    return secret_prefix + "Requirement: complete the matching Hermes behavior."
+        parts = [f"{metrics_label(r['metric'], locale_code)} ≥ {int(r.get('gte', 1))}" for r in requirements]
+        separator = "；" if locale_code != "en" else "; "
+        prefix_text = _locale_string("requirement_prefix", locale_code) or "Requirement"
+        return secret_prefix + f"{prefix_text}: " + separator.join(parts) + "。"
+    return secret_prefix + ("Requirement: complete the matching Hermes behavior." if locale_code == "en" else _locale_string("requirement_prefix", locale_code) or "要求: 完成匹配的 Hermes 行为。")
 
 
-def display_achievement(item: Dict[str, Any]) -> Dict[str, Any]:
+def display_achievement(item: Dict[str, Any], locale_code: str = "en") -> Dict[str, Any]:
     clean = dict(item)
     if clean.get("state") == "secret":
-        return {**clean, "name": "???", "description": "Secret achievement: hidden until Hermes detects the first relevant behavior in your session history.", "criteria": criteria_for(clean), "icon": "secret"}
-    clean["criteria"] = criteria_for(clean)
+        hint = _locale_string("secret_hint", locale_code)
+        if not hint:
+            hint = "Secret achievement: hidden until Hermes detects the first relevant behavior in your session history."
+        return {**clean, "name": "???", "description": hint, "criteria": criteria_for(clean, locale_code), "icon": "secret"}
+    clean["criteria"] = criteria_for(clean, locale_code)
+    clean = _apply_locale(clean, locale_code)
+    # Tier names stay in English — frontend uses them for CSS class names
+    # (ha-tier-copper, etc.) and color mapping (tierHex).
     return clean
 
 
@@ -996,8 +1110,46 @@ def evaluate_all(force: bool = False) -> Dict[str, Any]:
     return _build_pending_snapshot(now)
 
 
+def _localize_achievements(achievements: List[Dict[str, Any]], locale_code: str) -> List[Dict[str, Any]]:
+    """Apply locale translations to a list of fully-computed achievement dicts."""
+    if locale_code == "en":
+        return achievements
+    result = []
+    for a in achievements:
+        localized = _apply_locale(a, locale_code)
+        # Regenerate criteria in target locale (display_achievement already set it in English)
+        localized["criteria"] = criteria_for(localized, locale_code)
+        # Tier names stay in English for CSS class mapping (ha-tier-copper, etc.)
+        result.append(localized)
+    return result
+
+
+def _load_ui_strings(locale_code: str) -> Dict[str, str]:
+    """Load UI string translations for a given locale."""
+    if locale_code == "en":
+        return {}
+    locale_data = _load_locale(locale_code)
+    if not locale_data:
+        return {}
+    ui = locale_data.get("._ui", {})
+    if isinstance(ui, dict):
+        return ui
+    return {}
+
+def _localize_payload(data: Dict[str, Any], locale_code: str) -> Dict[str, Any]:
+    """Apply locale to the achievements list inside a full payload dict."""
+    if locale_code == "en":
+        return data
+    result = dict(data)
+    achievements = result.get("achievements", [])
+    result["achievements"] = _localize_achievements(achievements, locale_code)
+    result["_ui"] = _load_ui_strings(locale_code)
+    return result
+
+
 @router.get("/achievements")
-async def achievements():
+async def achievements(request: Request = None):
+    locale = _resolve_locale_from_request(request)
     data = evaluate_all()
     payload = {k: data[k] for k in ["achievements", "unlocked_count", "discovered_count", "secret_count", "total_count", "error", "generated_at"] if k in data}
     payload["is_stale"] = _is_snapshot_stale(data)
@@ -1005,6 +1157,7 @@ async def achievements():
         **(data.get("scan_meta") or {}),
         "status": _scan_status_payload(),
     }
+    payload = _localize_payload(payload, locale)
     return payload
 
 
@@ -1014,13 +1167,16 @@ async def scan_status():
 
 
 @router.get("/recent-unlocks")
-async def recent_unlocks():
+async def recent_unlocks(request: Request = None):
+    locale = _resolve_locale_from_request(request)
     data = evaluate_all()
-    return sorted([a for a in data["achievements"] if a["unlocked"]], key=lambda a: a.get("unlocked_at") or 0, reverse=True)[:20]
+    achievements = sorted([a for a in data["achievements"] if a["unlocked"]], key=lambda a: a.get("unlocked_at") or 0, reverse=True)[:20]
+    return _localize_achievements(achievements, locale)
 
 
 @router.get("/sessions/{session_id}/badges")
-async def session_badges(session_id: str):
+async def session_badges(session_id: str, request: Request = None):
+    locale = _resolve_locale_from_request(request)
     data = evaluate_all()
     session = next((s for s in data["sessions"] if s["session_id"] == session_id), None)
     if not session:
@@ -1031,12 +1187,14 @@ async def session_badges(session_id: str):
         result = evaluate_definition(definition, aggregate)
         if result["unlocked"]:
             badges.append(display_achievement({**definition, **result}))
-    return {"session_id": session_id, "badges": badges}
+    return {"session_id": session_id, "badges": _localize_achievements(badges, locale)}
 
 
 @router.post("/rescan")
-async def rescan():
-    return {"ok": True, **evaluate_all(force=True)}
+async def rescan(request: Request = None):
+    locale = _resolve_locale_from_request(request)
+    result = evaluate_all(force=True)
+    return {"ok": True, **_localize_payload(result, locale)}
 
 
 @router.post("/reset-state")
