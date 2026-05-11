@@ -1051,8 +1051,10 @@ class ChatQueue:
 
     def get_immediate(self) -> dict | None:
         for pq in ['immediate', 'high', 'normal']:
-            if not self._q[pq].empty():
-                return self._q[pq].get()
+            try:
+                return self._q[pq].get_nowait()
+            except queue_module.Empty:
+                continue
         return None
 
 class AIAgent:
