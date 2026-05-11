@@ -449,7 +449,6 @@ DISCORD_ALLOWED_USERS=...
 | **Groq** | `whisper-large-v3` | Fast (~1s) | Better | Free tier | Yes |
 | **OpenAI** | `whisper-1` | Fast (~1s) | Good | Paid | Yes |
 | **OpenAI** | `gpt-4o-transcribe` | Medium (~2s) | Best | Paid | Yes |
-| **OpenAI** | `gpt-realtime-whisper` | Very fast | Realtime STT | Paid | Yes |
 
 Provider priority (automatic fallback): **local** > **groq** > **openai**
 

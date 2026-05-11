@@ -97,12 +97,7 @@ LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
 # Known model sets for auto-correction
-OPENAI_MODELS = {
-    "whisper-1",
-    "gpt-4o-mini-transcribe",
-    "gpt-4o-transcribe",
-    "gpt-realtime-whisper",
-}
+OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}
 GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
 
 # Singleton for the local model — loaded once, reused across calls
