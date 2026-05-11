@@ -841,25 +841,6 @@ class DiscordAdapter(BasePlatformAdapter):
 
                 await self._handle_message(message)
 
-            # Unified trigger framework — global on_interaction handler for
-            # buttons that route to skills via custom_id. View-bound buttons
-            # (discord.ui.View subclasses) intercept BEFORE this handler fires
-            # (discord.py 2.7+ dispatch order), so they bypass the resolver
-            # intentionally. Skills emit buttons via SkillButtonView helper.
-            @self._client.event
-            async def on_interaction(interaction: discord.Interaction):
-                from gateway.platforms.discord_interactions import is_skill_custom_id
-                # Only route component interactions whose custom_id is in the
-                # skill prefix namespace; let other interaction types
-                # (slash commands, modals, internal Views) follow their
-                # existing dispatch path.
-                if interaction.type != discord.InteractionType.component:
-                    return
-                custom_id = (interaction.data or {}).get("custom_id") if interaction.data else None
-                if not is_skill_custom_id(custom_id):
-                    return
-                await adapter_self._interactions.handle_skill_button_interaction(interaction)
-
             # Inbound reaction routing — only registered when opt-in flag is set
             # at adapter init. Toggling the flag at runtime requires a bot
             # restart for these handlers to bind.

@@ -1,17 +1,18 @@
 """Tests for the Discord interactions handler companion file.
 
 Tests focus on units that are testable without a live Discord client:
-custom_id helpers, the explicit-triggers cache, payload builders, and
-SkillButtonView construction. Full event-loop integration tests live
-under tests/gateway/test_discord_inbound_reactions.py and the existing
-Discord adapter test files.
+custom_id helpers (extension hooks), the explicit-triggers cache, and
+inbound reaction dispatch. Button-click dispatch was deferred to PR #19413,
+so SkillButtonView and handle_skill_button_interaction tests were removed.
+Full event-loop integration tests live under
+tests/gateway/test_discord_inbound_reactions.py and the existing Discord
+adapter test files.
 """
 
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
-from typing import Any, Dict, List
+from typing import List
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -19,7 +20,6 @@ import pytest
 from gateway.platforms.discord_interactions import (
     SKILL_CUSTOM_ID_PREFIX,
     DiscordInteractionsHandler,
-    SkillButtonView,
     is_skill_custom_id,
     make_skill_custom_id,
 )
@@ -107,71 +107,6 @@ def test_explicit_triggers_present_handles_provider_exception() -> None:
     assert handler.explicit_triggers_present() is False
 
 
-# ── handle_skill_button_interaction ──────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_handle_skill_button_no_match_does_not_dispatch() -> None:
-    adapter = MagicMock()
-    adapter.handle_message = AsyncMock()
-    adapter._build_slash_event = MagicMock()
-
-    handler = DiscordInteractionsHandler(
-        adapter=adapter,
-        skill_provider=lambda: [_entry("approver", {"type": "button", "custom_id_pattern": "approve_*"})],
-    )
-
-    interaction = SimpleNamespace(
-        data={"custom_id": "deploy_5"},
-        user=SimpleNamespace(id=42),
-        channel=SimpleNamespace(name="general"),
-        channel_id=100,
-        response=MagicMock(),
-    )
-    interaction.response.is_done = MagicMock(return_value=True)
-    interaction.response.defer = AsyncMock()
-
-    await handler.handle_skill_button_interaction(interaction)
-    adapter.handle_message.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_handle_skill_button_match_dispatches_with_auto_skill() -> None:
-    adapter = MagicMock()
-    adapter.handle_message = AsyncMock()
-    fake_event = MagicMock()
-    fake_event.auto_skill = None
-    adapter._build_slash_event = MagicMock(return_value=fake_event)
-
-    handler = DiscordInteractionsHandler(
-        adapter=adapter,
-        skill_provider=lambda: [_entry("approver", {"type": "button", "custom_id_pattern": "skill_approve_*"})],
-    )
-
-    interaction = SimpleNamespace(
-        data={"custom_id": "skill_approve_42"},
-        user=SimpleNamespace(id=42),
-        channel=SimpleNamespace(name="general"),
-        channel_id=100,
-        response=MagicMock(),
-    )
-    interaction.response.is_done = MagicMock(return_value=True)
-    interaction.response.defer = AsyncMock()
-
-    await handler.handle_skill_button_interaction(interaction)
-    adapter.handle_message.assert_called_once()
-    dispatched_event = adapter.handle_message.call_args[0][0]
-    assert dispatched_event.auto_skill == ["approver"]
-
-
-@pytest.mark.asyncio
-async def test_handle_skill_button_with_no_data_returns_silently() -> None:
-    handler = DiscordInteractionsHandler(adapter=MagicMock(), skill_provider=lambda: [])
-    interaction = SimpleNamespace(data=None)
-    # Should not raise
-    await handler.handle_skill_button_interaction(interaction)
-
-
 # ── handle_inbound_reaction ──────────────────────────────────────────────
 
 
@@ -238,29 +173,3 @@ async def test_handle_inbound_reaction_dispatches_on_match() -> None:
     assert "[reaction:add]" in dispatched_event.text
 
 
-# ── SkillButtonView ──────────────────────────────────────────────────────
-
-
-def test_skill_button_view_creates_buttons_with_canonical_custom_ids() -> None:
-    handler = DiscordInteractionsHandler(adapter=MagicMock(), skill_provider=lambda: [])
-    view = SkillButtonView(
-        handler=handler,
-        skill_name="approver",
-        actions={"Approve": "approve", "Reject": "reject"},
-        timeout=180.0,
-    )
-    custom_ids = sorted(child.custom_id for child in view.children)
-    assert custom_ids == ["skill_approver_approve", "skill_approver_reject"]
-    labels = sorted(child.label for child in view.children)
-    assert labels == ["Approve", "Reject"]
-
-
-def test_skill_button_view_callback_delegates_to_handler() -> None:
-    """The button callback should delegate to handler.handle_skill_button_interaction."""
-    handler = MagicMock()
-    handler.handle_skill_button_interaction = AsyncMock()
-    view = SkillButtonView(handler=handler, skill_name="x", actions={"Y": "y"})
-    button = view.children[0]
-    interaction = MagicMock()
-    asyncio.get_event_loop().run_until_complete(button.callback(interaction))
-    handler.handle_skill_button_interaction.assert_awaited_once_with(interaction)

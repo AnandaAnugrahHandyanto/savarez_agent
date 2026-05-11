@@ -5,26 +5,32 @@
 Existing skills require **no changes**. The new `metadata.hermes.triggers`
 field is opt-in; absent triggers preserve all pre-framework behavior on
 every adapter. Adopt it incrementally, one skill at a time, when you want
-that skill to receive button clicks, reactions, or platform-specific events.
+that skill to receive reactions, mentions, or platform-specific events.
 
 ## What changed
 
 Hermes now ships an **adapter-agnostic skill event resolver**
 (`gateway/skill_resolver.py`) plus a **Discord interactions handler**
 (`gateway/platforms/discord_interactions.py`). Together they route inbound
-gateway events (buttons, reactions, mentions, slash commands) to skills
-whose frontmatter declares matching triggers.
+gateway events (reactions, mentions, slash commands, and — via a future
+bridge to PR #19413's components — buttons) to skills whose frontmatter
+declares matching triggers.
 
-Three LLM-callable outbound tools complete the loop so skills can emit
-the same surfaces they receive:
+Two LLM-callable outbound tools complete the loop so skills can emit
+the same reaction surfaces they receive:
 
-- `discord_send_button_message` — emit a message with a `SkillButtonView`
-  attached (canonical `custom_id` shape `skill_<name>_<action>`).
 - `discord_add_reaction` — bot pre-attaches an emoji on a message,
   enabling 1-tap UX where users complete an action with a single
   reaction click.
 - `discord_remove_reaction` — bot removes its own reaction for cleanup
   (e.g., when a recommendation expires).
+
+Discord button emission + interaction dispatch is intentionally scoped
+out: PR #19413 (interactive components — buttons, select menus, REST +
+WebSocket paths) provides that layer. The framework retains `button` as
+a first-class trigger type in the schema and resolver so a follow-up
+bridge PR can plug PR #19413's component dispatch into
+`resolve_event_skills('button', payload, skills)`.
 
 This is purely an extension. The existing prompt-builder skill injection
 path, slash command registration, and message handling pipelines are all
@@ -92,25 +98,17 @@ When the flag is true, the bot enables `intents.reactions = True`, registers
 events through the resolver. When false (the default), nothing changes —
 inbound reactions are not delivered to skills.
 
-## Discord — buttons via `SkillButtonView`
+## Discord — buttons (deferred to PR #19413)
 
-Skills that want to emit buttons for skill routing should use the helper
-`SkillButtonView` from `gateway.platforms.discord_interactions`:
+Discord button emission, REST/WebSocket interaction handling, and select-
+menu support are provided by **PR #19413 (interactive components)**, not
+this PR. The trigger framework retains a `button` schema entry so a future
+bridge PR can route PR #19413's component interactions back to skills via
+`resolve_event_skills('button', payload, skills)` — for example, by
+matching component custom_ids against `metadata.hermes.triggers.button.custom_id_pattern`.
 
-```python
-from gateway.platforms.discord_interactions import SkillButtonView
-
-view = SkillButtonView(
-    handler=adapter._interactions,
-    skill_name="approver",
-    actions={"Approve": "approve", "Reject": "reject"},
-    timeout=180.0,
-)
-await channel.send("Approve this?", view=view)
-```
-
-Buttons emitted via `SkillButtonView` get canonical `custom_id` values of
-the shape `skill_<skill_name>_<action>`. Skills declare a matching pattern:
+Skills can declare button trigger patterns today; the resolver will match
+them as soon as the bridge lands:
 
 ```yaml
 metadata:
@@ -120,54 +118,9 @@ metadata:
         custom_id_pattern: "skill_approver_*"
 ```
 
-**Skills that subclass `discord.ui.View` directly bypass the resolver** —
-discord.py 2.7+ routes `View` callbacks before the global `on_interaction`
-event, so a custom subclass owns its own dispatch. This is intentional:
-internal Hermes views (e.g., `ExecApprovalView`, `UpdatePromptView`) keep
-their existing in-process callbacks and are untouched by this PR.
-
-### LLM-callable variant — `discord_send_button_message` tool
-
-LLM-based skills that cannot import `gateway` modules directly use the
-`discord_send_button_message` tool instead. It wraps `SkillButtonView`
-and handles adapter resolution automatically:
-
-```json
-{
-  "name": "discord_send_button_message",
-  "arguments": {
-    "channel_id": "1496609306995458048",
-    "content": "Approve this deployment?",
-    "skill_name": "deployer",
-    "buttons": [
-      {"label": "Approve", "action": "approve", "style": "success"},
-      {"label": "Reject",  "action": "reject",  "style": "danger"}
-    ],
-    "timeout_seconds": 300
-  }
-}
-```
-
-The tool returns:
-
-```json
-{
-  "message_id": "...",
-  "channel_id": "...",
-  "view_id": "...",
-  "custom_ids": ["skill_deployer_approve", "skill_deployer_reject"]
-}
-```
-
-The `custom_ids` list confirms what was actually registered with discord.py,
-so the skill can store them for correlation if needed.
-
-**Per-button styles:** pass `"style": "primary" | "secondary" | "success" | "danger"`
-per button. Styles default to `primary` when omitted. The Python
-`SkillButtonView` also accepts an optional `button_styles` keyword
-(`Dict[label, discord.ButtonStyle]`) for callers that construct the view
-directly — existing callers that omit it get the previous all-primary
-behavior unchanged.
+The `make_skill_custom_id` and `is_skill_custom_id` helpers in
+`gateway/platforms/discord_interactions.py` remain as the bridge's hook
+points (canonical `skill_<name>_<action>` shape).
 
 ### LLM-callable reaction emit — `discord_add_reaction` / `discord_remove_reaction` tools
 
@@ -203,8 +156,7 @@ Returns:
 own** reaction (the tool passes `client.user` to discord.py's
 `message.remove_reaction`); it is not a generic admin operation and
 cannot remove other users' reactions. Use it for cleanup when a
-recommendation expires, an action is reversed, or a button no longer
-applies.
+recommendation expires or an action is reversed.
 
 ```json
 {
@@ -218,12 +170,11 @@ applies.
 ```
 
 **1-tap UX pattern.** After a skill sends a message — via plain
-`channel.send`, the cross-platform `send_message` tool from the
-`messaging` toolset, or `discord_send_button_message` above — call
-`discord_add_reaction` with the returned `message_id` to pre-attach the
-affordance. When the user clicks it, the inbound reaction routing
-dispatches the same skill via `triggers.reaction.emoji`, closing the
-loop.
+`channel.send` or the cross-platform `send_message` tool from the
+`messaging` toolset — call `discord_add_reaction` with the returned
+`message_id` to pre-attach the affordance. When the user clicks it, the
+inbound reaction routing dispatches the same skill via
+`triggers.reaction.emoji`, closing the loop.
 
 **Add+remove timing.** discord.py processes reaction add/remove on the
 gateway WebSocket; calling `discord_remove_reaction` within milliseconds
@@ -295,9 +246,10 @@ nothing happens until you do.
   - `snapshot_skills() -> List[SkillEntry]` — lazy walker shared across
     Discord and Feishu adapter wrappers.
 - `gateway/platforms/discord_interactions.py` — Discord composition handler:
-  - `DiscordInteractionsHandler` — receives buttons + reactions
-  - `SkillButtonView` — `discord.ui.View` subclass for skill-routed buttons
-  - `make_skill_custom_id(name, action)` — canonical custom_id helper
+  - `DiscordInteractionsHandler` — receives inbound reactions + mentions
+  - `make_skill_custom_id(name, action)` / `is_skill_custom_id(custom_id)` —
+    canonical custom_id helpers retained as bridge hook points for a future
+    PR connecting #19413's component dispatch to this resolver
 - `agent/skill_utils.py` — frontmatter parser:
   - `extract_skill_triggers(frontmatter)` — explicit triggers
   - `derive_implicit_triggers(frontmatter)` — slash from `slash_command` field
@@ -305,20 +257,27 @@ nothing happens until you do.
 
 ## Testing
 
-Test files for this PR (33 cases):
+Test files for this PR:
 
-- `tests/agent/test_skill_utils_triggers.py` — parser + derivation (18 cases)
-- `tests/gateway/test_skill_resolver.py` — resolver (20 cases)
-- `tests/gateway/test_discord_interactions.py` — handler unit tests (16 cases)
-- `tests/gateway/test_discord_inbound_reactions.py` — reaction integration (8 cases)
-- `tests/gateway/test_feishu_reactions_bc.py` — Feishu BC fork (6 cases)
+- `tests/agent/test_skill_utils_triggers.py` — parser + derivation (button schema preserved)
+- `tests/gateway/test_skill_resolver.py` — resolver (all event types including button matcher)
+- `tests/gateway/test_discord_interactions.py` — handler unit tests (custom_id helpers + reactions + mentions)
+- `tests/gateway/test_discord_inbound_reactions.py` — reaction integration
+- `tests/gateway/test_feishu_reactions_bc.py` — Feishu BC fork
+- `tests/tools/test_discord_reaction_tool.py` — outbound reaction tools
 
 All pass under both `pytest -n auto` (parallel) and `pytest -n 0` (serial).
-The 15 existing Discord adapter test files continue to pass without
+The existing Discord adapter test files continue to pass without
 modification.
 
 ## Future work (not in this PR)
 
+- **Button bridge to PR #19413**: PR #19413 (interactive components) lands
+  the Discord button + select-menu emission and REST/WebSocket interaction
+  handling. A follow-up PR can connect #19413's component dispatch to this
+  framework by calling `resolve_event_skills('button', payload, skills)`
+  with the interaction's `custom_id`, completing the round-trip from skill
+  declaration → component emission → click → skill dispatch.
 - **Matrix uplift**: `gateway/platforms/matrix.py:1528` `_on_reaction` is
   currently stub-only (logs reactions, no skill routing). Refactoring to
   use the unified resolver is mechanically identical to the Feishu uplift

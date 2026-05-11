@@ -904,7 +904,9 @@ semantics including the Feishu broadcast fallback rules.
 - `gateway/skill_resolver.py` — adapter-agnostic resolver +
   `snapshot_skills()` lazy walker.
 - `gateway/platforms/discord_interactions.py` — Discord composition handler
-  + `SkillButtonView` helper.
+  (inbound reactions + mentions). Button-click dispatch is layered separately
+  by PR #19413 (interactive components); `make_skill_custom_id` /
+  `is_skill_custom_id` remain as hook points for a future bridge PR.
 
 ---
 

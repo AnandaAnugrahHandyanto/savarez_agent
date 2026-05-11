@@ -13,9 +13,8 @@ Two tools are exposed:
 * ``discord_remove_reaction`` — bot removes its own emoji reaction
   (used for cleanup when a recommendation expires or is reversed).
 
-Only included in the ``discord`` toolset (same availability check as
-``discord_send_button_message``: requires a live Discord gateway adapter
-in the process, not just a bot token).
+Only included in the ``discord`` toolset (requires a live Discord
+gateway adapter in the process, not just a bot token).
 
 Both tools are **async** because they call into discord.py's async
 ``message.add_reaction`` / ``remove_reaction``. The registry routes
@@ -33,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Adapter resolution (mirrors discord_button_tool._get_discord_adapter)
+# Adapter resolution
 # ---------------------------------------------------------------------------
 
 def _get_discord_adapter():

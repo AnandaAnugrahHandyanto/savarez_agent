@@ -112,8 +112,8 @@ def _ensure_discord_mock() -> None:
     discord_mod.Message = type("Message", (), {})
 
     # Real Exception subclasses so tools that do `isinstance(exc,
-    # discord.Forbidden)` (e.g., tools/discord_button_tool.py,
-    # tools/discord_reaction_tool.py) work when this conftest's mock is
+    # discord.Forbidden)` (e.g., tools/discord_reaction_tool.py) work
+    # when this conftest's mock is
     # the one in sys.modules at runtime. Without these, the auto-MagicMock
     # attribute lookup would yield a MagicMock instance, and isinstance()
     # would TypeError. Required because xdist may collect a gateway test

@@ -3,8 +3,8 @@
 pytest collects ``conftest.py`` before any test module in the same
 directory, so calling ``_ensure_discord_mock()`` at module top here
 guarantees that ``sys.modules["discord"]`` is populated with the right
-shape *before* either ``test_discord_button_message.py`` or
-``test_discord_reaction_tool.py`` imports its target tool module.
+shape *before* ``test_discord_reaction_tool.py`` (and any other future
+Discord-related tool test) imports its target tool module.
 
 Behaviour:
 
@@ -14,7 +14,7 @@ Behaviour:
   exist as real ``Exception`` subclasses (so ``isinstance`` checks in
   the production code work) and that ``ui.View`` / ``ButtonStyle`` are
   proper stubs (not ``MagicMock`` auto-attrs that yield empty
-  ``children`` lists when ``SkillButtonView`` subclasses them).
+  ``children`` lists when ``View`` subclasses them).
 
 Idempotent and order-independent: if ``tests/gateway/conftest.py``
 already populated the mock for a different test ordering, this helper

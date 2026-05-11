@@ -477,8 +477,10 @@ metadata:
       mention:
         regex: "approve\\s+\\d+"
 
-# 2. Button-driven approver — receives clicks on buttons emitted via SkillButtonView
-#    (custom_id shape: "skill_<skill_name>_<action>")
+# 2. Button-driven approver — receives clicks on buttons whose custom_id matches
+#    the pattern. Discord button emission + interaction dispatch is provided by
+#    PR #19413 (interactive components); the framework's button trigger schema
+#    remains the resolver-side hook point a future bridge PR will use.
 metadata:
   hermes:
     triggers:
@@ -501,80 +503,13 @@ existing prompt-builder injection path is untouched. Skills with a legacy
 `metadata.hermes.slash_command` field automatically get an implicit slash
 trigger derived from that field — no rewrite needed.
 
-**Adapter support:** Discord (buttons + reactions, opt-in via
+**Adapter support:** Discord (reactions + mentions, opt-in via
 `config.extra.reactions.inbound_routing`) and Feishu (reactions). Resolver
 implementation: `gateway/skill_resolver.py`. Discord wiring:
-`gateway/platforms/discord_interactions.py`. See
-`docs/migration/triggers-v1.md` for the full migration guide and Feishu BC
-fallback semantics.
-
-#### How to send button messages from a skill
-
-Skills can emit Discord button messages at runtime by calling the
-`discord_send_button_message` tool. The tool wraps `SkillButtonView`
-so you do not need to import discord.py directly:
-
-```json
-// LLM tool call
-{
-  "name": "discord_send_button_message",
-  "arguments": {
-    "channel_id": "1496609306995458048",
-    "content": "Approve this deployment?",
-    "skill_name": "deployer",
-    "buttons": [
-      {"label": "Approve", "action": "approve", "style": "success"},
-      {"label": "Reject",  "action": "reject",  "style": "danger"}
-    ],
-    "timeout_seconds": 300
-  }
-}
-```
-
-The tool builds `custom_id` values of the shape `skill_<skill_name>_<action>`
-(`skill_deployer_approve`, `skill_deployer_reject` in the example above) and
-returns:
-
-```json
-{
-  "message_id": "...",
-  "channel_id": "...",
-  "view_id": "...",
-  "custom_ids": ["skill_deployer_approve", "skill_deployer_reject"]
-}
-```
-
-#### Receiving button clicks
-
-Declare a `button` trigger in the skill's frontmatter so the resolver routes
-clicks back to the skill:
-
-```yaml
-metadata:
-  hermes:
-    triggers:
-      button:
-        custom_id_pattern: "skill_deployer_*"
-```
-
-When a user clicks a button, discord.py fires the `SkillButtonView` callback,
-which calls `DiscordInteractionsHandler.handle_skill_button_interaction`. The
-resolver matches the `custom_id` against `custom_id_pattern` (fnmatch) and
-dispatches a synthetic `MessageEvent` with `auto_skill=["deployer"]`. The
-skill is invoked automatically — no further polling required.
-
-Full flow:
-
-```
-skill calls discord_send_button_message
-  → tool builds SkillButtonView (custom_ids: skill_<name>_<action>)
-  → message sent to Discord channel with view attached
-  → user clicks button
-  → discord.py routes to View callback
-  → callback → DiscordInteractionsHandler.handle_skill_button_interaction
-  → resolver matches skill via triggers.button.custom_id_pattern
-  → skill invoked with auto_skill set
-```
+`gateway/platforms/discord_interactions.py`. Discord button emission +
+interaction dispatch is layered separately in PR #19413 (interactive
+components). See `docs/migration/triggers-v1.md` for the full migration
+guide and Feishu BC fallback semantics.
 
 ### Skill setup metadata
 
