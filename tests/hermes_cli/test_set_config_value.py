@@ -134,6 +134,13 @@ class TestConfigYamlRouting:
         assert "vercel_runtime: python3.13" in config
         assert "TERMINAL_VERCEL_RUNTIME=python3.13" in env_content
 
+    def test_terminal_novita_image_goes_to_config_and_env(self, _isolated_hermes_home):
+        set_config_value("terminal.novita_image", "code-interpreter-v1")
+        config = _read_config(_isolated_hermes_home)
+        env_content = _read_env(_isolated_hermes_home)
+        assert "novita_image: code-interpreter-v1" in config
+        assert "TERMINAL_NOVITA_IMAGE=code-interpreter-v1" in env_content
+
 
 # ---------------------------------------------------------------------------
 # Empty / falsy values — regression tests for #4277

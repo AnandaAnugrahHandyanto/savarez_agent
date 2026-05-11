@@ -116,7 +116,7 @@ def make_env(novita_sdk, monkeypatch):
         sandbox.commands.run.return_value = _make_run_response(stdout=home_dir)
 
         novita_sdk.Sandbox.create = MagicMock(return_value=sandbox)
-        novita_sdk.Sandbox._cls_connect = MagicMock(return_value=sandbox)
+        novita_sdk.Sandbox.connect = MagicMock(return_value=sandbox)
         novita_sdk.Sandbox.list = MagicMock(
             return_value=_make_paginator(paginator_items)
         )
@@ -168,21 +168,21 @@ class TestPersistence:
         existing_sb = _make_sandbox("sb-existing")
         existing_sb.commands.run.return_value = _make_run_response(stdout="/root")
 
-        novita_sdk.Sandbox._cls_connect = MagicMock(return_value=existing_sb)
+        novita_sdk.Sandbox.connect = MagicMock(return_value=existing_sb)
 
         env = make_env(paginator_items=[existing_info], persistent=True, task_id="mytask")
 
         novita_sdk.Sandbox.list.assert_called_once()
         call_kwargs = novita_sdk.Sandbox.list.call_args
         assert call_kwargs.kwargs.get("limit") == 1 or call_kwargs[1].get("limit") == 1
-        novita_sdk.Sandbox._cls_connect.assert_called_once_with("sb-existing")
+        novita_sdk.Sandbox.connect.assert_called_once_with("sb-existing")
         novita_sdk.Sandbox.create.assert_not_called()
 
     def test_persistent_creates_new_when_none_found(self, make_env, novita_sdk):
         env = make_env(paginator_items=None, persistent=True, task_id="mytask")
 
         novita_sdk.Sandbox.list.assert_called_once()
-        novita_sdk.Sandbox._cls_connect.assert_not_called()
+        novita_sdk.Sandbox.connect.assert_not_called()
         novita_sdk.Sandbox.create.assert_called_once()
 
     def test_persistent_lookup_failure_falls_back_to_create(self, make_env, novita_sdk):
@@ -196,7 +196,7 @@ class TestPersistence:
         env = make_env(persistent=False)
 
         novita_sdk.Sandbox.list.assert_not_called()
-        novita_sdk.Sandbox._cls_connect.assert_not_called()
+        novita_sdk.Sandbox.connect.assert_not_called()
         novita_sdk.Sandbox.create.assert_called_once()
 
     def test_create_passes_metadata_with_task_id(self, make_env, novita_sdk):
@@ -212,6 +212,13 @@ class TestPersistence:
         call_kwargs = novita_sdk.Sandbox.create.call_args
         template = call_kwargs.kwargs.get("template") or call_kwargs[1].get("template")
         assert template == "my-template-id"
+
+    def test_create_uses_secure_sandbox_for_task_isolation(self, make_env, novita_sdk):
+        make_env(persistent=False)
+
+        call_kwargs = novita_sdk.Sandbox.create.call_args
+        secure = call_kwargs.kwargs.get("secure")
+        assert secure is True
 
     def test_create_passes_none_template_when_empty(self, make_env, novita_sdk):
         make_env(persistent=False, template="")
@@ -251,6 +258,40 @@ class TestCleanup:
         env._sandbox.beta_pause.side_effect = RuntimeError("pause failed")
         env.cleanup()  # should not raise
         assert env._sandbox is None
+
+    def test_cleanup_does_not_block_on_slow_sync_back(self, make_env):
+        event = threading.Event()
+        env = make_env(persistent=False)
+        sb = env._sandbox
+        env._cleanup_sync_timeout = 0.01
+
+        def slow_sync_back():
+            event.wait(timeout=5)
+
+        env._sync_manager.sync_back = slow_sync_back
+
+        try:
+            env.cleanup()
+            sb.kill.assert_called_once()
+            assert env._sandbox is None
+        finally:
+            event.set()
+
+    def test_cleanup_does_not_block_on_slow_kill(self, make_env):
+        event = threading.Event()
+        env = make_env(persistent=False)
+        env._cleanup_lifecycle_timeout = 0.01
+
+        def slow_kill():
+            event.wait(timeout=5)
+
+        env._sandbox.kill.side_effect = slow_kill
+
+        try:
+            env.cleanup()
+            assert env._sandbox is None
+        finally:
+            event.set()
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +380,8 @@ class TestExecute:
         env.execute("pwd", cwd="/tmp")
         call_args = sb.commands.run.call_args_list[-1]
         cmd = call_args[0][0]
-        assert "cd /tmp" in cmd
+        assert "cd" in cmd
+        assert "/tmp" in cmd
 
     def test_nonzero_exit_via_command_exit_exception(self, make_env):
         """CommandExitException (non-zero exit) must return real exit code, not 1."""

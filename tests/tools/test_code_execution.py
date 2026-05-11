@@ -48,6 +48,52 @@ from tools.code_execution_tool import (
 )
 
 
+def test_get_or_create_env_forwards_novita_config(monkeypatch):
+    from tools import code_execution_tool
+
+    captured = {}
+    mock_env = MagicMock()
+    config = {
+        "env_type": "novita",
+        "docker_image": "docker",
+        "singularity_image": "singularity",
+        "modal_image": "modal",
+        "daytona_image": "daytona",
+        "novita_image": "code-interpreter-v1",
+        "cwd": "~",
+        "host_cwd": None,
+        "timeout": 180,
+        "container_cpu": 2,
+        "container_memory": 4096,
+        "container_disk": 20480,
+        "container_persistent": False,
+        "docker_volumes": [],
+        "docker_run_as_host_user": False,
+    }
+
+    def fake_create_environment(**kwargs):
+        captured.update(kwargs)
+        return mock_env
+
+    monkeypatch.setattr("tools.terminal_tool._get_env_config", lambda: config)
+    monkeypatch.setattr("tools.terminal_tool._task_env_overrides", {})
+    monkeypatch.setattr("tools.terminal_tool._active_environments", {})
+    monkeypatch.setattr("tools.terminal_tool._last_activity", {})
+    monkeypatch.setattr("tools.terminal_tool._creation_locks", {})
+    monkeypatch.setattr("tools.terminal_tool._creation_locks_lock", threading.Lock())
+    monkeypatch.setattr("tools.terminal_tool._env_lock", threading.Lock())
+    monkeypatch.setattr("tools.terminal_tool._create_environment", fake_create_environment)
+    monkeypatch.setattr("tools.terminal_tool._start_cleanup_thread", lambda: None)
+
+    env, env_type = code_execution_tool._get_or_create_env("novita-code-test")
+
+    assert env is mock_env
+    assert env_type == "novita"
+    assert captured["image"] == "code-interpreter-v1"
+    assert captured["container_config"]["container_persistent"] is False
+    assert captured["container_config"]["container_memory"] == 4096
+
+
 def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
     """Mock dispatcher that returns canned responses for each tool."""
     if function_name == "terminal":

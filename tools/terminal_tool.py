@@ -1016,7 +1016,7 @@ def _get_env_config() -> Dict[str, Any]:
     # else starts in the backend's default root-like cwd.
     if env_type == "local":
         default_cwd = os.getcwd()
-    elif env_type == "ssh":
+    elif env_type in ("ssh", "novita"):
         default_cwd = "~"
     elif env_type == "vercel_sandbox":
         default_cwd = _VERCEL_SANDBOX_DEFAULT_CWD
@@ -1059,7 +1059,7 @@ def _get_env_config() -> Dict[str, Any]:
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
-        "novita_image": os.getenv("TERMINAL_NOVITA_IMAGE", ""),
+        "novita_image": os.getenv("TERMINAL_NOVITA_IMAGE", "code-interpreter-v1"),
         "vercel_runtime": os.getenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
         "cwd": cwd,
         "host_cwd": host_cwd,
@@ -2023,6 +2023,18 @@ def terminal_tool(
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:
                     error_str = str(e).lower()
+                    if env_type == "novita" and (
+                        "invalidated" in error_str or "no longer running" in error_str
+                    ):
+                        cleanup_vm(effective_task_id)
+                        return json.dumps({
+                            "output": "",
+                            "exit_code": -1,
+                            "error": (
+                                "Novita sandbox is no longer running. "
+                                "The cached sandbox was cleared; retry the command to create a new sandbox."
+                            ),
+                        }, ensure_ascii=False)
                     if "timeout" in error_str:
                         return json.dumps({
                             "output": "",
@@ -2049,6 +2061,9 @@ def terminal_tool(
                 
                 # Got a result
                 break
+
+            if env_type == "novita" and result and result.get("returncode") in (124, 130):
+                cleanup_vm(effective_task_id)
             
             # Extract output
             output = result.get("output", "")
