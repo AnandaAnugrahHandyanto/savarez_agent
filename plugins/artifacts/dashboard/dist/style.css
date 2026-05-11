@@ -1,0 +1,114 @@
+.hermes-artifacts-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  height: 100%;
+  min-height: 0;
+}
+
+.hermes-artifacts-header,
+.hermes-artifact-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.hermes-artifacts-header h1,
+.hermes-artifact-preview-header h2 {
+  margin: 0;
+}
+
+.hermes-artifacts-header p,
+.hermes-artifact-preview-header p,
+.hermes-artifact-card-description,
+.hermes-artifacts-muted {
+  color: hsl(var(--muted-foreground, 215 16% 47%));
+  margin: 0.25rem 0 0;
+}
+
+.hermes-artifacts-layout {
+  display: grid;
+  grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr);
+  gap: 1rem;
+  min-height: 32rem;
+  flex: 1;
+}
+
+.hermes-artifacts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  overflow: auto;
+  min-height: 0;
+}
+
+.hermes-artifact-card {
+  cursor: pointer;
+  border: 1px solid hsl(var(--border, 214 32% 91%));
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+
+.hermes-artifact-card:hover,
+.hermes-artifact-card:focus {
+  border-color: hsl(var(--primary, 221 83% 53%));
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.hermes-artifact-card-selected {
+  border-color: hsl(var(--primary, 221 83% 53%));
+  box-shadow: 0 0 0 1px hsl(var(--primary, 221 83% 53%) / 0.25);
+}
+
+.hermes-artifact-card-content {
+  padding: 0.9rem;
+}
+
+.hermes-artifact-card-title {
+  font-weight: 650;
+}
+
+.hermes-artifact-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+  font-size: 0.8rem;
+}
+
+.hermes-artifact-preview {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.hermes-artifact-preview-empty,
+.hermes-artifacts-empty,
+.hermes-artifacts-error {
+  border: 1px dashed hsl(var(--border, 214 32% 91%));
+  border-radius: 0.75rem;
+  padding: 1rem;
+}
+
+.hermes-artifacts-error {
+  border-color: hsl(var(--destructive, 0 84% 60%));
+  color: hsl(var(--destructive, 0 84% 60%));
+}
+
+.hermes-artifact-iframe {
+  width: 100%;
+  min-height: 28rem;
+  flex: 1;
+  border: 1px solid hsl(var(--border, 214 32% 91%));
+  border-radius: 0.75rem;
+  background: white;
+}
+
+@media (max-width: 900px) {
+  .hermes-artifacts-layout {
+    grid-template-columns: 1fr;
+  }
+}

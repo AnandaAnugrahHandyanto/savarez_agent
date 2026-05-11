@@ -1,0 +1,14 @@
+{
+  "name": "artifacts",
+  "label": "Artifacts",
+  "description": "Read-only local artifact gallery with sandboxed previews",
+  "icon": "PanelRight",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/artifacts",
+    "position": "after:kanban"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

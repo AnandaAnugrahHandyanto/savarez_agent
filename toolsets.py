@@ -35,6 +35,8 @@ _HERMES_CORE_TOOLS = [
     "terminal", "process",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
+    # Artifacts / Canvas
+    "artifact_present",
     # Vision + image generation
     "vision_analyze", "image_generate",
     # Skills
@@ -172,8 +174,14 @@ TOOLSETS = {
     },
     
     "file": {
-        "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
+        "description": "File system operations: read, write, edit, and search files",
         "tools": ["read_file", "write_file", "patch", "search_files"],
+        "includes": []
+    },
+
+    "artifacts": {
+        "description": "Register local generated content or files as Hermes dashboard artifacts",
+        "tools": ["artifact_present"],
         "includes": []
     },
     
