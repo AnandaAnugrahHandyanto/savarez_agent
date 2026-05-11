@@ -8,6 +8,9 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 
+[manifest]
+overrides = [{ name = "websockets", specifier = ">=15.0.0,<16.0.0" }]
+
 [[package]]
 name = "agent-client-protocol"
 version = "0.9.0"
@@ -1289,6 +1292,26 @@ wheels = [
 ]
 
 [[package]]
+name = "fastvm"
+version = "0.7.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "click" },
+    { name = "distro" },
+    { name = "httpx", extra = ["http2"] },
+    { name = "pydantic" },
+    { name = "sniffio" },
+    { name = "tabulate" },
+    { name = "typing-extensions" },
+    { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cf/cd/eb370909ec8acc7b07d3a649965a72a5926a739d705282ba2c02b10acacd/fastvm-0.7.0.tar.gz", hash = "sha256:d8e8cecd5eef48f42c72e7f0e55abea2f7c84d883e6511b684ce61dcea3bdfd3", size = 285617, upload-time = "2026-05-11T03:12:08.435Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/30/00/f9271ed52ebe4b14aca753dac2a4686c8b608ff452fe45a4315b367d6a58/fastvm-0.7.0-py3-none-any.whl", hash = "sha256:d675ca14855bef5a39ceeb381169bcf03de3fb81d528fdfa09a903993b1dd66e", size = 145943, upload-time = "2026-05-11T03:12:07.089Z" },
+]
+
+[[package]]
 name = "filelock"
 version = "3.24.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1654,6 +1677,9 @@ exa = [
 fal = [
     { name = "fal-client" },
 ]
+fastvm = [
+    { name = "fastvm" },
+]
 feishu = [
     { name = "lark-oapi" },
     { name = "qrcode" },
@@ -1780,6 +1806,7 @@ requires-dist = [
     { name = "fal-client", marker = "extra == 'fal'", specifier = "==0.13.1" },
     { name = "fastapi", marker = "extra == 'web'", specifier = "==0.133.1" },
     { name = "faster-whisper", marker = "extra == 'voice'", specifier = "==1.2.1" },
+    { name = "fastvm", marker = "extra == 'fastvm'", specifier = "==0.7.0" },
     { name = "fire", specifier = "==0.7.1" },
     { name = "firecrawl-py", marker = "extra == 'firecrawl'", specifier = "==4.17.0" },
     { name = "google-api-python-client", marker = "extra == 'google'", specifier = "==2.194.0" },
@@ -1855,7 +1882,7 @@ requires-dist = [
     { name = "vercel", marker = "extra == 'vercel'", specifier = "==0.5.7" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "cli", "tts-premium", "voice", "pty", "honcho", "mcp", "homeassistant", "sms", "computer-use", "acp", "bedrock", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "fastvm", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "cli", "tts-premium", "voice", "pty", "honcho", "mcp", "homeassistant", "sms", "computer-use", "acp", "bedrock", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"
@@ -2006,6 +2033,9 @@ wheels = [
 ]
 
 [package.optional-dependencies]
+http2 = [
+    { name = "h2" },
+]
 socks = [
     { name = "socksio" },
 ]

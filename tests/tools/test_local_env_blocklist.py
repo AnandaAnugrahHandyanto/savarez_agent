@@ -132,6 +132,7 @@ class TestProviderEnvBlocklist:
             "MODAL_TOKEN_ID": "modal-id",
             "MODAL_TOKEN_SECRET": "modal-secret",
             "DAYTONA_API_KEY": "daytona-key",
+            "FASTVM_API_KEY": "fastvm-key",
             "VERCEL_OIDC_TOKEN": "vercel-oidc-token",
             "VERCEL_TOKEN": "vercel-token",
             "VERCEL_PROJECT_ID": "vercel-project",

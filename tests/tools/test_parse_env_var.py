@@ -2,11 +2,12 @@
 
 import importlib
 import json
+import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-import sys
 import tools.terminal_tool  # noqa: F401 -- ensure module is loaded
 _tt_mod = sys.modules["tools.terminal_tool"]
 from tools.terminal_tool import _parse_env_var
@@ -52,6 +53,35 @@ class TestParseEnvVar:
 
         assert result is fake_env
         assert mock_docker.call_args.kwargs["forward_env"] == ["GITHUB_TOKEN"]
+
+    def test_create_environment_coerces_fastvm_live_resume_string(self, monkeypatch):
+        captured = {}
+        fake_env = object()
+
+        def _fake_fastvm_environment(**kwargs):
+            captured.update(kwargs)
+            return fake_env
+
+        monkeypatch.setitem(
+            sys.modules,
+            "tools.environments.fastvm",
+            SimpleNamespace(FastVMEnvironment=_fake_fastvm_environment),
+        )
+
+        result = _tt_mod._create_environment(
+            "fastvm",
+            image="ignored",
+            cwd="/root",
+            timeout=180,
+            container_config={
+                "container_disk": 51200,
+                "container_persistent": True,
+                "fastvm_live_resume": "false",
+            },
+        )
+
+        assert result is fake_env
+        assert captured["live_resume"] is False
 
     def test_falls_back_to_default(self):
         with patch.dict("os.environ", {}, clear=False):

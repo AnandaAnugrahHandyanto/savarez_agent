@@ -109,3 +109,34 @@ def test_show_status_reports_vercel_backend_contract(monkeypatch, capsys, tmp_pa
     assert "oidc-token" not in output
     assert "snapshot filesystem" in output
     assert "live processes do not survive" in output
+
+
+def test_show_status_reports_fastvm_backend_contract(monkeypatch, capsys, tmp_path):
+    from hermes_cli import status as status_mod
+    import hermes_cli.auth as auth_mod
+    import hermes_cli.gateway as gateway_mod
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TERMINAL_ENV", "fastvm")
+    monkeypatch.setenv("TERMINAL_FASTVM_MACHINE", "c2m4")
+    monkeypatch.setenv("TERMINAL_FASTVM_BASE_SNAPSHOT_ID", "snap-base")
+    monkeypatch.setenv("TERMINAL_FASTVM_LIVE_RESUME", "true")
+    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+    monkeypatch.setenv("FASTVM_API_KEY", "fv-secret")
+    monkeypatch.setattr(status_mod.importlib.util, "find_spec", lambda name: object() if name == "fastvm" else None)
+    monkeypatch.setattr(status_mod, "load_config", lambda: {"terminal": {"backend": "fastvm"}}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_qwen_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Backend:      fastvm" in output
+    assert "Machine:      c2m4" in output
+    assert "API key:" in output and "configured" in output
+    assert "fv-secret" not in output
+    assert "Base snap:    snap-base" in output
+    assert "Persistence:  VM snapshots" in output
+    assert "Live resume:  required" in output

@@ -372,6 +372,16 @@ class TestBuildSchemaFromConfig:
             assert "options" in entry
             assert "local" in entry["options"]
             assert "vercel_sandbox" in entry["options"]
+            assert "fastvm" in entry["options"]
+        fastvm_machine_entry = CONFIG_SCHEMA["terminal.fastvm_machine"]
+        assert fastvm_machine_entry["type"] == "string"
+        assert fastvm_machine_entry["category"] == "terminal"
+        fastvm_snapshot_entry = CONFIG_SCHEMA["terminal.fastvm_base_snapshot_id"]
+        assert fastvm_snapshot_entry["type"] == "string"
+        assert fastvm_snapshot_entry["category"] == "terminal"
+        fastvm_live_resume_entry = CONFIG_SCHEMA["terminal.fastvm_live_resume"]
+        assert fastvm_live_resume_entry["type"] == "boolean"
+        assert fastvm_live_resume_entry["category"] == "terminal"
         runtime_entry = CONFIG_SCHEMA["terminal.vercel_runtime"]
         assert runtime_entry["type"] == "select"
         assert "node24" in runtime_entry["options"]

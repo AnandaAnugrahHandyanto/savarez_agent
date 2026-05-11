@@ -67,6 +67,7 @@ class TestCatchAllPatterns:
 
     @pytest.mark.parametrize("key", [
         "DAYTONA_API_KEY",
+        "FASTVM_API_KEY",
         "ELEVENLABS_API_KEY",
         "SOME_FUTURE_SERVICE_API_KEY",
         "MY_CUSTOM_TOKEN",
@@ -131,6 +132,27 @@ class TestConfigYamlRouting:
         env_content = _read_env(_isolated_hermes_home)
         assert "vercel_runtime: python3.13" in config
         assert "TERMINAL_VERCEL_RUNTIME=python3.13" in env_content
+
+    def test_terminal_fastvm_machine_goes_to_config_and_env(self, _isolated_hermes_home):
+        set_config_value("terminal.fastvm_machine", "c4m16")
+        config = _read_config(_isolated_hermes_home)
+        env_content = _read_env(_isolated_hermes_home)
+        assert "fastvm_machine: c4m16" in config
+        assert "TERMINAL_FASTVM_MACHINE=c4m16" in env_content
+
+    def test_terminal_fastvm_snapshot_goes_to_config_and_env(self, _isolated_hermes_home):
+        set_config_value("terminal.fastvm_base_snapshot_id", "snap-fastvm-123")
+        config = _read_config(_isolated_hermes_home)
+        env_content = _read_env(_isolated_hermes_home)
+        assert "fastvm_base_snapshot_id: snap-fastvm-123" in config
+        assert "TERMINAL_FASTVM_BASE_SNAPSHOT_ID=snap-fastvm-123" in env_content
+
+    def test_terminal_fastvm_live_resume_goes_to_config_and_env(self, _isolated_hermes_home):
+        set_config_value("terminal.fastvm_live_resume", "false")
+        config = _read_config(_isolated_hermes_home)
+        env_content = _read_env(_isolated_hermes_home)
+        assert "fastvm_live_resume: 'false'" in config or "fastvm_live_resume: false" in config
+        assert "TERMINAL_FASTVM_LIVE_RESUME=false" in env_content
 
 
 # ---------------------------------------------------------------------------

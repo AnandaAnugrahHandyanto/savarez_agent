@@ -285,6 +285,33 @@ def test_doctor_reports_vercel_backend_diagnostics(monkeypatch, tmp_path):
     assert "snapshot filesystem only" in out
 
 
+def test_doctor_reports_fastvm_backend_diagnostics(monkeypatch):
+    monkeypatch.setenv("TERMINAL_ENV", "fastvm")
+    monkeypatch.setenv("TERMINAL_FASTVM_MACHINE", "c2m4")
+    monkeypatch.setenv("TERMINAL_FASTVM_BASE_SNAPSHOT_ID", "snap-base")
+    monkeypatch.setenv("TERMINAL_FASTVM_LIVE_RESUME", "true")
+    monkeypatch.setenv("FASTVM_API_KEY", "fastvm-secret")
+    monkeypatch.setattr(doctor_mod.importlib.util, "find_spec", lambda name: object() if name == "fastvm" else None)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert "FastVM API key" in out
+    assert "fastvm SDK" in out
+    assert "FastVM machine: c2m4" in out
+    assert "FastVM base snapshot: snap-base" in out
+    assert "live-resume required" in out
+    assert "fastvm-secret" not in out
+
+
 # ── Memory provider section (doctor should only check the *active* provider) ──
 
 

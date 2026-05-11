@@ -149,6 +149,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `HINDSIGHT_TIMEOUT` | Timeout in seconds for Hindsight memory-provider API calls (default: `60`). Bump this if your Hindsight instance is slow to respond during `/sync` or `on_session_switch` and you're seeing timeouts in `errors.log`. |
 | `SUPERMEMORY_API_KEY` | Semantic long-term memory with profile recall and session ingest ([supermemory.ai](https://supermemory.ai)) |
 | `DAYTONA_API_KEY` | Daytona cloud sandboxes ([daytona.io](https://daytona.io/)) |
+| `FASTVM_API_KEY` | FastVM cloud VM sandboxes |
 | `VERCEL_TOKEN` | Vercel Sandbox access token ([vercel.com](https://vercel.com/)) |
 | `VERCEL_PROJECT_ID` | Vercel project ID (required with `VERCEL_TOKEN`) |
 | `VERCEL_TEAM_ID` | Vercel team ID (required with `VERCEL_TOKEN`) |
@@ -185,7 +186,7 @@ These variables configure the [Tool Gateway](/docs/user-guide/features/tool-gate
 
 | Variable | Description |
 |----------|-------------|
-| `TERMINAL_ENV` | Backend: `local`, `docker`, `ssh`, `singularity`, `modal`, `daytona`, `vercel_sandbox` |
+| `TERMINAL_ENV` | Backend: `local`, `docker`, `ssh`, `singularity`, `modal`, `daytona`, `vercel_sandbox`, `fastvm` |
 | `HERMES_DOCKER_BINARY` | Override the container binary Hermes shells out to (e.g. `podman`, `/usr/local/bin/docker`). When unset, Hermes auto-discovers `docker` or `podman` on `PATH`. Needed when both are installed and you want the non-default, or when the binary lives outside `PATH`. |
 | `TERMINAL_DOCKER_IMAGE` | Docker image (default: `nikolaik/python-nodejs:python3.11-nodejs20`) |
 | `TERMINAL_DOCKER_FORWARD_ENV` | JSON array of env var names to explicitly forward into Docker terminal sessions. Note: skill-declared `required_environment_variables` are forwarded automatically — you only need this for vars not declared by any skill. |
@@ -195,12 +196,17 @@ These variables configure the [Tool Gateway](/docs/user-guide/features/tool-gate
 | `TERMINAL_MODAL_IMAGE` | Modal container image |
 | `TERMINAL_DAYTONA_IMAGE` | Daytona sandbox image |
 | `TERMINAL_VERCEL_RUNTIME` | Vercel Sandbox runtime (`node24`, `node22`, `python3.13`) |
+| `TERMINAL_FASTVM_MACHINE` | FastVM machine type (default: `c1m2`) |
+| `TERMINAL_FASTVM_BASE_SNAPSHOT_ID` | Optional FastVM base snapshot used for first launch before task-specific snapshots exist |
+| `TERMINAL_FASTVM_LIVE_RESUME` | Require FastVM snapshot restore for persistent sessions (`true` by default). Set `false` to allow fresh-VM fallback if restore fails |
+| `TERMINAL_FASTVM_LAUNCH_TIMEOUT` | FastVM VM launch timeout in seconds (default: `300`) |
+| `TERMINAL_FASTVM_SNAPSHOT_TIMEOUT` | FastVM snapshot readiness timeout in seconds (default: `300`) |
 | `TERMINAL_TIMEOUT` | Command timeout in seconds |
 | `TERMINAL_LIFETIME_SECONDS` | Max lifetime for terminal sessions in seconds |
 | `TERMINAL_CWD` | Working directory for terminal sessions (gateway/cron only; CLI uses launch dir) |
 | `SUDO_PASSWORD` | Enable sudo without interactive prompt |
 
-For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETIME_SECONDS` controls when Hermes cleans up an idle terminal session, and later resumes may recreate the sandbox rather than keep the same live processes running.
+For most cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETIME_SECONDS` controls when Hermes cleans up an idle terminal session, and later resumes may recreate the sandbox rather than keep the same live processes running. FastVM is the exception when `TERMINAL_FASTVM_LIVE_RESUME=true`: Hermes refuses a silent fresh-VM fallback if a task snapshot cannot be restored.
 
 ## SSH Backend
 
@@ -212,7 +218,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `TERMINAL_SSH_KEY` | Path to private key |
 | `TERMINAL_SSH_PERSISTENT` | Override persistent shell for SSH (default: follows `TERMINAL_PERSISTENT_SHELL`) |
 
-## Container Resources (Docker, Singularity, Modal, Daytona)
+## Container Resources (Docker, Singularity, Modal, Daytona, FastVM)
 
 | Variable | Description |
 |----------|-------------|

@@ -89,7 +89,7 @@ Close the browser tab and the PTY is reaped cleanly on the server. Re-opening sp
 A form-based editor for `config.yaml`. All 150+ configuration fields are auto-discovered from `DEFAULT_CONFIG` and organized into tabbed categories:
 
 - **model** — default model, provider, base URL, reasoning settings
-- **terminal** — backend (local/docker/ssh/modal), timeout, shell preferences
+- **terminal** — backend (local/docker/ssh/modal/daytona/vercel/fastvm), timeout, shell preferences
 - **display** — skin, tool progress, resume display, spinner settings
 - **agent** — max iterations, gateway timeout, service tier
 - **delegation** — subagent limits, reasoning effort

@@ -65,13 +65,14 @@ The terminal tool can execute commands in different environments:
 | `modal` | Cloud execution | Serverless, scale |
 | `daytona` | Cloud sandbox workspace | Persistent remote dev environments |
 | `vercel_sandbox` | Vercel Sandbox cloud microVM | Cloud execution with snapshot-backed filesystem persistence |
+| `fastvm` | FastVM cloud VM | Snapshot-backed live resume for gateway and cron workloads |
 
 ### Configuration
 
 ```yaml
 # In ~/.hermes/config.yaml
 terminal:
-  backend: local    # or: docker, ssh, singularity, modal, daytona, vercel_sandbox
+  backend: local    # or: docker, ssh, singularity, modal, daytona, vercel_sandbox, fastvm
   cwd: "."          # Working directory
   timeout: 180      # Command timeout in seconds
 ```
@@ -150,13 +151,24 @@ Background terminal commands use Hermes' generic non-local process flow: spawn, 
 
 Leave `container_disk` unset or at the shared default `51200`; custom disk sizing is unsupported for Vercel Sandbox and will fail diagnostics/backend creation.
 
+### FastVM
+
+```bash
+pip install 'hermes-agent[fastvm]'
+hermes config set FASTVM_API_KEY fv_...
+hermes config set terminal.backend fastvm
+hermes config set terminal.fastvm_machine c1m2
+```
+
+With `container_persistent: true`, Hermes snapshots the FastVM VM during cleanup and launches from that task snapshot on the next wake. `terminal.fastvm_base_snapshot_id` can point the first launch at a warm image, while later launches use the per-task snapshot. `terminal.fastvm_live_resume` defaults to `true`, which means Hermes fails loudly if it cannot restore the saved snapshot instead of silently starting from a fresh VM.
+
 ### Container Resources
 
 Configure CPU, memory, disk, and persistence for all container backends:
 
 ```yaml
 terminal:
-  backend: docker  # or singularity, modal, daytona, vercel_sandbox
+  backend: docker  # or singularity, modal, daytona, vercel_sandbox, fastvm
   container_cpu: 1              # CPU cores (default: 1)
   container_memory: 5120        # Memory in MB (default: 5GB)
   container_disk: 51200         # Disk in MB (default: 50GB)

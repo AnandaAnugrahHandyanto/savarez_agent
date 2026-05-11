@@ -316,6 +316,9 @@ def load_cli_config() -> Dict[str, Any]:
             "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
             "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
             "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+            "fastvm_machine": "c1m2",
+            "fastvm_base_snapshot_id": "",
+            "fastvm_live_resume": True,
             "docker_volumes": [],  # host:container volume mounts for Docker backend
             "docker_mount_cwd_to_workspace": False,  # explicit opt-in only; default off for sandbox isolation
         },
@@ -511,12 +514,15 @@ def load_cli_config() -> Dict[str, Any]:
         "modal_image": "TERMINAL_MODAL_IMAGE",
         "daytona_image": "TERMINAL_DAYTONA_IMAGE",
         "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
+        "fastvm_machine": "TERMINAL_FASTVM_MACHINE",
+        "fastvm_base_snapshot_id": "TERMINAL_FASTVM_BASE_SNAPSHOT_ID",
+        "fastvm_live_resume": "TERMINAL_FASTVM_LIVE_RESUME",
         # SSH config
         "ssh_host": "TERMINAL_SSH_HOST",
         "ssh_user": "TERMINAL_SSH_USER",
         "ssh_port": "TERMINAL_SSH_PORT",
         "ssh_key": "TERMINAL_SSH_KEY",
-        # Container resource config (docker, singularity, modal, daytona, vercel_sandbox -- ignored for local/ssh)
+        # Container resource config (docker, singularity, modal, daytona, vercel_sandbox, fastvm -- ignored for local/ssh)
         "container_cpu": "TERMINAL_CONTAINER_CPU",
         "container_memory": "TERMINAL_CONTAINER_MEMORY",
         "container_disk": "TERMINAL_CONTAINER_DISK",

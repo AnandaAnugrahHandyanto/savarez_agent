@@ -265,7 +265,22 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "terminal.backend": {
         "type": "select",
         "description": "Terminal execution backend",
-        "options": ["local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity"],
+        "options": ["local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "fastvm", "singularity"],
+    },
+    "terminal.fastvm_machine": {
+        "type": "string",
+        "description": "FastVM machine type",
+        "category": "terminal",
+    },
+    "terminal.fastvm_base_snapshot_id": {
+        "type": "string",
+        "description": "Optional FastVM base snapshot ID",
+        "category": "terminal",
+    },
+    "terminal.fastvm_live_resume": {
+        "type": "boolean",
+        "description": "Require FastVM snapshot restore to preserve live VM/process state",
+        "category": "terminal",
     },
     "terminal.vercel_runtime": {
         "type": "select",

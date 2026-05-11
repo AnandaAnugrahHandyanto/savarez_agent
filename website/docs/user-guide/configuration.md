@@ -83,20 +83,22 @@ Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERM
 
 ## Terminal Backend Configuration
 
-Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
+Hermes supports eight terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, a FastVM cloud VM, or a Singularity/Apptainer container.
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
+  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | fastvm | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   timeout: 180      # Per-command timeout in seconds
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"                 # Container image for Modal backend
   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Container image for Daytona backend
+  fastvm_machine: "c1m2"                                                    # FastVM machine type
+  fastvm_live_resume: true                                                  # Refuse fresh fallback if snapshot restore fails
 ```
 
-For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
+For most cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. FastVM uses VM snapshots for persistent sessions and, by default, treats snapshot restore as a hard requirement so a later wake does not silently become a fresh VM.
 
 ### Backend Overview
 
@@ -108,6 +110,7 @@ For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persi
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
 | **vercel_sandbox** | Vercel Sandbox | Full (cloud microVM) | Cloud execution with snapshot-backed filesystem persistence |
+| **fastvm** | FastVM cloud VM | Full (cloud VM) | Snapshot-backed live resume for gateway and cron workloads |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
 
 ### Local Backend
@@ -270,6 +273,37 @@ OIDC tokens are short-lived and should not be used as the documented deployment 
 
 **Disk sizing:** Vercel Sandbox does not currently support Hermes' `container_disk` resource knob. Leave `container_disk` unset or at the shared default `51200`; non-default values fail diagnostics and backend creation instead of being silently ignored.
 
+### FastVM Backend
+
+Runs commands in a FastVM cloud VM. Hermes uses the normal terminal, file, and `execute_code` surfaces; the provider-specific behavior is VM launch, file sync, and snapshot-backed cleanup/resume.
+
+```yaml
+terminal:
+  backend: fastvm
+  fastvm_machine: c1m2             # FastVM machine type
+  fastvm_base_snapshot_id: ""      # Optional warm base image for first launch
+  fastvm_live_resume: true         # Refuse fresh fallback if restore fails
+  cwd: /root                       # default remote workspace root
+  container_persistent: true       # Snapshot VM before teardown
+  container_disk: 51200            # MB, converted to FastVM GiB
+```
+
+**Required install:** Install the optional SDK extra:
+
+```bash
+pip install 'hermes-agent[fastvm]'
+```
+
+**Required authentication:** Set `FASTVM_API_KEY` in `~/.hermes/.env` or through `hermes config set FASTVM_API_KEY ...`.
+
+**Machine and disk:** `terminal.fastvm_machine` defaults to `c1m2`. Hermes converts `container_disk` from MB to GiB when launching the VM.
+
+**Base snapshots:** Set `terminal.fastvm_base_snapshot_id` when you want the first launch for a task to start from a prebuilt image with dependencies already installed. After the first persistent cleanup, Hermes resumes from the task-specific snapshot instead.
+
+**Persistence and live resume:** With `container_persistent: true`, Hermes snapshots the VM on cleanup, waits for the snapshot to become ready, stores the snapshot ID in `~/.hermes/fastvm_snapshots.json`, and deletes the live VM only after the snapshot succeeds. On the next wake for the same task, Hermes launches from that snapshot. With `fastvm_live_resume: true` (default), restore failure is treated as an error rather than silently falling back to a fresh VM.
+
+**Remote file sync:** Before snapshotting, Hermes syncs modified files back to the host under `~/.hermes/cache/remote-syncs/<session-id>/`. On the next launch, Hermes uploads the managed Hermes credential and skill files back into the VM under the remote home directory.
+
 ### Singularity/Apptainer Backend
 
 Runs commands in a [Singularity/Apptainer](https://apptainer.org) container. Designed for HPC clusters and shared machines where Docker isn't available.
@@ -300,13 +334,15 @@ If terminal commands fail immediately or the terminal tool is reported as disabl
 - **SSH** — Both `TERMINAL_SSH_HOST` and `TERMINAL_SSH_USER` must be set. Hermes logs a clear error if either is missing.
 - **Modal** — Needs `MODAL_TOKEN_ID` env var or `~/.modal.toml`. Run `hermes doctor` to check.
 - **Daytona** — Needs `DAYTONA_API_KEY`. The Daytona SDK handles server URL configuration.
+- **FastVM** — Needs `FASTVM_API_KEY` and the `fastvm` Python SDK. Run `pip install 'hermes-agent[fastvm]'` if `hermes doctor` reports the SDK missing.
+- **Vercel Sandbox** — Needs `VERCEL_TOKEN`, `VERCEL_PROJECT_ID`, and `VERCEL_TEAM_ID`.
 - **Singularity** — Needs `apptainer` or `singularity` in `$PATH`. Common on HPC clusters.
 
 When in doubt, set `terminal.backend` back to `local` and verify that commands run there first.
 
 ### Remote-to-Host File Sync on Teardown
 
-For the **SSH**, **Modal**, and **Daytona** backends (anywhere the agent's working tree lives on a different machine than the host running Hermes), Hermes tracks files the agent touched inside the remote sandbox and, on session teardown / sandbox cleanup, **syncs the modified files back to the host** under `~/.hermes/cache/remote-syncs/<session-id>/`.
+For the **SSH**, **Modal**, **Daytona**, and **FastVM** backends (anywhere the agent's working tree lives on a different machine than the host running Hermes), Hermes tracks files the agent touched inside the remote sandbox and, on session teardown / sandbox cleanup, **syncs the modified files back to the host** under `~/.hermes/cache/remote-syncs/<session-id>/`.
 
 - Triggers on: session close, `/new`, `/reset`, gateway message timeout, `delegate_task` subagent completion when the child used a remote backend.
 - Covers the whole tree the agent modified, not just files it explicitly opened. Additions, edits, and deletions are all captured.

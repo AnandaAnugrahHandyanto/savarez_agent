@@ -133,6 +133,7 @@ def _build_provider_env_blocklist() -> frozenset:
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
         "DAYTONA_API_KEY",
+        "FASTVM_API_KEY",
         "VERCEL_OIDC_TOKEN",
         "VERCEL_TOKEN",
         "VERCEL_PROJECT_ID",

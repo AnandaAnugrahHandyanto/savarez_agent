@@ -11,6 +11,11 @@ def _make_env_config(**overrides):
         "singularity_image": "docker://test",
         "modal_image": "test",
         "daytona_image": "test",
+        "fastvm_machine": "c2m4",
+        "fastvm_base_snapshot_id": "snap-base",
+        "fastvm_live_resume": True,
+        "fastvm_launch_timeout": 123,
+        "fastvm_snapshot_timeout": 456,
         "cwd": "/workspace",
         "host_cwd": None,
         "timeout": 180,
@@ -63,3 +68,12 @@ class TestFileToolsContainerConfig:
         del cfg["docker_forward_env"]
         cc = self._run(cfg, "t4")
         assert cc.get("docker_forward_env") == []
+
+    def test_fastvm_settings_forwarded(self):
+        """FastVM settings are forwarded to container_config."""
+        cc = self._run(_make_env_config(env_type="fastvm"), "t5")
+        assert cc.get("fastvm_machine") == "c2m4"
+        assert cc.get("fastvm_base_snapshot_id") == "snap-base"
+        assert cc.get("fastvm_live_resume") is True
+        assert cc.get("fastvm_launch_timeout") == 123
+        assert cc.get("fastvm_snapshot_timeout") == 456

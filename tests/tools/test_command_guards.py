@@ -77,6 +77,10 @@ class TestContainerSkip:
         result = check_all_command_guards("rm -rf /", "vercel_sandbox")
         assert result["approved"] is True
 
+    def test_fastvm_skips_both(self):
+        result = check_all_command_guards("rm -rf /", "fastvm")
+        assert result["approved"] is True
+
 
 # ---------------------------------------------------------------------------
 # tirith allow + safe command

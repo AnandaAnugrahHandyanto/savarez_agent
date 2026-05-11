@@ -3,7 +3,7 @@
 File Operations Module
 
 Provides file manipulation capabilities (read, write, patch, search) that work
-across all terminal backends (local, docker, ssh, singularity, modal, daytona, vercel_sandbox).
+across all terminal backends (local, docker, ssh, singularity, modal, daytona, vercel_sandbox, fastvm).
 
 The key insight is that all file operations can be expressed as shell commands,
 so we wrap the terminal backend's execute() interface to provide a unified file API.
@@ -505,7 +505,7 @@ class ShellFileOperations(FileOperations):
     File operations implemented via shell commands.
     
     Works with ANY terminal backend that has execute(command, cwd) method.
-    This includes local, docker, singularity, ssh, modal, and daytona environments.
+    This includes local, docker, singularity, ssh, modal, daytona, Vercel Sandbox, and FastVM environments.
     """
     
     def __init__(self, terminal_env, cwd: str = None):

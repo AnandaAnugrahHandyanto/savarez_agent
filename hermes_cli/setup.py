@@ -749,6 +749,63 @@ def _prompt_vercel_sandbox_settings(config: dict):
         save_env_value("VERCEL_TEAM_ID", team)
 
 
+def _prompt_fastvm_settings(config: dict):
+    """Prompt for FastVM settings."""
+    terminal = config.setdefault("terminal", {})
+
+    print()
+    print_info("FastVM settings:")
+    print_info("  Persistent mode snapshots the VM before deleting live compute.")
+    print_info("  Live resume expects FastVM snapshots to restore VM/process state.")
+
+    existing_key = get_env_value("FASTVM_API_KEY")
+    if existing_key:
+        print_info("  FastVM API key: already configured")
+        if prompt_yes_no("  Update FastVM API key?", False):
+            api_key = prompt("    FastVM API key", password=True)
+            if api_key:
+                save_env_value("FASTVM_API_KEY", api_key)
+                print_success("    Updated")
+    else:
+        api_key = prompt("    FastVM API key", password=True)
+        if api_key:
+            save_env_value("FASTVM_API_KEY", api_key)
+            print_success("    Configured")
+
+    current_machine = terminal.get("fastvm_machine", "c1m2")
+    machine = prompt("  Machine type", current_machine).strip() or current_machine
+    terminal["fastvm_machine"] = machine
+    save_env_value("TERMINAL_FASTVM_MACHINE", machine)
+
+    current_base = terminal.get("fastvm_base_snapshot_id", "")
+    base_snapshot = prompt("  Base snapshot ID (optional)", current_base).strip()
+    terminal["fastvm_base_snapshot_id"] = base_snapshot
+    if base_snapshot:
+        save_env_value("TERMINAL_FASTVM_BASE_SNAPSHOT_ID", base_snapshot)
+    else:
+        remove_env_value("TERMINAL_FASTVM_BASE_SNAPSHOT_ID")
+
+    current_live = terminal.get("fastvm_live_resume", True)
+    live_label = "yes" if current_live else "no"
+    terminal["fastvm_live_resume"] = prompt(
+        "  Require live VM/process resume from snapshots? (yes/no)", live_label
+    ).lower() in ("yes", "true", "y", "1")
+    save_env_value("TERMINAL_FASTVM_LIVE_RESUME", str(terminal["fastvm_live_resume"]).lower())
+
+    current_persist = terminal.get("container_persistent", True)
+    persist_label = "yes" if current_persist else "no"
+    terminal["container_persistent"] = prompt(
+        "  Persist sandbox with snapshots? (yes/no)", persist_label
+    ).lower() in ("yes", "true", "y", "1")
+
+    current_disk = terminal.get("container_disk", 51200)
+    disk_str = prompt("  Disk in MB (51200 = 50GB)", str(current_disk))
+    try:
+        terminal["container_disk"] = int(disk_str)
+    except ValueError:
+        pass
+
+
 def _read_nearest_vercel_project(start: Path | None = None) -> dict[str, str]:
     """Read project/team defaults from the nearest Vercel link file."""
     current = (start or Path.cwd()).resolve()
@@ -1410,11 +1467,12 @@ def setup_terminal_backend(config: dict):
         "SSH - run on a remote machine",
         "Daytona - persistent cloud development environment",
         "Vercel Sandbox - cloud microVM with snapshot filesystem persistence",
+        "FastVM - cloud VM with snapshot-backed live resume",
     ]
-    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "vercel_sandbox"}
-    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "vercel_sandbox": 5}
+    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "vercel_sandbox", 6: "fastvm"}
+    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "vercel_sandbox": 5, "fastvm": 6}
 
-    next_idx = 6
+    next_idx = 7
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
@@ -1693,6 +1751,39 @@ def setup_terminal_backend(config: dict):
 
         _prompt_vercel_sandbox_settings(config)
 
+    elif selected_backend == "fastvm":
+        print_success("Terminal backend: FastVM")
+        print_info("Cloud VMs with snapshot-backed sleep/wake.")
+        print_info("Requires the optional SDK: pip install 'hermes-agent[fastvm]'")
+
+        try:
+            __import__("fastvm")
+        except ImportError:
+            print_info("Installing fastvm SDK...")
+            import subprocess
+
+            uv_bin = shutil.which("uv")
+            if uv_bin:
+                result = subprocess.run(
+                    [uv_bin, "pip", "install", "--python", sys.executable, "fastvm"],
+                    capture_output=True,
+                    text=True,
+                )
+            else:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "fastvm"],
+                    capture_output=True,
+                    text=True,
+                )
+            if result.returncode == 0:
+                print_success("fastvm SDK installed")
+            else:
+                print_warning("Install failed — run manually: pip install 'hermes-agent[fastvm]'")
+                if result.stderr:
+                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+
+        _prompt_fastvm_settings(config)
+
     elif selected_backend == "ssh":
         print_success("Terminal backend: SSH")
         print_info("Run commands on a remote machine via SSH.")
@@ -1748,6 +1839,9 @@ def setup_terminal_backend(config: dict):
         save_env_value("TERMINAL_MODAL_MODE", config["terminal"].get("modal_mode", "auto"))
     if selected_backend == "vercel_sandbox":
         save_env_value("TERMINAL_VERCEL_RUNTIME", config["terminal"].get("vercel_runtime", "node24"))
+    if selected_backend == "fastvm":
+        save_env_value("TERMINAL_FASTVM_MACHINE", config["terminal"].get("fastvm_machine", "c1m2"))
+        save_env_value("TERMINAL_FASTVM_LIVE_RESUME", str(config["terminal"].get("fastvm_live_resume", True)).lower())
     save_config(config)
     print()
     print_success(f"Terminal backend set to: {selected_backend}")
