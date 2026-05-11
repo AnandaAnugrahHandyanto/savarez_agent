@@ -28,6 +28,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
+from pathlib import Path
 from typing import Any, Optional
 
 from tools.registry import registry, tool_error
@@ -357,6 +359,148 @@ def _handle_list(args: dict, **kw) -> str:
         return tool_error(f"kanban_list: {e}")
 
 
+def _metadata_list(metadata: dict, key: str) -> list[str]:
+    value = metadata.get(key)
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, (list, tuple, set)):
+        return [str(v) for v in value if str(v).strip()]
+    return []
+
+
+def _git(workspace: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(workspace), *args],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+        check=False,
+    )
+
+
+def _remote_verification_required(task: Any, metadata: dict) -> bool:
+    """Return whether code/worktree completion needs remote Git evidence."""
+    if metadata.get("no_code_changes") is True:
+        return False
+    if metadata.get("changed_tracked_files") == []:
+        return False
+    if _metadata_list(metadata, "changed_tracked_files"):
+        return True
+    if getattr(task, "workspace_kind", None) == "worktree":
+        if _metadata_list(metadata, "changed_files"):
+            return True
+        workspace = Path(getattr(task, "workspace_path", "") or "")
+        if not workspace.exists():
+            # A declared worktree is a code task. If the workspace cannot be
+            # inspected, require explicit no-change metadata rather than
+            # silently allowing a local-only commit claim through.
+            return True
+        status = _git(workspace, "status", "--porcelain=v1")
+        if status.returncode == 0:
+            for line in status.stdout.splitlines():
+                # Ignore untracked-only artifacts; tracked modifications,
+                # staged changes, deletes, renames, and copies are code work.
+                if line and not line.startswith("??"):
+                    return True
+        branch = _git(workspace, "branch", "--show-current")
+        if branch.returncode != 0 or not branch.stdout.strip():
+            return True
+        name = branch.stdout.strip()
+        remote_head = _git(workspace, "ls-remote", "--heads", "origin", name)
+        if remote_head.returncode != 0 or not remote_head.stdout.strip():
+            ahead = _git(workspace, "rev-list", "--count", "HEAD", "^origin/main")
+            if ahead.returncode == 0 and ahead.stdout.strip() not in {"", "0"}:
+                return True
+    return False
+
+
+def _normalise_branch_name(branch: str) -> str:
+    branch = (branch or "").strip()
+    for prefix in ("refs/heads/", "refs/remotes/origin/", "origin/"):
+        if branch.startswith(prefix):
+            return branch[len(prefix):]
+    return branch
+
+
+def _validate_remote_git_evidence(task: Any, metadata: dict) -> Optional[str]:
+    if not _remote_verification_required(task, metadata):
+        return None
+
+    branch = _normalise_branch_name(str(metadata.get("branch") or ""))
+    commit = str(metadata.get("commit") or metadata.get("pushed_commit") or "").strip()
+    remote_verified = metadata.get("remote_verified") is True
+    remote_ref = str(
+        metadata.get("pr_url")
+        or metadata.get("remote_branch_url")
+        or metadata.get("remote_branch_ref")
+        or ""
+    ).strip()
+    push_hint = (
+        "Run `git push -u origin HEAD`, create/open a PR if appropriate, "
+        "verify with `git ls-remote --heads origin <branch>` and "
+        "`git branch -r --contains <commit>`, then retry kanban_complete "
+        "with metadata including branch, commit, remote_verified=true, and "
+        "pr_url or remote_branch_url/remote_branch_ref. If push/auth/network "
+        "fails, call kanban_block with the exact error."
+    )
+    missing = []
+    if not branch:
+        missing.append("branch")
+    if not commit:
+        missing.append("commit")
+    if not remote_verified:
+        missing.append("remote_verified=true")
+    if not remote_ref:
+        missing.append("pr_url or remote_branch_url/remote_branch_ref")
+    if missing:
+        return (
+            "kanban_complete blocked: code/worktree completion requires "
+            f"remote Git verification evidence; missing {', '.join(missing)}. "
+            f"{push_hint}"
+        )
+
+    workspace = Path(getattr(task, "workspace_path", "") or "")
+    if not workspace.exists() or not (workspace / ".git").exists():
+        return (
+            "kanban_complete blocked: cannot validate remote Git evidence "
+            f"because workspace is not an inspectable git worktree: {workspace}. "
+            f"{push_hint}"
+        )
+
+    ls_remote = _git(workspace, "ls-remote", "--heads", "origin", branch)
+    if ls_remote.returncode != 0:
+        return (
+            "kanban_complete blocked: could not verify remote branch with "
+            f"`git ls-remote --heads origin {branch}`: "
+            f"{(ls_remote.stderr or ls_remote.stdout).strip()}. {push_hint}"
+        )
+    if not ls_remote.stdout.strip():
+        return (
+            "kanban_complete blocked: branch is not visible on origin: "
+            f"{branch}. {push_hint}"
+        )
+
+    fetch = _git(workspace, "fetch", "origin", branch)
+    if fetch.returncode != 0:
+        return (
+            "kanban_complete blocked: could not fetch remote branch for "
+            f"reachability verification: {(fetch.stderr or fetch.stdout).strip()}. "
+            f"{push_hint}"
+        )
+
+    remote_branch = f"refs/remotes/origin/{branch}"
+    contains = _git(workspace, "merge-base", "--is-ancestor", commit, remote_branch)
+    if contains.returncode != 0:
+        return (
+            "kanban_complete blocked: commit is not reachable from the "
+            f"remote branch origin/{branch}: {commit}. {push_hint}"
+        )
+    return None
+
+
 def _handle_complete(args: dict, **kw) -> str:
     """Mark the current task done with a structured handoff."""
     tid = _default_task_id(args.get("task_id"))
@@ -395,6 +539,12 @@ def _handle_complete(args: dict, **kw) -> str:
     try:
         kb, conn = _connect()
         try:
+            task = kb.get_task(conn, tid)
+            if task is None:
+                return tool_error(f"could not complete {tid} (unknown id)")
+            remote_err = _validate_remote_git_evidence(task, metadata or {})
+            if remote_err:
+                return tool_error(remote_err)
             try:
                 ok = kb.complete_task(
                     conn, tid,
@@ -782,8 +932,13 @@ KANBAN_COMPLETE_SCHEMA = {
                 "description": (
                     "Free-form dict of structured facts about this "
                     "attempt — {\"changed_files\": [...], \"tests_run\": 12, "
-                    "\"findings\": [...]}. Surfaced to downstream "
-                    "workers alongside ``summary``."
+                    "\"findings\": [...]}. For code/worktree tasks with "
+                    "changed tracked files, completion is blocked unless "
+                    "metadata includes branch, commit, remote_verified=true, "
+                    "and pr_url or remote_branch_url/remote_branch_ref. "
+                    "Use changed_tracked_files=[] or no_code_changes=true "
+                    "only for explicit no-code/no-tracked-change completions. "
+                    "Surfaced to downstream workers alongside ``summary``."
                 ),
             },
             "result": {

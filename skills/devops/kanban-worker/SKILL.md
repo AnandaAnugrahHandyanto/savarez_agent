@@ -40,12 +40,19 @@ kanban_complete(
     summary="shipped rate limiter — token bucket, keys on user_id with IP fallback, 14 tests pass",
     metadata={
         "changed_files": ["rate_limiter.py", "tests/test_rate_limiter.py"],
+        "changed_tracked_files": ["rate_limiter.py", "tests/test_rate_limiter.py"],
+        "branch": "dev/rate-limiter",
+        "commit": "abc1234",
+        "remote_verified": True,
+        "pr_url": "https://github.com/org/repo/pull/123",
         "tests_run": 14,
         "tests_passed": 14,
         "decisions": ["user_id primary, IP fallback for unauthenticated requests"],
     },
 )
 ```
+
+For code/worktree tasks with changed tracked files, `kanban_complete` enforces remote visibility. Include `branch`, `commit`, `remote_verified=True`, and either `pr_url` or `remote_branch_url` / `remote_branch_ref`; verify with `git ls-remote --heads origin <branch>` and `git branch -r --contains <commit>` (or the PR page) before completing. If there were no tracked code changes, say so explicitly with `changed_tracked_files=[]` or `no_code_changes=True`.
 
 **Coding task that needs human review (review-required):**
 

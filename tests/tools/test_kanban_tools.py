@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 
 import pytest
 
@@ -128,6 +129,8 @@ def worker_env(monkeypatch, tmp_path):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_CLAIM_LOCK", raising=False)
     from pathlib import Path as _Path
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
@@ -308,6 +311,142 @@ def test_complete_metadata_round_trips_through_show(worker_env):
     assert shown["task"]["status"] == "done"
     assert shown["runs"][-1]["summary"] == "finished with structured evidence"
     assert shown["runs"][-1]["metadata"] == handoff
+
+
+def _run_git(cwd, *args):
+    return subprocess.run(
+        ["git", *args], cwd=cwd, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
+    ).stdout.strip()
+
+
+@pytest.fixture
+def worktree_task(monkeypatch, tmp_path, worker_env):
+    """Create a claimed worktree task backed by a real git remote."""
+    remote = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _run_git(repo, "init", "-b", "main")
+    _run_git(repo, "config", "user.email", "worker@example.test")
+    _run_git(repo, "config", "user.name", "Worker Test")
+    (repo / "app.py").write_text("print('base')\n")
+    _run_git(repo, "add", "app.py")
+    _run_git(repo, "commit", "-m", "base")
+    _run_git(repo, "remote", "add", "origin", str(remote))
+    _run_git(repo, "push", "-u", "origin", "main")
+
+    branch = "dev/remote-gate-test"
+    _run_git(repo, "checkout", "-b", branch)
+    (repo / "app.py").write_text("print('changed')\n")
+    _run_git(repo, "add", "app.py")
+    _run_git(repo, "commit", "-m", "change tracked file")
+    commit = _run_git(repo, "rev-parse", "HEAD")
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="worktree-code-task",
+            assignee="test-worker",
+            workspace_kind="worktree",
+            workspace_path=str(repo),
+        )
+        kb.claim_task(conn, tid)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    return {"task_id": tid, "repo": repo, "branch": branch, "commit": commit}
+
+
+def test_complete_rejects_missing_remote_evidence_for_worktree_changes(worktree_task):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_complete({
+        "summary": "local code change",
+        "metadata": {"changed_tracked_files": ["app.py"]},
+    })
+
+    err = json.loads(out).get("error", "")
+    assert "remote Git verification evidence" in err
+    assert "git push -u origin HEAD" in err
+    assert "branch" in err
+    assert "commit" in err
+
+
+def test_complete_rejects_local_only_commit(worktree_task):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_complete({
+        "summary": "claimed pushed code change",
+        "metadata": {
+            "changed_tracked_files": ["app.py"],
+            "branch": worktree_task["branch"],
+            "commit": worktree_task["commit"],
+            "remote_verified": True,
+            "remote_branch_ref": f"origin/{worktree_task['branch']}",
+        },
+    })
+
+    err = json.loads(out).get("error", "")
+    assert "branch is not visible on origin" in err
+    assert worktree_task["branch"] in err
+
+
+def test_complete_accepts_pushed_remote_branch(worktree_task):
+    from tools import kanban_tools as kt
+
+    _run_git(worktree_task["repo"], "push", "-u", "origin", "HEAD")
+    out = kt._handle_complete({
+        "summary": "pushed code change",
+        "metadata": {
+            "changed_tracked_files": ["app.py"],
+            "branch": worktree_task["branch"],
+            "commit": worktree_task["commit"],
+            "remote_verified": True,
+            "remote_branch_ref": f"origin/{worktree_task['branch']}",
+        },
+    })
+
+    assert json.loads(out)["ok"] is True
+
+
+def test_complete_accepts_explicit_no_change_worktree(monkeypatch, tmp_path, worker_env):
+    remote = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True)
+    repo = tmp_path / "repo-no-change"
+    repo.mkdir()
+    _run_git(repo, "init", "-b", "main")
+    _run_git(repo, "config", "user.email", "worker@example.test")
+    _run_git(repo, "config", "user.name", "Worker Test")
+    (repo / "README.md").write_text("base\n")
+    _run_git(repo, "add", "README.md")
+    _run_git(repo, "commit", "-m", "base")
+    _run_git(repo, "remote", "add", "origin", str(remote))
+    _run_git(repo, "push", "-u", "origin", "main")
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="worktree-no-change-task",
+            assignee="test-worker",
+            workspace_kind="worktree",
+            workspace_path=str(repo),
+        )
+        kb.claim_task(conn, tid)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({
+        "summary": "operational no-change completion",
+        "metadata": {"changed_tracked_files": []},
+    })
+    assert json.loads(out)["ok"] is True
 
 
 def test_complete_with_result_only(worker_env):
