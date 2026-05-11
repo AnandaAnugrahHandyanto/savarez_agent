@@ -281,6 +281,70 @@ Peers can add/remove models at any time. The model recommended by `best-peer.sh`
 
 Prices contain literal `$` (e.g., `$0.007/1M`). In bash, `grep -E 'in \$[0-9]'` inside `$(...)` strips the backslash. Use `[[ "$var" == *'$'* ]]` glob matching or `awk` field extraction instead.
 
+## Script Reference
+
+### `scripts/preflight.sh` — Health Check
+```bash
+bash scripts/preflight.sh          # Human-readable (stderr) + JSON (stdout)
+bash scripts/preflight.sh --json   # JSON only
+```
+Checks: proxy HTTP 200, peer pinned, deposits > 0, channels active.
+Outputs structured JSON with `ok`, `proxy_up`, `deposits`, `issues[]`.
+
+### `scripts/best-peer.sh` — Smart Peer + Model Selection
+```bash
+bash scripts/best-peer.sh code          # Best for coding tasks
+bash scripts/best-peer.sh research      # Best for research/analysis
+bash scripts/best-peer.sh vision        # Best multimodal model
+bash scripts/best-peer.sh chat          # Best general conversation
+bash scripts/best-peer.sh cheap         # Cheapest available
+bash scripts/best-peer.sh code --json   # JSON output with fallbacks
+```
+Scans all reachable peers, scores models by task type using keyword matching on model names.
+Returns: best match + up to 5 fallback peers (auto-retry chain).
+
+### `scripts/auto-delegate.sh` — One-Command Delegation Pipeline
+```bash
+bash scripts/auto-delegate.sh code "Refactor auth module"
+bash scripts/auto-delegate.sh research "Summarize RLHF papers" --model deepseek-v4-flash
+bash scripts/auto-delegate.sh vision "Describe this image" --dry-run
+```
+Runs full pipeline: **preflight → best-peer → execute (with retry+fallback) → cost report**.
+Outputs result text on stderr, JSON on stdout.
+
+### `scripts/status-bar.sh` — One-Line Status
+```bash
+bash scripts/status-bar.sh           # Colored one-liner
+bash scripts/status-bar.sh --icon    # With bee emoji prefix
+bash scripts/status-bar.sh --json    # JSON for programmatic use
+```
+Output format: `AntSeed | $1.00 | step-3.5-flash | req:5 ch:1 | f629c1f9... | active`
+
+### `scripts/dashboard.sh` — Full TUI Dashboard
+```bash
+bash scripts/dashboard.sh            # Full screen dashboard
+bash scripts/dashboard.sh --compact  # Compact text mode
+bash scripts/dashboard.sh --json     # JSON for logging/monitoring
+```
+Shows: health status, wallet balance (available + reserved), pinned peer info,
+session usage (requests, USD signed), list of available models via proxy,
+quick action reference.
+
+### `scripts/cost-report.sh` — Spending Report
+```bash
+bash scripts/cost-report.sh          # Human-readable table
+bash scripts/cost-report.sh --json   # JSON for automation
+```
+Shows wallet address, deposits, channel state, estimated token usage and spend.
+
+### `scripts/test.sh` — Automated Validation
+```bash
+bash scripts/test.sh    # 25 checks: structure, syntax, secrets scan
+```
+Runs on every PR/commit. Catches data leaks, syntax errors, missing fields.
+
+---
+
 ## Verification Checklist
 
 - [ ] File at `skills/devops/antseed-smart-delegate/SKILL.md`
