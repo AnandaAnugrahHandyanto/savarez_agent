@@ -32,6 +32,13 @@ def _ok(obj: dict[str, Any]) -> str:
     return json.dumps(obj, ensure_ascii=False)
 
 
+def _to_int(value: Any, default: Any) -> Any:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
 def _status(args: dict[str, Any], **_: Any) -> str:
     return _ok(hermes_lcm.status(_ns()))
 
@@ -50,8 +57,8 @@ def _grep(args: dict[str, Any], **_: Any) -> str:
         since=args.get("since"),
         before=args.get("before"),
         sort=args.get("sort") or "rank",
-        limit=int(args.get("limit") or 5),
-        max_chars=int(args.get("max_chars") or 800),
+        limit=_to_int(args.get("limit") or 5, 5),
+        max_chars=_to_int(args.get("max_chars") or 800, 800),
     )))
 
 
@@ -65,10 +72,10 @@ def _describe(args: dict[str, Any], **_: Any) -> str:
     return _ok(hermes_lcm.describe(_ns(
         message_id=mid,
         session_id=args.get("session_id"),
-        tail=args.get("tail"),
+        tail=_to_int(args.get("tail"), None) if args.get("tail") is not None else None,
         around=args.get("around"),
-        window=int(args.get("window") or 3),
-        max_chars=int(args.get("max_chars") or 1200),
+        window=_to_int(args.get("window") or 3, 3),
+        max_chars=_to_int(args.get("max_chars") or 1200, 1200),
     )))
 
 
@@ -86,11 +93,11 @@ def _recall(args: dict[str, Any], **_: Any) -> str:
         since=args.get("since"),
         before=args.get("before"),
         sort=args.get("sort") or "rank",
-        limit=int(args.get("limit") or 10),
-        per_session=int(args.get("per_session") or 3),
-        window=int(args.get("window") or 1),
+        limit=_to_int(args.get("limit") or 10, 10),
+        per_session=_to_int(args.get("per_session") or 3, 3),
+        window=_to_int(args.get("window") or 1, 1),
         format=args.get("format") or "compact",
-        max_chars=int(args.get("max_chars") or 800),
+        max_chars=_to_int(args.get("max_chars") or 800, 800),
     )))
 
 

@@ -206,6 +206,19 @@ def test_direct_calls_clamp_untrusted_bounds(lcm_home):
     assert "[truncated by hermes_lcm]" in snippet
 
 
+def test_native_tool_handlers_tolerate_bad_numeric_args(lcm_home):
+    import tools.lcm_tool as lcm_tool
+
+    grep_data = json.loads(lcm_tool._grep({"query": "PER-2929", "limit": "not-int", "max_chars": "not-int"}))
+    assert grep_data["count"] >= 1
+
+    describe_data = json.loads(lcm_tool._describe({"message_id": 2, "tail": "not-int", "window": "not-int", "max_chars": "not-int"}))
+    assert describe_data["count"] >= 1
+
+    recall_data = json.loads(lcm_tool._recall({"query": "PER-2929", "limit": "not-int", "per_session": "not-int", "window": "not-int", "max_chars": "not-int"}))
+    assert recall_data["session_count"] >= 1
+
+
 def test_lcm_toolset_is_opt_in_not_default(lcm_home):
     from hermes_cli.tools_config import _get_platform_tools
 
