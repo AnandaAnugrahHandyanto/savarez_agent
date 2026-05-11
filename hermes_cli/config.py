@@ -439,6 +439,22 @@ DEFAULT_CONFIG = {
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
+    # Brain — multi-layer intelligent model routing (opt-in)
+    "brain": {
+        "enabled": False,
+    },
+    # Skills Hub — tool-level guardrails (opt-in): runtime escalation/downgrade + blocked tools
+    "skills_hub": {
+        "enabled": False,
+    },
+    # Approval — three-step safety gate before tool execution (opt-in)
+    "approval": {
+        "enabled": False,
+    },
+    # Session Search Pipeline — auto context injection per turn (opt-in)
+    "session_search_pipeline": {
+        "enabled": False,
+    },
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,

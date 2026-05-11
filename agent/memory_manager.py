@@ -198,6 +198,12 @@ class MemoryManager:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
         self._has_external: bool = False  # True once a non-builtin provider is added
+        self._life_mode_active: bool = False  # True → skip external provider sync
+
+    def set_life_mode(self, active: bool) -> None:
+        """LIFE 模式门控: True 时跳过外部 provider 的 sync_turn/queue_prefetch。
+        仅影响 Hindsight 等外部记忆提取，内置 MEMORY.md 不受影响。"""
+        self._life_mode_active = active
 
     # -- Registration --------------------------------------------------------
 
@@ -302,8 +308,11 @@ class MemoryManager:
         return "\n\n".join(parts)
 
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
-        """Queue background prefetch on all providers for the next turn."""
+        """Queue background prefetch on all providers for the next turn.
+        LIFE 模式跳过外部 provider。"""
         for provider in self._providers:
+            if self._life_mode_active and provider.name != "builtin":
+                continue
             try:
                 provider.queue_prefetch(query, session_id=session_id)
             except Exception as e:
@@ -315,8 +324,10 @@ class MemoryManager:
     # -- Sync ----------------------------------------------------------------
 
     def sync_all(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        """Sync a completed turn to all providers."""
+        """Sync a completed turn to all providers. LIFE 模式跳过外部 provider。"""
         for provider in self._providers:
+            if self._life_mode_active and provider.name != "builtin":
+                continue  # LIFE 模式隔离: 不提取到 Hindsight 等外部知识图谱
             try:
                 provider.sync_turn(user_content, assistant_content, session_id=session_id)
             except Exception as e:

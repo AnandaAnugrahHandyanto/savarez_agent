@@ -3110,6 +3110,11 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
                  hasn't fully exited yet.
     """
     _guard_official_docker_root_gateway()
+    # Defense-in-depth: Gateway is a service process — lock working directory
+    # to $HOME so project-level AGENTS.md / DESIGN.md / CLAUDE.md from the
+    # current directory never leak into the per-turn context.  Without this,
+    # restarting the gateway from a source checkout inflates token usage 2-3×.
+    os.chdir(os.path.expanduser("~"))
     sys.path.insert(0, str(PROJECT_ROOT))
 
     # Detached Windows gateway runs must ignore console-control broadcasts

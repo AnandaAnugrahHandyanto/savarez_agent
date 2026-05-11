@@ -30,9 +30,9 @@ import re
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
+from hermes_constants import get_hermes_home
 from utils import atomic_replace
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
@@ -221,16 +221,111 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
-    def add(self, target: str, content: str) -> Dict[str, Any]:
+    def _check_conflict(self, target: str, content: str):
+        """Check semantic similarity between new content and existing entries.
+
+        Uses DashScope text-embedding-v4 for embeddings. Returns None if no
+        conflict detected, or a dict with conflict info.
+        """
+        entries = self._entries_for(target)
+        if not entries or target != "memory":
+            return None
+
+        try:
+            from session_search.embedding import DashScopeEmbedding
+            import numpy as np
+
+            embedder = DashScopeEmbedding(dimensions=256)
+            new_emb = np.array(embedder.embed_single(content))
+
+            similarities = []
+            for i, e in enumerate(entries):
+                emb = np.array(embedder.embed_single(e))
+                sim = float(np.dot(new_emb, emb) / (
+                    np.linalg.norm(new_emb) * np.linalg.norm(emb) + 1e-10
+                ))
+                similarities.append((i, sim, e))
+
+            similarities.sort(key=lambda x: x[1], reverse=True)
+            if not similarities:
+                return None
+
+            best = similarities[0]
+            best_sim, best_entry = best[1], best[2]
+
+            if best_sim > 0.85:
+                if self._is_essentially_same(content, best_entry):
+                    return {
+                        "success": False,
+                        "error": (
+                            "Semantic duplicate (similarity={:.2f}). "
+                            "Existing: '{}...'. "
+                            "Use 'replace' to update, or skip if correct."
+                        ).format(best_sim, best_entry[:100]),
+                        "conflict_warning": True,
+                        "similar_entry": best_entry[:200],
+                        "similarity": best_sim,
+                    }
+                return {
+                    "success": False,
+                    "error": (
+                        "Potential conflict (similarity={:.2f}). "
+                        "Existing: '{}...'. "
+                        "If this is a correction, use 'replace'. "
+                        "If intentionally different, add '--override' at end of content."
+                    ).format(best_sim, best_entry[:100]),
+                    "conflict_warning": True,
+                    "similar_entry": best_entry[:200],
+                    "similarity": best_sim,
+                }
+        except (ImportError, ValueError) as e:
+            logger.debug("Conflict detection skipped: %s", e)
+            return None
+        except Exception as e:
+            logger.warning("Conflict detection failed (non-fatal): %s", e)
+            return None
+        return None
+
+    @staticmethod
+    def _is_essentially_same(a: str, b: str) -> bool:
+        """Quick heuristic: word-level Jaccard overlap."""
+        a_clean = re.sub(
+            r"\[(fact|preference|instruction|error|learning|relationship)\]\s*",
+            "", a
+        ).strip()
+        b_clean = re.sub(
+            r"\[(fact|preference|instruction|error|learning|relationship)\]\s*",
+            "", b
+        ).strip()
+        a_words = set(a_clean.lower().split())
+        b_words = set(b_clean.lower().split())
+        if not a_words or not b_words:
+            return False
+        overlap = len(a_words & b_words) / min(len(a_words), len(b_words))
+        return overlap > 0.7
+
+    def add(self, target: str, content: str, memory_type: str = None) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
 
+        # Auto-tag with memory_type if provided and not already prefixed
+        if memory_type and target == "memory":
+            import re
+            m = re.match(r"\[(fact|preference|instruction|error|learning|relationship)\]\s*", content)
+            if not m:
+                content = f"[{memory_type}] {content}"
+
         # Scan for injection/exfiltration before accepting
         scan_error = _scan_memory_content(content)
         if scan_error:
             return {"success": False, "error": scan_error}
+
+        # Conflict detection: check semantic similarity with existing entries
+        conflict_result = self._check_conflict(target, content)
+        if conflict_result:
+            return conflict_result
 
         with self._file_lock(self._path_for(target)):
             # Re-read from disk under lock to pick up writes from other sessions
@@ -379,6 +474,13 @@ class MemoryStore:
         limit = self._char_limit(target)
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
+        # Record successful write for health monitoring
+        try:
+            from session_search.agent_health import record_memory_write
+            record_memory_write(True)
+        except Exception:
+            pass
+
         resp = {
             "success": True,
             "target": target,
@@ -390,8 +492,11 @@ class MemoryStore:
             resp["message"] = message
         return resp
 
+    # Recognised memory type markers stripped from content for rendering
+    _TYPE_MARKERS = ["fact", "preference", "instruction", "error", "learning", "relationship"]
+
     def _render_block(self, target: str, entries: List[str]) -> str:
-        """Render a system prompt block with header and usage indicator."""
+        """Render a system prompt block with header, usage indicator, and type grouping."""
         if not entries:
             return ""
 
@@ -402,11 +507,37 @@ class MemoryStore:
 
         if target == "user":
             header = f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars]"
-        else:
-            header = f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars]"
+            separator = "═" * 46
+            return f"{separator}\n{header}\n{separator}\n{content}"
 
+        # For memory target, group entries by type for the system prompt
+        header = f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars]"
         separator = "═" * 46
-        return f"{separator}\n{header}\n{separator}\n{content}"
+
+        # Group entries by type marker
+        import re
+        groups: dict = {}
+        untyped = []
+        for e in entries:
+            m = re.match(r"\[(fact|preference|instruction|error|learning|relationship)\]\s*", e)
+            if m:
+                groups.setdefault(m.group(1), []).append(e[m.end():])
+            else:
+                untyped.append(e)
+
+        # Build grouped output
+        blocks = [f"{separator}\n{header}\n{separator}"]
+        order = ["fact", "preference", "instruction", "error", "learning", "relationship"]
+        for t in order:
+            if t in groups:
+                blocks.append(f"§ {t.upper()}")
+                for e in groups[t]:
+                    blocks.append(e)
+        if untyped:
+            blocks.append("§ UNTYPED")
+            for e in untyped:
+                blocks.append(e)
+        return "\n".join(blocks)
 
     @staticmethod
     def _read_file(path: Path) -> List[str]:
@@ -462,12 +593,22 @@ class MemoryStore:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
 
+def _record_memory_fail():
+    """Record a memory write failure for health monitoring."""
+    try:
+        from session_search.agent_health import record_memory_write
+        record_memory_write(False)
+    except Exception:
+        pass
+
+
 def memory_tool(
     action: str,
     target: str = "memory",
     content: str = None,
     old_text: str = None,
     store: Optional[MemoryStore] = None,
+    memory_type: str = None,
 ) -> str:
     """
     Single entry point for the memory tool. Dispatches to MemoryStore methods.
@@ -475,20 +616,25 @@ def memory_tool(
     Returns JSON string with results.
     """
     if store is None:
+        _record_memory_fail()
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
 
     if target not in ("memory", "user"):
+        _record_memory_fail()
         return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
 
     if action == "add":
         if not content:
+            _record_memory_fail()
             return tool_error("Content is required for 'add' action.", success=False)
-        result = store.add(target, content)
+        result = store.add(target, content, memory_type)
 
     elif action == "replace":
         if not old_text:
+            _record_memory_fail()
             return tool_error("old_text is required for 'replace' action.", success=False)
         if not content:
+            _record_memory_fail()
             return tool_error("content is required for 'replace' action.", success=False)
         result = store.replace(target, old_text, content)
 
@@ -535,7 +681,16 @@ MEMORY_SCHEMA = {
         "- 'memory': your notes -- environment facts, project conventions, tool quirks, lessons learned\n\n"
         "ACTIONS: add (new entry), replace (update existing -- old_text identifies it), "
         "remove (delete -- old_text identifies it).\n\n"
-        "SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state."
+        "SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state.\n\n"
+        "MEMORY TYPES (for 'memory' target only — 'user' target ignores this):\n"
+        "- fact: Objective, verifiable information (env facts, tool quirks, architecture decisions)\n"
+        "- preference: User/system preferences (communication style, design priorities)\n"
+        "- instruction: Rules/guidelines/mandatory procedures (anti-patterns, setup rules)\n"
+        "- error: Mistakes to avoid forever (crashes, deadlocks, data-loss vectors)\n"
+        "- learning: Lessons from experience — what worked, what didn't, patterns discovered\n"
+        "- relationship: Entity connections (model→provider mappings, module dep paths, alias mappings)\n\n"
+        "Types are stored as [type] markers in the entry text and enable type-weighted retrieval.\n"
+        "Example: '[fact] compaction threshold 0.7 target 0.4 protect 50' or '[error] approval deadlock: guard.py whitelist must cover config.yaml'."
     ),
     "parameters": {
         "type": "object",
@@ -552,11 +707,16 @@ MEMORY_SCHEMA = {
             },
             "content": {
                 "type": "string",
-                "description": "The entry content. Required for 'add' and 'replace'."
+                "description": "The entry content. Required for 'add' and 'replace'. For 'memory' target, prefix with [type] marker e.g. '[fact] compression threshold 0.7'."
             },
             "old_text": {
                 "type": "string",
                 "description": "Short unique substring identifying the entry to replace or remove."
+            },
+            "memory_type": {
+                "type": "string",
+                "enum": ["fact", "preference", "instruction", "error", "learning", "relationship"],
+                "description": "Memory type for 'memory' target. Ignored for 'user' target. Added as [type] prefix when content doesn't already have one."
             },
         },
         "required": ["action", "target"],
@@ -576,6 +736,7 @@ registry.register(
         target=args.get("target", "memory"),
         content=args.get("content"),
         old_text=args.get("old_text"),
+        memory_type=args.get("memory_type"),
         store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",
