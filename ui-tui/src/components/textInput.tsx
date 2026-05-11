@@ -991,7 +991,7 @@ export function TextInput({
           e.stopImmediatePropagation?.()
           const decision = decideRightClickAction(vRef.current, selRange())
           if (decision.action === 'copy') {
-            void writeClipboardText(decision.text)
+            void writeClipboardSmart(decision.text, undefined, stdout ?? process.stdout)
 
             return
           }
