@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import sys
 from pathlib import Path
 
@@ -168,3 +169,86 @@ class TestHooksInert:
         mod.on_post_llm_call(task_id="t", session_id="s", api_call_count=1)
         mod.on_pre_tool_call(tool_name="read_file", args={}, task_id="t", session_id="s")
         mod.on_post_tool_call(tool_name="read_file", args={}, result="ok", task_id="t", session_id="s")
+
+
+# ---------------------------------------------------------------------------
+# Placeholder-credential guard (#23823) — helper-level unit tests.
+#
+# Direct coverage for the two pure-Python helpers added by the fix:
+# ``_redact_key_preview`` and ``_validate_langfuse_key``.  These exercise
+# only the helpers (no _get_langfuse round-trip, no logging) so a
+# regression in the redaction / prefix logic is caught and named
+# specifically, without the noise of the end-to-end integration tests.
+# A companion test class in this file covers the runtime behaviour
+# through ``_get_langfuse()``.
+# ---------------------------------------------------------------------------
+
+
+class TestPlaceholderKeyDetection:
+    LOGGER_NAME = "plugins.observability.langfuse"
+
+    def _fresh_plugin(self, monkeypatch=None):
+        mod_name = "plugins.observability.langfuse"
+        sys.modules.pop(mod_name, None)
+        mod = importlib.import_module(mod_name)
+        return mod
+
+    @staticmethod
+    def _clear_env(monkeypatch):
+        for k in (
+            "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
+            "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
+        ):
+            monkeypatch.delenv(k, raising=False)
+
+    # -- helper unit tests (no SDK stub needed: these don't go through
+    #    _get_langfuse, they exercise the pure-Python helpers directly) ------
+
+    def test_redact_key_preview_empty(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        plugin = self._fresh_plugin()
+        assert plugin._redact_key_preview("") == "<empty>"
+
+    def test_redact_key_preview_short_value_echoed(self, monkeypatch):
+        """Short placeholder strings are echoed in full so the operator
+        can see exactly which template they forgot to replace."""
+        self._clear_env(monkeypatch)
+        plugin = self._fresh_plugin()
+        assert plugin._redact_key_preview("placeholder") == "'placeholder'"
+        assert plugin._redact_key_preview("test-key") == "'test-key'"
+
+    def test_redact_key_preview_long_value_truncated(self, monkeypatch):
+        """If an operator pasted a real secret into the wrong env var the
+        preview must NOT echo it in full — only the leading 6 chars."""
+        self._clear_env(monkeypatch)
+        plugin = self._fresh_plugin()
+        result = plugin._redact_key_preview("sk-lf-abcdefghijklmnop")
+        assert "abcdefghij" not in result
+        assert result.startswith("'sk-lf-")
+        assert result.endswith("...'")
+
+    def test_validate_langfuse_key_accepts_documented_prefix(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        plugin = self._fresh_plugin()
+        assert plugin._validate_langfuse_key(
+            "HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz"
+        ) is None
+        assert plugin._validate_langfuse_key(
+            "HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz"
+        ) is None
+
+    def test_validate_langfuse_key_rejects_wrong_prefix(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        plugin = self._fresh_plugin()
+        msg = plugin._validate_langfuse_key(
+            "HERMES_LANGFUSE_PUBLIC_KEY", "placeholder"
+        )
+        assert msg is not None
+        assert "HERMES_LANGFUSE_PUBLIC_KEY" in msg
+        assert "pk-lf-" in msg
+
+    def test_validate_langfuse_key_unknown_name_passes(self, monkeypatch):
+        """Defensive: an env var with no registered prefix is trusted."""
+        self._clear_env(monkeypatch)
+        plugin = self._fresh_plugin()
+        assert plugin._validate_langfuse_key("HERMES_LANGFUSE_BASE_URL", "anything") is None
