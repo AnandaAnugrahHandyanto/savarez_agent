@@ -187,6 +187,42 @@ class TestUpdateCwdRejectsMissingPaths:
 
         assert env.cwd == str(new_dir)
 
+    def test_accepts_msys_form_marker_path_on_windows(
+        self, tmp_path, monkeypatch
+    ):
+        """Reproduces the second half of #23846: ``pwd -P`` on Git Bash
+        writes an MSYS-form path (``/c/Users/...``) to the cwd marker file.
+        Without normalization in :meth:`_update_cwd`, ``os.path.isdir``
+        rejects the MSYS form and the cwd silently stays at the previous
+        value — so every ``cd`` inside a Git Bash session is lost.
+        """
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+
+        original = tmp_path / "starting"
+        original.mkdir()
+
+        msys_marker = "/c/Users/user/repo"
+        native_equivalent = "C:\\Users\\user\\repo"
+
+        monkeypatch.setattr(
+            os.path, "isdir", lambda p: p == native_equivalent
+        )
+
+        with patch.object(LocalEnvironment, "init_session", autospec=True, return_value=None):
+            env = LocalEnvironment(cwd=str(original), timeout=10)
+
+        with open(env._cwd_file, "w") as f:
+            f.write(msys_marker)
+
+        env._update_cwd({"output": "", "returncode": 0})
+
+        # cwd is updated AND stored in native form so the next Popen
+        # invocation does not need to re-normalize.
+        assert env.cwd == native_equivalent, (
+            f"Expected ``cd`` in bash to be tracked as {native_equivalent!r}; "
+            f"got {env.cwd!r} (#23846)"
+        )
+
 
 # ---------------------------------------------------------------------------
 # MSYS / Git Bash path normalizer (#23846) — pure-function unit tests
