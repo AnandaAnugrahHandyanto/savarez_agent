@@ -25,6 +25,7 @@ except ModuleNotFoundError:
 
 import logging
 import os
+import shlex
 import shutil
 import sys
 import json
@@ -8630,6 +8631,27 @@ class HermesCLI:
         without this prompt), Cancel.  Gated by
         ``approvals.mcp_reload_confirm`` — default on.
         """
+        args = []
+        if cmd_original:
+            try:
+                args = shlex.split(cmd_original)[1:]
+            except ValueError:
+                args = cmd_original.split()[1:]
+        explicit_choice = args[0].strip().lower() if args else ""
+        if explicit_choice in {"now", "once"}:
+            with self._busy_command(self._slow_command_status(cmd_original)):
+                self._reload_mcp()
+            return
+        if explicit_choice == "always":
+            if save_config_value("approvals.mcp_reload_confirm", False):
+                print("🔒 Future /reload-mcp calls will run without confirmation.")
+                print("   Re-enable via `approvals.mcp_reload_confirm: true` in config.yaml.")
+            else:
+                print("⚠️  Couldn't persist opt-out — reloading once.")
+            with self._busy_command(self._slow_command_status(cmd_original)):
+                self._reload_mcp()
+            return
+
         # Gate check — respects prior "Always Approve" clicks.
         try:
             cfg = load_cli_config()
@@ -8643,6 +8665,14 @@ class HermesCLI:
         if not confirm_required:
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._reload_mcp()
+            return
+
+        interactive_tty = bool(getattr(sys.stdin, "isatty", lambda: False)())
+        in_main_thread = threading.current_thread() is threading.main_thread()
+        if not interactive_tty or not in_main_thread:
+            print("🟡 /reload-mcp needs confirmation, but this context is non-interactive.")
+            print("   Re-run `/reload-mcp now` to proceed once, or `/reload-mcp always`")
+            print("   to proceed and silence this prompt permanently.")
             return
 
         # Render warning + prompt.  Use a single-line prompt so the user
