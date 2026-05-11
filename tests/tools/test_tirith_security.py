@@ -1007,3 +1007,123 @@ class TestHermesHomeIsolation:
             expected = os.path.join(os.path.expanduser("~"), ".hermes")
             result = _get_hermes_home()
         assert result == expected
+
+
+# ---------------------------------------------------------------------------
+# Unavailable-log helpers (#23845) — one-shot warning dedup
+# ---------------------------------------------------------------------------
+
+
+class TestUnavailableLogHelpers:
+    """Unit tests for the per-path dedup helpers that suppress repeating
+    "tirith spawn failed" / "tirith path resolved to None" warnings (#23845).
+    """
+
+    def setup_method(self) -> None:
+        # Each test sees a clean cache so order-independent.
+        _tirith_mod._reset_unavailable_log()
+
+    def teardown_method(self) -> None:
+        _tirith_mod._reset_unavailable_log()
+
+    def test_first_call_logs_once(self, caplog):
+        from tools.tirith_security import _log_unavailable_once
+
+        with caplog.at_level("WARNING", logger="tools.tirith_security"):
+            _log_unavailable_once("tirith", "tirith spawn failed: missing")
+
+        records = [r for r in caplog.records if "tirith spawn failed" in r.getMessage()]
+        assert len(records) == 1
+        assert "further occurrences for this path will be suppressed" in records[0].getMessage()
+
+    def test_second_call_same_key_is_silent(self, caplog):
+        from tools.tirith_security import _log_unavailable_once
+
+        with caplog.at_level("WARNING", logger="tools.tirith_security"):
+            _log_unavailable_once("tirith", "tirith spawn failed: missing")
+            _log_unavailable_once("tirith", "tirith spawn failed: still missing")
+            _log_unavailable_once("tirith", "tirith spawn failed: yes still")
+
+        records = [r for r in caplog.records if "tirith spawn failed" in r.getMessage()]
+        assert len(records) == 1, (
+            "Expected exactly one warning across three failures for the same path; "
+            f"got {len(records)} (#23845 dedup broken)"
+        )
+
+    def test_distinct_keys_each_log_once(self, caplog):
+        from tools.tirith_security import _log_unavailable_once
+
+        with caplog.at_level("WARNING", logger="tools.tirith_security"):
+            _log_unavailable_once("tirith", "missing on PATH")
+            _log_unavailable_once("/opt/custom/tirith", "missing at explicit path")
+            _log_unavailable_once("tirith", "missing on PATH (again)")
+            _log_unavailable_once("/opt/custom/tirith", "missing at explicit path (again)")
+
+        records = [r for r in caplog.records if r.levelname == "WARNING"]
+        msgs = [r.getMessage() for r in records]
+        assert sum("missing on PATH" in m for m in msgs) == 1
+        assert sum("missing at explicit path" in m for m in msgs) == 1
+
+    def test_clear_unavailable_log_re_arms_warning(self, caplog):
+        from tools.tirith_security import (
+            _clear_unavailable_log,
+            _log_unavailable_once,
+        )
+
+        with caplog.at_level("WARNING", logger="tools.tirith_security"):
+            _log_unavailable_once("tirith", "missing pass 1")
+            _log_unavailable_once("tirith", "missing pass 2 — should be silent")
+            _clear_unavailable_log("tirith")
+            _log_unavailable_once("tirith", "missing pass 3 — should log again")
+
+        msgs = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any("missing pass 1" in m for m in msgs)
+        assert not any("missing pass 2" in m for m in msgs)
+        assert any("missing pass 3" in m for m in msgs)
+
+    def test_clear_unavailable_log_unknown_key_is_noop(self):
+        from tools.tirith_security import _clear_unavailable_log
+
+        # Should not raise even though the key was never logged.
+        _clear_unavailable_log("never-seen-path")
+
+    def test_reset_unavailable_log_clears_all_keys(self, caplog):
+        from tools.tirith_security import (
+            _log_unavailable_once,
+            _reset_unavailable_log,
+        )
+
+        with caplog.at_level("WARNING", logger="tools.tirith_security"):
+            _log_unavailable_once("tirith", "miss A")
+            _log_unavailable_once("/a/b", "miss B")
+            caplog.clear()
+            _reset_unavailable_log()
+            _log_unavailable_once("tirith", "miss A again")
+            _log_unavailable_once("/a/b", "miss B again")
+
+        msgs = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any("miss A again" in m for m in msgs)
+        assert any("miss B again" in m for m in msgs)
+
+    def test_thread_safety_single_log_under_contention(self, caplog):
+        """Many concurrent threads racing on the same path emit exactly one warning."""
+        import threading
+        from tools.tirith_security import _log_unavailable_once
+
+        barrier = threading.Barrier(20)
+
+        def _hit() -> None:
+            barrier.wait()
+            _log_unavailable_once("tirith", "concurrent miss")
+
+        with caplog.at_level("WARNING", logger="tools.tirith_security"):
+            threads = [threading.Thread(target=_hit) for _ in range(20)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        msgs = [r.getMessage() for r in caplog.records if "concurrent miss" in r.getMessage()]
+        assert len(msgs) == 1, (
+            f"Expected exactly one warning under thread contention; got {len(msgs)}"
+        )
