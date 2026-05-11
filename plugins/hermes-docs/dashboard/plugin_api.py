@@ -35,6 +35,27 @@ from pydantic import BaseModel
 
 from hermes_constants import get_hermes_home
 
+# docs_profile is co-located in the same dashboard package.  When loaded via
+# the plugin system (which sets __package__ and submodule_search_locations)
+# the relative import resolves normally.  When loaded dynamically by tests
+# via importlib without a package context, we fall back to loading the sibling
+# file directly by path.
+try:
+    from .docs_profile import get_docs_profile_status, bootstrap_docs_profile  # type: ignore[import]
+except ImportError:
+    import importlib.util as _ilu
+    _dp_path = Path(__file__).parent / "docs_profile.py"
+    _dp_name = f"{__name__}_docs_profile"
+    if _dp_name not in sys.modules:
+        _dp_spec = _ilu.spec_from_file_location(_dp_name, _dp_path)
+        _dp_mod = _ilu.module_from_spec(_dp_spec)
+        sys.modules[_dp_name] = _dp_mod
+        _dp_spec.loader.exec_module(_dp_mod)
+    else:
+        _dp_mod = sys.modules[_dp_name]
+    get_docs_profile_status = _dp_mod.get_docs_profile_status  # type: ignore[attr-defined]
+    bootstrap_docs_profile = _dp_mod.bootstrap_docs_profile  # type: ignore[attr-defined]
+
 log = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -248,6 +269,42 @@ async def get_status():
         "workspace_count": len(workspaces),
         "recent": recent,
     }
+
+
+# ---------------------------------------------------------------------------
+# Docs persona profile status and bootstrap
+# ---------------------------------------------------------------------------
+
+
+@router.get("/profile/status")
+async def get_profile_status():
+    """Report whether the docs persona profile is installed.
+
+    Returns a JSON object with::
+
+        {
+            "installed": bool,
+            "profile_dir": str | null,
+            "has_soul": bool,
+            "has_config": bool,
+        }
+    """
+    return get_docs_profile_status()
+
+
+@router.post("/profile/bootstrap", status_code=200)
+async def bootstrap_profile():
+    """Create a minimal docs profile if one does not already exist.
+
+    Idempotent.  Returns::
+
+        {
+            "status": "created" | "already_exists",
+            "profile_dir": str,
+            "created_files": list[str],
+        }
+    """
+    return bootstrap_docs_profile()
 
 
 # ---------------------------------------------------------------------------

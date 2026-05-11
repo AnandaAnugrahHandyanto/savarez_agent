@@ -567,3 +567,90 @@ def test_status_with_workspaces(client, sample_folder, tmp_path):
     data = r.json()
     assert data["workspace_count"] == 2
     assert len(data["recent"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Docs persona profile status and bootstrap
+# ---------------------------------------------------------------------------
+
+
+def test_profile_status_missing(client):
+    """GET /profile/status returns installed=False when docs profile is absent."""
+    r = client.get("/api/plugins/hermes-docs/profile/status")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["installed"] is False
+    assert data["profile_dir"] is None
+    assert data["has_soul"] is False
+    assert data["has_config"] is False
+
+
+def test_profile_bootstrap_creates_profile(client, docs_home):
+    """POST /profile/bootstrap creates the docs profile when it is absent."""
+    r = client.post("/api/plugins/hermes-docs/profile/bootstrap")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["status"] == "created"
+    assert data["profile_dir"] is not None
+
+    profile_dir = docs_home / "profiles" / "docs"
+    assert profile_dir.is_dir()
+    assert (profile_dir / "config.yaml").exists()
+    assert (profile_dir / "SOUL.md").exists()
+    for subdir in ("memories", "sessions", "skills", "logs"):
+        assert (profile_dir / subdir).is_dir()
+
+
+def test_profile_bootstrap_idempotent(client, docs_home):
+    """POST /profile/bootstrap is idempotent — second call returns already_exists."""
+    r1 = client.post("/api/plugins/hermes-docs/profile/bootstrap")
+    assert r1.json()["status"] == "created"
+
+    r2 = client.post("/api/plugins/hermes-docs/profile/bootstrap")
+    assert r2.status_code == 200
+    data = r2.json()
+    assert data["status"] == "already_exists"
+    assert data["created_files"] == []
+
+
+def test_profile_bootstrap_preserves_existing_config(client, docs_home):
+    """Bootstrap must not overwrite a pre-existing config.yaml."""
+    profile_dir = docs_home / "profiles" / "docs"
+    profile_dir.mkdir(parents=True)
+    custom_config = "model:\n  provider: anthropic\n  default: claude-sonnet-4-6\n"
+    (profile_dir / "config.yaml").write_text(custom_config, encoding="utf-8")
+
+    r = client.post("/api/plugins/hermes-docs/profile/bootstrap")
+    assert r.status_code == 200
+    assert r.json()["status"] == "already_exists"
+
+    # config.yaml content must be unchanged
+    assert (profile_dir / "config.yaml").read_text(encoding="utf-8") == custom_config
+
+
+def test_profile_bootstrap_preserves_existing_soul(client, docs_home):
+    """Bootstrap must not overwrite a pre-existing SOUL.md."""
+    profile_dir = docs_home / "profiles" / "docs"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "config.yaml").write_text("model:\n  provider: auto\n", encoding="utf-8")
+    custom_soul = "# My custom docs persona\n\nDo exactly what I say.\n"
+    (profile_dir / "SOUL.md").write_text(custom_soul, encoding="utf-8")
+
+    r = client.post("/api/plugins/hermes-docs/profile/bootstrap")
+    assert r.status_code == 200
+    assert r.json()["status"] == "already_exists"
+
+    assert (profile_dir / "SOUL.md").read_text(encoding="utf-8") == custom_soul
+
+
+def test_profile_status_installed_after_bootstrap(client, docs_home):
+    """GET /profile/status returns installed=True after a successful bootstrap."""
+    client.post("/api/plugins/hermes-docs/profile/bootstrap")
+
+    r = client.get("/api/plugins/hermes-docs/profile/status")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["installed"] is True
+    assert data["has_config"] is True
+    assert data["has_soul"] is True
+    assert data["profile_dir"] is not None
