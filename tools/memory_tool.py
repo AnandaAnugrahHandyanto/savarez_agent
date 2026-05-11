@@ -9,23 +9,25 @@ Provides bounded, SQLite-backed memory that persists across sessions. Two stores
     expectations, workflow habits)
 
 Both are injected into the system prompt as a snapshot at session start.
-Mid-session writes update the DB immediately and refresh the snapshot on next API call.
+Mid-session writes update the DB immediately and refresh the snapshot.
 
 Design:
-- Single `memory` tool with action parameter: add, replace, remove, read
+- Single `memory` tool with action parameter: add, replace, remove
 - replace/remove use short unique substring matching (not full text or IDs)
 - Behavioral guidance lives in the tool schema description
 - DB-backed with auto-eviction: when adding would exceed the char limit, the
   lowest-value entries (access_count ASC, last_accessed ASC) are evicted first.
 - Access-count tracking: every format_for_system_prompt() call touches entries
   so frequently-used memories survive eviction.
+- Thread-safe: uses threading.Lock to serialize DB writes.
 """
 
 import json
 import logging
 import re
+import threading
 import uuid
-from hermes_constants import get_hermes_home
+from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -36,9 +38,9 @@ ENTRY_DELIMITER = "\n§\n"
 _DEFAULT_CATEGORY = "default"
 
 
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 # Memory content scanning — lightweight check for injection/exfiltration
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 
 _MEMORY_THREAT_PATTERNS = [
     # Prompt injection
@@ -79,9 +81,11 @@ class MemoryStore:
     """
     DB-backed curated memory with auto-eviction. One instance per AIAgent.
 
+    Thread-safe: all DB writes are serialized via threading.Lock.
+
     Maintains two parallel states:
       - _system_prompt_snapshot: refreshed on load_from_db() and after every
-        write (refresh()). Used for system prompt injection.
+        write. Used for system prompt injection.
       - _live_entries: live state, mutated by tool calls. Tool responses always
         reflect this live state.
     """
@@ -97,9 +101,23 @@ class MemoryStore:
         self.user_char_limit = user_char_limit
         self._live_entries: Dict[str, List[str]] = {"memory": [], "user": []}
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        self._lock = threading.Lock()
 
     # -------------------------------------------------------------------------
-    # Persistence
+    # Lock for thread-safe DB access
+    # -------------------------------------------------------------------------
+
+    @contextmanager
+    def _db_lock(self):
+        """Acquire the DB write lock. All mutating DB operations must run under this lock."""
+        self._lock.acquire()
+        try:
+            yield
+        finally:
+            self._lock.release()
+
+    # -------------------------------------------------------------------------
+    # Persistence (DB-only, no .md files)
     # -------------------------------------------------------------------------
 
     def load_from_db(self):
@@ -120,64 +138,9 @@ class MemoryStore:
             "user": self._render_block("user", self._live_entries["user"]),
         }
 
-    @staticmethod
-    @contextmanager
-    def _file_lock(path: Path):
-        """Acquire an exclusive file lock for read-modify-write safety.
-
-        Uses a separate .lock file so the memory file itself can still be
-        atomically replaced via os.replace().
-        """
-        lock_path = path.with_suffix(path.suffix + ".lock")
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if fcntl is None and msvcrt is None:
-            yield
-            return
-
-        if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
-            lock_path.write_text(" ", encoding="utf-8")
-
-        fd = open(lock_path, "r+" if msvcrt else "a+", encoding="utf-8")
-        try:
-            if fcntl:
-                fcntl.flock(fd, fcntl.LOCK_EX)
-            else:
-                fd.seek(0)
-                msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
-            yield
-        finally:
-            if fcntl:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            elif msvcrt:
-                try:
-                    fd.seek(0)
-                    msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
-                except (OSError, IOError):
-                    pass
-            fd.close()
-
-    @staticmethod
-    def _path_for(target: str) -> Path:
-        mem_dir = get_memory_dir()
-        if target == "user":
-            return mem_dir / "USER.md"
-        return mem_dir / "MEMORY.md"
-
-    def _reload_target(self, target: str):
-        """Re-read entries from disk into in-memory state.
-
-        Called under file lock to get the latest state before mutating.
-        """
-        fresh = self._read_file(self._path_for(target))
-        fresh = list(dict.fromkeys(fresh))  # deduplicate
-        self._set_entries(target, fresh)
-
-    def save_to_disk(self, target: str):
-        """Persist entries to the appropriate file. Called after every mutation."""
-        get_memory_dir().mkdir(parents=True, exist_ok=True)
-        self._write_file(self._path_for(target), self._entries_for(target))
-
+    # -------------------------------------------------------------------------
+    # Read helpers
+    # -------------------------------------------------------------------------
 
     def _entries_for(self, target: str) -> List[str]:
         return self._live_entries.get(target, [])
@@ -204,15 +167,16 @@ class MemoryStore:
         if not block:
             return None
 
-        # Touch all entries for this section to update access counts
-        rows = self._db.memory_get_active(target)
-        for row in rows:
-            self._db.memory_touch(row["id"])
+        # Touch all entries for this section to update access counts (thread-safe)
+        with self._db_lock():
+            rows = self._db.memory_get_active(target)
+            for row in rows:
+                self._db.memory_touch(row["id"])
 
         return block
 
     # -------------------------------------------------------------------------
-    # Mutations
+    # Mutations (thread-safe via _db_lock)
     # -------------------------------------------------------------------------
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
@@ -233,25 +197,26 @@ class MemoryStore:
         limit = self._char_limit(target)
         new_chars = len(content)
 
-        # Evict lowest-value entries until we have room
-        evicted = self._db.memory_evict_for_section(target, new_chars, limit)
-        if evicted > 0:
-            logger.debug("memory add: evicted %d entries from %s", evicted, target)
+        with self._db_lock():
+            # Evict lowest-value entries until we have room
+            evicted = self._db.memory_evict_for_section(target, new_chars, limit)
+            if evicted > 0:
+                logger.debug("memory add: evicted %d entries from %s", evicted, target)
 
-        # Persist new entry
-        entry_id = str(uuid.uuid4())
-        self._db.memory_upsert(
-            id=entry_id,
-            section=target,
-            category=_DEFAULT_CATEGORY,
-            key=entry_id,  # key is the id; value is the content
-            value=content,
-        )
+            # Persist new entry
+            entry_id = str(uuid.uuid4())
+            self._db.memory_upsert(
+                id=entry_id,
+                section=target,
+                category=_DEFAULT_CATEGORY,
+                key=entry_id,
+                value=content,
+            )
 
-        # Update live state
-        self._live_entries[target] = [r["value"] for r in self._db.memory_get_active(target)]
+            # Update live state directly (no DB re-read)
+            self._live_entries[target].append(content)
+
         self._refresh_snapshot()
-
         return self._success_response(target, "Entry added.")
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
@@ -279,38 +244,40 @@ class MemoryStore:
                 previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
                 return {"success": False, "error": f"Multiple entries matched '{old_text}'. Be more specific.", "matches": previews}
 
-        # Find the DB row for the matching entry
-        old_value = matches[0][1]
-        rows = self._db.memory_get_active(target)
-        match_row = None
-        for row in rows:
-            if row["value"] == old_value:
-                match_row = row
-                break
-        if not match_row:
-            return {"success": False, "error": f"No entry matched '{old_text}'."}
-
+        idx, old_value = matches[0]
         limit = self._char_limit(target)
         new_chars = len(new_content)
         old_chars = len(old_value)
         delta = new_chars - old_chars
 
-        # If replacing makes it bigger, evict if needed
-        if delta > 0:
-            self._db.memory_evict_for_section(target, delta, limit)
+        with self._db_lock():
+            # If replacing makes it bigger, evict if needed
+            if delta > 0:
+                self._db.memory_evict_for_section(target, delta, limit)
 
-        # Update in place (same id, same key)
-        self._db.memory_upsert(
-            id=match_row["id"],
-            section=target,
-            category=match_row["category"],
-            key=match_row["key"],
-            value=new_content,
-        )
+            # Find the DB row for the matching entry
+            rows = self._db.memory_get_active(target)
+            match_row = None
+            for row in rows:
+                if row["value"] == old_value:
+                    match_row = row
+                    break
+            if not match_row:
+                return {"success": False, "error": f"No entry matched '{old_text}'."}
 
-        self._live_entries[target] = [r["value"] for r in self._db.memory_get_active(target)]
+            # Update in place (same id, same key)
+            self._db.memory_upsert(
+                id=match_row["id"],
+                section=target,
+                category=match_row["category"],
+                key=match_row["key"],
+                value=new_content,
+            )
+
+            # Update live state directly (no DB re-read)
+            self._live_entries[target][idx] = new_content
+
         self._refresh_snapshot()
-
         return self._success_response(target, "Entry replaced.")
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
@@ -330,16 +297,20 @@ class MemoryStore:
                 previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
                 return {"success": False, "error": f"Multiple entries matched '{old_text}'. Be more specific.", "matches": previews}
 
-        old_value = matches[0][1]
-        rows = self._db.memory_get_active(target)
-        for row in rows:
-            if row["value"] == old_value:
-                self._db.memory_delete(target, row["category"], row["key"])
-                break
+        idx, old_value = matches[0]
 
-        self._live_entries[target] = [r["value"] for r in self._db.memory_get_active(target)]
+        with self._db_lock():
+            # Find the DB row for the matching entry
+            rows = self._db.memory_get_active(target)
+            for row in rows:
+                if row["value"] == old_value:
+                    self._db.memory_delete(target, row["category"], row["key"])
+                    break
+
+            # Update live state directly (no DB re-read)
+            del self._live_entries[target][idx]
+
         self._refresh_snapshot()
-
         return self._success_response(target, "Entry removed.")
 
     # -------------------------------------------------------------------------
@@ -381,9 +352,9 @@ class MemoryStore:
         return f"{separator}\n{header}\n{separator}\n{content}"
 
 
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 # Tool entry point
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 
 def memory_tool(
     action: str,
@@ -425,9 +396,9 @@ def check_memory_requirements() -> bool:
     return True
 
 
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 # OpenAI Function-Calling Schema
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 
 MEMORY_SCHEMA = {
     "name": "memory",
