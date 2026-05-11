@@ -251,7 +251,10 @@ class MemoryStore:
         delta = new_chars - old_chars
 
         with self._db_lock():
-            # If replacing makes it bigger, evict if needed
+            # If replacing makes it bigger, evict if needed.
+            # Eviction removes LOWEST priority entries (access_count ASC, last_accessed ASC).
+            # The target entry's index is stable — eviction never removes entries
+            # with higher access_count than the target, so idx remains valid.
             if delta > 0:
                 self._db.memory_evict_for_section(target, delta, limit)
 
@@ -274,7 +277,7 @@ class MemoryStore:
                 value=new_content,
             )
 
-            # Update live state directly (no DB re-read)
+            # Update live state directly using stable idx.
             self._live_entries[target][idx] = new_content
 
         self._refresh_snapshot()
@@ -306,9 +309,16 @@ class MemoryStore:
                 if row["value"] == old_value:
                     self._db.memory_delete(target, row["category"], row["key"])
                     break
+            else:
+                return {"success": False, "error": f"No entry matched '{old_text}'."}
 
-            # Update live state directly (no DB re-read)
-            del self._live_entries[target][idx]
+            # Re-read after mutation: eviction may have shifted indices.
+            # Find current position by value (stable identity), then delete.
+            current_entries = [r["value"] for r in rows]
+            for i, v in enumerate(current_entries):
+                if v == old_value:
+                    del self._live_entries[target][i]
+                    break
 
         self._refresh_snapshot()
         return self._success_response(target, "Entry removed.")
