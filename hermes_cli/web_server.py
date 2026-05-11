@@ -2807,9 +2807,14 @@ async def get_usage_analytics(days: int = 30):
 
     db = SessionDB()
     try:
+        from hermes_time import get_timezone
+        _tz = get_timezone()
+        import datetime as _dt
+        _tz_offset = int(_tz.utcoffset(_dt.datetime.now()).total_seconds()) if _tz else 0
+
         cutoff = time.time() - (days * 86400)
         cur = db._conn.execute("""
-            SELECT date(started_at, 'unixepoch') as day,
+            SELECT date(started_at + ?, 'unixepoch') as day,
                    SUM(input_tokens) as input_tokens,
                    SUM(output_tokens) as output_tokens,
                    SUM(cache_read_tokens) as cache_read_tokens,
@@ -2820,7 +2825,7 @@ async def get_usage_analytics(days: int = 30):
                    SUM(COALESCE(api_call_count, 0)) as api_calls
             FROM sessions WHERE started_at > ?
             GROUP BY day ORDER BY day
-        """, (cutoff,))
+        """, (_tz_offset, cutoff))
         daily = [dict(r) for r in cur.fetchall()]
 
         cur2 = db._conn.execute("""
