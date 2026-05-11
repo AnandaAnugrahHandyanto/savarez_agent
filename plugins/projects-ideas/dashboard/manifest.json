@@ -1,0 +1,11 @@
+{
+  "name": "projects-ideas",
+  "label": "Projects + Ideas",
+  "description": "Ryan personal command-center for active projects, standing workflows, ideas, and parking-lot items.",
+  "icon": "LayoutDashboard",
+  "version": "0.1.0",
+  "tab": { "path": "/projects-ideas", "position": "after:kanban" },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}
