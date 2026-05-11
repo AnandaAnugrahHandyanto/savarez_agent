@@ -279,7 +279,27 @@ export const EN = {
   'voice.modeDisabled': 'Voice mode disabled.',
   'voice.recordHint': '{key} to start/stop recording',
   'voice.ttsToggleHint': '/voice tts  to toggle speech output',
-  'voice.disableHint': '/voice off  to disable voice mode'
+  'voice.disableHint': '/voice off  to disable voice mode',
+  'hotkey.copySelection': 'copy selection',
+  'hotkey.interruptClearExit': 'interrupt / clear draft / exit',
+  'hotkey.copySelectionInterruptClearExit': 'copy selection / interrupt / clear draft / exit',
+  'hotkey.forwardCopySelection': 'forward copy selection',
+  'hotkey.quit': 'exit',
+  'hotkey.openEditor': 'open $EDITOR (Alt+G in VSCode/Cursor)',
+  'hotkey.redraw': 'redraw screen',
+  'hotkey.pasteTextOrImage': 'paste text; /paste to attach clipboard image',
+  'hotkey.applyCompletion': 'apply completion',
+  'hotkey.navigateOrEdit': 'completions / queue edit / history',
+  'hotkey.deleteQueuedMsg': 'delete editing queued message (Esc cancel)',
+  'hotkey.lineStartEnd': 'line start / end',
+  'hotkey.undoRedo': 'undo / redo input',
+  'hotkey.deleteWord': 'delete word',
+  'hotkey.deleteToLineEnds': 'delete to line start / end',
+  'hotkey.jumpWord': 'jump word',
+  'hotkey.insertNewline': 'insert newline',
+  'hotkey.multilineCont': 'multiline continuation (fallback)',
+  'hotkey.runShellCmd': 'run shell command (e.g. !ls, !git status)',
+  'hotkey.inlineShellCmd': 'inline shell output (e.g. "branch is {!git branch --show-current}")'
 } as const satisfies Record<string, TranslationValue>
 
 const ZH: Record<TranslationKey, TranslationValue> = {
@@ -453,7 +473,27 @@ const ZH: Record<TranslationKey, TranslationValue> = {
   'voice.modeDisabled': '语音模式已禁用。',
   'voice.recordHint': '{key} 开始/停止录音',
   'voice.ttsToggleHint': '/voice tts  切换语音输出',
-  'voice.disableHint': '/voice off  禁用语音模式'
+  'voice.disableHint': '/voice off  禁用语音模式',
+  'hotkey.copySelection': '复制选中',
+  'hotkey.interruptClearExit': '中断 / 清除草稿 / 退出',
+  'hotkey.copySelectionInterruptClearExit': '复制选中 / 中断 / 清除草稿 / 退出',
+  'hotkey.forwardCopySelection': '终端转发时复制选中',
+  'hotkey.quit': '退出',
+  'hotkey.openEditor': '打开编辑器（VSCode/Cursor 用 Alt+G）',
+  'hotkey.redraw': '重绘界面',
+  'hotkey.pasteTextOrImage': '粘贴文本；/paste 附加剪贴板图片',
+  'hotkey.applyCompletion': '应用补全',
+  'hotkey.navigateOrEdit': '补全 / 队列编辑 / 历史',
+  'hotkey.deleteQueuedMsg': '删除正在编辑的队列消息（Esc 取消编辑）',
+  'hotkey.lineStartEnd': '行首 / 行尾',
+  'hotkey.undoRedo': '撤销 / 重做输入',
+  'hotkey.deleteWord': '删除单词',
+  'hotkey.deleteToLineEnds': '删除到行首 / 行尾',
+  'hotkey.jumpWord': '跳单词',
+  'hotkey.insertNewline': '插入换行',
+  'hotkey.multilineCont': '多行续写（备用）',
+  'hotkey.runShellCmd': '运行 shell 命令（如 !ls、!git status）',
+  'hotkey.inlineShellCmd': '内联 shell 输出（如 "branch is {!git branch --show-current}"）'
 }
 
 const CATALOGS: Record<Locale, Record<TranslationKey, TranslationValue>> = { en: EN, zh: ZH }

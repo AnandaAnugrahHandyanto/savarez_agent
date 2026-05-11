@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { FACES } from '../content/faces.js'
-import { HOTKEYS } from '../content/hotkeys.js'
+import { HOTKEY_DEFS } from '../content/hotkeys.js'
 import { PLACEHOLDERS } from '../content/placeholders.js'
 import { TOOL_VERBS, VERBS } from '../content/verbs.js'
 import { ROLE } from '../domain/roles.js'
@@ -19,17 +19,17 @@ describe('constants', () => {
     }
   })
 
-  it('HOTKEYS are [key, desc] pairs', () => {
-    HOTKEYS.forEach(([k, d]) => {
+  it('HOTKEY_DEFS are [key, TranslationKey] pairs', () => {
+    HOTKEY_DEFS.forEach(([k, d]) => {
       expect(typeof k).toBe('string')
       expect(typeof d).toBe('string')
     })
   })
 
   it('documents Ctrl/Cmd+L as non-destructive redraw', () => {
-    const hotkey = HOTKEYS.find(([k]) => k.endsWith('+L'))
+    const hotkey = HOTKEY_DEFS.find(([k]) => k.endsWith('+L'))
     expect(hotkey).toBeDefined()
-    expect(hotkey?.[1]).toBe('redraw / repaint')
+    expect(hotkey?.[1]).toBe('hotkey.redraw')
   })
 
   it('TOOL_VERBS maps known tools (verb-only, no emoji)', () => {

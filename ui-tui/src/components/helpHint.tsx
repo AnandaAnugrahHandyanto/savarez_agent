@@ -1,6 +1,6 @@
 import { Box, Text } from '@hermes/ink'
 
-import { HOTKEYS } from '../content/hotkeys.js'
+import { HOTKEY_DEFS } from '../content/hotkeys.js'
 import { useI18n, type TranslationKey } from '../i18n.js'
 import type { Theme } from '../theme.js'
 
@@ -13,7 +13,7 @@ const COMMON_COMMAND_KEYS: [string, TranslationKey][] = [
   ['/quit', 'help.exitDesc']
 ]
 
-const HOTKEY_PREVIEW = HOTKEYS.slice(0, 8)
+const HOTKEY_PREVIEW = HOTKEY_DEFS.slice(0, 8)
 
 export function HelpHint({ t }: { t: Theme }) {
   const { t: ti } = useI18n()
@@ -64,10 +64,10 @@ export function HelpHint({ t }: { t: Theme }) {
           </Text>
         </Box>
 
-        {HOTKEY_PREVIEW.map(([k, v]) => (
+        {HOTKEY_PREVIEW.map(([k, key]) => (
           <Text key={k}>
             <Text color={t.color.label}>{pad(k)}</Text>
-            <Text color={t.color.muted}>{v}</Text>
+            <Text color={t.color.muted}>{ti(key as TranslationKey)}</Text>
           </Text>
         ))}
       </Box>

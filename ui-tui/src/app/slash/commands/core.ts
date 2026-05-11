@@ -2,7 +2,7 @@ import { forceRedraw } from '@hermes/ink'
 
 import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
-import { HOTKEYS } from '../../../content/hotkeys.js'
+import { HOTKEY_DEFS } from '../../../content/hotkeys.js'
 import { SECTION_NAMES, isSectionName, nextDetailsMode, parseDetailsMode } from '../../../domain/details.js'
 import type {
   ConfigGetValueResponse,
@@ -81,7 +81,7 @@ export const coreCommands: SlashCommand[] = [
           ],
           title: 'TUI 命令'
         },
-        { rows: HOTKEYS, title: '快捷键' }
+        { rows: HOTKEY_DEFS.map(([k, key]) => [k, tz(key)]), title: '快捷键' }
       )
 
       ctx.transcript.panel(ctx.ui.theme.brand.helpHeader, sections)

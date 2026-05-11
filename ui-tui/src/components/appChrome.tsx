@@ -20,10 +20,18 @@ import { getThinkingVerbs, useI18n } from '../i18n.js'
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
+// Terminal display width: ASCII=1, CJK/fullwidth=2
+const charDispWidth = (c: string) => (c.charCodeAt(0) > 0x7f ? 2 : 1)
+const dispWidth = (s: string) => { let w = 0; for (const c of s) w += charDispWidth(c); return w }
+
 // Keep verb segment width stable so status-bar content to the right doesn't
 // jitter when the ticker rotates between short/long verbs.
-export const VERB_PAD_LEN = Math.max(...getThinkingVerbs('en').concat(getThinkingVerbs('zh')).map(v => v.length)) + 1 // + ellipsis
-export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
+export const VERB_PAD_LEN = Math.max(...getThinkingVerbs('en').concat(getThinkingVerbs('zh')).map(v => dispWidth(v))) + 1 // + ellipsis
+export const padVerb = (verb: string) => {
+  const text = `${verb}…`
+  const pad = Math.max(0, VERB_PAD_LEN - dispWidth(text))
+  return text + ' '.repeat(pad)
+}
 
 // Compact alternates for the `emoji` and `ascii` indicator styles.
 // Each entry is a fixed-width (display-width) glyph.
