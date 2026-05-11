@@ -66,18 +66,18 @@ export const coreCommands: SlashCommand[] = [
       }))
 
       if (ctx.local.catalog?.skillCount) {
-        sections.push({ text: `${ctx.local.catalog.skillCount} tz('sys.helpSkillCount', { count: String(ctx.local.catalog?.skillCount ?? 0) })` })
+        sections.push({ text: tz('sys.helpSkillCount', { count: String(ctx.local.catalog?.skillCount ?? 0) }) })
       }
 
       sections.push(
         {
           rows: [
-            ['/details [hidden|collapsed|expanded|cycle]', 'set global agent detail visibility mode'],
+            ['/details [hidden|collapsed|expanded|cycle]', tz('sys.helpDetailGlobal')],
             [
               '/details <section> [hidden|collapsed|expanded|reset]',
               tz('sys.helpDetailSection')
             ],
-            ['/fortune [random|daily]', 'show a random or daily local fortune']
+            ['/fortune [random|daily]', tz('sys.helpFortune')]
           ],
           title: 'TUI 命令'
         },
@@ -200,7 +200,7 @@ export const coreCommands: SlashCommand[] = [
           .then(
             ctx.guarded<SessionTitleResponse>(r => {
               const current = (r?.title ?? '').trim()
-              ctx.transcript.sys(current ? `标题：${current}` : tz('sys.noTitleSet'))
+              ctx.transcript.sys(current ? tz('sys.titleSet', { title: current, suffix: '' }) : tz('sys.noTitleSet'))
             })
           )
           .catch(ctx.guardedErr)
@@ -336,9 +336,7 @@ export const coreCommands: SlashCommand[] = [
         if (text) {
           return sys(tz('sys.copiedChars', { count: String(text.length) }))
         } else {
-          return sys(
-            'clipboard copy failed — try HERMES_TUI_FORCE_OSC52=1 to force the escape sequence; HERMES_TUI_DEBUG_CLIPBOARD=1 for details'
-          )
+          return sys(tz('sys.clipboardCopyFailed'))
         }
       }
 
