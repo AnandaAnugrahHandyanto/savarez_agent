@@ -1331,6 +1331,65 @@ def test_scratch_rollback_plan_only_auto_discards_managed_workspace(tmp_path, mo
     assert "rm -rf" not in plan["suggested_commands"]
 
 
+def test_manifest_workspace_evidence_stops_at_directory_cap(tmp_path):
+    workspace = tmp_path / "many-dirs"
+    workspace.mkdir()
+    for i in range(kb.WORKSPACE_EVIDENCE_MAX_DIRS + 25):
+        (workspace / f"dir-{i:03d}").mkdir()
+    task = kb.Task(
+        id="t_manifest_dir_cap",
+        title="x",
+        body=None,
+        assignee="coder",
+        status="running",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="dir",
+        workspace_path=str(workspace),
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+        checkpoint_policy="manifest",
+    )
+    evidence = kb.collect_workspace_evidence(task, workspace, mode="manifest")
+    assert evidence["kind"] == "manifest"
+    assert evidence["dir_count"] == kb.WORKSPACE_EVIDENCE_MAX_DIRS
+    assert evidence["omitted_count"] >= 1
+
+
+def test_scratch_rollback_plan_rejects_managed_root_itself(tmp_path, monkeypatch):
+    managed_root = tmp_path / "managed"
+    managed_root.mkdir()
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(managed_root))
+    task = kb.Task(
+        id="t_managed_root",
+        title="x",
+        body=None,
+        assignee="coder",
+        status="running",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="scratch",
+        workspace_path=str(managed_root),
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+    )
+    checkpoint = kb.create_workspace_checkpoint(task, managed_root)
+
+    plan = kb.workspace_rollback_plan(task, checkpoint)
+
+    assert plan["can_rollback"] is False
+    assert plan["safe_to_auto_discard"] is False
+    assert "rm -rf" not in plan["suggested_commands"]
+
+
 def test_workspace_rollback_plan_is_safe_descriptor_not_execution(tmp_path):
     workspace = tmp_path / "repo"
     workspace.mkdir()
