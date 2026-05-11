@@ -222,6 +222,16 @@ class TestAdapterInit:
         adapter = HomeAssistantAdapter(config)
         assert adapter._notify_service == "mobile_app_pixel"
 
+    def test_invalid_notify_service_falls_back_to_default(self, caplog):
+        config = PlatformConfig(
+            enabled=True,
+            token="t",
+            extra={"notify_service": "notify.mobile/app"},
+        )
+        adapter = HomeAssistantAdapter(config)
+        assert adapter._notify_service == ""
+        assert "Ignoring invalid Home Assistant notify service" in caplog.text
+
     def test_watch_filters_parsed(self):
         config = PlatformConfig(
             enabled=True, token="***",

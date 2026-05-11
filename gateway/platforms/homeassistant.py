@@ -4,7 +4,7 @@ Home Assistant platform adapter.
 Connects to the HA WebSocket API for real-time event monitoring.
 State-change events are converted to MessageEvent objects and forwarded
 to the agent for processing.  Outbound messages are delivered as HA
-persistent notifications.
+persistent notifications by default, or through a configured notify service.
 
 Requires:
 - aiohttp (already in messaging extras)
@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from datetime import datetime
@@ -38,6 +39,7 @@ from gateway.platforms.base import (
 )
 
 logger = logging.getLogger(__name__)
+_NOTIFY_SERVICE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def check_ha_requirements() -> bool:
@@ -392,7 +394,14 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         service = str(value or "").strip().strip("/")
         if service.startswith("notify."):
             service = service.split(".", 1)[1]
-        return service.strip().strip("/")
+        service = service.strip().strip("/")
+        if service and not _NOTIFY_SERVICE_RE.match(service):
+            logger.warning(
+                "Ignoring invalid Home Assistant notify service: %s",
+                value,
+            )
+            return ""
+        return service
 
     async def send(
         self,
