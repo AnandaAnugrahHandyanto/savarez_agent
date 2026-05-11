@@ -73,7 +73,9 @@ GIT_TERMINAL_PROMPT=0 git push origin main
 
 ## Current direct deploy workflow for `/opt/data/hermes-pages`
 
-When editing Gordon's live homepage, wiki, Pivotal Systems site, or public career/vocation pages, the canonical working tree is usually `/opt/data/hermes-pages` and deploys are direct Cloudflare Pages uploads — not markdown regeneration and not the old workers.dev publish flow.
+When editing Gordon's live homepage, wiki, Pivotal Systems site, public career/vocation pages, or small static apps with Pages Functions, the canonical working tree is usually `/opt/data/hermes-pages` and deploys are direct Cloudflare Pages uploads — not markdown regeneration and not the old workers.dev publish flow.
+
+For LLM-backed static apps, especially apps that call a Cloudflare Pages Function and should leverage an existing local/site knowledge base, follow `references/llm-backed-static-apps.md`: keep secrets server-side, include a fallback/example mode, sanitize model JSON, surface KB grounding in the UI, run syntax checks, deploy, and verify the canonical URL plus API response.
 
 1. Edit static HTML directly under `/opt/data/hermes-pages`.
 2. Deploy with Wrangler to the **project name `hermes-pages`**:
