@@ -2547,6 +2547,7 @@ class HermesCLI:
         # don't auto-queue another continuation on top of a user-cancelled
         # turn (which would make Ctrl+C feel like it did nothing).
         self._last_turn_interrupted = False
+        self._destructive_pre_confirmed = False  # Set by main-thread handle_enter after confirmation
         self._should_exit = False
         self._last_ctrl_c_time = 0
         self._clarify_state = None
@@ -8545,7 +8546,7 @@ class HermesCLI:
         if _reload_thread.is_alive():
             print("  ⚠️  MCP reload timed out (30s). Some servers may not have reconnected.")
 
-    def _confirm_destructive_slash(self, command: str, detail: str) -> Optional[str]:
+    def _confirm_destructive_slash(self, command: str, detail: str, override: Optional[str] = None) -> Optional[str]:
         """Prompt the user to confirm a destructive session slash command.
 
         Used by ``/clear``, ``/new``/``/reset``, and ``/undo`` before they
@@ -8560,6 +8561,10 @@ class HermesCLI:
         Gated by ``approvals.destructive_slash_confirm`` (default on).  If the
         gate is off the function returns ``"once"`` immediately without
         prompting.
+
+        The *override* parameter lets callers skip the prompt programmatically:
+        ``"once"`` approves once, ``"always"`` approves and persists the opt-out.
+        This is used by ``/new now``, ``/clear always``, etc.
 
         Returns ``"once"``, ``"always"``, or ``None`` (cancelled).  Callers
         proceed with the destructive action when the result is non-None.
@@ -8577,19 +8582,44 @@ class HermesCLI:
         if not confirm_required:
             return "once"
 
-        # Render warning + prompt — single-line composer prompt, mirrors
-        # ``_confirm_and_reload_mcp``.
-        print()
-        print(f"⚠️  /{command} — destroys conversation state")
-        print()
-        for line in detail.splitlines():
-            print(f"  {line}")
-        print()
-        print("  [1] Approve Once   — proceed this time only")
-        print("  [2] Always Approve — proceed and silence this prompt permanently")
-        print("  [3] Cancel         — keep current conversation")
-        print()
-        raw = self._prompt_text_input("Choice [1/2/3]: ")
+        # Slash commands are dispatched from the process_loop daemon thread
+        # (see issue #23185).  Interactive input (input() / run_in_terminal)
+        # cannot work from a background thread.  If the main thread already
+        # handled the confirmation (via handle_enter), the pre_confirmed flag
+        # is set; otherwise auto-approve with a notice.
+        import threading as _thr
+        if not _thr.current_thread() is _thr.main_thread():
+            if getattr(self, "_destructive_pre_confirmed", False):
+                self._destructive_pre_confirmed = False
+                return "once"
+            print()
+            print(f"⚠️  /{command} — destroys conversation state")
+            print()
+            for line in detail.splitlines():
+                print(f"  {line}")
+            print()
+            print("  (Auto-approved — interactive confirmation unavailable here.)")
+            print("  Use `/clear now`, `/new now`, etc. to skip this prompt.")
+            print()
+            return "once"
+
+        # Render warning + prompt.  On the main thread this runs inside
+        # run_in_terminal (via _prompt_text_input) so all output must be
+        # rendered together to avoid ordering issues with patch_stdout.
+        # Pass the full dialog text as the prompt to _prompt_text_input.
+        _lines = detail.splitlines()
+        _detail_block = "\n".join(f"  {l}" for l in _lines)
+        _dialog = (
+            "\n"
+            + f"⚠️  /{command} — destroys conversation state"
+            + "\n\n" + _detail_block
+            + "\n\n"
+            + "  [1] Approve Once   — proceed this time only\n"
+            + "  [2] Always Approve — proceed and silence this prompt permanently\n"
+            + "  [3] Cancel         — keep current conversation\n"
+            + "\n"
+        )
+        raw = self._prompt_text_input(_dialog + "Choice [1/2/3]: ")
         if raw is None:
             print(f"🟡 /{command} cancelled (no input).")
             return None
@@ -10998,6 +11028,85 @@ class HermesCLI:
                     self.process_command(text)
                     event.app.current_buffer.reset(append_to_history=True)
                     return
+
+                # Handle destructive slash commands (/new, /clear, /undo, /reset)
+                # via the event loop so that run_in_terminal can be awaited.
+                # The actual command execution runs on the background thread
+                # via _pending_input; the pre_confirmed flag skips its
+                # confirmation.
+                if _looks_like_slash_command(text):
+                    _raw = text.lstrip("/").strip()
+                    _cmd_name = _raw.split(maxsplit=1)[0].lower() if _raw else ""
+                    if _cmd_name in ("new", "clear", "reset", "undo"):
+                        # Gate check: if the user already opted out via "Always Approve",
+                        # skip the confirmation and dispatch directly.
+                        try:
+                            _cfg = load_cli_config()
+                            _approvals = _cfg.get("approvals") if isinstance(_cfg, dict) else None
+                            _confirm_required = True
+                            if isinstance(_approvals, dict):
+                                _confirm_required = bool(_approvals.get("destructive_slash_confirm", True))
+                        except Exception:
+                            _confirm_required = True
+                        if not _confirm_required:
+                            self._pending_input.put(text)
+                            event.app.current_buffer.reset(append_to_history=True)
+                            return
+
+                        _detail = {
+                            "new": "This starts a fresh session.\nThe current conversation history will be discarded.",
+                            "reset": "This starts a fresh session.\nThe current conversation history will be discarded.",
+                            "clear": "This clears the screen and starts a new session.\nThe current conversation history will be discarded.",
+                            "undo": "This removes the last user/assistant exchange from history.",
+                        }.get(_cmd_name, "")
+                        _confirm_text = text
+                        _confirm_cmd = _cmd_name
+                        _confirm_detail = _detail
+
+                        async def _confirm_and_dispatch():
+                            from prompt_toolkit.application import run_in_terminal
+                            _lines = _confirm_detail.splitlines()
+                            _block = "\n".join(f"  {l}" for l in _lines)
+                            _prompt = (
+                                "\n"
+                                f"⚠️  /{_confirm_cmd} — destroys conversation state"
+                                "\n\n" + _block
+                                + "\n\n"
+                                "  [1] Approve Once   — proceed this time only\n"
+                                "  [2] Always Approve — proceed and silence this prompt permanently\n"
+                                "  [3] Cancel         — keep current conversation\n"
+                                "\n"
+                                "Choice [1/2/3]: "
+                            )
+                            try:
+                                raw = await run_in_terminal(
+                                    lambda: input(_prompt).strip().lower() or None
+                                )
+                            except Exception:
+                                raw = None
+                            if raw is None:
+                                print(f"🟡 /{_confirm_cmd} cancelled (no input).")
+                                return
+                            if raw in ("1", "once", "approve", "yes", "y", "ok"):
+                                pass  # proceed
+                            elif raw in ("2", "always", "remember"):
+                                if save_config_value("approvals.destructive_slash_confirm", False):
+                                    print("🔒 Future /clear, /new, /reset, and /undo will run without confirmation.")
+                                    print("   Re-enable via `approvals.destructive_slash_confirm: true` in config.yaml.")
+                                else:
+                                    print("⚠️  Couldn't persist opt-out — proceeding once.")
+                            elif raw in ("3", "cancel", "nevermind", "no", "n", ""):
+                                print(f"🟡 /{_confirm_cmd} cancelled. Conversation unchanged.")
+                                return
+                            else:
+                                print(f"🟡 Unrecognized choice '{raw}'. /{_confirm_cmd} cancelled.")
+                                return
+                            self._destructive_pre_confirmed = True
+                            self._pending_input.put(_confirm_text)
+
+                        event.app.create_background_task(_confirm_and_dispatch())
+                        event.app.current_buffer.reset(append_to_history=True)
+                        return
 
                 # Snapshot and clear attached images
                 images = list(self._attached_images)

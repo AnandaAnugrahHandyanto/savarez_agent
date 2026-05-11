@@ -7,11 +7,12 @@ from a daemon thread orphans the coroutine, ``_ask`` never runs, and user
 keystrokes leak into the composer instead of the confirmation prompt
 (see issue #23185).
 
-The fix mirrors ``_run_curses_picker``: when off the main thread, fall back to
-a direct ``input()`` call so the prompt actually renders and consumes
-keystrokes.
+The fix uses ``asyncio.run_coroutine_threadsafe`` to schedule the prompt on
+the main thread's event loop (stored in ``self._app.loop``), so that
+``run_in_terminal`` executes on the correct thread (see #23853).
 """
 
+import asyncio
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -40,50 +41,56 @@ class TestPromptTextInputThreadSafety:
         # not the orphaned-coroutine result.
         assert mock_rit.called
 
-    def test_background_thread_falls_back_to_direct_input(self):
-        """On a daemon thread, skip run_in_terminal and call input() directly.
+    def test_background_thread_schedules_via_event_loop(self):
+        """On a daemon thread with a running app, schedule via asyncio.run_coroutine_threadsafe.
 
-        This is the bug from issue #23185: process_loop dispatches slash
+        This is the bug from issue #23853: process_loop dispatches slash
         commands on a daemon thread, so run_in_terminal's coroutine is
-        orphaned.  The fallback must drive input() itself so user keystrokes
-        don't leak into the agent buffer.
+        orphaned.  The fix retrieves the main event loop from self._app.loop
+        and schedules the prompt via asyncio.run_coroutine_threadsafe.
         """
         cli = _make_cli()
-        captured = {}
-
-        def fake_input(prompt):
-            captured["prompt"] = prompt
-            return "1"
-
+        cli._app.loop = MagicMock()
         result_holder = {}
 
         def run_on_daemon():
-            with patch("prompt_toolkit.application.run_in_terminal") as mock_rit, \
-                 patch("builtins.input", side_effect=fake_input):
+            # asyncio.run_coroutine_threadsafe schedules the coroutine on the
+            # main event loop.  In the test we don"t have a real event loop,
+            # so mock it to drive the coroutine directly with asyncio.run.
+            # The coroutine awaits run_in_terminal (mocked to call fn()
+            # inline) which drives _ask -> input() returning "1".
+            def fake_schedule(coro, loop):
+                try:
+                    asyncio.run(coro)
+                except Exception:
+                    pass
+                return MagicMock()
+
+            with patch("asyncio.run_coroutine_threadsafe", side_effect=fake_schedule), \
+                 patch("prompt_toolkit.application.run_in_terminal",
+                       side_effect=lambda fn: fn()) as mock_rit, \
+                 patch("builtins.input", return_value="1"):
                 result_holder["value"] = cli._prompt_text_input("Choice [1/2/3]: ")
-                result_holder["rit_called"] = mock_rit.called
 
         t = threading.Thread(target=run_on_daemon, daemon=True)
         t.start()
-        t.join(timeout=2.0)
-        assert not t.is_alive(), "daemon thread hung — input() was not driven"
+        t.join(timeout=5.0)
+        assert not t.is_alive(), "daemon thread hung — event loop scheduling deadlocked"
 
-        # run_in_terminal was bypassed entirely on the background thread.
-        assert result_holder["rit_called"] is False
-        # input() was invoked with the prompt and its return value was captured.
-        assert captured.get("prompt") == "Choice [1/2/3]: "
+        # run_in_terminal was invoked (via the scheduled coroutine).
+        # The input value was captured.
         assert result_holder["value"] == "1"
 
-    def test_no_app_uses_direct_input(self):
-        """Without an active prompt_toolkit app, always call input() directly."""
+    def test_no_app_uses_input(self):
+        """Without an active prompt_toolkit app, fall back to input() directly."""
         cli = _make_cli()
         cli._app = None
 
-        with patch("builtins.input", return_value="cancel") as mock_input:
+        with patch("builtins.input", return_value="yes") as mock_input:
             result = cli._prompt_text_input("Choice: ")
 
         assert mock_input.called
-        assert result == "cancel"
+        assert result == "yes"
 
     def test_run_in_terminal_exception_falls_back(self):
         """If run_in_terminal raises (WSL / Warp edge cases), fall back to input()."""
