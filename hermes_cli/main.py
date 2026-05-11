@@ -5531,6 +5531,7 @@ def _run_npm_install_deterministic(
     *,
     extra_args: tuple[str, ...] = (),
     capture_output: bool = True,
+    include_dev: bool = False,
 ) -> subprocess.CompletedProcess:
     """Run a deterministic npm install that does not mutate ``package-lock.json``.
 
@@ -5540,10 +5541,17 @@ def _run_npm_install_deterministic(
     rewrites committed lockfiles (stripping ``"peer": true`` etc.), which leaves
     the working tree dirty and causes the next ``hermes update`` to stash the
     lockfile — repeatedly.
+
+    ``include_dev=True`` forces devDependencies to be installed even when the
+    parent environment exports ``NODE_ENV=production``.  This matters for build
+    steps such as the Web UI, where TypeScript/Vite live in devDependencies and
+    npm would otherwise omit them, causing build failures like ``tsc: command not
+    found`` during ``hermes update``.
     """
+    install_mode_args = ("--include=dev",) if include_dev else ()
     lockfile = cwd / "package-lock.json"
     if lockfile.exists():
-        ci_cmd = [npm, "ci", *extra_args]
+        ci_cmd = [npm, "ci", *install_mode_args, *extra_args]
         ci_result = subprocess.run(
             ci_cmd,
             cwd=cwd,
@@ -5555,7 +5563,7 @@ def _run_npm_install_deterministic(
             return ci_result
         # Fall through to `npm install` — lockfile may be out of sync on a
         # WIP fork/branch, or `npm ci` may not be available on very old npm.
-    install_cmd = [npm, "install", *extra_args]
+    install_cmd = [npm, "install", *install_mode_args, *extra_args]
     return subprocess.run(
         install_cmd,
         cwd=cwd,
@@ -5588,7 +5596,12 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             print("Install Node.js, then run:  cd web && npm install && npm run build")
         return not fatal
     print("→ Building web UI...")
-    r1 = _run_npm_install_deterministic(npm, web_dir, extra_args=("--silent",))
+    r1 = _run_npm_install_deterministic(
+        npm,
+        web_dir,
+        extra_args=("--silent",),
+        include_dev=True,
+    )
     if r1.returncode != 0:
         print(
             f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
