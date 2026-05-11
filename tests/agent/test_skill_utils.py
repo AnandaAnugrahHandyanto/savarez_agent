@@ -56,3 +56,78 @@ def test_metadata_missing_entirely():
         "fallback_for_tools": [],
         "requires_tools": [],
     }
+
+
+# ── rglob_follow tests ────────────────────────────────────────────────────
+
+from agent.skill_utils import rglob_follow
+
+
+def test_rglob_follow_finds_through_symlink(tmp_path):
+    """rgollow should descend into symlinked directories."""
+    real = tmp_path / "real-skills" / "alpha"
+    real.mkdir(parents=True)
+    (real / "SKILL.md").write_text("name: alpha")
+
+    root = tmp_path / "skills"
+    root.mkdir()
+    (root / "alpha").symlink_to(real)
+
+    results = list(rglob_follow(root, "SKILL.md"))
+    names = [r.parent.name for r in results]
+    assert "alpha" in names
+
+
+def test_rglob_follow_finds_nested_through_symlink(tmp_path):
+    """rgollow handles category/<skill>/SKILL.md inside symlinked dirs."""
+    real = tmp_path / "workspace" / "skills"
+    for name in ["skill-a", "skill-b", "skill-c"]:
+        d = real / name
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(f"name: {name}")
+
+    root = tmp_path / "hermes-skills"
+    root.mkdir()
+    (root / "my-skills").symlink_to(real)
+
+    results = list(rglob_follow(root, "SKILL.md"))
+    names = {r.parent.name for r in results}
+    assert names == {"skill-a", "skill-b", "skill-c"}
+
+
+def test_rglob_follow_skips_excluded_dirs(tmp_path):
+    """Excluded dirs like .archive and .git should be pruned."""
+    root = tmp_path / "skills"
+    (root / "good").mkdir(parents=True)
+    (root / "good" / "SKILL.md").write_text("name: good")
+    (root / ".archive").mkdir()
+    (root / ".archive" / "old").mkdir()
+    (root / ".archive" / "old" / "SKILL.md").write_text("name: old")
+    (root / ".git").mkdir()
+
+    results = list(rglob_follow(root, "SKILL.md"))
+    names = [r.parent.name for r in results]
+    assert "good" in names
+    assert "old" not in names
+
+
+def test_rglob_follow_matches_directory_names(tmp_path):
+    """rgollow can also match directory names, not just files."""
+    root = tmp_path / "skills"
+    (root / "alpha").mkdir(parents=True)
+    (root / "alpha" / "SKILL.md").write_text("")
+
+    results = list(rglob_follow(root, "alpha"))
+    assert any(r.is_dir() for r in results)
+
+
+def test_rglob_follow_finds_regular_files(tmp_path):
+    """rgollow also works on regular (non-symlinked) directory trees."""
+    root = tmp_path / "skills"
+    for name in ["a", "b", "c"]:
+        d = root / name
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(f"name: {name}")
+
+    results = list(rglob_follow(root, "SKILL.md"))
+    assert len(results) == 3

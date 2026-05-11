@@ -232,7 +232,8 @@ def list_agent_created_skill_names() -> List[str]:
 
     names: List[str] = []
     # Top-level SKILL.md files (flat layout) AND nested category/skill/SKILL.md
-    for skill_md in base.rglob("SKILL.md"):
+    from agent.skill_utils import rglob_follow
+    for skill_md in rglob_follow(base, "SKILL.md"):
         # Skip anything under .archive or .hub
         try:
             rel = skill_md.relative_to(base)
@@ -573,7 +574,8 @@ def _find_skill_dir(skill_name: str) -> Optional[Path]:
     base = _skills_dir()
     if not base.exists():
         return None
-    for skill_md in base.rglob("SKILL.md"):
+    from agent.skill_utils import rglob_follow
+    for skill_md in rglob_follow(base, "SKILL.md"):
         try:
             rel = skill_md.relative_to(base)
         except ValueError:
