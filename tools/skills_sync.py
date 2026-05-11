@@ -37,6 +37,20 @@ logger = logging.getLogger(__name__)
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
 MANIFEST_FILE = SKILLS_DIR / ".bundled_manifest"
+_INITIAL_SKILLS_DIR = SKILLS_DIR
+_INITIAL_MANIFEST_FILE = MANIFEST_FILE
+
+
+def _current_skills_dir() -> Path:
+    if SKILLS_DIR != _INITIAL_SKILLS_DIR:
+        return SKILLS_DIR
+    return get_hermes_home() / "skills"
+
+
+def _current_manifest_file() -> Path:
+    if MANIFEST_FILE != _INITIAL_MANIFEST_FILE:
+        return MANIFEST_FILE
+    return _current_skills_dir() / ".bundled_manifest"
 
 
 def _get_bundled_dir() -> Path:
@@ -67,11 +81,12 @@ def _read_manifest() -> Dict[str, str]:
     Handles both v1 (plain names) and v2 (name:hash) formats.
     v1 entries get an empty hash string which triggers migration on next sync.
     """
-    if not MANIFEST_FILE.exists():
+    manifest_file = _current_manifest_file()
+    if not manifest_file.exists():
         return {}
     try:
         result = {}
-        for line in MANIFEST_FILE.read_text(encoding="utf-8").splitlines():
+        for line in manifest_file.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -95,12 +110,13 @@ def _write_manifest(entries: Dict[str, str]):
     """
     import tempfile
 
-    MANIFEST_FILE.parent.mkdir(parents=True, exist_ok=True)
+    manifest_file = _current_manifest_file()
+    manifest_file.parent.mkdir(parents=True, exist_ok=True)
     data = "\n".join(f"{name}:{hash_val}" for name, hash_val in sorted(entries.items())) + "\n"
 
     try:
         fd, tmp_path = tempfile.mkstemp(
-            dir=str(MANIFEST_FILE.parent),
+            dir=str(manifest_file.parent),
             prefix=".bundled_manifest_",
             suffix=".tmp",
         )
@@ -109,7 +125,7 @@ def _write_manifest(entries: Dict[str, str]):
                 f.write(data)
                 f.flush()
                 os.fsync(f.fileno())
-            atomic_replace(tmp_path, MANIFEST_FILE)
+            atomic_replace(tmp_path, manifest_file)
         except BaseException:
             try:
                 os.unlink(tmp_path)
@@ -117,7 +133,7 @@ def _write_manifest(entries: Dict[str, str]):
                 pass
             raise
     except Exception as e:
-        logger.debug("Failed to write skills manifest %s: %s", MANIFEST_FILE, e, exc_info=True)
+        logger.debug("Failed to write skills manifest %s: %s", manifest_file, e, exc_info=True)
 
 
 def _read_skill_name(skill_md: Path, fallback: str) -> str:
@@ -167,7 +183,7 @@ def _compute_relative_dest(skill_dir: Path, bundled_dir: Path) -> Path:
     e.g., bundled/skills/mlops/axolotl -> ~/.hermes/skills/mlops/axolotl
     """
     rel = skill_dir.relative_to(bundled_dir)
-    return SKILLS_DIR / rel
+    return _current_skills_dir() / rel
 
 
 def _dir_hash(directory: Path) -> str:
@@ -210,7 +226,8 @@ def sync_skills(quiet: bool = False) -> dict:
             "user_modified": [], "cleaned": [], "total_bundled": 0,
         }
 
-    SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    skills_dir = _current_skills_dir()
+    skills_dir.mkdir(parents=True, exist_ok=True)
     manifest = _read_manifest()
     bundled_skills = _discover_bundled_skills(bundled_dir)
     bundled_names = {name for name, _ in bundled_skills}
@@ -319,7 +336,7 @@ def sync_skills(quiet: bool = False) -> dict:
     # Also copy DESCRIPTION.md files for categories (if not already present)
     for desc_md in bundled_dir.rglob("DESCRIPTION.md"):
         rel = desc_md.relative_to(bundled_dir)
-        dest_desc = SKILLS_DIR / rel
+        dest_desc = skills_dir / rel
         if not dest_desc.exists():
             try:
                 dest_desc.parent.mkdir(parents=True, exist_ok=True)

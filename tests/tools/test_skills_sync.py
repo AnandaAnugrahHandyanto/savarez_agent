@@ -240,6 +240,31 @@ class TestSyncSkills:
         assert result["skipped_reason"] == "skill_backpack_only"
         assert not skills_dir.exists()
 
+    def test_sync_uses_current_hermes_home_when_module_cache_is_stale(self, tmp_path, monkeypatch):
+        bundled = self._setup_bundled(tmp_path)
+        cached_home = tmp_path / "cached_home"
+        runtime_home = tmp_path / "runtime_home"
+        cached_skills = cached_home / "skills"
+        cached_manifest = cached_skills / ".bundled_manifest"
+
+        monkeypatch.setenv("HERMES_HOME", str(runtime_home))
+        with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), patch(
+            "tools.skills_sync.load_config",
+            return_value={"skills": {}},
+        ), patch("tools.skills_sync.SKILLS_DIR", cached_skills), patch(
+            "tools.skills_sync.MANIFEST_FILE", cached_manifest
+        ), patch(
+            "tools.skills_sync._INITIAL_SKILLS_DIR", cached_skills, create=True
+        ), patch(
+            "tools.skills_sync._INITIAL_MANIFEST_FILE", cached_manifest, create=True
+        ):
+            result = sync_skills(quiet=True)
+
+        assert len(result["copied"]) == 2
+        assert (runtime_home / "skills" / "category" / "new-skill" / "SKILL.md").exists()
+        assert (runtime_home / "skills" / "old-skill" / "SKILL.md").exists()
+        assert not cached_skills.exists()
+
     def test_fresh_install_records_origin_hashes(self, tmp_path):
         """After fresh install, manifest should have v2 format with hashes."""
         bundled = self._setup_bundled(tmp_path)
