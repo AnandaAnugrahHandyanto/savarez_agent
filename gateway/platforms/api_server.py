@@ -804,6 +804,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        model_override: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -826,9 +827,19 @@ class APIServerAdapter(BasePlatformAdapter):
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
-        model = _resolve_gateway_model()
-
         user_config = _load_gateway_config()
+
+        if model_override:
+            # Per-request override from the chat-completions `model` field.
+            # Accept a model_aliases key (e.g. "opus") or a literal
+            # provider/model id. Provider credentials in runtime_kwargs are
+            # left as-is, so this works when the override resolves to a model
+            # reachable with the configured provider (the common case).
+            alias = (user_config.get("model_aliases") or {}).get(model_override)
+            model = alias["model"] if isinstance(alias, dict) and "model" in alias else model_override
+        else:
+            model = _resolve_gateway_model()
+
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
@@ -1083,6 +1094,13 @@ class APIServerAdapter(BasePlatformAdapter):
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
+        # If the caller asked for a model other than the one this server
+        # advertises, treat it as a per-request override (a model_aliases key
+        # like "opus", or a literal provider/model id).  When the field is
+        # omitted or equals the advertised name, behaviour is unchanged.
+        model_override = (
+            model_name if model_name and model_name != self._model_name else None
+        )
         created = int(time.time())
 
         if stream:
@@ -1167,6 +1185,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                model_override=model_override,
             ))
 
             return await self._write_sse_chat_completion(
@@ -1183,6 +1202,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                model_override=model_override,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2684,6 +2704,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        model_override: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2707,6 +2728,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
+                model_override=model_override,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
