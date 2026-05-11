@@ -421,6 +421,46 @@ Behavior:
 - If a message arrives inside a thread or forum post and that thread has no explicit entry, Hermes falls back to the parent channel/forum ID.
 - Prompts are applied ephemerally at runtime, so changing them affects future turns immediately without rewriting past session history.
 
+#### Per-guild configuration (`discord.guilds`)
+
+When the bot is deployed to multiple Discord servers, you can override settings per-guild so each server behaves differently. Settings defined at the guild level take priority over the global `discord.*` values, which in turn take priority over the equivalent `DISCORD_*` environment variable.
+
+```yaml
+discord:
+  require_mention: true           # Global default: require mention everywhere
+  auto_thread: true               # Global default: auto-thread on mention
+
+  guilds:
+    "123456789012345678":         # Server A (guild ID)
+      require_mention: false      # No mention needed — free chat mode
+      auto_thread: false          # Reply inline, no threads
+      free_response_channels: "*" # All channels are free-response
+
+    "987654321098765432":         # Server B (guild ID)
+      require_mention: true       # Must mention the bot
+      allowed_channels:           # Only respond in these channels
+        - 111111111111111111
+        - 222222222222222222
+      no_thread_channels:
+        - 333333333333333333       # Bot replies inline in this channel
+```
+
+**Supported per-guild overrides:**
+
+| Setting | Description |
+|---------|-------------|
+| `require_mention` | Whether @mention is required in server channels |
+| `allowed_channels` | Whitelist of channels where the bot responds |
+| `ignored_channels` | Channels where the bot never responds |
+| `free_response_channels` | Channels where mention is not required |
+| `no_thread_channels` | Channels where bot replies inline (no auto-thread) |
+| `auto_thread` | Whether to auto-create threads on @mention |
+
+**Notes:**
+- Guild IDs must be quoted strings in YAML. Bare numbers can overflow 64-bit integers and get mangled by the YAML parser.
+- Any setting **not** specified in a guild block falls back to the global `discord.*` value, then to the env var. This means you can override just one setting per guild and leave the rest at their defaults.
+- Settings only apply to server channels (not DMs).
+
 #### `group_sessions_per_user`
 
 **Type:** boolean — **Default:** `true`
