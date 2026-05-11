@@ -3612,8 +3612,8 @@ class HermesCLI:
                 self._stream_text_ansi = f"\033[38;2;{_r};{_g};{_b}m"
             except (ValueError, IndexError):
                 self._stream_text_ansi = ""
-            if self.show_timestamps:
-                label = f"{label} {datetime.now().strftime('%H:%M')}"
+            # Append start timestamp to header label (always-on, with seconds)
+            label = f"{label} {time.strftime('%H:%M:%S')}"
             w = shutil.get_terminal_size().columns
             fill = w - 2 - len(label)
             _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
@@ -3650,7 +3650,23 @@ class HermesCLI:
         # Close the response box
         if self._stream_box_opened:
             w = shutil.get_terminal_size().columns
-            _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
+            _end = time.strftime("%H:%M:%S")
+            _pstart = getattr(self, "_prompt_start_time", None)
+            if _pstart:
+                _secs = time.time() - _pstart
+                _elapsed = f"{int(_secs // 60)}m{_secs % 60:.0f}s" if _secs >= 60 else f"{_secs:.1f}s"
+            else:
+                # _prompt_start_time may already be frozen to None by the
+                # main loop before _flush_stream runs — fall back to the
+                # frozen duration captured at thread exit.
+                _dur = getattr(self, "_prompt_duration", 0.0)
+                if _dur > 0:
+                    _elapsed = f"{int(_dur // 60)}m{_dur % 60:.0f}s" if _dur >= 60 else f"{_dur:.1f}s"
+                else:
+                    _elapsed = ""
+            _suffix = f" {_end} {_elapsed}"
+            _dash_count = max(w - 2 - len(_suffix), 0)
+            _cprint(f"{_ACCENT}╰{'─' * _dash_count}{_suffix}╯{_RST}")
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
