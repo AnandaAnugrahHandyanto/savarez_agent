@@ -32,6 +32,22 @@ from hermes_constants import get_hermes_dir
 logger = logging.getLogger(__name__)
 
 
+def _env_float(name: str, default: float) -> float:
+    """Read a float from an environment variable, with fallback."""
+    val = os.environ.get(name)
+    if val is not None:
+        try:
+            return float(val)
+        except ValueError:
+            pass
+    return default
+
+
+_WHATSAPP_HTTP_TIMEOUT = _env_float("HERMES_WHATSAPP_HTTP_TIMEOUT", 30.0)
+_WHATSAPP_MEDIA_TIMEOUT = _env_float("HERMES_WHATSAPP_MEDIA_TIMEOUT", 120.0)
+_WHATSAPP_HEALTH_TIMEOUT = _env_float("HERMES_WHATSAPP_HEALTH_TIMEOUT", 2.0)
+
+
 def _kill_port_process(port: int) -> None:
     """Kill any process listening on the given TCP port."""
     try:
@@ -403,7 +419,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 async with aiohttp.ClientSession() as session:
                     async with session.get(
                         f"http://127.0.0.1:{self._bridge_port}/health",
-                        timeout=aiohttp.ClientTimeout(total=2)
+                        timeout=aiohttp.ClientTimeout(total=_WHATSAPP_HEALTH_TIMEOUT)
                     ) as resp:
                         if resp.status == 200:
                             data = await resp.json()
@@ -470,7 +486,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     async with aiohttp.ClientSession() as session:
                         async with session.get(
                             f"http://127.0.0.1:{self._bridge_port}/health",
-                            timeout=aiohttp.ClientTimeout(total=2)
+                            timeout=aiohttp.ClientTimeout(total=_WHATSAPP_HEALTH_TIMEOUT)
                         ) as resp:
                             if resp.status == 200:
                                 http_ready = True
@@ -502,7 +518,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         async with aiohttp.ClientSession() as session:
                             async with session.get(
                                 f"http://127.0.0.1:{self._bridge_port}/health",
-                                timeout=aiohttp.ClientTimeout(total=2)
+                                timeout=aiohttp.ClientTimeout(total=_WHATSAPP_HEALTH_TIMEOUT)
                             ) as resp:
                                 if resp.status == 200:
                                     data = await resp.json()
@@ -702,7 +718,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 async with self._http_session.post(
                     f"http://127.0.0.1:{self._bridge_port}/send",
                     json=payload,
-                    timeout=aiohttp.ClientTimeout(total=30)
+                    timeout=aiohttp.ClientTimeout(total=_WHATSAPP_HTTP_TIMEOUT)
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
@@ -745,7 +761,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     "messageId": message_id,
                     "message": content,
                 },
-                timeout=aiohttp.ClientTimeout(total=15)
+                timeout=aiohttp.ClientTimeout(total=_WHATSAPP_HTTP_TIMEOUT)
             ) as resp:
                 if resp.status == 200:
                     return SendResult(success=True, message_id=message_id)
@@ -788,7 +804,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             async with self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/send-media",
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=120),
+                timeout=aiohttp.ClientTimeout(total=_WHATSAPP_MEDIA_TIMEOUT),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -879,7 +895,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             await self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/typing",
                 json={"chatId": chat_id},
-                timeout=aiohttp.ClientTimeout(total=5)
+                timeout=aiohttp.ClientTimeout(total=_WHATSAPP_HTTP_TIMEOUT)
             )
         except Exception:
             pass  # Ignore typing indicator failures
@@ -896,7 +912,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
             async with self._http_session.get(
                 f"http://127.0.0.1:{self._bridge_port}/chat/{chat_id}",
-                timeout=aiohttp.ClientTimeout(total=10)
+                timeout=aiohttp.ClientTimeout(total=_WHATSAPP_HTTP_TIMEOUT)
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -924,7 +940,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             try:
                 async with self._http_session.get(
                     f"http://127.0.0.1:{self._bridge_port}/messages",
-                    timeout=aiohttp.ClientTimeout(total=30)
+                    timeout=aiohttp.ClientTimeout(total=_WHATSAPP_HTTP_TIMEOUT)
                 ) as resp:
                     if resp.status == 200:
                         messages = await resp.json()

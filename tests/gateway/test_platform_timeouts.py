@@ -32,6 +32,23 @@ class TestSignalTimeouts:
         assert _SIGNAL_HEALTH_TIMEOUT == 10.0
 
 
+class TestWhatsAppTimeouts:
+    def test_default_http_timeout(self):
+        os.environ.pop("HERMES_WHATSAPP_HTTP_TIMEOUT", None)
+        from gateway.platforms.whatsapp import _WHATSAPP_HTTP_TIMEOUT
+        assert _WHATSAPP_HTTP_TIMEOUT == 30.0
+
+    def test_default_media_timeout(self):
+        os.environ.pop("HERMES_WHATSAPP_MEDIA_TIMEOUT", None)
+        from gateway.platforms.whatsapp import _WHATSAPP_MEDIA_TIMEOUT
+        assert _WHATSAPP_MEDIA_TIMEOUT == 120.0
+
+    def test_default_health_timeout(self):
+        os.environ.pop("HERMES_WHATSAPP_HEALTH_TIMEOUT", None)
+        from gateway.platforms.whatsapp import _WHATSAPP_HEALTH_TIMEOUT
+        assert _WHATSAPP_HEALTH_TIMEOUT == 2.0
+
+
 class TestRetryBackoff:
     def test_default_base_delay(self):
         os.environ.pop("HERMES_RETRY_BASE_DELAY", None)
