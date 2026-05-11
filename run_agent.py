@@ -5368,7 +5368,7 @@ class AIAgent:
         NOT called per-turn — only at CLI exit, /reset, gateway
         session expiry, etc.
         """
-        if self._memory_manager:
+        if hasattr(self, "_memory_manager") and self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])
             except Exception:
@@ -5392,7 +5392,7 @@ class AIAgent:
         Called when session_id rotates (e.g. /new, context compression);
         providers keep their state and continue running under the old
         session_id — they just flush pending extraction now."""
-        if self._memory_manager:
+        if hasattr(self, "_memory_manager") and self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])
             except Exception:
@@ -5447,7 +5447,7 @@ class AIAgent:
         """
         if interrupted:
             return
-        if not (self._memory_manager and final_response and original_user_message):
+        if not (hasattr(self, "_memory_manager") and self._memory_manager and final_response and original_user_message):
             return
         try:
             self._memory_manager.sync_all(
@@ -5544,14 +5544,16 @@ class AIAgent:
 
         # 4. Close active child agents
         try:
-            with self._active_children_lock:
-                children = list(self._active_children)
-                self._active_children.clear()
-            for child in children:
-                try:
-                    child.close()
-                except Exception:
-                    pass
+            if hasattr(self, "_active_children_lock"):
+                with self._active_children_lock:
+                    children = list(getattr(self, "_active_children", []))
+                    if hasattr(self, "_active_children"):
+                        self._active_children.clear()
+                for child in children:
+                    try:
+                        child.close()
+                    except Exception:
+                        pass
         except Exception:
             pass
 
