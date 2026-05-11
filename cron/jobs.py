@@ -479,6 +479,23 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
+
+def _normalize_reasoning_effort(reasoning_effort: Optional[str]) -> Optional[str]:
+    """Normalize and validate a per-job cron reasoning override."""
+    if reasoning_effort is None:
+        return None
+    text = str(reasoning_effort).strip().lower()
+    if not text:
+        return None
+
+    from hermes_constants import VALID_REASONING_EFFORTS
+
+    if text == "none" or text in VALID_REASONING_EFFORTS:
+        return text
+    allowed = ", ".join(("none",) + VALID_REASONING_EFFORTS)
+    raise ValueError(f"Invalid reasoning_effort {reasoning_effort!r}. Expected one of: {allowed}")
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -491,6 +508,7 @@ def create_job(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     script: Optional[str] = None,
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
@@ -513,6 +531,9 @@ def create_job(
         model: Optional per-job model override
         provider: Optional per-job provider override
         base_url: Optional per-job base URL override
+        reasoning_effort: Optional per-job reasoning override. Valid values:
+                         none|minimal|low|medium|high|xhigh. When unset, the
+                         cron run inherits agent.reasoning_effort from config.
         script: Optional path to a script whose stdout feeds the job. With
                 ``no_agent=True`` the script IS the job — its stdout is
                 delivered verbatim. Without ``no_agent``, its stdout is
@@ -565,6 +586,7 @@ def create_job(
     normalized_model = str(model).strip() if isinstance(model, str) else None
     normalized_provider = str(provider).strip() if isinstance(provider, str) else None
     normalized_base_url = str(base_url).strip().rstrip("/") if isinstance(base_url, str) else None
+    normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
     normalized_model = normalized_model or None
     normalized_provider = normalized_provider or None
     normalized_base_url = normalized_base_url or None
@@ -603,6 +625,7 @@ def create_job(
         "model": normalized_model,
         "provider": normalized_provider,
         "base_url": normalized_base_url,
+        "reasoning_effort": normalized_reasoning_effort,
         "script": normalized_script,
         "no_agent": normalized_no_agent,
         "context_from": context_from,
@@ -668,6 +691,9 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updates["workdir"] = None
             else:
                 updates["workdir"] = _normalize_workdir(_wd)
+
+        if "reasoning_effort" in updates:
+            updates["reasoning_effort"] = _normalize_reasoning_effort(updates["reasoning_effort"])
 
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates
