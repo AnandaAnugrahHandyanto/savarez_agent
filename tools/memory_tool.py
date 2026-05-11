@@ -1,67 +1,43 @@
 #!/usr/bin/env python3
 """
-Memory Tool Module - Persistent Curated Memory
+Memory Tool Module - Persistent Curated Memory (DB-backed)
 
-Provides bounded, file-backed memory that persists across sessions. Two stores:
-  - MEMORY.md: agent's personal notes and observations (environment facts, project
+Provides bounded, SQLite-backed memory that persists across sessions. Two stores:
+  - memory: agent's personal notes and observations (environment facts, project
     conventions, tool quirks, things learned)
-  - USER.md: what the agent knows about the user (preferences, communication style,
+  - user: what the agent knows about the user (preferences, communication style,
     expectations, workflow habits)
 
-Both are injected into the system prompt as a frozen snapshot at session start.
-Mid-session writes update files on disk immediately (durable) but do NOT change
-the system prompt -- this preserves the prefix cache for the entire session.
-The snapshot refreshes on the next session start.
-
-Entry delimiter: § (section sign). Entries can be multiline.
-Character limits (not tokens) because char counts are model-independent.
+Both are injected into the system prompt as a snapshot at session start.
+Mid-session writes update the DB immediately and refresh the snapshot on next API call.
 
 Design:
 - Single `memory` tool with action parameter: add, replace, remove, read
 - replace/remove use short unique substring matching (not full text or IDs)
 - Behavioral guidance lives in the tool schema description
-- Frozen snapshot pattern: system prompt is stable, tool responses show live state
+- DB-backed with auto-eviction: when adding would exceed the char limit, the
+  lowest-value entries (access_count ASC, last_accessed ASC) are evicted first.
+- Access-count tracking: every format_for_system_prompt() call touches entries
+  so frequently-used memories survive eviction.
 """
 
 import json
 import logging
-import os
 import re
-import tempfile
-from contextlib import contextmanager
-from pathlib import Path
+import uuid
 from hermes_constants import get_hermes_home
-from typing import Dict, Any, List, Optional
-
-from utils import atomic_replace
-
-# fcntl is Unix-only; on Windows use msvcrt for file locking
-msvcrt = None
-try:
-    import fcntl
-except ImportError:
-    fcntl = None
-    try:
-        import msvcrt
-    except ImportError:
-        pass
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Where memory files live — resolved dynamically so profile overrides
-# (HERMES_HOME env var changes) are always respected.  The old module-level
-# constant was cached at import time and could go stale if a profile switch
-# happened after the first import.
-def get_memory_dir() -> Path:
-    """Return the profile-scoped memories directory."""
-    return get_hermes_home() / "memories"
-
 ENTRY_DELIMITER = "\n§\n"
+
+# Default category for entries (used for future multi-category queries)
+_DEFAULT_CATEGORY = "default"
 
 
 # ---------------------------------------------------------------------------
 # Memory content scanning — lightweight check for injection/exfiltration
-# in content that gets injected into the system prompt.
 # ---------------------------------------------------------------------------
 
 _MEMORY_THREAT_PATTERNS = [
@@ -78,11 +54,10 @@ _MEMORY_THREAT_PATTERNS = [
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)', "read_secrets"),
     # Persistence via shell rc
     (r'authorized_keys', "ssh_backdoor"),
-    (r'\$HOME/\.ssh|\~/\.ssh', "ssh_access"),
+    (r'\$HOME/\.ssh|\~/ \.ssh', "ssh_access"),
     (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env', "hermes_env"),
 ]
 
-# Subset of invisible chars for injection detection
 _INVISIBLE_CHARS = {
     '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
     '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
@@ -91,54 +66,58 @@ _INVISIBLE_CHARS = {
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
-    # Check invisible unicode
     for char in _INVISIBLE_CHARS:
         if char in content:
             return f"Blocked: content contains invisible unicode character U+{ord(char):04X} (possible injection)."
-
-    # Check threat patterns
     for pattern, pid in _MEMORY_THREAT_PATTERNS:
         if re.search(pattern, content, re.IGNORECASE):
             return f"Blocked: content matches threat pattern '{pid}'. Memory entries are injected into the system prompt and must not contain injection or exfiltration payloads."
-
     return None
 
 
 class MemoryStore:
     """
-    Bounded curated memory with file persistence. One instance per AIAgent.
+    DB-backed curated memory with auto-eviction. One instance per AIAgent.
 
     Maintains two parallel states:
-      - _system_prompt_snapshot: frozen at load time, used for system prompt injection.
-        Never mutated mid-session. Keeps prefix cache stable.
-      - memory_entries / user_entries: live state, mutated by tool calls, persisted to disk.
-        Tool responses always reflect this live state.
+      - _system_prompt_snapshot: refreshed on load_from_db() and after every
+        write (refresh()). Used for system prompt injection.
+      - _live_entries: live state, mutated by tool calls. Tool responses always
+        reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
-        self.memory_entries: List[str] = []
-        self.user_entries: List[str] = []
+    def __init__(
+        self,
+        session_db,
+        memory_char_limit: int = 2200,
+        user_char_limit: int = 1375,
+    ):
+        self._db = session_db
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
-        # Frozen snapshot for system prompt -- set once at load_from_disk()
+        self._live_entries: Dict[str, List[str]] = {"memory": [], "user": []}
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
-    def load_from_disk(self):
-        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
-        mem_dir = get_memory_dir()
-        mem_dir.mkdir(parents=True, exist_ok=True)
+    # -------------------------------------------------------------------------
+    # Persistence
+    # -------------------------------------------------------------------------
 
-        self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
-        self.user_entries = self._read_file(mem_dir / "USER.md")
+    def load_from_db(self):
+        """Load entries from DB, capture system prompt snapshot."""
+        for section in ("memory", "user"):
+            rows = self._db.memory_get_active(section)
+            self._live_entries[section] = [r["value"] for r in rows]
+        self._refresh_snapshot()
 
-        # Deduplicate entries (preserves order, keeps first occurrence)
-        self.memory_entries = list(dict.fromkeys(self.memory_entries))
-        self.user_entries = list(dict.fromkeys(self.user_entries))
+    def refresh(self):
+        """Rebuild the snapshot after a mid-session write."""
+        self.load_from_db()
 
-        # Capture frozen snapshot for system prompt injection
+    def _refresh_snapshot(self):
+        """Rebuild _system_prompt_snapshot from current _live_entries."""
         self._system_prompt_snapshot = {
-            "memory": self._render_block("memory", self.memory_entries),
-            "user": self._render_block("user", self.user_entries),
+            "memory": self._render_block("memory", self._live_entries["memory"]),
+            "user": self._render_block("user", self._live_entries["user"]),
         }
 
     @staticmethod
@@ -199,16 +178,9 @@ class MemoryStore:
         get_memory_dir().mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
 
-    def _entries_for(self, target: str) -> List[str]:
-        if target == "user":
-            return self.user_entries
-        return self.memory_entries
 
-    def _set_entries(self, target: str, entries: List[str]):
-        if target == "user":
-            self.user_entries = entries
-        else:
-            self.memory_entries = entries
+    def _entries_for(self, target: str) -> List[str]:
+        return self._live_entries.get(target, [])
 
     def _char_count(self, target: str) -> int:
         entries = self._entries_for(target)
@@ -221,48 +193,64 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
+    def format_for_system_prompt(self, target: str) -> Optional[str]:
+        """
+        Return the current snapshot for system prompt injection.
+
+        Also touches all entries in the section to increment their access_count,
+        so frequently-used memories survive auto-eviction.
+        """
+        block = self._system_prompt_snapshot.get(target, "")
+        if not block:
+            return None
+
+        # Touch all entries for this section to update access counts
+        rows = self._db.memory_get_active(target)
+        for row in rows:
+            self._db.memory_touch(row["id"])
+
+        return block
+
+    # -------------------------------------------------------------------------
+    # Mutations
+    # -------------------------------------------------------------------------
+
     def add(self, target: str, content: str) -> Dict[str, Any]:
-        """Append a new entry. Returns error if it would exceed the char limit."""
+        """Append a new entry. Auto-evicts lowest-value entries if over limit."""
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
 
-        # Scan for injection/exfiltration before accepting
         scan_error = _scan_memory_content(content)
         if scan_error:
             return {"success": False, "error": scan_error}
 
-        with self._file_lock(self._path_for(target)):
-            # Re-read from disk under lock to pick up writes from other sessions
-            self._reload_target(target)
+        entries = self._entries_for(target)
+        # Reject exact duplicates
+        if content in entries:
+            return self._success_response(target, "Entry already exists (no duplicate added).")
 
-            entries = self._entries_for(target)
-            limit = self._char_limit(target)
+        limit = self._char_limit(target)
+        new_chars = len(content)
 
-            # Reject exact duplicates
-            if content in entries:
-                return self._success_response(target, "Entry already exists (no duplicate added).")
+        # Evict lowest-value entries until we have room
+        evicted = self._db.memory_evict_for_section(target, new_chars, limit)
+        if evicted > 0:
+            logger.debug("memory add: evicted %d entries from %s", evicted, target)
 
-            # Calculate what the new total would be
-            new_entries = entries + [content]
-            new_total = len(ENTRY_DELIMITER.join(new_entries))
+        # Persist new entry
+        entry_id = str(uuid.uuid4())
+        self._db.memory_upsert(
+            id=entry_id,
+            section=target,
+            category=_DEFAULT_CATEGORY,
+            key=entry_id,  # key is the id; value is the content
+            value=content,
+        )
 
-            if new_total > limit:
-                current = self._char_count(target)
-                return {
-                    "success": False,
-                    "error": (
-                        f"Memory at {current:,}/{limit:,} chars. "
-                        f"Adding this entry ({len(content)} chars) would exceed the limit. "
-                        f"Replace or remove existing entries first."
-                    ),
-                    "current_entries": entries,
-                    "usage": f"{current:,}/{limit:,}",
-                }
-
-            entries.append(content)
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+        # Update live state
+        self._live_entries[target] = [r["value"] for r in self._db.memory_get_active(target)]
+        self._refresh_snapshot()
 
         return self._success_response(target, "Entry added.")
 
@@ -275,52 +263,53 @@ class MemoryStore:
         if not new_content:
             return {"success": False, "error": "new_content cannot be empty. Use 'remove' to delete entries."}
 
-        # Scan replacement content for injection/exfiltration
         scan_error = _scan_memory_content(new_content)
         if scan_error:
             return {"success": False, "error": scan_error}
 
-        with self._file_lock(self._path_for(target)):
-            self._reload_target(target)
+        # Find matching entries
+        entries = self._entries_for(target)
+        matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+        if not matches:
+            return {"success": False, "error": f"No entry matched '{old_text}'."}
 
-            entries = self._entries_for(target)
-            matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+        if len(matches) > 1:
+            unique_texts = set(e for _, e in matches)
+            if len(unique_texts) > 1:
+                previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
+                return {"success": False, "error": f"Multiple entries matched '{old_text}'. Be more specific.", "matches": previews}
 
-            if not matches:
-                return {"success": False, "error": f"No entry matched '{old_text}'."}
+        # Find the DB row for the matching entry
+        old_value = matches[0][1]
+        rows = self._db.memory_get_active(target)
+        match_row = None
+        for row in rows:
+            if row["value"] == old_value:
+                match_row = row
+                break
+        if not match_row:
+            return {"success": False, "error": f"No entry matched '{old_text}'."}
 
-            if len(matches) > 1:
-                # If all matches are identical (exact duplicates), operate on the first one
-                unique_texts = set(e for _, e in matches)
-                if len(unique_texts) > 1:
-                    previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
-                    return {
-                        "success": False,
-                        "error": f"Multiple entries matched '{old_text}'. Be more specific.",
-                        "matches": previews,
-                    }
-                # All identical -- safe to replace just the first
+        limit = self._char_limit(target)
+        new_chars = len(new_content)
+        old_chars = len(old_value)
+        delta = new_chars - old_chars
 
-            idx = matches[0][0]
-            limit = self._char_limit(target)
+        # If replacing makes it bigger, evict if needed
+        if delta > 0:
+            self._db.memory_evict_for_section(target, delta, limit)
 
-            # Check that replacement doesn't blow the budget
-            test_entries = entries.copy()
-            test_entries[idx] = new_content
-            new_total = len(ENTRY_DELIMITER.join(test_entries))
+        # Update in place (same id, same key)
+        self._db.memory_upsert(
+            id=match_row["id"],
+            section=target,
+            category=match_row["category"],
+            key=match_row["key"],
+            value=new_content,
+        )
 
-            if new_total > limit:
-                return {
-                    "success": False,
-                    "error": (
-                        f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
-                        f"Shorten the new content or remove other entries first."
-                    ),
-                }
-
-            entries[idx] = new_content
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+        self._live_entries[target] = [r["value"] for r in self._db.memory_get_active(target)]
+        self._refresh_snapshot()
 
         return self._success_response(target, "Entry replaced.")
 
@@ -330,48 +319,32 @@ class MemoryStore:
         if not old_text:
             return {"success": False, "error": "old_text cannot be empty."}
 
-        with self._file_lock(self._path_for(target)):
-            self._reload_target(target)
+        entries = self._entries_for(target)
+        matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+        if not matches:
+            return {"success": False, "error": f"No entry matched '{old_text}'."}
 
-            entries = self._entries_for(target)
-            matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+        if len(matches) > 1:
+            unique_texts = set(e for _, e in matches)
+            if len(unique_texts) > 1:
+                previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
+                return {"success": False, "error": f"Multiple entries matched '{old_text}'. Be more specific.", "matches": previews}
 
-            if not matches:
-                return {"success": False, "error": f"No entry matched '{old_text}'."}
+        old_value = matches[0][1]
+        rows = self._db.memory_get_active(target)
+        for row in rows:
+            if row["value"] == old_value:
+                self._db.memory_delete(target, row["category"], row["key"])
+                break
 
-            if len(matches) > 1:
-                # If all matches are identical (exact duplicates), remove the first one
-                unique_texts = set(e for _, e in matches)
-                if len(unique_texts) > 1:
-                    previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
-                    return {
-                        "success": False,
-                        "error": f"Multiple entries matched '{old_text}'. Be more specific.",
-                        "matches": previews,
-                    }
-                # All identical -- safe to remove just the first
-
-            idx = matches[0][0]
-            entries.pop(idx)
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+        self._live_entries[target] = [r["value"] for r in self._db.memory_get_active(target)]
+        self._refresh_snapshot()
 
         return self._success_response(target, "Entry removed.")
 
-    def format_for_system_prompt(self, target: str) -> Optional[str]:
-        """
-        Return the frozen snapshot for system prompt injection.
-
-        This returns the state captured at load_from_disk() time, NOT the live
-        state. Mid-session writes do not affect this. This keeps the system
-        prompt stable across all turns, preserving the prefix cache.
-
-        Returns None if the snapshot is empty (no entries at load time).
-        """
-        block = self._system_prompt_snapshot.get(target, "")
-        return block if block else None
-
-    # -- Internal helpers --
+    # -------------------------------------------------------------------------
+    # Helpers
+    # -------------------------------------------------------------------------
 
     def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
         entries = self._entries_for(target)
@@ -394,7 +367,6 @@ class MemoryStore:
         """Render a system prompt block with header and usage indicator."""
         if not entries:
             return ""
-
         limit = self._char_limit(target)
         content = ENTRY_DELIMITER.join(entries)
         current = len(content)
@@ -408,59 +380,10 @@ class MemoryStore:
         separator = "═" * 46
         return f"{separator}\n{header}\n{separator}\n{content}"
 
-    @staticmethod
-    def _read_file(path: Path) -> List[str]:
-        """Read a memory file and split into entries.
 
-        No file locking needed: _write_file uses atomic rename, so readers
-        always see either the previous complete file or the new complete file.
-        """
-        if not path.exists():
-            return []
-        try:
-            raw = path.read_text(encoding="utf-8")
-        except (OSError, IOError):
-            return []
-
-        if not raw.strip():
-            return []
-
-        # Use ENTRY_DELIMITER for consistency with _write_file. Splitting by "§"
-        # alone would incorrectly split entries that contain "§" in their content.
-        entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
-        return [e for e in entries if e]
-
-    @staticmethod
-    def _write_file(path: Path, entries: List[str]):
-        """Write entries to a memory file using atomic temp-file + rename.
-
-        Previous implementation used open("w") + flock, but "w" truncates the
-        file *before* the lock is acquired, creating a race window where
-        concurrent readers see an empty file. Atomic rename avoids this:
-        readers always see either the old complete file or the new one.
-        """
-        content = ENTRY_DELIMITER.join(entries) if entries else ""
-        try:
-            # Write to temp file in same directory (same filesystem for atomic rename)
-            fd, tmp_path = tempfile.mkstemp(
-                dir=str(path.parent), suffix=".tmp", prefix=".mem_"
-            )
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(content)
-                    f.flush()
-                    os.fsync(f.fileno())
-                atomic_replace(tmp_path, path)
-            except BaseException:
-                # Clean up temp file on any failure
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
-        except (OSError, IOError) as e:
-            raise RuntimeError(f"Failed to write memory file {path}: {e}")
-
+# ---------------------------------------------------------------------------
+# Tool entry point
+# ---------------------------------------------------------------------------
 
 def memory_tool(
     action: str,
@@ -469,11 +392,8 @@ def memory_tool(
     old_text: str = None,
     store: Optional[MemoryStore] = None,
 ) -> str:
-    """
-    Single entry point for the memory tool. Dispatches to MemoryStore methods.
-
-    Returns JSON string with results.
-    """
+    """Single entry point for the memory tool. Dispatches to MemoryStore methods."""
+    from tools.registry import tool_error
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
 
@@ -484,19 +404,16 @@ def memory_tool(
         if not content:
             return tool_error("Content is required for 'add' action.", success=False)
         result = store.add(target, content)
-
     elif action == "replace":
         if not old_text:
             return tool_error("old_text is required for 'replace' action.", success=False)
         if not content:
             return tool_error("content is required for 'replace' action.", success=False)
         result = store.replace(target, old_text, content)
-
     elif action == "remove":
         if not old_text:
             return tool_error("old_text is required for 'remove' action.", success=False)
         result = store.remove(target, old_text)
-
     else:
         return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
 
@@ -508,9 +425,9 @@ def check_memory_requirements() -> bool:
     return True
 
 
-# =============================================================================
+# ---------------------------------------------------------------------------
 # OpenAI Function-Calling Schema
-# =============================================================================
+# ---------------------------------------------------------------------------
 
 MEMORY_SCHEMA = {
     "name": "memory",
@@ -580,7 +497,3 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
-
-
-
