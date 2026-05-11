@@ -115,6 +115,13 @@ class TestResolveCommand:
         assert topic.name == "topic"
         assert "topic" in GATEWAY_KNOWN_COMMANDS
 
+    def test_sessions_is_cli_only(self):
+        sessions = resolve_command("sessions")
+        assert sessions is not None
+        assert sessions.name == "sessions"
+        assert sessions.cli_only is True
+        assert "sessions" not in GATEWAY_KNOWN_COMMANDS
+
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"
         assert resolve_command("/bg").name == "background"

@@ -7036,6 +7036,9 @@ class HermesCLI:
                     pass
         elif canonical == "history":
             self.show_history()
+        elif canonical == "sessions":
+            if not self._show_recent_sessions(reason="command"):
+                print("(._.) No recent sessions available.")
         elif canonical == "title":
             parts = cmd_original.split(maxsplit=1)
             if len(parts) > 1:

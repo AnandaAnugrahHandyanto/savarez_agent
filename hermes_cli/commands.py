@@ -115,7 +115,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[name]"),
 
     # Configuration
-    CommandDef("sessions", "Browse and resume previous sessions", "Session"),
+    CommandDef("sessions", "Browse and resume previous sessions", "Session", cli_only=True),
 
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
