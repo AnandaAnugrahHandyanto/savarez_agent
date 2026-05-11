@@ -919,29 +919,187 @@ def _extract_responses_reasoning_text(item: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Full response normalization
+# Response extraction helpers
 # ---------------------------------------------------------------------------
+
+def _resolve_codex_output(response: Any) -> list:
+    """Return the output item list from a Codex response.
+
+    Falls back to ``output_text`` when the output list is empty
+    (streaming-only responses).  Raises RuntimeError when neither
+    is available.
+    """
+    output = getattr(response, "output", None)
+    if isinstance(output, list) and output:
+        return output
+    out_text = getattr(response, "output_text", None)
+    if isinstance(out_text, str) and out_text.strip():
+        logger.debug(
+            "Codex response has empty output but output_text is present (%d chars); "
+            "synthesizing output item.", len(out_text.strip()),
+        )
+        output = [SimpleNamespace(
+            type="message", role="assistant", status="completed",
+            content=[SimpleNamespace(type="output_text", text=out_text.strip())],
+        )]
+        response.output = output
+        return output
+    raise RuntimeError("Responses API returned no output items")
+
+
+def _process_message_item(
+    item: Any,
+    item_status: Optional[str],
+    content_parts: List[str],
+    message_items_raw: List[Dict[str, Any]],
+) -> None:
+    """Extract text from a ``message`` output item."""
+    message_text = _extract_responses_message_text(item)
+    if not message_text:
+        return
+    content_parts.append(message_text)
+    raw_message_item: Dict[str, Any] = {
+        "type": "message",
+        "role": "assistant",
+        "status": _normalize_responses_message_status(item_status),
+        "content": [{"type": "output_text", "text": message_text}],
+    }
+    item_id = getattr(item, "id", None)
+    if isinstance(item_id, str) and item_id:
+        raw_message_item["id"] = item_id
+    item_phase = getattr(item, "phase", None)
+    if isinstance(item_phase, str):
+        normalized_phase = item_phase.strip().lower()
+        if normalized_phase:
+            raw_message_item["phase"] = normalized_phase
+    message_items_raw.append(raw_message_item)
+
+
+def _process_reasoning_item(
+    item: Any,
+    reasoning_parts: List[str],
+    reasoning_items_raw: List[Dict[str, Any]],
+) -> None:
+    """Extract text and encrypted content from a ``reasoning`` output item."""
+    reasoning_text = _extract_responses_reasoning_text(item)
+    if reasoning_text:
+        reasoning_parts.append(reasoning_text)
+    # Capture the full reasoning item for multi-turn continuity.
+    # encrypted_content is an opaque blob the API needs back on
+    # subsequent turns to maintain coherent reasoning chains.
+    encrypted = getattr(item, "encrypted_content", None)
+    if not (isinstance(encrypted, str) and encrypted):
+        return
+    raw_item = {"type": "reasoning", "encrypted_content": encrypted}
+    item_id = getattr(item, "id", None)
+    if isinstance(item_id, str) and item_id:
+        raw_item["id"] = item_id
+    # Capture summary — required by the API when replaying reasoning items
+    summary = getattr(item, "summary", None)
+    if isinstance(summary, list):
+        raw_summary = []
+        for part in summary:
+            text = getattr(part, "text", None)
+            if isinstance(text, str):
+                raw_summary.append({"type": "summary_text", "text": text})
+        raw_item["summary"] = raw_summary
+    reasoning_items_raw.append(raw_item)
+
+
+def _process_function_call_item(
+    item: Any,
+    item_type: str,
+    idx: int,
+) -> Optional[Any]:
+    """Build a tool-call namespace from a function_call/custom_tool_call item.
+
+    Returns *None* when the item doesn't produce a valid tool call.
+    """
+    fn_name = getattr(item, "name", "") or ""
+    if not fn_name:
+        return None
+    # custom_tool_call uses ``input``, function_call uses ``arguments``
+    arguments = getattr(item, "input" if item_type == "custom_tool_call" else "arguments", "{}")
+    if not isinstance(arguments, str):
+        arguments = json.dumps(arguments, ensure_ascii=False)
+    raw_call_id = getattr(item, "call_id", None)
+    raw_item_id = getattr(item, "id", None)
+    embedded_call_id, _ = _split_responses_tool_id(raw_item_id)
+    call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
+    if not isinstance(call_id, str) or not call_id.strip():
+        call_id = _deterministic_call_id(fn_name, arguments, idx)
+    call_id = call_id.strip()
+    response_item_id = raw_item_id if isinstance(raw_item_id, str) else None
+    response_item_id = _derive_responses_function_call_id(call_id, response_item_id)
+    return SimpleNamespace(
+        id=call_id,
+        call_id=call_id,
+        response_item_id=response_item_id,
+        type="function",
+        function=SimpleNamespace(name=fn_name, arguments=arguments),
+    )
+
+
+def _detect_tool_call_leak(
+    final_text: str,
+    tool_calls: List[Any],
+) -> bool:
+    """Detect leaked tool-call text in assistant content.
+
+    gpt-5.x on the Codex Responses API sometimes degenerates and emits
+    what should be a structured ``function_call`` item as plain assistant
+    text using the Harmony/Codex serialization (``to=functions.foo
+    {json}`` or ``assistant to=functions.foo {json}``).
+
+    Returns *True* when a leak is detected and the response should be
+    treated as incomplete.
+    """
+    if not final_text:
+        return False
+    if tool_calls:
+        return False
+    if not _TOOL_CALL_LEAK_PATTERN.search(final_text):
+        return False
+    logger.warning(
+        "Codex response contains leaked tool-call text in assistant content "
+        "(no structured function_call items). Treating as incomplete so the "
+        "continuation path can re-elicit a proper tool call. Leaked snippet: %r",
+        final_text[:300],
+    )
+    return True
+
+
+def _determine_response_finish_reason(
+    *,
+    tool_calls: List[Any],
+    leaked_tool_call_text: bool,
+    has_incomplete_items: bool,
+    saw_commentary_phase: bool,
+    saw_final_answer_phase: bool,
+    reasoning_items_raw: List[Dict[str, Any]],
+    final_text: str,
+) -> str:
+    """Determine the finish_reason for a Codex Responses API response."""
+    if tool_calls:
+        return "tool_calls"
+    if leaked_tool_call_text:
+        return "incomplete"
+    if has_incomplete_items or (saw_commentary_phase and not saw_final_answer_phase):
+        return "incomplete"
+    if reasoning_items_raw and not final_text:
+        # Response contains only reasoning (encrypted thinking state) with
+        # no visible content or tool calls.  The model is still thinking and
+        # needs another turn to produce the actual answer.  Marking this as
+        # "stop" would send it into the empty-content retry loop which burns
+        # 3 retries then fails — treat it as incomplete instead so the Codex
+        # continuation path handles it correctly.
+        return "incomplete"
+    return "stop"
+
 
 def _normalize_codex_response(response: Any) -> tuple[Any, str]:
     """Normalize a Responses API object to an assistant_message-like object."""
-    output = getattr(response, "output", None)
-    if not isinstance(output, list) or not output:
-        # The Codex backend can return empty output when the answer was
-        # delivered entirely via stream events. Check output_text as a
-        # last-resort fallback before raising.
-        out_text = getattr(response, "output_text", None)
-        if isinstance(out_text, str) and out_text.strip():
-            logger.debug(
-                "Codex response has empty output but output_text is present (%d chars); "
-                "synthesizing output item.", len(out_text.strip()),
-            )
-            output = [SimpleNamespace(
-                type="message", role="assistant", status="completed",
-                content=[SimpleNamespace(type="output_text", text=out_text.strip())],
-            )]
-            response.output = output
-        else:
-            raise RuntimeError("Responses API returned no output items")
+    output = _resolve_codex_output(response)
 
     response_status = getattr(response, "status", None)
     if isinstance(response_status, str):
@@ -978,96 +1136,26 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
             has_incomplete_items = True
 
         if item_type == "message":
+            _process_message_item(
+                item, item_status, content_parts, message_items_raw,
+            )
             item_phase = getattr(item, "phase", None)
-            normalized_phase = None
             if isinstance(item_phase, str):
                 normalized_phase = item_phase.strip().lower()
                 if normalized_phase in {"commentary", "analysis"}:
                     saw_commentary_phase = True
                 elif normalized_phase in {"final_answer", "final"}:
                     saw_final_answer_phase = True
-            message_text = _extract_responses_message_text(item)
-            if message_text:
-                content_parts.append(message_text)
-                raw_message_item: Dict[str, Any] = {
-                    "type": "message",
-                    "role": "assistant",
-                    "status": _normalize_responses_message_status(item_status),
-                    "content": [{"type": "output_text", "text": message_text}],
-                }
-                item_id = getattr(item, "id", None)
-                if isinstance(item_id, str) and item_id:
-                    raw_message_item["id"] = item_id
-                if normalized_phase:
-                    raw_message_item["phase"] = normalized_phase
-                message_items_raw.append(raw_message_item)
         elif item_type == "reasoning":
-            reasoning_text = _extract_responses_reasoning_text(item)
-            if reasoning_text:
-                reasoning_parts.append(reasoning_text)
-            # Capture the full reasoning item for multi-turn continuity.
-            # encrypted_content is an opaque blob the API needs back on
-            # subsequent turns to maintain coherent reasoning chains.
-            encrypted = getattr(item, "encrypted_content", None)
-            if isinstance(encrypted, str) and encrypted:
-                raw_item = {"type": "reasoning", "encrypted_content": encrypted}
-                item_id = getattr(item, "id", None)
-                if isinstance(item_id, str) and item_id:
-                    raw_item["id"] = item_id
-                # Capture summary — required by the API when replaying reasoning items
-                summary = getattr(item, "summary", None)
-                if isinstance(summary, list):
-                    raw_summary = []
-                    for part in summary:
-                        text = getattr(part, "text", None)
-                        if isinstance(text, str):
-                            raw_summary.append({"type": "summary_text", "text": text})
-                    raw_item["summary"] = raw_summary
-                reasoning_items_raw.append(raw_item)
-        elif item_type == "function_call":
+            _process_reasoning_item(
+                item, reasoning_parts, reasoning_items_raw,
+            )
+        elif item_type in {"function_call", "custom_tool_call"}:
             if item_status in {"queued", "in_progress", "incomplete"}:
                 continue
-            fn_name = getattr(item, "name", "") or ""
-            arguments = getattr(item, "arguments", "{}")
-            if not isinstance(arguments, str):
-                arguments = json.dumps(arguments, ensure_ascii=False)
-            raw_call_id = getattr(item, "call_id", None)
-            raw_item_id = getattr(item, "id", None)
-            embedded_call_id, _ = _split_responses_tool_id(raw_item_id)
-            call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
-            if not isinstance(call_id, str) or not call_id.strip():
-                call_id = _deterministic_call_id(fn_name, arguments, len(tool_calls))
-            call_id = call_id.strip()
-            response_item_id = raw_item_id if isinstance(raw_item_id, str) else None
-            response_item_id = _derive_responses_function_call_id(call_id, response_item_id)
-            tool_calls.append(SimpleNamespace(
-                id=call_id,
-                call_id=call_id,
-                response_item_id=response_item_id,
-                type="function",
-                function=SimpleNamespace(name=fn_name, arguments=arguments),
-            ))
-        elif item_type == "custom_tool_call":
-            fn_name = getattr(item, "name", "") or ""
-            arguments = getattr(item, "input", "{}")
-            if not isinstance(arguments, str):
-                arguments = json.dumps(arguments, ensure_ascii=False)
-            raw_call_id = getattr(item, "call_id", None)
-            raw_item_id = getattr(item, "id", None)
-            embedded_call_id, _ = _split_responses_tool_id(raw_item_id)
-            call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
-            if not isinstance(call_id, str) or not call_id.strip():
-                call_id = _deterministic_call_id(fn_name, arguments, len(tool_calls))
-            call_id = call_id.strip()
-            response_item_id = raw_item_id if isinstance(raw_item_id, str) else None
-            response_item_id = _derive_responses_function_call_id(call_id, response_item_id)
-            tool_calls.append(SimpleNamespace(
-                id=call_id,
-                call_id=call_id,
-                response_item_id=response_item_id,
-                type="function",
-                function=SimpleNamespace(name=fn_name, arguments=arguments),
-            ))
+            fn_call = _process_function_call_item(item, item_type, len(tool_calls))
+            if fn_call is not None:
+                tool_calls.append(fn_call)
 
     final_text = "\n".join([p for p in content_parts if p]).strip()
     if not final_text and hasattr(response, "output_text"):
@@ -1075,35 +1163,8 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
         if isinstance(out_text, str):
             final_text = out_text.strip()
 
-    # ── Tool-call leak recovery ──────────────────────────────────
-    # gpt-5.x on the Codex Responses API sometimes degenerates and emits
-    # what should be a structured `function_call` item as plain assistant
-    # text using the Harmony/Codex serialization (``to=functions.foo
-    # {json}`` or ``assistant to=functions.foo {json}``). The model
-    # intended to call a tool, but the intent never made it into
-    # ``response.output`` as a ``function_call`` item, so ``tool_calls``
-    # is empty here. If we pass this through, the parent sees a
-    # confident-looking summary with no audit trail (empty ``tool_trace``)
-    # and no tools actually ran — the Taiwan-embassy-email incident.
-    #
-    # Detection: leaked tokens always contain ``to=functions.<name>`` and
-    # the assistant message has no real tool calls. Treat it as incomplete
-    # so the existing Codex-incomplete continuation path (3 retries,
-    # handled in run_agent.py) gets a chance to re-elicit a proper
-    # ``function_call`` item. The existing loop already handles message
-    # append, dedup, and retry budget.
-    leaked_tool_call_text = False
-    if final_text and not tool_calls and _TOOL_CALL_LEAK_PATTERN.search(final_text):
-        leaked_tool_call_text = True
-        logger.warning(
-            "Codex response contains leaked tool-call text in assistant content "
-            "(no structured function_call items). Treating as incomplete so the "
-            "continuation path can re-elicit a proper tool call. Leaked snippet: %r",
-            final_text[:300],
-        )
-        # Clear the text so downstream code doesn't surface the garbage as
-        # a summary. The encrypted reasoning items (if any) are preserved
-        # so the model keeps its chain-of-thought on the retry.
+    leaked_tool_call_text = _detect_tool_call_leak(final_text, tool_calls)
+    if leaked_tool_call_text:
         final_text = ""
 
     assistant_message = SimpleNamespace(
@@ -1116,20 +1177,13 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
         codex_message_items=message_items_raw or None,
     )
 
-    if tool_calls:
-        finish_reason = "tool_calls"
-    elif leaked_tool_call_text:
-        finish_reason = "incomplete"
-    elif has_incomplete_items or (saw_commentary_phase and not saw_final_answer_phase):
-        finish_reason = "incomplete"
-    elif reasoning_items_raw and not final_text:
-        # Response contains only reasoning (encrypted thinking state) with
-        # no visible content or tool calls.  The model is still thinking and
-        # needs another turn to produce the actual answer.  Marking this as
-        # "stop" would send it into the empty-content retry loop which burns
-        # 3 retries then fails — treat it as incomplete instead so the Codex
-        # continuation path handles it correctly.
-        finish_reason = "incomplete"
-    else:
-        finish_reason = "stop"
+    finish_reason = _determine_response_finish_reason(
+        tool_calls=tool_calls,
+        leaked_tool_call_text=leaked_tool_call_text,
+        has_incomplete_items=has_incomplete_items,
+        saw_commentary_phase=saw_commentary_phase,
+        saw_final_answer_phase=saw_final_answer_phase,
+        reasoning_items_raw=reasoning_items_raw,
+        final_text=final_text,
+    )
     return assistant_message, finish_reason
