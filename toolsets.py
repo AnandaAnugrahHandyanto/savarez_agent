@@ -46,8 +46,8 @@ _HERMES_CORE_TOOLS = [
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
     # Text-to-speech
     "text_to_speech",
-    # Planning & memory
-    "todo", "memory",
+    # Planning, memory, and learning hygiene
+    "todo", "memory", "learning_triage",
     # Session history search
     "session_search",
     # Clarifying questions
@@ -191,6 +191,12 @@ TOOLSETS = {
         "tools": ["memory"],
         "includes": []
     },
+
+    "learning": {
+        "description": "Learning hygiene triage: propose memory and skill candidates without mutating durable stores",
+        "tools": ["learning_triage"],
+        "includes": []
+    },
     
     "session_search": {
         "description": "Search and recall past conversations with summarization",
@@ -325,7 +331,7 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-            "todo", "memory",
+            "todo", "memory", "learning_triage",
             "session_search",
             "execute_code", "delegate_task",
         ],
@@ -351,7 +357,7 @@ TOOLSETS = {
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             # Planning & memory
-            "todo", "memory",
+            "todo", "memory", "learning_triage",
             # Session history search
             "session_search",
             # Code execution + delegation

@@ -9867,6 +9867,19 @@ class AIAgent:
                 merge=function_args.get("merge", False),
                 store=self._todo_store,
             )
+        elif function_name == "learning_triage":
+            from tools.learning_triage import learning_triage as _learning_triage
+            return _learning_triage(
+                session_id=function_args.get("session_id"),
+                scope=function_args.get("scope", "recent"),
+                target=function_args.get("target", "all"),
+                mode=function_args.get("mode", "propose"),
+                limit=function_args.get("limit", 10),
+                candidate_indexes=function_args.get("candidate_indexes"),
+                confirm_apply=bool(function_args.get("confirm_apply", False)),
+                db=self._session_db,
+                current_session_id=self.session_id,
+            )
         elif function_name == "session_search":
             if not self._session_db:
                 from hermes_state import format_session_db_unavailable
@@ -10491,6 +10504,22 @@ class AIAgent:
                 tool_duration = time.time() - tool_start_time
                 if self._should_emit_quiet_tool_messages():
                     self._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
+            elif function_name == "learning_triage":
+                from tools.learning_triage import learning_triage as _learning_triage
+                function_result = _learning_triage(
+                    session_id=function_args.get("session_id"),
+                    scope=function_args.get("scope", "recent"),
+                    target=function_args.get("target", "all"),
+                    mode=function_args.get("mode", "propose"),
+                    limit=function_args.get("limit", 10),
+                    candidate_indexes=function_args.get("candidate_indexes"),
+                    confirm_apply=bool(function_args.get("confirm_apply", False)),
+                    db=self._session_db,
+                    current_session_id=self.session_id,
+                )
+                tool_duration = time.time() - tool_start_time
+                if self._should_emit_quiet_tool_messages():
+                    self._vprint(f"  {_get_cute_tool_message_impl('learning_triage', function_args, tool_duration, result=function_result)}")
             elif function_name == "session_search":
                 if not self._session_db:
                     from hermes_state import format_session_db_unavailable
