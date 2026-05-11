@@ -49,6 +49,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba", "novita",
     "qwen-oauth",
+    "baidu", "qianfan", "baidu-coding", "baidu-qianfan",
     "xiaomi",
     "arcee",
     "gmi",
@@ -1442,6 +1443,7 @@ def get_model_context_length(
        bypass the cache here so step 5b can always reconcile against
        the authoritative portal /v1/models response.
     1b. AWS Bedrock static table (must precede custom-endpoint probe)
+    1c. Baidu Qianfan static table (must precede custom-endpoint probe)
     2. Active endpoint metadata (/models for explicit custom endpoints)
     3. Local server query (for local endpoints)
     4. Anthropic /v1/models API (API-key users only, not OAuth)
@@ -1555,6 +1557,24 @@ def get_model_context_length(
             if base_url:
                 save_context_length(model, base_url, ctx)
             return ctx
+
+    # 1d. Baidu Qianfan Coding Plan — use static context length table.
+    # Baidu's /v2/coding/models endpoint does not reliably expose context
+    # window sizes, and models.dev has no Baidu provider entry.  The same
+    # model can have different context limits on Baidu vs its native provider
+    # (e.g. glm-5.1 is 204,800 on Z.AI but 198,000 on Baidu Qianfan), so the
+    # generic DEFAULT_CONTEXT_LENGTHS catch-all ("glm": 202752) would return
+    # the wrong value.  This must run before step 8 (hardcoded defaults) and
+    # before step 2 (custom-endpoint probe is skipped for known providers).
+    if provider == "baidu-coding" or (
+        base_url
+        and base_url_hostname(base_url) == "qianfan.baidubce.com"
+    ):
+        try:
+            from agent.baidu_coding_context import get_baidu_coding_context_length
+            return get_baidu_coding_context_length(model)
+        except ImportError:
+            pass  # plugin not installed — fall through to generic resolution
 
     # 2. Active endpoint metadata for truly custom/unknown endpoints.
     # Known providers (Copilot, OpenAI, Anthropic, etc.) skip this — their

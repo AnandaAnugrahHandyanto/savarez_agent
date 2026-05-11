@@ -1926,6 +1926,21 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "BAIDU_CODING_API_KEY": {
+        "description": "Baidu Coding Plan API key (Qianfan + multi-provider models)",
+        "prompt": "Baidu Coding API Key",
+        "url": "https://console.bce.baidu.com/qianfan/",
+        "password": True,
+        "category": "provider",
+    },
+    "BAIDU_CODING_BASE_URL": {
+        "description": "Custom Baidu Coding base URL (default: Qianfan OpenAI-compat endpoint)",
+        "prompt": "Baidu Coding Base URL",
+        "url": "",
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "HERMES_QWEN_BASE_URL": {
         "description": "Qwen Portal base URL override (default: https://portal.qwen.ai/v1)",
         "prompt": "Qwen Portal base URL (leave empty for default)",

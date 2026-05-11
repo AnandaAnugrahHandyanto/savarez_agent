@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import List, NamedTuple, Optional
 
 from hermes_cli.providers import (
+    _LABEL_OVERRIDES,
     custom_provider_slug,
     determine_api_mode,
     get_label,
@@ -1252,6 +1253,10 @@ def list_authenticated_providers(
         slug = hermes_id
         pinfo = _mdev_pinfo(mdev_id)
         display_name = pinfo.name if pinfo else mdev_id
+        # Prefer Hermes label overrides (e.g. baidu-coding → "Baidu Coding Plan"
+        # instead of models.dev's "Z.AI Coding Plan" from the mapped provider).
+        if slug in _LABEL_OVERRIDES:
+            display_name = _LABEL_OVERRIDES[slug]
 
         results.append({
             "slug": slug,

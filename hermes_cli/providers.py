@@ -138,6 +138,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="ALIBABA_CODING_PLAN_BASE_URL",
     ),
+    "baidu-coding": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("BAIDU_CODING_API_KEY", "BAIDU_API_KEY"),
+        base_url_env_var="BAIDU_CODING_BASE_URL",
+    ),
     "vercel": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
@@ -314,6 +319,13 @@ ALIASES: Dict[str, str] = {
     "alibaba-coding": "alibaba-coding-plan",
     "alibaba_coding_plan": "alibaba-coding-plan",
 
+    # baidu-coding
+    "baidu": "baidu-coding",
+    "qianfan": "baidu-coding",
+    "baidu-coding": "baidu-coding",
+    "baidu-coding-plan": "baidu-coding",
+    "baidu_qianfan": "baidu-coding",
+
     # google-gemini-cli (OAuth + Code Assist)
     "gemini-cli": "google-gemini-cli",
     "gemini-oauth": "google-gemini-cli",
@@ -380,6 +392,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
+    "baidu-coding": "Baidu Coding Plan",
 }
 
 

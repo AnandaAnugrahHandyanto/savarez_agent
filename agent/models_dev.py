@@ -175,6 +175,9 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "perplexity": "perplexity",
     "cohere": "cohere",
     "ollama-cloud": "ollama-cloud",
+    # Baidu Qianfan shares models with Z.AI Coding Plan in the models.dev catalog.
+    # This enables auto context_length resolution for glm-5.1, deepseek-v3.2, etc.
+    "baidu-coding": "zai-coding-plan",
 }
 
 # Reverse mapping: models.dev → Hermes (built lazily)
