@@ -958,6 +958,7 @@ def remove_job(job_id: str, store: Optional["CronStore"] = None) -> bool:
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
+                 store: Optional["CronStore"] = None,
                  delivery_error: Optional[str] = None):
     """
     Mark a job as having been run.
@@ -1030,7 +1031,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
         logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
 
 
-def advance_next_run(job_id: str) -> bool:
+def advance_next_run(job_id: str, store: Optional["CronStore"] = None) -> bool:
     """Preemptively advance next_run_at for a recurring job before execution.
 
     Call this BEFORE run_job() so that if the process crashes mid-execution,
@@ -1059,7 +1060,7 @@ def advance_next_run(job_id: str) -> bool:
         return False
 
 
-def get_due_jobs() -> List[Dict[str, Any]]:
+def get_due_jobs(store: Optional["CronStore"] = None) -> List[Dict[str, Any]]:
     """Get all jobs that are due to run now.
 
     For recurring jobs (cron/interval), if the scheduled time is stale

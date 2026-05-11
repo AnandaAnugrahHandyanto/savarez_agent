@@ -1688,6 +1688,16 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
     try:
         due_jobs = get_due_jobs()
+        # Merge global due jobs (if stores differ — avoid double-counting)
+        try:
+            from cron.jobs import global_store as _gs, current_profile_store as _cps
+            gs = _gs()
+            ps = _cps()
+            if gs.jobs_file.resolve() != ps.jobs_file.resolve():
+                global_due = get_due_jobs(store=gs)
+                due_jobs.extend(global_due)
+        except Exception:
+            pass
 
         if verbose and not due_jobs:
             logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
