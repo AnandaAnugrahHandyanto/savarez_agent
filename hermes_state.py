@@ -218,6 +218,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_state TEXT,
     handoff_platform TEXT,
     handoff_error TEXT,
+    market_thread_id TEXT,
+    market_resume_contract TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -690,13 +692,15 @@ class SessionDB:
         system_prompt: str = None,
         user_id: str = None,
         parent_session_id: str = None,
+        market_thread_id: str = None,
+        market_resume_contract: Dict[str, Any] = None,
     ) -> None:
         """Shared INSERT OR IGNORE for session rows."""
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
-                   system_prompt, parent_session_id, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   system_prompt, parent_session_id, started_at, market_thread_id, market_resume_contract)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
@@ -706,6 +710,8 @@ class SessionDB:
                     system_prompt,
                     parent_session_id,
                     time.time(),
+                    market_thread_id,
+                    json.dumps(market_resume_contract, sort_keys=True) if market_resume_contract else None,
                 ),
             )
         self._execute_write(_do)
@@ -929,6 +935,21 @@ class SessionDB:
 
         return self._execute_write(_do) or 0
 
+    @staticmethod
+    def _decode_session_row(row: sqlite3.Row) -> Dict[str, Any]:
+        """Convert a session row to a dict and decode JSON metadata fields."""
+        session = dict(row)
+        raw_contract = session.get("market_resume_contract")
+        if isinstance(raw_contract, str) and raw_contract:
+            try:
+                session["market_resume_contract"] = json.loads(raw_contract)
+            except json.JSONDecodeError:
+                logger.warning(
+                    "Invalid market_resume_contract JSON for session %s",
+                    session.get("id"),
+                )
+        return session
+
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID."""
         with self._lock:
@@ -936,7 +957,61 @@ class SessionDB:
                 "SELECT * FROM sessions WHERE id = ?", (session_id,)
             )
             row = cursor.fetchone()
-        return dict(row) if row else None
+        return self._decode_session_row(row) if row else None
+
+    def set_market_thread_id(self, session_id: str, market_thread_id: Optional[str]) -> bool:
+        """Persist the explicit Market lane/thread id for a session.
+
+        Returns True when the session row exists.  Passing None clears the
+        binding; callers should only do that for deliberate lane resets.
+        """
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET market_thread_id = ? WHERE id = ?",
+                (market_thread_id, session_id),
+            )
+            return cursor.rowcount
+        return self._execute_write(_do) > 0
+
+    def get_market_thread_id(self, session_id: str) -> Optional[str]:
+        """Return the session's explicit Market thread id, if present."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT market_thread_id FROM sessions WHERE id = ?", (session_id,)
+            )
+            row = cursor.fetchone()
+        return row["market_thread_id"] if row else None
+
+    def set_market_resume_contract(
+        self,
+        session_id: str,
+        contract: Optional[Dict[str, Any]],
+    ) -> bool:
+        """Persist the bounded Market rollover resume contract for a session."""
+        encoded = json.dumps(contract, sort_keys=True) if contract else None
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET market_resume_contract = ? WHERE id = ?",
+                (encoded, session_id),
+            )
+            return cursor.rowcount
+        return self._execute_write(_do) > 0
+
+    def get_market_resume_contract(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Return the decoded Market rollover resume contract, if present."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT market_resume_contract FROM sessions WHERE id = ?",
+                (session_id,),
+            )
+            row = cursor.fetchone()
+        if not row or not row["market_resume_contract"]:
+            return None
+        try:
+            return json.loads(row["market_resume_contract"])
+        except json.JSONDecodeError:
+            logger.warning("Invalid market_resume_contract JSON for session %s", session_id)
+            return None
 
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.
@@ -1057,7 +1132,7 @@ class SessionDB:
                 "SELECT * FROM sessions WHERE title = ?", (title,)
             )
             row = cursor.fetchone()
-        return dict(row) if row else None
+        return self._decode_session_row(row) if row else None
 
     def resolve_session_by_title(self, title: str) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest in a lineage.

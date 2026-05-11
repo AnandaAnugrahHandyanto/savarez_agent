@@ -85,6 +85,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("fork",), args_hint="[name]"),
     CommandDef("compress", "Manually compress conversation context", "Session",
                args_hint="[focus topic]"),
+    CommandDef("market-rollover", "Manually split context through Market handoff, with compression fallback", "Session",
+               aliases=("market_rollover",), args_hint="[focus topic]"),
     CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
                args_hint="[number]"),
     CommandDef("snapshot", "Create or restore state snapshots of Hermes config/state", "Session",
