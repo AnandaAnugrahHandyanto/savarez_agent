@@ -146,7 +146,7 @@ Registered only when the agent is spawned by the kanban dispatcher (`HERMES_KANB
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `mixture_of_agents` | Route a hard problem through multiple frontier LLMs collaboratively. Makes 5 API calls (4 reference models + 1 aggregator) with maximum reasoning effort — use sparingly for genuinely difficult problems. Best for: complex math, advanced alg… | OPENROUTER_API_KEY |
+| `mixture_of_agents` | Route a hard problem through multiple frontier LLMs collaboratively. Roster, providers, and per-model reasoning effort are configured under `moa:` in `config.yaml` — see [Mixture of Agents](../user-guide/features/mixture-of-agents.md). | Credentials for each configured provider |
 
 ## `rl` toolset
 
