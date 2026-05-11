@@ -153,6 +153,35 @@ def _normalize_job_for_return(job: dict, *, store: "CronStore | None" = None) ->
     normalized["job_ref"] = _make_job_ref(normalized)
     return normalized
 
+def resolve_profile_home(profile_name: str) -> Path:
+    name = str(profile_name or "").strip()
+    if not name:
+        raise ValueError("Profile name must not be empty")
+    if "/" in name or "\\" in name or ":" in name:
+        raise ValueError(f"Invalid profile name: {name!r}")
+    if name in {".", ".."}:
+        raise ValueError(f"Invalid profile name: {name!r}")
+    for ch in name:
+        if ord(ch) < 32 or ord(ch) == 127:
+            raise ValueError(f"Invalid profile name: {name!r}")
+    profile_home = get_default_hermes_root() / "profiles" / name
+    resolved = profile_home.resolve()
+    try:
+        resolved.relative_to(get_default_hermes_root().resolve() / "profiles")
+    except ValueError:
+        raise ValueError(f"Profile path escapes profiles directory: {name!r}")
+    return resolved
+
+
+def _validate_run_as_profile(profile_name: str | None) -> str:
+    name = str(profile_name or "").strip()
+    if not name:
+        raise ValueError("Global cron jobs require run_as_profile")
+    profile_home = resolve_profile_home(name)
+    if not profile_home.exists():
+        raise ValueError(f"run_as_profile does not exist: {name}")
+    return name
+
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
     """Normalize legacy/single-skill and multi-skill inputs into a unique ordered list."""
     if skills is None:
@@ -607,6 +636,9 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    scope: str = "profile",
+    run_as_profile: Optional[str] = None,
+    store: Optional["CronStore"] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -656,6 +688,16 @@ def create_job(
         The created job dict
     """
     parsed_schedule = parse_schedule(schedule)
+
+    # Scope and store resolution (global cron v1)
+    _scope = str(scope or "profile").lower()
+    if _scope == "global":
+        run_as_profile = _validate_run_as_profile(run_as_profile)
+        target_store = resolve_store("global", store=store)
+    elif _scope == "profile":
+        target_store = resolve_store("profile", store=store)
+    else:
+        raise ValueError(f"Invalid scope: {_scope!r}. Must be profile or global.")
 
     # Normalize repeat: treat 0 or negative values as None (infinite)
     if repeat is not None and repeat <= 0:
@@ -707,6 +749,7 @@ def create_job(
     label_source = (prompt_text or (normalized_skills[0] if normalized_skills else None) or (normalized_script if normalized_no_agent else None)) or "cron job"
     job = {
         "id": job_id,
+        "scope": _scope,
         "name": name or label_source[:50].strip(),
         "prompt": prompt_text,
         "skills": normalized_skills,
@@ -736,39 +779,66 @@ def create_job(
         # Delivery configuration
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
+        "run_as_profile": run_as_profile if _scope == "global" else None,
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
     }
 
-    jobs = load_jobs()
+    jobs = load_jobs(store=target_store)
     jobs.append(job)
-    save_jobs(jobs)
+    save_jobs(jobs, store=target_store)
 
-    return job
+    return _normalize_job_for_return(job, store=target_store)
 
 
-def get_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Get a job by ID."""
-    jobs = load_jobs()
+
+def list_visible_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
+    """List current profile jobs plus global jobs. Safe for dashboard/API."""
+    jobs = list_jobs(include_disabled=include_disabled, store=current_profile_store())
+    jobs.extend(list_jobs(include_disabled=include_disabled, store=global_store()))
+    return jobs
+
+def get_job(job_id: str, store: Optional["CronStore"] = None) -> Optional[Dict[str, Any]]:
+    """Get a job by ID. Supports scoped refs (global:<id>)."""
+    scope, canonical_id = _parse_job_ref(job_id)
+    if scope == "global":
+        resolved = global_store() if store is None else resolve_store("global", store=store)
+    elif scope == "profile":
+        resolved = resolve_store("profile", store=store)
+    else:
+        resolved = resolve_store(store=store)
+        canonical_id = job_id
+    jobs = load_jobs(store=resolved)
     for job in jobs:
-        if job["id"] == job_id:
-            return _normalize_job_record(job)
+        if job["id"] == canonical_id:
+            return _normalize_job_for_return(job, store=resolved)
     return None
 
 
-def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
+def list_jobs(include_disabled: bool = False, store: Optional["CronStore"] = None) -> List[Dict[str, Any]]:
     """List all jobs, optionally including disabled ones."""
-    jobs = [_normalize_job_record(j) for j in load_jobs()]
+    resolved = resolve_store(store=store)
+    jobs = load_jobs(store=resolved)
     if not include_disabled:
         jobs = [j for j in jobs if j.get("enabled", True)]
     return jobs
 
 
-def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Update a job by ID, refreshing derived schedule fields when needed."""
-    jobs = load_jobs()
+def update_job(job_id: str, updates: Dict[str, Any], store: Optional["CronStore"] = None) -> Optional[Dict[str, Any]]:
+    """Update a job by ID with scope-aware routing. Naked IDs=profile only."""
+    scope, canonical_id = _parse_job_ref(job_id)
+    if scope == "global":
+        resolved = global_store() if store is None else resolve_store("global", store=store)
+    elif scope == "profile":
+        resolved = resolve_store("profile", store=store)
+    else:
+        resolved = resolve_store(store=store)
+        canonical_id = job_id
+    if "scope" in updates:
+        raise ValueError("Cannot change scope of existing cron job")
+    jobs = load_jobs(store=resolved)
     for i, job in enumerate(jobs):
-        if job["id"] != job_id:
+        if job["id"] != canonical_id:
             continue
 
         # Validate / normalize workdir if present in updates.  Empty string or
@@ -807,12 +877,12 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             updated["next_run_at"] = compute_next_run(updated["schedule"])
 
         jobs[i] = updated
-        save_jobs(jobs)
-        return _normalize_job_record(jobs[i])
+        save_jobs(jobs, store=resolved)
+        return _normalize_job_for_return(jobs[i], store=resolved)
     return None
 
 
-def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def pause_job(job_id: str, reason: Optional[str] = None, store: Optional["CronStore"] = None) -> Optional[Dict[str, Any]]:
     """Pause a job without deleting it."""
     return update_job(
         job_id,
@@ -822,12 +892,13 @@ def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, A
             "paused_at": _hermes_now().isoformat(),
             "paused_reason": reason,
         },
+        store=store,
     )
 
 
-def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
+def resume_job(job_id: str, store: Optional["CronStore"] = None) -> Optional[Dict[str, Any]]:
     """Resume a paused job and compute the next future run from now."""
-    job = get_job(job_id)
+    job = get_job(job_id, store=store)
     if not job:
         return None
 
@@ -841,12 +912,13 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
             "paused_reason": None,
             "next_run_at": next_run_at,
         },
+        store=store,
     )
 
 
-def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
+def trigger_job(job_id: str, store: Optional["CronStore"] = None) -> Optional[Dict[str, Any]]:
     """Schedule a job to run on the next scheduler tick."""
-    job = get_job(job_id)
+    job = get_job(job_id, store=store)
     if not job:
         return None
     return update_job(
@@ -858,16 +930,25 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
             "paused_reason": None,
             "next_run_at": _hermes_now().isoformat(),
         },
+        store=store,
     )
 
 
-def remove_job(job_id: str) -> bool:
-    """Remove a job by ID."""
-    jobs = load_jobs()
+def remove_job(job_id: str, store: Optional["CronStore"] = None) -> bool:
+    """Remove a job by ID. Naked IDs=profile only; global:<id> for global."""
+    scope, canonical_id = _parse_job_ref(job_id)
+    if scope == "global":
+        resolved = global_store() if store is None else resolve_store("global", store=store)
+    elif scope == "profile":
+        resolved = resolve_store("profile", store=store)
+    else:
+        resolved = resolve_store(store=store)
+        canonical_id = job_id
+    jobs = load_jobs(store=resolved)
     original_len = len(jobs)
-    jobs = [j for j in jobs if j["id"] != job_id]
+    jobs = [j for j in jobs if j["id"] != canonical_id]
     if len(jobs) < original_len:
-        save_jobs(jobs)
+        save_jobs(jobs, store=resolved)
         # Clean up output directory to prevent orphaned dirs accumulating
         job_output_dir = OUTPUT_DIR / job_id
         if job_output_dir.exists():
