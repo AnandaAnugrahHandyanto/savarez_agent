@@ -24,9 +24,11 @@ Defense against context-window overflow operates at three levels:
 
 import logging
 import os
+import re
 import shlex
 import uuid
 
+from hermes_constants import get_hermes_home
 from tools.budget_config import (
     DEFAULT_PREVIEW_SIZE_CHARS,
     BudgetConfig,
@@ -37,6 +39,7 @@ logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
 STORAGE_DIR = "/tmp/hermes-results"
+LOCAL_FS_SUBDIR = "tool_results"
 HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
 
@@ -73,6 +76,25 @@ def _heredoc_marker(content: str) -> str:
     if HEREDOC_MARKER not in content:
         return HEREDOC_MARKER
     return f"HERMES_PERSIST_{uuid.uuid4().hex[:8]}"
+
+
+def _write_to_local_filesystem(content: str, tool_use_id: str) -> str | None:
+    """Spill content to ``<HERMES_HOME>/tool_results/<safe_id>.txt``.
+
+    Used when no sandbox env is available so ``read_file`` can still access
+    the full output. Returns the absolute path on success, ``None`` on any
+    filesystem failure (the caller falls back to inline truncation).
+    """
+    try:
+        storage_dir = get_hermes_home() / LOCAL_FS_SUBDIR
+        storage_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", tool_use_id).strip("._") or uuid.uuid4().hex
+        target = storage_dir / f"{safe_name}.txt"
+        target.write_text(content, encoding="utf-8", errors="replace")
+        return str(target)
+    except Exception as exc:
+        logger.warning("Local-fs persistence failed for %s: %s", tool_use_id, exc)
+        return None
 
 
 def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
@@ -166,15 +188,28 @@ def maybe_persist_tool_result(
                 return _build_persisted_message(preview, has_more, len(content), remote_path)
         except Exception as exc:
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
+    else:
+        # No sandbox env (bare CLI, local custom providers). Spill to local
+        # filesystem so read_file can still reach the full output. Without
+        # this, oversized tool results fall through to inline truncation and
+        # inflate every subsequent prompt, which can drive a compression-grows
+        # -size loop on lower-context models. See issue #23767.
+        local_path = _write_to_local_filesystem(content, tool_use_id)
+        if local_path:
+            logger.info(
+                "Persisted large tool result to local fs: %s (%s, %d chars -> %s)",
+                tool_name, tool_use_id, len(content), local_path,
+            )
+            return _build_persisted_message(preview, has_more, len(content), local_path)
 
     logger.info(
-        "Inline-truncating large tool result: %s (%d chars, no sandbox write)",
+        "Inline-truncating large tool result: %s (%d chars, no sandbox or local-fs write)",
         tool_name, len(content),
     )
     return (
         f"{preview}\n\n"
         f"[Truncated: tool response was {len(content):,} chars. "
-        f"Full output could not be saved to sandbox.]"
+        f"Full output could not be saved.]"
     )
 
 

@@ -9,14 +9,17 @@ from tools.budget_config import (
     DEFAULT_PREVIEW_SIZE_CHARS,
     BudgetConfig,
 )
+from hermes_constants import get_hermes_home
 from tools.tool_result_storage import (
     HEREDOC_MARKER,
+    LOCAL_FS_SUBDIR,
     PERSISTED_OUTPUT_TAG,
     PERSISTED_OUTPUT_CLOSING_TAG,
     STORAGE_DIR,
     _build_persisted_message,
     _heredoc_marker,
     _resolve_storage_dir,
+    _write_to_local_filesystem,
     _write_to_sandbox,
     enforce_turn_budget,
     generate_preview,
@@ -156,6 +159,50 @@ class TestWriteToSandbox:
         assert "'/tmp/x; rm -rf /; echo .txt'" in cmd
 
 
+class TestWriteToLocalFilesystem:
+    def test_writes_under_hermes_home(self):
+        path = _write_to_local_filesystem("hello content", "tu_abc")
+        assert path is not None
+        target = get_hermes_home() / LOCAL_FS_SUBDIR / "tu_abc.txt"
+        assert target.exists()
+        assert target.read_text() == "hello content"
+        assert path == str(target)
+
+    def test_sanitizes_path_traversal(self):
+        path = _write_to_local_filesystem("data", "../../etc/passwd")
+        assert path is not None
+        # No literal ".." or "/" can survive in the spilled filename.
+        from pathlib import Path
+        name = Path(path).name
+        assert ".." not in name
+        assert "/" not in name
+        # The file must live under the spill dir, not outside it.
+        spill_root = get_hermes_home() / LOCAL_FS_SUBDIR
+        assert Path(path).parent == spill_root
+
+    def test_empty_id_falls_back_to_uuid(self):
+        path = _write_to_local_filesystem("data", "")
+        assert path is not None
+        from pathlib import Path
+        name = Path(path).stem
+        assert len(name) >= 8  # uuid4 hex is 32 chars
+
+    def test_unicode_content_round_trip(self):
+        content = "日本語テスト " * 100
+        path = _write_to_local_filesystem(content, "tu_unicode")
+        assert path is not None
+        from pathlib import Path
+        assert Path(path).read_text(encoding="utf-8") == content
+
+    def test_returns_none_on_unwritable_home(self, tmp_path, monkeypatch):
+        # Point HERMES_HOME at a regular file, so mkdir(parents=True) under it
+        # cannot succeed.
+        blocker = tmp_path / "not_a_directory"
+        blocker.write_text("blocker")
+        monkeypatch.setenv("HERMES_HOME", str(blocker))
+        assert _write_to_local_filesystem("data", "tu_x") is None
+
+
 class TestResolveStorageDir:
     def test_defaults_to_storage_dir_without_env(self):
         assert _resolve_storage_dir(None) == STORAGE_DIR
@@ -254,12 +301,40 @@ class TestMaybePersistToolResult:
         # command string — see test_large_content_via_stdin for why).
         assert env.execute.call_args[1]["stdin_data"] == content
 
-    def test_above_threshold_no_env_truncates_inline(self):
+    def test_above_threshold_no_env_spills_to_local_fs(self):
+        """Bare CLI (env=None) spills oversized results to ``<HERMES_HOME>/tool_results``.
+
+        Regression for #23767: previously env=None fell through to inline
+        truncation, leaving the truncated preview inflating every subsequent
+        prompt and driving a compression-grows-size loop on lower-context models.
+        """
         content = "x" * 60_000
         result = maybe_persist_tool_result(
             content=content,
             tool_name="terminal",
             tool_use_id="tc_789",
+            env=None,
+            threshold=30_000,
+        )
+        assert PERSISTED_OUTPUT_TAG in result
+        assert len(result) < len(content)
+
+        spilled_dir = get_hermes_home() / LOCAL_FS_SUBDIR
+        spilled_path = spilled_dir / "tc_789.txt"
+        assert spilled_path.exists()
+        assert spilled_path.read_text() == content
+        assert str(spilled_path) in result
+
+    def test_no_env_local_fs_failure_falls_back_to_truncation(self, tmp_path, monkeypatch):
+        """If both sandbox AND local-fs are unavailable, last-resort is inline truncation."""
+        blocker = tmp_path / "blocker_file"
+        blocker.write_text("not a dir")
+        monkeypatch.setenv("HERMES_HOME", str(blocker))
+        content = "x" * 60_000
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="tc_double_fail",
             env=None,
             threshold=30_000,
         )
