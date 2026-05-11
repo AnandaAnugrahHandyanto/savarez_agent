@@ -1487,10 +1487,10 @@ class WeComAdapter(BasePlatformAdapter):
                 reply_req_id = self._last_chat_req_ids[chat_id]
 
             if reply_req_id:
+                current_stream_reply_req_id = getattr(self, "_current_reply_req_id", None)
+                current_stream_id = getattr(self, "_thinking_stream_id", None)
                 has_streaming_context = bool(
-                    getattr(self, "_thinking_stream_id", None)
-                    or getattr(self, "_thinking_task", None)
-                    or getattr(self, "_thinking_accumulated_lines", None)
+                    current_stream_id and reply_req_id == current_stream_reply_req_id
                 )
                 if has_streaming_context:
                     # Stop the thinking timer loop if running, then send final reply via stream.
