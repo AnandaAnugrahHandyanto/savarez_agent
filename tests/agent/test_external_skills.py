@@ -103,6 +103,42 @@ class TestGetAllSkillsDirs:
         assert result[0] == hermes_home / "skills"
         assert result[1] == external_skills_dir.resolve()
 
+    def test_profile_inherits_default_skills_after_local(self, hermes_home):
+        default_skills = hermes_home / "skills"
+        inherited_skill = default_skills / "inherited-skill"
+        inherited_skill.mkdir(parents=True)
+        (inherited_skill / "SKILL.md").write_text(
+            "---\nname: inherited-skill\ndescription: From default profile\n---\n"
+        )
+
+        profile_home = hermes_home / "profiles" / "dev"
+        profile_skills = profile_home / "skills"
+        profile_skills.mkdir(parents=True)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile_home)}):
+            from agent.skill_utils import get_all_skills_dirs
+            result = get_all_skills_dirs()
+
+        assert result[0] == profile_skills
+        assert result[1] == default_skills.resolve()
+
+    def test_custom_home_does_not_inherit_default_skills(self, hermes_home):
+        default_skills = hermes_home / "skills"
+        (default_skills / "default-only").mkdir(parents=True)
+        ((default_skills / "default-only") / "SKILL.md").write_text(
+            "---\nname: default-only\ndescription: From default\n---\n"
+        )
+
+        custom_home = hermes_home / "scratch-home"
+        custom_skills = custom_home / "skills"
+        custom_skills.mkdir(parents=True)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(custom_home)}):
+            from agent.skill_utils import get_all_skills_dirs
+            result = get_all_skills_dirs()
+
+        assert result == [custom_skills]
+
 
 class TestExternalSkillsInFindAll:
     def test_external_skills_found(self, hermes_home, external_skills_dir):
@@ -155,3 +191,24 @@ class TestExternalSkillView:
             result = json.loads(skill_view("my-external-skill"))
         assert result["success"] is True
         assert "external things" in result["content"]
+
+    def test_profile_skill_view_finds_default_profile_skill(self, hermes_home):
+        default_skill = hermes_home / "skills" / "default-only"
+        default_skill.mkdir(parents=True)
+        (default_skill / "SKILL.md").write_text(
+            "---\nname: default-only\ndescription: Shared default skill\n---\n\nDefault profile content.\n"
+        )
+
+        profile_home = hermes_home / "profiles" / "dev"
+        profile_skills = profile_home / "skills"
+        profile_skills.mkdir(parents=True)
+
+        with (
+            patch.dict(os.environ, {"HERMES_HOME": str(profile_home)}),
+            patch("tools.skills_tool.SKILLS_DIR", profile_skills),
+        ):
+            from tools.skills_tool import skill_view
+            result = json.loads(skill_view("default-only"))
+
+        assert result["success"] is True
+        assert "Default profile content" in result["content"]

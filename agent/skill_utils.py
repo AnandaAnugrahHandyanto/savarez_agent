@@ -12,7 +12,12 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from hermes_constants import get_config_path, get_skills_dir
+from hermes_constants import (
+    get_config_path,
+    get_default_hermes_root,
+    get_hermes_home,
+    get_skills_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -172,40 +177,65 @@ def _normalize_string_set(values) -> Set[str]:
 
 
 def get_external_skills_dirs() -> List[Path]:
-    """Read ``skills.external_dirs`` from config.yaml and return validated paths.
+    """Return additional skill directories visible to the active profile.
 
-    Each entry is expanded (``~`` and ``${VAR}``) and resolved to an absolute
-    path.  Only directories that actually exist are returned.  Duplicates and
-    paths that resolve to the local ``~/.hermes/skills/`` are silently skipped.
+    Named profiles implicitly inherit the default profile's ``skills/`` tree so
+    workers launched with ``hermes -p <profile> --skills ...`` can resolve
+    skills that an orchestrator saw from the default profile.  Explicit
+    ``skills.external_dirs`` entries from the active profile's config follow.
+
+    Each explicit entry is expanded (``~`` and ``${VAR}``) and resolved to an
+    absolute path.  Only directories that actually exist are returned.
+    Duplicates and paths that resolve to the active profile's local
+    ``skills/`` directory are silently skipped.
     """
+    hermes_home = get_hermes_home()
+    local_skills = get_skills_dir().resolve()
+    seen: Set[Path] = {local_skills}
+    result: List[Path] = []
+
+    def add_dir(path: Path) -> None:
+        p = path.resolve()
+        if p in seen:
+            return
+        if p.is_dir():
+            seen.add(p)
+            result.append(p)
+        else:
+            logger.debug("External skills dir does not exist, skipping: %s", p)
+
+    # Profile homes live under <root>/profiles/<name>.  In that case, inherit
+    # the default profile's skills as an implicit read-through layer after the
+    # profile-local skills.  Custom non-profile HERMES_HOME values remain fully
+    # isolated.
+    try:
+        resolved_home = hermes_home.resolve()
+        if resolved_home.parent.name == "profiles":
+            add_dir(get_default_hermes_root() / "skills")
+    except Exception:
+        pass
+
     config_path = get_config_path()
     if not config_path.exists():
-        return []
+        return result
     try:
         parsed = yaml_load(config_path.read_text(encoding="utf-8"))
     except Exception:
-        return []
+        return result
     if not isinstance(parsed, dict):
-        return []
+        return result
 
     skills_cfg = parsed.get("skills")
     if not isinstance(skills_cfg, dict):
-        return []
+        return result
 
     raw_dirs = skills_cfg.get("external_dirs")
     if not raw_dirs:
-        return []
+        return result
     if isinstance(raw_dirs, str):
         raw_dirs = [raw_dirs]
     if not isinstance(raw_dirs, list):
-        return []
-
-    from hermes_constants import get_hermes_home
-
-    hermes_home = get_hermes_home()
-    local_skills = get_skills_dir().resolve()
-    seen: Set[Path] = set()
-    result: List[Path] = []
+        return result
 
     for entry in raw_dirs:
         entry = str(entry).strip()
@@ -219,15 +249,7 @@ def get_external_skills_dirs() -> List[Path]:
             p = (hermes_home / p).resolve()
         else:
             p = p.resolve()
-        if p == local_skills:
-            continue
-        if p in seen:
-            continue
-        if p.is_dir():
-            seen.add(p)
-            result.append(p)
-        else:
-            logger.debug("External skills dir does not exist, skipping: %s", p)
+        add_dir(p)
 
     return result
 
