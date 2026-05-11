@@ -1381,5 +1381,8 @@ def auth_command(args) -> None:
     if action == "spotify":
         auth_spotify_command(args)
         return
+    if action == "browser":
+        auth_browser_command(args)
+        return
     # No subcommand — launch interactive mode
     _interactive_auth()
