@@ -67,6 +67,15 @@ _kordoc_spec = _ilu.spec_from_file_location(
 kordoc_helper = _ilu.module_from_spec(_kordoc_spec)
 _kordoc_spec.loader.exec_module(kordoc_helper)  # type: ignore[union-attr]
 
+# codex_auth_helper lives alongside plugin_api.py — same explicit-load pattern
+# so the module resolves correctly as a standalone file in tests.
+_codex_auth_spec = _ilu.spec_from_file_location(
+    "hermes_docs_codex_auth_helper",
+    Path(__file__).parent / "codex_auth_helper.py",
+)
+codex_auth_helper = _ilu.module_from_spec(_codex_auth_spec)
+_codex_auth_spec.loader.exec_module(codex_auth_helper)  # type: ignore[union-attr]
+
 log = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -682,3 +691,30 @@ async def kordoc_preview(workspace_id: str, body: ConversionPreviewRequest):
         body.target_format,
     )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Codex auth readiness status
+# ---------------------------------------------------------------------------
+
+
+@router.get("/auth/codex/status")
+async def get_codex_auth_status():
+    """Report whether the local Codex / OpenAI auth broker is configured.
+
+    Returns a JSON object with::
+
+        {
+            "provider_id":  "openai-codex",
+            "configured":   bool,   // True when valid credentials are present
+            "available":    bool,   // alias for configured
+            "cli_command":  str,    // "hermes auth add openai-codex"
+            "token_exposed": false, // always False — no secrets are returned
+            "detail":       str,    // human-readable status line
+            "next_action":  str | null,  // what to do next; null when ready
+        }
+
+    This endpoint is **read-only**.  It never initiates OAuth or any network
+    call.  Raw tokens are never included in the response.
+    """
+    return await to_thread.run_sync(codex_auth_helper.get_codex_status)

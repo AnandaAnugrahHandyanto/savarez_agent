@@ -864,3 +864,99 @@ def test_kordoc_preview_missing_file_returns_404(docs_home, sample_folder):
         assert r.status_code == 404
     finally:
         mod.kordoc_helper._detect_override = None
+
+
+# ---------------------------------------------------------------------------
+# GET /auth/codex/status — Codex auth readiness
+# ---------------------------------------------------------------------------
+
+
+def _make_codex_auth_client(docs_home_fixture, status_override: dict):
+    """Load a fresh module, inject _status_override, return (mod, TestClient)."""
+    mod = _load_plugin_module_fresh(mod_key="hermes_docs_plugin_api_codex_auth_test")
+    mod.codex_auth_helper._status_override = status_override
+    app = FastAPI()
+    app.include_router(mod.router, prefix="/api/plugins/hermes-docs")
+    return mod, TestClient(app)
+
+
+def test_codex_auth_status_configured(docs_home):
+    """When credentials are present the endpoint reports configured=True."""
+    override = {
+        "provider_id": "openai-codex",
+        "configured": True,
+        "available": True,
+        "cli_command": "hermes auth add openai-codex",
+        "token_exposed": False,
+        "detail": "Authenticated (hermes-auth-store; store: /tmp/.hermes/auth.json)",
+        "next_action": None,
+    }
+    mod, c = _make_codex_auth_client(docs_home, override)
+    try:
+        r = c.get("/api/plugins/hermes-docs/auth/codex/status")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["provider_id"] == "openai-codex"
+        assert data["configured"] is True
+        assert data["available"] is True
+        assert data["cli_command"] == "hermes auth add openai-codex"
+        assert data["token_exposed"] is False
+        assert data["next_action"] is None
+    finally:
+        mod.codex_auth_helper._status_override = None
+
+
+def test_codex_auth_status_not_configured(docs_home):
+    """When credentials are absent the endpoint reports configured=False."""
+    override = {
+        "provider_id": "openai-codex",
+        "configured": False,
+        "available": False,
+        "cli_command": "hermes auth add openai-codex",
+        "token_exposed": False,
+        "detail": "Not configured",
+        "next_action": "Run: hermes auth add openai-codex",
+    }
+    mod, c = _make_codex_auth_client(docs_home, override)
+    try:
+        r = c.get("/api/plugins/hermes-docs/auth/codex/status")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["configured"] is False
+        assert data["available"] is False
+        assert data["next_action"] is not None
+        # next_action must mention the CLI command
+        assert "hermes auth add openai-codex" in data["next_action"]
+    finally:
+        mod.codex_auth_helper._status_override = None
+
+
+def test_codex_auth_status_no_token_exposure(docs_home):
+    """Raw auth fields from Hermes auth status must be stripped."""
+    mod = _load_plugin_module_fresh(mod_key="hermes_docs_plugin_api_codex_auth_real_test")
+
+    def fake_auth_status():
+        return {
+            "logged_in": True,
+            "source": "pool:primary",
+            "auth_store": "/tmp/.hermes/auth.json",
+            "api_key": "sk-sensitive-value",
+            "access_token": "token-sensitive-value",
+            "refresh_token": "refresh-sensitive-value",
+        }
+
+    mod.codex_auth_helper._read_auth_status = fake_auth_status
+    app = FastAPI()
+    app.include_router(mod.router, prefix="/api/plugins/hermes-docs")
+    c = TestClient(app)
+
+    r = c.get("/api/plugins/hermes-docs/auth/codex/status")
+    assert r.status_code == 200
+    data = r.json()
+    encoded = json.dumps(data)
+
+    assert data["configured"] is True
+    assert data["token_exposed"] is False
+    for key in ("api_key", "access_token", "refresh_token", "token", "secret", "password"):
+        assert key not in data, f"Sensitive key {key!r} must not appear in response"
+    assert "sensitive-value" not in encoded
