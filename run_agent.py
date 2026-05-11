@@ -11725,6 +11725,7 @@ class AIAgent:
                 system_prompt=active_system_prompt or "",
                 tools=self.tools or None,
             )
+            self.context_compressor.display_prompt_tokens = _preflight_tokens
 
             if _preflight_tokens >= self.context_compressor.threshold_tokens:
                 logger.info(
@@ -11771,6 +11772,7 @@ class AIAgent:
                         system_prompt=active_system_prompt or "",
                         tools=self.tools or None,
                     )
+                    self.context_compressor.display_prompt_tokens = _preflight_tokens
                     if _preflight_tokens < self.context_compressor.threshold_tokens:
                         break  # Under threshold
 
@@ -12142,6 +12144,7 @@ class AIAgent:
             # Calculate approximate request size for logging
             total_chars = sum(len(str(msg)) for msg in api_messages)
             approx_tokens = estimate_messages_tokens_rough(api_messages)
+            self.context_compressor.display_prompt_tokens = approx_tokens
             
             # Thinking spinner for quiet mode (animated during API call)
             thinking_spinner = None
