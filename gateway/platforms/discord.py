@@ -781,7 +781,17 @@ class DiscordAdapter(BasePlatformAdapter):
                             _channel_ids.add(_parent_id)
                         if "*" not in _free_channels and not (_channel_ids & _free_channels):
                             return
-
+		    # If you want to have multiple agents in the same Discord thread there is a
+		    # good chance they will end up in an endless loop of meaningless responses
+		    # as they say things like "that message was not for me, staying silent"
+		    # which in turn force the other agents to read and respond.
+		    # Setting DISCORD_REQUIRE_MENTION to `true` means agents will only handle
+		    # messages that specifically mention them.
+                    _require_mention = os.getenv(
+                        "DISCORD_REQUIRE_MENTION", "true"
+                    ).lower() in ("true", "1", "yes")
+                    if _require_mention and not _self_mentioned:
+                        return
                 await self._handle_message(message)
 
             @self._client.event
