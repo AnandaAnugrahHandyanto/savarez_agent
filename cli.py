@@ -4936,6 +4936,44 @@ class HermesCLI:
         except Exception as e:
             _cprint(f"  Clipboard copy failed: {e}")
 
+    def _handle_diff_command(self, cmd_original: str) -> None:
+        """Handle /diff [args...] — show git diff in the working directory."""
+        parts = cmd_original.split(maxsplit=1)
+        extra_args = parts[1].strip() if len(parts) > 1 else ""
+
+        if not shutil.which("git"):
+            _cprint("  git is not installed or not on PATH.")
+            return
+
+        try:
+            subprocess.run(
+                ["git", "rev-parse", "--git-dir"],
+                capture_output=True, check=True,
+                cwd=self.cwd if hasattr(self, "cwd") else None,
+            )
+        except subprocess.CalledProcessError:
+            _cprint("  Not in a git repository (or any parent up to root).")
+            return
+
+        cmd = ["git", "diff"]
+        if extra_args:
+            cmd.extend(extra_args.split())
+
+        # Pipe through less if output is a TTY and no arguments were given
+        # (preserving git's colour output).
+        env = dict(os.environ, GIT_PAGER="cat")
+        if sys.stdout.isatty() and not extra_args:
+            env.pop("GIT_PAGER", None)
+
+        try:
+            subprocess.run(
+                cmd,
+                cwd=self.cwd if hasattr(self, "cwd") else None,
+                env=env,
+            )
+        except Exception as e:
+            _cprint(f"  Failed to run git diff: {e}")
+
     def _handle_image_command(self, cmd_original: str):
         """Handle /image <path> — attach a local image file for the next prompt."""
         raw_args = (cmd_original.split(None, 1)[1].strip() if " " in cmd_original else "")
@@ -7493,6 +7531,8 @@ class HermesCLI:
             self._show_insights(cmd_original)
         elif canonical == "copy":
             self._handle_copy_command(cmd_original)
+        elif canonical == "diff":
+            self._handle_diff_command(cmd_original)
         elif canonical == "debug":
             self._handle_debug_command()
         elif canonical == "paste":

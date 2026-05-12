@@ -196,6 +196,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, aliases=("gateway",)),
     CommandDef("copy", "Copy the last assistant response to clipboard", "Info",
                cli_only=True, args_hint="[number]"),
+    CommandDef("diff", "Show git changes in the working directory", "Info",
+               cli_only=True, args_hint="[--staged] [path...]"),
     CommandDef("paste", "Attach clipboard image from your clipboard", "Info",
                cli_only=True),
     CommandDef("image", "Attach a local image file for your next prompt", "Info",
