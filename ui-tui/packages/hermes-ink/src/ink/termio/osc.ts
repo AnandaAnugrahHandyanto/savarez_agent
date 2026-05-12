@@ -4,9 +4,8 @@
 
 import { Buffer } from 'buffer'
 
-import { env } from '../../utils/env.js'
+import { env, supportsOsc52Clipboard } from '../../utils/env.js'
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
-import { supportsOsc52Clipboard } from '../terminal.js'
 
 import { BEL, ESC, ESC_TYPE, SEP } from './ansi.js'
 import type { Action, Color, TabStatusAction } from './types.js'
@@ -104,6 +103,74 @@ export function shouldEmitClipboardSequence(env: NodeJS.ProcessEnv = process.env
 }
 
 /**
+ * Decide whether setClipboard() should also fire the native clipboard tool
+ * (pbcopy / wl-copy / xclip / xsel / clip.exe) as a safety net alongside
+ * OSC 52 / tmux load-buffer.
+ *
+ * The default is "yes, native fires" — it's the historical safety net for
+ * terminals where OSC 52 may not work (iTerm2 disables OSC 52 by default,
+ * Apple_Terminal / GNOME Terminal / xterm coverage is patchy). The two
+ * cases where we suppress it:
+ *
+ *  1. SSH session: native tools would write to the *remote* machine's
+ *     clipboard. OSC 52 (which travels back over the pty to the user's
+ *     local terminal) is the right path. Existing behaviour.
+ *
+ *  2. Allowlisted OSC-52-capable terminal AND we're actually going to
+ *     emit an OSC 52 sequence AND we're not inside tmux/screen. On these
+ *     terminals (Ghostty / kitty / WezTerm / Windows Terminal / VS Code)
+ *     the OSC 52 write is reliable on its own, and racing it with a
+ *     native tool is destructive — wl-copy on Wayland in particular
+ *     wipes the clipboard during its existence-probe and forks a daemon
+ *     that races the terminal's own write (~30% empty-clipboard rate
+ *     reported on Ghostty + Wayland; symptom: ctrl+shift+c works on the
+ *     3rd attempt).
+ *
+ *     The TMUX/STY guard is important: detectTerminal() in utils/env.ts
+ *     prefers TERM_PROGRAM over TMUX, so a tmux session inside Ghostty
+ *     reports terminal='ghostty'. But inside tmux setClipboard() doesn't
+ *     emit raw OSC 52 — it goes through tmux load-buffer (which loads
+ *     the tmux paste buffer and, with -w, asks tmux to forward an OSC 52
+ *     to the OUTER terminal via its own emission path). The native
+ *     safety net is still useful there because tmux load-buffer's
+ *     outer-terminal forwarding depends on `set -g set-clipboard` and
+ *     `allow-passthrough`, which many users don't have configured.
+ *
+ *     The OSC-52-will-emit guard matters too: if the user has set
+ *     HERMES_TUI_FORCE_OSC52=0, no OSC 52 sequence will be written. If
+ *     we ALSO skip native, the clipboard write becomes a no-op. So skip
+ *     native only when OSC 52 will actually carry the data.
+ */
+export function shouldUseNativeClipboard(
+  env: NodeJS.ProcessEnv = process.env,
+  terminal: string | null = null
+): boolean {
+  // Over SSH the native tools would write to the wrong machine's clipboard.
+  if (env.SSH_CONNECTION) {
+    return false
+  }
+
+  // Inside tmux/screen we go through tmux load-buffer, not raw OSC 52,
+  // so the wl-copy/OSC-52 race we're avoiding doesn't apply. Native
+  // remains a useful safety net since tmux's outer-terminal forwarding
+  // depends on user config.
+  if (env.TMUX || env.STY) {
+    return true
+  }
+
+  // If OSC 52 won't actually emit (user override or env state), the
+  // native tool is the only path left — keep it on.
+  if (!shouldEmitClipboardSequence(env)) {
+    return true
+  }
+
+  // OSC 52 is going to emit AND the terminal is in the allowlist of
+  // terminals where OSC 52 alone is reliable: skip native to avoid the
+  // wl-copy race documented above.
+  return !supportsOsc52Clipboard(terminal)
+}
+
+/**
  * Wrap a payload in tmux's DCS passthrough: ESC P tmux ; <payload> ESC \
  * tmux forwards the payload to the outer terminal, bypassing its own parser.
  * Inner ESCs must be doubled. Requires `set -g allow-passthrough on` in
@@ -194,21 +261,22 @@ export async function setClipboard(text: string): Promise<ClipboardResult> {
   // AFTER awaiting tmux load-buffer, adding ~50-100ms of subprocess latency
   // before pbcopy even started — fast cmd+tab → paste would beat it
   // (https://anthropic.slack.com/archives/C07VBSHV7EV/p1773943921788829).
-  // Skipped entirely on terminals with first-class OSC 52 support
-  // (see `supportsOsc52Clipboard()` in ../terminal.ts): running
-  // wl-copy/xclip/pbcopy in parallel with OSC 52 on those terminals can
-  // corrupt the clipboard. wl-copy on Wayland is the worst offender —
-  // `probeLinuxCopy()` runs it with empty stdin to check if the binary
-  // exists (which destructively wipes the clipboard), and the subsequent
-  // real invocation forks a background daemon that races the terminal's
-  // own OSC 52 write plus its own prior daemon's SIGTERM. On Ghostty +
-  // Wayland this produced a ~30% clipboard-empty rate (symptom: user had
-  // to press ctrl+shift+c three times before the selection landed).
-  // Gated on SSH_CONNECTION (not SSH_TTY) since tmux panes inherit
-  // SSH_TTY forever but SSH_CONNECTION is in tmux's default
-  // update-environment and clears on local attach. Fire-and-forget, but
-  // `copyNativeAttempted` tells us whether ANY native path will be tried.
-  const nativeAttempted = !process.env['SSH_CONNECTION'] && !supportsOsc52Clipboard() && copyNative(text)
+  // Skipped entirely on terminals with first-class OSC 52 support (see
+  // `shouldUseNativeClipboard()` above): running wl-copy/xclip/pbcopy in
+  // parallel with OSC 52 on those terminals can corrupt the clipboard.
+  // wl-copy on Wayland is the worst offender — `probeLinuxCopy()` runs it
+  // with empty stdin to check if the binary exists (which destructively
+  // wipes the clipboard), and the subsequent real invocation forks a
+  // background daemon that races the terminal's own OSC 52 write plus its
+  // own prior daemon's SIGTERM. On Ghostty + Wayland this produced a ~30%
+  // clipboard-empty rate (symptom: user had to press ctrl+shift+c three
+  // times before the selection landed). Native still fires inside
+  // tmux/screen (we go through tmux load-buffer, not raw OSC 52, so the
+  // race doesn't apply) and when the user has disabled OSC 52 emission
+  // via HERMES_TUI_FORCE_OSC52=0 (otherwise the clipboard write becomes
+  // a complete no-op). Fire-and-forget, but `nativeAttempted` tells us
+  // whether ANY native path will be tried.
+  const nativeAttempted = shouldUseNativeClipboard(process.env, env.terminal) && copyNative(text)
 
   const tmuxBufferLoaded = await tmuxLoadBuffer(text)
 
