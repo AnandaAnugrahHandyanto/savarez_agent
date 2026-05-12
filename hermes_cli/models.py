@@ -3204,6 +3204,26 @@ def validate_requested_model(
             "message": "Model names cannot contain spaces.",
         }
 
+    # Anti-stupidity: reject inputs that are clearly not model names.
+    # Starts with @ → user mention (e.g. "@小马助理" is a bot name, not a model ID)
+    if requested.startswith("@"):
+        return {
+            "accepted": False, "persist": False, "recognized": False,
+            "message": (
+                f"`{requested}` looks like a user/bot mention, not a model name. "
+                f"Use the actual model ID (e.g. `qwen-plus`, `claude-sonnet-4-20250514`)."
+            ),
+        }
+    # Contains only CJK characters with no alphanumeric part → not a valid model ID
+    if requested and not any(c.isascii() for c in requested):
+        return {
+            "accepted": False, "persist": False, "recognized": False,
+            "message": (
+                f"`{requested}` does not look like a valid model ID. "
+                f"Model names are typically ASCII identifiers (e.g. `qwen-plus`, `glm-4`)."
+            ),
+        }
+
     if normalized == "lmstudio":
         from hermes_cli.auth import AuthError
         # Use probe_lmstudio_models so we can distinguish None (unreachable
@@ -3608,6 +3628,14 @@ def validate_requested_model(
             suggestion_text = "\n  Similar models: " + ", ".join(
                 f"`{catalog_lower[s]}`" for s in suggestions
             )
+        # Heuristic: even in the catalog-fallback path, reject obviously invalid names
+        if (requested.startswith("--")
+                or (requested.startswith(("-", "/")) and len(requested) < 3)
+                or len(requested) < 2):
+            return {
+                "accepted": False, "persist": False, "recognized": False,
+                "message": f"`{requested}` does not look like a valid model ID.",
+            }
         return {
             "accepted": True,
             "persist": True,
@@ -3619,14 +3647,37 @@ def validate_requested_model(
             ),
         }
 
-    # No catalog available — accept with a warning, matching the comment's
-    # stated intent ("Accept and persist, but warn").
+    # No catalog available and the /models probe was unreachable.
+    # Use heuristics to decide: if the name looks like a valid model ID,
+    # accept with a warning. If it looks like garbage, reject.
+    _looks_valid = True
+    # Must contain at least one ASCII alphanumeric character
+    if requested and not any(c.isalnum() for c in requested):
+        _looks_valid = False
+    # Reject if it looks like a URL, file path, or command
+    if requested.startswith(("http://", "https://", "/", "--")):
+        _looks_valid = False
+    # Reject if it's suspiciously short (1 char) or suspiciously long (>200 chars)
+    if len(requested) < 2 or len(requested) > 200:
+        _looks_valid = False
+
+    if not _looks_valid:
+        return {
+            "accepted": False,
+            "persist": False,
+            "recognized": False,
+            "message": (
+                f"`{requested}` does not look like a valid model ID. "
+                f"Model names are typically ASCII identifiers (e.g. `qwen-plus`, `glm-4`)."
+            ),
+        }
+
     return {
         "accepted": True,
         "persist": True,
         "recognized": False,
         "message": (
-            f"Note: could not reach the {provider_label} API to validate `{requested}`. "
-            f"If the service isn't down, this model may not be valid."
+            f"Warning: could not reach the {provider_label} API to validate `{requested}`. "
+            f"If the provider isn't down, this model config may be invalid."
         ),
     }
