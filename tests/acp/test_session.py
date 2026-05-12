@@ -596,3 +596,156 @@ class TestPersistence:
 
         assert stdout_buf.getvalue() == ""
         assert stderr_buf.getvalue() == "ACP noise\n"
+
+
+# ---------------------------------------------------------------------------
+# default_skills preload (#24466)
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultSkillsPreload:
+    """``hermes -s X acp`` must preload skill prompts into every ACP session."""
+
+    def test_default_skills_stored_on_manager(self):
+        manager = SessionManager(
+            agent_factory=_mock_agent, default_skills=["skill-a", "skill-b"],
+        )
+        assert manager._default_skills == ["skill-a", "skill-b"]
+
+    def test_default_skills_defaults_to_empty_list(self):
+        manager = SessionManager(agent_factory=_mock_agent)
+        assert manager._default_skills == []
+
+    def test_default_skills_accepts_none(self):
+        manager = SessionManager(agent_factory=_mock_agent, default_skills=None)
+        assert manager._default_skills == []
+
+    def test_build_default_skills_prompt_returns_empty_without_skills(self):
+        manager = SessionManager(agent_factory=_mock_agent)
+        assert manager._build_default_skills_prompt("sess-1") == ""
+
+    def test_build_default_skills_prompt_calls_skill_loader(self, monkeypatch):
+        calls = {}
+
+        def fake_build(identifiers, task_id=None):
+            calls["identifiers"] = identifiers
+            calls["task_id"] = task_id
+            return ("PRELOADED SKILL PROMPT", list(identifiers), [])
+
+        monkeypatch.setattr(
+            "agent.skill_commands.build_preloaded_skills_prompt", fake_build,
+        )
+        manager = SessionManager(
+            agent_factory=_mock_agent, default_skills=["skill-a"],
+        )
+
+        prompt = manager._build_default_skills_prompt("sess-xyz")
+
+        assert prompt == "PRELOADED SKILL PROMPT"
+        assert calls["identifiers"] == ["skill-a"]
+        assert calls["task_id"] == "sess-xyz"
+
+    def test_build_default_skills_prompt_swallows_loader_errors(self, monkeypatch):
+        """Skill-loader failures must not crash ACP session creation."""
+        def boom(identifiers, task_id=None):
+            raise RuntimeError("disk on fire")
+
+        monkeypatch.setattr(
+            "agent.skill_commands.build_preloaded_skills_prompt", boom,
+        )
+        manager = SessionManager(
+            agent_factory=_mock_agent, default_skills=["skill-a"],
+        )
+
+        assert manager._build_default_skills_prompt("sess-1") == ""
+
+    def test_make_agent_injects_ephemeral_system_prompt(self, tmp_path, monkeypatch):
+        """The AIAgent constructed for an ACP session must receive the
+        preloaded-skills prompt as ``ephemeral_system_prompt``, matching the
+        CLI's injection mechanism (cli.py:4152)."""
+        captured_kwargs = {}
+
+        def fake_agent(**kwargs):
+            captured_kwargs.update(kwargs)
+            return SimpleNamespace(model=kwargs.get("model"), _print_fn=None)
+
+        def fake_build(identifiers, task_id=None):
+            return (
+                f"[SKILL CONTENT for {','.join(identifiers)} session={task_id}]",
+                list(identifiers),
+                [],
+            )
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            return {
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": "https://openrouter.example/v1",
+                "api_key": "test-key",
+                "command": None,
+                "args": [],
+            }
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "openrouter", "default": "test-model"}
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        monkeypatch.setattr(
+            "agent.skill_commands.build_preloaded_skills_prompt", fake_build,
+        )
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=db, default_skills=["skill-x"])
+            state = manager.create_session(cwd="/work")
+
+        injected = captured_kwargs.get("ephemeral_system_prompt")
+        assert injected is not None
+        assert "SKILL CONTENT for skill-x" in injected
+        assert state.session_id in injected
+
+    def test_make_agent_omits_ephemeral_prompt_without_skills(self, tmp_path, monkeypatch):
+        """When ``--skills`` is absent, the AIAgent must NOT receive an
+        ``ephemeral_system_prompt`` kwarg — that channel is reserved for the
+        preloaded-skills payload here, and a stray empty value would mask
+        callers downstream that test for ``if ephemeral_system_prompt``."""
+        captured_kwargs = {}
+
+        def fake_agent(**kwargs):
+            captured_kwargs.update(kwargs)
+            return SimpleNamespace(model=kwargs.get("model"), _print_fn=None)
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            return {
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": "https://openrouter.example/v1",
+                "api_key": "test-key",
+                "command": None,
+                "args": [],
+            }
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "openrouter", "default": "test-model"}
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=db)
+            manager.create_session(cwd="/work")
+
+        assert "ephemeral_system_prompt" not in captured_kwargs
+
+    def test_default_skills_propagated_from_acp_agent(self):
+        """``HermesACPAgent(default_skills=...)`` must reach SessionManager."""
+        from acp_adapter.server import HermesACPAgent
+
+        agent = HermesACPAgent(default_skills=["skill-a", "skill-b"])
+        assert agent.session_manager._default_skills == ["skill-a", "skill-b"]

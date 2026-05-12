@@ -11414,7 +11414,7 @@ Examples:
         try:
             from acp_adapter.entry import main as acp_main
 
-            acp_main()
+            acp_main(skills=getattr(args, "skills", None))
         except ImportError:
             print("ACP dependencies not installed.")
             print("Install them with:  pip install -e '.[acp]'")

@@ -107,8 +107,42 @@ def _load_env() -> None:
         )
 
 
-def main() -> None:
-    """Entry point: load env, configure logging, run the ACP agent."""
+def _resolve_default_skills(skills, logger: logging.Logger) -> list[str]:
+    """Normalize and validate ``--skills`` for the ACP entry point.
+
+    Accepts the same argparse shapes as the CLI (None, string, or list of
+    strings; comma-separated values inside each entry are split). Unknown
+    skills cause a clean ``sys.exit(1)`` so editor clients see a startup
+    failure instead of a silently-ignored flag.
+    """
+    # Ensure the project root is on sys.path so the cli/agent imports below
+    # work when entry.main is invoked as a console script (``hermes-acp``).
+    project_root = str(Path(__file__).resolve().parent.parent)
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
+    from cli import _parse_skills_argument
+    from agent.skill_commands import build_preloaded_skills_prompt
+
+    parsed = _parse_skills_argument(skills)
+    if not parsed:
+        return []
+
+    _, loaded, missing = build_preloaded_skills_prompt(parsed)
+    if missing:
+        print(f"Unknown skill(s): {', '.join(missing)}", file=sys.stderr)
+        sys.exit(1)
+    logger.info("Preloading skills for ACP sessions: %s", ", ".join(loaded))
+    return parsed
+
+
+def main(skills=None) -> None:
+    """Entry point: load env, configure logging, run the ACP agent.
+
+    ``skills`` mirrors the global ``-s/--skills`` CLI flag. When provided,
+    each new ACP session is created with those skills preloaded into its
+    system prompt, matching ``hermes -s <skill> chat`` behavior (#24466).
+    """
     _setup_logging()
     _load_env()
 
@@ -119,6 +153,8 @@ def main() -> None:
     project_root = str(Path(__file__).resolve().parent.parent)
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
+
+    default_skills = _resolve_default_skills(skills, logger)
 
     import acp
     from .server import HermesACPAgent
@@ -134,7 +170,7 @@ def main() -> None:
     except Exception:
         logger.debug("MCP tool discovery failed at ACP startup", exc_info=True)
 
-    agent = HermesACPAgent()
+    agent = HermesACPAgent(default_skills=default_skills or None)
     try:
         asyncio.run(acp.run_agent(agent, use_unstable_protocol=True))
     except KeyboardInterrupt:

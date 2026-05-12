@@ -191,7 +191,7 @@ class SessionManager:
     via ``session_search``.
     """
 
-    def __init__(self, agent_factory=None, db=None):
+    def __init__(self, agent_factory=None, db=None, *, default_skills=None):
         """
         Args:
             agent_factory: Optional callable that creates an AIAgent-like object.
@@ -199,11 +199,15 @@ class SessionManager:
                            using the current Hermes runtime provider configuration.
             db:            Optional SessionDB instance. When omitted, the default
                            SessionDB (``~/.hermes/state.db``) is lazily created.
+            default_skills: Optional list of skill identifiers to preload into
+                            every session's system prompt. Set from the global
+                            ``-s/--skills`` flag of ``hermes ... acp`` (#24466).
         """
         self._sessions: Dict[str, SessionState] = {}
         self._lock = Lock()
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
+        self._default_skills: List[str] = list(default_skills or [])
 
     # ---- public API ---------------------------------------------------------
 
@@ -560,6 +564,30 @@ class SessionManager:
 
     # ---- internal -----------------------------------------------------------
 
+    def _build_default_skills_prompt(self, session_id: str) -> str:
+        """Return the preloaded-skills system prompt for a new ACP session.
+
+        Unknown skills are silently dropped here — startup validation in
+        ``acp_adapter.entry.main`` is the authoritative gate for fail-fast.
+        We re-resolve per session so each new AIAgent gets its own
+        ``task_id`` recorded by the skill-usage tracker.
+        """
+        if not self._default_skills:
+            return ""
+        try:
+            from agent.skill_commands import build_preloaded_skills_prompt
+        except Exception:
+            logger.debug("skill_commands import failed; skipping skill preload", exc_info=True)
+            return ""
+        try:
+            prompt, _loaded, _missing = build_preloaded_skills_prompt(
+                self._default_skills, task_id=session_id,
+            )
+        except Exception:
+            logger.debug("Failed to build preloaded skills prompt", exc_info=True)
+            return ""
+        return prompt or ""
+
     def _make_agent(
         self,
         *,
@@ -604,6 +632,10 @@ class SessionManager:
             "session_db": self._get_db(),
             "model": model or default_model,
         }
+
+        skills_prompt = self._build_default_skills_prompt(session_id)
+        if skills_prompt:
+            kwargs["ephemeral_system_prompt"] = skills_prompt
 
         try:
             runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
