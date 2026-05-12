@@ -1313,7 +1313,7 @@ def setup_terminal_backend(config: dict):
     idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "vercel_sandbox", 6: "novita"}
     backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "vercel_sandbox": 5, "novita": 6}
 
-    next_idx = 6
+    next_idx = len(terminal_choices)
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
@@ -1321,7 +1321,7 @@ def setup_terminal_backend(config: dict):
         next_idx += 1
 
     # Add keep current option
-    keep_current_idx = next_idx
+    keep_current_idx = len(terminal_choices)
     terminal_choices.append(f"Keep current ({current_backend})")
     idx_to_backend[keep_current_idx] = current_backend
 
