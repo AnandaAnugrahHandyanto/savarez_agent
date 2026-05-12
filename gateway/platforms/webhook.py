@@ -34,6 +34,7 @@ import logging
 import re
 import subprocess
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 
 try:
@@ -441,10 +442,11 @@ class WebhookAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[webhook] Skill loading failed: %s", e)
 
-        # Build a unique delivery ID
-        delivery_id = request.headers.get(
-            "X-GitHub-Delivery",
-            request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
+        # Build a delivery identity. Provider/request IDs are suitable for
+        # retry deduplication, but generated fallbacks are not: time-based
+        # IDs can collide across routes or within the same millisecond.
+        delivery_id, dedupe_key = self._resolve_delivery_identity(
+            route_name, request,
         )
 
         # ── Idempotency ─────────────────────────────────────────
@@ -456,15 +458,16 @@ class WebhookAdapter(BasePlatformAdapter):
             for k, v in self._seen_deliveries.items()
             if now - v < self._idempotency_ttl
         }
-        if delivery_id in self._seen_deliveries:
+        if dedupe_key and dedupe_key in self._seen_deliveries:
             logger.info(
-                "[webhook] Skipping duplicate delivery %s", delivery_id
+                "[webhook] Skipping duplicate delivery %s", dedupe_key
             )
             return web.json_response(
                 {"status": "duplicate", "delivery_id": delivery_id},
                 status=200,
             )
-        self._seen_deliveries[delivery_id] = now
+        if dedupe_key:
+            self._seen_deliveries[dedupe_key] = now
 
         # ── Direct delivery mode (deliver_only) ─────────────────
         # Skip the agent entirely — the rendered prompt IS the message we
@@ -581,6 +584,32 @@ class WebhookAdapter(BasePlatformAdapter):
             },
             status=202,
         )
+
+    def _resolve_delivery_identity(
+        self, route_name: str, request: "web.Request"
+    ) -> tuple[str, Optional[str]]:
+        """Return ``(delivery_id, dedupe_key)`` for the incoming request.
+
+        ``delivery_id`` is always unique enough to identify the run/session and
+        is returned to the caller. ``dedupe_key`` is only populated when the
+        request carried a caller-controlled retry token that is safe to use for
+        idempotency suppression.
+
+        Route scope is part of the dedupe key so two independent webhook routes
+        can legitimately reuse the same upstream request ID without suppressing
+        each other.
+        """
+        explicit_delivery_id = (
+            request.headers.get("X-GitHub-Delivery")
+            or request.headers.get("X-Request-ID")
+        )
+        if explicit_delivery_id:
+            explicit_delivery_id = str(explicit_delivery_id).strip()
+            if explicit_delivery_id:
+                return explicit_delivery_id, f"{route_name}:{explicit_delivery_id}"
+
+        generated_id = f"auto-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
+        return generated_id, None
 
     # ------------------------------------------------------------------
     # Signature validation
