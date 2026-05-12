@@ -25,9 +25,14 @@ Third-party X/Twitter API at `https://api.getxapi.com`. Credits-based ($0.001/re
 
 Use this skill for:
 - searching tweets by keyword with `product=Top` (actual engagement) vs `product=Latest` (bot spam)
-- posting standalone tweets and replies
-- fetching user timelines
-- checking account credits
+- posting standalone tweets, replies, and quote tweets with media attachments
+- liking, retweeting, and fetching tweet replies and articles
+- fetching user profiles, timelines, media, mentions, and liked tweets
+- searching users, checking follow relationships, listing followers/following
+- managing profile (avatar, banner, display name, bio)
+- sending and listing direct messages
+- checking account credits and payment history
+- bookmark search and home timeline
 
 Do NOT use for:
 - deleting tweets (no delete endpoint — must delete manually on x.com)
@@ -143,4 +148,4 @@ curl -s -X POST "https://api.getxapi.com/twitter/tweet/create" \
 # Should return tweet object with id
 ```
 
-For detailed endpoint documentation, field maps, and response schemas, see `references/getxapi-endpoints.md`.
+For detailed endpoint documentation covering all 35 endpoints, field maps, response schemas, pagination, and error codes, see `references/getxapi-endpoints.md`.
