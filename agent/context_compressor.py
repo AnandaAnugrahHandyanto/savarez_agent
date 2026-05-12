@@ -843,7 +843,13 @@ class ContextCompressor(ContextEngine):
         self.summary_model = ""  # empty = use main model
         self._summary_failure_cooldown_until = 0.0  # no cooldown — retry immediately
 
-    def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None) -> Optional[str]:
+    def _generate_summary(
+        self,
+        turns_to_summarize: List[Dict[str, Any]],
+        focus_topic: str = None,
+        *,
+        _same_model_retry_attempted: bool = False,
+    ) -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
         Uses a structured template (Goal, Progress, Decisions, Resolved/Pending
@@ -1088,6 +1094,32 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     _reason = "timed out"
                 self._fallback_to_main_for_compression(e, _reason)
                 return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)  # retry immediately
+
+            # If compression is already pinned to the main model, there is no
+            # alternate model to fall back to.  For premature stream closes and
+            # malformed transient responses, retry the SAME provider/model once
+            # before degrading to the deterministic extractive fallback.  Do not
+            # do this for full timeouts: with Edward's quality-first 900s
+            # timeout, a second full timeout would make Telegram appear stalled
+            # for up to 30 minutes.
+            _should_retry_same_model = (
+                (_is_json_decode or (_is_streaming_closed and not _is_timeout))
+                and not _same_model_retry_attempted
+                and (not self.summary_model or self.summary_model == self.model)
+            )
+            if _should_retry_same_model:
+                logging.warning(
+                    "Context compression summary via main model hit transient %s (%s). "
+                    "Retrying same provider/model once before using extractive fallback.",
+                    "invalid JSON" if _is_json_decode else "stream close",
+                    e,
+                )
+                self._summary_failure_cooldown_until = 0.0
+                return self._generate_summary(
+                    turns_to_summarize,
+                    focus_topic=focus_topic,
+                    _same_model_retry_attempted=True,
+                )
 
             # Unknown-error best-effort retry on main model.  Losing N turns of
             # context is almost always worse than one extra summary attempt, so

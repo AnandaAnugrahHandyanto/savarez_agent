@@ -1084,8 +1084,36 @@ def _normalize_empty_agent_response(
     Consolidates the existing ``failed`` handler and adds a catch-all for
     the case where the agent did work (api_calls > 0) but returned no text.
     Fix for #18765.
+
+    Intentional user interrupts stay silent here so the queued follow-up can
+    run without a stale duplicate answer. Gateway lifecycle interrupts are
+    different: without a visible fallback the user sees Telegram silence after
+    a restart/shutdown drain timeout.
     """
     if response:
+        return response
+
+    interrupt_message = str(agent_result.get("interrupt_message") or "")
+    interrupt_reason = " ".join(interrupt_message.strip().split()).lower()
+    if agent_result.get("interrupted"):
+        if interrupt_reason == _INTERRUPT_REASON_GATEWAY_RESTART.lower():
+            return (
+                "⚠️ Request interrupted by a gateway restart before a final "
+                "reply was generated. No final answer was delivered; send "
+                "the request again after the gateway reconnects."
+            )
+        if interrupt_reason == _INTERRUPT_REASON_GATEWAY_SHUTDOWN.lower():
+            return (
+                "⚠️ Request interrupted because the gateway is shutting down. "
+                "No final answer was delivered; send the request again after "
+                "the gateway reconnects."
+            )
+        if interrupt_reason == _INTERRUPT_REASON_TIMEOUT.lower():
+            return (
+                "⚠️ Request stopped after the gateway inactivity timeout. "
+                "No final answer was delivered; send the request again or "
+                "start a fresh session with /reset."
+            )
         return response
 
     if agent_result.get("failed"):
@@ -1107,7 +1135,7 @@ def _normalize_empty_agent_response(
         )
 
     api_calls = int(agent_result.get("api_calls", 0) or 0)
-    if api_calls > 0 and not agent_result.get("interrupted"):
+    if api_calls > 0:
         if agent_result.get("partial"):
             err = agent_result.get("error", "processing incomplete")
             return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
@@ -7606,6 +7634,14 @@ class GatewayRunner:
                     "rephrase your question."
                 )
             agent_messages = agent_result.get("messages", [])
+
+            # Normalize before logging so ``response ready`` reflects what the
+            # gateway will actually try to deliver, including lifecycle
+            # interrupt fallbacks that prevent Telegram silence.
+            response = _normalize_empty_agent_response(
+                agent_result, response, history_len=len(history),
+            )
+
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
             _resp_len = len(response)
@@ -7632,12 +7668,6 @@ class GatewayRunner:
                         "clear_resume_pending failed for %s: %s",
                         session_key, _e,
                     )
-
-            # Normalize empty responses: surface errors, partial failures, and
-            # the case where agent did work but returned no text. Fix for #18765.
-            response = _normalize_empty_agent_response(
-                agent_result, response, history_len=len(history),
-            )
 
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
