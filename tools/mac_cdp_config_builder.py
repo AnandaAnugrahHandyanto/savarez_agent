@@ -64,6 +64,7 @@ def _side_effect_policy(mode: str) -> dict[str, Any]:
             "types supplied values into selected fields",
             "does not click submit/save buttons because allowSubmit is forced false",
             "the target site may still autosave or trigger oninput/onchange side effects",
+            "runner marks the fill unsafe if post-fill network/storage/submit activity is detected",
         ],
         "approvalInstruction": (
             "Before running this fill config, explicitly tell the user the likely "
@@ -202,6 +203,7 @@ def build_config(spec: dict[str, Any], shared_root: str | Path = DEFAULT_SHARED_
                 "sessionId": session_id,
                 "fields": _validate_fields(spec.get("fields")),
                 "postFillWaitSec": float(spec.get("postFillWaitSec", 1.0)),
+                "postFillNetworkDrainSec": float(spec.get("postFillNetworkDrainSec", 0.5)),
                 "validationExpression": FIXED_VALIDATION_EXPRESSION,
                 "outputPath": _validate_shared_output(root / f"{prefix}-form-fill-result.json", root),
                 "screenshotPath": _validate_shared_output(root / f"{prefix}-form-fill-screenshot.png", root),
