@@ -79,7 +79,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # Pinned to exact versions to match pyproject.toml's no-ranges policy
     # (see comment at top of [project.dependencies]). When bumping, update
     # both this map AND the corresponding extra in pyproject.toml.
-    "tts.mistral": ("mistralai==2.3.0",),
+    #
+    # NOTE: tts.mistral / stt.mistral entries are intentionally absent —
+    # the `mistralai` PyPI project is quarantined as of 2026-05-12 (Mini
+    # Shai-Hulud worm). Re-add when PyPI restores a clean release; see
+    # comment in pyproject.toml above the (removed) `mistral` extra for
+    # the full restoration checklist.
     "tts.elevenlabs": ("elevenlabs==1.59.0",),
     # Speech-to-text providers (faster-whisper local STT bundle)
     "stt.faster_whisper": (
@@ -87,7 +92,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "sounddevice==0.5.5",
         "numpy==2.4.3",
     ),
-    "stt.mistral": ("mistralai==2.3.0",),
     # Memory providers
     "memory.honcho": ("honcho-ai==2.0.1",),
     # AWS Bedrock provider

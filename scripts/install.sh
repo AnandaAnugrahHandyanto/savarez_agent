@@ -1061,6 +1061,28 @@ install_deps() {
 
     # Install the main package in editable mode with all extras.
     #
+    # Hash-verified install (Tier 0) — when uv.lock is present, prefer
+    # `uv sync --locked`. The lockfile records SHA256 hashes for every
+    # transitive, so a compromised transitive (different hash than what
+    # we shipped) is REJECTED by the resolver. This is the *only* path
+    # that protects against the "direct dep is fine, but the dep's dep
+    # got worm-poisoned overnight" failure mode. All `uv pip install`
+    # tiers below re-resolve transitives fresh from PyPI without any
+    # hash verification — they exist to keep installs working when the
+    # lockfile is stale, missing, or out-of-sync with the current
+    # extras spec, NOT because they're equivalent in posture.
+    if [ -f "uv.lock" ]; then
+        log_info "Trying tier: hash-verified (uv.lock) ..."
+        if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --all-extras --locked 2>"$(mktemp)"; then
+            log_success "Main package installed (hash-verified via uv.lock)"
+            log_success "All dependencies installed"
+            return 0
+        fi
+        log_warn "uv.lock sync failed (lockfile may be stale), falling back to PyPI resolve..."
+    else
+        log_info "uv.lock not found — falling back to PyPI resolve (no hash verification)"
+    fi
+
     # Multi-tier fallback. The point of the tiers is that ONE compromised
     # PyPI package (a worm-poisoned release that gets quarantined, like
     # mistralai 2.4.6 in May 2026) shouldn't be able to silently demote a
@@ -1081,11 +1103,11 @@ install_deps() {
     #
     # Each tier's stderr is captured to a tempfile so we can show the user
     # WHY the higher tier failed instead of silently dropping support.
-    local _BROKEN_EXTRAS=("mistral")  # update when restored on PyPI
+    local _BROKEN_EXTRAS=()  # populate when an extra becomes unresolvable
     local _ALL_EXTRAS=(
         modal daytona vercel messaging matrix cron cli dev tts-premium slack
         pty honcho mcp homeassistant sms acp voice dingtalk feishu google
-        mistral bedrock web youtube
+        bedrock web youtube
     )
     # Tier 2: all extras minus _BROKEN_EXTRAS
     local _SAFE_EXTRAS=()

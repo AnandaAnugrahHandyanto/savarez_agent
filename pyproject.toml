@@ -97,16 +97,22 @@ sms = ["aiohttp==3.13.3"]
 # to it, which is already provided by the `mcp` extra.
 computer-use = ["mcp==1.26.0"]
 acp = ["agent-client-protocol==0.9.0"]
-# mistral: pinned but NOT in [all] — `mistralai` PyPI project was
-# quarantined 2026-05-12 after the malicious 2.4.6 release (Mini
-# Shai-Hulud worm). The extra remains here so that:
-#   (a) `tools/lazy_deps.py` has a canonical pin to refer to,
-#   (b) restoring after PyPI lifts the quarantine is a one-line update,
-# but it is NOT included in `[all]` (PR #24205) so fresh installs don't
-# fail to resolve. Note: `uv lock` regeneration will fail while
-# mistralai is unresolvable on PyPI; lockfile regeneration is gated
-# behind PyPI restoration, NOT on every PR.
-mistral = ["mistralai==2.3.0"]
+# mistral: extra REMOVED 2026-05-12 — `mistralai` PyPI project quarantined
+# after malicious 2.4.6 release (Mini Shai-Hulud worm). Every version of
+# `mistralai` returns 404 on PyPI right now, so any pin we'd write is
+# unresolvable, which breaks `uv lock --check` in CI.
+#
+# To restore once PyPI un-quarantines:
+#   1. Verify the new release is clean (read the changelog, check Socket
+#      advisory page, confirm no malicious code review findings).
+#   2. Add back: mistral = ["mistralai==<verified-version>"]
+#   3. Re-enable Mistral in:
+#        - tools/lazy_deps.py (LAZY_DEPS["tts.mistral"], LAZY_DEPS["stt.mistral"])
+#        - hermes_cli/tools_config.py (un-hide from provider picker)
+#        - hermes_cli/web_server.py (re-add to dashboard STT options)
+#        - tools/transcription_tools.py / tools/tts_tool.py (drop disabled stubs)
+#   4. Run `uv lock` to regenerate transitives.
+#   5. Optionally re-add to [all] only after a few days of clean operation.
 bedrock = ["boto3==1.42.89"]
 termux = [
   # Baseline Android / Termux path for reliable fresh installs.

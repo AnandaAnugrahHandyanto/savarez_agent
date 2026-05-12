@@ -793,7 +793,35 @@ function Install-Dependencies {
         # Tell uv to install into our venv (no activation needed)
         $env:VIRTUAL_ENV = "$InstallDir\venv"
     }
-    
+
+    # Hash-verified install (Tier 0) — when uv.lock is present, prefer
+    # `uv sync --locked`. The lockfile records SHA256 hashes for every
+    # transitive dependency, so a compromised transitive (different hash
+    # than what we shipped) is REJECTED by the resolver. This is the
+    # *only* path that protects against the "direct dep is fine, but the
+    # dep's dep got worm-poisoned overnight" failure mode. The
+    # `uv pip install` tiers below re-resolve transitives fresh from PyPI
+    # without any hash verification — they exist to keep installs working
+    # when the lockfile is stale, missing, or out-of-sync with the
+    # current extras spec, NOT because they're equivalent in posture.
+    if (Test-Path "uv.lock") {
+        Write-Info "Trying tier: hash-verified (uv.lock) ..."
+        & $UvCmd sync --all-extras --locked
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "Main package installed (hash-verified via uv.lock)"
+            $script:InstalledTier = "hash-verified (uv.lock)"
+            # Skip the rest of the tiered cascade — we already have a
+            # complete, hash-verified install.
+            $skipPipFallback = $true
+        } else {
+            Write-Warn "uv.lock sync failed (lockfile may be stale), falling back to PyPI resolve..."
+            $skipPipFallback = $false
+        }
+    } else {
+        Write-Info "uv.lock not found — falling back to PyPI resolve (no hash verification)"
+        $skipPipFallback = $false
+    }
+
     # Install main package.  Tiered fallback so a single flaky git+https dep
     # (atroposlib / tinker in the [rl] extra) doesn't silently drop
     # dashboard/MCP/cron/messaging extras.  Each tier's stdout/stderr is
@@ -815,19 +843,21 @@ function Install-Dependencies {
     # Tier 5: bare `.` — last-resort so at least the core CLI launches.
 
     # Currently-broken extras. Edit this list when an upstream package
-    # gets quarantined / yanked / breaks resolution. As of May 2026:
-    #   mistral — mistralai 2.4.6 was malware, PyPI quarantined the project
-    $brokenExtras = @("mistral")
+    # gets quarantined / yanked / breaks resolution. Empty means everything
+    # in [all] should be installable; populate with the names of extras
+    # whose deps are temporarily unavailable to keep installs working
+    # for users.
+    $brokenExtras = @()
 
     $allExtras = @(
         "modal","daytona","vercel","messaging","matrix","cron","cli","dev",
         "tts-premium","slack","pty","honcho","mcp","homeassistant","sms",
-        "acp","voice","dingtalk","feishu","google","mistral","bedrock","web",
+        "acp","voice","dingtalk","feishu","google","bedrock","web",
         "youtube"
     )
     $pypiExtras = @(
         "web","mcp","cron","cli","voice","messaging","slack","dev","acp",
-        "pty","homeassistant","sms","tts-premium","honcho","google","mistral",
+        "pty","homeassistant","sms","tts-premium","honcho","google",
         "bedrock","dingtalk","feishu","modal","daytona","vercel","youtube"
     )
     $safeAll  = ($allExtras  | Where-Object { $brokenExtras -notcontains $_ }) -join ","
@@ -841,8 +871,9 @@ function Install-Dependencies {
         @{ Name = "dashboard + core platforms"; Spec = ".[web,mcp,cron,cli,messaging,dev]" },
         @{ Name = "core only (no extras)"; Spec = "." }
     )
-    $installed = $false
-    foreach ($tier in $installTiers) {
+    $installed = $skipPipFallback
+    if (-not $skipPipFallback) {
+        foreach ($tier in $installTiers) {
         Write-Info "Trying tier: $($tier.Name) ..."
         & $UvCmd pip install -e $tier.Spec
         if ($LASTEXITCODE -eq 0) {
@@ -852,6 +883,7 @@ function Install-Dependencies {
             break
         }
         Write-Warn "Tier '$($tier.Name)' failed (exit $LASTEXITCODE). Trying next tier..."
+        }
     }
     if (-not $installed) {
         throw "Failed to install hermes-agent package even with no extras. Inspect the uv pip install output above."
