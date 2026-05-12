@@ -587,6 +587,56 @@ class TestNewEndpoints:
         assert resp.status_code == 200
         assert isinstance(resp.json(), list)
 
+    def test_cron_create_accepts_model_provider(self):
+        resp = self.client.post(
+            "/api/cron/jobs",
+            json={
+                "name": "Pinned model job",
+                "prompt": "Say hello",
+                "schedule": "30m",
+                "deliver": "local",
+                "model": "anthropic/claude-sonnet-4",
+                "provider": "openrouter",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["model"] == "anthropic/claude-sonnet-4"
+        assert data["provider"] == "openrouter"
+
+        listed = self.client.get("/api/cron/jobs").json()
+        assert any(
+            job["id"] == data["id"]
+            and job["model"] == "anthropic/claude-sonnet-4"
+            and job["provider"] == "openrouter"
+            for job in listed
+        )
+
+    def test_cron_update_model_provider(self):
+        created = self.client.post(
+            "/api/cron/jobs",
+            json={
+                "name": "Editable model job",
+                "prompt": "Say hello",
+                "schedule": "30m",
+                "deliver": "local",
+            },
+        ).json()
+
+        resp = self.client.put(
+            f"/api/cron/jobs/{created['id']}",
+            json={
+                "updates": {
+                    "model": "openai/gpt-5.1",
+                    "provider": "openrouter",
+                }
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["model"] == "openai/gpt-5.1"
+        assert data["provider"] == "openrouter"
+
     def test_cron_job_not_found(self):
         resp = self.client.get("/api/cron/jobs/nonexistent-id")
         assert resp.status_code == 404
