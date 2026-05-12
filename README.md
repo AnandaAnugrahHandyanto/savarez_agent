@@ -61,6 +61,16 @@ source ~/.bashrc    # reload shell (or: source ~/.zshrc)
 hermes              # start chatting!
 ```
 
+### Connect Inkbox (email + SMS + voice)
+
+Once Hermes is installed, wire up the Inkbox platform so your agent has a real email address, phone number, and persistent contact list:
+
+```bash
+hermes setup gateway
+```
+
+Toggle **`📨📱📞 Inkbox`** with Space, confirm with Enter. The wizard either walks you through Inkbox self-signup (creates the identity + API key for you) or accepts an existing `INKBOX_API_KEY` you paste in, then writes the values to `~/.hermes/.env`. Run `hermes gateway` afterward to start receiving inbound mail/SMS/calls.
+
 ---
 
 ## Getting Started
