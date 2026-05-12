@@ -409,7 +409,7 @@ prompt_caching:
 #                  endpoint.  Also falls back to Codex OAuth and API-key providers.
 #
 # Model: leave empty to use the provider's default.  When empty, OpenRouter
-# uses "google/gemini-3-flash-preview" and Nous uses "gemini-3-flash".
+# uses "google/gemini-2.5-flash" and Nous uses "google/gemini-2.5-flash".
 # Other providers pick a sensible default automatically.
 #
 # auxiliary:
@@ -776,7 +776,7 @@ platform_toolsets:
 #     args: ["-y", "analysis-server"]
 #     sampling:
 #       enabled: true           # default: true
-#       model: "gemini-3-flash" # override model (optional)
+#       model: "gemini-2.5-flash" # override model (optional)
 #       max_tokens_cap: 4096    # max tokens per request
 #       timeout: 30             # LLM call timeout (seconds)
 #       max_rpm: 10             # max requests per minute
@@ -852,7 +852,8 @@ delegation:
                                               # The parent TUI owns stdin, so blocking would deadlock; non-interactive resolution is required.
                                               # Both choices emit a logger.warning audit line. Flip to true only for cron/batch pipelines.
   # inherit_mcp_toolsets: true                # When explicit child toolsets are narrowed, also keep the parent's MCP toolsets (default: true). Set false for strict intersection.
-  # model: "google/gemini-3-flash-preview"    # Override model for subagents (empty = inherit parent)
+  # model: "gemini-2.5-flash"    # Override model for subagents (empty = inherit parent)
+  # provider: "gemini"           # Use google/Gemini API for children (requires GEMINI_API_KEY or GOOGLE_API_KEY)
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax

@@ -790,7 +790,7 @@ def get_nous_recommended_aux_model(
 
     Returns ``None`` when every candidate is missing, null, or the fetch
     fails — callers should fall back to their own default (currently
-    ``google/gemini-3-flash-preview``).
+    ``google/gemini-2.5-flash``).
     """
     base = portal_base_url or _resolve_nous_portal_url()
     payload = fetch_nous_recommended_models(base, force_refresh=force_refresh)

@@ -38,7 +38,7 @@ Example config::
         args: ["-y", "analysis-server"]
         sampling:                    # server-initiated LLM requests
           enabled: true              # default: true
-          model: "gemini-3-flash"    # override model (optional)
+          model: "gemini-2.5-flash"    # override model (optional)
           max_tokens_cap: 4096       # max tokens per request
           timeout: 30                # LLM call timeout (seconds)
           max_rpm: 10                # max requests per minute

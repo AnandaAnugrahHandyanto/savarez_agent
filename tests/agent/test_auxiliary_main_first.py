@@ -110,14 +110,14 @@ class TestResolveAutoMainFirst:
             return_value=(None, None),  # main provider has no client
         ), patch(
             "agent.auxiliary_client._try_openrouter",
-            return_value=(chain_client, "google/gemini-3-flash-preview"),
+            return_value=(chain_client, "google/gemini-2.5-flash"),
         ):
             from agent.auxiliary_client import _resolve_auto
 
             client, model = _resolve_auto()
 
         assert client is chain_client
-        assert model == "google/gemini-3-flash-preview"
+        assert model == "google/gemini-2.5-flash"
 
     def test_no_main_config_uses_chain_directly(self):
         """No main provider configured → skip step 1, use chain (no regression)."""
@@ -128,7 +128,7 @@ class TestResolveAutoMainFirst:
             "agent.auxiliary_client._read_main_model", return_value="",
         ), patch(
             "agent.auxiliary_client._try_openrouter",
-            return_value=(chain_client, "google/gemini-3-flash-preview"),
+            return_value=(chain_client, "google/gemini-2.5-flash"),
         ):
             from agent.auxiliary_client import _resolve_auto
 
@@ -213,7 +213,7 @@ class TestResolveVisionMainFirst:
             return_value=("auto", None, None, None, None),
         ), patch(
             "agent.auxiliary_client._resolve_strict_vision_backend",
-            return_value=(MagicMock(), "google/gemini-3-flash-preview"),
+            return_value=(MagicMock(), "google/gemini-2.5-flash"),
         ):
             from agent.auxiliary_client import resolve_vision_provider_client
 
@@ -221,7 +221,7 @@ class TestResolveVisionMainFirst:
 
         assert provider == "nous"
         assert client is not None
-        assert model == "google/gemini-3-flash-preview"
+        assert model == "google/gemini-2.5-flash"
 
     def test_nous_main_vision_uses_free_tier_nous_vision_backend(self):
         """Free-tier Nous main → aux vision uses MiMo omni, not the text main model."""
@@ -361,7 +361,7 @@ class TestResolveVisionMainFirst:
             return_value=(None, None),
         ), patch(
             "agent.auxiliary_client._resolve_strict_vision_backend",
-            return_value=(fallback_client, "google/gemini-3-flash-preview"),
+            return_value=(fallback_client, "google/gemini-2.5-flash"),
         ), patch(
             "agent.auxiliary_client._resolve_task_provider_model",
             return_value=("auto", None, None, None, None),

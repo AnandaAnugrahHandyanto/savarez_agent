@@ -120,7 +120,7 @@ def test_setup_syncs_nous_from_disk(tmp_path, monkeypatch):
     config = load_config()
 
     def fake_select():
-        _write_model_config(tmp_path, "nous", "https://inference.example.com/v1", "gemini-3-flash")
+        _write_model_config(tmp_path, "nous", "https://inference.example.com/v1", "gemini-2.5-flash")
 
     monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
 

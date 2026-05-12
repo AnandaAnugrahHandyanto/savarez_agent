@@ -610,7 +610,7 @@ compression:
 # The summarization model/provider is configured under auxiliary:
 auxiliary:
   compression:
-    model: ""                                       # Empty = use main chat model. Override with e.g. "google/gemini-3-flash-preview" for cheaper/faster compression.
+    model: ""                                       # Empty = use main chat model. Override with e.g. "google/gemini-2.5-flash" for cheaper/faster compression.
     provider: "auto"                                # Provider: "auto", "openrouter", "nous", "codex", "main", etc.
     base_url: null                                  # Custom OpenAI-compatible endpoint (overrides provider)
 ```
@@ -640,7 +640,7 @@ Uses your main provider and main model. Override per-task (e.g. `auxiliary.compr
 auxiliary:
   compression:
     provider: nous
-    model: gemini-3-flash
+    model: gemini-2.5-flash
 ```
 Works with any provider: `nous`, `openrouter`, `codex`, `anthropic`, `main`, etc.
 
@@ -1639,7 +1639,7 @@ Configure subagent behavior for the delegate tool:
 
 ```yaml
 delegation:
-  # model: "google/gemini-3-flash-preview"  # Override model (empty = inherit parent)
+  # model: "google/gemini-2.5-flash"  # Override model (empty = inherit parent)
   # provider: "openrouter"                  # Override provider (empty = inherit parent)
   # base_url: "http://localhost:1234/v1"    # Direct OpenAI-compatible endpoint (takes precedence over provider)
   # api_key: "local-key"                    # API key for base_url (falls back to OPENAI_API_KEY)
