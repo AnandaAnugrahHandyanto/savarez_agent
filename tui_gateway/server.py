@@ -1633,27 +1633,27 @@ def _on_tool_progress(
 
 
 def _agent_cbs(sid: str) -> dict:
-    return dict(
-        tool_start_callback=lambda tc_id, name, args: _on_tool_start(
+    return {
+        "tool_start_callback": lambda tc_id, name, args: _on_tool_start(
             sid, tc_id, name, args
         ),
-        tool_complete_callback=lambda tc_id, name, args, result: _on_tool_complete(
+        "tool_complete_callback": lambda tc_id, name, args, result: _on_tool_complete(
             sid, tc_id, name, args, result
         ),
-        tool_progress_callback=lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
+        "tool_progress_callback": lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
             sid, event_type, name, preview, args, **kwargs
         ),
-        tool_gen_callback=lambda name: _tool_progress_enabled(sid)
+        "tool_gen_callback": lambda name: _tool_progress_enabled(sid)
         and _emit("tool.generating", sid, {"name": name}),
-        thinking_callback=lambda text: _emit("thinking.delta", sid, {"text": text}),
-        reasoning_callback=lambda text: _emit("reasoning.delta", sid, {"text": text}),
-        status_callback=lambda kind, text=None: _status_update(
+        "thinking_callback": lambda text: _emit("thinking.delta", sid, {"text": text}),
+        "reasoning_callback": lambda text: _emit("reasoning.delta", sid, {"text": text}),
+        "status_callback": lambda kind, text=None: _status_update(
             sid, str(kind), None if text is None else str(text)
         ),
-        clarify_callback=lambda q, c: _block(
+        "clarify_callback": lambda q, c: _block(
             "clarify.request", sid, {"question": q, "choices": c}
         ),
-    )
+    }
 
 
 def _wire_callbacks(sid: str):
@@ -1715,7 +1715,7 @@ def _available_personalities(cfg: dict | None = None) -> dict:
 def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str]:
     raw = str(value or "").strip()
     name = raw.lower()
-    if not name or name in ("none", "default", "neutral"):
+    if not name or name in {"none", "default", "neutral"}:
         return "", ""
 
     personalities = _available_personalities(cfg)
@@ -2062,7 +2062,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if not isinstance(m, dict):
             continue
         role = m.get("role")
-        if role not in ("user", "assistant", "tool", "system"):
+        if role not in {"user", "assistant", "tool", "system"}:
             continue
         content_text = _content_display_text(m.get("content"))
         if role == "assistant" and m.get("tool_calls"):
@@ -2505,7 +2505,7 @@ def _(rid, params: dict) -> dict:
     removed = 0
     with session["history_lock"]:
         history = session.get("history", [])
-        while history and history[-1].get("role") in ("assistant", "tool"):
+        while history and history[-1].get("role") in {"assistant", "tool"}:
             history.pop()
             removed += 1
         if history and history[-1].get("role") == "user":
@@ -3260,7 +3260,6 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                             decision = goal_mgr.evaluate_after_turn(
                                 raw,
                                 user_initiated=True,
-                                messages=list(session.get("history") or []),
                             )
                             verdict_msg = decision.get("message") or ""
                             if verdict_msg:
@@ -3678,7 +3677,7 @@ def _(rid, params: dict) -> dict:
                 {"key": key, "value": "fast" if current_fast else "normal"},
             )
 
-        if raw in ("", "toggle"):
+        if raw in {"", "toggle"}:
             nv = "normal" if current_fast else "fast"
         elif raw in {"fast", "on"}:
             nv = "fast"
@@ -3726,7 +3725,7 @@ def _(rid, params: dict) -> dict:
 
     if key == "busy":
         raw = str(value or "").strip().lower()
-        if raw in ("", "status"):
+        if raw in {"", "status"}:
             return _ok(rid, {"key": key, "value": _load_busy_input_mode()})
         if raw not in {"queue", "steer", "interrupt"}:
             return _err(rid, 4002, f"unknown busy mode: {value}")
@@ -3791,7 +3790,7 @@ def _(rid, params: dict) -> dict:
             from hermes_constants import parse_reasoning_effort
 
             arg = str(value or "").strip().lower()
-            if arg in ("show", "on"):
+            if arg in {"show", "on"}:
                 cfg = _load_cfg()
                 display = (
                     cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
@@ -3809,7 +3808,7 @@ def _(rid, params: dict) -> dict:
                 if session:
                     session["show_reasoning"] = True
                 return _ok(rid, {"key": key, "value": "show"})
-            if arg in ("hide", "off"):
+            if arg in {"hide", "off"}:
                 cfg = _load_cfg()
                 display = (
                     cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
@@ -3904,7 +3903,7 @@ def _(rid, params: dict) -> dict:
         cfg0 = _load_cfg()
         d0 = cfg0.get("display") if isinstance(cfg0.get("display"), dict) else {}
         cur_b = bool(d0.get("tui_compact", False))
-        if raw in ("", "toggle"):
+        if raw in {"", "toggle"}:
             nv_b = not cur_b
         elif raw == "on":
             nv_b = True
@@ -3921,7 +3920,7 @@ def _(rid, params: dict) -> dict:
         d0 = display if isinstance(display, dict) else {}
         current = _coerce_statusbar(d0.get("tui_statusbar", "top"))
 
-        if raw in ("", "toggle"):
+        if raw in {"", "toggle"}:
             nv = "top" if current == "off" else "off"
         elif raw == "on":
             nv = "top"
@@ -3939,7 +3938,7 @@ def _(rid, params: dict) -> dict:
         display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
         current = _display_mouse_tracking(display)
 
-        if raw in ("", "toggle"):
+        if raw in {"", "toggle"}:
             nv = not current
         elif raw == "on":
             nv = True
@@ -3965,7 +3964,7 @@ def _(rid, params: dict) -> dict:
         _write_config_key("display.tui_status_indicator", raw)
         return _ok(rid, {"key": key, "value": raw})
 
-    if key in ("prompt", "personality", "skin"):
+    if key in {"prompt", "personality", "skin"}:
         try:
             cfg = _load_cfg()
             if key == "prompt":
@@ -4528,7 +4527,7 @@ def _(rid, params: dict) -> dict:
     # In the TUI the slash worker subprocess has no reader for that queue,
     # so we handle them here and return a structured payload.
 
-    if name in ("queue", "q"):
+    if name in {"queue", "q"}:
         if not arg:
             return _err(rid, 4004, "usage: /queue <prompt>")
         return _ok(rid, {"type": "send", "message": arg})
@@ -4627,7 +4626,7 @@ def _(rid, params: dict) -> dict:
                     ),
                 },
             )
-        if lower in ("clear", "stop", "done"):
+        if lower in {"clear", "stop", "done"}:
             had = mgr.has_goal()
             mgr.clear()
             return _ok(
@@ -4658,7 +4657,7 @@ def _(rid, params: dict) -> dict:
             {"type": "send", "notice": notice, "message": state.goal},
         )
 
-    if name in ("snapshot", "snap"):
+    if name in {"snapshot", "snap"}:
         subcommand = arg.split(maxsplit=1)[0].lower() if arg else ""
         if subcommand in {"restore", "rewind"}:
             return _ok(
@@ -4903,7 +4902,7 @@ def _(rid, params: dict) -> dict:
         # Accept both `@folder:path` and the bare `@folder` form so the user
         # sees directory listings as soon as they finish typing the keyword,
         # without first accepting the static `@folder:` hint.
-        if is_context and query in ("file", "folder"):
+        if is_context and query in {"file", "folder"}:
             prefix_tag, path_part = query, ""
         elif is_context and query.startswith(("file:", "folder:")):
             prefix_tag, _, tail = query.partition(":")
@@ -5647,7 +5646,7 @@ def _(rid, params: dict) -> dict:
 
         return _ok(rid, payload)
 
-    if action in ("on", "off"):
+    if action in {"on", "off"}:
         enabled = action == "on"
         # Runtime-only flag (CLI parity) — no _write_config_key, so the
         # next TUI launch starts with voice OFF instead of auto-REC from a
@@ -5880,7 +5879,7 @@ def _(rid, params: dict) -> dict:
                 removed = 0
                 with session["history_lock"]:
                     history = session.get("history", [])
-                    while history and history[-1].get("role") in ("assistant", "tool"):
+                    while history and history[-1].get("role") in {"assistant", "tool"}:
                         history.pop()
                         removed += 1
                     if history and history[-1].get("role") == "user":
@@ -6438,7 +6437,7 @@ def _(rid, params: dict) -> dict:
                     )
                 ),
             )
-        if action in ("remove", "pause", "resume"):
+        if action in {"remove", "pause", "resume"}:
             return _ok(rid, json.loads(cronjob(action=action, job_id=jid)))
         return _err(rid, 4016, f"unknown cron action: {action}")
     except Exception as e:
