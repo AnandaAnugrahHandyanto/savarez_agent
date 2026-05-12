@@ -1,6 +1,6 @@
 ---
 name: whisper
-description: OpenAI's general-purpose speech recognition model. Supports 99 languages, transcription, translation to English, and language identification. Six model sizes from tiny (39M params) to large (1550M params). Use for speech-to-text, podcast transcription, or multilingual audio processing. Best for robust, multilingual ASR.
+description: "Use when transcribing audio (podcasts, meetings, voice memos, lectures, video soundtracks), translating non-English audio to English text, generating subtitles in SRT/VTT, or building a speech-to-text pipeline. Triggers: 'transcribe this audio', 'extract speech from <file>', 'subtitle this video', 'translate this Spanish audio'. OpenAI Whisper: 99 languages, 6 model sizes (tiny→large/turbo), word-level timestamps, `initial_prompt` for domain vocabulary. For real-time/streaming prefer `faster-whisper`."
 version: 1.0.0
 author: Orchestra Research
 license: MIT
