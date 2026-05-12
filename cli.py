@@ -2785,12 +2785,16 @@ class HermesCLI:
         return f"{emoji} {time_str}"
 
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
-        # Prefer the agent's model name — it updates on fallback.
-        # self.model reflects the originally configured model and never
-        # changes mid-session, so the TUI would show a stale name after
-        # _try_activate_fallback() switches provider/model.
+        # Prefer the agent's resolved model name (e.g. when OpenRouter
+        # resolves @preset/hermes → minimax/minimax-m2.5) over the
+        # originally configured model, which never changes mid-session.
         agent = getattr(self, "agent", None)
-        model_name = (getattr(agent, "model", None) or self.model or "unknown")
+        model_name = (
+            getattr(agent, "_resolved_model", None)
+            or getattr(agent, "model", None)
+            or self.model
+            or "unknown"
+        )
         model_short = model_name.split("/")[-1] if "/" in model_name else model_name
         if model_short.endswith(".gguf"):
             model_short = model_short[:-5]
@@ -2836,7 +2840,13 @@ class HermesCLI:
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
             context_tokens = getattr(compressor, "last_prompt_tokens", 0) or 0
-            context_length = getattr(compressor, "context_length", 0) or 0
+            # Prefer agent-level resolved context length (from _resolved_model)
+            # over compressor.context_length — the compressor may not have been
+            # updated yet if the resolved model just changed this turn.
+            context_length = getattr(
+                agent, "_resolved_context_length",
+                getattr(compressor, "context_length", 0) or 0,
+            )
             snapshot["context_tokens"] = context_tokens
             snapshot["context_length"] = context_length or None
             snapshot["compressions"] = getattr(compressor, "compression_count", 0) or 0
