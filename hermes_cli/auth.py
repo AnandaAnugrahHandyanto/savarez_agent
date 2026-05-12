@@ -3973,8 +3973,18 @@ def get_codex_auth_status() -> Dict[str, Any]:
 
 
 def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
-    """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
+    """Status snapshot for API-key providers, including OpenRouter."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
+    if provider_id == "openrouter":
+        from types import SimpleNamespace
+
+        pconfig = SimpleNamespace(
+            name="OpenRouter",
+            auth_type="api_key",
+            api_key_env_vars=("OPENROUTER_API_KEY",),
+            inference_base_url=OPENROUTER_BASE_URL,
+            base_url_env_var="OPENROUTER_BASE_URL",
+        )
     if not pconfig or pconfig.auth_type != "api_key":
         return {"configured": False}
 
@@ -4048,6 +4058,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_gemini_oauth_auth_status()
     if target == "copilot-acp":
         return get_external_process_provider_status(target)
+    if target == "openrouter":
+        return get_api_key_provider_status(target)
     # API-key providers
     pconfig = PROVIDER_REGISTRY.get(target)
     if pconfig and pconfig.auth_type == "api_key":

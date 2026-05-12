@@ -322,12 +322,51 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
     )
 
 
-def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
+def _resolve_openrouter_usage_runtime(
+    base_url: Optional[str],
+    api_key: Optional[str],
+) -> dict[str, Any]:
+    """Resolve OpenRouter usage credentials from runtime config or credential pool.
+
+    Standalone cron/script contexts may not have `OPENROUTER_API_KEY` loaded in the
+    process environment even though the active runtime key exists in Hermes'
+    credential pool (`auth.json`). Usage monitoring should use the same fallback so
+    quota watchdogs do not silently lose proactive OpenRouter visibility and then
+    misreport a stale pool `last_status=exhausted` as real credit exhaustion.
+    """
     runtime = resolve_runtime_provider(
         requested="openrouter",
         explicit_base_url=base_url,
         explicit_api_key=api_key,
     )
+    token = str(runtime.get("api_key", "") or "").strip()
+    if token:
+        return runtime
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool("openrouter")
+        entry = next((candidate for candidate in pool.entries() if candidate.runtime_api_key), None)
+        if entry is None:
+            entry = pool.select()
+        if entry is not None and entry.runtime_api_key:
+            fallback = dict(runtime)
+            fallback["provider"] = "openrouter"
+            fallback["api_key"] = entry.runtime_api_key
+            fallback["base_url"] = (
+                entry.runtime_base_url
+                or str(runtime.get("base_url", "") or "").strip()
+                or "https://openrouter.ai/api/v1"
+            )
+            fallback["source"] = f"credential-pool:{entry.label or entry.id}"
+            return fallback
+    except Exception:
+        pass
+    return runtime
+
+
+def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
+    runtime = _resolve_openrouter_usage_runtime(base_url, api_key)
     token = str(runtime.get("api_key", "") or "").strip()
     if not token:
         return None
@@ -350,8 +389,17 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
             key_data = {}
     total_credits = float(credits.get("total_credits") or 0.0)
     total_usage = float(credits.get("total_usage") or 0.0)
-    details = [f"Credits balance: ${max(0.0, total_credits - total_usage):.2f}"]
+    credits_remaining = max(0.0, total_credits - total_usage)
+    details = [f"Credits balance: ${credits_remaining:.2f}"]
     windows: list[AccountUsageWindow] = []
+    if total_credits > 0:
+        windows.append(
+            AccountUsageWindow(
+                label="Credits balance",
+                used_percent=max(0.0, min(100.0, (total_usage / total_credits) * 100.0)),
+                detail=f"${credits_remaining:.2f} remaining",
+            )
+        )
     limit = key_data.get("limit")
     limit_remaining = key_data.get("limit_remaining")
     limit_reset = str(key_data.get("limit_reset") or "").strip()

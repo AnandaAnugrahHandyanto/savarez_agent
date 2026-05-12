@@ -29,12 +29,33 @@ def _jwt_with_email(email: str) -> str:
 def _clear_provider_env(monkeypatch):
     for key in (
         "OPENROUTER_API_KEY",
+        "OPENROUTER_BASE_URL",
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_TOKEN",
         "CLAUDE_CODE_OAUTH_TOKEN",
     ):
         monkeypatch.delenv(key, raising=False)
+
+
+def test_get_auth_status_openrouter_uses_env_api_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / ".env").write_text(
+        "OPENROUTER_API_KEY=sk-or-test\nOPENROUTER_BASE_URL=https://openrouter.ai/api/v1\n",
+        encoding="utf-8",
+    )
+
+    from hermes_cli.auth import get_auth_status
+
+    status = get_auth_status("openrouter")
+
+    assert status["logged_in"] is True
+    assert status["configured"] is True
+    assert status["provider"] == "openrouter"
+    assert status["key_source"] == "OPENROUTER_API_KEY"
+    assert status["base_url"] == "https://openrouter.ai/api/v1"
 
 
 def test_auth_add_api_key_persists_manual_entry(tmp_path, monkeypatch):

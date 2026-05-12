@@ -274,6 +274,11 @@ def test_fetch_account_usage_openrouter_uses_limit_remaining_and_ignores_depreca
     assert snapshot is not None
     assert snapshot.windows == (
         AccountUsageWindow(
+            label="Credits balance",
+            used_percent=3.64,
+            detail="$289.08 remaining",
+        ),
+        AccountUsageWindow(
             label="API key quota",
             used_percent=30.0,
             detail="$70.00 of $100.00 remaining • resets monthly",
@@ -317,6 +322,60 @@ def test_fetch_account_usage_openrouter_omits_quota_window_when_key_has_no_limit
     snapshot = fetch_account_usage("openrouter")
 
     assert snapshot is not None
-    assert snapshot.windows == ()
+    assert snapshot.windows == (
+        AccountUsageWindow(
+            label="Credits balance",
+            used_percent=25.5,
+            detail="$74.50 remaining",
+        ),
+    )
     assert "Credits balance: $74.50" in snapshot.details
     assert "API key usage: $25.50 total • $1.25 today • $4.50 this week • $18.00 this month" in snapshot.details
+
+
+def test_fetch_account_usage_openrouter_falls_back_to_credential_pool(monkeypatch):
+    class _Entry:
+        id = "or1"
+        label = "OPENROUTER_API_KEY"
+        runtime_api_key = "pool-openrouter-token"
+        runtime_base_url = "https://openrouter.ai/api/v1"
+
+    class _Pool:
+        def entries(self):
+            return [_Entry()]
+
+        def select(self):
+            raise AssertionError("usage monitor should inspect pool entries before selecting")
+
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_runtime_provider",
+        lambda requested, explicit_base_url=None, explicit_api_key=None: {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "",
+        },
+    )
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=10.0: _RoutingClient(
+            {
+                "https://openrouter.ai/api/v1/credits": {
+                    "data": {"total_credits": 10.0, "total_usage": 2.0}
+                },
+                "https://openrouter.ai/api/v1/key": {"data": {}},
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("openrouter")
+
+    assert snapshot is not None
+    assert snapshot.windows == (
+        AccountUsageWindow(
+            label="Credits balance",
+            used_percent=20.0,
+            detail="$8.00 remaining",
+        ),
+    )
+    assert "Credits balance: $8.00" in snapshot.details
