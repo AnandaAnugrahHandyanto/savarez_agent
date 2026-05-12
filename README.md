@@ -64,9 +64,9 @@ Two commands. By the end your agent has a real email address, a real phone numbe
 # 1. Install — uv, Python, Node.js, ripgrep, ffmpeg, Hermes itself
 curl -fsSL https://raw.githubusercontent.com/inkbox-ai/hermes-agent/inkbox/scripts/install.sh | bash
 
-# 2. Configure — provider/model, terminal backend, Inkbox (email + SMS + voice),
-#    and install the gateway as a system service. Prompts before anything starts.
-hermes setup
+# 2. Configure — Inkbox (email + SMS + voice) and install the gateway as a
+#    system service. Prompts before anything starts.
+hermes gateway setup
 ```
 
 **Windows (early beta):** swap step 1 for `irm https://raw.githubusercontent.com/inkbox-ai/hermes-agent/inkbox/scripts/install.ps1 | iex` in PowerShell. WSL2 is the more battle-tested path.
