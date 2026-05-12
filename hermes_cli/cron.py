@@ -91,6 +91,9 @@ def cron_list(show_all: bool = False):
         delivery_mode = job.get("delivery_mode")
         if delivery_mode:
             print(f"    Delivery:  {delivery_mode}")
+        thread_title_template = job.get("thread_title_template")
+        if thread_title_template:
+            print(f"    Thread title: {thread_title_template}")
         template_key = job.get("template_key")
         template_version = job.get("template_version")
         if template_key:
