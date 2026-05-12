@@ -398,8 +398,9 @@ def detect_apm_staleness(
 
 
 def _hermes_cache_dir() -> Path:
-    """Return ``~/.hermes/cache/``, creating it if needed."""
-    p = Path.home() / ".hermes" / "cache"
+    """Return ``<hermes_home>/cache/``, creating it if needed."""
+    from hermes_constants import get_hermes_home
+    p = get_hermes_home() / "cache"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -479,7 +480,6 @@ def validate_lockfile_against_modules(
     for dep in lock_data.get("dependencies", []):
         repo = dep.get("repo_url", "")
         vpath = dep.get("virtual_path", "")
-        commit = dep.get("resolved_commit", "")
 
         # Check if the repo exists on disk.  repo_url from the lockfile
         # can be "owner/repo" or "github.com/owner/repo".  We match
@@ -530,12 +530,6 @@ def _populate_virtual_paths(
 _MARKETPLACES: Dict[str, str] = {
     "awesome-copilot": "github/awesome-copilot",
 }
-
-# Primitive type directories that APM recognizes inside a package repo.
-_PRIMITIVE_DIRS: Tuple[str, ...] = (
-    "skills", "plugins", "agents", "instructions", "prompts", "hooks",
-    "chatmodes", "commands",
-)
 
 
 def resolve_marketplace_ref(dep_string: str) -> str:
@@ -711,20 +705,9 @@ def install_apm_dependencies(
         cwd = os.getcwd()
     workdir = str(Path(cwd).resolve())
 
-    # Try 'apm' on PATH first, then pip-installed
+    # Try 'apm' on PATH
     exe = shutil.which("apm")
     if exe is None:
-        try:
-            result = subprocess.run(
-                ["pip", "show", "apm-cli"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode != 0:
-                return False, "apm CLI not found (neither 'apm' on PATH nor 'apm-cli' pip package)"
-        except Exception:
-            pass
         return False, "apm CLI not found on PATH"
     try:
         result = subprocess.run(
