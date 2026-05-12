@@ -88,6 +88,16 @@ def cron_list(show_all: bool = False):
         print(f"    Repeat:    {repeat_str}")
         print(f"    Next run:  {next_run}")
         print(f"    Deliver:   {deliver_str}")
+        delivery_mode = job.get("delivery_mode")
+        if delivery_mode:
+            print(f"    Delivery:  {delivery_mode}")
+        template_key = job.get("template_key")
+        template_version = job.get("template_version")
+        if template_key:
+            template_label = template_key
+            if template_version:
+                template_label = f"{template_label}@{template_version}"
+            print(f"    Template:  {template_label}")
         if skills:
             print(f"    Skills:    {', '.join(skills)}")
         script = job.get("script")
@@ -175,6 +185,10 @@ def cron_create(args):
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
         no_agent=getattr(args, "no_agent", False) or None,
+        delivery_mode=getattr(args, "delivery_mode", None),
+        thread_title_template=getattr(args, "thread_title_template", None),
+        template_key=getattr(args, "template_key", None),
+        template_version=getattr(args, "template_version", None),
     )
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -231,6 +245,10 @@ def cron_edit(args):
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
         no_agent=getattr(args, "no_agent", None),
+        delivery_mode=getattr(args, "delivery_mode", None),
+        thread_title_template=getattr(args, "thread_title_template", None),
+        template_key=getattr(args, "template_key", None),
+        template_version=getattr(args, "template_version", None),
     )
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -250,6 +268,23 @@ def cron_edit(args):
         print("  Mode: no-agent (script stdout delivered directly)")
     if updated.get("workdir"):
         print(f"  Workdir: {updated['workdir']}")
+    return 0
+
+
+def cron_sync_templates():
+    """Sync cron templates from the active Hermes profile."""
+    from cron.job_templates import sync_cron_templates
+
+    result = sync_cron_templates()
+    created = result.get("created", [])
+    updated = result.get("updated", [])
+    print(color("Synced cron templates.", Colors.GREEN))
+    print(f"  Created: {len(created)}")
+    if created:
+        print(f"    {', '.join(created)}")
+    print(f"  Updated: {len(updated)}")
+    if updated:
+        print(f"    {', '.join(updated)}")
     return 0
 
 
@@ -284,6 +319,9 @@ def cron_command(args):
         cron_tick()
         return 0
 
+    if subcmd == "sync-templates":
+        return cron_sync_templates()
+
     if subcmd in {"create", "add"}:
         return cron_create(args)
 
@@ -303,5 +341,5 @@ def cron_command(args):
         return _job_action("remove", args.job_id, "Removed")
 
     print(f"Unknown cron command: {subcmd}")
-    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick]")
+    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick|sync-templates]")
     sys.exit(1)

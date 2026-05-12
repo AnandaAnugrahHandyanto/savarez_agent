@@ -9844,6 +9844,16 @@ def main():
         "--workdir",
         help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
     )
+    cron_create.add_argument("--delivery-mode", help="Optional delivery mode metadata")
+    cron_create.add_argument(
+        "--thread-title-template",
+        help="Optional thread title template metadata",
+    )
+    cron_create.add_argument("--template-key", help="Optional cron template key metadata")
+    cron_create.add_argument(
+        "--template-version",
+        help="Optional cron template version metadata",
+    )
 
     # cron edit
     cron_edit = cron_subparsers.add_parser(
@@ -9908,6 +9918,16 @@ def main():
         "--workdir",
         help="Absolute path for the job to run from (injects AGENTS.md etc. and sets terminal cwd). Pass empty string to clear.",
     )
+    cron_edit.add_argument("--delivery-mode", help="New delivery mode metadata")
+    cron_edit.add_argument(
+        "--thread-title-template",
+        help="New thread title template metadata",
+    )
+    cron_edit.add_argument("--template-key", help="New cron template key metadata")
+    cron_edit.add_argument(
+        "--template-version",
+        help="New cron template version metadata",
+    )
 
     # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")
@@ -9933,6 +9953,12 @@ def main():
     # cron tick (mostly for debugging)
     cron_tick = cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
     _add_accept_hooks_flag(cron_tick)
+
+    # cron sync-templates
+    cron_subparsers.add_parser(
+        "sync-templates",
+        help="Sync active profile cron templates into jobs.json",
+    )
     _add_accept_hooks_flag(cron_parser)
     cron_parser.set_defaults(func=cmd_cron)
 
