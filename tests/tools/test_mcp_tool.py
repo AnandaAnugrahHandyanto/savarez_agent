@@ -266,6 +266,24 @@ class TestSchemaConversion:
 
         assert schema["properties"]["items"]["items"]["properties"] == {}
 
+    def test_array_missing_items_gets_permissive_items_schema(self):
+        """OpenAI/Codex reject array schemas that omit items."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "cookies": {
+                    "anyOf": [
+                        {"type": "object"},
+                        {"type": "array"},
+                    ],
+                },
+            },
+        })
+
+        assert schema["properties"]["cookies"]["anyOf"][1]["items"] == {}
+
     def test_optional_nullable_field_is_collapsed_to_non_null_schema(self):
         """Anthropic rejects MCP/Pydantic anyOf-null optional parameter schemas."""
         from tools.mcp_tool import _normalize_mcp_input_schema
