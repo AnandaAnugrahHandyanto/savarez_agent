@@ -37,10 +37,42 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from _hermes_home import get_hermes_home
+from agent.file_safety import is_write_denied
 
 HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "google_token.json"
 CLIENT_SECRET_PATH = HERMES_HOME / "google_client_secret.json"
+
+
+def _reject_unsafe_output_fragment(path: Path, *, label: str) -> None:
+    if path.is_absolute() or any(part == ".." for part in path.parts):
+        raise ValueError(f"Unsafe Drive download {label}: absolute paths and '..' are not allowed")
+
+
+def _safe_drive_download_path(output: str, remote_name: str, default_ext: str = "") -> Path:
+    """Return a cwd-confined, write-safe local path for Drive downloads."""
+    if output:
+        relative_path = Path(output).expanduser()
+        _reject_unsafe_output_fragment(relative_path, label="output path")
+    else:
+        safe_name = Path(remote_name or "download").name or "download"
+        relative_path = Path(safe_name)
+
+    if default_ext and not relative_path.suffix:
+        relative_path = relative_path.with_suffix(default_ext)
+
+    cwd = Path.cwd().resolve()
+    candidate = cwd / relative_path
+    resolved = candidate.resolve(strict=False)
+    try:
+        resolved.relative_to(cwd)
+    except ValueError as exc:
+        raise ValueError("Unsafe Drive download output path escapes the current directory") from exc
+
+    if is_write_denied(str(resolved)):
+        raise ValueError("Unsafe Drive download output path is blocked by Hermes write safety rules")
+
+    return resolved
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -638,7 +670,6 @@ def drive_upload(args):
 def drive_download(args):
     """Download a Drive file to a local path. Google-native files (Docs/Sheets/Slides)
     must be exported; binary files are downloaded as-is."""
-    import io
     from googleapiclient.http import MediaIoBaseDownload
 
     service = build_service("drive", "v3")
@@ -656,24 +687,33 @@ def drive_download(args):
         "application/vnd.google-apps.drawing": ("image/png", ".png"),
     }
 
-    out_path = Path(args.output).expanduser() if args.output else Path.cwd() / name
+    default_ext = native_export_map[mime][1] if mime in native_export_map and not args.output else ""
+    try:
+        out_path = _safe_drive_download_path(args.output, name, default_ext)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     if mime in native_export_map:
         export_mime = args.export_mime or native_export_map[mime][0]
-        default_ext = native_export_map[mime][1]
-        if not args.output and not out_path.suffix:
-            out_path = out_path.with_suffix(default_ext)
         request = service.files().export_media(fileId=args.file_id, mimeType=export_mime)
     else:
         request = service.files().get_media(fileId=args.file_id)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fh = io.FileIO(str(out_path), "wb")
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-    fh.close()
+    fd = os.open(
+        str(out_path),
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+        0o666,
+    )
+    fh = os.fdopen(fd, "wb")
+    try:
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+    finally:
+        fh.close()
 
     print(json.dumps({
         "status": "downloaded",

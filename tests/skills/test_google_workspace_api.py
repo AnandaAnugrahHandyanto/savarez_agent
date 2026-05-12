@@ -234,3 +234,81 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+
+
+def test_drive_download_path_rejects_unsafe_output(api_module, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(tmp_path))
+
+    with pytest.raises(ValueError):
+        api_module._safe_drive_download_path("../outside.txt", "ignored.txt")
+    with pytest.raises(ValueError):
+        api_module._safe_drive_download_path(str(tmp_path / "outside.txt"), "ignored.txt")
+
+
+def test_drive_download_path_sanitizes_remote_name_and_enforces_safe_root(api_module, tmp_path, monkeypatch):
+    safe_root = tmp_path / "safe"
+    safe_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.chdir(safe_root)
+    monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+    out_path = api_module._safe_drive_download_path("", "../outside/payload")
+    assert out_path == safe_root / "payload"
+
+    escape_link = safe_root / "escape"
+    escape_link.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError):
+        api_module._safe_drive_download_path("escape/file.txt", "ignored.txt")
+
+
+def test_drive_download_writes_sanitized_remote_name_inside_cwd(api_module, tmp_path, monkeypatch):
+    safe_root = tmp_path / "safe"
+    safe_root.mkdir()
+    outside_target = tmp_path / "outside.txt"
+    monkeypatch.chdir(safe_root)
+    monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+    class FakeRequest:
+        pass
+
+    class FakeFiles:
+        def get(self, **kwargs):
+            assert kwargs["fileId"] == "file-1"
+            return self
+
+        def execute(self):
+            return {"id": "file-1", "name": "../outside.txt", "mimeType": "text/plain"}
+
+        def get_media(self, **kwargs):
+            assert kwargs["fileId"] == "file-1"
+            return FakeRequest()
+
+    class FakeService:
+        def files(self):
+            return FakeFiles()
+
+    class FakeDownloader:
+        def __init__(self, fh, request):
+            self.fh = fh
+            self.done = False
+
+        def next_chunk(self):
+            if not self.done:
+                self.fh.write(b"drive bytes")
+                self.done = True
+            return None, True
+
+    googleapiclient_module = types.ModuleType("googleapiclient")
+    http_module = types.ModuleType("googleapiclient.http")
+    http_module.MediaIoBaseDownload = FakeDownloader
+    monkeypatch.setitem(sys.modules, "googleapiclient", googleapiclient_module)
+    monkeypatch.setitem(sys.modules, "googleapiclient.http", http_module)
+    monkeypatch.setattr(api_module, "build_service", lambda *_args: FakeService())
+
+    args = api_module.argparse.Namespace(file_id="file-1", output="", export_mime="")
+    api_module.drive_download(args)
+
+    assert (safe_root / "outside.txt").read_bytes() == b"drive bytes"
+    assert not outside_target.exists()
