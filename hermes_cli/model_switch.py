@@ -1200,12 +1200,27 @@ def list_authenticated_providers(
             live = [current_model]
         curated["lmstudio"] = live
 
+    # Providers whose authoritative model catalog comes from a live
+    # endpoint owned by Hermes (handled in Section 2 via
+    # ``provider_model_ids``), NOT from the static curated list. These
+    # MUST be skipped in Section 1 even when they are advertised by
+    # models.dev (e.g. ``github-copilot``), otherwise the curated list
+    # short-circuits the live fetch and the picker silently lags behind
+    # the account's real catalog.
+    _LIVE_CATALOG_PROVIDERS = frozenset({"copilot", "copilot-acp"})
+
     # --- 1. Check Hermes-mapped providers ---
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
         # Skip aliases that map to the same models.dev provider (e.g.
         # kimi-coding and kimi-coding-cn both → kimi-for-coding).
         # The first one with valid credentials wins (#10526).
         if mdev_id in seen_mdev_ids:
+            continue
+        # Hand off to Section 2 for providers whose catalog comes from a
+        # live Hermes-owned endpoint (e.g. Copilot's /v1/models). The
+        # curated list under Section 1 is months behind the live catalog
+        # and lacks subscription-dependent models like ``claude-opus-4.7``.
+        if hermes_id in _LIVE_CATALOG_PROVIDERS:
             continue
         pdata = data.get(mdev_id)
         if not isinstance(pdata, dict):
