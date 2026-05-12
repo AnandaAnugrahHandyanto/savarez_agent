@@ -273,7 +273,11 @@ When asked to auto-fix CI, follow this loop:
 5. Wait for CI → re-check status
 6. Repeat if still failing (up to 3 attempts, then ask the user)
 
-## 6. Merging
+## 6. Low-risk upstream sync / cherry-pick pass
+
+When the user wants only low-risk upstream changes in a fork, do **not** merge upstream wholesale. First map fork-sensitive paths, then cherry-pick narrow commits on a branch, run targeted tests, and preserve fork deployment behavior. See `references/low-risk-upstream-sync.md` for the detailed workflow, including `merge-tree` risk mapping, conflict triage, `uv run --with pytest --with pytest-asyncio`, and reverting accidental `uv.lock` churn.
+
+## 7. Merging
 
 **With gh:**
 
@@ -326,7 +330,7 @@ curl -s -X POST \
   -d "{\"query\": \"mutation { enablePullRequestAutoMerge(input: {pullRequestId: \\\"$PR_NODE_ID\\\", mergeMethod: SQUASH}) { clientMutationId } }\"}"
 ```
 
-## 7. Complete Workflow Example
+## 8. Complete Workflow Example
 
 ```bash
 # 1. Start from clean main

@@ -766,7 +766,11 @@ Optional body.
 
 Types: `fix:`, `feat:`, `refactor:`, `docs:`, `chore:`
 
-### Documenting Gordon's fork overlay
+### Gordon fork upstream sync
+
+For Gordon's deployment fork (`rousegordon-ops/hermes-agent`), avoid wholesale upstream merges unless explicitly requested. Prefer a low-risk cherry-pick pass: map fork-sensitive paths, use `git merge-tree` for conflict prediction, pick narrow bug/security fixes, preserve Railway/source-watcher behavior, run targeted tests, and revert incidental `uv.lock` churn. Detailed workflow: `github-pr-workflow` → `references/low-risk-upstream-sync.md`. Fork overlay documentation workflow: `references/fork-change-documentation.md`.
+
+### Gateway Metrics & Cost Report
 
 When asked to explain or comment the differences between `rousegordon-ops/hermes-agent` and upstream Nous Hermes Agent, add/update a root `FORK_NOTES.md` plus a short `README.md` fork note. Compare against `upstream/main`, unshallow the clone if needed, and summarize intentional deployment-overlay changes rather than every commit. See `references/fork-change-documentation.md`.
 
