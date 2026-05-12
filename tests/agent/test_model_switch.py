@@ -17,8 +17,9 @@ class TestModelSwitchMixinImport:
         assert hasattr(ModelSwitchMixin, '_convert_to_trajectory_format')
 
     def test_has_create_openai_client(self):
-        from agent.model_switch import ModelSwitchMixin
-        assert hasattr(ModelSwitchMixin, '_create_openai_client')
+        # _create_openai_client remains in run_agent.py for monkeypatch compat
+        import run_agent
+        assert hasattr(run_agent.AIAgent, '_create_openai_client')
 
     def test_has_save_trajectory(self):
         from agent.model_switch import ModelSwitchMixin
