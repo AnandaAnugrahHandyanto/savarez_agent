@@ -287,3 +287,91 @@ class TestBaseProfile:
         eb, tl = p.build_api_kwargs_extras()
         assert eb == {}
         assert tl == {}
+
+
+class TestDeepSeekProfile:
+    """DeepSeek V4 profile — thinking toggle + reasoning_effort."""
+
+    def test_profile_registered(self):
+        p = get_provider_profile("deepseek")
+        assert p is not None
+        assert p.name == "deepseek"
+        assert "api.deepseek.com" in p.base_url
+
+    def test_alias_lookup(self):
+        p = get_provider_profile("deepseek-chat")
+        assert p.name == "deepseek"
+
+    def test_no_config_defaults(self):
+        """Default: thinking enabled, effort high."""
+        p = get_provider_profile("deepseek")
+        eb, tl = p.build_api_kwargs_extras(reasoning_config=None)
+        assert eb["thinking"] == {"type": "enabled"}
+        assert tl["reasoning_effort"] == "high"
+
+    def test_thinking_disabled(self):
+        """When disabled, no reasoning_effort is emitted."""
+        p = get_provider_profile("deepseek")
+        eb, tl = p.build_api_kwargs_extras(reasoning_config={"enabled": False})
+        assert eb["thinking"] == {"type": "disabled"}
+        assert "reasoning_effort" not in tl
+
+    def test_effort_high(self):
+        p = get_provider_profile("deepseek")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"}
+        )
+        assert eb["thinking"] == {"type": "enabled"}
+        assert tl["reasoning_effort"] == "high"
+
+    def test_effort_max(self):
+        p = get_provider_profile("deepseek")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "max"}
+        )
+        assert tl["reasoning_effort"] == "max"
+
+    def test_effort_xhigh_maps_to_max(self):
+        """xhigh (OpenRouter-style) maps to max."""
+        p = get_provider_profile("deepseek")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "xhigh"}
+        )
+        assert tl["reasoning_effort"] == "max"
+
+    def test_effort_medium_maps_to_high(self):
+        """medium maps to high (DeepSeek's minimum effort)."""
+        p = get_provider_profile("deepseek")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"}
+        )
+        assert tl["reasoning_effort"] == "high"
+
+    def test_effort_low_maps_to_high(self):
+        p = get_provider_profile("deepseek")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "low"}
+        )
+        assert tl["reasoning_effort"] == "high"
+
+    def test_effort_minimal_maps_to_high(self):
+        p = get_provider_profile("deepseek")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "minimal"}
+        )
+        assert tl["reasoning_effort"] == "high"
+
+    def test_unknown_effort_falls_back_to_high(self):
+        p = get_provider_profile("deepseek")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "garbage"}
+        )
+        assert tl["reasoning_effort"] == "high"
+
+    def test_missing_effort_defaults_to_high(self):
+        p = get_provider_profile("deepseek")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True}
+        )
+        assert eb["thinking"] == {"type": "enabled"}
+        assert tl["reasoning_effort"] == "high"
