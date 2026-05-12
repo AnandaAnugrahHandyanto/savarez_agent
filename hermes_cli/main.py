@@ -6012,7 +6012,8 @@ def _update_via_zip(args):
     pip_cmd = [sys.executable, "-m", "pip"]
     uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        _venv = _find_venv_dir()
+        uv_env = {**os.environ, "VIRTUAL_ENV": str(_venv) if _venv else str(PROJECT_ROOT / ".venv")}
         if _is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
@@ -6599,10 +6600,19 @@ def _is_windows() -> bool:
     return sys.platform == "win32"
 
 
+def _find_venv_dir() -> Path | None:
+    """Find the project venv directory (.venv preferred, venv as fallback)."""
+    for name in (".venv", "venv"):
+        candidate = PROJECT_ROOT / name
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
 def _venv_scripts_dir() -> Path | None:
     """Return the venv Scripts directory if we're running inside the project venv."""
-    venv_dir = PROJECT_ROOT / "venv"
-    if not venv_dir.is_dir():
+    venv_dir = _find_venv_dir()
+    if venv_dir is None:
         return None
     scripts = venv_dir / ("Scripts" if _is_windows() else "bin")
     return scripts if scripts.is_dir() else None
@@ -7575,7 +7585,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         install_group = "all"
 
         if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            _venv = _find_venv_dir()
+            uv_env = {**os.environ, "VIRTUAL_ENV": str(_venv) if _venv else str(PROJECT_ROOT / ".venv")}
             if _is_termux_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
                 uv_env.pop("PYTHONHOME", None)
