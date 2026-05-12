@@ -5599,28 +5599,50 @@ class AIAgent:
         swallows exceptions, the Hindsight backend persists its own state,
         and an interrupt-or-shutdown mid-sync is harmless.  Deferring to a
         daemon thread matches the existing pattern used by
-        ``_spawn_background_review`` and keeps response delivery on the
+        ``_spawn_background_review`` and moves response delivery off the
         critical path.
+
+        Per-agent single-worker discipline: if a previous turn's sync is
+        still in flight (e.g. the user typed faster than the 30-50s
+        Hindsight retain), skip spawning a second thread.  The in-flight
+        worker already has the full conversation tail it needs, and
+        sync_all is idempotent on overlapping turn data — piling threads
+        per turn would let a chatty user balloon thread count under a
+        slow backend.
 
         Early-skips when interrupted or no manager are handled here too
         so we don't spin up a no-op thread; the worker enforces the same
         invariants internally if called directly.
+
+        Best-effort thread spawn: if ``Thread()`` itself raises (e.g.
+        the process is at its thread limit), swallow it.  We must not
+        propagate out of ``run_conversation`` and block response
+        completion — which is the exact regression this method exists
+        to prevent.
         """
         if interrupted:
             return
         if not (self._memory_manager and final_response and original_user_message):
             return
         import threading
-        threading.Thread(
-            target=self._sync_external_memory_for_turn,
-            kwargs=dict(
-                original_user_message=original_user_message,
-                final_response=final_response,
-                interrupted=interrupted,
-            ),
-            daemon=True,
-            name=f"hermes-memory-sync-{self.session_id or 'anon'}",
-        ).start()
+        prior = getattr(self, "_memory_sync_thread", None)
+        if prior is not None and prior.is_alive():
+            return
+        try:
+            t = threading.Thread(
+                target=self._sync_external_memory_for_turn,
+                kwargs=dict(
+                    original_user_message=original_user_message,
+                    final_response=final_response,
+                    interrupted=interrupted,
+                ),
+                daemon=True,
+                name=f"hermes-memory-sync-{self.session_id or 'anon'}",
+            )
+            t.start()
+            self._memory_sync_thread = t
+        except Exception:
+            pass
 
     def release_clients(self) -> None:
         """Release LLM client resources WITHOUT tearing down session tool state.

@@ -68,16 +68,24 @@ class TestDispatchMemorySyncForTurn:
         )
         elapsed = time.monotonic() - start
 
-        # Headroom on the 0.5s SSE poll: 0.1s is generous and still
-        # 5x faster than the synchronous baseline this PR replaces.
-        assert elapsed < 0.1, (
-            f"dispatcher blocked for {elapsed:.3f}s; must return "
-            "near-instantly so the SSE writer can emit response.completed"
+        # Wait for the worker to start before measuring "really non-blocking" —
+        # the timing fence below is a coarse upper bound, but the primary
+        # non-blocking proof is that the dispatcher returned before the
+        # 0.5s sleep finished (sync_finished is not set yet on return).
+        assert sync_started.wait(timeout=2.0), "worker never ran"
+        assert not sync_finished.is_set(), (
+            "dispatcher waited for the worker — the 0.5s sleep finished "
+            "before dispatch returned, defeating the #24453 fix"
         )
 
-        # The worker really did start on the thread (proof the dispatcher
-        # didn't silently swallow the call entirely).
-        assert sync_started.wait(timeout=2.0), "worker never ran"
+        # Coarse headroom: dispatch should complete in well under the 0.5s
+        # SSE poll interval.  0.3s tolerates slow CI runners while still
+        # being ~1.5x faster than the synchronous baseline this PR replaces.
+        assert elapsed < 0.3, (
+            f"dispatcher blocked for {elapsed:.3f}s; must return "
+            "well under the 0.5s SSE poll so response.completed fires"
+        )
+
         assert sync_finished.wait(timeout=2.0), "worker never finished"
 
     def test_dispatcher_uses_daemon_thread(self):
@@ -206,6 +214,79 @@ class TestDispatchMemorySyncForTurn:
             "What's the weather in Paris?",
             session_id="test_session_dispatch",
         )
+
+    def test_skips_when_prior_sync_still_in_flight(self):
+        """Per-agent single-worker discipline: a chatty user who fires
+        turns faster than Hindsight can sync (30-50s/turn) must not
+        accumulate one daemon thread per turn.  The second dispatch
+        within the same agent skips if the first thread is still alive.
+        """
+        agent = _bare_agent()
+
+        class _LiveThread:
+            """Stand-in for a still-running worker thread."""
+            def is_alive(self):
+                return True
+
+        agent._memory_sync_thread = _LiveThread()
+
+        with patch("threading.Thread") as mock_thread:
+            agent._dispatch_memory_sync_for_turn(
+                original_user_message="second turn",
+                final_response="reply",
+                interrupted=False,
+            )
+
+        mock_thread.assert_not_called()
+        # Sync_all itself must not be re-driven on the dispatcher thread
+        # — the whole point is to keep run_conversation off the sync path.
+        agent._memory_manager.sync_all.assert_not_called()
+
+    def test_skips_release_when_prior_sync_completed(self):
+        """The single-worker guard must NOT permanently latch — once
+        the prior thread is done, the next turn should spawn again.
+        """
+        agent = _bare_agent()
+
+        class _DeadThread:
+            def is_alive(self):
+                return False
+
+        agent._memory_sync_thread = _DeadThread()
+
+        with patch("threading.Thread") as mock_thread:
+            mock_thread.return_value.start.return_value = None
+            agent._dispatch_memory_sync_for_turn(
+                original_user_message="next turn",
+                final_response="reply",
+                interrupted=False,
+            )
+
+        mock_thread.assert_called_once()
+
+    def test_thread_start_failure_is_swallowed(self):
+        """If the process is at its thread limit (or Thread() raises for
+        any other reason), the dispatcher must NOT propagate — that
+        would block ``run_conversation`` from returning and reintroduce
+        the exact regression #24453 fixed.
+        """
+        agent = _bare_agent()
+
+        with patch("threading.Thread", side_effect=RuntimeError(
+            "can't start new thread"
+        )):
+            # Must not raise.
+            agent._dispatch_memory_sync_for_turn(
+                original_user_message="hi",
+                final_response="hey",
+                interrupted=False,
+            )
+
+        # The failed attempt must not have stamped a fake "in-flight"
+        # tracker that would deadlock future dispatches.
+        prior = getattr(agent, "_memory_sync_thread", None)
+        if prior is not None:
+            assert not prior.is_alive()
 
     def test_worker_exception_does_not_crash_dispatcher(self):
         """A backend error inside ``sync_all`` must not propagate up out
