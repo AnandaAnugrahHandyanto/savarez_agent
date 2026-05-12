@@ -263,6 +263,10 @@ class MattermostAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, MAX_POST_LENGTH)
 
+        # For Mattermost threading, root_id (from metadata["thread_id"]) is required.
+        # reply_to contains the specific message_id being replied to, which is wrong for root_id.
+        effective_reply_to = (metadata or {}).get("thread_id") or reply_to
+
         last_id = None
         for chunk in chunks:
             payload: Dict[str, Any] = {
@@ -270,8 +274,8 @@ class MattermostAdapter(BasePlatformAdapter):
                 "message": chunk,
             }
             # Thread support: reply_to is the root post ID.
-            if reply_to and self._reply_mode == "thread":
-                payload["root_id"] = reply_to
+            if effective_reply_to and self._reply_mode == "thread":
+                payload["root_id"] = effective_reply_to
 
             data = await self._api_post("posts", payload)
             if not data or "id" not in data:
@@ -325,8 +329,9 @@ class MattermostAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Download an image and upload it as a file attachment."""
+        effective_reply_to = (metadata or {}).get("thread_id") or reply_to
         return await self._send_url_as_file(
-            chat_id, image_url, caption, reply_to, "image"
+            chat_id, image_url, caption, effective_reply_to, "image"
         )
 
     async def send_image_file(
@@ -338,8 +343,9 @@ class MattermostAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Upload a local image file."""
+        effective_reply_to = (metadata or {}).get("thread_id") or reply_to
         return await self._send_local_file(
-            chat_id, image_path, caption, reply_to
+            chat_id, image_path, caption, effective_reply_to
         )
 
     async def send_document(
@@ -352,8 +358,9 @@ class MattermostAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Upload a local file as a document."""
+        effective_reply_to = (metadata or {}).get("thread_id") or reply_to
         return await self._send_local_file(
-            chat_id, file_path, caption, reply_to, file_name
+            chat_id, file_path, caption, effective_reply_to, file_name
         )
 
     async def send_voice(
@@ -365,8 +372,9 @@ class MattermostAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Upload an audio file."""
+        effective_reply_to = (metadata or {}).get("thread_id") or reply_to
         return await self._send_local_file(
-            chat_id, audio_path, caption, reply_to
+            chat_id, audio_path, caption, effective_reply_to
         )
 
     async def send_video(
@@ -378,8 +386,9 @@ class MattermostAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Upload a video file."""
+        effective_reply_to = (metadata or {}).get("thread_id") or reply_to
         return await self._send_local_file(
-            chat_id, video_path, caption, reply_to
+            chat_id, video_path, caption, effective_reply_to
         )
 
     def format_message(self, content: str) -> str:
