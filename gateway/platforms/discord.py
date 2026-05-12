@@ -4883,6 +4883,8 @@ if DISCORD_AVAILABLE:
         Times out after 2 minutes.
         """
 
+        _MODEL_PAGE_SIZE = 25
+
         def __init__(
             self,
             providers: list,
@@ -4903,6 +4905,7 @@ if DISCORD_AVAILABLE:
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
             self._selected_provider: str = ""
+            self._model_page: int = 0
 
             self._build_provider_select()
 
@@ -4910,6 +4913,34 @@ if DISCORD_AVAILABLE:
             return _component_check_auth(
                 interaction, self.allowed_user_ids, self.allowed_role_ids,
             )
+
+        def _provider_for_slug(self, provider_slug: str):
+            return next(
+                (p for p in self.providers if p["slug"] == provider_slug), None
+            )
+
+        def _model_select_description(self, provider: dict) -> str:
+            pname = provider.get("name", provider.get("slug", "provider"))
+            models = provider.get("models", [])
+            loaded_total = len(models)
+            reported_total = provider.get("total_models", loaded_total) or loaded_total
+
+            lines = [f"Provider: **{pname}**"]
+            if loaded_total:
+                start = self._model_page * self._MODEL_PAGE_SIZE
+                end = min(start + self._MODEL_PAGE_SIZE, loaded_total)
+                lines.append(f"Select a model (showing {start + 1}-{end} of {loaded_total}):")
+                if loaded_total > self._MODEL_PAGE_SIZE:
+                    lines.append("Use Next/Prev to browse more models.")
+            else:
+                lines.append("Select a model:")
+
+            if reported_total > loaded_total:
+                lines.append(
+                    f"*{reported_total - loaded_total} more available — "
+                    "type `/model <name>` directly*"
+                )
+            return "\n".join(lines)
 
         def _build_provider_select(self):
             """Build the provider dropdown menu."""
@@ -4943,18 +4974,24 @@ if DISCORD_AVAILABLE:
             cancel_btn.callback = self._on_cancel
             self.add_item(cancel_btn)
 
-        def _build_model_select(self, provider_slug: str):
+        def _build_model_select(self, provider_slug: str, page: int = 0):
             """Build the model dropdown for a specific provider."""
             self.clear_items()
-            provider = next(
-                (p for p in self.providers if p["slug"] == provider_slug), None
-            )
+            provider = self._provider_for_slug(provider_slug)
             if not provider:
                 return
 
             models = provider.get("models", [])
+            if models:
+                last_page = max((len(models) - 1) // self._MODEL_PAGE_SIZE, 0)
+                self._model_page = max(0, min(page, last_page))
+            else:
+                self._model_page = 0
+
+            start = self._model_page * self._MODEL_PAGE_SIZE
+            end = start + self._MODEL_PAGE_SIZE
             options = []
-            for model_id in models[:25]:
+            for model_id in models[start:end]:
                 short = model_id.split("/")[-1] if "/" in model_id else model_id
                 options.append(
                     discord.SelectOption(
@@ -4972,6 +5009,25 @@ if DISCORD_AVAILABLE:
             )
             select.callback = self._on_model_selected
             self.add_item(select)
+
+            if len(models) > self._MODEL_PAGE_SIZE:
+                prev_btn = discord.ui.Button(
+                    label="◀ Prev",
+                    style=discord.ButtonStyle.grey,
+                    custom_id="model_prev",
+                    disabled=self._model_page <= 0,
+                )
+                prev_btn.callback = self._on_model_prev
+                self.add_item(prev_btn)
+
+                next_btn = discord.ui.Button(
+                    label="Next ▶",
+                    style=discord.ButtonStyle.grey,
+                    custom_id="model_next",
+                    disabled=(self._model_page + 1) * self._MODEL_PAGE_SIZE >= len(models),
+                )
+                next_btn.callback = self._on_model_next
+                self.add_item(next_btn)
 
             back_btn = discord.ui.Button(
                 label="◀ Back", style=discord.ButtonStyle.grey, custom_id="model_back"
@@ -4994,21 +5050,50 @@ if DISCORD_AVAILABLE:
 
             provider_slug = interaction.data["values"][0]
             self._selected_provider = provider_slug
-            provider = next(
-                (p for p in self.providers if p["slug"] == provider_slug), None
-            )
+            self._model_page = 0
+            provider = self._provider_for_slug(provider_slug)
             pname = provider.get("name", provider_slug) if provider else provider_slug
 
-            self._build_model_select(provider_slug)
-
-            total = provider.get("total_models", 0) if provider else 0
-            shown = min(len(provider.get("models", [])), 25) if provider else 0
-            extra = f"\n*{total - shown} more available — type `/model <name>` directly*" if total > shown else ""
+            self._build_model_select(provider_slug, page=0)
 
             await interaction.response.edit_message(
                 embed=discord.Embed(
                     title="⚙ Model Configuration",
-                    description=f"Provider: **{pname}**\nSelect a model:{extra}",
+                    description=(
+                        self._model_select_description(provider)
+                        if provider else f"Provider: **{pname}**\nSelect a model:"
+                    ),
+                    color=discord.Color.blue(),
+                ),
+                view=self,
+            )
+
+        async def _on_model_prev(self, interaction: discord.Interaction):
+            await self._turn_model_page(interaction, -1)
+
+        async def _on_model_next(self, interaction: discord.Interaction):
+            await self._turn_model_page(interaction, 1)
+
+        async def _turn_model_page(self, interaction: discord.Interaction, delta: int):
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized~", ephemeral=True
+                )
+                return
+
+            provider_slug = self._selected_provider
+            provider = self._provider_for_slug(provider_slug)
+            if not provider:
+                await interaction.response.send_message(
+                    "Provider no longer available~", ephemeral=True
+                )
+                return
+
+            self._build_model_select(provider_slug, page=self._model_page + delta)
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="⚙ Model Configuration",
+                    description=self._model_select_description(provider),
                     color=discord.Color.blue(),
                 ),
                 view=self,
