@@ -1320,6 +1320,7 @@ class AIAgent:
         self._executing_tools = False
         self._tool_guardrails = ToolCallGuardrailController()
         self._tool_guardrail_halt_decision: ToolGuardrailDecision | None = None
+        self._turn_tool_trace: list[dict[str, Any]] = []
 
         # Interrupt mechanism for breaking out of tool loops
         self._interrupt_requested = False
@@ -5529,12 +5530,70 @@ class AIAgent:
             except Exception:
                 pass
 
+    def _record_turn_tool_trace(
+        self,
+        *,
+        tool_call_id: str,
+        name: str,
+        arguments: dict,
+        result_content: str,
+        duration: float,
+        is_error: bool,
+        blocked: bool = False,
+        cancelled: bool = False,
+    ) -> None:
+        """Record a tool observation for completed-turn memory providers."""
+        try:
+            self._turn_tool_trace.append(
+                {
+                    "order": len(self._turn_tool_trace) + 1,
+                    "tool_call_id": str(tool_call_id or ""),
+                    "name": str(name or ""),
+                    "arguments": copy.deepcopy(arguments or {}),
+                    "result_content": str(result_content or ""),
+                    "duration_seconds": float(duration or 0.0),
+                    "is_error": bool(is_error),
+                    "blocked": bool(blocked),
+                    "cancelled": bool(cancelled),
+                }
+            )
+        except Exception:
+            pass
+
+    def _build_external_memory_trace(self, messages: list) -> dict | None:
+        """Build final post-Hermes tool trace for completed-turn sync."""
+        if not self._turn_tool_trace:
+            return None
+
+        final_tool_content: dict[str, str] = {}
+        for msg in messages or []:
+            if not isinstance(msg, dict) or msg.get("role") != "tool":
+                continue
+            tool_call_id = str(msg.get("tool_call_id") or "")
+            if tool_call_id:
+                final_tool_content[tool_call_id] = str(msg.get("content") or "")
+
+        tool_calls = []
+        for entry in self._turn_tool_trace:
+            item = copy.deepcopy(entry)
+            tool_call_id = item.get("tool_call_id") or ""
+            if tool_call_id in final_tool_content:
+                item["result_content"] = final_tool_content[tool_call_id]
+            tool_calls.append(item)
+
+        return {
+            "version": 1,
+            "capture_policy": "full_raw_after_hermes_processing",
+            "tool_calls": tool_calls,
+        }
+
     def _sync_external_memory_for_turn(
         self,
         *,
         original_user_message: Any,
         final_response: Any,
         interrupted: bool,
+        messages: list | None = None,
     ) -> None:
         """Mirror a completed turn into external memory providers.
 
@@ -5567,10 +5626,18 @@ class AIAgent:
         if not (self._memory_manager and final_response and original_user_message):
             return
         try:
-            self._memory_manager.sync_all(
-                original_user_message, final_response,
-                session_id=self.session_id or "",
-            )
+            trace = self._build_external_memory_trace(messages or [])
+            if trace is not None:
+                self._memory_manager.sync_all(
+                    original_user_message, final_response,
+                    session_id=self.session_id or "",
+                    trace=trace,
+                )
+            else:
+                self._memory_manager.sync_all(
+                    original_user_message, final_response,
+                    session_id=self.session_id or "",
+                )
             self._memory_manager.queue_prefetch_all(
                 original_user_message,
                 session_id=self.session_id or "",
@@ -10574,12 +10641,31 @@ class AIAgent:
         if self._interrupt_requested:
             print(f"{self.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
             for tc in tool_calls:
+                try:
+                    skipped_args = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    skipped_args = {}
+                if not isinstance(skipped_args, dict):
+                    skipped_args = {}
+                skipped_content = (
+                    f"[Tool execution cancelled — {tc.function.name} was skipped "
+                    "due to user interrupt]"
+                )
                 messages.append({
                     "role": "tool",
                     "name": tc.function.name,
-                    "content": f"[Tool execution cancelled — {tc.function.name} was skipped due to user interrupt]",
+                    "content": skipped_content,
                     "tool_call_id": tc.id,
                 })
+                self._record_turn_tool_trace(
+                    tool_call_id=tc.id,
+                    name=tc.function.name,
+                    arguments=skipped_args,
+                    result_content=skipped_content,
+                    duration=0.0,
+                    is_error=True,
+                    cancelled=True,
+                )
             return
 
         # ── Parse args + pre-execution bookkeeping ───────────────────────
@@ -10849,15 +10935,19 @@ class AIAgent:
         for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
             r = results[i]
             blocked = False
+            trace_is_error = True
+            cancelled = False
             if r is None:
                 # Tool was cancelled (interrupt) or thread didn't return
                 if self._interrupt_requested:
                     function_result = f"[Tool execution cancelled — {name} was skipped due to user interrupt]"
+                    cancelled = True
                 else:
                     function_result = f"Error executing tool '{name}': thread did not return a result"
                 tool_duration = 0.0
             else:
                 function_name, function_args, function_result, tool_duration, is_error, blocked = r
+                trace_is_error = is_error
 
                 if not blocked:
                     function_result = self._append_guardrail_observation(
@@ -10948,6 +11038,16 @@ class AIAgent:
             # Same as the sequential path: drain between each collected
             # result so the steer lands as early as possible.
             self._apply_pending_steer_to_tool_results(messages, 1)
+            self._record_turn_tool_trace(
+                tool_call_id=tc.id,
+                name=name,
+                arguments=args,
+                result_content=str(tool_msg.get("content") or ""),
+                duration=tool_duration,
+                is_error=trace_is_error,
+                blocked=blocked,
+                cancelled=cancelled,
+            )
 
         # ── Per-turn aggregate budget enforcement ─────────────────────────
         num_tools = len(parsed_calls)
@@ -10974,13 +11074,32 @@ class AIAgent:
                     self._vprint(f"{self.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)", force=True)
                 for skipped_tc in remaining_calls:
                     skipped_name = skipped_tc.function.name
+                    try:
+                        skipped_args = json.loads(skipped_tc.function.arguments)
+                    except json.JSONDecodeError:
+                        skipped_args = {}
+                    if not isinstance(skipped_args, dict):
+                        skipped_args = {}
+                    skipped_content = (
+                        f"[Tool execution cancelled — {skipped_name} was skipped "
+                        "due to user interrupt]"
+                    )
                     skip_msg = {
                         "role": "tool",
                         "name": skipped_name,
-                        "content": f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
+                        "content": skipped_content,
                         "tool_call_id": skipped_tc.id,
                     }
                     messages.append(skip_msg)
+                    self._record_turn_tool_trace(
+                        tool_call_id=skipped_tc.id,
+                        name=skipped_name,
+                        arguments=skipped_args,
+                        result_content=skipped_content,
+                        duration=0.0,
+                        is_error=True,
+                        cancelled=True,
+                    )
                 break
 
             function_name = tool_call.function.name
@@ -11356,6 +11475,15 @@ class AIAgent:
             # injection lands as soon as a tool finishes — not after the
             # entire batch.  The model sees it on the next API iteration.
             self._apply_pending_steer_to_tool_results(messages, 1)
+            self._record_turn_tool_trace(
+                tool_call_id=tool_call.id,
+                name=function_name,
+                arguments=function_args,
+                result_content=str(tool_msg.get("content") or ""),
+                duration=tool_duration,
+                is_error=_is_error_result,
+                blocked=_execution_blocked,
+            )
 
             if not self.quiet_mode:
                 if self.verbose_logging:
@@ -12000,6 +12128,7 @@ class AIAgent:
         # scope the tool-level interrupt signal to THIS agent's thread only.
         # Must be set before any thread-scoped interrupt syncing.
         self._execution_thread_id = threading.current_thread().ident
+        self._turn_tool_trace = []
 
         # Always clear stale per-thread state from a previous turn. If an
         # interrupt arrived before startup finished, preserve it and bind it
@@ -15427,6 +15556,7 @@ class AIAgent:
             original_user_message=original_user_message,
             final_response=final_response,
             interrupted=interrupted,
+            messages=messages,
         )
 
         # Background memory/skill review — runs AFTER the response is delivered

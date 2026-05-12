@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — Honcho, OpenViking, Mem0, Memori, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with 9 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # or honcho, mem0, memori, hindsight, holographic, retaindb, byterover, supermemory
 ```
 
 ## How It Works
@@ -323,6 +323,39 @@ echo "MEM0_API_KEY=your-key" >> ~/.hermes/.env
 
 ---
 
+### Memori
+
+Structured long-term memory using Memori Cloud, with background completed-turn capture, Hermes-processed tool trace, and explicit recall tools for facts, summaries, quota, signup, and feedback.
+
+| | |
+|---|---|
+| **Best for** | Agent-controlled recall with structured project and session attribution |
+| **Requires** | `pip install memori` + [Memori API key](https://app.memorilabs.ai/signup) |
+| **Data storage** | Memori Cloud |
+| **Cost** | Memori pricing |
+
+**Tools:** `memori_recall` (search long-term memory), `memori_recall_summary` (summarized context), `memori_quota` (usage/quota), `memori_signup` (request signup email), `memori_feedback` (send integration feedback)
+
+**Setup:**
+```bash
+hermes memory setup    # select "memori"
+# Or manually:
+hermes config set memory.provider memori
+echo "MEMORI_API_KEY=your-key" >> ~/.hermes/.env
+echo "MEMORI_ENTITY_ID=your-user-or-workspace-id" >> ~/.hermes/.env
+```
+
+**Config:** `$HERMES_HOME/memori.json`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `entityId` | -- | Stable end-user or workspace identifier |
+| `projectId` | Agent scope | Optional project scope for recall and summaries |
+
+Memori receives the completed user message, final assistant response, and full raw tool trace after Hermes processing. That trace can include tool arguments and final tool result content, so enable Memori only for workspaces where sending those outputs to Memori Cloud is acceptable.
+
+---
+
 ### Hindsight
 
 Long-term memory with knowledge graph, entity resolution, and multi-strategy retrieval. The `hindsight_reflect` tool provides cross-memory synthesis that no other provider offers. Automatically retains full conversation turns (including tool calls) with session-level document tracking.
@@ -529,6 +562,7 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 | **Honcho** | Cloud | Paid | 5 | `honcho-ai` | Dialectic user modeling + session-scoped context |
 | **OpenViking** | Self-hosted | Free | 5 | `openviking` + server | Filesystem hierarchy + tiered loading |
 | **Mem0** | Cloud | Paid | 3 | `mem0ai` | Server-side LLM extraction |
+| **Memori** | Cloud | Paid | 5 | `memori` | Structured agent recall + summaries |
 | **Hindsight** | Cloud/Local | Free/Paid | 3 | `hindsight-client` | Knowledge graph + reflect synthesis |
 | **Holographic** | Local | Free | 2 | None | HRR algebra + trust scoring |
 | **RetainDB** | Cloud | $20/mo | 5 | `requests` | Delta compression |

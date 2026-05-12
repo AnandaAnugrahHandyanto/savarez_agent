@@ -10644,7 +10644,7 @@ Examples:
         help="Configure external memory provider",
         description=(
             "Set up and manage external memory provider plugins.\n\n"
-            "Available providers: honcho, openviking, mem0, hindsight,\n"
+            "Available providers: honcho, openviking, mem0, memori, hindsight,\n"
             "holographic, retaindb, byterover.\n\n"
             "Only one external provider can be active at a time.\n"
             "Built-in memory (MEMORY.md/USER.md) is always active."
