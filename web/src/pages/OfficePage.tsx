@@ -114,6 +114,8 @@ type OfficeRoom = "front" | "strategy" | "build" | "quality" | "ops";
 type RoleMeta = {
   name: OfficeProfileName;
   title: string;
+  personName?: string;
+  avatarTone?: string;
   room: OfficeRoom;
   seat: string;
   description: string;
@@ -142,6 +144,73 @@ const OFFICE_ROLES: RoleMeta[] = [
 
 const ROLE_META_BY_NAME = Object.fromEntries(OFFICE_ROLES.map((role) => [role.name, role]));
 
+const CREW_NAMES: Record<string, string[]> = {
+  triage: ["Mira"],
+  chief: ["Astra", "Orion", "Vega"],
+  supervisor: ["Nadia", "Soren", "Iris"],
+  pm: ["Priya", "Milo", "Elena"],
+  architect: ["Daedalus", "Noor", "Atlas"],
+  research: ["Lyra", "Jun", "Sage"],
+  coder: ["Kai", "Anika", "Ravi", "Maya", "Theo", "Zara"],
+  tooling: ["Pax", "Tessa", "Nico", "Uma"],
+  memory: ["Mnemos", "Ari", "Kepler"],
+  reviewer: ["Quinn", "Selene", "Hugo", "Rhea"],
+  qa: ["Nova", "Tariq", "Lena", "Owen"],
+  security: ["Kira", "Bastian", "Mina"],
+  approval: ["Grace", "Eli"],
+  observability: ["Echo", "River", "Samir"],
+  devops: ["Forge", "Leah", "Arjun"],
+  docs: ["Wren", "Ivy", "Mateo"],
+  demo: ["Luna", "Cleo", "Finn"],
+};
+
+const AVATAR_TONES = [
+  "from-cyan-300/25 via-teal-200/15 to-emerald-300/15 text-cyan-50 shadow-[0_0_28px_rgba(45,212,191,0.18)]",
+  "from-violet-300/25 via-fuchsia-200/15 to-sky-300/15 text-violet-50 shadow-[0_0_28px_rgba(167,139,250,0.18)]",
+  "from-amber-300/25 via-orange-200/15 to-rose-300/15 text-amber-50 shadow-[0_0_28px_rgba(251,191,36,0.16)]",
+  "from-sky-300/25 via-cyan-200/15 to-blue-300/15 text-sky-50 shadow-[0_0_28px_rgba(125,211,252,0.18)]",
+  "from-emerald-300/25 via-lime-200/15 to-teal-300/15 text-emerald-50 shadow-[0_0_28px_rgba(110,231,183,0.18)]",
+];
+
+function hashString(value: string): number {
+  return value.split("").reduce((hash, char) => ((hash << 5) - hash + char.charCodeAt(0)) | 0, 0);
+}
+
+function seatIndex(baseName: string, seat: string): number {
+  if (seat === baseName) return 0;
+  const suffix = seat.startsWith(`${baseName}-`) ? seat.slice(baseName.length + 1) : seat;
+  const numeric = Number.parseInt(suffix, 10);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric - 1;
+  return Math.abs(hashString(seat));
+}
+
+function crewName(baseName: string, seat: string): string {
+  const names = CREW_NAMES[baseName] ?? ["Hermes"];
+  const index = seatIndex(baseName, seat);
+  return names[index % names.length];
+}
+
+function avatarTone(seat: string): string {
+  return AVATAR_TONES[Math.abs(hashString(seat)) % AVATAR_TONES.length];
+}
+
+function initials(name: string): string {
+  return name.split(/\s+/).filter(Boolean).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "H";
+}
+
+function withCrewIdentity(base: RoleMeta, seat: string): RoleMeta {
+  const baseName = base.name;
+  const name = crewName(baseName, seat);
+  return {
+    ...base,
+    name: seat,
+    title: seatTitle(base, seat),
+    personName: name,
+    avatarTone: avatarTone(seat),
+    seat: seat === base.name ? base.seat : `${base.seat} · ${seat}`,
+  };
+}
+
 function seatTitle(base: RoleMeta, seat: string): string {
   if (seat === base.name) return base.title;
   const suffix = seat.startsWith(`${base.name}-`) ? seat.slice(base.name.length + 1) : seat;
@@ -156,12 +225,7 @@ function expandOfficeRoles(office?: OfficeStatus): RoleMeta[] {
     for (const seat of seats) {
       if (!seat || seen.has(seat)) continue;
       seen.add(seat);
-      expanded.push({
-        ...base,
-        name: seat,
-        title: seatTitle(base, seat),
-        seat: seat === base.name ? base.seat : `${base.seat} · ${seat}`,
-      });
+      expanded.push(withCrewIdentity(base, seat));
     }
   }
   for (const profile of office?.profiles?.present ?? []) {
@@ -169,7 +233,7 @@ function expandOfficeRoles(office?: OfficeStatus): RoleMeta[] {
     const baseName = profile.replace(/-\d+$/, "");
     const base = ROLE_META_BY_NAME[baseName] ?? OFFICE_ROLES[0];
     seen.add(profile);
-    expanded.push({ ...base, name: profile, title: seatTitle(base, profile), seat: `${base.seat} · ${profile}` });
+    expanded.push(withCrewIdentity(base, profile));
   }
   return expanded;
 }
@@ -309,20 +373,23 @@ function PersonCard({ role, tasks, now, office, onOpenTask }: { role: RoleMeta; 
   const installed = office?.profiles?.present?.includes(role.name) ?? true;
   const stale = current?.status === "running" && taskAgeSeconds(now, current) > 30 * 60;
   const Icon = role.icon;
+  const personName = role.personName ?? crewName(role.name.replace(/-\d+$/, ""), role.name);
   const diagnostics = tasks.reduce((sum, task) => sum + (task.diagnostics?.length ?? task.warnings?.count ?? 0), 0);
 
   return (
     <div className="group relative min-w-0 border border-border/70 bg-black/35 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.03)_inset] transition hover:border-midground/50 hover:bg-card/70">
       <div className="absolute inset-x-4 top-0 h-px bg-gradient-to-r from-transparent via-midground/40 to-transparent" />
       <div className="flex items-start gap-3">
-        <div className={cn("relative flex h-12 w-10 shrink-0 items-center justify-center border", busy ? "border-emerald-200/60 bg-emerald-300/10" : "border-border bg-muted/10")}>
-          <Icon className={cn("h-5 w-5", busy ? "text-emerald-100" : "text-muted-foreground")} />
-          <span className="absolute -bottom-1 -right-1"><StatusDot status={status} /></span>
+        <div className={cn("relative flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-midground/40 bg-gradient-to-br", role.avatarTone ?? avatarTone(role.name), busy ? "ring-1 ring-emerald-200/50" : "")}>
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.28),transparent_34%),linear-gradient(135deg,rgba(255,255,255,0.12),transparent_45%)]" />
+          <span className="relative text-sm font-black tracking-[0.12em]">{initials(personName)}</span>
+          <Icon className="absolute bottom-1 left-1 h-3.5 w-3.5 opacity-70" />
+          <span className="absolute -bottom-0.5 -right-0.5"><StatusDot status={status} /></span>
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div className="min-w-0 flex-1 basis-48">
-              <div className="break-words text-sm font-bold tracking-[0.05em] text-foreground">{role.title}</div>
+              <div className="break-words text-sm font-bold tracking-[0.05em] text-foreground">{personName} <span className="font-medium text-muted-foreground">({role.title})</span></div>
               <div className="mt-0.5 break-words text-[10px] normal-case text-muted-foreground">@{role.name} · {role.seat}</div>
             </div>
             <Badge className={cn("shrink-0 border px-2 py-0 text-[10px] uppercase", !installed ? "border-red-300/60 bg-red-300/10 text-red-100" : stale ? "border-amber-300/60 bg-amber-300/10 text-amber-100" : taskStatusTone(status))}>
