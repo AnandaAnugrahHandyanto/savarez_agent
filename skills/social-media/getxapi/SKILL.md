@@ -105,7 +105,7 @@ getxapi uses **non-standard field names**. Do NOT use official X API v2 field na
 
 Broad niche keywords work best (examples: `exampleKeyword1`, `exampleKeyword2`). Multi-word queries must be URL-encoded (e.g. `exampleKeyword1%20modifier`) — unencoded spaces cause truncated or failed requests.
 
-Overly specific terms like `exampleKeyword2 tip` often return zero Top results. Cast a wide net then filter.
+Overly specific terms like `exampleKeyword2%20tip` often return zero Top results. Cast a wide net then filter.
 
 ## Posting
 
