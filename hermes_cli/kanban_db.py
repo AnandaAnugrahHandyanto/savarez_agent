@@ -3902,6 +3902,50 @@ def _resolve_hermes_argv() -> list[str]:
     return [sys.executable, "-m", "hermes_cli.main"]
 
 
+def _load_assignee_map() -> dict:
+    """Load kanban.assignee_to_profile from config.yaml (D1 Task 2).
+
+    Default (when key absent or empty): ``{"*": "worker"}`` — swarm-as-persona,
+    every assignee tag collapses to a single ``worker`` profile.
+
+    Override examples in config.yaml:
+
+        kanban:
+          assignee_to_profile:
+            "*": worker
+            ops: ops-special      # ops tasks still go to dedicated profile
+
+    Returns dict[str, str]. Returns the swarm default on any config error.
+    """
+    try:
+        from hermes_cli.config import load_config as _lc
+        cfg = _lc() or {}
+    except Exception:
+        return {"*": "worker"}
+    raw = (cfg.get("kanban") or {}).get("assignee_to_profile") or {}
+    if not isinstance(raw, dict) or not raw:
+        return {"*": "worker"}
+    # Normalize to str:str
+    return {str(k): str(v) for k, v in raw.items()}
+
+
+def _resolve_assignee_to_profile(assignee: str) -> str:
+    """Apply the kanban.assignee_to_profile map (D1 Task 2).
+
+    Lookup order:
+      1. Exact match in the map
+      2. Wildcard '*' fallback
+      3. Identity (return assignee unchanged) — preserves pre-D1 behavior
+         when user explicitly deletes the wildcard from config.
+    """
+    m = _load_assignee_map()
+    if assignee in m:
+        return m[assignee]
+    if "*" in m:
+        return m["*"]
+    return assignee
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -3926,7 +3970,10 @@ def _default_spawn(
 
     from hermes_cli.profiles import normalize_profile_name
 
-    profile_arg = normalize_profile_name(task.assignee)
+    # D1 Task 2: swarm-as-persona — collapse assignee tags to runtime profiles.
+    # Default map {"*": "worker"} routes everything through one profile.
+    resolved_assignee = _resolve_assignee_to_profile(task.assignee)
+    profile_arg = normalize_profile_name(resolved_assignee)
 
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
