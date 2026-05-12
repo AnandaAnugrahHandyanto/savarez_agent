@@ -744,6 +744,16 @@ class TestBuildGeminiRequest:
         assert tc["thinkingBudget"] == 1024
         assert tc["includeThoughts"] is True
 
+    def test_bare_include_thoughts_true_is_stripped_for_code_assist(self):
+        from agent.gemini_cloudcode_adapter import build_gemini_request
+
+        req = build_gemini_request(
+            messages=[{"role": "user", "content": "hi"}],
+            thinking_config={"includeThoughts": True},
+        )
+
+        assert "generationConfig" not in req or "thinkingConfig" not in req["generationConfig"]
+
 
 class TestWrapCodeAssistRequest:
     def test_envelope_shape(self):
@@ -912,6 +922,26 @@ class TestTranslateStreamEvent:
         )
         assert chunks[-1].choices[0].finish_reason == "tool_calls"
 
+    def test_finish_only_stream_chunk_has_openai_delta_attributes(self):
+        """Terminal Code Assist SSE events can carry finishReason without parts.
+
+        Downstream streaming consumers access delta.content directly. Match the
+        OpenAI/native Gemini shape by always providing nullable delta fields.
+        """
+        from agent.gemini_cloudcode_adapter import _translate_stream_event
+
+        chunks = _translate_stream_event(
+            {"response": {"candidates": [{"finishReason": "STOP"}]}},
+            model="gemini-3-pro-preview", tool_call_counter=[0],
+        )
+
+        delta = chunks[-1].choices[0].delta
+        assert delta.content is None
+        assert delta.tool_calls is None
+        assert delta.reasoning is None
+        assert delta.reasoning_content is None
+        assert chunks[-1].choices[0].finish_reason == "stop"
+
 
 class TestGeminiCloudCodeClient:
     def test_client_exposes_openai_interface(self):
@@ -1036,6 +1066,8 @@ class TestGeminiHttpErrorParsing:
         )
         err = _gemini_http_error(resp)
         assert err.retry_after == 45.0
+        assert "rate limited" in str(err)
+        assert "quota exhausted" not in str(err).lower()
 
     def test_malformed_body_still_produces_structured_error(self):
         """Non-JSON body must not swallow status_code — we still want the classifier path."""

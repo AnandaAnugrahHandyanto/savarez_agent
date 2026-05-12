@@ -236,7 +236,14 @@ def _translate_tool_choice_to_gemini(tool_choice: Any) -> Optional[Dict[str, Any
 
 
 def _normalize_thinking_config(config: Any) -> Optional[Dict[str, Any]]:
-    """Accept thinkingBudget / thinkingLevel / includeThoughts (+ snake_case)."""
+    """Accept thinkingBudget / thinkingLevel / includeThoughts (+ snake_case).
+
+    Cloud Code Assist is stricter than the public Gemini API: some models reject
+    ``includeThoughts`` unless thinking is explicitly enabled via a budget or
+    level. Hermes' generic Gemini profile may emit ``{"includeThoughts": True}``
+    by itself, so strip that shape here instead of sending a request Google will
+    reject with INVALID_ARGUMENT.
+    """
     if not isinstance(config, dict) or not config:
         return None
     budget = config.get("thinkingBudget", config.get("thinking_budget"))
@@ -248,6 +255,8 @@ def _normalize_thinking_config(config: Any) -> Optional[Dict[str, Any]]:
     if isinstance(level, str) and level.strip():
         normalized["thinkingLevel"] = level.strip().lower()
     if isinstance(include, bool):
+        if include is True and not any(k in normalized for k in ("thinkingBudget", "thinkingLevel")):
+            return None
         normalized["includeThoughts"] = include
     return normalized or None
 
@@ -450,7 +459,13 @@ def _make_stream_chunk(
     finish_reason: Optional[str] = None,
     reasoning: str = "",
 ) -> _GeminiStreamChunk:
-    delta_kwargs: Dict[str, Any] = {"role": "assistant"}
+    delta_kwargs: Dict[str, Any] = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": None,
+        "reasoning": None,
+        "reasoning_content": None,
+    }
     if content:
         delta_kwargs["content"] = content
     if tool_call_delta is not None:
@@ -868,8 +883,8 @@ def _gemini_http_error(response: httpx.Response) -> CodeAssistError:
             message += f" Google suggests retrying in {retry_delay_seconds:g}s."
     elif status == 429 and err_status == "RESOURCE_EXHAUSTED":
         message = (
-            f"Gemini quota exhausted ({err_message or 'RESOURCE_EXHAUSTED'}). "
-            f"Check /gquota for remaining daily requests."
+            f"Gemini Code Assist rate limited ({err_message or 'RESOURCE_EXHAUSTED'}). "
+            f"This may be a short-window Google-side throttle even when /gquota shows daily quota remaining."
         )
         if retry_delay_seconds is not None:
             message += f" Retry suggested in {retry_delay_seconds:g}s."
