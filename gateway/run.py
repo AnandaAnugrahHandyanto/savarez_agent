@@ -1822,6 +1822,97 @@ import weakref as _weakref
 _gateway_runner_ref: _weakref.ref = lambda: None
 
 
+_PROVIDER_API_FAILURE_RE = re.compile(
+    r"^API call failed after (?P<retries>\d+) retries:\s*(?P<detail>.*)$",
+    re.IGNORECASE | re.DOTALL,
+)
+_REQUEST_ID_RE = re.compile(
+    r"\brequest[ _-]?id\b\s*(?:[:=]|is|was)?\s*([A-Za-z0-9][A-Za-z0-9._:-]{8,})",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_provider_api_failure(text: str) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    return bool(_PROVIDER_API_FAILURE_RE.match(text.strip())) or any(
+        marker in lowered
+        for marker in (
+            "api call failed after",
+            "rate limited after",
+            "provider's stream connection",
+            "openai.badrequesterror",
+            "openai.authenticationerror",
+            "openai.permissiondeniederror",
+            "openai.ratelimiterror",
+            "openai.internalservererror",
+        )
+    )
+
+
+def _format_provider_api_failure_for_gateway(agent_result: dict, response: str) -> str:
+    """Return a short user-facing fallback for provider/API failures.
+
+    The agent core intentionally keeps the raw provider error in logs and in the
+    result dict for diagnostics.  Gateway chats should not expose long English
+    SDK/provider messages (especially help-center text and request IDs) as the
+    visible bot reply.
+    """
+    if not response:
+        return response
+
+    error_detail = str(agent_result.get("error") or "") if isinstance(agent_result, dict) else ""
+    raw_text = str(response)
+    combined = "\n".join(part for part in (raw_text, error_detail) if part)
+    if not _looks_like_provider_api_failure(raw_text) and not _looks_like_provider_api_failure(error_detail):
+        return response
+
+    request_id_match = _REQUEST_ID_RE.search(combined)
+    request_id = request_id_match.group(1).strip(".,;)") if request_id_match else None
+    logger.warning(
+        "Provider/API failure hidden from gateway user response%s: %s",
+        f" request_id={request_id}" if request_id else "",
+        combined[:2000],
+    )
+
+    lowered = combined.lower()
+    context_markers = (
+        "context length", "context size", "context window", "maximum context",
+        "token limit", "too many tokens", "reduce the length", "exceeds the limit",
+        "request entity too large", "prompt is too long", "payload too large",
+        "input is too long",
+    )
+    if any(marker in lowered for marker in context_markers):
+        return (
+            "⚠️ 会話が長くなり、モデルのコンテキスト上限に近づきました。\n"
+            "/compact で圧縮するか、/reset で新しく始めてください。"
+        )
+
+    if any(marker in lowered for marker in ("429", "rate limit", "rate_limited", "too many requests")):
+        return (
+            "⚠️ モデルAPIが一時的に混み合っています。少し待って再実行してください。\n"
+            "詳細はログに記録しました。"
+        )
+
+    if any(marker in lowered for marker in ("401", "403", "authentication", "permission", "api key", "unauthorized")):
+        return (
+            "⚠️ モデルAPIの認証または権限で失敗しました。設定を確認してください。\n"
+            "詳細はログに記録しました。"
+        )
+
+    if any(marker in lowered for marker in ("connection lost", "connection reset", "connection closed", "network connection", "network error", "stream connection")):
+        return (
+            "⚠️ モデルAPIとの接続が途中で切れました。少し待って再実行してください。\n"
+            "大きな出力中に起きた場合は、作業を小さく分けると通りやすいです。"
+        )
+
+    return (
+        "⚠️ モデル応答が一時的に失敗しました。少し待って再実行してください。\n"
+        "詳細はログに記録しました。"
+    )
+
+
 def _normalize_empty_agent_response(
     agent_result: dict,
     response: str,
@@ -8670,6 +8761,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             response = _normalize_empty_agent_response(
                 agent_result, response, history_len=len(history),
             )
+            response = _format_provider_api_failure_for_gateway(agent_result, response)
             response = _sanitize_gateway_final_response(source.platform, response)
 
             # Ordering contract: the agent thread already updated the contextvar
@@ -10169,6 +10261,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):
                 response = f"Error: {result['error']}"
+            if result:
+                response = _format_provider_api_failure_for_gateway(result, response)
 
             # Extract media files from the response
             if response:
