@@ -376,6 +376,7 @@ def test_mac_cdp_inventory_config_writes_readonly_config(tmp_path):
     assert result["readOnly"] is True
     assert result["allowSubmit"] is False
     assert result["url"] == "https://example.com/form?sessionId=inv-001"
+    assert result["sideEffectPolicy"]["approvalRequiredBeforeRun"] is False
     assert '"readOnly": true' in result["config_json"]
     cfg = json.loads((tmp_path / "cdp-readonly-inventory-config.json").read_text())
     assert cfg["readOnly"] is True
@@ -426,6 +427,8 @@ def test_mac_cdp_fill_config_writes_non_submitting_config(tmp_path):
     assert result["allowSubmit"] is False
     assert result["fields_count"] == 1
     assert result["url"] == "https://example.com/form?x=1&sessionId=fill-001"
+    assert result["sideEffectPolicy"]["approvalRequiredBeforeRun"] is True
+    assert "explicit approval" in result["next_step"]
     assert '"allowSubmit": false' in result["config_json"]
     cfg = json.loads((tmp_path / "cdp-form-fill-config.json").read_text())
     assert cfg["allowSubmit"] is False

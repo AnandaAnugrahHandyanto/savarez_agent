@@ -23,6 +23,8 @@ def test_inventory_config_is_readonly_and_sessionized(tmp_path):
     assert cfg["allowSubmit"] is False
     assert cfg["readOnly"] is True
     assert cfg["minFields"] == 1
+    assert cfg["sideEffectPolicy"]["approvalRequiredBeforeRun"] is False
+    assert "does not type" in " ".join(cfg["sideEffectPolicy"]["knownSideEffects"])
     assert cfg["outputPath"] == str(tmp_path / "dryrun-readonly-inventory-result.json")
     assert cfg["screenshotPath"] == str(tmp_path / "dryrun-readonly-inventory-screenshot.png")
 
@@ -96,6 +98,9 @@ def test_fill_config_requires_fields_and_preserves_validation(tmp_path):
     assert cfg["allowSubmit"] is False
     assert cfg["fields"][0]["value"] == "こんにちは"
     assert cfg["validationExpression"].startswith("({ok:")
+    assert cfg["sideEffectPolicy"]["approvalRequiredBeforeRun"] is True
+    assert "autosave" in " ".join(cfg["sideEffectPolicy"]["knownSideEffects"])
+    assert "obtain approval" in cfg["sideEffectPolicy"]["approvalInstruction"]
 
 
 def test_write_config_uses_mode_specific_default_name(tmp_path):

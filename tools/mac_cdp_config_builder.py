@@ -39,6 +39,34 @@ FIELD_KINDS = {"value", "textContent", "innerText"}
 MODES = {"inventory", "fill"}
 
 
+def _side_effect_policy(mode: str) -> dict[str, Any]:
+    """Return the approval policy agents should surface before execution."""
+    if mode == "inventory":
+        return {
+            "approvalRequiredBeforeRun": False,
+            "operationClass": "read-only inventory",
+            "knownSideEffects": [
+                "loads the target URL in a dedicated CDP browser profile",
+                "may create normal network access logs, analytics events, or cookies",
+                "does not type, click, submit, save, or intentionally mutate fields",
+            ],
+        }
+    return {
+        "approvalRequiredBeforeRun": True,
+        "operationClass": "guarded fill without submit",
+        "knownSideEffects": [
+            "loads the target URL in a dedicated CDP browser profile",
+            "types supplied values into selected fields",
+            "does not click submit/save buttons because allowSubmit is forced false",
+            "the target site may still autosave or trigger oninput/onchange side effects",
+        ],
+        "approvalInstruction": (
+            "Before running this fill config, explicitly tell the user the likely "
+            "side effects and obtain approval for this specific URL and field set."
+        ),
+    }
+
+
 def _as_path(path: str | Path) -> Path:
     return Path(path).expanduser().resolve()
 
@@ -145,6 +173,7 @@ def build_config(spec: dict[str, Any], shared_root: str | Path = DEFAULT_SHARED_
         "windowSize": str(spec.get("windowSize", "1280,900")),
         "pageReadyTimeoutSec": int(spec.get("pageReadyTimeoutSec", 12)),
         "allowSubmit": False,
+        "sideEffectPolicy": _side_effect_policy(mode),
     }
 
     if mode == "inventory":

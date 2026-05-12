@@ -462,10 +462,12 @@ def _mac_sidecar_config_payload(
         "result_path": cfg.get("outputPath"),
         "screenshot_path": cfg.get("screenshotPath"),
         "allowSubmit": cfg.get("allowSubmit"),
+        "sideEffectPolicy": cfg.get("sideEffectPolicy"),
         "url": cfg.get("url"),
         "next_step": (
             "Install config_json to config_path via mac_write_file, then run "
-            "runner_path via mac_run_shared_python."
+            "runner_path via mac_run_shared_python. For fill configs, first "
+            "state sideEffectPolicy to the user and obtain explicit approval."
         ),
     }
     if cfg.get("readOnly") is True:
