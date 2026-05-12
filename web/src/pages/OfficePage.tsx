@@ -175,11 +175,11 @@ function expandOfficeRoles(office?: OfficeStatus): RoleMeta[] {
 }
 
 const ROOMS: Array<{ id: OfficeRoom; label: string; className: string }> = [
-  { id: "front", label: "Front Desk", className: "lg:col-span-3" },
-  { id: "strategy", label: "Strategy Room", className: "lg:col-span-6" },
-  { id: "build", label: "Build Floor", className: "lg:col-span-5" },
-  { id: "quality", label: "Quality / Security", className: "lg:col-span-4" },
-  { id: "ops", label: "Ops + Showcase", className: "lg:col-span-7" },
+  { id: "front", label: "Front Desk", className: "" },
+  { id: "strategy", label: "Strategy Room", className: "" },
+  { id: "build", label: "Build Floor", className: "" },
+  { id: "quality", label: "Quality / Security", className: "" },
+  { id: "ops", label: "Ops + Showcase", className: "" },
 ];
 
 const STATUS_LABELS: Record<string, string> = {
@@ -312,7 +312,7 @@ function PersonCard({ role, tasks, now, office, onOpenTask }: { role: RoleMeta; 
   const diagnostics = tasks.reduce((sum, task) => sum + (task.diagnostics?.length ?? task.warnings?.count ?? 0), 0);
 
   return (
-    <div className="group relative overflow-hidden border border-border/70 bg-black/35 p-3 shadow-[0_0_0_1px_rgba(255,255,255,0.03)_inset] transition hover:border-midground/50 hover:bg-card/70">
+    <div className="group relative min-w-0 border border-border/70 bg-black/35 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.03)_inset] transition hover:border-midground/50 hover:bg-card/70">
       <div className="absolute inset-x-4 top-0 h-px bg-gradient-to-r from-transparent via-midground/40 to-transparent" />
       <div className="flex items-start gap-3">
         <div className={cn("relative flex h-12 w-10 shrink-0 items-center justify-center border", busy ? "border-emerald-200/60 bg-emerald-300/10" : "border-border bg-muted/10")}>
@@ -320,21 +320,21 @@ function PersonCard({ role, tasks, now, office, onOpenTask }: { role: RoleMeta; 
           <span className="absolute -bottom-1 -right-1"><StatusDot status={status} /></span>
         </div>
         <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-2">
-            <div>
-              <div className="text-sm font-bold tracking-[0.05em] text-foreground">{role.title}</div>
-              <div className="text-[10px] text-muted-foreground">@{role.name} · {role.seat}</div>
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="min-w-0 flex-1 basis-48">
+              <div className="break-words text-sm font-bold tracking-[0.05em] text-foreground">{role.title}</div>
+              <div className="mt-0.5 break-words text-[10px] normal-case text-muted-foreground">@{role.name} · {role.seat}</div>
             </div>
-            <Badge className={cn("border px-2 py-0 text-[10px] uppercase", !installed ? "border-red-300/60 bg-red-300/10 text-red-100" : stale ? "border-amber-300/60 bg-amber-300/10 text-amber-100" : taskStatusTone(status))}>
+            <Badge className={cn("shrink-0 border px-2 py-0 text-[10px] uppercase", !installed ? "border-red-300/60 bg-red-300/10 text-red-100" : stale ? "border-amber-300/60 bg-amber-300/10 text-amber-100" : taskStatusTone(status))}>
               {!installed ? "missing" : stale ? "stale" : busy ? STATUS_LABELS[status] ?? status : "idle"}
             </Badge>
           </div>
-          <p className="mt-2 line-clamp-2 text-[11px] normal-case leading-snug text-muted-foreground">{role.description}</p>
+          <p className="mt-2 text-[11px] normal-case leading-snug text-muted-foreground">{role.description}</p>
           {current ? (
             <button type="button" onClick={() => onOpenTask(current.id)} className="mt-3 w-full rounded-sm border border-border/70 bg-background/50 p-2 text-left transition hover:border-midground/60 hover:bg-card/70 focus:border-midground focus:outline-none">
-              <div className="line-clamp-1 text-xs normal-case text-foreground">{miniTaskLabel(current)}</div>
-              {current.latest_summary && <div className="mt-1 line-clamp-1 text-[10px] normal-case text-muted-foreground">{current.latest_summary}</div>}
-              <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+              <div className="line-clamp-2 text-xs normal-case text-foreground">{miniTaskLabel(current)}</div>
+              {current.latest_summary && <div className="mt-1 line-clamp-2 text-[10px] normal-case text-muted-foreground">{current.latest_summary}</div>}
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[10px] text-muted-foreground">
                 <span>{tasks.length} task{tasks.length === 1 ? "" : "s"}{diagnostics ? ` · ${diagnostics} alerts` : ""}</span>
                 <span>{timeAgo(now, current.started_at || current.created_at)}</span>
               </div>
@@ -361,21 +361,21 @@ function OfficeRoomCard({ room, roles, assignments, now, office, onOpenTask }: {
   const queued = roomTasks.filter((task) => task.status === "ready").length;
   const idle = roles.filter((role) => (assignments.get(role.name) ?? []).filter((task) => task.status !== "done").length === 0).length;
   return (
-    <Card className={cn("relative overflow-hidden bg-gradient-to-br to-transparent", ROOM_GLOW[room.id], room.className)}>
+    <Card className={cn("relative bg-gradient-to-br to-transparent", ROOM_GLOW[room.id], room.className)}>
       <div className="absolute inset-0 opacity-[0.08]" style={{ backgroundImage: "linear-gradient(currentColor 1px, transparent 1px), linear-gradient(90deg, currentColor 1px, transparent 1px)", backgroundSize: "24px 24px" }} />
-      <CardHeader className="relative">
-        <div className="flex items-start justify-between gap-3">
-          <div>
+      <CardHeader className="relative pb-3">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0 flex-1 basis-72">
             <CardTitle>{room.label}</CardTitle>
             <CardDescription>{roles.length} crew · {roomTasks.length} assigned · {active} active{queued ? ` · ${queued} queued` : ""}{blocked ? ` · ${blocked} blocked` : ""}</CardDescription>
           </div>
-          <div className="grid grid-cols-2 gap-1 text-center text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
+          <div className="grid shrink-0 grid-cols-2 gap-1 text-center text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
             <div className="border border-border/70 bg-background/35 px-2 py-1"><div className="text-foreground">{roles.length}</div><div>crew</div></div>
             <div className="border border-border/70 bg-background/35 px-2 py-1"><div className="text-foreground">{idle}</div><div>idle</div></div>
           </div>
         </div>
       </CardHeader>
-      <CardContent className="relative grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+      <CardContent className="relative grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(280px,1fr))]">
         {roles.map((role) => (
           <PersonCard key={role.name} role={role} tasks={assignments.get(role.name) ?? []} now={now} office={office} onOpenTask={onOpenTask} />
         ))}
@@ -396,7 +396,7 @@ function CrewTeamOverview({ rooms, roles, assignments, onSelectRoom }: { rooms: 
           </div>
         </div>
       </CardHeader>
-      <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+      <CardContent className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(220px,1fr))]">
         {rooms.map((room) => {
           const team = roles.filter((role) => role.room === room.id);
           const teamTasks = team.flatMap((role) => assignments.get(role.name) ?? []);
@@ -1282,7 +1282,7 @@ export default function OfficePage() {
           <div className="space-y-4">
             <FlowMap tasks={tasks} selectedStatus={statusFilter} onSelectStatus={setStatusFilter} />
             {viewMode === "floor" && (
-              <div className="grid gap-4 lg:grid-cols-12">
+              <div className="space-y-5">
                 {visibleRooms.map((room) => (
                   <OfficeRoomCard
                     key={room.id}
