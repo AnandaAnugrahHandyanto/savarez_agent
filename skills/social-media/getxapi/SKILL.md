@@ -113,7 +113,7 @@ Overly specific terms like `exampleKeyword2%20tip` often return zero Top results
 
 ## Posting
 
-Posting requires BOTH the API key (Bearer header) AND an X `auth_token` cookie (in JSON body). The auth_token must be extracted from browser cookies — it is httpOnly and cannot be extracted programmatically at runtime.
+Posting requires BOTH the API key (Bearer header) AND an X `auth_token` value (passed in the JSON body). The auth_token is typically extracted from browser cookies — it is httpOnly and should not be extracted programmatically at runtime. Alternatively, `POST /twitter/user_login` (see the endpoint reference) can retrieve fresh tokens, but this endpoint accepts highly sensitive credentials and must only be used locally with credentials stored in `~/.hermes/.env`.
 
 **Cron prompt compatibility:** The Hermes cron scanner (`_CRON_EXFIL_COMMAND_PATTERNS` + `_CRON_SECRET_VAR_RE`) blocks `$VAR`-style environment variable references — in Authorization headers, embedded in URLs, and in POST/form data — for all curl/wget invocations targeting non-GitHub domains. The only allowlist exemption is `Authorization: token $VAR` targeting `https://api.github.com`. To use getxapi in cron jobs, reference a helper script that reads credentials from `~/.hermes/.env` at runtime and makes the authenticated call — scripts are not scanned.
 

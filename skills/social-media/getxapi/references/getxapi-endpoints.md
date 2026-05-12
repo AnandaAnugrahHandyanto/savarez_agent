@@ -1,7 +1,7 @@
 # getxapi Endpoint Reference
 
 Base URL: `https://api.getxapi.com`
-Auth: `Authorization: Bearer <api-key>` (all endpoints)
+Auth: `Authorization: Bearer <your-api-key>` (all endpoints)
 Post auth: value of the X `auth_token` cookie, passed as an `auth_token` field in the JSON body
 
 ## Account
@@ -22,7 +22,7 @@ Free. Rate limit: 30 req/min. Returns payment history.
 curl -s -H "Authorization: Bearer <your-api-key>" "https://api.getxapi.com/account/payments"
 ```
 
-Response: `{"payments": [{"amount", "credits_added", "status", "created_at"}]}`
+Response fields: `{"payments": [{"amount", "credits_added", "status", "created_at"}]}`
 
 ---
 
@@ -43,9 +43,9 @@ curl -s -H "Authorization: Bearer <your-api-key>" \
   "https://api.getxapi.com/twitter/tweet/advanced_search?q=from:elonmusk&product=Top"
 ```
 
-Response: `{"query", "tweet_count", "has_more", "next_cursor", "tweets": [...]}`
+Response fields: `query`, `tweet_count`, `has_more`, `next_cursor`, `tweets` (array of tweet objects).
 
-Each tweet: `type`, `id`, `url`, `twitterUrl`, `text`, `source`, `retweetCount`, `replyCount`, `likeCount`, `quoteCount`, `viewCount`, `createdAt`, `lang`, `bookmarkCount`, `isReply`, `inReplyToId`, `conversationId`, `media[]`, `inReplyToUserId`, `author{...}`, `quoted_tweet`.
+Response fields: `type`, `id`, `url`, `twitterUrl`, `text`, `source`, like/reply/quote/view counts, `createdAt`, `isReply`, `inReplyToId`, `media[]`, `author{...}`.
 
 ### GET /twitter/tweet/detail
 Cost: $0.001. Returns a single tweet with full author and media.
@@ -74,7 +74,7 @@ curl -s -H "Authorization: Bearer <your-api-key>" \
   "https://api.getxapi.com/twitter/tweet/replies?id=1234567890123456789"
 ```
 
-Response: `{"tweetId", "reply_count", "has_more", "next_cursor", "replies": [...]}`
+Response fields: `{"tweetId", "reply_count", "has_more", "next_cursor", "replies": [...]}`
 
 ### GET /twitter/tweet/article
 Cost: $0.001. Returns full article/note content. Tweet must be an article tweet.
@@ -88,7 +88,7 @@ curl -s -H "Authorization: Bearer <your-api-key>" \
   "https://api.getxapi.com/twitter/tweet/article?id=1234567890123456789"
 ```
 
-Response: `article` with `title`, `preview_text`, `cover_media_img_url`, `contents` (rich text blocks).
+Response fields: `article` with `title`, `preview_text`, `cover_media_img_url`, `contents` (rich text blocks).
 
 ### POST /twitter/tweet/create
 Cost: $0.002. Creates a tweet or reply.
@@ -176,7 +176,7 @@ curl -s -H "Authorization: Bearer <your-api-key>" \
   "https://api.getxapi.com/twitter/user/info?userName=someuser"
 ```
 
-Response: `id`, `name`, `userName`, `location`, `description`, `protected`, `isVerified`, `isBlueVerified`, `followers`, `following`, `favouritesCount`, `statusesCount`, `mediaCount`, `createdAt`, `profilePicture`, `coverPicture`, `canDm`, `pinnedTweetIds`.
+Response fields: `id`, `name`, `userName`, `location`, `description`, `protected`, `isVerified`, `isBlueVerified`, `followers`, `following`, `favouritesCount`, `statusesCount`, `mediaCount`, `createdAt`, `profilePicture`, `coverPicture`, `canDm`, `pinnedTweetIds`.
 
 ### GET /twitter/user/info_by_id
 Cost: $0.001. Same as `/user/info` but by numeric user ID.
@@ -324,7 +324,7 @@ Cost: $0.001. Checks follow/block/mute relationship between two users.
 | `source_user_name` | Yes | Source screen name |
 | `target_user_name` | Yes | Target screen name |
 
-Response: `sourceFollowsTarget`, `targetFollowsSource`, `canDm`, `blocking`, `blockedBy`, `muting`.
+Response fields: `sourceFollowsTarget`, `targetFollowsSource`, `canDm`, `blocking`, `blockedBy`, `muting`.
 
 ### POST /twitter/user/home_timeline
 Cost: $0.001. ~20 tweets/page. Home timeline feed.
