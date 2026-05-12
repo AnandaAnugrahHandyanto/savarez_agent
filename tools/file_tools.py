@@ -848,7 +848,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
 
 
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
-               new_string: str = None, replace_all: bool = False, patch: str = None,
+               new_string: str = None, replace_all: bool = False, dry_run: bool = False,
+               patch: str = None,
                task_id: str = "default") -> str:
     """Patch a file using replace mode or V4A patch format."""
     # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
@@ -909,7 +910,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     return tool_error("path required")
                 if old_string is None or new_string is None:
                     return tool_error("old_string and new_string required")
-                result = file_ops.patch_replace(path, old_string, new_string, replace_all)
+                if dry_run:
+                    result = file_ops.dry_run_replace(path, old_string, new_string, replace_all)
+                else:
+                    result = file_ops.patch_replace(path, old_string, new_string, replace_all)
             elif mode == "patch":
                 if not patch:
                     return tool_error("patch content required")
@@ -1042,7 +1046,7 @@ READ_FILE_SCHEMA = {
 
 WRITE_FILE_SCHEMA = {
     "name": "write_file",
-    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out).",
+    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. Auto-runs syntax + diagnostic checks: ruff/eslint/shellcheck (primary) with fallback to py_compile/node --check. Only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out).",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1058,11 +1062,14 @@ PATCH_SCHEMA = {
     "description": (
         "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. "
         "Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. "
-        "Returns a unified diff. Auto-runs syntax checks after editing.\n\n"
+        "Returns a unified diff. Auto-runs syntax + diagnostic checks after editing.\n\n"
         "REPLACE MODE (mode='replace', default): find a unique string and replace it. "
         "REQUIRED PARAMETERS: mode, path, old_string, new_string.\n"
         "PATCH MODE (mode='patch'): apply V4A multi-file patches for bulk changes. "
-        "REQUIRED PARAMETERS: mode, patch."
+        "REQUIRED PARAMETERS: mode, patch.\n\n"
+        "DRY RUN: set dry_run=true to preview the diff without modifying the file. "
+        "Use this when you're unsure if the fuzzy matching will find the right text — "
+        "especially after a failed patch, to verify your correction before applying."
     ),
     "parameters": {
         "type": "object",
@@ -1088,6 +1095,11 @@ PATCH_SCHEMA = {
             "replace_all": {
                 "type": "boolean",
                 "description": "Replace all occurrences instead of requiring a unique match (default: false)",
+                "default": False,
+            },
+            "dry_run": {
+                "type": "boolean",
+                "description": "Preview mode: show the diff that would be applied without actually modifying the file. Use to verify fuzzy matches before committing.",
                 "default": False,
             },
             "patch": {
@@ -1152,7 +1164,8 @@ def _handle_patch(args, **kw):
     return patch_tool(
         mode=args.get("mode", "replace"), path=args.get("path"),
         old_string=args.get("old_string"), new_string=args.get("new_string"),
-        replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid)
+        replace_all=args.get("replace_all", False), dry_run=args.get("dry_run", False),
+        patch=args.get("patch"), task_id=tid)
 
 
 def _handle_search_files(args, **kw):

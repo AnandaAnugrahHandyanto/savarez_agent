@@ -137,6 +137,8 @@ class PatchResult:
     files_deleted: List[str] = field(default_factory=list)
     lint: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    match_count: int = 0
+    strategy: str = ""
     
     def to_dict(self) -> dict:
         result = {"success": self.success}
@@ -148,6 +150,10 @@ class PatchResult:
             result["files_created"] = self.files_created
         if self.files_deleted:
             result["files_deleted"] = self.files_deleted
+        if self.match_count:
+            result["match_count"] = self.match_count
+        if self.strategy:
+            result["strategy"] = self.strategy
         if self.lint:
             result["lint"] = self.lint
         if self.error:
@@ -305,14 +311,23 @@ class FileOperations(ABC):
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico'}
 
 # Shell-based linters by file extension.  Invoked via _exec() with the
-# filesystem path.  Cover languages where a compile/type check needs an
-# external toolchain (py_compile, node, tsc, go vet, rustfmt).
-LINTERS = {
-    '.py': 'python -m py_compile {file} 2>&1',
-    '.js': 'node --check {file} 2>&1',
-    '.ts': 'npx tsc --noEmit {file} 2>&1',
-    '.go': 'go vet {file} 2>&1',
-    '.rs': 'rustfmt --check {file} 2>&1',
+# filesystem path.  Each entry is a (command_template, fallback_template) tuple.
+# The command is tried first; fallback runs if the primary tool isn't installed.
+# Fallback=None means skip linting entirely if the primary tool is missing.
+LINTERS: dict[str, tuple[str, str | None]] = {
+    '.py':  ('ruff check --quiet --no-cache --output-format concise {file} 2>&1',
+             'python -m py_compile {file} 2>&1'),
+    '.js':  ('npx eslint --no-color --format compact {file} 2>&1',
+             'node --check {file} 2>&1'),
+    '.ts':  ('npx eslint --no-color --format compact {file} 2>&1',
+             'npx tsc --noEmit {file} 2>&1'),
+    '.go':  ('go vet {file} 2>&1', None),
+    '.rs':  ('cargo clippy --message-format short {file} 2>&1',
+             'rustfmt --check {file} 2>&1'),
+    '.sh':  ('shellcheck -f tty {file} 2>&1', None),
+    '.bash':('shellcheck -f tty {file} 2>&1', None),
+    '.toml':('taplo check {file} 2>&1', None),
+    '.json':('node -e "JSON.parse(require(\"fs\").readFileSync(\"{file}\",\"utf8\"))" 2>&1', None),
 }
 
 
@@ -999,6 +1014,47 @@ class ShellFileOperations(FileOperations):
             lint=lint_result.to_dict() if lint_result else None
         )
     
+    def dry_run_replace(self, path: str, old_string: str, new_string: str,
+                        replace_all: bool = False) -> PatchResult:
+        """Preview a find-and-replace without modifying the file.
+
+        Same fuzzy matching as :meth:`patch_replace`, but returns the diff
+        and match info without writing to disk or running lint checks.
+
+        Returns a PatchResult with diff, match_count, and files_modified —
+        but ``success=False`` on no-match (same contract as patch_replace).
+        """
+        path = self._expand_path(path)
+        read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+        read_result = self._exec(read_cmd)
+        if read_result.exit_code != 0:
+            return PatchResult(error=f"Failed to read file: {path}")
+        content = read_result.stdout
+
+        from tools.fuzzy_match import fuzzy_find_and_replace
+        new_content, match_count, strategy, error = fuzzy_find_and_replace(
+            content, old_string, new_string, replace_all
+        )
+
+        if error or match_count == 0:
+            err_msg = error or f"Could not find match for old_string in {path}"
+            try:
+                from tools.fuzzy_match import format_no_match_hint
+                err_msg += format_no_match_hint(err_msg, match_count, old_string, content)
+            except Exception:
+                pass
+            return PatchResult(error=err_msg)
+
+        diff = self._unified_diff(content, new_content, path)
+
+        return PatchResult(
+            success=True,
+            diff=diff,
+            files_modified=[path],
+            match_count=match_count,
+            strategy=strategy,
+        )
+    
     def patch_v4a(self, patch_content: str) -> PatchResult:
         """
         Apply a V4A format patch.
@@ -1029,22 +1085,33 @@ class ShellFileOperations(FileOperations):
         result = apply_v4a_operations(operations, self)
         return result
     
+    def _try_shell_lint(self, ext: str, path: str, template: str) -> LintResult | None:
+        """Try running a shell linter template. Returns LintResult or None if unavailable."""
+        base_cmd = template.split()[0]
+        if not self._has_command(base_cmd):
+            return None
+        cmd = template.replace("{file}", self._escape_shell_arg(path))
+        result = self._exec(cmd, timeout=30)
+        return LintResult(
+            success=result.exit_code == 0,
+            output=result.stdout.strip() if result.stdout.strip() else ""
+        )
+
     def _check_lint(self, path: str, content: Optional[str] = None) -> LintResult:
         """
-        Run syntax check on a file after editing.
+        Run syntax + diagnostics check on a file after editing.
 
-        Prefers the in-process linter for structured formats (JSON, YAML,
-        TOML) when possible — those parse via the Python stdlib in
-        microseconds and don't require a subprocess.  Falls back to the
-        shell linter table for compiled/type-checked languages
-        (py_compile, node --check, tsc, go vet, rustfmt).
+        Multi-tier approach:
+        1. In-process linter (Python ast, JSON, YAML, TOML) — microseconds, no subprocess
+        2. Primary shell linter (ruff, eslint, clippy, shellcheck) — real diagnostics
+        3. Fallback shell linter (py_compile, node --check, rustfmt) — syntax only
+
+        Only NEW errors introduced by this edit are surfaced (pre-existing
+        lint failures are filtered out by _check_lint_delta).
 
         Args:
             path: File path (used to select the linter + for shell invocation).
-            content: Optional file content.  If provided AND an in-process
-                     linter matches the extension, we lint the content
-                     directly without re-reading the file from disk.  Ignored
-                     for shell linters.
+            content: Optional file content for in-process linters.
 
         Returns:
             LintResult with status and any errors.
@@ -1067,24 +1134,24 @@ class ShellFileOperations(FileOperations):
             return LintResult(success=ok, output="" if ok else err)
 
         # Fall back to shell linter.
-        if ext not in LINTERS:
+        entry = LINTERS.get(ext)
+        if entry is None:
             return LintResult(skipped=True, message=f"No linter for {ext} files")
 
-        linter_cmd = LINTERS[ext]
-        # Extract the base command (first word)
-        base_cmd = linter_cmd.split()[0]
+        primary_cmd, fallback_cmd = entry
 
-        if not self._has_command(base_cmd):
-            return LintResult(skipped=True, message=f"{base_cmd} not available")
+        # Try primary first (ruff, eslint, clippy, etc.)
+        result = self._try_shell_lint(ext, path, primary_cmd)
+        if result is not None:
+            return result
 
-        # Run linter
-        cmd = linter_cmd.replace("{file}", self._escape_shell_arg(path))
-        result = self._exec(cmd, timeout=30)
+        # Try fallback (py_compile, node --check, etc.)
+        if fallback_cmd:
+            result = self._try_shell_lint(ext, path, fallback_cmd)
+            if result is not None:
+                return result
 
-        return LintResult(
-            success=result.exit_code == 0,
-            output=result.stdout.strip() if result.stdout.strip() else ""
-        )
+        return LintResult(skipped=True, message=f"No linter available for {ext} files")
 
     def _check_lint_delta(self, path: str, pre_content: Optional[str],
                           post_content: Optional[str] = None) -> LintResult:
