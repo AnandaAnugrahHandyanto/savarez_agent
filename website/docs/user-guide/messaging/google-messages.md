@@ -25,14 +25,16 @@ python -m playwright install chromium
 
 Enable or request the `google_messages` toolset for the Hermes session/profile that should use it. The toolset exposes:
 
-- `google_messages_status` — opens Google Messages for Web and reports `ready`, `pairing_required`, or `unknown`.
+- `google_messages_status` — opens Google Messages for Web and reports `ready`, `pairing_required`, `login_required`, or `unknown`.
 - `google_messages_conversations` — returns visible conversation-list previews only.
 
-By default both tools use this persistent profile:
+By default both tools use this persistent profile under the active Hermes profile home:
 
 ```text
 ~/.hermes/browser-profiles/google-messages
 ```
+
+For named Hermes profiles, replace `~/.hermes` with that profile's home directory. The checker creates the browser-profile directory with owner-only permissions (`0700`) where the platform allows it, because the profile contains paired Google session state.
 
 That dedicated profile keeps Google Messages cookies/session state away from the normal browser automation profile and makes it easier to revoke, inspect, or delete the pairing later.
 
@@ -71,5 +73,7 @@ To force a fresh pairing, close any checker browser window and remove the dedica
 ```bash
 rm -rf ~/.hermes/browser-profiles/google-messages
 ```
+
+For named Hermes profiles, remove the same `browser-profiles/google-messages` subdirectory from that profile's Hermes home instead.
 
 Also unpair the browser from the Pixel's Google Messages device-pairing screen when you no longer want Hermes to have access.

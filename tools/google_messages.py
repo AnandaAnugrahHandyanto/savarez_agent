@@ -29,13 +29,20 @@ _TIMESTAMP_RE = re.compile(
     r"\d{1,2}/\d{1,2}(?:/\d{2,4})?|"
     r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:day)?|"
     r"(?:Yesterday|Today)|"
-    r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b.*"
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+    r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|"
+    r"Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2}(?:,?\s+\d{4})?"
     r")$",
     re.IGNORECASE,
 )
 
 _PAIRING_HINT_RE = re.compile(
     r"(qr code|pair(?:ing)?|scan the code|use messages on the web)",
+    re.IGNORECASE,
+)
+
+_LOGIN_REQUIRED_RE = re.compile(
+    r"(sign in|google account|choose an account|accounts\.google\.com/(?:.*signin|.*sign-in))",
     re.IGNORECASE,
 )
 
@@ -154,11 +161,16 @@ def _parse_conversation_items(raw_items: Iterable[Dict[str, Any]], limit: int = 
 
 def _classify_status(url: str, body_text: str, raw_items: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     raw_list = list(raw_items)
-    conversations = _parse_conversation_items(raw_list, limit=5)
-    pairing_required = bool(_PAIRING_HINT_RE.search(body_text or "")) and not conversations
-    logged_in = bool(conversations) or "conversations" in (url or "").lower()
+    url_text = url or ""
+    body = body_text or ""
+    pairing_required = bool(_PAIRING_HINT_RE.search(body))
+    login_required = bool(_LOGIN_REQUIRED_RE.search(f"{url_text}\n{body}"))
+    conversations = [] if pairing_required or login_required else _parse_conversation_items(raw_list, limit=5)
+    logged_in = bool(conversations) or "conversations" in url_text.lower()
     if pairing_required:
         state = "pairing_required"
+    elif login_required:
+        state = "login_required"
     elif logged_in:
         state = "ready"
     else:
@@ -166,7 +178,8 @@ def _classify_status(url: str, body_text: str, raw_items: Iterable[Dict[str, Any
     return {
         "state": state,
         "pairing_required": pairing_required,
-        "ready": logged_in and not pairing_required,
+        "login_required": login_required,
+        "ready": logged_in and not pairing_required and not login_required,
         "conversation_candidates": len(raw_list),
     }
 
@@ -179,7 +192,6 @@ def _conversation_extract_script() -> str:
     'mws-conversation-list-item',
     '[data-e2e-conversation-list-item]',
     'a[href*="/web/conversations"]',
-    '[role="listitem"]',
     'mws-conversation-list [role="button"]',
     'mws-conversation-list a'
   ];
@@ -203,25 +215,45 @@ def _conversation_extract_script() -> str:
 def _with_page(profile_path: Path, headless: bool, timeout_ms: int):
     """Launch Google Messages with a persistent context and return Playwright objects.
 
-    Caller must close the context and stop Playwright.
+    Caller must close the context and stop Playwright after successful return.
+    Partial launch/navigation failures are cleaned up here before re-raising.
     """
     from playwright.sync_api import sync_playwright
 
     profile_path.mkdir(parents=True, exist_ok=True)
-    pw = sync_playwright().start()
-    context = pw.chromium.launch_persistent_context(
-        str(profile_path),
-        headless=headless,
-        viewport={"width": 1280, "height": 900},
-    )
-    page = context.pages[0] if context.pages else context.new_page()
-    page.set_default_timeout(timeout_ms)
-    page.goto(GOOGLE_MESSAGES_URL, wait_until="domcontentloaded", timeout=timeout_ms)
     try:
-        page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 5000))
-    except Exception:
+        profile_path.chmod(0o700)
+    except OSError:
         pass
-    return pw, context, page
+    pw = None
+    context = None
+    try:
+        pw = sync_playwright().start()
+        context = pw.chromium.launch_persistent_context(
+            str(profile_path),
+            headless=headless,
+            viewport={"width": 1280, "height": 900},
+        )
+        page = context.pages[0] if context.pages else context.new_page()
+        page.set_default_timeout(timeout_ms)
+        page.goto(GOOGLE_MESSAGES_URL, wait_until="domcontentloaded", timeout=timeout_ms)
+        try:
+            page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 5000))
+        except Exception:
+            pass
+        return pw, context, page
+    except Exception:
+        if context is not None:
+            try:
+                context.close()
+            except Exception:
+                pass
+        if pw is not None:
+            try:
+                pw.stop()
+            except Exception:
+                pass
+        raise
 
 
 def google_messages_status(
@@ -315,7 +347,7 @@ registry.register(
         "parameters": {
             "type": "object",
             "properties": {
-                "profile_path": {"type": "string", "description": "Optional persistent browser profile path. Defaults to ~/.hermes/browser-profiles/google-messages."},
+                "profile_path": {"type": "string", "description": "Optional persistent browser profile path. Defaults to the active Hermes profile home under browser-profiles/google-messages."},
                 "headless": {"type": "boolean", "description": "Run browser headlessly. Defaults to false so QR pairing is visible."},
                 "timeout_ms": {"type": "integer", "description": "Navigation/detection timeout in milliseconds."},
             },
@@ -345,7 +377,7 @@ registry.register(
             "type": "object",
             "properties": {
                 "limit": {"type": "integer", "description": "Maximum conversation previews to return, capped at 50."},
-                "profile_path": {"type": "string", "description": "Optional persistent browser profile path. Defaults to ~/.hermes/browser-profiles/google-messages."},
+                "profile_path": {"type": "string", "description": "Optional persistent browser profile path. Defaults to the active Hermes profile home under browser-profiles/google-messages."},
                 "headless": {"type": "boolean", "description": "Run browser headlessly. Defaults to false so pairing problems are visible."},
                 "timeout_ms": {"type": "integer", "description": "Navigation/extraction timeout in milliseconds."},
             },
