@@ -44,6 +44,11 @@ _HERMES_CORE_TOOLS = [
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+    # Playwright automation
+    "pw_start", "pw_navigate", "pw_click", "pw_type", "pw_fill",
+    "pw_press", "pw_wait_for_selector", "pw_eval", "pw_screenshot",
+    "pw_pdf", "pw_content", "pw_text", "pw_set_cookies", "pw_get_cookies",
+    "pw_set_viewport", "pw_route_block", "pw_info", "pw_close",
     # Text-to-speech
     "text_to_speech",
     # Planning & memory
@@ -117,6 +122,28 @@ TOOLSETS = {
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp",
             "browser_dialog", "web_search"
+        ],
+        "includes": []
+    },
+
+    "playwright": {
+        "description": "Playwright browser automation (stateful sessions)",
+        "tools": [
+            "pw_start", "pw_navigate", "pw_click", "pw_type", "pw_fill",
+            "pw_press", "pw_wait_for_selector", "pw_eval", "pw_screenshot",
+            "pw_pdf", "pw_content", "pw_text", "pw_set_cookies", "pw_get_cookies",
+            "pw_set_viewport", "pw_route_block", "pw_info", "pw_close"
+        ],
+        "includes": []
+    },
+
+    "playwright": {
+        "description": "Playwright browser automation (stateful sessions)",
+        "tools": [
+            "pw_start", "pw_navigate", "pw_click", "pw_type", "pw_fill",
+            "pw_press", "pw_wait_for_selector", "pw_eval", "pw_screenshot",
+            "pw_pdf", "pw_content", "pw_text", "pw_set_cookies", "pw_get_cookies",
+            "pw_set_viewport", "pw_route_block", "pw_info", "pw_close"
         ],
         "includes": []
     },

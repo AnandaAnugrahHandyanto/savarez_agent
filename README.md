@@ -62,6 +62,13 @@ hermes update       # Update to the latest version
 hermes doctor       # Diagnose any issues
 ```
 
+Playwright toolset (optional):
+
+```bash
+pip install playwright
+playwright install
+```
+
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
 
 ## CLI vs Messaging Quick Reference
