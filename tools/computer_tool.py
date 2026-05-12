@@ -55,6 +55,20 @@ def _get_store() -> ComputerStore:
 _VALID_ACTIONS = frozenset({"start", "list", "get", "events", "cancel", "schedule"})
 
 
+def _reconcile_quietly(store: ComputerStore) -> None:
+    """Best-effort: flip stale ``running`` runs to ``failed`` before a read.
+
+    The tool surface should never expose a phantom ``running`` row to the
+    model just because a previous background hermes died before reconciling
+    itself. We swallow exceptions here — reconciliation is a best-effort
+    enrichment and must not break the read path.
+    """
+    try:
+        store.reconcile_running_runs()
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("computer tool: reconcile_running_runs failed: %s", exc)
+
+
 def computer(
     action: str,
     goal: Optional[str] = None,
@@ -96,13 +110,16 @@ def computer(
             )
 
         if normalized == "list":
+            _reconcile_quietly(store)
             runs = store.list_runs()
             return tool_result(success=True, count=len(runs), runs=runs)
 
         if normalized == "get":
+            _reconcile_quietly(store)
             return _handle_get(store, run_id)
 
         if normalized == "events":
+            _reconcile_quietly(store)
             return _handle_events(store, run_id)
 
         if normalized == "cancel":

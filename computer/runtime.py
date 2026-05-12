@@ -62,6 +62,66 @@ _DEFAULT_FEATURES = (
 )
 
 
+# ── Process probes / watcher registry ─────────────────────────────────────────
+#
+# ``_is_pid_alive`` is the single shared "is this background hermes child
+# still running?" probe used by both the in-process watcher and the
+# best-effort ``reconcile_running_runs`` cleanup path. Tests monkeypatch
+# this so they don't depend on real system pids.
+
+
+def _is_pid_alive(pid: int) -> bool:
+    """Return True if ``pid`` looks alive (signal 0 succeeds).
+
+    Best-effort: returns False for invalid/missing pids. ``PermissionError``
+    is treated as **alive** — the pid exists but belongs to another user /
+    we cannot signal it, so it would be wrong to reconcile the run as
+    failed on that basis. ``ProcessLookupError`` and other ``OSError``
+    values return False. Callers must treat False as "probably not ours /
+    not alive" rather than a hard kill.
+    """
+    if pid is None:
+        return False
+    try:
+        pid_int = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid_int <= 0:
+        return False
+    try:
+        os.kill(pid_int, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Permission denied means the pid exists but we can't signal it —
+        # treat as alive so we don't wrongly mark a run failed.
+        return True
+    except OSError:
+        return False
+    return True
+
+
+# Map of run_id -> daemon Thread watching the spawned child. Only used so
+# tests (and future tooling) can join on watcher completion deterministically.
+_WATCHERS: Dict[str, threading.Thread] = {}
+_WATCHERS_LOCK = threading.Lock()
+
+
+def wait_for_watcher(run_id: str, timeout: float = 5.0) -> bool:
+    """Block until the watcher for ``run_id`` finishes or ``timeout`` elapses.
+
+    Returns True if the watcher thread finished within the timeout (or no
+    watcher was registered), False otherwise. Tests rely on this to avoid
+    polling races without sprinkling ``time.sleep`` calls.
+    """
+    with _WATCHERS_LOCK:
+        thread = _WATCHERS.get(run_id)
+    if thread is None:
+        return True
+    thread.join(timeout)
+    return not thread.is_alive()
+
+
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -302,6 +362,54 @@ class ComputerStore:
             logger.warning("could not read events for %s: %s", run_id, exc)
         return out
 
+    def reconcile_running_runs(self) -> List[str]:
+        """Mark obviously stale ``running`` records as ``failed``.
+
+        For each persisted run currently in status ``running``:
+
+        * If the recorded background pid is still alive (per
+          :func:`_is_pid_alive`) the run is left untouched — an in-process
+          watcher (or another hermes process) is presumed to be tracking it.
+        * Otherwise the run is transitioned to ``failed`` with an
+          explanatory error and a ``computer.background.reconciled_stale``
+          event appended so the audit trail shows why the status moved.
+
+        Returns the list of run ids that were reconciled.  This API is
+        intentionally pid-only — we never shell out to ``pkill`` / ``ps``
+        / similar, and we never broaden process identification beyond the
+        pid we ourselves stored at launch time.
+        """
+        reconciled: List[str] = []
+        with self._lock:
+            ids = self._load_index()
+        for run_id in ids:
+            run = self.get_run(run_id)
+            if run is None or run.get("status") != "running":
+                continue
+            background = run.get("background") or {}
+            pid = background.get("pid")
+            if pid and _is_pid_alive(pid):
+                # Live (or at least signal-able) — leave for its watcher.
+                continue
+            error_msg = (
+                f"background process for run {run_id} is not alive "
+                f"(pid={pid!r}); reconciled by ComputerStore"
+            )
+            try:
+                self.update_run(run_id, status="failed", error=error_msg)
+                self.append_event(
+                    run_id,
+                    "computer.background.reconciled_stale",
+                    {"pid": pid, "reason": "pid not alive"},
+                )
+                reconciled.append(run_id)
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.warning(
+                    "reconcile_running_runs: failed to mark %s failed: %s",
+                    run_id, exc,
+                )
+        return reconciled
+
     # ── internal helpers ─────────────────────────────────────────────────
 
     def _load_run_unlocked(self, run_id: str) -> Optional[Dict[str, Any]]:
@@ -494,6 +602,8 @@ def start_computer_run(
     stdout_path = artifact_dir / "background.stdout.log"
     stderr_path = artifact_dir / "background.stderr.log"
 
+    stdout_fh = None
+    stderr_fh = None
     try:
         # Open the log files now and hand them to the child. We do NOT call
         # ``shell=True`` — the prompt is passed as a single argv element so
@@ -508,6 +618,12 @@ def start_computer_run(
             start_new_session=True,
         )
     except Exception as exc:  # pragma: no cover — defensive
+        for fh in (stdout_fh, stderr_fh):
+            try:
+                if fh is not None:
+                    fh.close()
+            except Exception:
+                pass
         target_store.update_run(
             run_id,
             status="failed",
@@ -530,7 +646,133 @@ def start_computer_run(
         "computer.background.launched",
         {"pid": proc.pid, "binary": binary},
     )
+
+    _spawn_watcher(
+        run_id,
+        proc,
+        binary=binary,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+        stdout_fh=stdout_fh,
+        stderr_fh=stderr_fh,
+        store=target_store,
+    )
     return True
+
+
+def _spawn_watcher(
+    run_id: str,
+    proc: Any,
+    *,
+    binary: str,
+    stdout_path: Path,
+    stderr_path: Path,
+    stdout_fh: Any,
+    stderr_fh: Any,
+    store: "ComputerStore",
+) -> threading.Thread:
+    """Spawn a daemon thread that reconciles the run's status on child exit.
+
+    The watcher:
+
+    * blocks on ``proc.wait()``,
+    * closes the stdout/stderr log file handles we opened for the child,
+    * looks up the latest run record so a user-issued ``cancel`` is not
+      overwritten,
+    * updates ``background.exit_code`` and either flips status to
+      ``completed`` / ``failed`` (with an explanatory error on failure),
+    * appends an explicit ``computer.background.completed`` /
+      ``computer.background.failed`` event for the audit trail.
+
+    Watchers are daemonized so they never block interpreter shutdown, and
+    they are registered in :data:`_WATCHERS` so tests / future tooling can
+    join on completion without racing.
+    """
+
+    def _watch() -> None:
+        exit_code: Optional[int] = None
+        wait_error: Optional[str] = None
+        try:
+            exit_code = proc.wait()
+        except Exception as exc:  # pragma: no cover — defensive
+            wait_error = f"watcher proc.wait() failed: {exc!r}"
+            logger.warning("computer watcher %s wait failed: %s", run_id, exc)
+        finally:
+            for fh in (stdout_fh, stderr_fh):
+                try:
+                    if fh is not None:
+                        fh.close()
+                except Exception:  # pragma: no cover — defensive
+                    pass
+
+        try:
+            latest = store.get_run(run_id) or {}
+            background = dict(latest.get("background") or {})
+            background.update({
+                "pid": getattr(proc, "pid", background.get("pid")),
+                "binary": binary,
+                "stdout_log": str(stdout_path),
+                "stderr_log": str(stderr_path),
+                "exit_code": exit_code,
+            })
+
+            current_status = latest.get("status")
+            if current_status == "cancelled":
+                # User (or another reconciler) already cancelled this run.
+                # Record exit_code in background metadata but do not flip
+                # the lifecycle status — cancelled is terminal.
+                store.update_run(run_id, background=background)
+                store.append_event(
+                    run_id,
+                    "computer.background.exited_after_cancel",
+                    {"pid": background.get("pid"), "exit_code": exit_code},
+                )
+                return
+
+            if wait_error is not None or exit_code is None or exit_code != 0:
+                error_text = wait_error or (
+                    f"background hermes process exited with code {exit_code}"
+                )
+                store.update_run(
+                    run_id,
+                    status="failed",
+                    background=background,
+                    error=error_text,
+                )
+                store.append_event(
+                    run_id,
+                    "computer.background.failed",
+                    {"pid": background.get("pid"), "exit_code": exit_code},
+                )
+            else:
+                store.update_run(
+                    run_id,
+                    status="completed",
+                    background=background,
+                )
+                store.append_event(
+                    run_id,
+                    "computer.background.completed",
+                    {"pid": background.get("pid"), "exit_code": exit_code},
+                )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("computer watcher %s post-exit update failed: %s", run_id, exc)
+        finally:
+            with _WATCHERS_LOCK:
+                # Only clear if we're still the registered watcher for
+                # this run — a future relaunch may have replaced us.
+                if _WATCHERS.get(run_id) is threading.current_thread():
+                    _WATCHERS.pop(run_id, None)
+
+    thread = threading.Thread(
+        target=_watch,
+        name=f"computer-watcher-{run_id}",
+        daemon=True,
+    )
+    with _WATCHERS_LOCK:
+        _WATCHERS[run_id] = thread
+    thread.start()
+    return thread
 
 
 __all__ = [
@@ -539,4 +781,5 @@ __all__ = [
     "build_computer_prompt",
     "build_scheduled_computer_prompt",
     "start_computer_run",
+    "wait_for_watcher",
 ]
