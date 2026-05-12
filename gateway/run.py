@@ -52,6 +52,7 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from hermes_cli.config import cfg_get
+from gateway.config import Platform
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -5598,6 +5599,22 @@ class GatewayRunner:
 
     async def _deliver_platform_notice(self, source, content: str) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
+        
+        # CRITICAL: Suppress internal notices for customer-facing platforms
+        # when suppress_system_messages=true. This prevents configuration
+        # warnings (e.g., "No home channel") from leaking to end customers.
+        if source.platform in (Platform.WHATSAPP, Platform.DISCORD, Platform.SLACK, Platform.TELEGRAM):
+            _cfg = _load_gateway_config() or {}
+            _platform_cfg = (_cfg.get("display") or {}).get("platforms") or {}
+            _plat_cfg = _platform_cfg.get(source.platform.value) or {}
+            if _plat_cfg.get("suppress_system_messages", False):
+                logger.debug(
+                    "[%s] Suppressed internal notice (customer-facing): %s",
+                    source.platform.value,
+                    content[:150] if content else ""
+                )
+                return  # Don't deliver internal notices to customers
+        
         adapter = self.adapters.get(source.platform)
         if not adapter:
             return
@@ -7855,6 +7872,42 @@ class GatewayRunner:
                         logger.debug("trailing footer send failed: %s", _e)
                 return None
 
+            # CRITICAL: Suppress assistant narration for customer-facing WhatsApp
+            # when suppress_system_messages=true. This prevents the agent from
+            # narrating what it did (e.g., "Perfeito! Enviei as mensagens...").
+            # Only tool call results should be delivered, not assistant commentary.
+            if source.platform == Platform.WHATSAPP:
+                _cfg = _load_gateway_config() or {}
+                _platform_cfg = (_cfg.get("display") or {}).get("platforms") or {}
+                _wa_cfg = _platform_cfg.get("whatsapp") or {}
+                _suppress_narration = _wa_cfg.get("suppress_system_messages", False)
+                
+                if _suppress_narration and response:
+                    # Check if this is pure narration (agent executed tool calls but
+                    # has no substantive response to deliver)
+                    _has_tool_calls = bool(agent_result.get("messages") and any(
+                        msg.get("tool_calls") for msg in agent_result.get("messages", [])
+                    ))
+                    _is_narration = any(phrase in response.lower() for phrase in [
+                        "perfeito", "enviei", "executei", "fiz", "completei",
+                        "seguindo o fluxo", "conforme definido", "aguardando",
+                        "fico aguardando", "agora é só", "pronto", "finalizado"
+                    ])
+                    
+                    if _has_tool_calls and _is_narration:
+                        logger.debug(
+                            "WhatsApp: Suppressed assistant narration (customer-facing): %s",
+                            response[:100] if response else ""
+                        )
+                        # Still deliver media if present
+                        if "MEDIA:" in response:
+                            _media_adapter = self.adapters.get(source.platform)
+                            if _media_adapter:
+                                await self._deliver_media_from_response(
+                                    response, event, _media_adapter,
+                                )
+                        return None
+
             return response
             
         except Exception as e:
@@ -8182,6 +8235,20 @@ class GatewayRunner:
             _tip_line = ""
 
         if session_info:
+            # CRITICAL: Suppress session reset messages for customer-facing platforms
+            # when suppress_system_messages=true. Session still resets internally,
+            # but customer doesn't see the "✨ Session reset!" notification.
+            _cfg = _load_gateway_config() or {}
+            _platform_cfg = (_cfg.get("display") or {}).get("platforms") or {}
+            _plat_cfg = _platform_cfg.get(source.platform.value) or {}
+            if _plat_cfg.get("suppress_system_messages", False):
+                logger.debug(
+                    "[%s] Suppressed session reset notification (customer-facing)",
+                    source.platform.value
+                )
+                # Session already reset, just don't notify the customer
+                return None
+            
             return EphemeralReply(f"{header}\n\n{session_info}{_tip_line}")
         return EphemeralReply(f"{header}{_tip_line}")
 
@@ -15062,10 +15129,27 @@ class GatewayRunner:
 
                 # Fallback: plain text approval prompt
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
+                
+                # CRITICAL: Suppress dangerous command approval prompts for customer-facing platforms
+                # when suppress_system_messages=true. Command is auto-denied silently,
+                # logged to gateway.log, but customer doesn't see the approval prompt.
+                _cfg = _load_gateway_config() or {}
+                _platform_cfg = (_cfg.get("display") or {}).get("platforms") or {}
+                _plat_cfg = _platform_cfg.get(source.platform.value) or {}
+                if _plat_cfg.get("suppress_system_messages", False):
+                    logger.warning(
+                        "[%s] Dangerous command auto-denied (customer-facing, suppress_system_messages=true): %s — Reason: %s",
+                        source.platform.value,
+                        cmd[:200] if cmd else "",
+                        desc
+                    )
+                    # Auto-deny: don't send approval prompt to customer, just return
+                    return
+                
                 msg = (
-                    f"⚠️ **Dangerous command requires approval:**\n"
-                    f"```\n{cmd_preview}\n```\n"
-                    f"Reason: {desc}\n\n"
+                    f"⚠️ **Dangerous command requires approval:**\\n"
+                    f"```\\n{cmd_preview}\\n```\\n"
+                    f"Reason: {desc}\\n\\n"
                     f"Reply `/approve` to execute, `/approve session` to approve this pattern "
                     f"for the session, `/approve always` to approve permanently, or `/deny` to cancel."
                 )
