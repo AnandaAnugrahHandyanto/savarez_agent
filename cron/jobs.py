@@ -79,6 +79,12 @@ def _coerce_job_text(value: Any, fallback: str = "") -> str:
     return str(value)
 
 
+def _normalize_optional_job_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    return str(value).strip() or None
+
+
 def _schedule_display_for_job(job: Dict[str, Any]) -> str:
     display = _coerce_job_text(job.get("schedule_display")).strip()
     if display:
@@ -496,6 +502,10 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    delivery_mode: Optional[str] = None,
+    thread_title_template: Optional[str] = None,
+    template_key: Optional[str] = None,
+    template_version: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -540,6 +550,10 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        delivery_mode: Optional delivery metadata for downstream formatters.
+        thread_title_template: Optional thread title template metadata.
+        template_key: Optional response template key metadata.
+        template_version: Optional response template version metadata.
 
     Returns:
         The created job dict
@@ -574,6 +588,10 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
+    normalized_delivery_mode = _normalize_optional_job_text(delivery_mode)
+    normalized_thread_title_template = _normalize_optional_job_text(thread_title_template)
+    normalized_template_key = _normalize_optional_job_text(template_key)
+    normalized_template_version = _normalize_optional_job_text(template_version)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -627,6 +645,10 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "delivery_mode": normalized_delivery_mode,
+        "thread_title_template": normalized_thread_title_template,
+        "template_key": normalized_template_key,
+        "template_version": normalized_template_version,
     }
 
     jobs = load_jobs()

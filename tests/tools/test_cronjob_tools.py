@@ -123,6 +123,82 @@ class TestCronjobRequirements:
         assert check_cronjob_requirements() is False
 
 
+@pytest.fixture
+def isolated_cron_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+
+
+def test_create_job_preserves_delivery_metadata(isolated_cron_dir):
+    from cron.jobs import get_job
+
+    created = json.loads(
+        cronjob(
+            action="create",
+            prompt="Summarize the daily status",
+            schedule="every 1h",
+            delivery_mode="threaded",
+            thread_title_template="Daily status - {date}",
+            template_key="kb_daily_status",
+            template_version="v1",
+        )
+    )
+
+    assert created["success"] is True
+    assert created["job"]["delivery_mode"] == "threaded"
+    assert created["job"]["thread_title_template"] == "Daily status - {date}"
+    assert created["job"]["template_key"] == "kb_daily_status"
+    assert created["job"]["template_version"] == "v1"
+
+    listing = json.loads(cronjob(action="list"))
+    assert listing["jobs"][0]["delivery_mode"] == "threaded"
+    assert listing["jobs"][0]["thread_title_template"] == "Daily status - {date}"
+    assert listing["jobs"][0]["template_key"] == "kb_daily_status"
+    assert listing["jobs"][0]["template_version"] == "v1"
+
+    stored = get_job(created["job_id"])
+    assert stored["delivery_mode"] == "threaded"
+    assert stored["thread_title_template"] == "Daily status - {date}"
+    assert stored["template_key"] == "kb_daily_status"
+    assert stored["template_version"] == "v1"
+
+
+def test_update_job_preserves_delivery_metadata(isolated_cron_dir):
+    created = json.loads(
+        cronjob(
+            action="create",
+            prompt="Summarize the daily status",
+            schedule="every 1h",
+            delivery_mode="threaded",
+            thread_title_template="Daily status - {date}",
+            template_key="kb_daily_status",
+            template_version="v1",
+        )
+    )
+
+    updated = json.loads(
+        cronjob(
+            action="update",
+            job_id=created["job_id"],
+            delivery_mode="channel",
+            template_version="",
+        )
+    )
+
+    assert updated["success"] is True
+    assert updated["job"]["delivery_mode"] == "channel"
+    assert updated["job"]["thread_title_template"] == "Daily status - {date}"
+    assert updated["job"]["template_key"] == "kb_daily_status"
+    assert "template_version" not in updated["job"]
+
+    listing = json.loads(cronjob(action="list"))
+    assert listing["jobs"][0]["delivery_mode"] == "channel"
+    assert listing["jobs"][0]["thread_title_template"] == "Daily status - {date}"
+    assert listing["jobs"][0]["template_key"] == "kb_daily_status"
+    assert "template_version" not in listing["jobs"][0]
+
+
 class TestUnifiedCronjobTool:
     @pytest.fixture(autouse=True)
     def _setup_cron_dir(self, tmp_path, monkeypatch):
