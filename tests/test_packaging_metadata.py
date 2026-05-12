@@ -32,7 +32,7 @@ def test_document_processing_libraries_are_base_dependencies():
         "pdfplumber",
     }
     declared_packages = {
-        dep.split("[", 1)[0].split("<", 1)[0].split(">", 1)[0].strip()
+        dep.split("[", 1)[0].split("==", 1)[0].split("<", 1)[0].split(">", 1)[0].strip()
         for dep in deps
     }
 
