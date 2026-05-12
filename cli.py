@@ -5123,6 +5123,34 @@ class HermesCLI:
         provider = getattr(self, "provider", None) or "unknown"
         model = getattr(self, "model", None) or "(unknown)"
         is_running = bool(getattr(self, "_agent_running", False))
+        continuity_line = None
+        compressor = getattr(agent, "context_compressor", None) if agent else None
+        if compressor:
+            try:
+                from agent.context_continuity import (
+                    ContextContinuityStatus,
+                    recommend_continuity_action,
+                )
+
+                recommendation = recommend_continuity_action(
+                    ContextContinuityStatus(
+                        context_tokens=getattr(compressor, "last_prompt_tokens", 0) or 0,
+                        context_length=getattr(compressor, "context_length", 0) or 0,
+                        compression_count=getattr(compressor, "compression_count", 0) or 0,
+                    )
+                )
+                if recommendation.recommended_action != "continue":
+                    action_label = (
+                        "이어가기 권장"
+                        if recommendation.recommended_action == "handoff"
+                        else recommendation.recommended_action.replace("_", " ")
+                    )
+                    continuity_line = (
+                        f"이어가기 상태: {action_label} ({recommendation.usage_percent}%) — "
+                        f"{recommendation.reason} /handoff로 새 세션용 이어가기 안내를 만드세요."
+                    )
+            except Exception:
+                continuity_line = None
 
         lines = [
             "Hermes CLI Status",
@@ -5139,6 +5167,8 @@ class HermesCLI:
             f"Tokens: {total_tokens:,}",
             f"Agent Running: {'Yes' if is_running else 'No'}",
         ])
+        if continuity_line:
+            lines.append(continuity_line)
         self._console_print("\n".join(lines), highlight=False, markup=False)
     
     def _fast_command_available(self) -> bool:
@@ -7487,6 +7517,8 @@ class HermesCLI:
             self._handle_fast_command(cmd_original)
         elif canonical == "compress":
             self._manual_compress(cmd_original)
+        elif canonical == "handoff":
+            self._handle_handoff_command(cmd_original)
         elif canonical == "usage":
             self._show_usage()
         elif canonical == "insights":
@@ -8660,6 +8692,45 @@ class HermesCLI:
 
             except Exception as e:
                 print(f"  ❌ Compression failed: {e}")
+
+    def _handle_handoff_command(self, cmd_original: str = ""):
+        """Generate a copy/paste continuation packet for a fresh session."""
+        if not self.conversation_history:
+            print("(._.) No conversation to hand off — send a message first.")
+            return
+
+        current_step = ""
+        if cmd_original:
+            parts = cmd_original.strip().split(None, 1)
+            if len(parts) > 1:
+                current_step = parts[1].strip()
+
+        context_tokens = None
+        context_length = None
+        if self.agent:
+            compressor = getattr(self.agent, "context_compressor", None)
+            if compressor:
+                context_tokens = getattr(compressor, "last_prompt_tokens", None)
+                context_length = getattr(compressor, "context_length", None)
+
+        title = None
+        if self._session_db:
+            try:
+                title = self._session_db.get_session_title(self.session_id)
+            except Exception:
+                title = None
+
+        from agent.context_continuity import build_handoff_packet
+
+        packet = build_handoff_packet(
+            self.conversation_history,
+            session_id=self.session_id,
+            context_tokens=context_tokens,
+            context_length=context_length,
+            current_step=current_step or None,
+            title=title,
+        )
+        print(packet)
 
     def _handle_debug_command(self):
         """Handle /debug — upload debug report + logs and print paste URLs."""

@@ -6456,6 +6456,9 @@ class GatewayRunner:
         if canonical == "compress":
             return await self._handle_compress_command(event)
 
+        if canonical == "handoff":
+            return await self._handle_handoff_command(event)
+
         if canonical == "usage":
             return await self._handle_usage_command(event)
 
@@ -8488,6 +8491,36 @@ class GatewayRunner:
             except Exception:
                 db_total_tokens = 0
 
+        continuity_line = None
+        running_agent = self._running_agents.get(session_key)
+        compressor = getattr(running_agent, "context_compressor", None) if running_agent else None
+        if compressor:
+            try:
+                from agent.context_continuity import (
+                    ContextContinuityStatus,
+                    recommend_continuity_action,
+                )
+
+                recommendation = recommend_continuity_action(
+                    ContextContinuityStatus(
+                        context_tokens=getattr(compressor, "last_prompt_tokens", 0) or 0,
+                        context_length=getattr(compressor, "context_length", 0) or 0,
+                        compression_count=getattr(compressor, "compression_count", 0) or 0,
+                    )
+                )
+                if recommendation.recommended_action != "continue":
+                    action_label = (
+                        "이어가기 권장"
+                        if recommendation.recommended_action == "handoff"
+                        else recommendation.recommended_action.replace("_", " ")
+                    )
+                    continuity_line = (
+                        f"**이어가기 상태:** {action_label} ({recommendation.usage_percent}%) — "
+                        f"{recommendation.reason} `/handoff`로 새 세션용 이어가기 안내를 만드세요."
+                    )
+            except Exception:
+                continuity_line = None
+
         lines = [
             t("gateway.status.header"),
             "",
@@ -8503,12 +8536,41 @@ class GatewayRunner:
         ])
         if queue_depth:
             lines.append(t("gateway.status.queued", count=queue_depth))
+        if continuity_line:
+            lines.append(continuity_line)
         lines.extend([
             "",
             t("gateway.status.platforms", platforms=', '.join(connected_platforms)),
         ])
 
         return "\n".join(lines)
+
+    async def _handle_handoff_command(self, event: MessageEvent) -> str:
+        """Handle /handoff — return a copy/paste packet for a fresh session."""
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+        history = self.session_store.load_transcript(session_entry.session_id)
+        history = [m for m in (history or []) if m.get("role") in ("user", "assistant", "tool")]
+        if not history:
+            return "아직 이어갈 대화가 없습니다. 먼저 메시지를 보내세요."
+
+        title = None
+        if self._session_db:
+            try:
+                title = self._session_db.get_session_title(session_entry.session_id)
+            except Exception:
+                title = None
+
+        from agent.context_continuity import build_handoff_packet
+
+        return build_handoff_packet(
+            history,
+            session_id=session_entry.session_id,
+            context_tokens=session_entry.last_prompt_tokens or None,
+            context_length=None,
+            current_step=(event.get_command_args() or "").strip() or None,
+            title=title,
+        )
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""

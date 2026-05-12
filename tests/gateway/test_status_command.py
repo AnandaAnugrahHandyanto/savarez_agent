@@ -105,6 +105,34 @@ async def test_status_command_reports_running_agent_without_interrupt(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_status_command_recommends_handoff_when_context_is_high_risk():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=321,
+    )
+    runner = _make_runner(session_entry)
+    running_agent = SimpleNamespace(
+        context_compressor=SimpleNamespace(
+            last_prompt_tokens=85_000,
+            context_length=100_000,
+            compression_count=0,
+        )
+    )
+    runner._running_agents[build_session_key(_make_source())] = running_agent
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**이어가기 상태:** 이어가기 권장" in result
+    assert "85%" in result
+    assert "/handoff" in result
+
+
+@pytest.mark.asyncio
 async def test_status_command_includes_session_title_when_present():
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),

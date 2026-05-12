@@ -86,6 +86,27 @@ def test_show_session_status_prints_gateway_style_summary():
     assert kwargs.get("markup") is False
 
 
+def test_show_session_status_recommends_handoff_when_context_is_high_risk():
+    cli_obj = _make_cli()
+    cli_obj.agent = SimpleNamespace(
+        session_total_tokens=321,
+        session_api_calls=4,
+        context_compressor=SimpleNamespace(
+            last_prompt_tokens=85_000,
+            context_length=100_000,
+            compression_count=0,
+        ),
+    )
+
+    with patch("cli.display_hermes_home", return_value="~/.hermes"):
+        cli_obj._show_session_status()
+
+    printed = "\n".join(str(call.args[0]) for call in cli_obj.console.print.call_args_list)
+    assert "이어가기 상태: 이어가기 권장" in printed
+    assert "85%" in printed
+    assert "/handoff" in printed
+
+
 def test_profile_command_reports_custom_root_profile(monkeypatch, tmp_path, capsys):
     """Profile detection works for custom-root deployments (not under ~/.hermes)."""
     cli_obj = _make_cli()

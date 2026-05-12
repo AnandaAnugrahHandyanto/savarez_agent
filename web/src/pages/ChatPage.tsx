@@ -25,7 +25,7 @@ import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@/components/NouiTypography";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, X } from "lucide-react";
+import { Copy, FileText, PanelRight, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
@@ -261,6 +261,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setCopyState("copied");
     if (copyResetRef.current) clearTimeout(copyResetRef.current);
     copyResetRef.current = setTimeout(() => setCopyState("idle"), 1500);
+    termRef.current?.focus();
+  };
+
+  const handleHandoff = () => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    // Route through the same PTY command path as a typed `/handoff`, so the
+    // generated packet appears in the terminal and stays aligned with CLI
+    // command behavior.
+    ws.send("/handoff");
+    setTimeout(() => {
+      const s = wsRef.current;
+      if (s && s.readyState === WebSocket.OPEN) s.send("\r");
+    }, 100);
     termRef.current?.focus();
   };
 
@@ -824,9 +838,33 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
           <Button
             ghost
+            onClick={handleHandoff}
+            title="새 세션 이어가기 안내 만들기"
+            aria-label="새 세션 이어가기 안내 만들기"
+            className={cn(
+              "absolute z-10",
+              "rounded border border-current/30",
+              "bg-black/20 backdrop-blur-sm",
+              "opacity-60 hover:opacity-100 hover:border-current/60",
+              "transition-opacity duration-150 normal-case font-normal tracking-normal",
+              "bottom-12 right-2 px-2 py-1 text-[0.65rem] sm:bottom-14 sm:right-3 sm:px-2.5 sm:py-1.5 sm:text-xs",
+              "lg:bottom-16 lg:right-4",
+            )}
+            style={{ color: TERMINAL_THEME.foreground }}
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <FileText className="h-3 w-3 shrink-0" />
+              <span className="hidden min-[400px]:inline tracking-wide">
+                이어가기 안내
+              </span>
+            </span>
+          </Button>
+
+          <Button
+            ghost
             onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
+            title="마지막 답변을 원문으로 복사"
+            aria-label="마지막 답변 복사"
             className={cn(
               "absolute z-10",
               "rounded border border-current/30",
@@ -841,7 +879,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             <span className="inline-flex items-center gap-1.5">
               <Copy className="h-3 w-3 shrink-0" />
               <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
+                {copyState === "copied" ? "복사됨" : "마지막 답변 복사"}
               </span>
             </span>
           </Button>
