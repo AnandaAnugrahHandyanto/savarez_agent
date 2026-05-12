@@ -1,6 +1,6 @@
 # Managed-Agent Policy Audit Enforcement
 
-Status: in_progress
+Status: blocked
 Owner: Hermes main / Multica Codex worker
 Started: 2026-05-12 09:10 +08
 Branch: feat/managed-agent-policy-audit-enforcement
@@ -71,3 +71,4 @@ git diff --check
 - 2026-05-12 09:10 +08 — in_progress: branch created and Phase 3 plan drafted after checking PR #24075.
 - 2026-05-12 09:10 +08 — in_progress: Multica trace created and linked in ledger; ledger commit `2f622fb33` pushed to `fork/feat/managed-agent-policy-audit-enforcement`; JEF-226 moved to in_progress.
 - 2026-05-12 09:12 +08 — in_progress: supervisor `f9d30fdf5eee` started; Multica auto-execution shows JEF-226 and JEF-227 in_progress.
+- 2026-05-12 09:13 +08 — blocked: JEF-226 run `8f7d1d41-1cf6-4cc3-a758-a71710b77ec0` reported the Multica workspace only exposed `court-booking-management`, not Hermes Agent. The worker marked JEF-226 blocked and produced no code commit. JEF-227 remains running but has no Phase 3 implementation diff to review.
