@@ -1241,6 +1241,7 @@ class AIAgent:
         self.verbose_logging = verbose_logging
         self.quiet_mode = quiet_mode
         self.ephemeral_system_prompt = ephemeral_system_prompt
+        self.caveman_mode = None  # Set by gateway when caveman mode is active (e.g. "medium", "max")
         self.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
         self._user_id = user_id  # Platform user identifier (gateway sessions)
         self._user_name = user_name
@@ -11608,7 +11609,7 @@ class AIAgent:
 
             effective_system = self._cached_system_prompt or ""
             if self.ephemeral_system_prompt:
-                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+                effective_system = (self.ephemeral_system_prompt + "\n\n" + effective_system).strip()
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
             if self.prefill_messages:
@@ -12418,7 +12419,7 @@ class AIAgent:
                 # The signature field helps maintain reasoning continuity
                 api_messages.append(api_msg)
 
-            # Build the final system message: cached prompt + ephemeral system prompt.
+            # Build the final system message: ephemeral system prompt + cached prompt.
             # Ephemeral additions are API-call-time only (not persisted to session DB).
             # External recall context is injected into the user message, not the system
             # prompt, so the stable cache prefix remains unchanged.
@@ -12430,6 +12431,8 @@ class AIAgent:
             # cache_control marker further down via
             # apply_anthropic_cache_control_long_lived; blocks 1-3 are
             # cached only via the rolling messages window at 5m.
+            # For plain string system prompts, ephemeral instructions are
+            # prepended so high-priority modes (e.g. caveman) stay visible.
             # NOTE: Plugin context from pre_llm_call hooks is injected into the
             # user message (see injection block above), NOT the system prompt.
             # This is intentional — system prompt modifications break the prompt
@@ -12450,7 +12453,7 @@ class AIAgent:
             else:
                 effective_system = active_system_prompt or ""
                 if self.ephemeral_system_prompt:
-                    effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+                    effective_system = (self.ephemeral_system_prompt + "\n\n" + effective_system).strip()
                 if effective_system:
                     api_messages = [{"role": "system", "content": effective_system}] + api_messages
 
@@ -14941,6 +14944,23 @@ class AIAgent:
                     # execution so a single truncation doesn't poison the
                     # entire conversation.
                     truncated_tool_call_retries = 0
+
+                    # Caveman mode: inject reminder after tool results so model
+                    # doesn't drift back to normal speech. Appends to ALL tool
+                    # results in this turn (not just the last one) and adds a
+                    # separate user message for stronger reinforcement.
+                    if self.caveman_mode and messages:
+                        _cm_level = self.caveman_mode.upper()
+                        _cm_msg = f"\n\n[CAVEMAN MODE {_cm_level}: You MUST reply in caveman speak. Override default style.]"
+                        for m in reversed(messages):
+                            if m.get("role") == "tool":
+                                m["content"] = m.get("content", "") + _cm_msg
+                            else:
+                                break
+                        messages.append({
+                            "role": "user",
+                            "content": f"[CAVEMAN MODE ACTIVE — {_cm_level}. Respond in caveman speak. No formal language.]",
+                        })
 
                     # Signal that a paragraph break is needed before the next
                     # streamed text.  We don't emit it immediately because
