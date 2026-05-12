@@ -13,6 +13,7 @@ import { flushInteractionTime } from '../bootstrap/state.js'
 import { getYogaCounters } from '../native-ts/yoga-layout/index.js'
 import { logForDebugging } from '../utils/debug.js'
 import { logError } from '../utils/log.js'
+import { openExternalUrl } from '../utils/openExternalUrl.js'
 
 import { colorize } from './colorize.js'
 import App from './components/App.js'
@@ -1825,7 +1826,13 @@ export default class Ink {
    * the mutable field at call time — not the undefined-at-render value.
    */
   openHyperlink(url: string): void {
-    this.onHyperlinkClick?.(url)
+    if (this.onHyperlinkClick) {
+      this.onHyperlinkClick(url)
+
+      return
+    }
+
+    openExternalUrl(url)
   }
 
   /**
