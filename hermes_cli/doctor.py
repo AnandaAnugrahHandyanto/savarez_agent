@@ -245,14 +245,30 @@ def _build_apikey_providers_list() -> list:
     }
     for _label, _canonical in _name_to_canonical.items():
         _known_canonical.add(_canonical)
+    # Providers that already have a dedicated health check above the generic
+    # API-key loop (with custom headers/auth). Skip their pluggable profiles
+    # here so the generic Bearer-auth loop doesn't run a duplicate, broken
+    # check (e.g. Anthropic native API requires x-api-key, not Bearer).
+    _dedicated_canonical = {"anthropic", "openrouter", "bedrock"}
+    _known_canonical.update(_dedicated_canonical)
     try:
         from providers import list_providers
         from providers.base import ProviderProfile as _PP
+        try:
+            from hermes_cli.providers import normalize_provider as _normalize_provider
+        except Exception:  # pragma: no cover - normalization is best-effort
+            def _normalize_provider(_name: str) -> str:
+                return (_name or "").strip().lower()
         for _pp in list_providers():
             if not isinstance(_pp, _PP) or _pp.auth_type != "api_key" or not _pp.env_vars:
                 continue
             _label = _pp.display_name or _pp.name
             if _label in _known_names or _pp.name in _known_canonical:
+                continue
+            _candidates = {_normalize_provider(_pp.name)}
+            for _alias in (_pp.aliases or ()):
+                _candidates.add(_normalize_provider(_alias))
+            if _candidates & _dedicated_canonical:
                 continue
             # Separate API-key vars from base-URL override vars — the health-check
             # loop sends the first found value as Authorization: Bearer, so a URL
@@ -457,7 +473,7 @@ def run_doctor(args):
             if (
                 provider
                 and _resolve_auth_provider is not None
-                and provider not in ("auto", "custom")
+                and provider not in {"auto", "custom"}
             ):
                 try:
                     runtime_provider = _resolve_auth_provider(provider)
@@ -469,7 +485,7 @@ def run_doctor(args):
             if (
                 provider
                 and _resolve_provider_full is not None
-                and provider not in ("auto", "custom")
+                and provider not in {"auto", "custom"}
             ):
                 provider_def = _resolve_provider_full(provider, user_providers, custom_providers)
                 catalog_provider = provider_def.id if provider_def is not None else None
@@ -526,7 +542,7 @@ def run_doctor(args):
             # own env-var checks elsewhere in doctor, and get_auth_status()
             # returns a bare {logged_in: False} for anything it doesn't
             # explicitly dispatch, which would produce false positives.
-            if runtime_provider and runtime_provider not in ("auto", "custom", "openrouter"):
+            if runtime_provider and runtime_provider not in {"auto", "custom", "openrouter"}:
                 try:
                     from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
                     pconfig = PROVIDER_REGISTRY.get(runtime_provider)
@@ -713,13 +729,12 @@ def run_doctor(args):
     hermes_home = HERMES_HOME
     if hermes_home.exists():
         check_ok(f"{_DHH} directory exists")
+    elif should_fix:
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        check_ok(f"Created {_DHH} directory")
+        fixed_count += 1
     else:
-        if should_fix:
-            hermes_home.mkdir(parents=True, exist_ok=True)
-            check_ok(f"Created {_DHH} directory")
-            fixed_count += 1
-        else:
-            check_warn(f"{_DHH} not found", "(will be created on first use)")
+        check_warn(f"{_DHH} not found", "(will be created on first use)")
     
     # Check expected subdirectories
     expected_subdirs = ["cron", "sessions", "logs", "skills", "memories"]
@@ -727,13 +742,12 @@ def run_doctor(args):
         subdir_path = hermes_home / subdir_name
         if subdir_path.exists():
             check_ok(f"{_DHH}/{subdir_name}/ exists")
+        elif should_fix:
+            subdir_path.mkdir(parents=True, exist_ok=True)
+            check_ok(f"Created {_DHH}/{subdir_name}/")
+            fixed_count += 1
         else:
-            if should_fix:
-                subdir_path.mkdir(parents=True, exist_ok=True)
-                check_ok(f"Created {_DHH}/{subdir_name}/")
-                fixed_count += 1
-            else:
-                check_warn(f"{_DHH}/{subdir_name}/ not found", "(will be created on first use)")
+            check_warn(f"{_DHH}/{subdir_name}/ not found", "(will be created on first use)")
     
     # Check for SOUL.md persona file
     soul_path = hermes_home / "SOUL.md"
@@ -939,14 +953,12 @@ def run_doctor(args):
         else:
             check_fail("docker not found", "(required for TERMINAL_ENV=docker)")
             issues.append("Install Docker or change TERMINAL_ENV")
+    elif _safe_which("docker"):
+        check_ok("docker", "(optional)")
+    elif _is_termux():
+        check_info("Docker backend is not available inside Termux (expected on Android)")
     else:
-        if _safe_which("docker"):
-            check_ok("docker", "(optional)")
-        else:
-            if _is_termux():
-                check_info("Docker backend is not available inside Termux (expected on Android)")
-            else:
-                check_warn("docker not found", "(optional)")
+        check_warn("docker not found", "(optional)")
     
     # SSH (if using ssh backend)
     if terminal_env == "ssh":
@@ -998,7 +1010,7 @@ def run_doctor(args):
             issues.append(f"Set TERMINAL_VERCEL_RUNTIME to one of: {supported}")
 
         disk = os.getenv("TERMINAL_CONTAINER_DISK", "51200").strip()
-        if disk in ("", "0", "51200"):
+        if disk in {"", "0", "51200"}:
             check_ok("Vercel disk setting", "(uses platform default)")
         else:
             check_fail("Vercel custom disk unsupported", "(reset terminal.container_disk to 51200)")
@@ -1024,7 +1036,7 @@ def run_doctor(args):
         for line in auth_status.detail_lines:
             check_info(f"Vercel auth {line}")
 
-        persistent = os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("1", "true", "yes", "on")
+        persistent = os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"1", "true", "yes", "on"}
         if persistent:
             check_info("Vercel persistence: snapshot filesystem only; live processes do not survive sandbox recreation")
         else:
@@ -1042,15 +1054,14 @@ def run_doctor(args):
         elif shutil.which("agent-browser"):
             check_ok("agent-browser", "(browser automation)")
             agent_browser_ok = True
+        elif _is_termux():
+            check_info("agent-browser is not installed (expected in the tested Termux path)")
+            check_info("Install it manually later with: npm install -g agent-browser && agent-browser install")
+            check_info("Termux browser setup:")
+            for step in _termux_browser_setup_steps(node_installed=True):
+                check_info(step)
         else:
-            if _is_termux():
-                check_info("agent-browser is not installed (expected in the tested Termux path)")
-                check_info("Install it manually later with: npm install -g agent-browser && agent-browser install")
-                check_info("Termux browser setup:")
-                for step in _termux_browser_setup_steps(node_installed=True):
-                    check_info(step)
-            else:
-                check_warn("agent-browser not installed", "(run: npm install)")
+            check_warn("agent-browser not installed", "(run: npm install)")
 
         # Chromium presence — the browser tools silently fail to register when
         # agent-browser is found but no Playwright-managed Chromium is on disk
@@ -1101,15 +1112,14 @@ def run_doctor(args):
                                 f"Install with: cd {PROJECT_ROOT} && "
                                 "npx playwright install --with-deps chromium"
                             )
+    elif _is_termux():
+        check_info("Node.js not found (browser tools are optional in the tested Termux path)")
+        check_info("Install Node.js on Termux with: pkg install nodejs")
+        check_info("Termux browser setup:")
+        for step in _termux_browser_setup_steps(node_installed=False):
+            check_info(step)
     else:
-        if _is_termux():
-            check_info("Node.js not found (browser tools are optional in the tested Termux path)")
-            check_info("Install Node.js on Termux with: pkg install nodejs")
-            check_info("Termux browser setup:")
-            for step in _termux_browser_setup_steps(node_installed=False):
-                check_info(step)
-        else:
-            check_warn("Node.js not found", "(optional, needed for browser tools)")
+        check_warn("Node.js not found", "(optional, needed for browser tools)")
     
     # npm audit for all Node.js packages
     _npm_bin = _safe_which("npm")
