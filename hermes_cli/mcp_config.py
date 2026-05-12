@@ -164,13 +164,18 @@ def _apply_mcp_preset(
 # ─── Discovery (temporary connect) ───────────────────────────────────────────
 
 def _probe_single_server(
-    name: str, config: dict, connect_timeout: float = 30
+    name: str, config: dict, connect_timeout: float | None = None
 ) -> List[Tuple[str, str]]:
     """Temporarily connect to one MCP server, list its tools, disconnect.
 
     Returns list of ``(tool_name, description)`` tuples.
     Raises on connection failure.
     """
+    if connect_timeout is None:
+        try:
+            connect_timeout = float(config.get("connect_timeout", 300))
+        except (TypeError, ValueError):
+            connect_timeout = 300.0
     from tools.mcp_tool import (
         _ensure_mcp_loop,
         _run_on_mcp_loop,

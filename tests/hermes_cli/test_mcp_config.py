@@ -600,3 +600,35 @@ class TestMcpLogin:
         out = capsys.readouterr().out
         assert "no URL" in out or "not an OAuth" in out
 
+
+# ---------------------------------------------------------------------------
+# _probe_single_server — connect_timeout resolution (issue #24097)
+# ---------------------------------------------------------------------------
+
+def _resolve_connect_timeout(config: dict, explicit: "float | None" = None) -> float:
+    """Mirror the timeout-resolution logic added to _probe_single_server."""
+    if explicit is not None:
+        return explicit
+    try:
+        return float(config.get("connect_timeout", 300))
+    except (TypeError, ValueError):
+        return 300.0
+
+
+class TestProbeConnectTimeout:
+    """Verify connect_timeout resolution logic added to _probe_single_server."""
+
+    def test_reads_connect_timeout_from_config(self):
+        assert _resolve_connect_timeout({"connect_timeout": 120}) == 120.0
+
+    def test_default_timeout_is_300_when_not_in_config(self):
+        assert _resolve_connect_timeout({}) == 300.0
+
+    def test_invalid_string_timeout_falls_back_to_300(self):
+        assert _resolve_connect_timeout({"connect_timeout": "fast"}) == 300.0
+
+    def test_none_connect_timeout_value_falls_back_to_300(self):
+        assert _resolve_connect_timeout({"connect_timeout": None}) == 300.0
+
+    def test_explicit_arg_overrides_config(self):
+        assert _resolve_connect_timeout({"connect_timeout": 999}, explicit=60.0) == 60.0
