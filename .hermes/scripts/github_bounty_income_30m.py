@@ -1,0 +1,525 @@
+#!/usr/bin/env python3
+"""Deterministic GitHub bounty income scout gate.
+
+No-agent cron script. It writes a report on every run and prints only when a
+TAKE candidate needs user confirmation. Non-TAKE runs end with a wakeAgent=false
+gate so Hermes stays silent.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+HERMES_HOME = Path(os.environ.get("HERMES_HOME", ".hermes")).resolve()
+REPORT_DIR = HERMES_HOME / "reports" / "bounty-candidates"
+WORKSPACE = HERMES_HOME / "bounty-workspace"
+
+LANGUAGES = ("Python", "TypeScript", "Rust", "Go")
+LIMIT_PER_QUERY = int(os.environ.get("BOUNTY_SCOUT_LIMIT_PER_QUERY", "18"))
+ENRICH_LIMIT = int(os.environ.get("BOUNTY_SCOUT_ENRICH_LIMIT", "36"))
+TAKE_THRESHOLD = int(os.environ.get("BOUNTY_SCOUT_TAKE_THRESHOLD", "82"))
+
+FIELDS = "title,url,repository,labels,updatedAt,createdAt,commentsCount,body,number,state"
+NOTIFY_CMD = [
+    "osascript",
+    "-e",
+    'display notification "Found/Commented on Bounty" with title "Hermes Bounty Alert"',
+]
+
+LABEL_QUERIES = ("bounty", "help wanted", "good first issue")
+TERM_QUERIES = (
+    '"$" bounty',
+    '"paid issue"',
+    '"paid task"',
+    '"reward"',
+    '"sponsor"',
+    '"bounty"',
+    '"USDC"',
+    '"USD"',
+)
+
+NOISE_REPO_PATTERNS = (
+    "awesome",
+    "radar",
+    "artifact",
+    "bounties",
+    "claim",
+)
+NOISE_TERMS = (
+    "artifact aggregation",
+    "radar",
+    "claim:",
+    "claim #",
+    "duplicate claim",
+    "social task",
+    "share this",
+    "retweet",
+    "video submission",
+    "run the miner",
+    "banana bread",
+)
+PRIVATE_OR_UNSAFE_TERMS = (
+    "exploit",
+    "0day",
+    "zero-day",
+    "credential",
+    "private key",
+    "seed phrase",
+    "password dump",
+    "unauthorized",
+    "scan mainnet",
+    "private vulnerability",
+)
+AUTHORIZATION_TERMS = (
+    "bounty",
+    "reward",
+    "paid",
+    "sponsor",
+    "grant",
+    "prize",
+    "payout",
+)
+ACCEPTANCE_TERMS = (
+    "acceptance criteria",
+    "requirements",
+    "deliverables",
+    "merged pr",
+    "submit a pr",
+    "pull request",
+    "passes ci",
+    "tests pass",
+    "review",
+)
+
+
+@dataclass
+class Candidate:
+    title: str
+    url: str
+    repo: str
+    labels: list[str]
+    updated_at: str
+    created_at: str
+    comments_count: int
+    language: str
+    body: str = ""
+    comments_text: str = ""
+    linked_pr_count: int = 0
+    state: str = ""
+    number: int | None = None
+    score: int = 0
+    gate: str = "WATCH"
+    reasons: list[str] = field(default_factory=list)
+    risk_flags: list[str] = field(default_factory=list)
+
+
+def run_json(args: list[str]) -> Any:
+    completed = subprocess.run(args, text=True, capture_output=True, check=False)
+    if completed.returncode != 0:
+        return []
+    text = completed.stdout.strip()
+    if not text:
+        return []
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return []
+
+
+def notify() -> None:
+    subprocess.run(NOTIFY_CMD, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def repo_name(item: dict[str, Any]) -> str:
+    repository = item.get("repository") or {}
+    return repository.get("nameWithOwner") or ""
+
+
+def labels_from(item: dict[str, Any]) -> list[str]:
+    return [label.get("name", "") for label in item.get("labels") or [] if label.get("name")]
+
+
+def candidate_from_item(item: dict[str, Any], language: str) -> Candidate | None:
+    repo = repo_name(item)
+    url = item.get("url") or ""
+    if not repo or not url:
+        return None
+    number = item.get("number")
+    return Candidate(
+        title=item.get("title") or "",
+        url=url,
+        repo=repo,
+        labels=labels_from(item),
+        updated_at=item.get("updatedAt") or "",
+        created_at=item.get("createdAt") or "",
+        comments_count=int(item.get("commentsCount") or 0),
+        language=language,
+        body=item.get("body") or "",
+        state=item.get("state") or "",
+        number=int(number) if isinstance(number, int) else None,
+    )
+
+
+def gh_search(args: list[str], language: str) -> list[Candidate]:
+    data = run_json(args)
+    if not isinstance(data, list):
+        return []
+    candidates: list[Candidate] = []
+    for item in data:
+        if isinstance(item, dict):
+            candidate = candidate_from_item(item, language)
+            if candidate:
+                candidates.append(candidate)
+    return candidates
+
+
+def scout() -> list[Candidate]:
+    if not shutil.which("gh"):
+        return []
+
+    found: dict[str, Candidate] = {}
+    for language in LANGUAGES:
+        for label in LABEL_QUERIES:
+            args = [
+                "gh",
+                "search",
+                "issues",
+                "--label",
+                label,
+                "--language",
+                language,
+                "--state",
+                "open",
+                "--archived=false",
+                "--sort",
+                "updated",
+                "--limit",
+                str(LIMIT_PER_QUERY),
+                "--json",
+                FIELDS,
+            ]
+            for candidate in gh_search(args, language):
+                found.setdefault(candidate.url, candidate)
+
+        for term in TERM_QUERIES:
+            query = f"{term} is:issue is:open archived:false"
+            args = [
+                "gh",
+                "search",
+                "issues",
+                query,
+                "--language",
+                language,
+                "--state",
+                "open",
+                "--archived=false",
+                "--match",
+                "title,body,comments",
+                "--sort",
+                "updated",
+                "--limit",
+                str(LIMIT_PER_QUERY),
+                "--json",
+                FIELDS,
+            ]
+            for candidate in gh_search(args, language):
+                found.setdefault(candidate.url, candidate)
+
+    return list(found.values())
+
+
+def issue_number(candidate: Candidate) -> str | None:
+    if candidate.number is not None:
+        return str(candidate.number)
+    match = re.search(r"/issues/(\d+)", candidate.url)
+    return match.group(1) if match else None
+
+
+def enrich(candidate: Candidate) -> Candidate:
+    number = issue_number(candidate)
+    if not number:
+        return candidate
+    data = run_json(
+        [
+            "gh",
+            "issue",
+            "view",
+            number,
+            "--repo",
+            candidate.repo,
+            "--json",
+            "title,url,state,body,labels,comments,createdAt,updatedAt,number",
+        ]
+    )
+    if isinstance(data, dict):
+        candidate.body = data.get("body") or candidate.body
+        candidate.state = data.get("state") or candidate.state
+        candidate.labels = labels_from(data) or candidate.labels
+        candidate.created_at = data.get("createdAt") or candidate.created_at
+        candidate.updated_at = data.get("updatedAt") or candidate.updated_at
+        comments = data.get("comments") or []
+        candidate.comments_text = "\n".join(str(comment.get("body") or "") for comment in comments)
+        candidate.linked_pr_count = len(
+            set(
+                re.findall(
+                    r"(?:/pull/|PR\s*#|pull request\s*#|#)(\d+)",
+                    candidate.comments_text,
+                    flags=re.I,
+                )
+            )
+        )
+    return candidate
+
+
+def has_amount(text: str) -> bool:
+    return bool(
+        re.search(
+            r"(\$\s*\d+|\d[\d,.\s]*(xtm|rtc|sol|usd|usdc|usdt|dxtn|eur|gbp|inr|₹))",
+            text,
+            re.I,
+        )
+    )
+
+
+def repo_noise(repo: str) -> bool:
+    lower = repo.lower()
+    return any(part in lower for part in NOISE_REPO_PATTERNS) and "bounty" not in lower
+
+
+def score(candidate: Candidate) -> Candidate:
+    labels_lower = [label.lower() for label in candidate.labels]
+    text = f"{candidate.title}\n{candidate.body}\n{candidate.comments_text}\n{' '.join(labels_lower)}".lower()
+    score_value = 0
+    reasons: list[str] = []
+    risk_flags: list[str] = []
+
+    if repo_noise(candidate.repo):
+        score_value -= 25
+        risk_flags.append("possible radar/artifact/aggregation repository")
+
+    if any(term in text for term in NOISE_TERMS):
+        score_value -= 35
+        risk_flags.append("noise, artifact, duplicate, or social-task signal")
+
+    if any(term in text for term in PRIVATE_OR_UNSAFE_TERMS):
+        score_value -= 45
+        risk_flags.append("private or unauthorized security-sensitive request")
+
+    if any(term in text for term in AUTHORIZATION_TERMS) or any("bounty" in label for label in labels_lower):
+        score_value += 25
+        reasons.append("maintainer-facing bounty/reward language")
+
+    if any(label in {"bounty", "help wanted", "good first issue"} for label in labels_lower):
+        score_value += 15
+        reasons.append("useful public issue label")
+
+    if any(label.startswith("bounty-") for label in labels_lower):
+        score_value += 15
+        reasons.append("bounty tier label")
+
+    if has_amount(text):
+        score_value += 25
+        reasons.append("explicit amount or token")
+
+    if any(term in text for term in ACCEPTANCE_TERMS):
+        score_value += 20
+        reasons.append("acceptance or submission path described")
+
+    if "first come" in text or "first valid" in text or "merged pr" in text:
+        score_value += 8
+        reasons.append("award path described")
+
+    if candidate.comments_count <= 6:
+        score_value += 8
+        reasons.append("not too crowded")
+    elif candidate.comments_count >= 15:
+        score_value -= 15
+        risk_flags.append("crowded thread")
+    if candidate.comments_count >= 25:
+        score_value -= 20
+        risk_flags.append("very crowded thread")
+
+    if candidate.linked_pr_count >= 3:
+        score_value -= 45
+        risk_flags.append(f"crowded with {candidate.linked_pr_count}+ linked PRs")
+
+    if candidate.language in {"Python", "TypeScript", "Rust", "Go"}:
+        score_value += 5
+        reasons.append("preferred implementation language")
+
+    if candidate.state and candidate.state.upper() != "OPEN":
+        score_value -= 60
+        risk_flags.append("issue is not open")
+
+    lacks_terms = not has_amount(text) and not any(term in text for term in AUTHORIZATION_TERMS)
+    lacks_acceptance = not any(term in text for term in ACCEPTANCE_TERMS)
+    if lacks_terms:
+        score_value -= 20
+        risk_flags.append("no clear payout or authorization terms")
+    if lacks_acceptance:
+        score_value -= 15
+        risk_flags.append("unclear acceptance criteria")
+
+    candidate.score = max(0, min(100, score_value))
+    candidate.reasons = reasons
+    candidate.risk_flags = risk_flags
+
+    if any("private or unauthorized" in flag for flag in risk_flags):
+        candidate.gate = "SKIP"
+    elif candidate.linked_pr_count >= 3:
+        candidate.gate = "WATCH"
+    elif candidate.score >= TAKE_THRESHOLD and not lacks_terms and not lacks_acceptance:
+        candidate.gate = "TAKE"
+    elif candidate.score >= 50:
+        candidate.gate = "WATCH"
+    else:
+        candidate.gate = "SKIP"
+    return candidate
+
+
+def maybe_clone(candidate: Candidate | None) -> Path | None:
+    if not candidate or candidate.gate != "TAKE":
+        return None
+    repo_dir = WORKSPACE / candidate.repo.replace("/", "__")
+    if repo_dir.exists():
+        subprocess.run(["git", "-C", str(repo_dir), "fetch", "--all", "--prune"], check=False)
+        return repo_dir
+    WORKSPACE.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["gh", "repo", "clone", candidate.repo, str(repo_dir), "--", "--depth=1"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return repo_dir if repo_dir.exists() else None
+
+
+def report_header(now: str, gate: str, take: Candidate | None) -> list[str]:
+    return [
+        f"# GitHub Bounty Scout Report - {now}",
+        "",
+        "## Safety Envelope",
+        "- Scout + Score + Repo Analysis Gate + Report only.",
+        "- May clone or fetch candidate repositories into the local bounty workspace for inspection and reporting only.",
+        "- Must not claim bounties, create branches, commit, push, create PRs, or make code changes without explicit TAKE confirmation in this thread.",
+        "- Must not run unauthorized scanning, spam comments, disclose private vulnerabilities publicly, fabricate findings, bypass platform rules, or publish payout-sensitive data.",
+        "",
+        "## Gate Result",
+        f"- Decision: {gate}",
+        f"- TAKE target: {take.url if take else 'none'}",
+    ]
+
+
+def render(candidates: list[Candidate], take: Candidate | None, cloned: Path | None) -> str:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    gate = take.gate if take else ("WATCH" if any(c.gate == "WATCH" for c in candidates) else "SKIP")
+    lines = report_header(now, gate, take)
+    lines.extend(["", "## Ranked Candidates"])
+
+    if not candidates:
+        lines.append("- No candidates collected. Check `gh auth status`, network access, and GitHub search rate limits.")
+
+    for idx, c in enumerate(candidates[:15], 1):
+        body_excerpt = " ".join(c.body.split())[:280]
+        lines.extend(
+            [
+                f"{idx}. [{c.title}]({c.url})",
+                f"   - Repo: `{c.repo}`",
+                f"   - Language: `{c.language}`",
+                f"   - Labels: `{', '.join(c.labels) or 'none'}`",
+                f"   - Created/Updated: `{c.created_at or '?'}` / `{c.updated_at or '?'}`",
+                f"   - Comments: `{c.comments_count}`",
+                f"   - Score/Gate: `{c.score}` / `{c.gate}`",
+                f"   - Reasons: {', '.join(c.reasons) or 'none'}",
+                f"   - Risks: {', '.join(c.risk_flags) or 'none'}",
+            ]
+        )
+        if body_excerpt:
+            lines.append(f"   - Body: {body_excerpt}")
+
+    if take:
+        likely_files = "Inspect after user confirms TAKE; start with issue-linked modules, tests, and CI config."
+        lines.extend(
+            [
+                "",
+                "## TAKE Confirmation Required",
+                f"- Target repo: `{take.repo}`",
+                f"- Issue URL: {take.url}",
+                f"- Language: `{take.language}`",
+                f"- Bounty/terms evidence: labels `{', '.join(take.labels) or 'none'}`; score reasons `{', '.join(take.reasons) or 'none'}`",
+                f"- Legitimacy signals: open public issue, recent update `{take.updated_at or '?'}`, low linked-PR crowding `{take.linked_pr_count}`.",
+                "- Smallest viable fix/contribution: after user confirmation, inspect the issue acceptance criteria and prepare the narrowest verifiable patch.",
+                f"- Likely files: {likely_files}",
+                f"- Local clone/fetch: `{cloned}`" if cloned else "- Local clone/fetch: not available",
+                "- Tests to run: project-specific unit tests, lint/typecheck, and the smallest regression test for the touched behavior.",
+                "- PR/submission path: draft only after user confirms TAKE; do not claim, branch, commit, push, or create PR without separate instruction.",
+                "",
+                "## Validation Checklist",
+                "- [ ] User confirms this TAKE target in the current thread",
+                "- [ ] Re-read issue body and maintainer comments for payout and acceptance terms",
+                "- [ ] Inspect local clone/fetch without code changes first",
+                "- [ ] Identify minimal files and tests",
+                "- [ ] Prepare changes only after explicit code-change authorization",
+                "- [ ] Run local verification before any submission",
+                "",
+                "## Rollback / Debug Path",
+                f"- Remove cloned workspace: `rm -rf {cloned}`" if cloned else "- No cloned workspace to remove",
+                "- Re-run this script manually with `HERMES_HOME=.hermes python .hermes/scripts/github_bounty_income_30m.py`.",
+                "- If GitHub returns no results, verify `gh auth status` and search rate limits.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "## Quiet Status",
+                "- DONT_NOTIFY: No TAKE candidate met the gate on this run.",
+                "- Reports are still written locally for review.",
+            ]
+        )
+
+    return "\n".join(lines) + "\n"
+
+
+def main() -> int:
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    WORKSPACE.mkdir(parents=True, exist_ok=True)
+
+    candidates = scout()
+    seed_ranked = sorted(candidates, key=lambda c: (c.comments_count, c.updated_at), reverse=True)
+    enriched: list[Candidate] = []
+    for candidate in seed_ranked[:ENRICH_LIMIT]:
+        enriched.append(score(enrich(candidate)))
+
+    seen = {candidate.url for candidate in enriched}
+    for candidate in seed_ranked[ENRICH_LIMIT:]:
+        if candidate.url not in seen:
+            enriched.append(score(candidate))
+
+    ranked = sorted(enriched, key=lambda c: c.score, reverse=True)
+    take = next((candidate for candidate in ranked if candidate.gate == "TAKE"), None)
+    cloned = maybe_clone(take)
+    report = render(ranked, take, cloned)
+    report_path = REPORT_DIR / f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-github-bounty-income-30m.md"
+    report_path.write_text(report, encoding="utf-8")
+
+    if take:
+        notify()
+        print(report)
+    else:
+        print('DONT_NOTIFY: No TAKE candidate met the gate on this run.')
+        print(json.dumps({"wakeAgent": False, "report": str(report_path)}))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
