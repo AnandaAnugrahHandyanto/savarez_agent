@@ -1379,24 +1379,29 @@ class AIAgent:
         # Anthropic protocol (``api_mode == 'anthropic_messages'``). Reduces
         # input costs by ~75% on multi-turn conversations. Uses system_and_3
         # strategy (4 breakpoints). See ``_anthropic_prompt_cache_policy``
-        # for the layout-vs-transport decision.
-        self._use_prompt_caching, self._use_native_cache_layout = (
-            self._anthropic_prompt_cache_policy()
-        )
+        # for the layout-vs-transport decision. Users can override marker
+        # injection with config.yaml ``prompt_caching.mode`` (auto|force|off).
         # Anthropic supports "5m" (default) and "1h" cache TTL tiers. Read from
         # config.yaml under prompt_caching.cache_ttl; unknown values keep "5m".
         # 1h tier costs 2x on write vs 1.25x for 5m, but amortizes across long
         # sessions with >5-minute pauses between turns (#14971).
+        self._prompt_caching_mode = "auto"
         self._cache_ttl = "5m"
         try:
             from hermes_cli.config import load_config as _load_pc_cfg
 
             _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
+            _mode = str(_pc_cfg.get("mode", "auto") or "auto").strip().lower()
+            if _mode in ("auto", "force", "off"):
+                self._prompt_caching_mode = _mode
             _ttl = _pc_cfg.get("cache_ttl", "5m")
             if _ttl in ("5m", "1h"):
                 self._cache_ttl = _ttl
         except Exception:
             pass
+        self._use_prompt_caching, self._use_native_cache_layout = (
+            self._anthropic_prompt_cache_policy()
+        )
 
         # Iteration budget: the LLM is only notified when it actually exhausts
         # the iteration budget (api_call_count >= max_iterations).  At that
@@ -3415,6 +3420,16 @@ class AIAgent:
         is_claude = "claude" in model_lower
         is_openrouter = base_url_host_matches(eff_base_url, "openrouter.ai")
         is_anthropic_wire = eff_api_mode == "anthropic_messages"
+        prompt_caching_mode = str(
+            getattr(self, "_prompt_caching_mode", "auto") or "auto"
+        ).strip().lower()
+        if prompt_caching_mode == "off":
+            return False, False
+        if prompt_caching_mode == "force":
+            # Force only controls whether cache_control markers are injected;
+            # the layout still follows the active transport.
+            return True, is_anthropic_wire
+
         is_native_anthropic = (
             is_anthropic_wire
             and (eff_provider == "anthropic" or base_url_hostname(eff_base_url) == "api.anthropic.com")

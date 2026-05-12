@@ -178,6 +178,50 @@ class TestOpenAIWireFormatOnCustomProvider:
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
 
+class TestPromptCachingModeOverride:
+    """Users may explicitly override prompt cache marker injection."""
+
+    def test_force_enables_custom_openai_wire_with_envelope_layout(self):
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://proxy.example.com/v1",
+            api_mode="chat_completions",
+            model="qwen3.6-plus",
+        )
+        agent._prompt_caching_mode = "force"
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_force_enables_custom_anthropic_wire_with_native_layout(self):
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://proxy.example.com/anthropic",
+            api_mode="anthropic_messages",
+            model="qwen3.6-plus",
+        )
+        agent._prompt_caching_mode = "force"
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_off_disables_auto_detected_cache_support(self):
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="anthropic/claude-sonnet-4.6",
+        )
+        agent._prompt_caching_mode = "off"
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_invalid_mode_falls_back_to_auto(self):
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="anthropic/claude-sonnet-4.6",
+        )
+        agent._prompt_caching_mode = "definitely-not-valid"
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+
 class TestQwenAlibabaFamily:
     """Qwen on OpenCode/OpenCode-Go/Alibaba — needs cache_control even on OpenAI-wire.
 

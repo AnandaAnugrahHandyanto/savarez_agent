@@ -679,8 +679,13 @@ DEFAULT_CONFIG = {
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
+    # mode controls cache_control marker injection:
+    #   "auto"  - enable only for known-compatible provider/model combinations
+    #   "force" - always inject cache_control markers (use with compatible gateways)
+    #   "off"   - never inject cache_control markers
     # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
     "prompt_caching": {
+        "mode": "auto",
         "cache_ttl": "5m",
     },
 
