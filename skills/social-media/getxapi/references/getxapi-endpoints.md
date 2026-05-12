@@ -37,7 +37,7 @@ curl -s -H "Authorization: Bearer <your-api-key>" \
 Response: `{"tweets": [...]}` or `{"data": {"tweets": [...]}}`. Each tweet has `id`, `text`, `author.userName`, `author.followers`, `isReply`, `createdAt`, `viewCount`, `media[]`.
 
 **Field mapping gotchas:**
-- `author.userName` — NOT `screen_name` or `author.username`
+- `author.userName` — NOT `screen_name` (v1.1), `username` (v2 user objects), or `author.username`
 - `author.followers` — NOT `public_metrics.followers_count`
 - `isReply` (boolean) — NOT `in_reply_to_user_id`
 - `createdAt` — NOT `created_at`
@@ -61,10 +61,11 @@ Body (JSON):
 ```json
 {
   "auth_token": "<your-auth-token>",
-  "text": "tweet content here",
-  "reply_to_tweet_id": "1234567890"  // optional, for replies
+  "text": "tweet content here"
 }
 ```
+
+Add `"reply_to_tweet_id": "1234567890"` to the body to post a reply instead of a standalone tweet.
 
 ```bash
 curl -s -X POST "https://api.getxapi.com/twitter/tweet/create" \

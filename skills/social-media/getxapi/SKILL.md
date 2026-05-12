@@ -73,9 +73,9 @@ curl -s -H "Authorization: Bearer <your-api-key>" \
 
 getxapi uses **non-standard field names**. Do NOT use official X API v2 field names — they silently produce zero results.
 
-| getxapi field | X API v2 equivalent | Usage |
+| getxapi field | NOT these (official X API fields — won't work) | Usage |
 |---------------|---------------------|-------|
-| `author.userName` | NOT `screen_name` or `author.username` (those are X API v2 names — using them returns zero results) | Author handle |
+| `author.userName` | `screen_name` (v1.1), `username` (v2 user objects), `author.username` — using any of these returns zero results | Author handle |
 | `author.followers` | `public_metrics.followers_count` | Follower count |
 | `isReply` | `in_reply_to_user_id` (check if set) | Is it a reply? |
 | `id` | `id` (same) | Tweet ID |
