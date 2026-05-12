@@ -1577,22 +1577,25 @@ run_setup_wizard() {
     # but opening fails with ENXIO, so the wizard would proceed and
     # then crash on `< /dev/tty` below.
     if ! (: </dev/tty) 2>/dev/null; then
-        log_info "Setup wizard skipped (no terminal available). Run 'hermes setup' after install."
+        log_info "Setup wizard skipped (no terminal available). Run 'hermes gateway setup' after install."
         return 0
     fi
 
     echo ""
-    log_info "Starting setup wizard..."
+    log_info "Starting gateway setup wizard..."
     echo ""
 
     cd "$INSTALL_DIR"
 
-    # Run hermes setup using the venv Python directly (no activation needed).
+    # Run `hermes gateway setup` using the venv Python directly (no activation
+    # needed). Single wizard that handles Inkbox self-signup + system-service
+    # install, matching the README's step-2 entry point so curl-pipe-bash and
+    # the documented manual path land on the same prompts.
     # Redirect stdin from /dev/tty so interactive prompts work when piped from curl.
     if [ "$USE_VENV" = true ]; then
-        "$INSTALL_DIR/venv/bin/python" -m hermes_cli.main setup < /dev/tty
+        "$INSTALL_DIR/venv/bin/python" -m hermes_cli.main gateway setup < /dev/tty
     else
-        python -m hermes_cli.main setup < /dev/tty
+        python -m hermes_cli.main gateway setup < /dev/tty
     fi
 }
 

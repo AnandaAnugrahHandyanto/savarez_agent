@@ -58,18 +58,13 @@ We sync with the base repo daily, so changes here are scoped to the Inkbox-integ
 
 ## Quick Install
 
-Two commands. By the end your agent has a real email address, a real phone number, and is running as a background service.
+One command. Installs deps, then walks you through Inkbox setup (email + SMS + voice) and installs the gateway as a background service. By the end your agent has a real email address and a real phone number.
 
 ```bash
-# 1. Install — uv, Python, Node.js, ripgrep, ffmpeg, Hermes itself
 curl -fsSL https://raw.githubusercontent.com/inkbox-ai/hermes-agent/inkbox/scripts/install.sh | bash
-
-# 2. Configure — Inkbox (email + SMS + voice) and install the gateway as a
-#    system service. Prompts before anything starts.
-hermes gateway setup
 ```
 
-**Windows (early beta):** swap step 1 for `irm https://raw.githubusercontent.com/inkbox-ai/hermes-agent/inkbox/scripts/install.ps1 | iex` in PowerShell. WSL2 is the more battle-tested path.
+**Windows (early beta):** use `irm https://raw.githubusercontent.com/inkbox-ai/hermes-agent/inkbox/scripts/install.ps1 | iex` in PowerShell instead. WSL2 is the more battle-tested path.
 
 ---
 
