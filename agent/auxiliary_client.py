@@ -1327,6 +1327,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 from hermes_cli.models import copilot_default_headers
 
                 extra["default_headers"] = copilot_default_headers()
+            # 9Router support - must use non-OpenAI User-Agent to avoid 403
+            elif "9router" in base_url.lower() or "router." in base_url.lower():
+                extra["default_headers"] = {"User-Agent": "HermesAgent/1.0"}
             else:
                 try:
                     from providers import get_provider_profile as _gpf_aux
@@ -1362,6 +1365,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             from hermes_cli.models import copilot_default_headers
 
             extra["default_headers"] = copilot_default_headers()
+        # 9Router support - must use non-OpenAI User-Agent to avoid 403
+        elif "9router" in base_url.lower() or "router." in base_url.lower():
+            extra["default_headers"] = {"User-Agent": "HermesAgent/1.0"}
         else:
             try:
                 from providers import get_provider_profile as _gpf_aux2
@@ -2843,6 +2849,9 @@ def resolve_provider_client(
                 extra["default_headers"] = copilot_request_headers(
                     is_agent_turn=True, is_vision=is_vision
                 )
+            # 9Router support - must use non-OpenAI User-Agent to avoid 403
+            elif "9router" in custom_base.lower() or "router." in custom_base.lower():
+                extra["default_headers"] = {"User-Agent": "HermesAgent/1.0"}
             else:
                 # Fall back to profile.default_headers for providers that
                 # declare client-level attribution headers on their profile.
@@ -3041,6 +3050,10 @@ def resolve_provider_client(
             headers.update(copilot_request_headers(
                 is_agent_turn=True, is_vision=is_vision
             ))
+        # 9Router support - must use non-OpenAI User-Agent to avoid 403
+        # 9Router blocks requests with "OpenAI" in User-Agent header
+        elif "9router" in base_url.lower() or "router." in base_url.lower():
+            headers["User-Agent"] = "HermesAgent/1.0"
         else:
             # Fall back to profile.default_headers for providers that declare
             # client-level attribution headers on their profile (e.g. GMI

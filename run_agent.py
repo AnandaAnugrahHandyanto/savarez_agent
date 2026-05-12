@@ -7145,6 +7145,10 @@ class AIAgent:
             self._client_kwargs["default_headers"] = _codex_cloudflare_headers(
                 self._client_kwargs.get("api_key", "")
             )
+        # 9Router support - must use non-OpenAI User-Agent to avoid 403
+        # 9Router blocks requests with "OpenAI" in User-Agent header
+        elif "9router" in base_url.lower() or "router." in base_url.lower():
+            self._client_kwargs["default_headers"] = {"User-Agent": "HermesAgent/1.0"}
         else:
             # No URL-specific headers — check profile.default_headers before clearing.
             _ph_headers = None
