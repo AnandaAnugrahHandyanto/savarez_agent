@@ -803,6 +803,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        reasoning_callback=None,
         gateway_session_key: Optional[str] = None,
     ) -> Any:
         """
@@ -851,6 +852,7 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
+            reasoning_callback=reasoning_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
@@ -2790,12 +2792,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     "error": kwargs.get("is_error", False),
                 })
             elif event_type == "reasoning.available":
-                _push({
-                    "event": "reasoning.available",
-                    "run_id": run_id,
-                    "timestamp": ts,
-                    "text": preview or "",
-                })
+                # NOTE: This path fires from assistant_message.content after
+                # completion (run_agent.py:14406), which is the WRONG source —
+                # it's the final response text, not reasoning. We suppress it
+                # here and rely on the streaming reasoning_callback wired in
+                # _handle_runs to deliver correct deltas from
+                # reasoning_content. (See NousResearch/hermes-agent#24518.)
+                return
             # _thinking and subagent_progress are intentionally not forwarded
 
         return _callback
@@ -2905,6 +2908,24 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
+        # Wire reasoning_callback so reasoning.available deltas flow into the
+        # SSE stream from the correct source (reasoning_content field via
+        # _fire_reasoning_delta), matching how Telegram and other streaming
+        # gateways render reasoning. Streams char-by-char alongside
+        # message.delta.
+        def _reasoning_cb(delta: Optional[str]) -> None:
+            if not delta:
+                return
+            try:
+                loop.call_soon_threadsafe(q.put_nowait, {
+                    "event": "reasoning.available",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "text": delta,
+                })
+            except Exception:
+                pass
+
         self._set_run_status(
             run_id,
             "queued",
@@ -2921,6 +2942,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_id=session_id,
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
+                    reasoning_callback=_reasoning_cb,
                     gateway_session_key=gateway_session_key,
                 )
                 self._active_run_agents[run_id] = agent
