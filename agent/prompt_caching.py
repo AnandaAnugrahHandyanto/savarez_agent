@@ -67,11 +67,12 @@ def apply_anthropic_cache_control(
     messages, all at the same TTL.
 
     Returns:
-        Deep copy of messages with cache_control breakpoints injected.
+        Shallow copy of messages with cache_control breakpoints injected.
     """
-    messages = copy.deepcopy(api_messages)
-    if not messages:
-        return messages
+    if not api_messages:
+        return []
+
+    messages = [msg.copy() if isinstance(msg, dict) else msg for msg in api_messages]
 
     marker = _build_marker(cache_ttl)
 
@@ -153,11 +154,12 @@ def apply_anthropic_cache_control_long_lived(
     not isolated, so the prefix invalidates per-session).
 
     Returns:
-        Deep copy of messages with cache_control breakpoints injected.
+        Shallow copy of messages with cache_control breakpoints injected.
     """
-    messages = copy.deepcopy(api_messages)
-    if not messages:
-        return messages
+    if not api_messages:
+        return []
+
+    messages = [msg.copy() if isinstance(msg, dict) else msg for msg in api_messages]
 
     long_marker = _build_marker(long_lived_ttl)
     rolling_marker = _build_marker(rolling_ttl)
@@ -188,13 +190,14 @@ def mark_tools_for_long_lived_cache(
     OpenRouter and Nous Portal (which proxies to OpenRouter); on native
     Anthropic the marker is forwarded by ``convert_tools_to_anthropic``.
 
-    Returns a deep copy of the tools list with the marker attached, or the
+    Returns a shallow copy of the tools list with the marker attached, or the
     input unchanged when tools is empty/None.  Pure function — does not
     mutate the input.
     """
     if not tools:
         return tools
-    out = copy.deepcopy(tools)
+
+    out = [t.copy() if isinstance(t, dict) else t for t in tools]
     last = out[-1]
     if isinstance(last, dict):
         last["cache_control"] = _build_marker(long_lived_ttl)
