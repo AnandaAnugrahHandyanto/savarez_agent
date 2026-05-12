@@ -1,0 +1,5 @@
+# pi-hermes OpenAI/Codex OAuth renewal watchdog — installed by Puck.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+17 8 * * * pi set -a; . /mnt/usb-ssd/hermes/config/.env; set +a; STATE_DIR=/mnt/usb-ssd/hermes/state TELEGRAM_CHAT="-1003774651323:topic:4" /mnt/usb-ssd/hermes/scripts/hermes-oauth-watch.sh >> /mnt/usb-ssd/hermes/logs/hermes-oauth-watch.log 2>&1
