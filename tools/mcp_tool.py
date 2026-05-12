@@ -3155,6 +3155,17 @@ def discover_mcp_tools() -> List[str]:
         return []
 
     servers = _load_mcp_config()
+
+    # ── APM: discover MCP servers from apm.yml ─
+    try:
+        from agent.apm_consumer import discover_apm_mcp_servers
+        apm_servers = discover_apm_mcp_servers()
+        if apm_servers:
+            # Config-defined servers take precedence over APM
+            servers = {**apm_servers, **servers}
+    except Exception:
+        pass
+
     if not servers:
         logger.debug("No MCP servers configured")
         return []
