@@ -613,14 +613,6 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
       return
     }
 
-    if (baseButton !== 0) {
-      // Non-left press breaks the multi-click chain.
-      app.clickCount = 0
-      app.props.onMouseDownAt(col, row, baseButton)
-
-      return
-    }
-
     if ((m.button & 0x20) !== 0) {
       if (app.mouseCaptureTarget) {
         app.props.onMouseDragAt(app.mouseCaptureTarget, col, row, baseButton)
@@ -628,9 +620,21 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
         return
       }
 
+      if (baseButton !== 0) {
+        return
+      }
+
       // Drag motion: mode-aware extension (char/word/line). onSelectionDrag
       // calls notifySelectionChange internally — no extra onSelectionChange.
       app.props.onSelectionDrag(col, row)
+
+      return
+    }
+
+    if (baseButton !== 0) {
+      // Non-left press breaks the multi-click chain.
+      app.clickCount = 0
+      app.props.onMouseDownAt(col, row, baseButton)
 
       return
     }
