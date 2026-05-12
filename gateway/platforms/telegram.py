@@ -4670,12 +4670,14 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id_str = self._GENERAL_TOPIC_THREAD_ID
         chat_topic = None
         topic_skill = None
+        topic_config = None
 
         if chat_type == "dm" and thread_id_str:
             topic_info = self._get_dm_topic_info(str(chat.id), thread_id_str)
             if topic_info:
                 chat_topic = topic_info.get("name")
                 topic_skill = topic_info.get("skill")
+                topic_config = topic_info
 
             # Also check forum_topic_created service message for topic discovery
             if hasattr(message, "forum_topic_created") and message.forum_topic_created:
@@ -4695,6 +4697,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         if tid is not None and str(tid) == thread_id_str:
                             chat_topic = topic.get("name")
                             topic_skill = topic.get("skill")
+                            topic_config = topic
                             break
                     break
 
@@ -4752,6 +4755,7 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
+            topic_config=topic_config,
             timestamp=message.date,
         )
 

@@ -681,6 +681,18 @@ platform_toolsets:
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
+#       # Optional: predeclare private-chat topic lanes. `thread_id` is the
+#       # Telegram topic/message_thread_id. Topic provider/model/toolsets become
+#       # the base runtime for messages in that topic; explicit /model session
+#       # overrides still win.
+#       dm_topics:
+#         - chat_id: 123456789
+#           topics:
+#             - name: "Research"
+#               thread_id: 2503
+#               provider: "openrouter"     # Optional; may name a custom_provider
+#               model: "anthropic/claude-opus-4.6"
+#               toolsets: [web, file, session_search]
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

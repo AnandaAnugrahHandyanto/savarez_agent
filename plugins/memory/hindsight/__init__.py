@@ -436,6 +436,15 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(
             _parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT)
         )
+    retain_max_completion_tokens = (
+        config.get("retain_max_completion_tokens")
+        if config.get("retain_max_completion_tokens") is not None
+        else os.environ.get("HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS")
+    )
+    if retain_max_completion_tokens is not None and retain_max_completion_tokens != "":
+        env_values["HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS"] = str(
+            _parse_int_setting(retain_max_completion_tokens, 4096)
+        )
     return env_values
 
 

@@ -961,6 +961,11 @@ class MessageEvent:
     # from ``text`` so the sender-prefix logic in run.py can operate on the
     # trigger message alone, then prepend this context afterward.
     channel_context: Optional[str] = None
+
+    # Platform/topic specific execution hints. Telegram DM/group topics can
+    # attach this from config so the gateway can narrow tools or switch models
+    # for that topic without changing the global platform defaults.
+    topic_config: Optional[Dict[str, Any]] = None
     
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.

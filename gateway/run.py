@@ -1212,6 +1212,7 @@ class GatewayRunner:
         self._busy_input_mode = self._load_busy_input_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
+        self._smart_model_routing = self._load_smart_model_routing()
         self._fallback_model = self._load_fallback_model()
 
         # Wire process registry into session store for reset protection
@@ -1819,6 +1820,7 @@ class GatewayRunner:
         source: Optional[SessionSource] = None,
         session_key: Optional[str] = None,
         user_config: Optional[dict] = None,
+        include_session_override: bool = True,
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session, honoring session-scoped /model overrides.
 
@@ -1834,7 +1836,11 @@ class GatewayRunner:
                 resolved_session_key = None
 
         model = _resolve_gateway_model(user_config)
-        override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
+        override = (
+            self._session_model_overrides.get(resolved_session_key)
+            if include_session_override and resolved_session_key
+            else None
+        )
         if override:
             override_model = override.get("model", model)
             override_runtime = {
@@ -1895,10 +1901,62 @@ class GatewayRunner:
 
         return model, runtime_kwargs
 
+    def _resolve_effective_agent_runtime(
+        self,
+        *,
+        source: Optional[SessionSource] = None,
+        session_key: Optional[str] = None,
+        user_config: Optional[dict] = None,
+        topic_config: Optional[dict] = None,
+        include_session_override: bool = True,
+    ) -> tuple[str, dict]:
+        """Resolve runtime with precedence: global config, topic defaults, session override."""
+        resolved_session_key = session_key
+        if not resolved_session_key and source is not None:
+            try:
+                resolved_session_key = self._session_key_for_source(source)
+            except Exception:
+                resolved_session_key = None
+
+        override = (
+            self._session_model_overrides.get(resolved_session_key)
+            if include_session_override and resolved_session_key
+            else None
+        )
+        if override and override.get("api_key"):
+            return self._resolve_session_agent_runtime(
+                source=source,
+                session_key=resolved_session_key,
+                user_config=user_config,
+                include_session_override=True,
+            )
+
+        model, runtime_kwargs = self._resolve_session_agent_runtime(
+            source=source,
+            session_key=resolved_session_key,
+            user_config=user_config,
+            include_session_override=False,
+        )
+        model, runtime_kwargs = self._apply_topic_model_config(
+            model,
+            runtime_kwargs,
+            user_config or {},
+            topic_config,
+        )
+        if include_session_override and resolved_session_key:
+            model, runtime_kwargs = self._apply_session_model_override(
+                resolved_session_key,
+                model,
+                runtime_kwargs,
+            )
+        return model, runtime_kwargs
+
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
 
-        Always uses the session's primary model/provider.  If `/fast` is
+        Uses the session's primary model/provider by default.  When
+        smart_model_routing is enabled, short non-action messages can be
+        routed to a cheaper local model on the same runtime.  If `/fast` is
         enabled and the model supports Priority Processing / Anthropic fast
         mode, attach `request_overrides` so the API call is marked
         accordingly.
@@ -1913,6 +1971,7 @@ class GatewayRunner:
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
+            "max_tokens": runtime_kwargs.get("max_tokens"),
         }
         route = {
             "model": model,
@@ -1924,8 +1983,39 @@ class GatewayRunner:
                 runtime["api_mode"],
                 runtime["command"],
                 tuple(runtime["args"]),
+                runtime.get("max_tokens"),
             ),
         }
+
+        smart_cfg = getattr(self, "_smart_model_routing", None) or {}
+        if self._should_use_smart_simple_route(user_message, smart_cfg):
+            cheap = smart_cfg.get("cheap_model") or {}
+            cheap_model = str(cheap.get("model") or "").strip()
+            if cheap_model:
+                route["model"] = cheap_model
+                for key in (
+                    "provider",
+                    "base_url",
+                    "api_mode",
+                    "api_key",
+                    "command",
+                    "credential_pool",
+                    "max_tokens",
+                ):
+                    if cheap.get(key) not in (None, ""):
+                        runtime[key] = cheap.get(key)
+                if cheap.get("args") is not None:
+                    runtime["args"] = list(cheap.get("args") or [])
+                route["signature"] = (
+                    route["model"],
+                    runtime["provider"],
+                    runtime["base_url"],
+                    runtime["api_mode"],
+                    runtime["command"],
+                    tuple(runtime["args"]),
+                    runtime.get("max_tokens"),
+                )
+                route["smart_model_route"] = "simple"
 
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
@@ -1938,6 +2028,204 @@ class GatewayRunner:
             overrides = None
         route["request_overrides"] = overrides or {}
         return route
+
+    @staticmethod
+    def _resolve_topic_toolsets(
+        user_config: dict,
+        platform_key: str,
+        topic_config: dict | None,
+    ) -> list | None:
+        """Resolve per-topic toolsets, returning None when the topic has no override."""
+        if not isinstance(topic_config, dict):
+            return None
+        raw_toolsets = topic_config.get("toolsets")
+        if raw_toolsets is None:
+            raw_toolsets = topic_config.get("tools")
+        if raw_toolsets is None:
+            return None
+        if isinstance(raw_toolsets, str):
+            toolsets = [raw_toolsets.strip()]
+        elif isinstance(raw_toolsets, list):
+            toolsets = [str(item).strip() for item in raw_toolsets]
+        else:
+            return None
+        toolsets = [item for item in toolsets if item]
+        if not toolsets:
+            return []
+        from hermes_cli.tools_config import (
+            CONFIGURABLE_TOOLSETS,
+            PLATFORMS,
+            _get_platform_tools,
+            _get_plugin_toolset_keys,
+        )
+        topic_config_copy = dict(user_config or {})
+        platform_toolsets = dict(topic_config_copy.get("platform_toolsets") or {})
+        platform_toolsets[platform_key] = toolsets
+        topic_config_copy["platform_toolsets"] = platform_toolsets
+        # Per-topic toolsets are intended to be exact. Mark plugin toolsets as
+        # known for this synthetic config so default-on plugins do not reappear
+        # unless the topic explicitly lists them.
+        known_plugin_toolsets = dict(topic_config_copy.get("known_plugin_toolsets") or {})
+        known_plugin_toolsets[platform_key] = sorted(_get_plugin_toolset_keys())
+        topic_config_copy["known_plugin_toolsets"] = known_plugin_toolsets
+        resolved = _get_platform_tools(
+            topic_config_copy,
+            platform_key,
+            include_default_mcp_servers=False,
+        )
+
+        # The normal platform resolver recovers built-in helpers from the
+        # platform's default composite. For a topic override, keep only the
+        # exact entries the topic requested unless the topic explicitly names
+        # a platform composite like ``hermes-telegram``.
+        platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
+        if any(ts in platform_default_keys for ts in toolsets):
+            return sorted(resolved)
+        explicit_toolsets = set(toolsets) - {"no_mcp"}
+        configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+        plugin_keys = _get_plugin_toolset_keys()
+        mcp_servers = topic_config_copy.get("mcp_servers") or {}
+        enabled_mcp_servers = {
+            str(name)
+            for name, server_cfg in mcp_servers.items()
+            if isinstance(server_cfg, dict)
+            and str(server_cfg.get("enabled", True)).strip().lower()
+            not in {"false", "0", "no", "off"}
+        }
+        allowed = set()
+        allowed.update(explicit_toolsets & configurable_keys)
+        allowed.update(explicit_toolsets & plugin_keys)
+        if "no_mcp" not in toolsets:
+            allowed.update(explicit_toolsets & enabled_mcp_servers)
+        allowed.update(explicit_toolsets - configurable_keys - plugin_keys - enabled_mcp_servers)
+        return sorted(resolved & allowed)
+
+    @staticmethod
+    def _apply_topic_model_config(
+        model: str,
+        runtime_kwargs: dict,
+        user_config: dict,
+        topic_config: dict | None,
+    ) -> tuple[str, dict]:
+        """Apply optional per-topic model/provider hints from config.yaml."""
+        if not isinstance(topic_config, dict):
+            return model, runtime_kwargs
+        topic_model = str(topic_config.get("model") or "").strip()
+        topic_provider = str(topic_config.get("provider") or "").strip()
+        if not topic_model and not topic_provider:
+            return model, runtime_kwargs
+
+        runtime = dict(runtime_kwargs or {})
+        if topic_model:
+            model = topic_model
+
+        provider_cfg = None
+        if topic_provider:
+            for item in user_config.get("custom_providers") or []:
+                if isinstance(item, dict) and str(item.get("name") or "") == topic_provider:
+                    provider_cfg = item
+                    break
+            runtime["provider"] = topic_provider
+            if provider_cfg is None:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+                resolved = resolve_runtime_provider(
+                    requested=topic_provider,
+                    explicit_api_key=topic_config.get("api_key"),
+                    explicit_base_url=topic_config.get("base_url"),
+                    target_model=topic_model or model,
+                )
+                for key in (
+                    "provider",
+                    "base_url",
+                    "api_key",
+                    "api_mode",
+                    "command",
+                    "credential_pool",
+                ):
+                    value = resolved.get(key)
+                    if value not in (None, ""):
+                        runtime[key] = value
+                if resolved.get("args") is not None:
+                    runtime["args"] = list(resolved.get("args") or [])
+                # Preserve the configured provider name for model routing,
+                # labels, and cache signatures even when runtime resolution
+                # passes through aliases or custom-compatible endpoints.
+                runtime["provider"] = topic_provider
+
+        for key in (
+            "base_url",
+            "api_key",
+            "api_mode",
+            "command",
+            "credential_pool",
+            "max_tokens",
+        ):
+            value = topic_config.get(key)
+            if value in (None, "") and provider_cfg is not None:
+                value = provider_cfg.get(key)
+            if value not in (None, ""):
+                runtime[key] = value
+        if topic_config.get("args") is not None:
+            runtime["args"] = list(topic_config.get("args") or [])
+        elif provider_cfg is not None and provider_cfg.get("args") is not None:
+            runtime["args"] = list(provider_cfg.get("args") or [])
+
+        return model, runtime
+
+    @staticmethod
+    def _resolve_config_context_length(
+        user_config: dict | None,
+        *,
+        model: str,
+        provider: str | None = None,
+        base_url: str | None = None,
+        prefer_model_config: bool = True,
+    ) -> int | None:
+        """Find an explicit context_length for an effective provider/model pair."""
+        data = user_config if isinstance(user_config, dict) else {}
+        if prefer_model_config:
+            model_cfg = data.get("model", {})
+            if isinstance(model_cfg, dict):
+                raw_ctx = model_cfg.get("context_length")
+                if raw_ctx is not None:
+                    try:
+                        return int(raw_ctx)
+                    except (TypeError, ValueError):
+                        pass
+
+        custom_providers = data.get("custom_providers")
+        if not isinstance(custom_providers, list):
+            custom_providers = []
+        base_url_norm = str(base_url or "").rstrip("/")
+        for cp in custom_providers:
+            if not isinstance(cp, dict):
+                continue
+            cp_name = str(cp.get("name") or "")
+            cp_url = str(cp.get("base_url") or "").rstrip("/")
+            provider_match = bool(provider and cp_name == provider)
+            base_url_match = bool(base_url_norm and cp_url and cp_url == base_url_norm)
+            cp_model = cp.get("model") or ""
+            model_match = bool(cp_model and cp_model == model)
+            if provider_match or base_url_match or model_match:
+                raw_cp_ctx = cp.get("context_length")
+                if raw_cp_ctx is not None:
+                    try:
+                        return int(raw_cp_ctx)
+                    except (TypeError, ValueError):
+                        pass
+            cp_models = cp.get("models") or {}
+            if isinstance(cp_models, dict):
+                model_entry = cp_models.get(model)
+                if isinstance(model_entry, dict):
+                    model_ctx = model_entry.get("context_length")
+                else:
+                    model_ctx = model_entry
+                if model_ctx is not None:
+                    try:
+                        return int(model_ctx)
+                    except (TypeError, ValueError):
+                        pass
+        return None
 
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to an adapter failure after startup.
@@ -2528,6 +2816,58 @@ class GatewayRunner:
         except Exception:
             pass
         return {}
+
+    @staticmethod
+    def _load_smart_model_routing() -> dict:
+        """Load simple-turn model routing preferences from config.yaml."""
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                routing = cfg.get("smart_model_routing", {}) or {}
+                return routing if isinstance(routing, dict) else {}
+        except Exception:
+            pass
+        return {}
+
+    @staticmethod
+    def _should_use_smart_simple_route(user_message: str, routing: dict) -> bool:
+        """Return true for short conversational turns that should avoid the large model."""
+        if not isinstance(routing, dict) or not routing.get("enabled"):
+            return False
+        text = (user_message or "").strip()
+        if not text or text.startswith("/"):
+            return False
+        if "\n" in text or "```" in text or "http://" in text or "https://" in text:
+            return False
+        max_chars = GatewayRunner._parse_positive_int_setting(
+            routing.get("max_simple_chars"),
+            160,
+        )
+        max_words = GatewayRunner._parse_positive_int_setting(
+            routing.get("max_simple_words"),
+            28,
+        )
+        words = text.split()
+        if len(text) > max_chars or len(words) > max_words:
+            return False
+        action_terms = {
+            "browse", "search", "look up", "open", "read", "write", "edit",
+            "fix", "run", "test", "install", "commit", "deploy", "logs",
+            "error", "traceback", "file", "repo", "github", "terminal",
+        }
+        lowered = text.lower()
+        return not any(term in lowered for term in action_terms)
+
+    @staticmethod
+    def _parse_positive_int_setting(value, default: int) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed > 0 else default
 
     @staticmethod
     def _load_fallback_model() -> list | dict | None:
@@ -6165,6 +6505,7 @@ class GatewayRunner:
                         source=event.source,
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
+                        topic_config=getattr(event, "topic_config", None),
                     )
                     self._enqueue_fifo(_quick_key, queued_event, adapter)
                 depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
@@ -6192,6 +6533,7 @@ class GatewayRunner:
                             source=event.source,
                             message_id=event.message_id,
                             channel_prompt=event.channel_prompt,
+                            topic_config=getattr(event, "topic_config", None),
                         )
                         adapter._pending_messages[_quick_key] = queued_event
                     return "Agent still starting — /steer queued for the next turn."
@@ -6214,6 +6556,7 @@ class GatewayRunner:
                         source=event.source,
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
+                        topic_config=getattr(event, "topic_config", None),
                     )
                     adapter._pending_messages[_quick_key] = queued_event
                 return "No active agent — /steer queued for the next turn."
@@ -7039,22 +7382,35 @@ class GatewayRunner:
                 from agent.model_metadata import get_model_context_length
 
                 _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
-                _msg_runtime = _resolve_runtime_agent_kwargs()
-                _msg_config_ctx = None
+                _msg_cfg = _load_gateway_config()
+                _msg_model, _msg_runtime = self._resolve_effective_agent_runtime(
+                    source=source,
+                    session_key=session_key,
+                    user_config=_msg_cfg,
+                    topic_config=getattr(event, "topic_config", None),
+                )
+                _msg_config_ctx = self._resolve_config_context_length(
+                    _msg_cfg,
+                    model=_msg_model,
+                    provider=_msg_runtime.get("provider"),
+                    base_url=_msg_runtime.get("base_url"),
+                    prefer_model_config=not bool(getattr(event, "topic_config", None)),
+                )
                 try:
-                    _msg_cfg = _load_gateway_config()
-                    _msg_model_cfg = _msg_cfg.get("model", {})
-                    if isinstance(_msg_model_cfg, dict):
-                        _msg_raw_ctx = _msg_model_cfg.get("context_length")
-                        if _msg_raw_ctx is not None:
-                            _msg_config_ctx = int(_msg_raw_ctx)
+                    if _msg_config_ctx is None and not getattr(event, "topic_config", None):
+                        _msg_model_cfg = _msg_cfg.get("model", {})
+                        if isinstance(_msg_model_cfg, dict):
+                            _msg_raw_ctx = _msg_model_cfg.get("context_length")
+                            if _msg_raw_ctx is not None:
+                                _msg_config_ctx = int(_msg_raw_ctx)
                 except Exception:
                     pass
                 _msg_ctx_len = get_model_context_length(
-                    self._model,
-                    base_url=self._base_url or _msg_runtime.get("base_url") or "",
+                    _msg_model,
+                    base_url=_msg_runtime.get("base_url") or "",
                     api_key=_msg_runtime.get("api_key") or "",
                     config_context_length=_msg_config_ctx,
+                    provider=_msg_runtime.get("provider") or "",
                 )
                 _ctx_result = await preprocess_context_references_async(
                     message_text,
@@ -7252,7 +7608,7 @@ class GatewayRunner:
                             f"Adjust reset timing in config.yaml under session_reset."
                         )
                         try:
-                            session_info = self._format_session_info()
+                            session_info = self._format_session_info(event)
                             if session_info:
                                 notice = f"{notice}\n\n{session_info}"
                         except Exception:
@@ -7383,14 +7739,22 @@ class GatewayRunner:
                                 pass
 
                 try:
-                    _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
+                    _hyg_model, _hyg_runtime = self._resolve_effective_agent_runtime(
                         source=source,
                         session_key=session_key,
                         user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
+                        topic_config=getattr(event, "topic_config", None),
                     )
                     _hyg_provider = _hyg_runtime.get("provider") or _hyg_provider
                     _hyg_base_url = _hyg_runtime.get("base_url") or _hyg_base_url
                     _hyg_api_key = _hyg_runtime.get("api_key") or _hyg_api_key
+                    _hyg_config_context_length = self._resolve_config_context_length(
+                        _hyg_data if isinstance(_hyg_data, dict) else None,
+                        model=_hyg_model,
+                        provider=_hyg_provider,
+                        base_url=_hyg_base_url,
+                        prefer_model_config=not bool(getattr(event, "topic_config", None)),
+                    )
                 except Exception:
                     pass
 
@@ -7486,10 +7850,11 @@ class GatewayRunner:
                     try:
                         from run_agent import AIAgent
 
-                        _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
+                        _hyg_model, _hyg_runtime = self._resolve_effective_agent_runtime(
                             source=source,
                             session_key=session_key,
                             user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
+                            topic_config=getattr(event, "topic_config", None),
                         )
                         if _hyg_runtime.get("api_key"):
                             _hyg_msgs = [
@@ -7713,6 +8078,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                topic_config=getattr(event, "topic_config", None),
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -8126,12 +8492,14 @@ class GatewayRunner:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
 
-    def _format_session_info(self) -> str:
+    def _format_session_info(self, event: MessageEvent | None = None) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
         users can immediately see if context detection went wrong (e.g.
-        local models falling to the 128K default).
+        local models falling to the 128K default).  When invoked from a
+        topic-scoped command, apply the same topic runtime override that
+        normal turns use so `/new` reports the model that will actually run.
         """
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
@@ -8164,18 +8532,46 @@ class GatewayRunner:
         except Exception:
             pass
 
-        # Also check custom_providers for context_length when top-level model.context_length is not set
-        if config_context_length is None and data:
+        # Resolve runtime credentials for probing, then apply topic overrides
+        # before reading provider-scoped context caps.
+        try:
+            topic_config = getattr(event, "topic_config", None) if event is not None else None
+            model, runtime = self._resolve_effective_agent_runtime(
+                source=getattr(event, "source", None) if event is not None else None,
+                user_config=data,
+                topic_config=topic_config,
+            )
+            config_context_length = self._resolve_config_context_length(
+                data,
+                model=model,
+                provider=runtime.get("provider"),
+                base_url=runtime.get("base_url"),
+                prefer_model_config=not bool(topic_config),
+            )
+            provider = runtime.get("provider") or provider
+            base_url = runtime.get("base_url") or base_url
+            api_key = runtime.get("api_key")
+        except Exception:
+            runtime = {}
+
+        # Also check custom_providers for context_length. Provider-scoped
+        # context wins for topic overrides because the same model family can
+        # be served on multiple local lanes with different KV caps.
+        if data:
             try:
                 custom_providers = data.get("custom_providers", [])
                 if custom_providers:
                     for cp in custom_providers:
                         if not isinstance(cp, dict):
                             continue
+                        cp_name = str(cp.get("name") or "")
+                        cp_url = str(cp.get("base_url") or "").rstrip("/")
+                        provider_match = bool(provider and cp_name == provider)
+                        base_url_match = bool(base_url and cp_url and cp_url == str(base_url).rstrip("/"))
                         cp_model = cp.get("model") or ""
                         cp_models = cp.get("models") or {}
                         # Match provider model to current model
-                        if cp_model and cp_model == model:
+                        if provider_match or base_url_match or (cp_model and cp_model == model):
                             raw_cp_ctx = cp.get("context_length")
                             if raw_cp_ctx is not None:
                                 try:
@@ -8198,15 +8594,6 @@ class GatewayRunner:
                                     pass
             except Exception:
                 pass
-
-        # Resolve runtime credentials for probing
-        try:
-            runtime = _resolve_runtime_agent_kwargs()
-            provider = provider or runtime.get("provider")
-            base_url = base_url or runtime.get("base_url")
-            api_key = runtime.get("api_key")
-        except Exception:
-            pass
 
         context_length = get_model_context_length(
             model,
@@ -8328,7 +8715,7 @@ class GatewayRunner:
 
         # Resolve session config info to surface to the user
         try:
-            session_info = self._format_session_info()
+            session_info = self._format_session_info(event)
         except Exception:
             session_info = ""
 
@@ -9149,6 +9536,20 @@ class GatewayRunner:
         # Check for session override
         source = event.source
         session_key = self._session_key_for_source(source)
+        try:
+            effective_model, effective_runtime = self._resolve_effective_agent_runtime(
+                source=source,
+                session_key=session_key,
+                user_config=cfg if "cfg" in locals() else None,
+                topic_config=getattr(event, "topic_config", None),
+                include_session_override=False,
+            )
+            current_model = effective_model or current_model
+            current_provider = effective_runtime.get("provider") or current_provider
+            current_base_url = effective_runtime.get("base_url") or current_base_url
+            current_api_key = effective_runtime.get("api_key") or current_api_key
+        except Exception:
+            pass
         override = self._session_model_overrides.get(session_key, {})
         if override:
             current_model = override.get("model", current_model)
@@ -9453,6 +9854,8 @@ class GatewayRunner:
 
         if persist_global:
             lines.append(t("gateway.model.saved_global"))
+            if getattr(event, "topic_config", None):
+                lines.append("Note: this topic has a model/provider override; it remains the topic default after global changes.")
         else:
             lines.append(t("gateway.model.session_only_hint"))
 
@@ -9603,6 +10006,7 @@ class GatewayRunner:
             source=source,
             raw_message=event.raw_message,
             channel_prompt=event.channel_prompt,
+            topic_config=getattr(event, "topic_config", None),
         )
         
         # Let the normal message handler process it
@@ -9724,6 +10128,7 @@ class GatewayRunner:
                     source=event.source,
                     message_id=event.message_id,
                     channel_prompt=event.channel_prompt,
+                    topic_config=getattr(event, "topic_config", None),
                 )
                 self._enqueue_fifo(_quick_key, kickoff_event, adapter)
             except Exception as exc:
@@ -10566,6 +10971,7 @@ class GatewayRunner:
                 event_message_id=event_message_id,
                 media_urls=media_urls,
                 media_types=media_types,
+                topic_config=getattr(event, "topic_config", None),
             )
         )
         self._background_tasks.add(_task)
@@ -10582,6 +10988,7 @@ class GatewayRunner:
         event_message_id: Optional[str] = None,
         media_urls: Optional[List[str]] = None,
         media_types: Optional[List[str]] = None,
+        topic_config: Optional[dict] = None,
     ) -> None:
         """Execute a background agent task and deliver the result to the chat."""
         from run_agent import AIAgent
@@ -10598,9 +11005,10 @@ class GatewayRunner:
 
         try:
             user_config = _load_gateway_config()
-            model, runtime_kwargs = self._resolve_session_agent_runtime(
+            model, runtime_kwargs = self._resolve_effective_agent_runtime(
                 source=source,
                 user_config=user_config,
+                topic_config=topic_config,
             )
             if not runtime_kwargs.get("api_key"):
                 await adapter.send(
@@ -10614,6 +11022,9 @@ class GatewayRunner:
 
             from hermes_cli.tools_config import _get_platform_tools
             enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            topic_toolsets = self._resolve_topic_toolsets(user_config, platform_key, topic_config)
+            if topic_toolsets is not None:
+                enabled_toolsets = topic_toolsets
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
@@ -10871,7 +11282,14 @@ class GatewayRunner:
         self._service_tier = self._load_service_tier()
 
         user_config = _load_gateway_config()
-        model = _resolve_gateway_model(user_config)
+        try:
+            model, _ = self._resolve_effective_agent_runtime(
+                source=event.source,
+                user_config=user_config,
+                topic_config=getattr(event, "topic_config", None),
+            )
+        except Exception:
+            model = _resolve_gateway_model(user_config)
         if not model_supports_fast_mode(model):
             return t("gateway.fast.not_supported")
 
@@ -11013,13 +11431,8 @@ class GatewayRunner:
         platform_key = _platform_config_key(event.source.platform)
 
         # --- parse argument -------------------------------------------------
-        arg = ""
         try:
-            text = (getattr(event, "message", None) or "").strip()
-            if text.startswith("/"):
-                parts = text.split(None, 1)
-                if len(parts) > 1:
-                    arg = parts[1].strip().lower()
+            arg = event.get_command_args().strip().lower()
         except Exception:
             arg = ""
 
@@ -11068,8 +11481,16 @@ class GatewayRunner:
         if new_state:
             # Show a preview using current agent state if available.
             from gateway.runtime_footer import format_runtime_footer
+            try:
+                preview_model, _ = self._resolve_effective_agent_runtime(
+                    source=event.source,
+                    user_config=user_config,
+                    topic_config=getattr(event, "topic_config", None),
+                )
+            except Exception:
+                preview_model = _resolve_gateway_model(user_config)
             preview = format_runtime_footer(
-                model=_resolve_gateway_model(user_config) or None,
+                model=preview_model or None,
                 context_tokens=0,
                 context_length=None,
                 fields=effective.get("fields") or ["model", "context_pct", "cwd"],
@@ -11101,9 +11522,12 @@ class GatewayRunner:
             from agent.model_metadata import estimate_request_tokens_rough
 
             session_key = self._session_key_for_source(source)
-            model, runtime_kwargs = self._resolve_session_agent_runtime(
+            _compress_cfg = _load_gateway_config()
+            model, runtime_kwargs = self._resolve_effective_agent_runtime(
                 source=source,
                 session_key=session_key,
+                user_config=_compress_cfg,
+                topic_config=getattr(event, "topic_config", None),
             )
             if not runtime_kwargs.get("api_key"):
                 return t("gateway.compress.no_provider")
@@ -13835,6 +14259,7 @@ class GatewayRunner:
                 runtime.get("base_url", ""),
                 runtime.get("provider", ""),
                 runtime.get("api_mode", ""),
+                runtime.get("max_tokens"),
                 sorted(enabled_toolsets) if enabled_toolsets else [],
                 # reasoning_config excluded — it's set per-message on the
                 # cached agent and doesn't affect system prompt or tools.
@@ -13861,10 +14286,24 @@ class GatewayRunner:
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
-        for key in ("provider", "api_key", "base_url", "api_mode"):
+        # A session override is an explicit /model choice and should win over
+        # topic defaults. If it does not carry a topic-scoped budget, remove
+        # that budget so switching out of a small topic lane is not capped by it.
+        if "max_tokens" not in override:
+            runtime_kwargs.pop("max_tokens", None)
+        for key in (
+            "provider",
+            "api_key",
+            "base_url",
+            "api_mode",
+            "command",
+            "args",
+            "credential_pool",
+            "max_tokens",
+        ):
             val = override.get(key)
             if val is not None:
-                runtime_kwargs[key] = val
+                runtime_kwargs[key] = list(val) if key == "args" else val
         return model, runtime_kwargs
 
     def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:
@@ -14528,6 +14967,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        topic_config: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -14567,6 +15007,9 @@ class GatewayRunner:
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        topic_toolsets = self._resolve_topic_toolsets(user_config, platform_key, topic_config)
+        if topic_toolsets is not None:
+            enabled_toolsets = topic_toolsets
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 
@@ -15103,10 +15546,11 @@ class GatewayRunner:
             _reload_runtime_env_preserving_config_authority()
 
             try:
-                model, runtime_kwargs = self._resolve_session_agent_runtime(
+                model, runtime_kwargs = self._resolve_effective_agent_runtime(
                     source=source,
                     session_key=session_key,
                     user_config=user_config,
+                    topic_config=topic_config,
                 )
                 logger.debug(
                     "run_agent resolved: model=%s provider=%s session=%s",
@@ -16400,6 +16844,7 @@ class GatewayRunner:
                 next_message = pending
                 next_message_id = None
                 next_channel_prompt = None
+                next_topic_config = topic_config
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
                     if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
@@ -16417,6 +16862,7 @@ class GatewayRunner:
                         return result
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
+                    next_topic_config = getattr(pending_event, "topic_config", None)
 
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background
@@ -16442,6 +16888,7 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    topic_config=next_topic_config,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
