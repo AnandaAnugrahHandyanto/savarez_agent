@@ -538,22 +538,25 @@ def _copy_dist_payload(
     """
     target.mkdir(parents=True, exist_ok=True)
 
-    for rel_str in manifest.owned_paths():
-        rel = Path(rel_str)
+    def _is_user_owned_path(rel: Path) -> bool:
+        return any(part in USER_OWNED_EXCLUDE for part in rel.parts)
+
+    def _copy_owned_path(rel: Path) -> None:
         if rel.is_absolute() or ".." in rel.parts or not rel.parts:
-            continue
-        if rel.parts[0] in USER_OWNED_EXCLUDE:
-            continue
-        if rel_str == ENV_TEMPLATE_FILENAME:
+            return
+        if _is_user_owned_path(rel):
+            return
+        rel_posix = rel.as_posix()
+        if rel_posix == ENV_TEMPLATE_FILENAME:
             # Handled below as .env.EXAMPLE.
-            continue
-        if rel_str == "config.yaml" and preserve_config and (target / "config.yaml").exists():
+            return
+        if rel_posix == "config.yaml" and preserve_config and (target / "config.yaml").exists():
             # Leave user's config.yaml alone on update
-            continue
+            return
 
         entry = staged / rel
         if not entry.exists():
-            continue
+            return
 
         dest = target / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -571,6 +574,13 @@ def _copy_dist_payload(
             if dest.is_dir():
                 shutil.rmtree(dest)
             shutil.copy2(entry, dest)
+
+    if manifest.distribution_owned:
+        for rel_str in manifest.owned_paths():
+            _copy_owned_path(Path(rel_str))
+    else:
+        for entry in staged.iterdir():
+            _copy_owned_path(Path(entry.name))
 
     env_template = staged / ENV_TEMPLATE_FILENAME
     if env_template.is_file():

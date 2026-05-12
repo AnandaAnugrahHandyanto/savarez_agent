@@ -342,6 +342,35 @@ class TestInstall:
         with pytest.raises(DistributionError, match="requires Hermes"):
             install_distribution(str(staged), name="future")
 
+    def test_install_explicit_nested_user_owned_files_are_not_copied(self, profile_env):
+        mf = DistributionManifest(
+            name="explicit_secret",
+            version="0.1.0",
+            distribution_owned=[
+                "skills/demo/SKILL.md",
+                "skills/demo/auth.json",
+                "skills/demo/.env",
+                MANIFEST_FILENAME,
+            ],
+        )
+        staged = _make_staging_dir(profile_env, "explicit_secret", manifest=mf)
+        (staged / "skills" / "demo" / "auth.json").write_text('{"leaked": true}\n')
+        (staged / "skills" / "demo" / ".env").write_text("LEAKED=1\n")
+
+        plan = install_distribution(str(staged), name="explicit_secret")
+
+        assert (plan.target_dir / "skills" / "demo" / "SKILL.md").is_file()
+        assert not (plan.target_dir / "skills" / "demo" / "auth.json").exists()
+        assert not (plan.target_dir / "skills" / "demo" / ".env").exists()
+
+    def test_install_default_manifest_copies_top_level_non_default_files(self, profile_env):
+        staged = _make_staging_dir(profile_env, "default_payload")
+        (staged / "README.md").write_text("# Profile distribution\n")
+
+        plan = install_distribution(str(staged), name="default_payload")
+
+        assert (plan.target_dir / "README.md").read_text() == "# Profile distribution\n"
+
 
 # ===========================================================================
 # Update — preserves user data, preserves config by default
