@@ -159,6 +159,20 @@ _PROVIDER_ALIASES = {
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
     "tencentmaas": "tencent-tokenhub",
+    # Additional aliases from model_metadata._PROVIDER_PREFIXES
+    "stepfun": "stepfun",
+    "opencode": "opencode-go",
+    "zen": "opencode-zen",
+    "go": "opencode-go",
+    "vercel": "ai-gateway",
+    "kilo": "kilocode",
+    "dashscope": "alibaba",
+    "aliyun": "alibaba",
+    "qwen": "alibaba",
+    "arcee-ai": "arcee",
+    "arceeai": "arcee",
+    "gmi": "gmi",
+    "ollama": "ollama-cloud",
 }
 
 
