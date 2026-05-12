@@ -1137,8 +1137,23 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
         return None, None
     model = _read_main_model() or "gpt-4o-mini"
     logger.debug("Auxiliary client: custom endpoint (%s, api_mode=%s)", model, custom_mode or "chat_completions")
+    # Resolve user_agent from custom_providers for Cloudflare WAF compatibility (#24293)
+    _aux_ua: str | None = None
+    try:
+        from hermes_cli.config import load_config as _aux_load_cfg
+        _aux_cfg = _aux_load_cfg()
+        _aux_cps = _aux_cfg.get("custom_providers", [])
+    except Exception:
+        _aux_cps = []
+    for _cp in (_aux_cps or []):
+        if isinstance(_cp, dict) and (_cp.get("base_url") or "").rstrip("/") == custom_base:
+            _aux_ua = (_cp.get("user_agent") or "").strip() or None
+            break
     if custom_mode == "codex_responses":
-        real_client = OpenAI(api_key=custom_key, base_url=custom_base)
+        extra = {}
+        if _aux_ua:
+            extra["default_headers"] = {"User-Agent": _aux_ua}
+        real_client = OpenAI(api_key=custom_key, base_url=custom_base, **extra)
         return CodexAuxiliaryClient(real_client, model), model
     if custom_mode == "anthropic_messages":
         # Third-party Anthropic-compatible gateway (MiniMax, Zhipu GLM,
@@ -1146,17 +1161,25 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
         # Anthropic OAuth claims only apply to api.anthropic.com.
         try:
             from agent.anthropic_adapter import build_anthropic_client
-            real_client = build_anthropic_client(custom_key, custom_base)
+            real_client = build_anthropic_client(
+                custom_key, custom_base, user_agent=_aux_ua,
+            )
         except ImportError:
             logger.warning(
                 "Custom endpoint declares api_mode=anthropic_messages but the "
                 "anthropic SDK is not installed — falling back to OpenAI-wire."
             )
-            return OpenAI(api_key=custom_key, base_url=custom_base), model
+            extra = {}
+            if _aux_ua:
+                extra["default_headers"] = {"User-Agent": _aux_ua}
+            return OpenAI(api_key=custom_key, base_url=custom_base, **extra), model
         return (
             AnthropicAuxiliaryClient(real_client, model, custom_key, custom_base, is_oauth=False),
             model,
         )
+    if _aux_ua:
+        return OpenAI(api_key=custom_key, base_url=custom_base,
+                      default_headers={"User-Agent": _aux_ua}), model
     return OpenAI(api_key=custom_key, base_url=custom_base), model
 
 

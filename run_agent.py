@@ -1128,7 +1128,22 @@ class AIAgent:
                 # the third-party identity-injection bug.
                 from agent.anthropic_adapter import _is_oauth_token as _is_oat
                 self._is_anthropic_oauth = _is_oat(effective_key) if _is_native_anthropic else False
-                self._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+                # Resolve custom_providers user_agent for Cloudflare WAF compatibility (#24293)
+                _ua: str | None = None
+                try:
+                    from hermes_cli.config import get_compatible_custom_providers
+                    _cps = get_compatible_custom_providers(_agent_cfg)
+                except Exception:
+                    _cps = _agent_cfg.get("custom_providers") if isinstance(_agent_cfg, dict) else None
+                    if not isinstance(_cps, list):
+                        _cps = []
+                for _cp in (_cps or []):
+                    if isinstance(_cp, dict) and (_cp.get("base_url") or "").rstrip("/") == (base_url or "").rstrip("/"):
+                        _ua = (_cp.get("user_agent") or "").strip() or None
+                        break
+                self._anthropic_client = build_anthropic_client(
+                    effective_key, base_url, timeout=_provider_timeout, user_agent=_ua,
+                )
                 # No OpenAI client needed for Anthropic mode
                 self.client = None
                 self._client_kwargs = {}
@@ -1192,6 +1207,19 @@ class AIAgent:
                 elif base_url_host_matches(effective_base, "chatgpt.com"):
                     from agent.auxiliary_client import _codex_cloudflare_headers
                     client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
+
+                # Resolve custom_providers user_agent for Cloudflare WAF compatibility (#24293)
+                if self.provider == "custom" or (self.provider or "").startswith("custom:"):
+                    from hermes_cli.config import get_compatible_custom_providers
+                    _cps = get_compatible_custom_providers(_agent_cfg)
+                    for _cp in (_cps or []):
+                        if isinstance(_cp, dict) and (_cp.get("base_url") or "").rstrip("/") == effective_base.rstrip("/"):
+                            _ua = (_cp.get("user_agent") or "").strip()
+                            if _ua:
+                                _dh = client_kwargs.setdefault("default_headers", {})
+                                if "User-Agent" not in _dh and "user-agent" not in {k.lower() for k in _dh}:
+                                    _dh["User-Agent"] = _ua
+                            break
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -1944,9 +1972,23 @@ class AIAgent:
             self.api_key = effective_key
             self._anthropic_api_key = effective_key
             self._anthropic_base_url = base_url or getattr(self, "_anthropic_base_url", None)
+            # Resolve custom_providers user_agent for Cloudflare WAF compatibility (#24293)
+            try:
+                from hermes_cli.config import get_compatible_custom_providers, load_config as _sm_load_cfg
+                _sm_cfg = _sm_load_cfg()
+                _sm_cps = get_compatible_custom_providers(_sm_cfg)
+            except Exception:
+                _sm_cps = []
+            _sm_ua: str | None = None
+            _sm_base = self._anthropic_base_url or ""
+            for _cp in (_sm_cps or []):
+                if isinstance(_cp, dict) and (_cp.get("base_url") or "").rstrip("/") == _sm_base.rstrip("/"):
+                    _sm_ua = (_cp.get("user_agent") or "").strip() or None
+                    break
             self._anthropic_client = build_anthropic_client(
                 effective_key, self._anthropic_base_url,
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                user_agent=_sm_ua,
             )
             self._is_anthropic_oauth = _is_oauth_token(effective_key) if _is_native_anthropic else False
             self.client = None

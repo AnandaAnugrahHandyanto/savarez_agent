@@ -20,6 +20,15 @@ from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
 from utils import normalize_proxy_env_vars
 
+
+def _get_hermes_version() -> str:
+    """Return the Hermes Agent version string for User-Agent headers."""
+    try:
+        from hermes_cli import __version__
+        return __version__
+    except Exception:
+        return "0.0.0"
+
 try:
     import anthropic as _anthropic_sdk
 except ImportError:
@@ -357,7 +366,7 @@ def _common_betas_for_base_url(base_url: str | None) -> list[str]:
     return _COMMON_BETAS
 
 
-def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = None):
+def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = None, user_agent: str = None):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
     If *timeout* is provided it overrides the default 900s read timeout.  The
@@ -365,6 +374,11 @@ def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = 
     per-model ``request_timeout_seconds`` config so Anthropic-native and
     Anthropic-compatible providers respect the same knob as OpenAI-wire
     providers.
+
+    If *user_agent* is provided (e.g. from a custom_providers config entry),
+    it overrides the SDK's default "Anthropic/Python X.Y.Z" User-Agent header.
+    This prevents Cloudflare WAF and other bot-detection rules from blocking
+    requests to third-party API proxies.
 
     Returns an anthropic.Anthropic instance.
     """
@@ -430,6 +444,21 @@ def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = 
         kwargs["api_key"] = api_key
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+
+    # Override User-Agent for custom providers behind Cloudflare WAF or similar
+    # bot-detection rules.  The SDK's default "Anthropic/Python X.Y.Z" is often
+    # blocked by Cloudflare's bot rules; a generic "hermes-agent/X.Y.Z" UA
+    # bypasses these filters.  Respects caller override (custom_providers
+    # config entry) and falls back to "hermes-agent/X.Y.Z" when user_agent is
+    # not explicitly set but the base_url parameter was provided (i.e. the
+    # caller is using a custom/third-party endpoint).
+    if user_agent or base_url:
+        _ua = user_agent or f"hermes-agent/{_get_hermes_version()}"
+        _dh = kwargs.setdefault("default_headers", {})
+        # Only set User-Agent if this isn't a specialized header path
+        # (OAuth sets claude-code/UA, kimi_coding sets claude-code/UA).
+        if "User-Agent" not in _dh and "user-agent" not in {k.lower() for k in _dh}:
+            _dh["User-Agent"] = _ua
 
     return _anthropic_sdk.Anthropic(**kwargs)
 
