@@ -137,6 +137,14 @@ def _build_provider_env_blocklist() -> frozenset:
         "VERCEL_TOKEN",
         "VERCEL_PROJECT_ID",
         "VERCEL_TEAM_ID",
+        # Virtual environment markers - prevent Hermes venv leaking into subprocesses
+        "VIRTUAL_ENV",
+        "VIRTUAL_ENV_PROMPT",
+        "UV_PROJECT_ENVIRONMENT",
+        "POETRY_ACTIVE",
+        "PIPENV_ACTIVE",
+        "CONDA_PREFIX",
+        "CONDA_DEFAULT_ENV",
     })
     return frozenset(blocked)
 
