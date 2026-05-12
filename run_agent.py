@@ -2488,6 +2488,7 @@ class AIAgent:
             "compressor_base_url": getattr(_cc, "base_url", self.base_url),
             "compressor_api_key": getattr(_cc, "api_key", ""),
             "compressor_provider": getattr(_cc, "provider", self.provider),
+            "compressor_api_mode": getattr(_cc, "api_mode", self.api_mode),
             "compressor_context_length": _cc.context_length,
             "compressor_threshold_tokens": _cc.threshold_tokens,
         }
@@ -2773,6 +2774,7 @@ class AIAgent:
             "compressor_base_url": getattr(_cc, "base_url", self.base_url) if _cc else self.base_url,
             "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",
             "compressor_provider": getattr(_cc, "provider", self.provider) if _cc else self.provider,
+            "compressor_api_mode": getattr(_cc, "api_mode", self.api_mode) if _cc else self.api_mode,
             "compressor_context_length": _cc.context_length if _cc else 0,
             "compressor_threshold_tokens": _cc.threshold_tokens if _cc else 0,
         }
@@ -9002,6 +9004,7 @@ class AIAgent:
                 base_url=rt["compressor_base_url"],
                 api_key=rt["compressor_api_key"],
                 provider=rt["compressor_provider"],
+                api_mode=rt.get("compressor_api_mode", ""),
             )
 
             # ── Reset fallback chain for the new turn ──
