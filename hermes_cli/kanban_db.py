@@ -2653,6 +2653,62 @@ def complete_task(
         verified_cards = []
 
     with write_txn(conn):
+        final_metadata, policy_violation = _policy_audit_completion_metadata(
+            conn, task_id, metadata
+        )
+        if policy_violation:
+            if expected_run_id is None:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'blocked',
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL
+                     WHERE id = ?
+                       AND status IN ('running', 'ready', 'blocked')
+                    """,
+                    (task_id,),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'blocked',
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL
+                     WHERE id = ?
+                       AND status IN ('running', 'ready', 'blocked')
+                       AND current_run_id = ?
+                    """,
+                    (task_id, int(expected_run_id)),
+                )
+            if cur.rowcount != 1:
+                return False
+            message = str(policy_violation.get("message") or "policy audit blocked completion")
+            run_id = _end_run(
+                conn, task_id,
+                outcome="blocked", status="blocked",
+                summary=message,
+                metadata=final_metadata,
+            )
+            if run_id is None:
+                run_id = _synthesize_ended_run(
+                    conn, task_id,
+                    outcome="blocked",
+                    summary=message,
+                    metadata=final_metadata,
+                )
+            _append_event(
+                conn,
+                task_id,
+                "policy_audit_violation",
+                policy_violation,
+                run_id=run_id,
+            )
+            _append_event(conn, task_id, "blocked", {"reason": message}, run_id=run_id)
+            return False
         if expected_run_id is None:
             cur = conn.execute(
                 """
@@ -2690,7 +2746,7 @@ def complete_task(
             conn, task_id,
             outcome="completed", status="done",
             summary=summary if summary is not None else result,
-            metadata=_final_workspace_metadata(conn, task_id, metadata),
+            metadata=final_metadata,
         )
         # If complete_task was called on a never-claimed task (ready or
         # blocked → done with no run in flight), synthesize a
@@ -2701,7 +2757,7 @@ def complete_task(
                 conn, task_id,
                 outcome="completed",
                 summary=summary if summary is not None else result,
-                metadata=_final_workspace_metadata(conn, task_id, metadata),
+                metadata=final_metadata,
             )
         # Carry the handoff summary in the event payload so gateway
         # notifiers and dashboard WS consumers can render it without a
@@ -3628,6 +3684,117 @@ def _final_workspace_metadata(
         except Exception as exc:
             out.setdefault("workspace_final_evidence_error", str(exc)[:400])
     return out or None
+
+
+def _evidence_mutation_reasons(pre: dict[str, Any], final: dict[str, Any]) -> list[str]:
+    """Return bounded reasons when post-run workspace evidence differs.
+
+    This is an audit comparator, not a sandbox.  It intentionally compares the
+    evidence captured before dispatch with final evidence collected at terminal
+    transition time so read-only/test-only contract violations cannot be
+    silently recorded as clean completions.
+    """
+    reasons: list[str] = []
+    if not isinstance(pre, dict) or not pre:
+        return reasons
+    if not isinstance(final, dict) or not final:
+        return ["missing_final_evidence"]
+
+    pre_kind = pre.get("kind")
+    final_kind = final.get("kind")
+    if pre_kind != final_kind:
+        reasons.append("evidence_kind_changed")
+
+    if pre.get("exists") != final.get("exists"):
+        reasons.append("workspace_existence_changed")
+    if pre.get("available", True) != final.get("available", True):
+        reasons.append("workspace_availability_changed")
+
+    if pre_kind == "git" and final_kind == "git":
+        if pre.get("head") != final.get("head"):
+            reasons.append("git_head_changed")
+        if (pre.get("status_short") or "") != (final.get("status_short") or ""):
+            reasons.append("git_status_changed")
+        if (pre.get("diff_stat") or "") != (final.get("diff_stat") or ""):
+            reasons.append("git_diff_stat_changed")
+        return reasons
+
+    if pre_kind == "manifest" and final_kind == "manifest":
+        pre_files = {
+            item.get("path"): (item.get("size"), item.get("mtime"))
+            for item in pre.get("files", [])
+            if isinstance(item, dict) and item.get("path") is not None
+        }
+        final_files = {
+            item.get("path"): (item.get("size"), item.get("mtime"))
+            for item in final.get("files", [])
+            if isinstance(item, dict) and item.get("path") is not None
+        }
+        if pre_files != final_files:
+            reasons.append("manifest_files_changed")
+        if pre.get("omitted_count") != final.get("omitted_count"):
+            reasons.append("manifest_omitted_count_changed")
+        return reasons
+
+    return reasons
+
+
+def _policy_audit_completion_metadata(
+    conn: sqlite3.Connection,
+    task_id: str,
+    metadata: Optional[dict] = None,
+) -> tuple[Optional[dict], Optional[dict]]:
+    """Build final metadata and optional no-edit policy violation payload."""
+    final_metadata = _final_workspace_metadata(conn, task_id, metadata) or {}
+    task = get_task(conn, task_id)
+    if not task:
+        return final_metadata or None, None
+
+    policy = validate_worker_policy(task.worker_policy)
+    contract = worker_policy_contract(policy)
+    if contract.get("allows_edits") is not False:
+        return final_metadata or None, None
+
+    audit: dict[str, Any] = {
+        "policy": policy,
+        "enforced": True,
+        "allows_edits": False,
+        "enforcement_level": "contract_audit",
+        "violation": False,
+        "notes": (
+            "Post-run audit compares bounded pre/post workspace evidence. "
+            "This is not OS/container sandbox enforcement."
+        ),
+    }
+
+    current_run_id = _current_run_id(conn, task_id)
+    current_run = _merge_run_metadata(conn, current_run_id, None) if current_run_id else {}
+    pre = current_run.get("workspace_pre_evidence") if isinstance(current_run, dict) else None
+    final = final_metadata.get("workspace_final_evidence")
+    if not isinstance(pre, dict) or not pre:
+        audit.update({"enforced": False, "skip_reason": "missing_pre_evidence"})
+        final_metadata.setdefault("policy_audit", audit)
+        return final_metadata or None, None
+
+    reasons = _evidence_mutation_reasons(pre, final if isinstance(final, dict) else {})
+    if reasons:
+        audit.update({"violation": True, "reasons": reasons})
+        final_metadata.setdefault("policy_audit", audit)
+        violation = {
+            "policy": policy,
+            "reasons": reasons,
+            "workspace": task.workspace_path,
+            "pre_kind": pre.get("kind"),
+            "final_kind": final.get("kind") if isinstance(final, dict) else None,
+            "message": (
+                f"{policy} policy forbids workspace edits, but bounded "
+                "pre/post evidence changed. Completion was blocked."
+            ),
+        }
+        return final_metadata or None, violation
+
+    final_metadata.setdefault("policy_audit", audit)
+    return final_metadata or None, None
 
 
 # ---------------------------------------------------------------------------

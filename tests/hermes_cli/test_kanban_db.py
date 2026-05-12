@@ -1351,6 +1351,84 @@ def test_checkpoint_policy_off_suppresses_workspace_evidence(kanban_home, monkey
         assert "workspace_final_evidence" not in done_run.metadata
 
 
+def test_read_only_completion_blocks_when_workspace_evidence_changes(
+    kanban_home, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _profile: True)
+    workspace = tmp_path / "readonly-ws"
+    workspace.mkdir()
+    (workspace / "report.txt").write_text("before\n", encoding="utf-8")
+
+    def fake_spawn(task, workspace_path):
+        return 1234
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="read-only audit",
+            assignee="alice",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+            worker_policy="read_only",
+            checkpoint_policy="manifest",
+        )
+        assert kb.dispatch_once(conn, spawn_fn=fake_spawn, max_spawn=1).spawned
+        (workspace / "report.txt").write_text("after\n", encoding="utf-8")
+
+        assert kb.complete_task(conn, tid, summary="done") is False
+        task = kb.get_task(conn, tid)
+        run = kb.latest_run(conn, tid)
+        events = kb.list_events(conn, tid)
+
+    assert task.status == "blocked"
+    assert run.status == "blocked"
+    assert run.outcome == "blocked"
+    assert run.metadata["policy_audit"]["violation"] is True
+    assert "manifest_files_changed" in run.metadata["policy_audit"]["reasons"]
+    assert any(e.kind == "policy_audit_violation" for e in events)
+
+
+def test_test_only_completion_records_clean_policy_audit(
+    kanban_home, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _profile: True)
+    workspace = tmp_path / "testonly-ws"
+    workspace.mkdir()
+    (workspace / "probe.txt").write_text("unchanged\n", encoding="utf-8")
+
+    def fake_spawn(task, workspace_path):
+        return 1234
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="test-only audit",
+            assignee="alice",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+            worker_policy="test_only",
+            checkpoint_policy="manifest",
+        )
+        assert kb.dispatch_once(conn, spawn_fn=fake_spawn, max_spawn=1).spawned
+
+        assert kb.complete_task(conn, tid, summary="done") is True
+        task = kb.get_task(conn, tid)
+        run = kb.latest_run(conn, tid)
+
+    assert task.status == "done"
+    assert run.metadata["policy_audit"] == {
+        "policy": "test_only",
+        "enforced": True,
+        "allows_edits": False,
+        "enforcement_level": "contract_audit",
+        "violation": False,
+        "notes": (
+            "Post-run audit compares bounded pre/post workspace evidence. "
+            "This is not OS/container sandbox enforcement."
+        ),
+    }
+
+
 def test_manifest_workspace_evidence_stops_at_file_cap(tmp_path):
     workspace = tmp_path / "big"
     workspace.mkdir()
