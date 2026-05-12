@@ -56,7 +56,7 @@ curl -s -H "Authorization: Bearer <your-api-key>" \
 
 # Search tweets (always use product=Top)
 curl -s -H "Authorization: Bearer <your-api-key>" \
-  "https://api.getxapi.com/twitter/tweet/advanced_search?q=homelab&product=Top&count=20"
+  "https://api.getxapi.com/twitter/tweet/advanced_search?q=exampleKeyword1&product=Top&count=20"
 
 # Post a tweet
 curl -s -X POST "https://api.getxapi.com/twitter/tweet/create" \
@@ -103,9 +103,9 @@ getxapi uses **non-standard field names**. Do NOT use official X API v2 field na
 
 **Always use `product=Top`.** `product=Latest` returns 0-50 follower accounts and bot spam.
 
-Broad niche keywords work best: `homelab`, `self-hosting`, `Ollama`, `Hackintosh`, `HomeAssistant`, `Proxmox`, `Docker`, `TrueNAS`. Multi-word queries must be URL-encoded (e.g. `Ollama%20local`, `Docker%20self-hosted`) — unencoded spaces cause truncated or failed requests.
+Broad niche keywords work best (examples: `exampleKeyword1`, `exampleKeyword2`). Multi-word queries must be URL-encoded (e.g. `exampleKeyword1%20modifier`) — unencoded spaces cause truncated or failed requests.
 
-Narrow terms like `Proxmox tip` often return zero Top results. Cast a wide net then filter.
+Overly specific terms like `exampleKeyword2 tip` often return zero Top results. Cast a wide net then filter.
 
 ## Posting
 

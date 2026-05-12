@@ -31,7 +31,7 @@ Search tweets by keyword.
 
 ```bash
 curl -s -H "Authorization: Bearer <your-api-key>" \
-  "https://api.getxapi.com/twitter/tweet/advanced_search?q=homelab&product=Top&count=20"
+  "https://api.getxapi.com/twitter/tweet/advanced_search?q=exampleKeyword1&product=Top&count=20"
 ```
 
 Response: `{"tweets": [...]}` or `{"data": {"tweets": [...]}}`. Each tweet has `id`, `text`, `author.userName`, `author.followers`, `isReply`, `createdAt`, `viewCount`, `media[]`.
@@ -48,7 +48,7 @@ Response: `{"tweets": [...]}` or `{"data": {"tweets": [...]}}`. Each tweet has `
 - `from:username` — from specific user
 - `-filter:retweets` — exclude retweets
 - `-filter:replies` — exclude replies
-- Combine: `q=homelab%20has:media%20-filter:retweets`
+- Combine: `q=exampleKeyword1%20has:media%20-filter:retweets`
 
 ---
 
