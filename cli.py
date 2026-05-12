@@ -7825,6 +7825,14 @@ class HermesCLI:
                 if self.bell_on_complete:
                     sys.stdout.write("\a")
                     sys.stdout.flush()
+                    # Ghostty's bell audio is unreliable via prompt_toolkit;
+                    # play directly via macOS afplay as a backup.
+                    import subprocess
+                    subprocess.Popen(
+                        ["afplay", "/System/Library/Sounds/Ping.aiff"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
 
             except Exception as e:
                 # Same TUI refresh pattern as success path (#2718)
@@ -9891,6 +9899,17 @@ class HermesCLI:
         """
         import time as _time
 
+        # Trigger bell + dock bounce so the user knows approval is needed
+        if self.bell_on_complete:
+            sys.stdout.write("\a")
+            sys.stdout.flush()
+            import subprocess
+            subprocess.Popen(
+                ["afplay", "/System/Library/Sounds/Ping.aiff"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
         with self._approval_lock:
             timeout = 60
             response_queue = queue.Queue()
@@ -10726,6 +10745,14 @@ class HermesCLI:
             if self.bell_on_complete:
                 sys.stdout.write("\a")
                 sys.stdout.flush()
+                # Ghostty's bell audio is unreliable via prompt_toolkit;
+                # play directly via macOS afplay as a backup.
+                import subprocess
+                subprocess.Popen(
+                    ["afplay", "/System/Library/Sounds/Ping.aiff"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
 
             # Notify when iteration budget was hit
             if result and not result.get("completed") and not result.get("interrupted"):
