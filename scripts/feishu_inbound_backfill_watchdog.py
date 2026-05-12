@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Read-only Feishu/Lark inbound backfill watchdog.
+"""Feishu inbound backfill watchdog.
 
-Polls recent Feishu/Lark chat history and compares message_id values with local
-Hermes evidence (gateway logs + Feishu dedup state). This intentionally reports
-or queues suspected websocket misses but does not replay messages into the
-agent.
+Polls recent Feishu chat history and compares message_id values with Hermes
+local evidence (gateway logs + Feishu dedup state). It is intentionally
+read-only: it reports suspected websocket misses but does not replay messages.
 """
 from __future__ import annotations
 
@@ -20,6 +19,13 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+HERMES_HOME = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").expanduser()
+LOG_PATH = HERMES_HOME / "logs" / "gateway.log"
+DEDUP_PATH = HERMES_HOME / "feishu_seen_message_ids.json"
+ENV_PATH = HERMES_HOME / ".env"
+STATE_PATH = HERMES_HOME / "state" / "feishu_inbound_backfill_watchdog.json"
+QUEUE_PATH = HERMES_HOME / "state" / "feishu_inbound_backfill_queue.jsonl"
+
 MESSAGE_ID_RE = re.compile(r"\bom_[A-Za-z0-9_\-]+")
 DEFAULT_WINDOW_SECONDS = 15 * 60
 DEFAULT_GRACE_SECONDS = 45
@@ -27,12 +33,7 @@ DEFAULT_PAGE_SIZE = 50
 RECALLED_PREVIEWS = {"this message was recalled", "message was recalled", "消息已撤回"}
 
 
-def hermes_home() -> Path:
-    return Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").expanduser()
-
-
-def _load_env(path: Path | None = None) -> None:
-    path = path or hermes_home() / ".env"
+def _load_env(path: Path = ENV_PATH) -> None:
     if not path.exists():
         return
     for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -47,21 +48,10 @@ def _load_env(path: Path | None = None) -> None:
 
 
 def _domain_base() -> str:
-    return (
-        "https://open.larksuite.com"
-        if os.getenv("FEISHU_DOMAIN", "feishu").strip().lower() == "lark"
-        else "https://open.feishu.cn"
-    )
+    return "https://open.larksuite.com" if os.getenv("FEISHU_DOMAIN", "feishu").strip().lower() == "lark" else "https://open.feishu.cn"
 
 
-def _request_json(
-    method: str,
-    url: str,
-    *,
-    token: str | None = None,
-    body: dict[str, Any] | None = None,
-    timeout: int = 20,
-) -> dict[str, Any]:
+def _request_json(method: str, url: str, *, token: str | None = None, body: dict[str, Any] | None = None, timeout: int = 20) -> dict[str, Any]:
     data = None
     headers = {"Content-Type": "application/json; charset=utf-8"}
     if token:
@@ -84,17 +74,16 @@ def _tenant_token() -> str:
         body={"app_id": app_id, "app_secret": app_secret},
     )
     if payload.get("code") != 0 or not payload.get("tenant_access_token"):
-        raise RuntimeError(
-            f"tenant token request failed: code={payload.get('code')} msg={payload.get('msg')}"
-        )
+        raise RuntimeError(f"tenant token request failed: code={payload.get('code')} msg={payload.get('msg')}")
     return str(payload["tenant_access_token"])
 
 
-def _load_log_ids(home: Path) -> set[str]:
+def _load_log_ids() -> set[str]:
     ids: set[str] = set()
-    for path in home.glob("logs/gateway.log*"):
+    for path in HERMES_HOME.glob("logs/gateway.log*"):
         if not path.is_file():
             continue
+        # Bound read volume per file. Rotated gateway logs may hold the relevant window.
         with path.open("rb") as fh:
             try:
                 fh.seek(-5 * 1024 * 1024, os.SEEK_END)
@@ -105,40 +94,34 @@ def _load_log_ids(home: Path) -> set[str]:
     return ids
 
 
-def _load_dedup_ids(path: Path) -> set[str]:
+def _load_dedup_ids(path: Path = DEDUP_PATH) -> set[str]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return set()
     data = payload.get("message_ids", {}) if isinstance(payload, dict) else {}
     if isinstance(data, dict):
-        return {str(k) for k in data if str(k).startswith("om_")}
+        return {str(k) for k in data.keys() if str(k).startswith("om_")}
     if isinstance(data, list):
         return {str(k) for k in data if str(k).startswith("om_")}
     return set()
 
 
-def _load_state(path: Path) -> dict[str, Any]:
+def _load_state() -> dict[str, Any]:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(STATE_PATH.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {"reported": {}}
 
 
-def _save_state(path: Path, state: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
+def _save_state(state: dict[str, Any]) -> None:
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = STATE_PATH.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    tmp.replace(STATE_PATH)
 
 
-def _list_messages(
-    token: str,
-    chat_id: str,
-    start_time: int,
-    end_time: int,
-    page_size: int,
-) -> list[dict[str, Any]]:
+def _list_messages(token: str, chat_id: str, start_time: int, end_time: int, page_size: int) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     page_token = ""
     while True:
@@ -182,6 +165,7 @@ def _sender_type(item: dict[str, Any]) -> str:
 def _message_create_time(item: dict[str, Any]) -> int:
     raw = item.get("create_time") or item.get("update_time") or 0
     try:
+        # Feishu often returns milliseconds as a string.
         val = int(str(raw))
         return val // 1000 if val > 10_000_000_000 else val
     except (TypeError, ValueError):
@@ -223,7 +207,7 @@ def _queue_record(item: dict[str, Any], *, chat_id: str, detected_at: int) -> di
     }
 
 
-def _append_queue(records: list[dict[str, Any]], path: Path) -> None:
+def _append_queue(records: list[dict[str, Any]], path: Path = QUEUE_PATH) -> None:
     if not records:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -232,8 +216,8 @@ def _append_queue(records: list[dict[str, Any]], path: Path) -> None:
             fh.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Read-only Feishu/Lark inbound backfill watchdog")
+def run() -> int:
+    parser = argparse.ArgumentParser(description="Read-only Feishu inbound backfill watchdog")
     parser.add_argument("--chat-id", default=os.getenv("FEISHU_HOME_CHANNEL", ""), help="Feishu chat/container id")
     parser.add_argument("--window-seconds", type=int, default=int(os.getenv("FEISHU_BACKFILL_WINDOW_SECONDS", DEFAULT_WINDOW_SECONDS)))
     parser.add_argument("--grace-seconds", type=int, default=int(os.getenv("FEISHU_BACKFILL_GRACE_SECONDS", DEFAULT_GRACE_SECONDS)))
@@ -242,15 +226,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--include-recalled", action="store_true", help="Also report recalled/withdrawn messages")
     parser.add_argument("--no-queue", action="store_true", help="Do not append suspected misses to the local review queue")
     parser.add_argument("--dry-run", action="store_true", help="Print OK summary even when no misses are found")
-    return parser
+    args = parser.parse_args()
 
-
-def run(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-
-    home = hermes_home()
-    _load_env(home / ".env")
+    _load_env()
     chat_id = (args.chat_id or os.getenv("FEISHU_HOME_CHANNEL", "")).strip()
     if not chat_id:
         raise RuntimeError("chat id missing; set FEISHU_HOME_CHANNEL or pass --chat-id")
@@ -261,14 +239,15 @@ def run(argv: list[str] | None = None) -> int:
     if end_time <= start_time:
         raise RuntimeError("window too small after grace period")
 
-    state_path = home / "state" / "feishu_inbound_backfill_watchdog.json"
-    queue_path = home / "state" / "feishu_inbound_backfill_queue.jsonl"
     token = _tenant_token()
     messages = _list_messages(token, chat_id, start_time, end_time, max(1, min(args.page_size, 50)))
-    seen_ids = _load_log_ids(home) | _load_dedup_ids(home / "feishu_seen_message_ids.json")
+    log_ids = _load_log_ids()
+    dedup_ids = _load_dedup_ids()
+    seen_ids = log_ids | dedup_ids
 
-    state = _load_state(state_path)
+    state = _load_state()
     reported = state.setdefault("reported", {})
+    # Prune old report suppression entries.
     cutoff = now - 24 * 60 * 60
     state["reported"] = {
         mid: ts for mid, ts in reported.items()
@@ -293,26 +272,17 @@ def run(argv: list[str] | None = None) -> int:
             reported[mid] = now
 
     state["last_run"] = now
-    state["last_window"] = {
-        "chat_id": chat_id,
-        "start_time": start_time,
-        "end_time": end_time,
-        "checked": checked,
-        "fetched": len(messages),
-    }
-    _save_state(state_path, state)
+    state["last_window"] = {"chat_id": chat_id, "start_time": start_time, "end_time": end_time, "checked": checked, "fetched": len(messages)}
+    _save_state(state)
 
     queue_records = [_queue_record(item, chat_id=chat_id, detected_at=now) for item in missing]
     if not args.no_queue:
-        _append_queue(queue_records, queue_path)
+        _append_queue(queue_records)
 
     if missing:
         print("Feishu inbound watchdog: suspected missed message(s)")
-        queue_note = " disabled" if args.no_queue else f" appended={len(queue_records)} path={queue_path}"
-        print(
-            f"chat_id={chat_id} window={start_time}..{end_time} "
-            f"fetched={len(messages)} checked={checked} missing={len(missing)} queue{queue_note}"
-        )
+        queue_note = " disabled" if args.no_queue else f" appended={len(queue_records)} path={QUEUE_PATH}"
+        print(f"chat_id={chat_id} window={start_time}..{end_time} fetched={len(messages)} checked={checked} missing={len(missing)} queue{queue_note}")
         for record in queue_records[:10]:
             print(
                 f"- id={record['message_id']} create_time={record['create_time']} "
@@ -320,20 +290,19 @@ def run(argv: list[str] | None = None) -> int:
             )
         if len(missing) > 10:
             print(f"... {len(missing) - 10} more")
-        return 2
+        # Cron semantics: suspected misses are an alert condition, not a script
+        # failure. Keep stdout non-empty so no_agent cron delivers the alert,
+        # but reserve non-zero exit codes for API/config/runtime failures.
+        return 0
 
     if args.dry_run:
         print(f"Feishu inbound watchdog OK: chat_id={chat_id} fetched={len(messages)} checked={checked} window={start_time}..{end_time}")
     return 0
 
 
-def main() -> int:
+if __name__ == "__main__":
     try:
-        return run()
+        raise SystemExit(run())
     except (HTTPError, URLError, TimeoutError, RuntimeError) as exc:
         print(f"Feishu inbound watchdog ERROR: {exc}", file=sys.stderr)
-        return 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+        raise SystemExit(1)
