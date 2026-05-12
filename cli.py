@@ -2816,6 +2816,38 @@ class HermesCLI:
         emoji = "⏱" if live else "⏲"
         return f"{emoji} {time_str}"
 
+    @staticmethod
+    def _status_bar_reasoning_effort_label(reasoning_config: Any) -> str:
+        """Return the compact reasoning-effort suffix for the status bar.
+
+        Mirrors the Ink TUI's compact model label behavior: hide default
+        ``medium``/``normal`` noise, but surface every explicit non-default
+        reasoning state (including ``none``) for any provider/model.
+        """
+        if not isinstance(reasoning_config, dict):
+            return ""
+        if reasoning_config.get("enabled") is False:
+            return "none"
+        effort = str(reasoning_config.get("effort", "") or "").strip().lower()
+        if effort in {"", "medium", "normal", "default"}:
+            return ""
+        return effort
+
+    @staticmethod
+    def _status_bar_model_label(snapshot: Dict[str, Any]) -> str:
+        effort = snapshot.get("reasoning_effort")
+        if effort:
+            return f"{snapshot['model_short']} {effort}"
+        return snapshot["model_short"]
+
+    @staticmethod
+    def _status_bar_model_fragments(snapshot: Dict[str, Any]):
+        fragments = [("class:status-bar-strong", snapshot["model_short"])]
+        effort = snapshot.get("reasoning_effort")
+        if effort:
+            fragments.append(("class:status-bar-dim", f" {effort}"))
+        return fragments
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
         # self.model reflects the originally configured model and never
@@ -2829,10 +2861,16 @@ class HermesCLI:
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
+        reasoning_config = getattr(agent, "reasoning_config", None)
+        if not isinstance(reasoning_config, dict):
+            reasoning_config = getattr(self, "reasoning_config", None)
+        reasoning_effort = self._status_bar_reasoning_effort_label(reasoning_config)
+
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "reasoning_effort": reasoning_effort,
             "duration": format_duration_compact(elapsed_seconds),
             "prompt_elapsed": self._format_prompt_elapsed(
                 getattr(self, "_prompt_start_time", None),
@@ -3050,12 +3088,13 @@ class HermesCLI:
             percent = snapshot["context_percent"]
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
+            model_label = self._status_bar_model_label(snapshot)
 
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"⚕ {model_label} · {duration_label}"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"⚕ {model_label}", percent_label]
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -3070,7 +3109,7 @@ class HermesCLI:
                 context_label = "ctx --"
 
             compressions = snapshot.get("compressions", 0)
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [f"⚕ {model_label}", context_label, percent_label]
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             parts.append(duration_label)
@@ -3097,7 +3136,7 @@ class HermesCLI:
             if width < 52:
                 frags = [
                     ("class:status-bar", " ⚕ "),
-                    ("class:status-bar-strong", snapshot["model_short"]),
+                    *self._status_bar_model_fragments(snapshot),
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
                     ("class:status-bar", " "),
@@ -3109,7 +3148,7 @@ class HermesCLI:
                     compressions = snapshot.get("compressions", 0)
                     frags = [
                         ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
+                        *self._status_bar_model_fragments(snapshot),
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
                     ]
@@ -3133,7 +3172,7 @@ class HermesCLI:
                     compressions = snapshot.get("compressions", 0)
                     frags = [
                         ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
+                        *self._status_bar_model_fragments(snapshot),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
                         ("class:status-bar-dim", " │ "),
