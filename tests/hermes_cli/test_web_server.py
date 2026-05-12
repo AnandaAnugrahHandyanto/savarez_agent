@@ -2315,6 +2315,55 @@ class TestPtyWebSocket:
         assert "tool.start" in received
         assert '"tool_id":"t1"' in received
 
+    def test_events_replays_missed_frames_after_subscriber_reconnect(self, monkeypatch):
+        """A transient /api/events subscriber drop should not lose PTY-side
+        events published while the PTY-side /api/pub connection is still alive.
+
+        Dashboard users otherwise see "events feed disconnected" and reconnect
+        to a session whose final tool/status events have already disappeared.
+        """
+        import time
+        from urllib.parse import urlencode
+        from hermes_cli import web_server as ws_mod
+
+        channel = "replay-test"
+        qs = urlencode({"token": self.token, "channel": channel})
+        pub_path = f"/api/pub?{qs}"
+        sub_path = f"/api/events?{qs}"
+
+        def wait_for_subscriber(expected: bool) -> None:
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                present = bool(ws_mod._event_channels.get(channel))
+                if present is expected:
+                    return
+                time.sleep(0.01)
+            raise AssertionError(f"subscriber present did not become {expected}")
+
+        with self.client.websocket_connect(pub_path) as pub:
+            with self.client.websocket_connect(sub_path) as sub:
+                wait_for_subscriber(True)
+                pub.send_text(
+                    '{"type":"tool.start","payload":{"tool_id":"before-drop"}}'
+                )
+                assert "before-drop" in sub.receive_text()
+
+            wait_for_subscriber(False)
+            pub.send_text(
+                '{"type":"tool.complete","payload":{"tool_id":"missed-final"}}'
+            )
+            time.sleep(0.05)
+
+            with self.client.websocket_connect(sub_path) as sub:
+                wait_for_subscriber(True)
+                pub.send_text(
+                    '{"type":"tool.start","payload":{"tool_id":"after-reconnect"}}'
+                )
+                received = sub.receive_text()
+
+        assert "missed-final" in received
+        assert "after-reconnect" not in received
+
     def test_events_rejects_missing_channel(self):
         from starlette.websockets import WebSocketDisconnect
 
