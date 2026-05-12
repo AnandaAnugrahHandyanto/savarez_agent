@@ -1119,16 +1119,24 @@ setup_path() {
     command_link_display_dir="$(get_command_link_display_dir)"
 
     # Create a user-facing shim for the hermes command.
-    # We intentionally clear PYTHONPATH/PYTHONHOME here so inherited env vars
-    # can't make this launcher import modules from another checkout.
+    # Write via a temp file + mv instead of redirecting directly to the final
+    # path. Some older installs used ~/.local/bin/hermes as a symlink to the
+    # venv entry point; shell redirection follows that symlink and overwrites
+    # the real entry point with a self-referential shim.
     mkdir -p "$command_link_dir"
-    cat > "$command_link_dir/hermes" <<EOF
+    local command_link_path
+    local command_link_tmp
+    command_link_path="$command_link_dir/hermes"
+    command_link_tmp="$(mktemp "$command_link_dir/.hermes.XXXXXX")"
+
+    cat > "$command_link_tmp" <<EOF
 #!/usr/bin/env bash
 unset PYTHONPATH
 unset PYTHONHOME
 exec "$HERMES_BIN" "\$@"
 EOF
-    chmod +x "$command_link_dir/hermes"
+    chmod +x "$command_link_tmp"
+    mv -f "$command_link_tmp" "$command_link_path"
     log_success "Installed hermes launcher → $command_link_display_dir/hermes"
 
     if [ "$DISTRO" = "termux" ]; then
