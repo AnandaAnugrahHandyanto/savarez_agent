@@ -74,6 +74,51 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 _SESSION_TOKEN = secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
+# ---------------------------------------------------------------------------
+# Cloudflare Access JWT validation — HD-7 patch (2026-05-11)
+# Allows external users authenticated via CF Access to bypass the ephemeral
+# per-process session token.  The ephemeral token remains as local fallback.
+# ---------------------------------------------------------------------------
+try:
+    from jwt import PyJWKClient as _PyJWKClient
+    import jwt as _jwt_mod
+
+    _CF_TEAM_DOMAIN = "berlai.cloudflareaccess.com"
+    _CF_CERTS_URL = f"https://{_CF_TEAM_DOMAIN}/cdn-cgi/access/certs"
+    _CF_ALLOWED_AUDS: dict = {
+        "ca90f278-a5b1-4d21-9282-76a4a59065ec": "henry-hermes.berl.ai",
+        "8f1a4a35-23e8-46f8-a0f6-c136bf26c00d": "mallywork-hermes.berl.ai",
+        "3c084b71-9a99-4364-a412-2e43a10cb009": "miranda-hermes.berl.ai",
+    }
+    _cf_jwk_client = _PyJWKClient(_CF_CERTS_URL, cache_keys=True, lifespan=21600)
+
+    def _verify_cf_access_jwt(token: str):
+        """Return decoded JWT claims on success, None on failure."""
+        try:
+            signing_key = _cf_jwk_client.get_signing_key_from_jwt(token)
+            for aud, hostname in _CF_ALLOWED_AUDS.items():
+                try:
+                    claims = _jwt_mod.decode(
+                        token,
+                        signing_key.key,
+                        audience=aud,
+                        algorithms=["RS256"],
+                        issuer=f"https://{_CF_TEAM_DOMAIN}",
+                    )
+                    return {**claims, "hostname": hostname}
+                except _jwt_mod.InvalidAudienceError:
+                    continue
+            return None
+        except Exception:
+            return None
+
+    _CF_ACCESS_AVAILABLE = True
+except ImportError:
+    _CF_ACCESS_AVAILABLE = False
+    def _verify_cf_access_jwt(token: str):  # type: ignore
+        return None
+
+
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
 # or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = False
@@ -89,7 +134,7 @@ _REVEAL_WINDOW_SECONDS = 30
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$|^https://(hermes|henry-hermes|mallywork-hermes|miranda-hermes)\.berl\.ai$",
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -113,11 +158,21 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
 def _has_valid_session_token(request: Request) -> bool:
     """True if the request carries a valid dashboard session token.
 
+    Auth priority:
+    1. Cloudflare Access JWT (Cf-Access-Jwt-Assertion header) -- preferred
+       path for external users authenticated via CF Access.
+    2. X-Hermes-Session-Token header -- ephemeral per-process token.
+    3. Authorization: Bearer <token> -- legacy fallback for older SPA bundles.
+
     The dedicated session header avoids collisions with reverse proxies that
-    already use ``Authorization`` (for example Caddy ``basic_auth``). We still
-    accept the legacy Bearer path for backward compatibility with older
-    dashboard bundles.
+    already use ``Authorization`` (for example Caddy ``basic_auth``).
     """
+    # 1. Cloudflare Access JWT -- external user authenticated via CF Access
+    cf_jwt = request.headers.get("Cf-Access-Jwt-Assertion", "")
+    if cf_jwt and _verify_cf_access_jwt(cf_jwt) is not None:
+        return True
+
+    # 2. Ephemeral session token (local fallback)
     session_header = request.headers.get(_SESSION_HEADER_NAME, "")
     if session_header and hmac.compare_digest(
         session_header.encode(),
@@ -2972,10 +3027,7 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
-        await ws.close(code=4403)
-        return
+    # loopback check removed — HMAC token auth is sufficient for proxied connections
 
     await ws.accept()
 
@@ -3080,10 +3132,7 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
-        await ws.close(code=4403)
-        return
+    # loopback check removed — HMAC token auth is sufficient for proxied connections
 
     from tui_gateway.ws import handle_ws
 
@@ -3113,10 +3162,7 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
-        await ws.close(code=4403)
-        return
+    # loopback check removed — HMAC token auth is sufficient for proxied connections
 
     channel = _channel_or_close_code(ws)
     if not channel:
@@ -3143,10 +3189,7 @@ async def events_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
-        await ws.close(code=4403)
-        return
+    # loopback check removed — HMAC token auth is sufficient for proxied connections
 
     channel = _channel_or_close_code(ws)
     if not channel:

@@ -35,6 +35,51 @@ from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
 
+# ── Tenant ACL (MU-6) ────────────────────────────────────────────────────────
+import sqlite3 as _sqlite3
+from datetime import datetime as _datetime, timezone as _timezone
+from pathlib import Path as _Path
+
+_RELAY_DB = _Path("/home/ubuntu/.hermes/relay.db")
+
+
+class ACLError(PermissionError):
+    """Raised when a cross-tenant delegate_task call is denied by tenant_acl."""
+
+
+def check_tenant_acl(caller: str, callee: str, capability: str) -> bool:
+    """Return True iff the (caller, callee, capability) triple is permitted.
+
+    Rules:
+      - Same-tenant calls always pass (no ACL needed for intra-tenant).
+      - Cross-tenant calls require an unexpired row in tenant_acl.
+      - relay.db unreachable -> fail closed (returns False).
+    """
+    if caller == callee:
+        return True  # intra-tenant: always allowed
+    try:
+        con = _sqlite3.connect(str(_RELAY_DB), timeout=5)
+        cur = con.cursor()
+        cur.execute(
+            """
+            SELECT 1 FROM tenant_acl
+             WHERE caller_tenant = ?
+               AND callee_tenant = ?
+               AND capability    = ?
+               AND (expires_at IS NULL OR expires_at > ?)
+             LIMIT 1
+            """,
+            (caller, callee, capability, _datetime.now(_timezone.utc).isoformat()),
+        )
+        row = cur.fetchone()
+        con.close()
+        return row is not None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("check_tenant_acl: relay.db query failed (%s) -> deny", exc)
+        return False
+# ── End Tenant ACL ────────────────────────────────────────────────────────────
+
+
 
 # Tools that children must never have access to
 DELEGATE_BLOCKED_TOOLS = frozenset(
@@ -1819,6 +1864,9 @@ def delegate_task(
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
     parent_agent=None,
+    caller_tenant: Optional[str] = None,
+    callee_tenant: Optional[str] = None,
+    capability: Optional[str] = "delegate",
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -1845,6 +1893,16 @@ def delegate_task(
             "Delegation spawning is paused. Clear the pause via the TUI "
             "(`p` in /agents) or the `delegation.pause` RPC before retrying."
         )
+
+    # ── Cross-tenant ACL gate (MU-6) ─────────────────────────────────────────
+    if caller_tenant and callee_tenant and caller_tenant != callee_tenant:
+        if not check_tenant_acl(caller_tenant, callee_tenant, capability or "delegate"):
+            raise ACLError(
+                f"delegate_task: cross-tenant call denied -- "
+                f"{caller_tenant!r} -> {callee_tenant!r} capability={capability!r}. "
+                f"Grant via INSERT INTO tenant_acl in relay.db."
+            )
+    # ── End ACL gate ──────────────────────────────────────────────────────────
 
     # Normalise the top-level role once; per-task overrides re-normalise.
     top_role = _normalize_role(role)

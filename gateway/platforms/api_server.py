@@ -575,6 +575,10 @@ class APIServerAdapter(BasePlatformAdapter):
         self._host: str = extra.get("host", os.getenv("API_SERVER_HOST", DEFAULT_HOST))
         self._port: int = int(extra.get("port", os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))))
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
+        # Scope deny list: keywords (lowercase) blocked at API server layer.
+        # Configured via extra.scope_deny_keywords in config.yaml (list of strings).
+        _raw_deny = extra.get("scope_deny_keywords", [])
+        self._scope_deny_keywords: list = [k.lower().strip() for k in _raw_deny if k and isinstance(k, str)]
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
@@ -762,6 +766,188 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         return agent
 
+
+    # ------------------------------------------------------------------
+    # /errors — watchdog alert ingest (Fix 111 / Audit Round-2 New-R1)
+    # ------------------------------------------------------------------
+    #
+    # Schema (auditor_errors table in auditor_errors.db):
+    #   id            INTEGER PRIMARY KEY AUTOINCREMENT
+    #   service       TEXT NOT NULL          -- watchdog name / source
+    #   host          TEXT NOT NULL          -- originating hostname
+    #   severity      TEXT NOT NULL          -- info | warn | error | critical
+    #   message       TEXT NOT NULL
+    #   ts_received   TEXT NOT NULL          -- ISO UTC, server clock
+    #   ts_event      TEXT                   -- ISO UTC, client clock (optional)
+    #   message_hash  TEXT                   -- SHA-256 prefix for dedup (optional)
+    #   count         INTEGER DEFAULT 1      -- incremented on dedup within 5-min window
+    #   metadata_json TEXT                   -- arbitrary JSON context
+    #
+    # POST /errors  requires Bearer auth (same key as the gateway)
+    # GET  /errors  no auth (internal readers; tunnel auth gates the public face)
+
+    def _get_errors_db(self) -> "sqlite3.Connection":
+        """Open (and lazily migrate) the auditor_errors.db."""
+        db_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        )
+        # Resolve to the profile dir at runtime via environment
+        profile_name = os.environ.get("HERMES_PROFILE", "hermes-auditor")
+        profiles_root = os.path.join(os.path.expanduser("~"), ".hermes", "profiles")
+        db_path = os.path.join(profiles_root, profile_name, "auditor_errors.db")
+        conn = sqlite3.connect(db_path, check_same_thread=False)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS auditor_errors (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                service       TEXT NOT NULL,
+                host          TEXT NOT NULL DEFAULT '',
+                severity      TEXT NOT NULL DEFAULT 'error',
+                message       TEXT NOT NULL DEFAULT '',
+                ts_received   TEXT NOT NULL,
+                ts_event      TEXT,
+                message_hash  TEXT,
+                count         INTEGER NOT NULL DEFAULT 1,
+                metadata_json TEXT
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_errors_sev_ts "
+            "ON auditor_errors (severity, ts_received)"
+        )
+        conn.commit()
+        return conn
+
+    async def _handle_errors_post(self, request: "web.Request") -> "web.Response":
+        """POST /errors — ingest a watchdog alert row.
+
+        ## Consumer
+        hermes-auditor digest cron reads auditor_errors.db WHERE ts_received > last_run
+        and surfaces failures in the Ares Telegram channel (next-session UI lane).
+
+        Accepts two payload shapes:
+          watchdog_template: {service, host, severity, message, ts}
+          errors_db.py:      {source, host, severity, message, ts, message_hash, context_json}
+
+        Returns 204 on success (body empty). Never raises — bad payloads return 400.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except Exception as exc:
+            return web.json_response(
+                {"error": f"invalid JSON: {exc}"}, status=400
+            )
+
+        now_iso = __import__("datetime").datetime.now(
+            __import__("datetime").timezone.utc
+        ).isoformat(timespec="seconds")
+
+        # Normalise both payload shapes to a common dict
+        service  = (body.get("service") or body.get("source") or "unknown")[:120]
+        host     = (body.get("host") or "")[:120]
+        severity = (body.get("severity") or "error")[:20].lower()
+        message  = (body.get("message") or "")[:2000]
+        ts_event = body.get("ts") or body.get("ts_event")
+        msg_hash = body.get("message_hash")
+
+        # Build metadata_json from any extra fields
+        known = {"service", "source", "host", "severity", "message", "ts",
+                 "ts_event", "message_hash", "context_json"}
+        extras = {k: v for k, v in body.items() if k not in known}
+        if body.get("context_json"):
+            try:
+                extras["context"] = __import__("json").loads(body["context_json"])
+            except Exception:
+                extras["context_raw"] = body["context_json"]
+        metadata_json = __import__("json").dumps(extras) if extras else None
+
+        try:
+            conn = self._get_errors_db()
+            # Dedup: if same (service, message_hash) within last 5 min, increment count
+            if msg_hash:
+                row = conn.execute(
+                    "SELECT id FROM auditor_errors "
+                    "WHERE service=? AND message_hash=? "
+                    "  AND ts_received >= datetime(?, '-5 minutes') "
+                    "LIMIT 1",
+                    (service, msg_hash, now_iso),
+                ).fetchone()
+                if row:
+                    conn.execute(
+                        "UPDATE auditor_errors SET count=count+1 WHERE id=?",
+                        (row[0],)
+                    )
+                    conn.commit()
+                    conn.close()
+                    return web.Response(status=204)
+
+            conn.execute(
+                "INSERT INTO auditor_errors "
+                "(service, host, severity, message, ts_received, ts_event, message_hash, metadata_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (service, host, severity, message, now_iso, ts_event, msg_hash, metadata_json),
+            )
+            conn.commit()
+            conn.close()
+            logger.info("[errors] ingested %s/%s from %s", service, severity, host)
+        except Exception as exc:
+            logger.error("[errors] DB write failed: %s", exc)
+            return web.json_response({"error": str(exc)}, status=500)
+
+        return web.Response(status=204)
+
+    async def _handle_errors_get(self, request: "web.Request") -> "web.Response":
+        """GET /errors?since=<ISO>&severity=<level>&limit=<n> — query error rows.
+
+        No auth required on GET (internal consumers; public tunnel has CF Access).
+        Query params:
+          since    ISO-8601 datetime (default: last 24 h)
+          severity filter: info | warn | error | critical (omit for all)
+          limit    max rows returned (default 200, max 1000)
+        """
+        import datetime
+
+        qs = request.rel_url.query
+        limit = min(int(qs.get("limit", 200)), 1000)
+        since = qs.get("since")
+        if not since:
+            since = (
+                datetime.datetime.now(datetime.timezone.utc)
+                - datetime.timedelta(hours=24)
+            ).isoformat(timespec="seconds")
+        severity = qs.get("severity")
+
+        try:
+            conn = self._get_errors_db()
+            if severity:
+                rows = conn.execute(
+                    "SELECT id, service, host, severity, message, ts_received, "
+                    "ts_event, count, metadata_json "
+                    "FROM auditor_errors WHERE severity=? AND ts_received >= ? "
+                    "ORDER BY ts_received DESC LIMIT ?",
+                    (severity, since, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, service, host, severity, message, ts_received, "
+                    "ts_event, count, metadata_json "
+                    "FROM auditor_errors WHERE ts_received >= ? "
+                    "ORDER BY ts_received DESC LIMIT ?",
+                    (since, limit),
+                ).fetchall()
+            conn.close()
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
+        cols = ["id", "service", "host", "severity", "message",
+                "ts_received", "ts_event", "count", "metadata_json"]
+        result = [dict(zip(cols, r)) for r in rows]
+        return web.json_response({"errors": result, "count": len(result)})
+
+
     # ------------------------------------------------------------------
     # HTTP Handlers
     # ------------------------------------------------------------------
@@ -912,6 +1098,31 @@ class APIServerAdapter(BasePlatformAdapter):
                 {"error": {"message": "No user message found in messages", "type": "invalid_request_error"}},
                 status=400,
             )
+
+        # Scope filter: hard-block topics outside this profile scope before forwarding to LLM.
+        if self._scope_deny_keywords:
+            user_text_lower = user_message.lower() if isinstance(user_message, str) else ""
+            if not user_text_lower and isinstance(user_message, list):
+                user_text_lower = " ".join(
+                    p.get("text", "") for p in user_message
+                    if isinstance(p, dict) and p.get("type") == "text"
+                ).lower()
+            matched_kw = next(
+                (kw for kw in self._scope_deny_keywords if kw in user_text_lower),
+                None,
+            )
+            if matched_kw:
+                logger.warning("Scope filter blocked request: matched keyword (profile scope enforcement)")
+                return web.json_response(
+                    {
+                        "error": {
+                            "message": "This topic is outside the scope of this agent profile.",
+                            "type": "scope_denied",
+                            "code": "scope_denied",
+                        }
+                    },
+                    status=403,
+                )
 
         # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
         # When provided, history is loaded from state.db instead of from the request body.
@@ -2737,6 +2948,138 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return web.json_response({"run_id": run_id, "status": "stopping"})
 
+
+    # ------------------------------------------------------------------
+    # AgentEvent SSE stream  (GET /v1/events/stream)
+    # ------------------------------------------------------------------
+
+    def _ensure_events_db(self) -> "sqlite3.Connection":
+        if not hasattr(self, "_events_conn") or self._events_conn is None:
+            try:
+                from hermes_cli.config import get_hermes_home
+                db_path = str(get_hermes_home() / "hermes_events.db")
+            except Exception:
+                db_path = ":memory:"
+            conn = sqlite3.connect(db_path, check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS hermes_events (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id      TEXT    NOT NULL UNIQUE,
+                    kind          TEXT    NOT NULL,
+                    goal_id       TEXT    NOT NULL,
+                    step_id       TEXT,
+                    profile       TEXT    NOT NULL,
+                    role          TEXT,
+                    payload       TEXT,
+                    token_usage   TEXT,
+                    ts            TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_he_profile_ts ON hermes_events(profile, ts)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_he_goal_id   ON hermes_events(goal_id)")
+            conn.commit()
+            self._events_conn = conn
+        return self._events_conn
+
+    async def _handle_events_stream(self, request: "web.Request") -> "web.StreamResponse":
+        """GET /v1/events/stream — SSE tail of the hermes_events table."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        params = request.rel_url.query
+        profile_filter = params.get("profile", "").strip() or None
+        goal_filter    = params.get("goal_id", "").strip() or None
+        try:
+            since_id = int(params.get("since_id", "0"))
+        except (ValueError, TypeError):
+            since_id = 0
+        try:
+            batch_limit = max(1, min(int(params.get("limit", "50")), 500))
+        except (ValueError, TypeError):
+            batch_limit = 50
+
+        conn = self._ensure_events_db()
+
+        def _build_query(min_id: int, count: int) -> tuple:
+            clauses, args = ["id > ?"], [min_id]
+            if profile_filter:
+                clauses.append("profile = ?")
+                args.append(profile_filter)
+            if goal_filter:
+                clauses.append("goal_id = ?")
+                args.append(goal_filter)
+            where = " AND ".join(clauses)
+            args.append(count)
+            return (
+                f"SELECT id,event_id,kind,goal_id,step_id,profile,role,payload,token_usage,ts "
+                f"FROM hermes_events WHERE {where} ORDER BY id ASC LIMIT ?",
+                args,
+            )
+
+        def _row_to_event(row: tuple) -> dict:
+            id_, event_id, kind, goal_id, step_id, profile, role, payload_raw, tok_raw, ts = row
+            return {
+                "id":          id_,
+                "event_id":    event_id,
+                "kind":        kind,
+                "goal_id":     goal_id,
+                "step_id":     step_id,
+                "profile":     profile,
+                "role":        role,
+                "payload":     json.loads(payload_raw) if payload_raw else None,
+                "token_usage": json.loads(tok_raw)     if tok_raw     else None,
+                "ts":          ts,
+            }
+
+        response = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+        origin = request.headers.get("Origin", "")
+        cors_headers = self._cors_headers_for_origin(origin)
+        if cors_headers:
+            response.headers.update(cors_headers)
+
+        await response.prepare(request)
+
+        last_id = since_id
+        POLL_INTERVAL = 1.0
+        KEEPALIVE_INTERVAL = 15.0
+        last_keepalive = time.monotonic()
+
+        try:
+            sql, args = _build_query(last_id, batch_limit)
+            for row in conn.execute(sql, args).fetchall():
+                event = _row_to_event(row)
+                last_id = max(last_id, event["id"])
+                payload = f"data: {json.dumps(event)}\n\n"
+                await response.write(payload.encode())
+
+            while True:
+                await asyncio.sleep(POLL_INTERVAL)
+                sql, args = _build_query(last_id, 100)
+                rows = conn.execute(sql, args).fetchall()
+                for row in rows:
+                    event = _row_to_event(row)
+                    last_id = max(last_id, event["id"])
+                    payload = f"data: {json.dumps(event)}\n\n"
+                    await response.write(payload.encode())
+                now = time.monotonic()
+                if now - last_keepalive >= KEEPALIVE_INTERVAL:
+                    await response.write(b": keepalive\n\n")
+                    last_keepalive = now
+        except Exception as exc:
+            logger.debug("[api_server] /v1/events/stream error: %s", exc)
+
+        return response
+
     async def _sweep_orphaned_runs(self) -> None:
         """Periodically clean up run streams that were never consumed."""
         while True:
@@ -2800,6 +3143,11 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
+            # AgentEvent audit stream (hermes_events table tail)
+            self._app.router.add_get("/v1/events/stream", self._handle_events_stream)
+            # Watchdog error ingest (Fix 111 / Audit New-R1)
+            self._app.router.add_post("/errors", self._handle_errors_post)
+            self._app.router.add_get("/errors", self._handle_errors_get)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:

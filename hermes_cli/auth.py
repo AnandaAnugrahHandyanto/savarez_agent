@@ -2410,6 +2410,13 @@ def resolve_codex_runtime_credentials(
     refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
 ) -> Dict[str, Any]:
     """Resolve runtime credentials from Hermes's own Codex token store."""
+    # Wave 3 Option 1 (BerlAI 2026-05-06): when HERMES_CODEX_NO_REFRESH=1, the
+    # external sync (Mac cliproxy keepalive -> com.berlai.codex-token-sync plist)
+    # is the canonical refresh owner. Disable in-process refresh to avoid races
+    # that rotate the refresh_token and brick the external chain.
+    if os.getenv("HERMES_CODEX_NO_REFRESH", "").strip() == "1":
+        force_refresh = False
+        refresh_if_expiring = False
     data = _read_codex_tokens()
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()

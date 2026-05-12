@@ -235,6 +235,7 @@ _COMMON_BETAS = [
     "interleaved-thinking-2025-05-14",
     "fine-grained-tool-streaming-2025-05-14",
     "context-1m-2025-08-07",
+    "context-management-2025-06-27",  # Anthropic Memory Tool
 ]
 # MiniMax's Anthropic-compatible endpoints fail tool-use requests when
 # the fine-grained tool streaming beta is present.  Omit it so tool calls
