@@ -766,6 +766,10 @@ Optional body.
 
 Types: `fix:`, `feat:`, `refactor:`, `docs:`, `chore:`
 
+### Documenting Gordon's fork overlay
+
+When asked to explain or comment the differences between `rousegordon-ops/hermes-agent` and upstream Nous Hermes Agent, add/update a root `FORK_NOTES.md` plus a short `README.md` fork note. Compare against `upstream/main`, unshallow the clone if needed, and summarize intentional deployment-overlay changes rather than every commit. See `references/fork-change-documentation.md`.
+
 ### Gateway Metrics & Cost Report
 
 The daily cost report (`scripts/cost_report.py`) sends balance + spend + request metrics to Telegram. Request tracking uses a local JSONL log appended by a gateway hook — OpenRouter's analytics API requires a management key most users don't have. See `references/gateway-request-tracking.md` for the full pattern (hook location, JSONL schema, sliding-window algorithm, data sources considered).

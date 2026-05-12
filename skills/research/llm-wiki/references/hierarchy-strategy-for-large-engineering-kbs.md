@@ -1,57 +1,93 @@
-# Hierarchy Strategy for Large Engineering Knowledge Bases
+# Hierarchy strategy for large internal engineering knowledge bases
 
-Captured from a discussion comparing Gordon's agent-inferred static LLM wiki hierarchy with the more programmatic approach in `nashsu/llm_wiki`.
+This captures the distinction between prompt-derived wiki hierarchy and a more programmatic graph/community approach, using `nashsu/llm_wiki` as a reference point.
 
-## Current Gordon/public static KB behavior
+## Current Gordon static/public KB approach
 
-- Hierarchy is primarily LLM/agent-inferred from semantic structure and user intent.
-- It is agent-maintained over time; "human maintained" means human-curated/overseen, not that the user manually edits hierarchy.
-- The agent should automatically re-evaluate topology during substantial updates: update existing pages, create child pages, split oversized pages, add intermediate hubs, move shared material upward, add cross-links, update sources, and preserve old URLs when pages move.
-- Existing rules are qualitative prompt rules, not deterministic constraints: semantic containment, concise hub pages, split large/duplicative sections, child/back links, top index contains only major hubs.
-- There is no hard encoded max-child rule today. A sensible future policy is soft max 7±2 children per parent; review threshold at 10+ children; root nav ~6-10 major hubs.
+The agent infers and maintains hierarchy semantically:
 
-## What nashsu/llm_wiki adds programmatically
+- root index contains only top-level hubs
+- broad domain → hub page
+- major bucket/theme → child hub
+- specific opportunity/company/source/deep dive → leaf page
+- repeated/shared analysis is promoted to an intermediate hub
+- parent pages stay concise maps, not dumping grounds
+- child pages are linked from parents and back to parents
 
-Observed from the repo README/code:
-- Two-step ingest: analysis first, then generation.
-- Persistent ingest queue with crash recovery/retry/cancel.
-- Knowledge graph from `[[wikilinks]]`.
-- 4-signal graph relevance: direct links, source overlap, Adamic-Adar/common neighbors, type affinity.
-- Louvain community detection with cohesion and top nodes.
-- Optional vector semantic search.
-- Review workflow for contradictions, duplicates, missing pages, and suggestions.
+These are mainly LLM/skill instructions, not a deterministic optimizer.
 
-## Trade-off
+## What the more programmatic approach adds
 
-Agent-inferred hierarchy is strong for small/medium curated expert KBs where a human-readable teaching structure matters more than deterministic clustering. It can produce better narrative topology, e.g. fundamentals → mechanisms → reliability → applications → latest research.
+`nashsu/llm_wiki`-style systems add encoded infrastructure around the wiki:
 
-Programmatic graph/hierarchy support scales better for large, continuously updated, multi-user engineering KBs because it can recompute structure signals, detect orphans/duplicates/stale pages, and expose cluster metrics. However, graph clusters are not automatically good navigation; they need LLM naming/synthesis and sometimes human approval.
+- two-stage ingest: analyze first, then generate/update pages
+- graph built from `[[wikilinks]]`
+- relevance scoring from direct links, source overlap, common neighbors / Adamic-Adar, and type affinity
+- Louvain community detection to identify emergent clusters
+- persistent ingest queue with retry/cancel/crash recovery
+- vector search / embedding layer
+- review queue for contradictions, duplicates, missing pages, and suggestions
 
-## Recommended scalable architecture
+## Pros of LLM-derived hierarchy
+
+- Better semantic and pedagogical judgment for human-readable KBs.
+- Can organize by reader intent, such as onboarding, device physics, design guidance, or business decision-making.
+- Flexible when the right structure is domain-specific and not obvious from graph metrics.
+- Avoids mechanical clusters that are statistically related but poor as navigation.
+
+## Cons of LLM-derived hierarchy
+
+- Less deterministic and harder to test.
+- At hundreds/thousands of pages, local updates can degrade global structure if the agent lacks full context.
+- Large refactors are expensive: move pages, preserve URLs, update backlinks, clean duplication.
+- Multi-user/team edits need stronger invariants and review gates.
+
+## Pros of programmatic graph/hierarchy signals
+
+- Scales mechanically to large corpora.
+- Repeatable metrics for orphan pages, dense clusters, source overlap, stale pages, missing backlinks, duplicate-ish pages.
+- Better observability for engineering teams: subsystem clusters, ownership gaps, underlinked docs.
+- Useful as a trigger for refactor candidates.
+
+## Cons of programmatic hierarchy
+
+- Graph communities are not automatically good navigation or teaching order.
+- Bad links or overly broad sources produce misleading clusters.
+- Regenerating hierarchy too aggressively can destabilize familiar navigation.
+- Still needs LLM/human naming and curation.
+
+## Recommended architecture for a large engineering team
 
 Use a hybrid:
-1. Programmatic substrate enforces invariants and computes signals:
-   - stable page IDs/slugs
-   - backlinks and broken-link checks
+
+1. **Programmatic substrate** enforces invariants and computes signals:
+   - stable IDs/slugs
+   - backlinks
    - source provenance
-   - freshness/staleness
-   - duplicate/orphan detection
-   - graph communities and cohesion
-   - max page size and max child count warnings
-   - redirect preservation
-   - review queues
-2. LLM semantic maintainer uses those signals to:
+   - owners/freshness
+   - duplicate/orphan/stale detection
+   - graph communities
+   - max page size / child count warnings
+   - redirects for moves
+   - review queue
+2. **LLM semantic maintainer** uses those signals to:
    - name clusters
-   - write hub summaries
+   - write summaries
    - decide when a cluster deserves a hub
    - split/merge pages
-   - convert raw docs into readable wiki pages
+   - convert raw docs into readable pages
    - explain contradictions
    - propose topology refactors
-3. Human approval gates for disruptive topology changes:
-   - automatic: small updates, new cross-links, ordinary child pages, minor page splits
-   - review required: moving/renaming major hubs, merging/deleting pages, re-homing many pages
+3. **Human review** is required for disruptive topology changes:
+   - move/rename major hubs
+   - merge/delete pages
+   - re-home many pages
+   - regenerate top-level navigation
 
-## Practical guidance for future answers
+Small updates, new leaf pages, backlinks, and obvious splits can be automatic.
 
-When asked which approach scales for an internal engineering team, recommend the hybrid. Say: program computes structure signals and enforces invariants; LLM turns them into human-usable hierarchy; humans approve disruptive refactors.
+## Practical rule of thumb
+
+- Curated expert/public KBs: LLM-derived hierarchy is usually best.
+- Large, continuously updated internal engineering KBs: programmatic graph + LLM curation is more scalable.
+- Do not choose pure graph hierarchy as the reader-facing structure without an LLM/human curation layer.

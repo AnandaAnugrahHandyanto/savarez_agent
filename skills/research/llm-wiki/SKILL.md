@@ -57,7 +57,7 @@ Recommended pattern:
 6. Verify with browser-like curl: `curl -L -A 'Mozilla/5.0' -H 'Cookie: wiki_auth=GW2026' <live-url>` because Python `urllib` can get Cloudflare 403s
 7. Live in ~30 seconds at `https://hermes-pages-d55.pages.dev/wiki/`
 
-Detailed Gordon-specific notes: see `references/gordon-static-html-wiki-maintenance.md`. For reducing duplication by refactoring hub/child topology, see `references/gordon-static-html-wiki-topology-refactors.md`. For public standalone KBs linked from the Hermes Pages homepage, see `references/public-static-kb-on-hermes-pages.md`. For hierarchy trade-offs and the recommended hybrid model for large engineering/team KBs, see `references/hierarchy-strategy-for-large-engineering-kbs.md`.
+Detailed Gordon-specific notes: see `references/gordon-static-html-wiki-maintenance.md`. For reducing duplication by refactoring hub/child topology, see `references/gordon-static-html-wiki-topology-refactors.md`. For public standalone KBs linked from the Hermes Pages homepage, see `references/public-static-kb-on-hermes-pages.md`. For large internal engineering KB hierarchy strategy (LLM-derived vs programmatic graph/community detection), see `references/hierarchy-strategy-for-large-engineering-kbs.md`. For hierarchy trade-offs and the recommended hybrid model for large engineering/team KBs, see `references/hierarchy-strategy-for-large-engineering-kbs.md`.
 
 **To add the wiki to Obsidian later:** Clone `https://github.com/rousegordon-ops/hermes-pages`, point Obsidian at `gordons-llm-wiki/` subdirectory.
 
