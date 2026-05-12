@@ -145,21 +145,27 @@ fi
 
 echo -e "${CYAN}→${NC} Setting up virtual environment..."
 
+# Clean up both old and current venv directories for a fresh install.
+# "venv" is the legacy name; ".venv" is the current convention.
+if [ -d ".venv" ]; then
+    echo -e "${CYAN}→${NC} Removing existing .venv..."
+    rm -rf .venv
+fi
 if [ -d "venv" ]; then
-    echo -e "${CYAN}→${NC} Removing old venv..."
+    echo -e "${CYAN}→${NC} Removing legacy venv/ (project now uses .venv)..."
     rm -rf venv
 fi
 
 if is_termux; then
-    "$PYTHON_PATH" -m venv venv
-    echo -e "${GREEN}✓${NC} venv created with stdlib venv"
+    "$PYTHON_PATH" -m venv .venv
+    echo -e "${GREEN}✓${NC} .venv created with stdlib venv"
 else
-    $UV_CMD venv venv --python "$PYTHON_VERSION"
-    echo -e "${GREEN}✓${NC} venv created (Python $PYTHON_VERSION)"
+    $UV_CMD venv .venv --python "$PYTHON_VERSION"
+    echo -e "${GREEN}✓${NC} .venv created (Python $PYTHON_VERSION)"
 fi
 
-export VIRTUAL_ENV="$SCRIPT_DIR/venv"
-SETUP_PYTHON="$SCRIPT_DIR/venv/bin/python"
+export VIRTUAL_ENV="$SCRIPT_DIR/.venv"
+SETUP_PYTHON="$SCRIPT_DIR/.venv/bin/python"
 
 # ============================================================================
 # Dependencies
@@ -219,7 +225,7 @@ else
         # `uv pip install` re-resolves transitives fresh from PyPI).
         echo -e "${CYAN}→${NC} Using uv.lock for hash-verified installation..."
         _UV_SYNC_LOG=$(mktemp)
-        if UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/venv" $UV_CMD sync --all-extras --locked 2>"$_UV_SYNC_LOG"; then
+        if UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/.venv" $UV_CMD sync --all-extras --locked 2>"$_UV_SYNC_LOG"; then
             echo -e "${GREEN}✓${NC} Dependencies installed (hash-verified via uv.lock)"
             rm -f "$_UV_SYNC_LOG"
         else
@@ -328,7 +334,7 @@ fi
 
 echo -e "${CYAN}→${NC} Setting up hermes command..."
 
-HERMES_BIN="$SCRIPT_DIR/venv/bin/hermes"
+HERMES_BIN="$SCRIPT_DIR/.venv/bin/hermes"
 COMMAND_LINK_DIR="$(get_command_link_dir)"
 COMMAND_LINK_DISPLAY_DIR="$(get_command_link_display_dir)"
 mkdir -p "$COMMAND_LINK_DIR"
@@ -385,7 +391,7 @@ mkdir -p "$HERMES_SKILLS_DIR"
 
 echo ""
 echo "Syncing bundled skills to ~/.hermes/skills/ ..."
-if "$SCRIPT_DIR/venv/bin/python" "$SCRIPT_DIR/tools/skills_sync.py" 2>/dev/null; then
+if "$SCRIPT_DIR/.venv/bin/python" "$SCRIPT_DIR/tools/skills_sync.py" 2>/dev/null; then
     echo -e "${GREEN}✓${NC} Skills synced"
 else
     # Fallback: copy if sync script fails (missing deps, etc.)
@@ -439,5 +445,5 @@ echo
 if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
     echo ""
     # Run directly with venv Python (no activation needed)
-    "$SCRIPT_DIR/venv/bin/python" -m hermes_cli.main setup
+    "$SCRIPT_DIR/.venv/bin/python" -m hermes_cli.main setup
 fi

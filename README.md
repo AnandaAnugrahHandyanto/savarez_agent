@@ -161,8 +161,8 @@ Quick start for contributors — clone and go with `setup-hermes.sh`:
 ```bash
 git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
-./setup-hermes.sh     # installs uv, creates venv, installs .[all], symlinks ~/.local/bin/hermes
-./hermes              # auto-detects the venv, no need to `source` first
+./setup-hermes.sh     # installs uv, creates .venv, installs .[all], symlinks ~/.local/bin/hermes
+./hermes              # auto-detects the .venv, no need to `source` first
 ```
 
 Manual path (equivalent to the above):
