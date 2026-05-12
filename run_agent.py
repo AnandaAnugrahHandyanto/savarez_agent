@@ -1243,6 +1243,8 @@ class AIAgent:
         self.ephemeral_system_prompt = ephemeral_system_prompt
         self.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
         self._user_id = user_id  # Platform user identifier (gateway sessions)
+        self._active_model = model        # updated by switch_model(); may differ from config-level self.model
+        self._active_provider = provider_name or ""
         self._user_name = user_name
         self._chat_id = chat_id
         self._chat_name = chat_name
@@ -2650,6 +2652,8 @@ class AIAgent:
         # ── Swap core runtime fields ──
         self.model = new_model
         self.provider = new_provider
+        self._active_model = new_model
+        self._active_provider = new_provider
         # Use new base_url when provided; only fall back to current when the
         # new provider genuinely has no endpoint (e.g. native SDK providers).
         # Without this guard the old provider's URL (e.g. Ollama's localhost
@@ -6093,10 +6097,12 @@ class AIAgent:
         timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
         if self.pass_session_id and self.session_id:
             timestamp_line += f"\nSession ID: {self.session_id}"
-        if self.model:
-            timestamp_line += f"\nModel: {self.model}"
-        if self.provider:
-            timestamp_line += f"\nProvider: {self.provider}"
+        _display_model = getattr(self, "_active_model", None) or self.model
+        _display_provider = getattr(self, "_active_provider", None) or self.provider
+        if _display_model:
+            timestamp_line += f"\nModel: {_display_model}"
+        if _display_provider:
+            timestamp_line += f"\nProvider: {_display_provider}"
         volatile_parts.append(timestamp_line)
 
         return {
