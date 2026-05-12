@@ -164,9 +164,6 @@ class LoopSupportMixin:
         "x-forwarded-for",
     )
 
-    @staticmethod
-
-
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
         """Request a summary when max iterations are reached. Returns the final response text."""
         print(f"⚠️  Reached maximum iterations ({self.max_iterations}). Requesting summary...")
