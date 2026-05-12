@@ -422,6 +422,8 @@ const ZH: Record<TranslationKey, TranslationValue> = {
   'setup.body': 'Hermes 需要先配置模型提供商，TUI 才能启动会话。',
   'setup.title': '需要配置',
   'setup.actions': '操作',
+  'setup.complete': '配置完成 — 正在启动会话…',
+  'setup.help': '运行完整配置向导（启动 `hermes setup`）',
   'session.titleQueuedSuffix': '（会话初始化后排队设置）',
   'session.titleSet': '会话标题已设置：{title}{suffix}',
   'session.titleSetFailed': '警告：设置会话标题失败：{message}',
