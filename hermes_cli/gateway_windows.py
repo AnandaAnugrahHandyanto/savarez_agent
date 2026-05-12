@@ -677,6 +677,13 @@ def stop() -> None:
     if killed:
         stopped_any = True
         print(f"✓ Killed {killed} gateway process(es)")
+    # Clear the lock file so a fresh gateway can start clean.
+    from hermes_cli.config import get_hermes_home
+    lock_path = Path(get_hermes_home()) / "gateway.lock"
+    try:
+        lock_path.write_text("")
+    except Exception:
+        pass
     if stopped_any:
         print("✓ Gateway stopped")
     else:
@@ -689,13 +696,4 @@ def restart() -> None:
     stop()
     # Give Windows a moment to release the listening port.
     time.sleep(1.0)
-    # Clear stale lock file — a zombie process may still hold the handle,
-    # but writing empty content effectively releases the lock for the new
-    # gateway process (see GitHub PR #24417).
-    from hermes_cli.config import get_hermes_home
-    lock_path = Path(get_hermes_home()) / "gateway.lock"
-    try:
-        lock_path.write_text("")
-    except Exception:
-        pass
     start()
