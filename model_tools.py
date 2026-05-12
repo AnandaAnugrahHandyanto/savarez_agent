@@ -197,7 +197,7 @@ try:
     from hermes_cli.plugins import discover_plugins
     discover_plugins()
 except Exception as e:
-    logger.debug("Plugin discovery failed: %s", e)
+    logger.warning("Plugin discovery failed: %s", e)
 
 
 # =============================================================================
