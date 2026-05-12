@@ -2917,6 +2917,12 @@ class DispatchResult:
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
+    disk_pressure_hold: Optional[dict[str, Any]] = None
+    """Details for an intentional disk-pressure dispatch pause, if active.
+
+    When set, normal non-emergency spawning is paused and dispatcher health
+    telemetry must treat the board as intentionally idle rather than stuck.
+    """
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -3631,7 +3637,188 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
-def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
+def _as_bool(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on", "enabled"}:
+            return True
+        if lowered in {"0", "false", "no", "off", "disabled"}:
+            return False
+    return default
+
+
+def _load_disk_pressure_hold_config() -> dict[str, Any]:
+    """Return ``kanban.disk_pressure_hold`` config as a mapping, if present.
+
+    The hold is intentionally opt-in via config/env or via a blocked board
+    hold task; the dispatcher should not surprise unrelated boards by applying
+    host-specific disk policies globally.
+    """
+    try:
+        from hermes_cli.config import load_config  # local import: avoids CLI cycles
+
+        cfg = load_config()
+    except Exception:
+        return {}
+    if not isinstance(cfg, dict):
+        return {}
+    kanban_cfg = cfg.get("kanban", {})
+    if not isinstance(kanban_cfg, dict):
+        return {}
+    raw = kanban_cfg.get("disk_pressure_hold", {})
+    if raw is True:
+        return {"enabled": True}
+    if isinstance(raw, dict):
+        return dict(raw)
+    return {}
+
+
+def _board_matches_disk_pressure_config(board: Optional[str], cfg: dict[str, Any]) -> bool:
+    boards = cfg.get("boards") or cfg.get("board")
+    if not boards:
+        return True
+    current = _normalize_board_slug(board) or get_current_board()
+    if isinstance(boards, str):
+        values = [boards]
+    else:
+        try:
+            values = list(boards)
+        except TypeError:
+            return False
+    for val in values:
+        try:
+            if (_normalize_board_slug(str(val)) or DEFAULT_BOARD) == current:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _configured_disk_pressure_hold(board: Optional[str]) -> Optional[dict[str, Any]]:
+    cfg = _load_disk_pressure_hold_config()
+    env = os.environ.get("HERMES_KANBAN_DISK_PRESSURE_HOLD")
+    if env is not None:
+        enabled = _as_bool(env, default=False)
+    else:
+        has_threshold = any(
+            key in cfg for key in ("critical_free_gib", "critical_free_bytes", "min_free_gib", "min_free_bytes")
+        )
+        enabled = _as_bool(cfg.get("enabled"), default=has_threshold)
+    if not enabled or not _board_matches_disk_pressure_config(board, cfg):
+        return None
+
+    path = str(cfg.get("path") or cfg.get("mount") or "/")
+    try:
+        import shutil
+
+        usage = shutil.disk_usage(path)
+    except OSError:
+        return None
+
+    threshold_bytes: Optional[float] = None
+    threshold_label: dict[str, Any] = {}
+    if cfg.get("critical_free_bytes") is not None:
+        try:
+            threshold_bytes = float(cfg["critical_free_bytes"])
+            threshold_label["critical_free_bytes"] = int(threshold_bytes)
+        except (TypeError, ValueError):
+            threshold_bytes = None
+    elif cfg.get("min_free_bytes") is not None:
+        try:
+            threshold_bytes = float(cfg["min_free_bytes"])
+            threshold_label["critical_free_bytes"] = int(threshold_bytes)
+        except (TypeError, ValueError):
+            threshold_bytes = None
+    else:
+        raw_gib = cfg.get("critical_free_gib", cfg.get("min_free_gib"))
+        try:
+            threshold_gib = float(raw_gib)
+            threshold_bytes = threshold_gib * 1024 * 1024 * 1024
+            threshold_label["critical_free_gib"] = threshold_gib
+        except (TypeError, ValueError):
+            threshold_bytes = None
+    if threshold_bytes is None or usage.free >= threshold_bytes:
+        return None
+
+    free_gib = usage.free / (1024 * 1024 * 1024)
+    hold: dict[str, Any] = {
+        "source": "disk_usage",
+        "board": _normalize_board_slug(board) or get_current_board(),
+        "path": path,
+        "free_gib": round(free_gib, 3),
+        "reason": (
+            f"disk pressure hold active: {path} has {free_gib:.2f} GiB free, "
+            f"below configured critical threshold"
+        ),
+    }
+    hold.update(threshold_label)
+    return hold
+
+
+def _blocked_disk_dispatch_hold(conn: sqlite3.Connection, board: Optional[str]) -> Optional[dict[str, Any]]:
+    row = conn.execute(
+        """
+        SELECT id, title
+          FROM tasks
+         WHERE status = 'blocked'
+           AND (
+                lower(coalesce(title, '') || ' ' || coalesce(body, '')) LIKE '%disk%'
+                OR lower(coalesce(title, '') || ' ' || coalesce(body, '')) LIKE '%low space%'
+           )
+           AND lower(coalesce(title, '') || ' ' || coalesce(body, '')) LIKE '%dispatch hold%'
+         ORDER BY priority DESC, created_at ASC
+         LIMIT 1
+        """
+    ).fetchone()
+    if row is None:
+        return None
+    board_slug = _normalize_board_slug(board) or get_current_board()
+    title = str(row["title"] or "disk-pressure dispatch hold")
+    task_id = str(row["id"])
+    return {
+        "source": "blocked_task",
+        "board": board_slug,
+        "task_id": task_id,
+        "title": title,
+        "reason": (
+            f"disk-pressure dispatch hold active via blocked task {task_id}: {title}. "
+            "Resume explicitly by unblocking/completing the hold after approval."
+        ),
+    }
+
+
+def get_disk_pressure_hold(
+    conn: sqlite3.Connection,
+    *,
+    board: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Return active disk-pressure dispatch-hold details, if any.
+
+    Two mechanisms are supported:
+
+    * ``kanban.disk_pressure_hold`` config for automatic low-free-space checks.
+    * A blocked board task whose title/body declares a disk dispatch hold, for
+      reversible operator-controlled pauses that remain explicit after disk
+      recovery until a human unblocks/completes the hold task.
+    """
+    return _configured_disk_pressure_hold(board) or _blocked_disk_dispatch_hold(conn, board)
+
+
+def _is_emergency_dispatch_task(task: Task) -> bool:
+    """Return True for tasks allowed through a disk-pressure hold."""
+    if task.priority >= 1000:
+        return True
+    text = f"{task.title or ''}\n{task.body or ''}".lower()
+    return "[emergency]" in text or text.startswith("emergency:") or "\nemergency:" in text
+
+
+def has_spawnable_ready(conn: sqlite3.Connection, *, board: Optional[str] = None) -> bool:
     """Return True iff there is at least one ready+assigned+unclaimed task
     whose assignee maps to a real Hermes profile.
 
@@ -3645,6 +3832,8 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     importable (e.g. partial install) — preserves the old behavior so
     the warning still fires in degraded environments.
     """
+    if get_disk_pressure_hold(conn, board=board) is not None:
+        return False
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
         "WHERE status = 'ready' AND assignee IS NOT NULL "
@@ -3734,18 +3923,22 @@ def dispatch_once(
             pass
 
     result = DispatchResult()
-    result.reclaimed = release_stale_claims(conn)
-    result.crashed = detect_crashed_workers(conn)
-    # detect_crashed_workers stashes protocol-violation auto-blocks on
-    # itself so the public list-return stays stable. Pull them into the
-    # DispatchResult here so telemetry / tests see the trip.
-    _crash_auto_blocked = getattr(
-        detect_crashed_workers, "_last_auto_blocked", []
-    )
-    if _crash_auto_blocked:
-        result.auto_blocked.extend(_crash_auto_blocked)
-    result.timed_out = enforce_max_runtime(conn)
-    result.promoted = recompute_ready(conn)
+    disk_pressure_hold = get_disk_pressure_hold(conn, board=board)
+    if disk_pressure_hold is not None:
+        result.disk_pressure_hold = disk_pressure_hold
+    if disk_pressure_hold is None:
+        result.reclaimed = release_stale_claims(conn)
+        result.crashed = detect_crashed_workers(conn)
+        # detect_crashed_workers stashes protocol-violation auto-blocks on
+        # itself so the public list-return stays stable. Pull them into the
+        # DispatchResult here so telemetry / tests see the trip.
+        _crash_auto_blocked = getattr(
+            detect_crashed_workers, "_last_auto_blocked", []
+        )
+        if _crash_auto_blocked:
+            result.auto_blocked.extend(_crash_auto_blocked)
+        result.timed_out = enforce_max_runtime(conn)
+        result.promoted = recompute_ready(conn)
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full
@@ -3763,12 +3956,15 @@ def dispatch_once(
         )
 
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT * FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
     spawned = 0
     for row in ready_rows:
+        task_view = Task.from_row(row)
+        if disk_pressure_hold is not None and not _is_emergency_dispatch_task(task_view):
+            continue
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
         if not row["assignee"]:

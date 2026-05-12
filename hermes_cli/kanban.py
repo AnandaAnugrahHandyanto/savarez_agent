@@ -1698,6 +1698,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             ],
             "skipped_unassigned": res.skipped_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
+            "disk_pressure_hold": res.disk_pressure_hold,
         }, indent=2))
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -1712,6 +1713,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"  {', '.join(res.auto_blocked)}")
     print(f"Promoted:     {res.promoted}")
     print(f"Spawned:      {len(res.spawned)}")
+    if res.disk_pressure_hold:
+        print(f"Disk hold:    {res.disk_pressure_hold.get('reason', res.disk_pressure_hold)}")
     for tid, who, ws in res.spawned:
         tag = " (dry)" if args.dry_run else ""
         print(f"  - {tid}  ->  {who}  @ {ws or '-'}{tag}")

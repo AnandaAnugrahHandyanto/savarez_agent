@@ -596,6 +596,133 @@ def test_dispatch_dry_run_does_not_claim(kanban_home, all_assignees_spawnable):
         assert kb.get_task(conn, t2).status == "ready"
 
 
+def test_dispatch_disk_pressure_hold_skips_spawns_and_running_reclaim(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    """An active disk-pressure hold pauses new worker starts without touching
+    already-running claims, even if one looks stale. Operators can then keep
+    current workers alive while preventing more disk churn."""
+    hold = {"reason": "low disk", "path": "/System/Volumes/Data"}
+    monkeypatch.setattr(kb, "get_disk_pressure_hold", lambda *a, **k: hold)
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    spawns = []
+
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="alice")
+        ready = kb.create_task(conn, title="ready", assignee="bob")
+        kb.claim_task(conn, running)
+        kb._set_worker_pid(conn, running, 12345)
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 3600, running),
+        )
+
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda task, workspace: spawns.append(task.id),
+        )
+
+        assert res.disk_pressure_hold == hold
+        assert res.spawned == []
+        assert spawns == []
+        assert res.reclaimed == 0
+        assert kb.get_task(conn, running).status == "running"
+        assert kb.get_task(conn, ready).status == "ready"
+
+
+def test_dispatch_disk_pressure_hold_allows_emergency_task(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    hold = {"reason": "low disk", "path": "/System/Volumes/Data"}
+    monkeypatch.setattr(kb, "get_disk_pressure_hold", lambda *a, **k: hold)
+    spawns = []
+
+    with kb.connect() as conn:
+        normal = kb.create_task(conn, title="normal", assignee="alice")
+        emergency = kb.create_task(
+            conn,
+            title="Emergency: preserve dispatcher health",
+            assignee="bob",
+            priority=1000,
+        )
+
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda task, workspace: spawns.append(task.id),
+        )
+
+        assert res.disk_pressure_hold == hold
+        assert spawns == [emergency]
+        assert kb.get_task(conn, normal).status == "ready"
+        assert kb.get_task(conn, emergency).status == "running"
+
+
+def test_has_spawnable_ready_false_when_disk_pressure_hold_active(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    monkeypatch.setattr(
+        kb,
+        "get_disk_pressure_hold",
+        lambda *a, **k: {"reason": "low disk"},
+    )
+    with kb.connect() as conn:
+        kb.create_task(conn, title="ready", assignee="alice")
+        assert kb.has_spawnable_ready(conn) is False
+
+
+def test_disk_pressure_hold_detects_blocked_dispatch_hold_task(kanban_home):
+    with kb.connect() as conn:
+        hold_task = kb.create_task(
+            conn,
+            title="Gridlux disk-space dispatch hold",
+            assignee="bonny",
+            body="Keep blocked until disk space has recovered and dispatch is approved.",
+        )
+        assert kb.block_task(conn, hold_task, reason="Blocked by design: low disk")
+
+        hold = kb.get_disk_pressure_hold(conn, board="gridlux")
+
+    assert hold is not None
+    assert hold["task_id"] == hold_task
+    assert "dispatch hold" in hold["reason"]
+
+
+def test_disk_pressure_hold_detects_configured_low_free_space(
+    kanban_home, monkeypatch
+):
+    import shutil
+
+    monkeypatch.setattr(
+        kb,
+        "_load_disk_pressure_hold_config",
+        lambda: {
+            "enabled": True,
+            "boards": ["gridlux"],
+            "path": "/System/Volumes/Data",
+            "critical_free_gib": 20,
+        },
+    )
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda _path: shutil._ntuple_diskusage(
+            total=100 * 1024**3,
+            used=90 * 1024**3,
+            free=10 * 1024**3,
+        ),
+    )
+
+    with kb.connect() as conn:
+        hold = kb.get_disk_pressure_hold(conn, board="gridlux")
+        assert kb.get_disk_pressure_hold(conn, board="default") is None
+
+    assert hold is not None
+    assert hold["source"] == "disk_usage"
+    assert hold["path"] == "/System/Volumes/Data"
+    assert hold["free_gib"] == 10
+    assert hold["critical_free_gib"] == 20
+
+
 def test_dispatch_skips_unassigned(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="floater")

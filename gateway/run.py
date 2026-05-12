@@ -4562,6 +4562,7 @@ class GatewayRunner:
         HEALTH_WINDOW = 6
         bad_ticks = 0
         last_warn_at = 0
+        last_hold_log_at: dict[str, int] = {}
 
         def _tick_once_for_board(slug: str) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
@@ -4635,7 +4636,7 @@ class GatewayRunner:
                 conn = None
                 try:
                     conn = _kb.connect(board=slug)
-                    if _kb.has_spawnable_ready(conn):
+                    if _kb.has_spawnable_ready(conn, board=slug):
                         return True
                 except Exception:
                     continue
@@ -4655,6 +4656,18 @@ class GatewayRunner:
                 results = await asyncio.to_thread(_tick_once)
                 any_spawned = False
                 for slug, res in (results or []):
+                    if res is not None and getattr(res, "disk_pressure_hold", None):
+                        now = int(time.time())
+                        if now - last_hold_log_at.get(slug, 0) >= 300:
+                            hold = getattr(res, "disk_pressure_hold", {}) or {}
+                            reason = hold.get("reason", hold) if isinstance(hold, dict) else hold
+                            logger.warning(
+                                "kanban dispatcher [%s]: disk-pressure hold active; "
+                                "new non-emergency workers paused (%s)",
+                                slug,
+                                reason,
+                            )
+                            last_hold_log_at[slug] = now
                     if res is not None and getattr(res, "spawned", None):
                         any_spawned = True
                         # Quiet by default — only log when something actually
