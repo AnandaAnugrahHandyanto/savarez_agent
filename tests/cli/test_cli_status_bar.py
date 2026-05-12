@@ -53,6 +53,12 @@ def _attach_agent(
 
 
 class TestCLIStatusBar:
+    def test_scrollback_box_width_is_resize_safe(self):
+        assert HermesCLI._scrollback_box_width(120) == 56
+        assert HermesCLI._scrollback_box_width(80) == 56
+        assert HermesCLI._scrollback_box_width(60) == 56
+        assert HermesCLI._scrollback_box_width(20) == 32
+
     def test_context_style_thresholds(self):
         cli_obj = _make_cli()
 
@@ -331,6 +337,13 @@ class TestCLIStatusBar:
         assert cli_obj._tui_input_rule_height("top", width=50) == 1
         assert cli_obj._tui_input_rule_height("bottom", width=50) == 0
         assert cli_obj._tui_input_rule_height("bottom", width=90) == 1
+
+    def test_input_rules_hide_after_resize_until_next_input(self):
+        cli_obj = _make_cli()
+        cli_obj._status_bar_suppressed_after_resize = True
+
+        assert cli_obj._tui_input_rule_height("top", width=90) == 0
+        assert cli_obj._tui_input_rule_height("bottom", width=90) == 0
 
     def test_agent_spacer_reclaimed_on_narrow_terminals(self):
         cli_obj = _make_cli()

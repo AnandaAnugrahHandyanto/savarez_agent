@@ -222,6 +222,27 @@ class TestPromptToolkitTerminalCompatibility:
 
         assert renderer.cpr_not_supported_callback is None
 
+    def test_resize_recovery_delegates_to_native_handler_only(self, monkeypatch):
+        """Ordinary terminal resize must not clear/replay/reset outside prompt_toolkit."""
+        cli_obj = _make_cli()
+        import cli as cli_mod
+
+        events = []
+        monkeypatch.setattr(cli_mod, "_replay_output_history", lambda: events.append("replay"))
+        app = MagicMock()
+
+        def original_on_resize():
+            events.append("original_on_resize")
+
+        cli_obj._recover_after_resize(app, original_on_resize)
+
+        assert events == ["original_on_resize"]
+        assert cli_obj._status_bar_suppressed_after_resize is True
+        app.renderer.output.erase_screen.assert_not_called()
+        app.renderer.output.write_raw.assert_not_called()
+        app.renderer.reset.assert_not_called()
+        app.invalidate.assert_not_called()
+
 
 class TestSingleQueryState:
     def test_voice_and_interrupt_state_initialized_before_run(self):
