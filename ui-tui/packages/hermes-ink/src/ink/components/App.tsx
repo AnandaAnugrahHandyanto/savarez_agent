@@ -75,6 +75,7 @@ type Props = {
   // DOM elements. Called for mode-1003 motion events with no button held.
   // No-op outside fullscreen (Ink.dispatchHover gates on altScreenActive).
   readonly onHoverAt: (col: number, row: number) => void
+  readonly onHyperlinkHover: (url: string | undefined) => void
   // Look up the OSC 8 hyperlink at (col, row) synchronously at click
   // time. Returns the URL or undefined. The browser-open is deferred by
   // MULTI_CLICK_TIMEOUT_MS so double-click can cancel it.
@@ -609,6 +610,7 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
       app.lastHoverCol = col
       app.lastHoverRow = row
       app.props.onHoverAt(col, row)
+      app.props.onHyperlinkHover(app.props.getHyperlinkAt(col, row))
 
       return
     }

@@ -17,6 +17,12 @@ const ENV_OFF_RE = /^(?:0|false|no|off)$/i
 /** String Terminator (ESC \) - alternative to BEL for terminating OSC */
 export const ST = ESC + '\\'
 
+export type PointerShape = 'default' | 'pointer'
+
+export function setPointerShape(shape: PointerShape): string {
+  return osc(OSC.POINTER_SHAPE, shape)
+}
+
 /** Generate an OSC sequence: ESC ] p1;p2;...;pN <terminator>
  * Uses ST terminator for Kitty (avoids beeps), BEL for others */
 export function osc(...parts: (string | number)[]): string {
@@ -424,6 +430,7 @@ export const OSC = {
   SET_TITLE: 2,
   SET_COLOR: 4,
   SET_CWD: 7,
+  POINTER_SHAPE: 22,
   HYPERLINK: 8,
   ITERM2: 9, // iTerm2 proprietary sequences
   SET_FG_COLOR: 10,

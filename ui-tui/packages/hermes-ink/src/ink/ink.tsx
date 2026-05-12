@@ -105,6 +105,7 @@ import {
   CLEAR_ITERM2_PROGRESS,
   CLEAR_TAB_STATUS,
   setClipboard,
+  setPointerShape,
   supportsTabStatus,
   wrapForMultiplexer
 } from './termio/osc.js'
@@ -233,6 +234,7 @@ export default class Ink {
   // so App.tsx's handleMouseEvent is stateless — dispatchHover diffs
   // against this set and mutates it in place.
   private readonly hoveredNodes = new Set<dom.DOMElement>()
+  private hyperlinkPointerActive = false
   // Set by <AlternateScreen> via setAltScreenActive(). Controls the
   // renderer's cursor.y clamping (keeps cursor in-viewport to avoid
   // LF-induced scroll when screen.height === terminalRows) and gates
@@ -1835,6 +1837,17 @@ export default class Ink {
     openExternalUrl(url)
   }
 
+  setHyperlinkHover(url: string | undefined): void {
+    const active = !!url
+
+    if (active === this.hyperlinkPointerActive || !this.options.stdout.isTTY) {
+      return
+    }
+
+    this.hyperlinkPointerActive = active
+    this.options.stdout.write(setPointerShape(active ? 'pointer' : 'default'))
+  }
+
   /**
    * Handle a double- or triple-click at (col, row): select the word or
    * line under the cursor by reading the current screen buffer. Called on
@@ -2121,6 +2134,7 @@ export default class Ink {
         onCursorDeclaration={this.setCursorDeclaration}
         onExit={this.unmount}
         onHoverAt={this.dispatchHover}
+        onHyperlinkHover={this.setHyperlinkHover}
         onMouseDownAt={this.dispatchMouseDown}
         onMouseDragAt={this.dispatchMouseDrag}
         onMouseUpAt={this.dispatchMouseUp}
@@ -2193,6 +2207,12 @@ export default class Ink {
       writeSync(1, DBP)
       // Show cursor
       writeSync(1, SHOW_CURSOR)
+
+      if (this.hyperlinkPointerActive) {
+        writeSync(1, setPointerShape('default'))
+        this.hyperlinkPointerActive = false
+      }
+
       // Clear iTerm2 progress bar
       writeSync(1, CLEAR_ITERM2_PROGRESS)
 

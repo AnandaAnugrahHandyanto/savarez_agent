@@ -7,6 +7,7 @@ const createApp = () => {
     getHyperlinkAt: vi.fn(),
     onClickAt: vi.fn(),
     onHoverAt: vi.fn(),
+    onHyperlinkHover: vi.fn(),
     onMouseDownAt: vi.fn(),
     onMouseDragAt: vi.fn(),
     onMouseUpAt: vi.fn(),
@@ -88,5 +89,33 @@ describe('handleMouseEvent', () => {
     vi.runOnlyPendingTimers()
     expect(props.onOpenHyperlink).toHaveBeenCalledWith('https://example.com')
     vi.useRealTimers()
+  })
+
+  it('updates hyperlink hover state on no-button mouse motion', () => {
+    const { app, props } = createApp()
+
+    props.getHyperlinkAt.mockReturnValueOnce('https://example.com').mockReturnValueOnce(undefined)
+
+    handleMouseEvent(app, {
+      action: 'press',
+      button: 35,
+      col: 10,
+      kind: 'mouse',
+      row: 5,
+      sequence: '\x1b[<35;10;5M'
+    })
+    handleMouseEvent(app, {
+      action: 'press',
+      button: 35,
+      col: 11,
+      kind: 'mouse',
+      row: 5,
+      sequence: '\x1b[<35;11;5M'
+    })
+
+    expect(props.onHoverAt).toHaveBeenCalledWith(9, 4)
+    expect(props.getHyperlinkAt).toHaveBeenNthCalledWith(1, 9, 4)
+    expect(props.onHyperlinkHover).toHaveBeenNthCalledWith(1, 'https://example.com')
+    expect(props.onHyperlinkHover).toHaveBeenNthCalledWith(2, undefined)
   })
 })

@@ -169,9 +169,7 @@ function ResolvedLink({ fallbackLabel, t, url }: ResolvedLinkProps) {
 
   return (
     <Link url={url}>
-      <Text color={t.color.accent} underline>
-        {display}
-      </Text>
+      <Text color={t.color.accent}>{display}</Text>
     </Link>
   )
 }

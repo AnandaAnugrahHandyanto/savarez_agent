@@ -14,7 +14,7 @@ const ESC = String.fromCharCode(27)
 const CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g')
 const OSC_RE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
 
-const renderPlain = (node: React.ReactNode) => {
+const renderRaw = (node: React.ReactNode) => {
   const stdout = new PassThrough()
   const stdin = new PassThrough()
   const stderr = new PassThrough()
@@ -36,6 +36,12 @@ const renderPlain = (node: React.ReactNode) => {
 
   instance.unmount()
   instance.cleanup()
+
+  return output
+}
+
+const renderPlain = (node: React.ReactNode) => {
+  const output = renderRaw(node)
 
   return output
     .replace(OSC_RE, '')
@@ -181,6 +187,16 @@ describe('protocol sentinels', () => {
     expect(AUDIO_DIRECTIVE_RE.test('[[audio_as_voice]]')).toBe(true)
     expect(AUDIO_DIRECTIVE_RE.test('  [[audio_as_voice]]  ')).toBe(true)
     expect(AUDIO_DIRECTIVE_RE.test('audio_as_voice')).toBe(false)
+  })
+})
+
+describe('Md links', () => {
+  it('renders OSC 8 links without static underline styling', () => {
+    const raw = renderRaw(React.createElement(Md, { t: DEFAULT_THEME, text: '[Example](https://example.com)' }))
+
+    expect(raw).toContain('https://example.com')
+    expect(raw).not.toContain(`${ESC}[4m`)
+    expect(raw).not.toContain(`${ESC}[24m`)
   })
 })
 
