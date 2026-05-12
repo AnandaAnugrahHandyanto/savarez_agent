@@ -3135,8 +3135,36 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             "Move fallback_model to the top level of config.yaml (no indentation)",
         ))
 
-    # ── model section: should exist when custom_providers is configured ──
+    # ── Gemini Code Assist OAuth as primary needs a real fallback ─────────
+    # Code Assist OAuth can authenticate and handle simple prompts, but its
+    # backend applies short-window account/model throttles that commonly 429 on
+    # Hermes tool-call follow-up turns even when daily quota remains. Warn early
+    # instead of letting users discover this mid-agent run.
+    model_provider = None
     model_cfg = config.get("model")
+    if isinstance(model_cfg, dict):
+        model_provider = str(model_cfg.get("provider") or "").strip().lower()
+    elif isinstance(model_cfg, str):
+        model_provider = str(model_cfg or "").strip().lower()
+    code_assist_aliases = {"google-gemini-cli", "gemini-cli", "gemini-oauth"}
+
+    if model_provider in code_assist_aliases:
+        configured_fallback = config.get("fallback_providers") or config.get("fallback_model")
+        fallback_entries = configured_fallback if isinstance(configured_fallback, list) else [configured_fallback]
+        has_non_code_assist_fallback = any(
+            isinstance(entry, dict)
+            and str(entry.get("provider") or "").strip().lower() not in ("", *code_assist_aliases)
+            and bool(entry.get("model"))
+            for entry in fallback_entries
+        )
+        if not has_non_code_assist_fallback:
+            issues.append(ConfigIssue(
+                "warning",
+                "google-gemini-cli is configured as the primary provider without a non-Code-Assist fallback",
+                "Code Assist OAuth can short-window 429 during tool-call follow-up turns even with daily quota remaining; add fallback_providers with an API-key or other paid provider.",
+            ))
+
+    # ── model section: should exist when custom_providers is configured ──
     if cp and not model_cfg:
         issues.append(ConfigIssue(
             "warning",

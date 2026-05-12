@@ -170,6 +170,40 @@ class TestFallbackModelValidation:
         })
         assert any("fallback_model[0]" in i.message and "should be a dict" in i.message for i in issues)
 
+    def test_google_gemini_cli_primary_without_fallback_warns(self):
+        """Code Assist OAuth is burst capacity; primary config needs fallback."""
+        issues = validate_config_structure({
+            "model": {"provider": "google-gemini-cli", "default": "gemini-2.5-pro"},
+            "fallback_providers": [],
+        })
+
+        assert any(
+            i.severity == "warning"
+            and "google-gemini-cli" in i.message
+            and "fallback" in i.message
+            for i in issues
+        )
+
+    def test_google_gemini_cli_primary_with_non_code_assist_fallback_no_warning(self):
+        issues = validate_config_structure({
+            "model": {"provider": "google-gemini-cli", "default": "gemini-2.5-pro"},
+            "fallback_providers": [
+                {"provider": "openai-codex", "model": "gpt-5.4-mini"},
+            ],
+        })
+
+        assert not any("google-gemini-cli" in i.message and "fallback" in i.message for i in issues)
+
+    def test_google_gemini_cli_primary_with_code_assist_fallback_still_warns(self):
+        issues = validate_config_structure({
+            "model": {"provider": "gemini-oauth", "default": "gemini-2.5-pro"},
+            "fallback_providers": [
+                {"provider": "gemini-cli", "model": "gemini-2.5-flash-lite"},
+            ],
+        })
+
+        assert any("google-gemini-cli" in i.message and "fallback" in i.message for i in issues)
+
 
 class TestMissingModelSection:
     """Warn when custom_providers exists but model section is missing."""
