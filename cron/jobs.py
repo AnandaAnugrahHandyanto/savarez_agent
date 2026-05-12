@@ -986,7 +986,7 @@ def remove_job(job_id: str, store: Optional["CronStore"] = None) -> bool:
     if len(jobs) < original_len:
         save_jobs(jobs, store=resolved)
         # Clean up output directory to prevent orphaned dirs accumulating
-        job_output_dir = OUTPUT_DIR / job_id
+        job_output_dir = resolved.output_dir / job_id
         if job_output_dir.exists():
             shutil.rmtree(job_output_dir)
         return True
@@ -1197,7 +1197,7 @@ def _get_due_jobs_locked(store: Optional["CronStore"] = None) -> List[Dict[str, 
             due.append(job)
 
     if needs_save:
-        save_jobs(raw_jobs)
+        save_jobs(raw_jobs, store=resolved)
 
     return due
 

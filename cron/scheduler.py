@@ -878,45 +878,54 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             )
 
     # Inject output from referenced cron jobs as context.
+    # v1: store-aware context resolution via load_latest_job_output.
     context_from = job.get("context_from")
     if context_from:
-        from cron.jobs import OUTPUT_DIR
+        from cron.jobs import load_latest_job_output, OUTPUT_DIR as _legacy_output_dir
         if isinstance(context_from, str):
             context_from = [context_from]
         for source_job_id in context_from:
-            # Guard against path traversal — valid job IDs are 12-char hex strings
-            if not source_job_id or not all(c in "0123456789abcdef" for c in source_job_id):
-                logger.warning("context_from: skipping invalid job_id %r", source_job_id)
-                continue
+            # Try store-aware resolution first
             try:
-                job_output_dir = OUTPUT_DIR / source_job_id
-                if not job_output_dir.exists():
-                    continue  # silent skip — no output yet
-                output_files = sorted(
-                    job_output_dir.glob("*.md"),
-                    key=lambda f: f.stat().st_mtime,
-                    reverse=True,
-                )
-                if not output_files:
-                    continue  # silent skip — no output yet
-                latest_output = output_files[0].read_text(encoding="utf-8").strip()
-                # Truncate to 8K characters to avoid prompt bloat
-                _MAX_CONTEXT_CHARS = 8000
-                if len(latest_output) > _MAX_CONTEXT_CHARS:
-                    latest_output = latest_output[:_MAX_CONTEXT_CHARS] + "\n\n[... output truncated ...]"
-                if latest_output:
-                    prompt = (
-                        f"## Output from job '{source_job_id}'\n"
-                        "The following is the most recent output from a preceding "
-                        "cron job. Use it as context for your analysis.\n\n"
-                        f"```\n{latest_output}\n```\n\n"
-                        f"{prompt}"
+                context_output = load_latest_job_output(source_job_id)
+            except (OSError, PermissionError):
+                context_output = None
+            if context_output is not None:
+                latest_output = context_output.strip()
+            else:
+                # Fallback: direct file read for legacy plain IDs
+                if not source_job_id or not all(c in "0123456789abcdef" for c in source_job_id):
+                    logger.warning("context_from: skipping invalid job_id %r", source_job_id)
+                    continue
+                try:
+                    job_output_dir = _legacy_output_dir / source_job_id
+                    if not job_output_dir.exists():
+                        continue
+                    output_files = sorted(
+                        job_output_dir.glob("*.md"),
+                        key=lambda f: f.stat().st_mtime,
+                        reverse=True,
                     )
-                else:
-                    continue  # silent skip — empty output
-            except (OSError, PermissionError) as e:
-                logger.warning("context_from: failed to read output for job %r: %s", source_job_id, e)
-                # silent skip — do not pollute the prompt with error messages
+                    if not output_files:
+                        continue
+                    latest_output = output_files[0].read_text(encoding="utf-8").strip()
+                except Exception:
+                    logger.warning("context_from: failed to read output for %r", source_job_id)
+                    continue
+            # Truncate to 8K characters to avoid prompt bloat
+            _MAX_CONTEXT_CHARS = 8000
+            if latest_output and len(latest_output) > _MAX_CONTEXT_CHARS:
+                latest_output = latest_output[:_MAX_CONTEXT_CHARS] + "\n\n[... output truncated ...]"
+            if latest_output:
+                prompt = (
+                    f"## Output from job '{source_job_id}'\n"
+                    "The following is the most recent output from a preceding "
+                    "cron job. Use it as context for your analysis.\n\n"
+                    f"```\n{latest_output}\n```\n\n"
+                    f"{prompt}"
+                )
+            else:
+                continue
 
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
@@ -1753,16 +1762,28 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
     try:
         due_jobs = get_due_jobs()
-        # Merge global due jobs (if stores differ — avoid double-counting)
+        # Merge global due jobs under cross-process file lock so multiple
+        # profile gateways can't claim the same global job.
+        global_lock_cm = None
+        global_lock_held = False
         try:
-            from cron.jobs import global_store as _gs, current_profile_store as _cps
+            from cron.jobs import global_store as _gs, current_profile_store as _cps, with_store_file_lock
             gs = _gs()
             ps = _cps()
             if gs.jobs_file.resolve() != ps.jobs_file.resolve():
-                global_due = get_due_jobs(store=gs)
-                due_jobs.extend(global_due)
-        except Exception:
-            pass
+                global_lock_cm = with_store_file_lock(gs)
+                global_lock_held = global_lock_cm.__enter__()
+                if global_lock_held:
+                    global_due = get_due_jobs(store=gs)
+                    due_jobs.extend(global_due)
+                else:
+                    global_lock_cm.__exit__(None, None, None)
+                    global_lock_cm = None
+            else:
+                global_lock_cm = None
+        except Exception as e:
+            logger.debug("Global cron claim skipped: %s", e)
+            global_lock_cm = None
 
         if verbose and not due_jobs:
             logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
@@ -1912,6 +1933,11 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
         return sum(_results)
     finally:
+        if global_lock_cm is not None:
+            try:
+                global_lock_cm.__exit__(None, None, None)
+            except Exception:
+                pass
         if fcntl:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
         elif msvcrt:
