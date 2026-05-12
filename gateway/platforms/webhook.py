@@ -581,6 +581,14 @@ class WebhookAdapter(BasePlatformAdapter):
             ).hexdigest()
             return hmac.compare_digest(generic_sig, expected)
 
+        # Linear: Linear-Signature = <hex HMAC-SHA256>
+        linear_sig = request.headers.get("Linear-Signature", "")
+        if linear_sig:
+            expected = hmac.new(
+                secret.encode(), body, hashlib.sha256
+            ).hexdigest()
+            return hmac.compare_digest(linear_sig, expected)
+
         # No recognised signature header but secret is configured → reject
         logger.debug(
             "[webhook] Secret configured but no signature header found"
