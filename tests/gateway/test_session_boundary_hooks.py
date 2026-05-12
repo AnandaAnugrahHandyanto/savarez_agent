@@ -101,6 +101,30 @@ async def test_reset_fires_reset_hook(mock_invoke_hook):
 
 @pytest.mark.asyncio
 @patch("hermes_cli.plugins.invoke_hook")
+async def test_reset_without_existing_session_skips_finalize_hook(mock_invoke_hook):
+    """First-session /new should not emit a fake finalize event with None."""
+    runner = _make_runner()
+    session_key = build_session_key(_make_source())
+    runner.session_store._entries = {}
+    runner.session_store.reset_session.return_value = None
+
+    await runner._handle_reset_command(_make_event("/new"))
+
+    finalize_calls = [
+        call for call in mock_invoke_hook.call_args_list if call[0][0] == "on_session_finalize"
+    ]
+    assert finalize_calls == []
+    runner.session_store.reset_session.assert_called_once_with(session_key)
+    runner.session_store.get_or_create_session.assert_called_once_with(
+        _make_source(), force_new=True
+    )
+    mock_invoke_hook.assert_any_call(
+        "on_session_reset", session_id="sess-new", platform="telegram"
+    )
+
+
+@pytest.mark.asyncio
+@patch("hermes_cli.plugins.invoke_hook")
 async def test_finalize_before_reset(mock_invoke_hook):
     """on_session_finalize must fire before on_session_reset."""
     runner = _make_runner()
