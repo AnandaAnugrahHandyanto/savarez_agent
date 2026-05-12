@@ -176,7 +176,7 @@ hermes skills uninstall <skill-name>
 | [**1password**](/docs/user-guide/skills/optional/security/security-1password) | Set up and use 1Password CLI (op). Use when installing the CLI, enabling desktop app integration, signing in, and reading/injecting secrets for commands. |
 | [**oss-forensics**](/docs/user-guide/skills/optional/security/security-oss-forensics) | Supply chain investigation, evidence recovery, and forensic analysis for GitHub repositories. Covers deleted commit recovery, force-push detection, IOC extraction, multi-source evidence collection, hypothesis formation/validation, and st... |
 | [**sherlock**](/docs/user-guide/skills/optional/security/security-sherlock) | OSINT username search across 400+ social networks. Hunt down social media accounts by username. |
-| [**web3-permission-audit**](/docs/user-guide/skills/optional/security/security-web3-permission-audit) | Read-only cross-chain wallet permission audit for Solana SPL delegates, XRPL trust lines, and targeted Base/EVM ERC-20 allowances. Surfaces revocable spend rights, issuer-control risk, rippling exposure, freeze authorities, and explicit... |
+| [**web3-permission-audit**](/docs/user-guide/skills/optional/security/security-web3-permission-audit) | Instruction-first cross-chain wallet permission audit playbook for Solana, XRPL, and Base/EVM. Guides read-only review of delegates, trust lines, allowances, freeze controls, issuer exposure, and explicit coverage limits without bundling... |
 
 ## web-development
 
