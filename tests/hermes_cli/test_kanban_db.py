@@ -1230,11 +1230,12 @@ def test_unlink_tasks_triggers_recompute_ready(kanban_home):
         a = kb.create_task(conn, title="parent-done")
         kb.complete_task(conn, a)
 
-        # C is running (not done) — blocks child B.
-        c = kb.create_task(conn, title="parent-running")
-        kb.claim_task(conn, c, claimer="worker:1")
+        # C is todo (blocked by its own unsatisfied parent) — blocks child B.
+        c_grandparent = kb.create_task(conn, title="c-grandparent")
+        c = kb.create_task(conn, title="parent-blocked", parents=[c_grandparent])
+        assert kb.get_task(conn, c).status == "todo"
 
-        # B depends on both A (done) and C (running) → stays todo.
+        # B depends on both A (done) and C (todo) → stays todo.
         b = kb.create_task(conn, title="child", parents=[a, c])
         assert kb.get_task(conn, b).status == "todo"
 
@@ -1247,6 +1248,105 @@ def test_unlink_tasks_triggers_recompute_ready(kanban_home):
             "child should promote to ready immediately after unlink_tasks "
             "removes its last blocking dependency"
         )
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator pattern: running parents allow children (issue #24489)
+# ---------------------------------------------------------------------------
+
+def test_running_parent_does_not_block_child_promotion(kanban_home):
+    """Children must be promotable to ready while a parent is still running.
+
+    Regression test for issue #24489: the orchestrator pattern requires
+    a parent task to stay 'running' while coordinating child tasks in
+    parallel. Before the fix, children were permanently stuck in 'todo'
+    because only 'done' and 'archived' parents were considered non-blocking.
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="orchestrator")
+        kb.claim_task(conn, parent, claimer="orch:1")
+        assert kb.get_task(conn, parent).status == "running"
+
+        child = kb.create_task(conn, title="review-task", parents=[parent])
+        assert kb.get_task(conn, child).status == "ready", (
+            "child should be ready when parent is running (orchestrator pattern)"
+        )
+
+
+def test_link_keeps_ready_child_when_parent_is_running(kanban_home):
+    """link_tasks must not demote a ready child when the parent is running.
+
+    Regression test for issue #24489: link_tasks previously demoted children
+    to 'todo' whenever the parent was not 'done'. With the orchestrator pattern,
+    'running' parents must also allow children to remain ready.
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="orchestrator")
+        kb.claim_task(conn, parent, claimer="orch:1")
+        assert kb.get_task(conn, parent).status == "running"
+
+        child = kb.create_task(conn, title="child")
+        assert kb.get_task(conn, child).status == "ready"
+
+        kb.link_tasks(conn, parent, child)
+        assert kb.get_task(conn, child).status == "ready", (
+            "child should remain ready when linked to a running parent"
+        )
+
+
+def test_child_claimable_while_parent_is_running(kanban_home):
+    """Children must be claimable while a parent is still running.
+
+    Regression test for issue #24489: claim_task previously rejected claims
+    when any parent was not 'done' or 'archived'. With the orchestrator
+    pattern, 'running' parents must not block child claiming.
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="orchestrator")
+        kb.claim_task(conn, parent, claimer="orch:1")
+        assert kb.get_task(conn, parent).status == "running"
+
+        child = kb.create_task(conn, title="review-task", parents=[parent])
+        assert kb.get_task(conn, child).status == "ready"
+
+        claimed = kb.claim_task(conn, child, claimer="worker:1")
+        assert claimed is not None, (
+            "child should be claimable while parent is running"
+        )
+        assert claimed.status == "running"
+
+
+def test_orchestrator_full_lifecycle(kanban_home):
+    """Full orchestrator lifecycle: parent runs, children execute, parent completes.
+
+    Regression test for issue #24489: verifies the complete orchestrator
+    workflow where a running parent coordinates children in parallel.
+    """
+    with kb.connect() as conn:
+        # Create orchestrator and claim it.
+        parent = kb.create_task(conn, title="orchestrator")
+        kb.claim_task(conn, parent, claimer="orch:1")
+
+        # Create two child tasks linked to the running parent.
+        c1 = kb.create_task(conn, title="review-1", parents=[parent])
+        c2 = kb.create_task(conn, title="review-2", parents=[parent])
+        assert kb.get_task(conn, c1).status == "ready"
+        assert kb.get_task(conn, c2).status == "ready"
+
+        # Claim and complete children while parent is running.
+        kb.claim_task(conn, c1, claimer="worker:1")
+        kb.complete_task(conn, c1, result="approved")
+        assert kb.get_task(conn, c1).status == "done"
+
+        kb.claim_task(conn, c2, claimer="worker:2")
+        kb.complete_task(conn, c2, result="approved")
+        assert kb.get_task(conn, c2).status == "done"
+
+        # Parent can now complete.
+        kb.complete_task(conn, parent, result="all reviews done")
+        assert kb.get_task(conn, parent).status == "done"
+
+
 # ---------------------------------------------------------------------------
 # _add_column_if_missing / _migrate_add_optional_columns idempotency (#21708)
 # ---------------------------------------------------------------------------

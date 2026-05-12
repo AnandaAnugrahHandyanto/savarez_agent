@@ -1362,7 +1362,7 @@ def create_task(
                             "(" + ",".join("?" * len(parents)) + ")",
                             parents,
                         ).fetchall()
-                        if any(r["status"] != "done" for r in rows):
+                        if any(r["status"] not in {"done", "running"} for r in rows):
                             initial_status = "todo"
                 # Even in triage mode we still need to validate parent ids
                 # so the eventual link rows don't dangle.
@@ -1529,7 +1529,7 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
         parent_status = conn.execute(
             "SELECT status FROM tasks WHERE id = ?", (parent_id,)
         ).fetchone()["status"]
-        if parent_status != "done":
+        if parent_status not in {"done", "running"}:
             conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
@@ -1826,7 +1826,7 @@ def _synthesize_ended_run(
 # ---------------------------------------------------------------------------
 
 def recompute_ready(conn: sqlite3.Connection) -> int:
-    """Promote ``todo`` tasks to ``ready`` when all parents are ``done`` or ``archived``.
+    """Promote ``todo`` tasks to ``ready`` when all parents are ``done``, ``archived``, or ``running``.
 
     Returns the number of tasks promoted.  Safe to call inside or outside
     an existing transaction; it opens its own IMMEDIATE txn.
@@ -1844,7 +1844,7 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if all(p["status"] in {"done", "archived"} for p in parents):
+            if all(p["status"] in {"done", "archived", "running"} for p in parents):
                 conn.execute(
                     "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
                     (task_id,),
@@ -1885,7 +1885,7 @@ def claim_task(
         undone = conn.execute(
             "SELECT 1 FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived', 'running') LIMIT 1",
             (task_id,),
         ).fetchone()
         if undone:
@@ -2673,7 +2673,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         undone_parents = conn.execute(
             "SELECT 1 FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
+            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'running') LIMIT 1",
             (task_id,),
         ).fetchone()
         new_status = "todo" if undone_parents else "ready"
