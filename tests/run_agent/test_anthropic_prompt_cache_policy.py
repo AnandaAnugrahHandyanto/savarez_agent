@@ -246,6 +246,40 @@ class TestQwenAlibabaFamily:
         )
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
+    def test_deepseek_on_opencode_go_caches_with_envelope_layout(self):
+        # Issue #24617: deepseek-v4-pro on opencode-go reports
+        # `$0.01/M cache read` pricing — gateway-side cache_control is
+        # supported but never engaged without markers.
+        agent = _make_agent(
+            provider="opencode-go",
+            base_url="https://opencode.ai/v1",
+            api_mode="chat_completions",
+            model="deepseek-v4-pro",
+        )
+        should, native = agent._anthropic_prompt_cache_policy()
+        assert should is True, "DeepSeek on opencode-go must cache"
+        assert native is False, "opencode-go is OpenAI-wire; envelope layout"
+
+    def test_deepseek_on_opencode_zen_caches(self):
+        agent = _make_agent(
+            provider="opencode",
+            base_url="https://opencode.ai/v1",
+            api_mode="chat_completions",
+            model="deepseek-v3.5",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_deepseek_on_openrouter_not_affected(self):
+        # DeepSeek via OpenRouter falls through — same as Qwen, OpenRouter
+        # has its own upstream caching arrangement.
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="deepseek/deepseek-chat",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
     def test_qwen_on_openrouter_not_affected(self):
         # Qwen via OpenRouter falls through — OpenRouter has its own
         # upstream caching arrangement for Qwen (provider-dependent).
