@@ -1264,8 +1264,18 @@ class DiscordAdapter(BasePlatformAdapter):
         stale_keys = [k for k in existing_by_key if k not in desired_by_key]
         for key in stale_keys:
             current = existing_by_key.pop(key)
-            await mutate(http.delete_global_command, app_id, current.id)
-            deleted += 1
+            try:
+                await mutate(http.delete_global_command, app_id, current.id)
+                deleted += 1
+            except Exception as e:
+                logger.warning(
+                    "[%s] Failed to delete stale command '%s' (id=%s): %s. "
+                    "Continuing with remaining stale commands.",
+                    self.name, current.name, current.id, e,
+                )
+                # Popped from existing_by_key so the create/update loop
+                # skips it. The stale command remains on Discord but won't
+                # block new commands from being registered.
 
         for key, desired in desired_by_key.items():
             current = existing_by_key.pop(key, None)
