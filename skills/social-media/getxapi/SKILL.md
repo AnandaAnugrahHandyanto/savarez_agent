@@ -16,7 +16,7 @@ required_environment_variables:
     required_for: all API access (search, post, user lookup)
   - name: GETXAPI_AUTH_TOKEN
     prompt: X auth_token for posting (32+ hex chars)
-    help: Extract from browser cookies (x.com → Storage → Cookies → auth_token). Required for tweet create/delete.
+    help: Extract from browser cookies (x.com → Storage → Cookies → auth_token). Required for posting tweets and replies.
     required_for: posting tweets and replies
 ---
 
@@ -76,7 +76,7 @@ getxapi uses **non-standard field names**. Do NOT use official X API v2 field na
 
 | getxapi field | X API v2 equivalent | Usage |
 |---------------|---------------------|-------|
-| `author.userName` | `author.username` / `screen_name` | Author handle |
+| `author.userName` | NOT `screen_name` or `author.username` (those are X API v2 names — using them returns zero results) | Author handle |
 | `author.followers` | `public_metrics.followers_count` | Follower count |
 | `isReply` | `in_reply_to_user_id` (check if set) | Is it a reply? |
 | `id` | `id` (same) | Tweet ID |
@@ -102,7 +102,7 @@ Narrow terms like `Proxmox tip` often return zero Top results. Cast a wide net t
 
 Posting requires BOTH the API key (Bearer header) AND an X `auth_token` cookie (in JSON body). The auth_token must be extracted from browser cookies — it is httpOnly and cannot be extracted programmatically at runtime.
 
-**Never put inline Bearer tokens in cron prompts.** The Hermes cron scanner blocks `$VAR` patterns in Authorization headers targeting non-GitHub domains. Hardcode the literal key or use `<your-api-key>` placeholder in documentation.
+**Cron prompt compatibility:** The Hermes cron scanner blocks `$VAR`-style environment variable references in Authorization headers for non-GitHub domains. When using getxapi in cron job prompts, reference the stored credential from `~/.hermes/.env` at runtime rather than embedding variable expansions. For curl examples in this skill, `<your-api-key>` and `<your-auth-token>` placeholders are used throughout to avoid false-positive scanner matches.
 
 **Shell quoting:** When reply text contains apostrophes (`'`), embedding JSON in `-d '{...}'` breaks. Write JSON to a temp file and use `-d @file` instead.
 
@@ -112,7 +112,7 @@ Check `GET /account/me` before bulk operations. If credits drop below $1.00, red
 
 ## Gotchas
 
-- **No delete endpoint.** `POST /twitter/tweet/delete` returns 404. Contradictory tweets must be deleted manually on x.com.
+- **No delete endpoint.** `/twitter/tweet/delete` is not implemented (returns 404). Contradictory tweets must be deleted manually on x.com.
 - **`inReplyToId` is the field to check for original tweet** when deduplicating — use this, not `conversationId`.
 - **Transient "Daily tweet limit reached" errors** — retry once. Account still in warmup may hit X platform caps.
 - **Image-only tweets:** If text < 30 chars with media, analyze image OR skip — never reply blind.

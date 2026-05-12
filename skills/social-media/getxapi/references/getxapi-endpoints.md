@@ -2,7 +2,7 @@
 
 Base URL: `https://api.getxapi.com`
 Auth: `Authorization: Bearer <api-key>` (all endpoints)
-Post auth: `auth_token` cookie in JSON body (create/delete endpoints)
+Post auth: `auth_token` cookie in JSON body (create endpoint)
 
 ## Account
 
@@ -86,8 +86,8 @@ curl -s -X POST "https://api.getxapi.com/twitter/tweet/create" \
   -d @/tmp/post.json
 ```
 
-### DELETE /twitter/tweet/delete
-**DOES NOT EXIST.** Returns 404. Tweets must be deleted manually on x.com. There is no programmatic undelete.
+### /twitter/tweet/delete (not implemented)
+**DOES NOT EXIST.** Returns 404. Tweets must be deleted manually on x.com. There is no programmatic undo.
 
 ---
 
