@@ -249,10 +249,16 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     @property
     def _webhook_url(self) -> str:
-        """Compute the external webhook URL for BlueBubbles registration."""
+        """Compute the external webhook URL for BlueBubbles registration.
+
+        Keep loopback registrations pinned to IPv4. BlueBubbles/Electron may
+        resolve ``localhost`` to ``::1`` first, while the Hermes webhook server
+        binds to ``127.0.0.1`` by default. Registering ``localhost`` then causes
+        live webhook dispatch to fail with ``ECONNREFUSED ::1:<port>``.
+        """
         host = self.webhook_host
         if host in ("0.0.0.0", "127.0.0.1", "localhost", "::"):
-            host = "localhost"
+            host = "127.0.0.1"
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
     @property
