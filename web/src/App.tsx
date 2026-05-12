@@ -81,6 +81,14 @@ function RootRedirect() {
   return <Navigate to="/sessions" replace />;
 }
 
+function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
+  if (pluginsLoading) {
+    // Render nothing during the plugin-load window — a spinner here would just flash.
+    return null;
+  }
+  return <Navigate to="/sessions" replace />;
+}
+
 const CHAT_NAV_ITEM: NavItem = {
   path: "/chat",
   labelKey: "chat",
@@ -583,7 +591,9 @@ function AppShell() {
                   ))}
                   <Route
                     path="*"
-                    element={<Navigate to="/sessions" replace />}
+                    element={
+                      <UnknownRouteFallback pluginsLoading={pluginsLoading} />
+                    }
                   />
                 </Routes>
 

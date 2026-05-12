@@ -1,10 +1,35 @@
-const BASE = "";
+// The dashboard can be served either at the root of its host (e.g.
+// https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
+// (e.g. https://mission-control.tilos.com/hermes/). The Python backend
+// injects ``window.__HERMES_BASE_PATH__`` into index.html based on the
+// incoming ``X-Forwarded-Prefix`` header so the SPA can address its own
+// ``/api/...`` and ``/dashboard-plugins/...`` URLs correctly without a
+// rebuild. Empty string means "served at root".
+function readBasePath(): string {
+  if (typeof window === "undefined") return "";
+  const raw = window.__HERMES_BASE_PATH__ ?? "";
+  if (!raw) return "";
+  // Normalise: ensure leading slash, strip trailing slash.
+  const withLead = raw.startsWith("/") ? raw : `/${raw}`;
+  return withLead.replace(/\/+$/, "");
+}
+
+export const HERMES_BASE_PATH = readBasePath();
+const BASE = HERMES_BASE_PATH;
 
 import type { DashboardTheme } from "@/themes/types";
 import { DASHBOARD_SESSION_HEADER, dashboardAuthHeaders, getDashboardSessionToken } from "@/lib/dashboardAuth";
 
 // Dashboard auth is intentionally sessionStorage-backed.  The legacy
 // window-injected token remains supported as a fallback for older servers.
+// Ephemeral session token for protected endpoints.
+// Injected into index.html by the server — never fetched via API.
+declare global {
+  interface Window {
+    __HERMES_SESSION_TOKEN__?: string;
+    __HERMES_BASE_PATH__?: string;
+  }
+}
 let _sessionToken: string | null = null;
 
 export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
@@ -34,6 +59,10 @@ export const api = {
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
     fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages`),
+  getSessionLatestDescendant: (id: string) =>
+    fetchJSON<SessionLatestDescendantResponse>(
+      `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
+    ),
   deleteSession: (id: string) =>
     fetchJSON<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(id)}`, {
       method: "DELETE",
@@ -358,6 +387,14 @@ export interface SessionInfo {
   input_tokens: number;
   output_tokens: number;
   preview: string | null;
+  parent_session_id?: string | null;
+}
+
+export interface SessionLatestDescendantResponse {
+  requested_session_id: string;
+  session_id: string;
+  path: string[];
+  changed: boolean;
 }
 
 export interface PaginatedSessions {
@@ -508,13 +545,14 @@ export interface ModelsAnalyticsResponse {
 
 export interface CronJob {
   id: string;
-  name?: string;
-  prompt: string;
-  schedule: { kind: string; expr: string; display: string };
-  schedule_display: string;
+  name?: string | null;
+  prompt?: string | null;
+  script?: string | null;
+  schedule?: { kind?: string; expr?: string; display?: string };
+  schedule_display?: string | null;
   enabled: boolean;
-  state: string;
-  deliver?: string;
+  state?: string | null;
+  deliver?: string | null;
   last_run_at?: string | null;
   next_run_at?: string | null;
   last_error?: string | null;

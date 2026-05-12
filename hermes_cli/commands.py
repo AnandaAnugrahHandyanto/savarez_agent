@@ -64,7 +64,9 @@ class CommandDef:
 COMMAND_REGISTRY: list[CommandDef] = [
     # Session
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
-               aliases=("reset",)),
+               aliases=("reset",), args_hint="[name]"),
+    CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
+               gateway_only=True, args_hint="[off|help|session-id]"),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
@@ -77,6 +79,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("undo", "Remove the last user/assistant exchange", "Session"),
     CommandDef("title", "Set a title for the current session", "Session",
                args_hint="[name]"),
+    CommandDef("handoff", "Hand off this session to a messaging platform (Telegram, Discord, etc.)", "Session",
+               args_hint="<platform>", cli_only=True),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",
                aliases=("fork",), args_hint="[name]"),
     CommandDef("compress", "Manually compress conversation context", "Session",
@@ -101,11 +105,15 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
                args_hint="[text | pause | resume | clear | status]"),
     CommandDef("status", "Show session info", "Session"),
+    CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
+
+    # Configuration
+    CommandDef("sessions", "Browse and resume previous sessions", "Session"),
 
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
@@ -155,9 +163,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
                cli_only=True, args_hint="[subcommand]",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
-    CommandDef("curator", "Background skill maintenance (status, run, pin, archive)",
+    CommandDef("curator", "Background skill maintenance (status, run, pin, archive, list-archived)",
                "Tools & Skills", args_hint="[subcommand]",
-               subcommands=("status", "run", "pause", "resume", "pin", "unpin", "restore")),
+               subcommands=("status", "run", "pause", "resume", "pin", "unpin", "restore", "list-archived")),
     CommandDef("kanban", "Multi-profile collaboration board (tasks, links, comments)",
                "Tools & Skills", args_hint="[subcommand]",
                subcommands=("list", "ls", "show", "create", "assign", "link", "unlink",
@@ -803,7 +811,7 @@ def discord_skill_commands_by_category(
     # names are marked with a sentinel so the warning distinguishes
     # "skill collided with a reserved command" from "two skills collided
     # on the 32-char clamp" — the latter is the rename-worthy case.
-    _names_used: dict[str, str] = {n: "<reserved>" for n in reserved_names}
+    _names_used: dict[str, str] = dict.fromkeys(reserved_names, "<reserved>")
     hidden = 0
 
     try:
@@ -1126,6 +1134,12 @@ class SlashCommandCompleter(Completer):
         except Exception:
             return {}
 
+    # Commands that open pickers when run without arguments.
+    # These should NOT receive a trailing space in completions because:
+    # - The TUI's submit handler applies completions on Enter if input differs
+    # - Adding space makes "/model" → "/model " which blocks picker execution
+    _PICKER_COMMANDS = frozenset({"model", "skin", "personality"})
+
     @staticmethod
     def _completion_text(cmd_name: str, word: str) -> str:
         """Return replacement text for a completion.
@@ -1134,8 +1148,17 @@ class SlashCommandCompleter(Completer):
         returning ``help`` would be a no-op and prompt_toolkit suppresses the
         menu. Appending a trailing space keeps the dropdown visible and makes
         backspacing retrigger it naturally.
+
+        However, commands that open pickers (model, skin, personality) should
+        NOT get a trailing space — the TUI would apply the completion on Enter
+        and block the picker from opening.
         """
-        return f"{cmd_name} " if cmd_name == word else cmd_name
+        if cmd_name != word:
+            return cmd_name
+        # Don't add space for picker commands — allows Enter to execute them
+        if cmd_name in SlashCommandCompleter._PICKER_COMMANDS:
+            return cmd_name
+        return f"{cmd_name} "
 
     @staticmethod
     def _extract_path_word(text: str) -> str | None:
