@@ -2553,7 +2553,7 @@ def _inkbox_print_agent_summary(identity):
     print()
     print(color("  ─── 🛡  Reachability rules ───", Colors.CYAN))
     print_info("  Open the Inkbox console to control who can reach this agent:")
-    print_info("    https://inkbox.ai/console")
+    print_info("    https://inkbox.ai/console/contact-rules")
     print_info("  You can allow or block:")
     print_info("    • specific contacts and contact domains")
     print_info("    • specific phone numbers")
