@@ -2443,7 +2443,8 @@ class GatewayRunner:
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
-                fb = cfg.get("fallback_providers") or cfg.get("fallback_model") or None
+                fb_cfg = cfg.get("fallback_providers")
+                fb = fb_cfg if fb_cfg else cfg.get("fallback_model") or None
                 if fb:
                     return fb
         except Exception:

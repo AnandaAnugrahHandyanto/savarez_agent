@@ -2529,7 +2529,8 @@ class HermesCLI:
         
         # Fallback provider chain — tried in order when primary fails after retries.
         # Supports new list format (fallback_providers) and legacy single-dict (fallback_model).
-        fb = CLI_CONFIG.get("fallback_providers") or CLI_CONFIG.get("fallback_model") or []
+        _fb_providers = CLI_CONFIG.get("fallback_providers")
+        fb = _fb_providers if _fb_providers else CLI_CONFIG.get("fallback_model") or []
         # Normalize legacy single-dict to a one-element list
         if isinstance(fb, dict):
             fb = [fb] if fb.get("provider") and fb.get("model") else []
