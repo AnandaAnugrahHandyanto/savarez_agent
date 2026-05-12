@@ -173,13 +173,21 @@ def _extract_attachments(msg: dict) -> List[dict]:
                 # Unknown non-text content type
                 attachments.append({"type": ptype, "data": part})
 
-    # MEDIA: tags in text content
+    # MEDIA: tags in text content. Keep this in sync with the gateway parser's
+    # user-facing behavior for quoted/backticked paths while preserving the
+    # existing unquoted-token behavior used by MCP clients.
     text = _extract_message_content(msg)
     if text:
-        media_pattern = re.compile(r'MEDIA:\s*(\S+)')
+        media_pattern = re.compile(
+            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?'''
+        )
         for match in media_pattern.finditer(text):
-            path = match.group(1)
-            attachments.append({"type": "media", "path": path})
+            path = match.group("path").strip()
+            if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
+                path = path[1:-1].strip()
+            path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+            if path:
+                attachments.append({"type": "media", "path": path})
 
     return attachments
 

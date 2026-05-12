@@ -348,6 +348,13 @@ class TestAttachmentExtraction:
         msg = {"content": "MEDIA: /a.png and MEDIA: /b.mp3"}
         assert len(_extract_attachments(msg)) == 2
 
+    def test_media_tag_with_quoted_path_containing_spaces(self):
+        from mcp_serve import _extract_attachments
+        msg = {"content": "Here is the file\nMEDIA: '/tmp/my image.png'\nDone"}
+        assert _extract_attachments(msg) == [
+            {"type": "media", "path": "/tmp/my image.png"}
+        ]
+
     def test_no_attachments(self):
         from mcp_serve import _extract_attachments
         assert _extract_attachments({"content": "plain text"}) == []
