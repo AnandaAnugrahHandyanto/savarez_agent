@@ -5,10 +5,29 @@ This transport owns format conversion and normalization — NOT client lifecycle
 streaming, or the _run_codex_stream() call path.
 """
 
+import hashlib
 from typing import Any, Dict, List, Optional
 
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
+
+
+_PROMPT_CACHE_KEY_MAX_LENGTH = 64
+
+
+def _safe_prompt_cache_key(value: str) -> str:
+    """Return a Codex-compatible prompt_cache_key.
+
+    The Codex backend rejects prompt_cache_key values longer than 64
+    characters. Hermes session IDs can exceed that when gateway/platform
+    routing embeds long external identifiers. Preserve short IDs for
+    debuggability and hash only oversized values into a stable 64-character
+    scope key.
+    """
+    raw = str(value or "").strip()
+    if len(raw) <= _PROMPT_CACHE_KEY_MAX_LENGTH:
+        return raw
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 class ResponsesApiTransport(ProviderTransport):
@@ -101,7 +120,7 @@ class ResponsesApiTransport(ProviderTransport):
 
         session_id = params.get("session_id")
         if not is_github_responses and session_id:
-            kwargs["prompt_cache_key"] = session_id
+            kwargs["prompt_cache_key"] = _safe_prompt_cache_key(str(session_id))
 
         if reasoning_enabled and is_xai_responses:
             from agent.model_metadata import grok_supports_reasoning_effort

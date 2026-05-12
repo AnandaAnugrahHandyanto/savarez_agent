@@ -91,6 +91,16 @@ class TestCodexBuildKwargs:
         )
         assert kw.get("prompt_cache_key") == "test-session-123"
 
+    def test_long_session_id_cache_key_is_hashed_to_backend_limit(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        long_session_id = "atlas:4CGVtvUxCQrizW2tuRbqNa25nLnClXPm:494fd2fb-ca04-431b-a26d-f6c255d0804e"
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=messages, tools=[],
+            session_id=long_session_id,
+        )
+        assert len(kw.get("prompt_cache_key")) == 64
+        assert kw.get("prompt_cache_key") != long_session_id
+
     def test_github_responses_no_cache_key(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
