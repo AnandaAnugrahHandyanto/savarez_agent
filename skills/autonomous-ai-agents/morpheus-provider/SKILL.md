@@ -20,7 +20,7 @@ This skill ships the lessons from the May 2026 GLM-5.1 stabilization session.
 - User says "switch to GLM 5.1" or "add Morpheus"
 - Seeing 401 with key that starts with `sk-` (especially those with embedded dot like `sk-hrOKrR.88...`)
 - Auxiliary title generation or other sub-tasks fail with "Connection error"
-- Want remote gateway over local proxy (simpler, no EverClaw daemon)
+- Want Morpheus API Gateway (simpler, no local proxy needed)
 
 Do not use for local proxy debugging or OpenClaw-specific setups — see `hermes-agent` skill references instead.
 
@@ -68,7 +68,7 @@ Do not use for local proxy debugging or OpenClaw-specific setups — see `hermes
 - `hermes auth add morpheus` and `hermes model` require real TTY — fails in tool calls.
 - Auxiliary "Connection error" fixed by explicit morpheus/GLM-5.1 fallback (auto often fails without OpenRouter key).
 - Changes require fresh session (`hermes` or `/new`). Python cache clear if editing providers.py.
-- Prefer remote gateway over local :8083 proxy unless running full EverClaw stack.
+- Prefer api.mor.org over local :8083 proxy unless running local inference server.
 
 ## Verification Checklist
 - [ ] `hermes config` shows correct morpheus + GLM-5.1 + base_url

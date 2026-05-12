@@ -99,7 +99,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     ),
     "morpheus": HermesOverlay(
         transport="openai_chat",
-        extra_env_vars=("MORPHEUS_API_KEY", "MOR_API_KEY", "EVERCLAW_API_KEY"),
+        extra_env_vars=("MORPHEUS_API_KEY", "MOR_API_KEY"),
         # Remote gateway preferred (session-tested). /api/v1 required; /v1 → 403.
         # Key with embedded dot (sk-hrOKrR.88..) works via Bearer but fragile in SDK.
         base_url_override="https://api.mor.org/api/v1",
@@ -243,10 +243,8 @@ ALIASES: Dict[str, str] = {
     "z.ai": "zai",
     "zhipu": "zai",
 
-    # morpheus / everclaw (GLM-5.1 via decentralized proxy)
+    # morpheus (GLM-5.1 via decentralized inference)
     "morpheus": "morpheus",
-    "morpheus-skill": "morpheus",
-    "everclaw": "morpheus",
     "mor": "morpheus",
     "glm-5": "morpheus",
     "glm-5.1": "morpheus",

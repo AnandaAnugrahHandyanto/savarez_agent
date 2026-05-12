@@ -218,7 +218,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="Morpheus Gateway",
         auth_type="api_key",
         inference_base_url="http://localhost:8083/v1",
-        api_key_env_vars=("MORPHEUS_API_KEY", "MOR_API_KEY", "EVERCLAW_API_KEY"),
+        api_key_env_vars=("MORPHEUS_API_KEY", "MOR_API_KEY"),
         base_url_env_var="MORPHEUS_BASE_URL",
     ),
     "kimi-coding": ProviderConfig(
