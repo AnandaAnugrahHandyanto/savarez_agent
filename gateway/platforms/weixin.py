@@ -1230,10 +1230,11 @@ class WeixinAdapter(BasePlatformAdapter):
         # from the same user into a single MessageEvent before dispatching.
         # Prevents "Interrupt recursion depth 3" errors when a user sends
         # multiple docx/images in quick succession (e.g. 8 files in 4 seconds).
-        self._media_batch_delay_seconds = float(
-            extra.get("media_batch_delay_seconds")
-            or os.getenv("WEIXIN_MEDIA_BATCH_DELAY_SECONDS", "2.0")
-        )
+        # Use explicit None check so an operator-supplied 0 (disable) is honored.
+        _raw_batch_delay = extra.get("media_batch_delay_seconds")
+        if _raw_batch_delay is None:
+            _raw_batch_delay = os.getenv("WEIXIN_MEDIA_BATCH_DELAY_SECONDS", "2.0")
+        self._media_batch_delay_seconds = float(_raw_batch_delay)
         self._pending_media_batches: Dict[str, "MessageEvent"] = {}
         self._pending_media_batch_tasks: Dict[str, asyncio.Task] = {}
 
@@ -1457,24 +1458,29 @@ class WeixinAdapter(BasePlatformAdapter):
         # in rapid succession, merge them into one event and dispatch once.
         if media_paths and self._media_batch_delay_seconds > 0:
             batch_key = f"{source.chat_id}:{sender_id}:media-burst"
-            existing = self._pending_media_batches.get(batch_key)
-            if existing is None:
-                self._pending_media_batches[batch_key] = event
-            else:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
-                if event.text:
-                    existing.text = self._merge_caption(existing.text, event.text)
-            # Cancel prior flush timer, restart the window
-            prior = self._pending_media_batch_tasks.get(batch_key)
-            if prior and not prior.done():
-                prior.cancel()
-            self._pending_media_batch_tasks[batch_key] = asyncio.create_task(
-                self._flush_media_batch(batch_key)
-            )
+            self._enqueue_media_event(batch_key, event)
             return
 
         await self.handle_message(event)
+
+    def _enqueue_media_event(self, batch_key: str, event: "MessageEvent") -> None:
+        """Merge media events into a pending batch and (re)schedule flush."""
+        existing = self._pending_media_batches.get(batch_key)
+        if existing is None:
+            self._pending_media_batches[batch_key] = event
+        else:
+            existing.media_urls.extend(event.media_urls)
+            existing.media_types.extend(event.media_types)
+            if event.text:
+                existing.text = self._merge_caption(existing.text, event.text)
+
+        prior_task = self._pending_media_batch_tasks.get(batch_key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+
+        self._pending_media_batch_tasks[batch_key] = asyncio.create_task(
+            self._flush_media_batch(batch_key)
+        )
 
     async def _flush_media_batch(self, batch_key: str) -> None:
         """Wait for the burst window to expire, then dispatch the merged event."""
