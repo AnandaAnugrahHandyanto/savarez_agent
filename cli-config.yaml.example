@@ -96,6 +96,27 @@ model:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
 
 # =============================================================================
+# Fallback Providers
+# =============================================================================
+# Ordered list of backup providers tried when the primary fails (rate-limit,
+# overload, connection error).  Each entry needs at minimum `provider` and
+# `model`.  Optional: `base_url`, `api_key`, `key_env`, `stream`.
+#
+# Set `stream: false` for custom endpoints that don't support SSE streaming
+# (e.g. lightweight proxies, Vertex AI REST API).  Without this flag, Hermes
+# sends stream=True by default; providers that return plain JSON instead of
+# SSE will produce zero chunks and trigger spurious "empty response" retries.
+#
+# fallback_providers:
+#   - provider: openai
+#     model: gpt-4o
+#   - provider: custom
+#     model: my-local-model
+#     base_url: http://my-proxy:8080/v1
+#     key_env: MY_PROXY_KEY
+#     stream: false    # This provider returns JSON, not SSE
+
+# =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)
 # =============================================================================
 # Control how requests are routed across providers on OpenRouter.
