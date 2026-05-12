@@ -1319,9 +1319,10 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         setattr(ws_client, "_configure", _configure_with_overrides)
     _apply_runtime_ws_overrides()
     try:
+        logger.info("[Feishu] Websocket client thread starting")
         ws_client.start()
     except Exception:
-        pass
+        logger.exception("[Feishu] Websocket client thread crashed")
     finally:
         ws_client_module.websockets.connect = original_connect
         if original_configure is not None:
@@ -1340,6 +1341,7 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         except Exception:
             pass
         adapter._ws_thread_loop = None
+        logger.info("[Feishu] Websocket client thread exiting")
 
 
 def check_feishu_requirements() -> bool:
@@ -2206,6 +2208,15 @@ class FeishuAdapter(BasePlatformAdapter):
         during startup/restart or network-flap reconnect), the event is queued
         for replay instead of dropped.
         """
+        message_id = "unknown"
+        try:
+            event = getattr(data, "event", None)
+            message = getattr(event, "message", None)
+            message_id = str(getattr(message, "message_id", "") or "unknown")
+        except Exception:
+            message_id = "unknown"
+        logger.info("[Feishu] Raw inbound message callback: id=%s", message_id)
+
         loop = self._loop
         if not self._loop_accepts_callbacks(loop):
             start_drainer = self._enqueue_pending_inbound_event(data)
@@ -2216,6 +2227,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     daemon=True,
                 ).start()
             return
+        logger.info("[Feishu] Scheduling inbound message on adapter loop: id=%s", message_id)
         future = asyncio.run_coroutine_threadsafe(
             self._handle_message_event_data(data),
             loop,
@@ -2251,8 +2263,15 @@ class FeishuAdapter(BasePlatformAdapter):
             should_start = not self._pending_drain_scheduled
             if should_start:
                 self._pending_drain_scheduled = True
+        try:
+            event = getattr(data, "event", None)
+            message = getattr(event, "message", None)
+            message_id = str(getattr(message, "message_id", "") or "unknown")
+        except Exception:
+            message_id = "unknown"
         logger.warning(
-            "[Feishu] Queued inbound event for replay (loop not ready, queue depth=%d)",
+            "[Feishu] Queued inbound event for replay (loop not ready, id=%s, queue depth=%d)",
+            message_id,
             depth,
         )
         return should_start
@@ -2346,17 +2365,23 @@ class FeishuAdapter(BasePlatformAdapter):
         message = getattr(event, "message", None)
         sender = getattr(event, "sender", None)
         if not message or not sender or not getattr(sender, "sender_id", None):
-            logger.debug("[Feishu] Dropping malformed inbound event: missing message/sender")
+            logger.info("[Feishu] Dropping malformed inbound event: missing message/sender")
             return
 
         message_id = getattr(message, "message_id", None)
         if not message_id or self._is_duplicate(message_id):
-            logger.debug("[Feishu] Dropping duplicate/missing message_id: %s", message_id)
+            logger.info("[Feishu] Dropping duplicate/missing message_id: %s", message_id)
             return
+
+        logger.info(
+            "[Feishu] Received raw message type=%s message_id=%s",
+            getattr(message, "message_type", None) or getattr(message, "msg_type", None) or "unknown",
+            message_id,
+        )
 
         reason = self._admit(sender, message)
         if reason is not None:
-            logger.debug("[Feishu] dropping inbound event: %s", reason)
+            logger.info("[Feishu] Dropping inbound event: id=%s reason=%s", message_id, reason)
             return
 
         chat_type = getattr(message, "chat_type", "p2p")
@@ -2745,6 +2770,12 @@ class FeishuAdapter(BasePlatformAdapter):
         chat_id = getattr(event.source, "chat_id", "") or "" if event.source else ""
         chat_lock = self._get_chat_lock(chat_id)
         async with chat_lock:
+            logger.info(
+                "[Feishu] Dispatching inbound event to agent: id=%s chat_id=%s type=%s",
+                event.message_id,
+                chat_id,
+                event.message_type.value,
+            )
             await self.handle_message(event)
 
     # =========================================================================
@@ -2777,8 +2808,15 @@ class FeishuAdapter(BasePlatformAdapter):
             response = await asyncio.to_thread(self._client.im.v1.message_reaction.create, request)
             if response and getattr(response, "success", lambda: False)():
                 data = getattr(response, "data", None)
-                return getattr(data, "reaction_id", None)
-            logger.debug(
+                reaction_id = getattr(data, "reaction_id", None)
+                logger.info(
+                    "[Feishu] Added reaction %s on %s reaction_id=%s",
+                    emoji_type,
+                    message_id,
+                    reaction_id,
+                )
+                return reaction_id
+            logger.info(
                 "[Feishu] Add reaction %s on %s rejected: code=%s msg=%s",
                 emoji_type,
                 message_id,
@@ -2807,8 +2845,9 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             response = await asyncio.to_thread(self._client.im.v1.message_reaction.delete, request)
             if response and getattr(response, "success", lambda: False)():
+                logger.info("[Feishu] Removed reaction %s on %s", reaction_id, message_id)
                 return True
-            logger.debug(
+            logger.info(
                 "[Feishu] Remove reaction %s on %s rejected: code=%s msg=%s",
                 reaction_id,
                 message_id,
