@@ -251,6 +251,7 @@ class ThreadParticipationTracker:
 
     def mark(self, thread_id: str) -> None:
         """Mark *thread_id* as participated and persist."""
+        thread_id = str(thread_id)
         if thread_id not in self._threads:
             self._threads[thread_id] = None
             self._save()

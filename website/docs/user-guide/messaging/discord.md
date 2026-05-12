@@ -302,6 +302,7 @@ The `discord` section in `~/.hermes/config.yaml` mirrors the env vars above. Con
 # Discord-specific settings
 discord:
   require_mention: true           # Require @mention in server channels
+  require_mention_in_threads: false # Also require @mention in participated threads
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
   reactions: true                 # Add emoji reactions during processing
@@ -353,6 +354,12 @@ Free-response channels also **skip auto-threading** — the bot replies inline r
 When enabled, every `@mention` in a regular text channel automatically creates a new thread for the conversation. This keeps the main channel clean and gives each conversation its own isolated session history. Once a thread is created, subsequent messages in that thread don't require `@mention` — the bot knows it's already participating.
 
 Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.free_response_channels` or `discord.no_thread_channels` also bypass auto-threading and get inline replies instead.
+
+#### `discord.require_mention_in_threads`
+
+**Type:** boolean — **Default:** `false`
+
+When enabled, existing Discord threads where the bot has already participated still require a direct `@mention`. This is useful when you want the bot to stay silent unless explicitly addressed, even in threads it created or previously answered in.
 
 #### `discord.reactions`
 

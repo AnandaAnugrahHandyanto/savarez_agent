@@ -7545,6 +7545,8 @@ class HermesCLI:
             self._handle_agents_command()
         elif canonical == "background":
             self._handle_background_command(cmd_original)
+        elif canonical == "orchestrate":
+            self._handle_orchestrate_command(cmd_original)
         elif canonical == "queue":
             # Extract prompt after "/queue " or "/q "
             parts = cmd_original.split(None, 1)
@@ -7699,6 +7701,24 @@ class HermesCLI:
         
         return True
     
+    def _handle_orchestrate_command(self, cmd: str):
+        """Handle /orchestrate <task> by queueing a plan-first orchestration prompt."""
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            _cprint("  Usage: /orchestrate <task>")
+            _cprint("  Example: /orchestrate Refactor gateway routing with tests")
+            return
+
+        from agent.hard_task_orchestrator import build_orchestration_prompt
+
+        task = parts[1].strip()
+        prompt = build_orchestration_prompt(task)
+        self._pending_input.put(prompt)
+        if getattr(self, "_agent_running", False):
+            _cprint(f"  Queued hard-task orchestrator for next turn: {task[:80]}{'...' if len(task) > 80 else ''}")
+        else:
+            _cprint(f"  Starting hard-task orchestrator: {task[:80]}{'...' if len(task) > 80 else ''}")
+
     def _handle_background_command(self, cmd: str):
         """Handle /background <prompt> — run a prompt in a separate background session.
 

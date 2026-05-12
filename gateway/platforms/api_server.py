@@ -1330,8 +1330,23 @@ class APIServerAdapter(BasePlatformAdapter):
             }
             await response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
             last_activity = time.monotonic()
+            buffered_text_chunks: List[str] = []
 
             # Helper — route a queue item to the correct SSE event.
+            fallback_filter_agent = None
+
+            def _filter_public_delta(text: str) -> str:
+                nonlocal fallback_filter_agent
+                agent = agent_ref[0] if agent_ref else None
+                if agent is None:
+                    if fallback_filter_agent is None:
+                        from run_agent import AIAgent
+                        fallback_filter_agent = AIAgent.__new__(AIAgent)
+                    agent = fallback_filter_agent
+                if hasattr(agent, "_filter_public_stream_scaffolding"):
+                    return agent._filter_public_stream_scaffolding(text)
+                return text
+
             async def _emit(item):
                 """Write a single queue item to the SSE stream.
 
@@ -1348,12 +1363,10 @@ class APIServerAdapter(BasePlatformAdapter):
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
                     )
                 else:
-                    content_chunk = {
-                        "id": completion_id, "object": "chat.completion.chunk",
-                        "created": created, "model": model,
-                        "choices": [{"index": 0, "delta": {"content": item}, "finish_reason": None}],
-                    }
-                    await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
+                    if not isinstance(item, str):
+                        item = str(item)
+                    if item:
+                        buffered_text_chunks.append(item)
                 return time.monotonic()
 
             # Stream content chunks as they arrive from the agent
@@ -1388,6 +1401,22 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
+                final_text = result.get("final_response", "") if isinstance(result, dict) else ""
+                if not final_text and buffered_text_chunks:
+                    fallback_agent = fallback_filter_agent
+                    if fallback_agent is None:
+                        from run_agent import AIAgent
+                        fallback_agent = AIAgent.__new__(AIAgent)
+                    final_text = fallback_agent._strip_public_response_scaffolding(
+                        "".join(buffered_text_chunks)
+                    ).strip()
+                if final_text:
+                    content_chunk = {
+                        "id": completion_id, "object": "chat.completion.chunk",
+                        "created": created, "model": model,
+                        "choices": [{"index": 0, "delta": {"content": final_text}, "finish_reason": None}],
+                    }
+                    await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
             except Exception as exc:
                 logger.warning("Agent task %s failed, usage data lost: %s", completion_id, exc)
 
@@ -1635,7 +1664,24 @@ class APIServerAdapter(BasePlatformAdapter):
                     "item": item,
                 })
 
+            fallback_filter_agent = None
+
+            def _filter_public_delta(delta_text: str) -> str:
+                nonlocal fallback_filter_agent
+                agent = agent_ref[0] if agent_ref else None
+                if agent is None:
+                    if fallback_filter_agent is None:
+                        from run_agent import AIAgent
+                        fallback_filter_agent = AIAgent.__new__(AIAgent)
+                    agent = fallback_filter_agent
+                if hasattr(agent, "_filter_public_stream_scaffolding"):
+                    return agent._filter_public_stream_scaffolding(delta_text)
+                return delta_text
+
             async def _emit_text_delta(delta_text: str) -> None:
+                delta_text = _filter_public_delta(delta_text)
+                if not delta_text:
+                    return
                 await _open_message_item()
                 final_text_parts.append(delta_text)
                 await _write_event("response.output_text.delta", {

@@ -3477,8 +3477,9 @@ class DiscordAdapter(BasePlatformAdapter):
         link = f"<#{thread_id}>" if thread_id else f"**{thread_name}**"
         await interaction.followup.send(f"Created thread {link}", ephemeral=True)
 
-        # Track thread participation so follow-ups don't require @mention
-        if thread_id:
+        # Track thread participation so follow-ups don't require @mention,
+        # unless this install is configured to require mentions in threads.
+        if thread_id and not self._discord_require_mention_in_threads():
             self._threads.mark(thread_id)
 
         # If a message was provided, kick off a new Hermes session in the thread
@@ -3553,6 +3554,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 return configured.lower() not in {"false", "0", "no", "off"}
             return bool(configured)
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
+
+    def _discord_require_mention_in_threads(self) -> bool:
+        """Return whether participated Discord threads still require a bot mention."""
+        configured = self.config.extra.get("require_mention_in_threads")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in ("true", "1", "yes", "on")
+            return bool(configured)
+        return os.getenv("DISCORD_REQUIRE_MENTION_IN_THREADS", "false").lower() in ("true", "1", "yes", "on")
 
     def _discord_free_response_channels(self) -> set:
         """Return Discord channel IDs where no bot mention is required.
@@ -4210,7 +4220,11 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Skip the mention check if the message is in a thread where
             # the bot has previously participated (auto-created or replied in).
-            in_bot_thread = is_thread and thread_id in self._threads
+            in_bot_thread = (
+                is_thread
+                and thread_id in self._threads
+                and not self._discord_require_mention_in_threads()
+            )
 
             if require_mention and not is_free_channel and not in_bot_thread:
                 if self._client.user not in message.mentions and not mention_prefix:
@@ -4233,7 +4247,8 @@ class DiscordAdapter(BasePlatformAdapter):
                     is_thread = True
                     thread_id = str(thread.id)
                     auto_threaded_channel = thread
-                    self._threads.mark(thread_id)
+                    if not self._discord_require_mention_in_threads():
+                        self._threads.mark(thread_id)
 
         # Determine message type
         msg_type = MessageType.TEXT
@@ -4422,7 +4437,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         # Track thread participation so the bot won't require @mention for
         # follow-up messages in threads it has already engaged in.
-        if thread_id:
+        if thread_id and not self._discord_require_mention_in_threads():
             self._threads.mark(thread_id)
 
         # Only batch plain text messages — commands, media, etc. dispatch

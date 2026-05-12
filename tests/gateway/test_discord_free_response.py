@@ -359,6 +359,7 @@ async def test_discord_auto_thread_can_be_disabled(adapter, monkeypatch):
 async def test_discord_bot_thread_skips_mention_requirement(adapter, monkeypatch):
     """Messages in a thread the bot has participated in should not require @mention."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_REQUIRE_MENTION_IN_THREADS", raising=False)
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
 
@@ -374,6 +375,48 @@ async def test_discord_bot_thread_skips_mention_requirement(adapter, monkeypatch
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "follow-up without mention"
     assert event.source.chat_type == "thread"
+
+
+@pytest.mark.asyncio
+async def test_discord_bot_thread_can_require_mentions(adapter, monkeypatch):
+    """Strict mode keeps participated threads silent unless the bot is mentioned."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION_IN_THREADS", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    adapter._threads.mark("456")
+
+    thread = FakeThread(channel_id=456, name="existing thread")
+    message = make_message(channel=thread, content="follow-up without mention")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_bot_thread_strict_mode_allows_direct_mentions(adapter, monkeypatch):
+    """Strict thread mode still accepts explicit bot mentions."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION_IN_THREADS", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    adapter._threads.mark("456")
+    bot_user = adapter._client.user
+    thread = FakeThread(channel_id=456, name="existing thread")
+    message = make_message(
+        channel=thread,
+        content=f"<@{bot_user.id}> follow-up with mention",
+        mentions=[bot_user],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "follow-up with mention"
 
 
 @pytest.mark.asyncio

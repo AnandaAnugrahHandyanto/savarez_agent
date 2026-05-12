@@ -3813,6 +3813,161 @@ class AIAgent:
         )
         return content
 
+    def _strip_public_response_scaffolding(self, content: str) -> str:
+        """Remove internal planning/refinement preambles from public replies."""
+        if not content:
+            return ""
+
+        content = self._strip_think_blocks(content).strip()
+        content = re.sub(
+            r"\A((?:#{1,6}\s*)?(?:\*\*)?Refined\s+"
+            r"(?:Prompt|Spec|Specification)(?:\*\*)?:?)"
+            r"(?=[ \t]*[-*][ \t]*(?:\*\*)?(?:Objective|Scope|Constraints|Acceptance criteria)\b)",
+            r"\1\n",
+            content,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        content = re.sub(
+            r"\A\s*(?:[^\w\s]{1,3}\s*)?\*\*Reasoning:\*\*\s*```.*?```\s*",
+            "",
+            content,
+            flags=re.DOTALL | re.IGNORECASE,
+        ).lstrip()
+
+        lines = content.splitlines()
+        start = 0
+        while start < len(lines) and not lines[start].strip():
+            start += 1
+        if start >= len(lines):
+            return ""
+
+        heading = re.sub(r"^[#>\s-]*", "", lines[start]).strip()
+        heading = heading.strip("*_` ").rstrip(":").strip().lower()
+        if heading not in {
+            "refined prompt",
+            "refined spec",
+            "refined specification",
+        }:
+            return content
+
+        preamble_start = start + 1
+        while preamble_start < len(lines) and not lines[preamble_start].strip():
+            preamble_start += 1
+
+        end = preamble_start
+        while end < len(lines) and lines[end].strip():
+            end += 1
+        if end >= len(lines):
+            return content
+
+        preamble = "\n".join(lines[preamble_start:end]).lower()
+        expected_fields = (
+            "objective",
+            "scope",
+            "constraints",
+            "acceptance criteria",
+            "risks/assumptions",
+            "validation",
+            "planned tests",
+            "minimal diffs",
+        )
+        if not any(field in preamble for field in expected_fields):
+            return content
+
+        return "\n".join(lines[end + 1:]).lstrip()
+
+    def _strip_public_response_scaffolding_from_codex_items(self, items):
+        """Clean Codex Responses message items before transcript persistence."""
+        if not isinstance(items, list):
+            return items
+
+        changed = False
+        cleaned_items = []
+        for item in items:
+            new_item = item
+            if isinstance(item, dict) and isinstance(item.get("content"), list):
+                new_content = []
+                item_changed = False
+                for part in item["content"]:
+                    new_part = part
+                    if (
+                        isinstance(part, dict)
+                        and part.get("type") == "output_text"
+                        and isinstance(part.get("text"), str)
+                    ):
+                        cleaned_text = self._strip_public_response_scaffolding(part["text"]).strip()
+                        if cleaned_text != part["text"]:
+                            new_part = dict(part)
+                            new_part["text"] = cleaned_text
+                            item_changed = True
+                    new_content.append(new_part)
+                if item_changed:
+                    new_item = dict(item)
+                    new_item["content"] = new_content
+                    changed = True
+            cleaned_items.append(new_item)
+
+        return cleaned_items if changed else items
+
+    def _filter_public_stream_scaffolding(self, text: str) -> str:
+        """Suppress leading internal scaffolding while streaming public text."""
+        if not text:
+            return ""
+        if getattr(self, "_public_stream_scaffolding_done", False):
+            return text
+
+        buffered = getattr(self, "_public_stream_scaffolding_buffer", "") + text
+        stripped = buffered.lstrip()
+        if not stripped:
+            self._public_stream_scaffolding_buffer = buffered
+            return ""
+
+        first_line = stripped.splitlines()[0] if stripped.splitlines() else stripped
+        heading = re.sub(r"^[#>\s-]*", "", first_line).strip()
+        heading = heading.strip("*_` ").rstrip(":").strip().lower()
+        valid_headings = (
+            "refined prompt",
+            "refined spec",
+            "refined specification",
+        )
+
+        if not any(candidate.startswith(heading) or heading.startswith(candidate) for candidate in valid_headings):
+            self._public_stream_scaffolding_done = True
+            self._public_stream_scaffolding_buffer = ""
+            return buffered
+
+        cleaned = self._strip_public_response_scaffolding(buffered)
+        if cleaned != buffered.strip():
+            self._public_stream_scaffolding_done = True
+            self._public_stream_scaffolding_buffer = ""
+            return cleaned
+
+        expected_fields = (
+            "objective",
+            "scope",
+            "constraints",
+            "acceptance criteria",
+            "risks/assumptions",
+            "validation",
+            "planned tests",
+            "minimal diffs",
+        )
+        body_lines = stripped.splitlines()[1:]
+        first_body_line = next((line.strip().lower() for line in body_lines if line.strip()), "")
+        if first_body_line and not any(field in first_body_line for field in expected_fields):
+            self._public_stream_scaffolding_done = True
+            self._public_stream_scaffolding_buffer = ""
+            return buffered
+
+        if len(buffered) > 4096:
+            self._public_stream_scaffolding_done = True
+            self._public_stream_scaffolding_buffer = ""
+            return buffered
+
+        self._public_stream_scaffolding_buffer = buffered
+        return ""
+
     @staticmethod
     def _has_natural_response_ending(content: str) -> bool:
         """Heuristic: does visible assistant text look intentionally finished?"""
@@ -7655,6 +7810,8 @@ class AIAgent:
                 if ctx_scrubber is not None:
                     think_tail = ctx_scrubber.feed(think_tail)
                 if think_tail:
+                    think_tail = self._filter_public_stream_scaffolding(think_tail)
+                if think_tail:
                     callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
                     for cb in callbacks:
                         try:
@@ -7669,6 +7826,8 @@ class AIAgent:
         if scrubber is not None:
             tail = scrubber.flush()
             if tail:
+                tail = self._filter_public_stream_scaffolding(tail)
+            if tail:
                 callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
                 for cb in callbacks:
                     try:
@@ -7677,6 +7836,8 @@ class AIAgent:
                         pass
                 self._record_streamed_assistant_text(tail)
         self._current_streamed_assistant_text = ""
+        self._public_stream_scaffolding_buffer = ""
+        self._public_stream_scaffolding_done = False
 
     def _record_streamed_assistant_text(self, text: str) -> None:
         """Accumulate visible assistant text emitted through stream callbacks."""
@@ -7757,6 +7918,7 @@ class AIAgent:
                 self, "_current_streamed_assistant_text", ""
             ):
                 text = text.lstrip("\n")
+            text = self._filter_public_stream_scaffolding(text)
         if not text:
             return
         callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
@@ -9956,7 +10118,7 @@ class AIAgent:
         # API replay, session transcript, gateway delivery, CLI display,
         # compression, title generation.
         if isinstance(_san_content, str) and _san_content:
-            _san_content = self._strip_think_blocks(_san_content).strip()
+            _san_content = self._strip_public_response_scaffolding(_san_content).strip()
 
         msg = {
             "role": "assistant",
@@ -10039,7 +10201,7 @@ class AIAgent:
         # flattening to plain text. This is required for prefix cache hits.
         codex_message_items = getattr(assistant_message, "codex_message_items", None)
         if codex_message_items:
-            msg["codex_message_items"] = codex_message_items
+            msg["codex_message_items"] = self._strip_public_response_scaffolding_from_codex_items(codex_message_items)
 
         if assistant_tool_calls:
             tool_calls = []
@@ -15066,7 +15228,7 @@ class AIAgent:
                             # old code injected "Calling the X tools..." which
                             # poisoned the conversation history.  Just use the
                             # fallback text as the final response and break.
-                            final_response = self._strip_think_blocks(fallback).strip()
+                            final_response = self._strip_public_response_scaffolding(fallback).strip()
                             self._response_was_previewed = True
                             break
 
@@ -15313,7 +15475,7 @@ class AIAgent:
                         truncated_response_prefix = ""
                         length_continue_retries = 0
                     
-                    final_response = self._strip_think_blocks(final_response).strip()
+                    final_response = self._strip_public_response_scaffolding(final_response).strip()
                     
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
 
