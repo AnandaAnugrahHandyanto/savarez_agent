@@ -96,6 +96,9 @@ def test_fill_config_requires_fields_and_blocks_custom_validation_js(tmp_path):
     assert cfg["url"] == "https://example.com/form?x=1&sessionId=abc"
     assert cfg["allowSubmit"] is False
     assert cfg["fields"][0]["value"] == "こんにちは"
+    assert cfg["allowedDomains"] == ["example.com"]
+    assert cfg["sessionId"] == "abc"
+    assert "sideEffectApproval" not in cfg
     assert cfg["validationExpression"] == "({ok:true})"
     assert cfg["sideEffectPolicy"]["approvalRequiredBeforeRun"] is True
     assert "autosave" in " ".join(cfg["sideEffectPolicy"]["knownSideEffects"])
@@ -110,6 +113,38 @@ def test_fill_config_requires_fields_and_blocks_custom_validation_js(tmp_path):
                 "allowedDomains": ["example.com"],
                 "fields": [{"selector": "#title", "kind": "value", "value": "こんにちは"}],
                 "validationExpression": "document.querySelector('form').submit()",
+            },
+            shared_root=tmp_path,
+        )
+
+
+def test_fill_config_includes_approval_marker_only_with_matching_token(tmp_path):
+    cfg = builder.build_config(
+        {
+            "mode": "fill",
+            "url": "https://example.com/form",
+            "sessionId": "abc",
+            "allowedDomains": ["example.com"],
+            "fields": [{"selector": "#title", "value": "ok"}],
+            "approvalToken": "APPROVED:abc",
+        },
+        shared_root=tmp_path,
+    )
+    assert cfg["sideEffectApproval"] == {
+        "approved": True,
+        "token": "APPROVED:abc",
+        "scope": "url+fields+sessionId",
+    }
+
+    with pytest.raises(ValueError, match="approvalToken"):
+        builder.build_config(
+            {
+                "mode": "fill",
+                "url": "https://example.com/form",
+                "sessionId": "abc",
+                "allowedDomains": ["example.com"],
+                "fields": [{"selector": "#title", "value": "ok"}],
+                "approvalToken": "APPROVED:wrong",
             },
             shared_root=tmp_path,
         )

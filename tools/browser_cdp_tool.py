@@ -525,6 +525,7 @@ def browser_mac_cdp_fill_config(
     session_id: str,
     output_prefix: Optional[str] = None,
     validation_expression: Optional[str] = None,
+    approval_token: Optional[str] = None,
     shared_root: str = str(DEFAULT_SHARED_ROOT),
     config_path: Optional[str] = None,
     write_local_config: bool = False,
@@ -541,6 +542,8 @@ def browser_mac_cdp_fill_config(
         spec["outputPrefix"] = output_prefix
     if validation_expression:
         spec["validationExpression"] = validation_expression
+    if approval_token:
+        spec["approvalToken"] = approval_token
     return _mac_sidecar_config_payload(
         spec,
         shared_root=shared_root,
@@ -759,6 +762,10 @@ MAC_CDP_FILL_SCHEMA: Dict[str, Any] = {
                 "type": "string",
                 "description": "Deprecated/blocked for guarded fill: arbitrary JS validation is rejected because it can cause side effects.",
             },
+            "approval_token": {
+                "type": "string",
+                "description": "Optional explicit approval marker required by the runner for actual fill execution. Must equal APPROVED:<session_id> after user approval for this URL and field set.",
+            },
             "shared_root": {"type": "string", "description": "Mac shared-worker root. Defaults to Kagura local-worker shared root."},
             "config_path": {"type": "string", "description": "Optional intended output config JSON path under shared_root."},
             "write_local_config": {"type": "boolean", "description": "Advanced/testing only: also write config_path on the current Hermes host."},
@@ -795,6 +802,7 @@ registry.register(
         session_id=args.get("session_id", ""),
         output_prefix=args.get("output_prefix"),
         validation_expression=args.get("validation_expression"),
+        approval_token=args.get("approval_token"),
         shared_root=args.get("shared_root", str(DEFAULT_SHARED_ROOT)),
         config_path=args.get("config_path"),
         write_local_config=bool(args.get("write_local_config", False)),

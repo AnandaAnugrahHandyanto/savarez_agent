@@ -37,6 +37,11 @@ SECRET_PATTERNS = [
 ]
 FIELD_KINDS = {"value", "textContent", "innerText"}
 MODES = {"inventory", "fill"}
+FIXED_VALIDATION_EXPRESSION = "({ok:true})"
+
+
+def _approval_token(session_id: str) -> str:
+    return f"APPROVED:{session_id}"
 
 
 def _side_effect_policy(mode: str) -> dict[str, Any]:
@@ -179,6 +184,7 @@ def build_config(spec: dict[str, Any], shared_root: str | Path = DEFAULT_SHARED_
         "pageReadyTimeoutSec": int(spec.get("pageReadyTimeoutSec", 12)),
         "allowSubmit": False,
         "sideEffectPolicy": _side_effect_policy(mode),
+        "allowedDomains": [str(x).lower().strip().strip(".") for x in allowed if str(x).strip()],
     }
 
     if mode == "inventory":
@@ -193,13 +199,23 @@ def build_config(spec: dict[str, Any], shared_root: str | Path = DEFAULT_SHARED_
     else:
         cfg.update(
             {
+                "sessionId": session_id,
                 "fields": _validate_fields(spec.get("fields")),
                 "postFillWaitSec": float(spec.get("postFillWaitSec", 1.0)),
-                "validationExpression": "({ok:true})",
+                "validationExpression": FIXED_VALIDATION_EXPRESSION,
                 "outputPath": _validate_shared_output(root / f"{prefix}-form-fill-result.json", root),
                 "screenshotPath": _validate_shared_output(root / f"{prefix}-form-fill-screenshot.png", root),
             }
         )
+        approval_token = str(spec.get("approvalToken") or "").strip()
+        if approval_token:
+            if approval_token != _approval_token(session_id):
+                raise ValueError("approvalToken must match APPROVED:<sessionId>")
+            cfg["sideEffectApproval"] = {
+                "approved": True,
+                "token": approval_token,
+                "scope": "url+fields+sessionId",
+            }
     if _looks_like_secret({k: v for k, v in cfg.items() if k not in {"profile", "outputPath", "screenshotPath"}}):
         raise ValueError("config rejected as possible secret payload")
     return cfg
