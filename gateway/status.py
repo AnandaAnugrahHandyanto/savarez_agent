@@ -14,6 +14,7 @@ concurrently under distinct configurations).
 import hashlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -109,12 +110,31 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
 
 
 def _get_process_start_time(pid: int) -> Optional[int]:
-    """Return the kernel start time for a process when available."""
-    stat_path = Path(f"/proc/{pid}/stat")
+    """Return a stable process-start identifier when available.
+
+    Uses ``psutil.Process(pid).create_time()`` so the kernel-reported boot
+    time of the PID is available on Linux, macOS, and Windows alike — the
+    legacy ``/proc/<pid>/stat`` path only worked on Linux, which silently
+    disabled stale-lock detection everywhere else.
+
+    Result is rounded to milliseconds so it serialises cleanly to JSON and
+    compares with `==` across restarts.  Returns ``None`` when the process
+    no longer exists, when access is denied, or when psutil itself is
+    unavailable (scaffold phase before ``psutil`` is pip-installed) — in
+    that case callers fall back to the cmdline identity check.
+
+    Format change vs. previous releases: old PID/lock files stored Linux
+    jiffies; new files store milliseconds.  Mixed values self-heal
+    because the stale-detection branch compares for equality and treats
+    any mismatch as stale.
+    """
     try:
-        # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
-        return int(stat_path.read_text(encoding="utf-8").split()[21])
-    except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
+        import psutil  # type: ignore
+    except ImportError:
+        return None
+    try:
+        return int(psutil.Process(int(pid)).create_time() * 1000)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError, ValueError):
         return None
 
 
@@ -126,9 +146,24 @@ def get_process_start_time(pid: int) -> Optional[int]:
 def _read_process_cmdline(pid: int) -> Optional[str]:
     """Return the process command line as a space-separated string.
 
-    On Linux, reads /proc/<pid>/cmdline directly.  On macOS and other
-    platforms without /proc, falls back to ``ps -p <pid> -o command=``.
+    Prefers ``psutil.Process(pid).cmdline()`` because it works identically
+    on Linux, macOS, and Windows without spawning a subprocess.  Falls back
+    to ``/proc/<pid>/cmdline`` (Linux) and finally to ``ps -p <pid> -o
+    command=`` (gated by ``shutil.which("ps")``) so the function still
+    yields something useful if psutil raises ``AccessDenied`` for a
+    privileged Apple daemon or is unavailable during the install scaffold.
     """
+    try:
+        import psutil  # type: ignore
+        try:
+            parts = psutil.Process(int(pid)).cmdline()
+            if parts:
+                return " ".join(parts)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+    except ImportError:
+        pass
+
     cmdline_path = Path(f"/proc/{pid}/cmdline")
     try:
         raw = cmdline_path.read_bytes()
@@ -138,23 +173,46 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
         if raw:
             return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
 
-    try:
-        result = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "command="],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+    ps_path = shutil.which("ps")
+    if ps_path:
+        try:
+            result = subprocess.run(
+                [ps_path, "-p", str(pid), "-o", "command="],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
     return None
 
 
 def _looks_like_gateway_process(pid: int) -> bool:
-    """Return True when the live PID still looks like the Hermes gateway."""
+    """Return True when the live PID still looks like the Hermes gateway.
+
+    Fast-rejects system daemons (CloudDocs / FileProvider / launchd children
+    on macOS, svchost on Windows) via ``psutil.Process(pid).name()`` before
+    doing any cmdline string matching — that prefilter is what flips the
+    macOS PID-reuse case (issue #24067) from "process exists" to "process
+    is clearly not us".  Falls through to cmdline pattern matching when
+    the name check is inconclusive or unavailable.
+    """
+    try:
+        import psutil  # type: ignore
+        try:
+            proc_name = (psutil.Process(int(pid)).name() or "").lower()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            proc_name = ""
+        if proc_name:
+            allowed_prefixes = ("python", "hermes", "pythonw", "uv")
+            if not any(proc_name.startswith(prefix) for prefix in allowed_prefixes):
+                return False
+    except ImportError:
+        pass
+
     cmdline = _read_process_cmdline(pid)
     if not cmdline:
         return False
@@ -605,23 +663,26 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                 stale = True
             else:
                 current_start = _get_process_start_time(existing_pid)
-                if (
-                    existing.get("start_time") is not None
-                    and current_start is not None
-                    and current_start != existing.get("start_time")
-                ):
-                    stale = True
-                # When start_time comparison is unavailable (macOS / Windows
-                # have no /proc, so both sides are None), fall back to
-                # checking the live process command line.  If the PID was
-                # reused by an unrelated process the lock is stale.
-                if (
-                    not stale
-                    and existing.get("start_time") is None
-                    and current_start is None
-                    and not _looks_like_gateway_process(existing_pid)
-                ):
-                    stale = True
+                existing_start = existing.get("start_time")
+                if existing_start is not None and current_start is not None:
+                    # Both sides have a kernel start-time.  Equality means
+                    # this is still the same process; any mismatch (incl.
+                    # legacy jiffies vs. new milliseconds after the psutil
+                    # migration) signals PID reuse.
+                    if existing_start != current_start:
+                        stale = True
+                else:
+                    # At least one side is unknown — either psutil could
+                    # not read create_time (AccessDenied on a privileged
+                    # daemon, or an older lock file with start_time=None
+                    # from the pre-psutil era), or both platforms have no
+                    # /proc.  Fall back to the cmdline identity check:
+                    # if the live PID does not look like the gateway,
+                    # treat the lock as stale.  Closes the cross-platform
+                    # lockfile edge case (one side has start_time, other
+                    # does not).
+                    if not _looks_like_gateway_process(existing_pid):
+                        stale = True
                 # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped
                 # processes still appear alive to _pid_exists but are not
                 # actually running. Treat them as stale so --replace works.
