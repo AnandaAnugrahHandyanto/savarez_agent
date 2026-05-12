@@ -129,6 +129,14 @@ def _is_relative_oneshot_schedule(schedule: str) -> bool:
     return True
 
 
+def _legacy_relative_oneshot_schedule(existing: Dict[str, Any]) -> Optional[str]:
+    display = str(existing.get("schedule_display") or "").strip()
+    prefix = "once in "
+    if display.lower().startswith(prefix):
+        return display[len(prefix):].strip()
+    return None
+
+
 def _schedule_changed(existing: Dict[str, Any], schedule: str) -> bool:
     template_schedule = existing.get("template_schedule")
     if template_schedule is not None:
@@ -136,6 +144,9 @@ def _schedule_changed(existing: Dict[str, Any], schedule: str) -> bool:
     if existing.get("schedule_display") == schedule:
         return False
     if existing.get("schedule", {}).get("kind") == "once" and _is_relative_oneshot_schedule(schedule):
+        legacy_schedule = _legacy_relative_oneshot_schedule(existing)
+        if legacy_schedule is not None:
+            return legacy_schedule != schedule
         return False
     return parse_schedule(schedule) != existing.get("schedule")
 

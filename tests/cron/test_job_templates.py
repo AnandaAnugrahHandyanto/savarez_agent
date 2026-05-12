@@ -172,6 +172,38 @@ def test_sync_cron_templates_relative_one_shot_does_not_shift_on_second_sync(tmp
     assert after["next_run_at"] == first_next_run_at
 
 
+def test_sync_cron_templates_legacy_relative_one_shot_detects_changed_duration(tmp_path, monkeypatch):
+    hermes_home, jobs, job_templates = _load_modules(tmp_path, monkeypatch)
+    existing = jobs.create_job(
+        prompt="old",
+        schedule="30m",
+        name="Legacy one-shot template job",
+        template_key="repo-self-improvement",
+        template_version="1",
+    )
+    before = jobs.get_job(existing["id"])
+    assert before["schedule_display"] == "once in 30m"
+    assert "template_schedule" not in before
+
+    _write_template(
+        hermes_home,
+        "repo-self-improvement.json",
+        template_key="repo-self-improvement",
+        version="2",
+        name="Legacy one-shot template job",
+        schedule="60m",
+        prompt="new",
+    )
+
+    job_templates.sync_cron_templates()
+
+    stored = jobs.get_job(existing["id"])
+    assert stored["schedule_display"] == "once in 60m"
+    assert stored["schedule"]["run_at"] != before["schedule"]["run_at"]
+    assert stored["next_run_at"] == stored["schedule"]["run_at"]
+    assert stored["template_schedule"] == "60m"
+
+
 def test_sync_cron_templates_duplicate_keys_raise_before_mutating_jobs(tmp_path, monkeypatch):
     hermes_home, jobs, job_templates = _load_modules(tmp_path, monkeypatch)
     _write_template(
