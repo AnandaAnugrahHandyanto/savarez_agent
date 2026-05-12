@@ -130,6 +130,41 @@ class TestCLIStatusBar:
         cli_obj.reasoning_config = {"enabled": False}
         assert "gpt-5.5 none" in cli_obj._build_status_bar_text(width=120)
 
+    def test_status_bar_text_hides_invalid_reasoning_effort(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="openai/gpt-5.5"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.reasoning_config = {"enabled": True, "effort": "turbo"}
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "turbo" not in text
+        assert "gpt-5.5 │" in text
+
+    def test_status_bar_text_prefers_agent_reasoning_config(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="openai/gpt-5.5"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.reasoning_config = {"enabled": True, "effort": "low"}
+        cli_obj.agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "gpt-5.5 xhigh" in text
+        assert "gpt-5.5 low" not in text
+
     def test_status_bar_fragments_include_reasoning_effort_next_to_model(self):
         cli_obj = _attach_agent(
             _make_cli(model="openai/gpt-5.5"),

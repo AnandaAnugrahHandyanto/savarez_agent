@@ -2818,20 +2818,10 @@ class HermesCLI:
 
     @staticmethod
     def _status_bar_reasoning_effort_label(reasoning_config: Any) -> str:
-        """Return the compact reasoning-effort suffix for the status bar.
+        """Return the compact reasoning-effort suffix for the status bar."""
+        from hermes_constants import reasoning_effort_label
 
-        Mirrors the Ink TUI's compact model label behavior: hide default
-        ``medium``/``normal`` noise, but surface every explicit non-default
-        reasoning state (including ``none``) for any provider/model.
-        """
-        if not isinstance(reasoning_config, dict):
-            return ""
-        if reasoning_config.get("enabled") is False:
-            return "none"
-        effort = str(reasoning_config.get("effort", "") or "").strip().lower()
-        if effort in {"", "medium", "normal", "default"}:
-            return ""
-        return effort
+        return reasoning_effort_label(reasoning_config)
 
     @staticmethod
     def _status_bar_model_label(snapshot: Dict[str, Any]) -> str:

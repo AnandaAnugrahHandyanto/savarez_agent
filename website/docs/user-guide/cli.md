@@ -59,16 +59,16 @@ The welcome banner shows your model, terminal backend, working directory, availa
 A persistent status bar sits above the input area, updating in real time:
 
 ```
- ⚕ claude-sonnet-4-20250514 │ 12.4K/200K │ [██████░░░░] 6% │ $0.06 │ 15m
+ ⚕ claude-sonnet-4-20250514 high │ 12.4K/200K │ [██████░░░░] 6% │ 15m │ ⏱ 4s
 ```
 
 | Element | Description |
 |---------|-------------|
-| Model name | Current model (truncated if longer than 26 chars) |
+| Model name | Current model (truncated if longer than 26 chars). Explicit non-default reasoning effort, or `none` when reasoning is disabled, appears next to the model. |
 | Token count | Context tokens used / max context window |
 | Context bar | Visual fill indicator with color-coded thresholds |
-| Cost | Estimated session cost (or `n/a` for unknown/zero-priced models) |
 | Duration | Elapsed session time |
+| Prompt timer | Elapsed time for the current or most recent prompt |
 
 The bar adapts to terminal width — full layout at ≥ 76 columns, compact at 52–75, minimal (model + duration only) below 52.
 

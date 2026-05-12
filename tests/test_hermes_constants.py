@@ -12,6 +12,7 @@ from hermes_constants import (
     get_default_hermes_root,
     is_container,
     parse_reasoning_effort,
+    reasoning_effort_label,
 )
 
 
@@ -171,3 +172,28 @@ class TestParseReasoningEffort:
         """
         documented = {"minimal", "low", "medium", "high", "xhigh"}
         assert documented.issubset(set(VALID_REASONING_EFFORTS))
+
+
+class TestReasoningEffortLabel:
+    """Tests for canonical compact reasoning labels used by CLI/TUI status."""
+
+    @pytest.mark.parametrize(
+        "config, expected",
+        [
+            (None, ""),
+            ({}, ""),
+            ({"enabled": True}, ""),
+            ({"enabled": True, "effort": "medium"}, ""),
+            ({"enabled": True, "effort": "normal"}, ""),
+            ({"enabled": True, "effort": "default"}, ""),
+            ({"enabled": False}, "none"),
+            ({"enabled": True, "effort": "minimal"}, "minimal"),
+            ({"enabled": True, "effort": "HIGH"}, "high"),
+            ({"enabled": True, "effort": " xhigh "}, "xhigh"),
+            ({"enabled": True, "effort": "turbo"}, ""),
+            ({"enabled": True, "effort": object()}, ""),
+            ("high", ""),
+        ],
+    )
+    def test_compact_display_label(self, config, expected):
+        assert reasoning_effort_label(config) == expected
