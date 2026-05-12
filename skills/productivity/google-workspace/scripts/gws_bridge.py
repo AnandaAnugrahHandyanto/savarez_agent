@@ -10,12 +10,18 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Ensure sibling modules (_hermes_home) are importable when run standalone.
-_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
+# Ensure sibling modules (_hermes_home) AND project-root modules
+# (agent.secure_file_io) are importable when run standalone — this bridge
+# is invoked from gws CLI wrappers where only the script directory is on
+# sys.path by default.
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SCRIPTS_DIR.parents[3]
+for _p in (str(_SCRIPTS_DIR), str(_REPO_ROOT)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from _hermes_home import get_hermes_home
+from agent.secure_file_io import write_secret_json
 
 
 def get_token_path() -> Path:
@@ -65,8 +71,9 @@ def refresh_token(token_data: dict) -> dict:
         tz=timezone.utc,
     ).isoformat()
 
-    get_token_path().write_text(
-        json.dumps(_normalize_authorized_user_payload(token_data), indent=2)
+    write_secret_json(
+        get_token_path(),
+        _normalize_authorized_user_payload(token_data),
     )
     return token_data
 

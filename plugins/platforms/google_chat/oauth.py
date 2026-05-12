@@ -66,6 +66,8 @@ import sys
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
+from agent.secure_file_io import write_secret_json
+
 # Pin the legacy logger name so operator-side log filters keep matching
 # after the in-tree → plugin migration. See adapter.py for context.
 logger = logging.getLogger("gateway.platforms.google_chat_user_oauth")
@@ -296,14 +298,11 @@ def list_authorized_emails() -> List[str]:
 
 
 def _persist_credentials(creds: Any, token_path: Path) -> None:
-    """Atomic-ish JSON write of refreshed credentials."""
+    """Atomic JSON write of refreshed credentials at 0o600 / parent 0o700."""
     try:
-        token_path.parent.mkdir(parents=True, exist_ok=True)
-        token_path.write_text(
-            json.dumps(
-                _normalize_authorized_user_payload(json.loads(creds.to_json())),
-                indent=2,
-            )
+        write_secret_json(
+            token_path,
+            _normalize_authorized_user_payload(json.loads(creds.to_json())),
         )
     except Exception:
         logger.debug(
@@ -402,25 +401,21 @@ def store_client_secret(path: str) -> None:
         sys.exit(1)
 
     target = _client_secret_path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(data, indent=2))
+    write_secret_json(target, data)
     print(f"OK: Client secret saved to {target}")
 
 
 def _save_pending_auth(*, state: str, code_verifier: str,
                       email: Optional[str] = None) -> None:
     pending = _pending_auth_path(email)
-    pending.parent.mkdir(parents=True, exist_ok=True)
-    pending.write_text(
-        json.dumps(
-            {
-                "state": state,
-                "code_verifier": code_verifier,
-                "redirect_uri": _REDIRECT_URI,
-                "email": email or "",
-            },
-            indent=2,
-        )
+    write_secret_json(
+        pending,
+        {
+            "state": state,
+            "code_verifier": code_verifier,
+            "redirect_uri": _REDIRECT_URI,
+            "email": email or "",
+        },
     )
 
 
