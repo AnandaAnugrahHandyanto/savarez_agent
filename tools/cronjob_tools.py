@@ -40,7 +40,15 @@ from cron.jobs import (
 
 _CRON_THREAT_PATTERNS = [
     (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
+    # Block "do not tell the user [about/that/what/...]" — instructions to hide
+    # actions from the operator. Carve out anti-fabrication skill guidance like
+    # `Do NOT tell the user "the stream stalled"` where a quoted literal names
+    # a specific response string the agent must not produce. The quoted-suffix
+    # carve-out distinguishes "hide your action from the user" (adversarial)
+    # from "don't fabricate this specific string back to the user" (legit
+    # skill-author instruction). Quotes covered: ASCII ' " and curly
+    # U+2018/U+2019/U+201C/U+201D.
+    (r'do\s+not\s+tell\s+the\s+user(?!\s*[\'"\u2018\u2019\u201c\u201d])', "deception_hide"),
     (r'system\s+prompt\s+override', "sys_prompt_override"),
     (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
