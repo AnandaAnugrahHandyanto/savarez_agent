@@ -263,10 +263,17 @@ class TestPackaging:
         content = toml_path.read_text()
         assert 'bedrock = ["boto3' in content
 
-    def test_bedrock_in_all_extra(self):
+    def test_bedrock_reachable_via_all_or_lazy(self):
+        # Bedrock can ship via `[all]` (legacy) or `tools/lazy_deps.py`
+        # (#24515 policy: only extras that genuinely can't be lazy-installed
+        # belong in `[all]`). Either reachability path satisfies the
+        # invariant: a fresh install can still get to Bedrock when needed.
         from pathlib import Path
         content = (Path(__file__).parent.parent.parent / "pyproject.toml").read_text()
-        assert '"hermes-agent[bedrock]"' in content
+        in_all_extra = '"hermes-agent[bedrock]"' in content
+        if not in_all_extra:
+            from tools.lazy_deps import LAZY_DEPS
+            assert "provider.bedrock" in LAZY_DEPS
 
 
 # ---------------------------------------------------------------------------
