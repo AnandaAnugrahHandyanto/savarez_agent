@@ -6018,22 +6018,34 @@ class HermesCLI:
     def _prompt_text_input(self, prompt_text: str) -> str | None:
         """Prompt for free-text input safely inside or outside prompt_toolkit.
 
-        Mirrors the thread-aware guard in ``_run_curses_picker``: ``run_in_terminal``
-        returns a coroutine that must be awaited by the prompt_toolkit event loop,
-        which only exists on the main thread.  Slash commands are dispatched from
-        the ``process_loop`` daemon thread (see issue #23185), so calling
-        ``run_in_terminal`` from there orphans the coroutine — ``_ask`` never runs,
-        and user keystrokes leak into the composer instead.  Fall back to a direct
-        ``input()`` when we're off the main thread.
+        Three cases:
+
+        1. Main thread + app running: call ``run_in_terminal`` directly —
+           prompt_toolkit pauses the input area, runs ``_ask``, then redraws.
+
+        2. Background thread + app running (the common case — process_loop is a
+           daemon thread): ``run_in_terminal`` must be called from the app's
+           event loop, not from the background thread.  Schedule it via
+           ``loop.call_soon_threadsafe`` and block the background thread on a
+           ``threading.Event`` until ``_ask`` finishes.  Without this the
+           direct ``input()`` fallback races against prompt_toolkit's raw-mode
+           stdin ownership and hangs — keystrokes go to the PT handler on the
+           main thread instead of the ``input()`` call on the daemon thread
+           (root cause of the /new, /clear, /undo confirmation hang, #23185).
+
+        3. No app (non-interactive / tests): fall back to plain ``input()``.
         """
         import threading
         result = [None]
+        done = threading.Event()
 
         def _ask():
             try:
                 result[0] = input(prompt_text).strip() or None
             except (KeyboardInterrupt, EOFError):
                 pass
+            finally:
+                done.set()
 
         in_main_thread = threading.current_thread() is threading.main_thread()
 
@@ -6049,12 +6061,46 @@ class HermesCLI:
                 # scheduled coroutine.  Fall back to a direct input() so the
                 # user's keystrokes don't leak into the agent buffer.
                 try:
+                    done.clear()
                     _ask()
                 except Exception:
-                    pass
+                    done.set()
             finally:
                 self._status_bar_visible = was_visible
                 self._app.invalidate()
+        elif self._app and not in_main_thread:
+            # Cross-thread: schedule run_in_terminal on the app's event loop
+            # and block here until _ask finishes.
+            try:
+                from prompt_toolkit.application import run_in_terminal
+                loop = getattr(self._app, "loop", None)
+                if loop is not None and loop.is_running():
+                    was_visible = self._status_bar_visible
+                    self._status_bar_visible = False
+                    self._app.invalidate()
+
+                    def _schedule():
+                        try:
+                            run_in_terminal(_ask)
+                        except Exception:
+                            # run_in_terminal failed — call _ask directly so
+                            # done.set() is still reached and we don't deadlock.
+                            try:
+                                _ask()
+                            except Exception:
+                                done.set()
+                        finally:
+                            self._status_bar_visible = was_visible
+                            self._app.invalidate()
+
+                    loop.call_soon_threadsafe(_schedule)
+                    done.wait()  # block background thread until _ask finishes
+                else:
+                    _ask()
+                    done.wait()
+            except Exception:
+                _ask()
+                done.wait()
         else:
             _ask()
         return result[0]
