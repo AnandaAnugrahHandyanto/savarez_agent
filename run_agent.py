@@ -1590,7 +1590,6 @@ class AIAgent(StreamingMixin, ToolExecutionMixin, FallbackMixin, CompressionMixi
         # in _compression_warning and replayed in the first run_conversation().
         self._compression_warning = None
         self._check_compression_model_feasibility()
-        print("DEBUG: past compression check", file=__import__('sys').stderr)
 
         # Snapshot primary runtime for per-turn restoration.  When fallback
         # activates during a turn, the next turn restores these values so the
@@ -1617,7 +1616,6 @@ class AIAgent(StreamingMixin, ToolExecutionMixin, FallbackMixin, CompressionMixi
             "compressor_context_length": _cc.context_length,
             "compressor_threshold_tokens": _cc.threshold_tokens,
         }
-        print("DEBUG: past primary_runtime", file=__import__('sys').stderr)
         if self.api_mode == "anthropic_messages":
             self._primary_runtime.update({
                 "anthropic_api_key": self._anthropic_api_key,
