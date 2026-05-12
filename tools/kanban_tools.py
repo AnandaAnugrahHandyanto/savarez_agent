@@ -422,6 +422,14 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"and either drop these ids from created_cards, or pass "
                     f"created_cards=[] to skip the card-claim check entirely."
                 )
+            except kb.ScopeAttestationError as scope_err:
+                return tool_error(
+                    "kanban_complete blocked: this task requires "
+                    "completion_policy.require_scope_attestation=true metadata. "
+                    "Provide metadata with scope_contract_version >= 2, "
+                    "scope_attestation=true, and forbidden_actions_taken=0. "
+                    f"Missing/invalid: {', '.join(scope_err.missing)}."
+                )
             if not ok:
                 return tool_error(
                     f"could not complete {tid} (unknown id or already terminal)"
@@ -435,6 +443,36 @@ def _handle_complete(args: dict, **kw) -> str:
         return tool_error(f"kanban_complete: {e}")
 
 
+def _handle_validate_created_cards(args: dict, **kw) -> str:
+    """Dry-run created_cards validation without completing the task."""
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    created_cards = args.get("created_cards")
+    if created_cards is None:
+        created_cards = []
+    if isinstance(created_cards, str):
+        created_cards = [created_cards]
+    if not isinstance(created_cards, (list, tuple)):
+        return tool_error(
+            f"created_cards must be a list of task ids, got "
+            f"{type(created_cards).__name__}"
+        )
+    created_cards = [str(c).strip() for c in created_cards if str(c).strip()]
+    try:
+        kb, conn = _connect()
+        try:
+            result = kb.validate_created_cards(conn, tid, created_cards)
+            return json.dumps(result)
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.exception("kanban_validate_created_cards failed")
+        return tool_error(f"kanban_validate_created_cards: {e}")
+
+
 def _handle_block(args: dict, **kw) -> str:
     """Transition the task to blocked with a reason a human will read."""
     tid = _default_task_id(args.get("task_id"))
@@ -446,8 +484,14 @@ def _handle_block(args: dict, **kw) -> str:
     if ownership_err:
         return ownership_err
     reason = args.get("reason")
+    context_comment_id = args.get("context_comment_id")
     if not reason or not str(reason).strip():
         return tool_error("reason is required — explain what input you need")
+    if context_comment_id is not None:
+        try:
+            context_comment_id = int(context_comment_id)
+        except (TypeError, ValueError):
+            return tool_error("context_comment_id must be an integer comment id")
     try:
         kb, conn = _connect()
         try:
@@ -455,11 +499,12 @@ def _handle_block(args: dict, **kw) -> str:
                 conn, tid,
                 reason=reason,
                 expected_run_id=_worker_run_id(tid),
+                context_comment_id=context_comment_id,
             )
             if not ok:
                 return tool_error(
                     f"could not block {tid} (unknown id or not in "
-                    f"running/ready)"
+                    f"running/ready/todo/triage)"
                 )
             run = kb.latest_run(conn, tid)
             return _ok(task_id=tid, run_id=run.id if run else None)
@@ -816,6 +861,35 @@ KANBAN_COMPLETE_SCHEMA = {
     },
 }
 
+KANBAN_VALIDATE_CREATED_CARDS_SCHEMA = {
+    "name": "kanban_validate_created_cards",
+    "description": (
+        "Dry-run validation for the created_cards manifest you plan to "
+        "pass to kanban_complete. This checks whether each claimed task id "
+        "exists and belongs to this worker/task without completing or "
+        "otherwise mutating the task. Use when you created follow-up cards "
+        "and want to catch phantom or foreign ids before final handoff."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "created_cards": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Task ids you intend to pass to "
+                    "kanban_complete(created_cards=[...])."
+                ),
+            },
+        },
+        "required": ["created_cards"],
+    },
+}
+
 KANBAN_BLOCK_SCHEMA = {
     "name": "kanban_block",
     "description": (
@@ -838,6 +912,15 @@ KANBAN_BLOCK_SCHEMA = {
                     "What you need answered, in one or two sentences. "
                     "Don't paste the whole conversation; the human has "
                     "the board and can ask follow-ups via comments."
+                ),
+            },
+            "context_comment_id": {
+                "type": "integer",
+                "description": (
+                    "Optional id returned by kanban_comment when a longer "
+                    "blocker explanation was posted first. The blocked "
+                    "event stores this id and a short snippet so dashboards "
+                    "can show context without another lookup."
                 ),
             },
         },
@@ -1082,6 +1165,15 @@ registry.register(
     handler=_handle_complete,
     check_fn=_check_kanban_mode,
     emoji="✔",
+)
+
+registry.register(
+    name="kanban_validate_created_cards",
+    toolset="kanban",
+    schema=KANBAN_VALIDATE_CREATED_CARDS_SCHEMA,
+    handler=_handle_validate_created_cards,
+    check_fn=_check_kanban_mode,
+    emoji="🔎",
 )
 
 registry.register(

@@ -416,11 +416,11 @@ class TestCmdUpdateLaunchdRestart:
         )
 
         # ``find_gateway_pids`` is invoked twice: once to enumerate manual
-         # PIDs to restart, then again ~3s later by the post-restart survivor
-         # sweep (#17648). Return the live PID first, then an empty list to
-         # simulate the process actually exiting after the graceful restart
-         # — otherwise the sweep would SIGKILL pid 12345 even though graceful
-         # drain succeeded, and ``kill.assert_not_called()`` would fire.
+        # PIDs to restart, then again ~3s later by the post-restart survivor
+        # sweep (#17648). Return the live PID first, then an empty list to
+        # simulate the process actually exiting after the graceful restart
+        # — otherwise the sweep would SIGKILL pid 12345 even though graceful
+        # drain succeeded, and ``kill.assert_not_called()`` would fire.
         with patch.object(gateway_cli, "find_gateway_pids", side_effect=[[12345], []]), \
              patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
              patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
@@ -954,10 +954,10 @@ class TestServicePidExclusion:
         )
 
         # Survivor sweep (#17648) re-queries ``find_gateway_pids`` after
-         # SIGTERM. ``os.kill`` is mocked, so the PID never "dies" — track
-         # the killed-via-SIGTERM PIDs ourselves and exclude them on later
-         # calls to simulate the OS reaping the process. Without this the
-         # sweep escalates with SIGKILL and ``manual_kills == 2`` instead of 1.
+        # SIGTERM. ``os.kill`` is mocked, so the PID never "dies" — track
+        # the killed-via-SIGTERM PIDs ourselves and exclude them on later
+        # calls to simulate the OS reaping the process. Without this the
+        # sweep escalates with SIGKILL and ``manual_kills == 2`` instead of 1.
         _killed_pids: set[int] = set()
 
         def fake_find(exclude_pids=None, all_profiles=False):
@@ -1068,6 +1068,8 @@ class TestFindGatewayPidsExclude:
 
     def test_excludes_specified_pids(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli.os.path, "isdir", lambda path: False)
 
         def fake_run(cmd, **kwargs):
             return subprocess.CompletedProcess(
@@ -1088,6 +1090,8 @@ class TestFindGatewayPidsExclude:
 
     def test_no_exclude_returns_all(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli.os.path, "isdir", lambda path: False)
 
         def fake_run(cmd, **kwargs):
             return subprocess.CompletedProcess(
@@ -1111,6 +1115,7 @@ class TestFindGatewayPidsExclude:
         profile_dir.mkdir(parents=True)
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli.os.path, "isdir", lambda path: False)
 
         def fake_run(cmd, **kwargs):
             return subprocess.CompletedProcess(
@@ -1434,11 +1439,30 @@ class TestCmdUpdateLegacyGatewayWarning:
 # ---------------------------------------------------------------------------
 
 
+def _mock_call_args(call):
+    """Return positional args from a mock call without touching call.args.
+
+    Some mock entries in this cluster can expose a pathological ``call.args``
+    property under the per-test timeout handler. The tuple representation is
+    stable for both ``call(args, kwargs)`` and named ``call.name(args, kwargs)``
+    forms.
+    """
+    raw = tuple(call)
+    if len(raw) == 3:
+        return raw[1]
+    if len(raw) == 2:
+        return raw[0]
+    return ()
+
+
 def _systemctl_calls(mock_run, subcommand):
     """Return every subprocess.run call that was `systemctl [--user] <subcommand>`."""
     out = []
     for call in mock_run.call_args_list:
-        argv = call.args[0]
+        args = _mock_call_args(call)
+        if not args:
+            continue
+        argv = args[0]
         joined = " ".join(str(c) for c in argv)
         if "systemctl" in joined and subcommand in joined:
             out.append(argv)
@@ -1505,7 +1529,10 @@ class TestCmdUpdateResetFailedBeforeRestart:
         first_reset_idx = None
         first_restart_idx = None
         for idx, call in enumerate(mock_run.call_args_list):
-            joined = " ".join(str(c) for c in call.args[0])
+            args = _mock_call_args(call)
+            if not args:
+                continue
+            joined = " ".join(str(c) for c in args[0])
             if "systemctl" in joined and "reset-failed" in joined and first_reset_idx is None:
                 first_reset_idx = idx
             if "systemctl" in joined and "restart" in joined and "hermes-gateway" in joined:

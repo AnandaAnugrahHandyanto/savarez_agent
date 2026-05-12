@@ -85,6 +85,11 @@ from typing import Any, Iterable, Optional
 
 from toolsets import get_toolset_names
 
+try:
+    import yaml
+except Exception:  # pragma: no cover - PyYAML is part of Hermes runtime deps
+    yaml = None
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1770,6 +1775,58 @@ def _current_run_id(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
     return int(row["current_run_id"]) if row and row["current_run_id"] else None
 
 
+def _terminal_event_payload(
+    conn: sqlite3.Connection,
+    task_id: str,
+    run_id: Optional[int],
+    *,
+    outcome: str,
+    summary: Optional[str] = None,
+    error: Optional[str] = None,
+    extra: Optional[dict] = None,
+) -> dict:
+    """Build a self-contained terminal event payload.
+
+    Terminal state is also persisted on ``task_runs``; duplicating the
+    small operator-facing subset here lets dashboards/notifiers reconstruct
+    lifecycle state from ``task_events`` without a second table join.
+    """
+    payload: dict[str, Any] = {"outcome": outcome}
+    if run_id is not None:
+        payload["run_id"] = int(run_id)
+        run = conn.execute(
+            "SELECT profile, status, outcome, summary, error, ended_at "
+            "FROM task_runs WHERE id = ?",
+            (int(run_id),),
+        ).fetchone()
+        if run:
+            payload.update(
+                {
+                    "profile": run["profile"],
+                    "status": run["status"],
+                    "outcome": run["outcome"] or outcome,
+                    "ended_at": run["ended_at"],
+                }
+            )
+            if summary is None:
+                summary = run["summary"]
+            if error is None:
+                error = run["error"]
+    else:
+        row = conn.execute(
+            "SELECT assignee FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if row:
+            payload["profile"] = row["assignee"]
+    if summary:
+        payload["summary"] = str(summary).strip().splitlines()[0][:400]
+    if error:
+        payload["error"] = str(error)[:500]
+    if extra:
+        payload.update(extra)
+    return payload
+
+
 def _synthesize_ended_run(
     conn: sqlite3.Connection,
     task_id: str,
@@ -2216,6 +2273,18 @@ def reassign_task(
         return False
 
 
+def _normalize_created_card_claims(claimed_ids: Iterable[str]) -> list[str]:
+    """Return non-empty claimed card ids, deduped while preserving order."""
+    claimed = [str(x).strip() for x in (claimed_ids or []) if str(x).strip()]
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for cid in claimed:
+        if cid not in seen:
+            seen.add(cid)
+            ordered.append(cid)
+    return ordered
+
+
 def _verify_created_cards(
     conn: sqlite3.Connection,
     completing_task_id: str,
@@ -2241,16 +2310,9 @@ def _verify_created_cards(
     but don't satisfy any of the three trust conditions. The caller
     decides what to do with each bucket; this helper never mutates.
     """
-    claimed = [str(x).strip() for x in (claimed_ids or []) if str(x).strip()]
-    if not claimed:
+    ordered = _normalize_created_card_claims(claimed_ids)
+    if not ordered:
         return [], []
-    # Dedupe while preserving order.
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for cid in claimed:
-        if cid not in seen:
-            seen.add(cid)
-            ordered.append(cid)
 
     row = conn.execute(
         "SELECT assignee FROM tasks WHERE id = ?", (completing_task_id,),
@@ -2289,6 +2351,29 @@ def _verify_created_cards(
         else:
             phantom.append(cid)
     return verified, phantom
+
+
+def validate_created_cards(
+    conn: sqlite3.Connection,
+    completing_task_id: str,
+    claimed_ids: Iterable[str],
+) -> dict[str, Any]:
+    """Dry-run the ``created_cards`` completion gate without mutating state.
+
+    This is the public, side-effect-free preflight counterpart to the
+    ``complete_task(..., created_cards=...)`` gate. Keep completion wired
+    through this helper so workers can validate claims before risking a
+    terminal handoff and both paths cannot drift.
+    """
+    claimed = _normalize_created_card_claims(claimed_ids)
+    verified, phantom = _verify_created_cards(conn, completing_task_id, claimed)
+    return {
+        "ok": not phantom,
+        "task_id": completing_task_id,
+        "claimed_cards": claimed,
+        "verified_cards": verified,
+        "phantom_cards": phantom,
+    }
 
 
 # Task-id pattern used both by ``kanban_create`` (``t_<12 hex>``) and
@@ -2348,6 +2433,296 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+class ScopeAttestationError(ValueError):
+    """Raised when a task that requires scope attestation is completed
+    without the structured safety metadata downstream verifiers rely on.
+    """
+
+    def __init__(self, missing: list[str], task_id: str):
+        self.missing = list(missing)
+        self.task_id = task_id
+        super().__init__(
+            "completion blocked: scope attestation metadata is incomplete "
+            f"for {task_id}: {', '.join(missing)}"
+        )
+
+
+_KANBAN_POLICY_KEYS = {"completion_policy", "scope_contract"}
+_KNOWN_SCOPE_ALLOWED_TOOLS = {
+    "kanban_show",
+    "kanban_complete",
+    "kanban_block",
+    "kanban_comment",
+    "kanban_heartbeat",
+    "kanban_create",
+    "kanban_link",
+    "kanban_run_workspace_command",
+    "read_file",
+    "search_files",
+    "write_file",
+    "patch",
+    "terminal",
+    "process",
+    "skill_view",
+    "skills_list",
+    "todo",
+    "memory",
+    "session_search",
+}
+_BROAD_SCOPE_ALLOWED_TOOL_MARKERS = {
+    "*",
+    "all",
+    "any",
+    "tools",
+    "all_tools",
+    # Toolset/category names are not valid scope-contract tool names.  The
+    # contract must name model-native tools exactly; otherwise the dispatcher
+    # cannot distinguish a narrow tool allowlist from a broad toolset request.
+    "terminal",
+    "file",
+    "kanban",
+    "mcp",
+    "delegation",
+    "code_execution",
+    "memory",
+    "clarify",
+}
+_FORBIDDEN_SCOPE_ALLOWED_TOOL_MARKERS = {
+    "openclaw",
+    "mission_control",
+    "telegram",
+    "discord_admin",
+    "config_write",
+    "auth",
+    "secrets",
+    "cron_write",
+}
+_REQUIRED_SCOPE_FORBIDDEN_SYSTEMS = {
+    "openclaw": "OpenClaw",
+    "atlas": "Atlas",
+    "mission-control": "Mission-Control",
+    "telegram": "Telegram",
+}
+
+
+def _truthy_policy_value(value: Any) -> bool:
+    """Return True for explicit YAML truthy policy values only."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "1", "ok", "pass", "passed"}
+    return bool(value)
+
+
+def _safe_yaml_mapping(text: str) -> Optional[dict[str, Any]]:
+    """Parse ``text`` as YAML and return a mapping, or ``None``.
+
+    Kanban task bodies are Markdown with optional YAML snippets. Parser errors
+    are treated as "no structured policy found" so malformed prose cannot crash
+    dispatcher/completion paths or accidentally satisfy a policy gate.
+    """
+    if yaml is None:
+        return None
+    try:
+        loaded = yaml.safe_load(text)
+    except Exception:
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
+def _extract_frontmatter_block(text: str) -> Optional[str]:
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None
+    for idx, line in enumerate(lines[1:], start=1):
+        if line.strip() in {"---", "..."}:
+            return "\n".join(lines[1:idx])
+    return None
+
+
+def _extract_fenced_yaml_blocks(text: str) -> list[str]:
+    blocks: list[str] = []
+    in_yaml = False
+    buf: list[str] = []
+    fence_re = re.compile(r"^\s*```\s*(yaml|yml)?\s*$", re.IGNORECASE)
+    for line in text.splitlines():
+        match = fence_re.match(line)
+        if match:
+            if in_yaml:
+                blocks.append("\n".join(buf))
+                buf = []
+                in_yaml = False
+            elif (match.group(1) or "").lower() in {"yaml", "yml"}:
+                in_yaml = True
+                buf = []
+            continue
+        if in_yaml:
+            buf.append(line)
+    return blocks
+
+
+def _extract_top_level_yaml_snippets(text: str) -> list[str]:
+    """Extract compact top-level policy snippets from Markdown task bodies.
+
+    This is a controlled compatibility path for existing unfenced task specs:
+    it only considers lines where ``completion_policy:`` or ``scope_contract:``
+    starts at column 0, then keeps the following indented/blank/comment lines.
+    Inline prose such as "mention completion_policy: require..." is ignored.
+    """
+    snippets: list[str] = []
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if any(line.startswith(f"{key}:") for key in _KANBAN_POLICY_KEYS):
+            buf = [line]
+            i += 1
+            while i < len(lines):
+                nxt = lines[i]
+                if nxt and not nxt.startswith((" ", "\t", "#")):
+                    break
+                buf.append(nxt)
+                i += 1
+            snippets.append("\n".join(buf))
+            continue
+        i += 1
+    return snippets
+
+
+def _iter_task_policy_mappings(body: Optional[str]) -> list[dict[str, Any]]:
+    """Return parser-backed policy mappings found in a Markdown task body."""
+    text = body or ""
+    candidates: list[str] = []
+    frontmatter = _extract_frontmatter_block(text)
+    if frontmatter:
+        candidates.append(frontmatter)
+    candidates.extend(_extract_fenced_yaml_blocks(text))
+    whole = _safe_yaml_mapping(text)
+    if whole is not None:
+        candidates.append(text)
+    candidates.extend(_extract_top_level_yaml_snippets(text))
+
+    mappings: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        stripped = candidate.strip()
+        if not stripped or stripped in seen:
+            continue
+        seen.add(stripped)
+        mapping = _safe_yaml_mapping(stripped)
+        if not isinstance(mapping, dict):
+            continue
+        if _KANBAN_POLICY_KEYS.intersection(mapping):
+            mappings.append(mapping)
+    return mappings
+
+
+def _body_requires_scope_attestation(body: Optional[str]) -> bool:
+    """Return True for structured ``completion_policy.require_scope_attestation``.
+
+    Supported forms are YAML frontmatter, fenced YAML blocks, pure YAML bodies,
+    and top-level unfenced YAML snippets. Arbitrary prose/inline strings are not
+    treated as policy declarations.
+    """
+    for mapping in _iter_task_policy_mappings(body):
+        policy = mapping.get("completion_policy")
+        if isinstance(policy, dict) and _truthy_policy_value(policy.get("require_scope_attestation")):
+            return True
+    return False
+
+
+def _metadata_truthy(metadata: Optional[dict], key: str) -> bool:
+    if not isinstance(metadata, dict) or key not in metadata:
+        return False
+    value = metadata.get(key)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "1", "ok", "pass", "passed"}
+    return bool(value)
+
+
+def _metadata_int(metadata: Optional[dict], key: str) -> Optional[int]:
+    if not isinstance(metadata, dict) or key not in metadata:
+        return None
+    value = metadata.get(key)
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _latest_dispatch_preflight_effective_toolsets(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[list[str]]:
+    """Return the latest dispatcher-recorded effective tool schema for a task."""
+    row = conn.execute(
+        """
+        SELECT payload FROM task_events
+         WHERE task_id = ? AND kind = 'dispatch_preflight_passed'
+         ORDER BY id DESC LIMIT 1
+        """,
+        (task_id,),
+    ).fetchone()
+    if not row or not row["payload"]:
+        return None
+    try:
+        payload = json.loads(row["payload"])
+    except Exception:
+        return None
+    effective = payload.get("effective_toolsets") if isinstance(payload, dict) else None
+    if not isinstance(effective, list):
+        return None
+    return [str(item) for item in effective]
+
+
+def _validate_required_scope_attestation(
+    metadata: Optional[dict],
+    body: Optional[str] = None,
+    *,
+    conn: Optional[sqlite3.Connection] = None,
+    task_id: Optional[str] = None,
+) -> list[str]:
+    """Return missing/invalid fields for a scope-gated completion."""
+    missing: list[str] = []
+    if not isinstance(metadata, dict):
+        return ["metadata object is required"]
+    version = _metadata_int(metadata, "scope_contract_version")
+    if version is None or version < 2:
+        missing.append("scope_contract_version >= 2")
+    forbidden = _metadata_int(metadata, "forbidden_actions_taken")
+    if forbidden is None:
+        missing.append("forbidden_actions_taken = 0")
+    elif forbidden != 0:
+        missing.append("forbidden_actions_taken must be 0")
+    if not _metadata_truthy(metadata, "scope_attestation"):
+        missing.append("scope_attestation = true")
+    expected_effective = _scope_contract_allowed_tools(body)
+    if conn is not None and task_id:
+        expected_effective = (
+            _latest_dispatch_preflight_effective_toolsets(conn, task_id)
+            or expected_effective
+        )
+    if expected_effective is not None:
+        effective = metadata.get("effective_toolsets")
+        if not isinstance(effective, list) or not effective:
+            missing.append("effective_toolsets list")
+        elif [str(item) for item in effective] != [str(item) for item in expected_effective]:
+            missing.append("effective_toolsets mismatch")
+    return missing
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -2388,15 +2763,47 @@ def complete_task(
     """
     now = int(time.time())
 
+    task_row = conn.execute(
+        "SELECT body FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    requires_scope_attestation = bool(
+        task_row and _body_requires_scope_attestation(task_row["body"])
+    )
+    task_body = task_row["body"] if task_row else None
+    if requires_scope_attestation:
+        missing_scope = _validate_required_scope_attestation(
+            metadata,
+            task_body,
+            conn=conn,
+            task_id=task_id,
+        )
+        if missing_scope:
+            with write_txn(conn):
+                _append_event(
+                    conn,
+                    task_id,
+                    "completion_blocked_scope_attestation",
+                    {
+                        "missing": missing_scope,
+                        "summary_preview": (
+                            (summary or result or "").strip().splitlines()[0][:200]
+                            if (summary or result)
+                            else None
+                        ),
+                    },
+                )
+            raise ScopeAttestationError(missing_scope, task_id)
+
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
     # tiny dedicated txn, then raise. The caller is responsible for
     # surfacing HallucinatedCardsError to the worker; this function
     # never mutates task state on a phantom-card rejection.
     if created_cards:
-        verified_cards, phantom_cards = _verify_created_cards(
-            conn, task_id, created_cards
-        )
+        card_validation = validate_created_cards(conn, task_id, created_cards)
+        verified_cards = card_validation["verified_cards"]
+        phantom_cards = card_validation["phantom_cards"]
         if phantom_cards:
             with write_txn(conn):
                 _append_event(
@@ -2472,10 +2879,14 @@ def complete_task(
         # full summary stays on the run row.
         ev_summary = (summary if summary is not None else result) or ""
         ev_summary = ev_summary.strip().splitlines()[0][:400] if ev_summary else ""
-        completed_payload: dict = {
-            "result_len": len(result) if result else 0,
-            "summary": ev_summary or None,
-        }
+        completed_payload = _terminal_event_payload(
+            conn,
+            task_id,
+            run_id,
+            outcome="completed",
+            summary=ev_summary or None,
+            extra={"result_len": len(result) if result else 0},
+        )
         if verified_cards:
             completed_payload["verified_cards"] = verified_cards
         _append_event(
@@ -2587,8 +2998,15 @@ def block_task(
     *,
     reason: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    context_comment_id: Optional[int] = None,
 ) -> bool:
-    """Transition ``running -> blocked``."""
+    """Transition an active or queued task to ``blocked``.
+
+    Worker-owned blocks pass ``expected_run_id`` and are restricted to the
+    live ``running|ready`` task/run pair. Administrative/manual blocks without
+    an expected run may also block ``triage`` and ``todo`` tasks so superseded
+    fixtures can be parked without direct SQLite surgery.
+    """
     with write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(
@@ -2599,7 +3017,7 @@ def block_task(
                        claim_expires= NULL,
                        worker_pid   = NULL
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ('running', 'ready', 'todo', 'triage')
                 """,
                 (task_id,),
             )
@@ -2632,7 +3050,26 @@ def block_task(
                 outcome="blocked",
                 summary=reason,
             )
-        _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
+        block_payload_extra: dict[str, Any] = {"reason": reason}
+        if context_comment_id is not None:
+            comment = conn.execute(
+                "SELECT body FROM task_comments WHERE id = ? AND task_id = ?",
+                (int(context_comment_id), task_id),
+            ).fetchone()
+            if comment:
+                block_payload_extra["context_comment_id"] = int(context_comment_id)
+                snippet = (comment["body"] or "").strip().replace("\n", " ")[:200]
+                if snippet:
+                    block_payload_extra["context_snippet"] = snippet
+        block_payload = _terminal_event_payload(
+            conn,
+            task_id,
+            run_id,
+            outcome="blocked",
+            summary=reason,
+            extra=block_payload_extra,
+        )
+        _append_event(conn, task_id, "blocked", block_payload, run_id=run_id)
         return True
 
 
@@ -2917,6 +3354,166 @@ class DispatchResult:
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
+    preflight_blocked: list[str] = field(default_factory=list)
+    """Task ids blocked before claim/spawn because they failed dispatcher preflight."""
+
+
+def _task_has_scope_contract_v2(body: Optional[str]) -> bool:
+    for mapping in _iter_task_policy_mappings(body):
+        contract = mapping.get("scope_contract")
+        if not isinstance(contract, dict):
+            continue
+        version = contract.get("version")
+        try:
+            if int(version) >= 2:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _scope_contract_allowed_tools(body: Optional[str]) -> Optional[list[str]]:
+    """Return structured ``scope_contract.allowed_tools`` when present.
+
+    The values are task-author declarations, not a replacement for profile or
+    model-native tool isolation. Dispatcher preflight uses them as the narrow
+    allowed surface and records the effective list for worker attestation.
+    """
+    for mapping in _iter_task_policy_mappings(body):
+        contract = mapping.get("scope_contract")
+        if not isinstance(contract, dict) or "allowed_tools" not in contract:
+            continue
+        allowed = contract.get("allowed_tools")
+        if isinstance(allowed, str):
+            return [allowed]
+        if isinstance(allowed, (list, tuple)):
+            return [str(item).strip() for item in allowed if str(item).strip()]
+        return []
+    return None
+
+
+def _scope_contract_forbidden_systems(body: Optional[str]) -> Optional[list[str]]:
+    """Return structured ``scope_contract.forbidden_systems`` when present."""
+    for mapping in _iter_task_policy_mappings(body):
+        contract = mapping.get("scope_contract")
+        if not isinstance(contract, dict) or "forbidden_systems" not in contract:
+            continue
+        forbidden = contract.get("forbidden_systems")
+        if isinstance(forbidden, str):
+            return [forbidden]
+        if isinstance(forbidden, (list, tuple)):
+            return [str(item).strip() for item in forbidden if str(item).strip()]
+        return []
+    return None
+
+
+def _normalize_forbidden_system_name(name: str) -> str:
+    return re.sub(r"[\s_]+", "-", str(name).strip().lower())
+
+
+def _validate_scope_forbidden_systems(body: Optional[str]) -> list[str]:
+    """Validate core Hermes-only forbidden-system declarations."""
+    declared = _scope_contract_forbidden_systems(body)
+    if declared is None:
+        declared_keys: set[str] = set()
+    else:
+        declared_keys = {_normalize_forbidden_system_name(item) for item in declared}
+    missing = [
+        canonical
+        for key, canonical in _REQUIRED_SCOPE_FORBIDDEN_SYSTEMS.items()
+        if key not in declared_keys
+    ]
+    if not missing:
+        return []
+    return [
+        "scope_contract.forbidden_systems is missing required entries: "
+        + ", ".join(missing)
+    ]
+
+
+def _validate_scope_allowed_tools(body: Optional[str]) -> tuple[list[str], list[str]]:
+    """Validate ``scope_contract.allowed_tools`` for dispatcher preflight.
+
+    Returns ``(effective_toolsets, problems)``. Missing, unknown, and obviously
+    broad/forbidden declarations fail closed before spawn.
+    """
+    allowed = _scope_contract_allowed_tools(body)
+    if allowed is None:
+        return [], ["scope_contract.allowed_tools is required"]
+    normalized: list[str] = []
+    problems: list[str] = []
+    seen: set[str] = set()
+    for item in allowed:
+        name = str(item).strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if key in _BROAD_SCOPE_ALLOWED_TOOL_MARKERS:
+            problems.append(f"allowed_tool is too broad: {name}")
+            continue
+        if key in _FORBIDDEN_SCOPE_ALLOWED_TOOL_MARKERS:
+            problems.append(f"allowed_tool is forbidden for Hermes-only dispatch: {name}")
+            continue
+        if name not in _KNOWN_SCOPE_ALLOWED_TOOLS:
+            problems.append(f"unknown allowed_tool: {name}")
+            continue
+        normalized.append(name)
+    if not normalized and not problems:
+        problems.append("scope_contract.allowed_tools must not be empty")
+    return normalized, problems
+
+
+def _task_requires_dispatcher_scope_preflight(body: Optional[str]) -> bool:
+    if _body_requires_scope_attestation(body):
+        return True
+    return any("scope_contract" in mapping for mapping in _iter_task_policy_mappings(body))
+
+
+def _validate_task_extra_skills(skills: Optional[list]) -> list[str]:
+    """Return force-loaded skills that the current CLI cannot resolve.
+
+    This preflight prevents crash loops where the spawned process exits with
+    ``Unknown skill(s): ...`` before it can block its own task.
+    """
+    requested = [str(s).strip() for s in (skills or []) if str(s).strip()]
+    requested = [s for s in requested if s != "kanban-worker"]
+    if not requested:
+        return []
+    try:
+        from agent.skill_commands import build_preloaded_skills_prompt
+        _prompt, _loaded, missing = build_preloaded_skills_prompt(requested)
+        return [str(s) for s in (missing or [])]
+    except Exception as exc:
+        return [f"skill preflight failed: {exc}"]
+
+
+def _block_dispatch_preflight(
+    conn: sqlite3.Connection,
+    task_id: str,
+    reason: str,
+    *,
+    kind: str = "dispatch_preflight_blocked",
+) -> bool:
+    now = int(time.time())
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'blocked', result = ?, completed_at = NULL, "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+            "last_failure_error = ? WHERE id = ? AND status = 'ready'",
+            (reason[:500], reason[:500], task_id),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(
+            conn,
+            task_id,
+            kind,
+            {"reason": reason[:500], "blocked_at": now},
+        )
+        return True
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -3253,8 +3850,16 @@ def enforce_max_runtime(
                     error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
                     metadata=payload,
                 )
+                timeout_payload = _terminal_event_payload(
+                    conn,
+                    tid,
+                    run_id,
+                    outcome="timed_out",
+                    error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
+                    extra=payload,
+                )
                 _append_event(
-                    conn, tid, "timed_out", payload, run_id=run_id,
+                    conn, tid, "timed_out", timeout_payload, run_id=run_id,
                 )
                 timed_out.append(tid)
         # Increment the unified failure counter. Outside the write_txn
@@ -3375,9 +3980,17 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     error=error_text,
                     metadata=dict(event_payload),
                 )
+                crash_payload = _terminal_event_payload(
+                    conn,
+                    row["id"],
+                    run_id,
+                    outcome="crashed",
+                    error=error_text,
+                    extra=event_payload,
+                )
                 _append_event(
                     conn, row["id"], event_kind,
-                    event_payload,
+                    crash_payload,
                     run_id=run_id,
                 )
                 crashed.append(row["id"])
@@ -3530,8 +4143,16 @@ def _record_task_failure(
             }
             if event_payload_extra:
                 payload.update(event_payload_extra)
+            gave_up_payload = _terminal_event_payload(
+                conn,
+                task_id,
+                run_id,
+                outcome="gave_up",
+                error=error[:500],
+                extra=payload,
+            )
             _append_event(
-                conn, task_id, "gave_up", payload, run_id=run_id,
+                conn, task_id, "gave_up", gave_up_payload, run_id=run_id,
             )
             blocked = True
         else:
@@ -3561,9 +4182,17 @@ def _record_task_failure(
                     error=error[:500],
                     metadata={"failures": failures},
                 )
+                failure_payload = _terminal_event_payload(
+                    conn,
+                    task_id,
+                    run_id,
+                    outcome=outcome,
+                    error=error[:500],
+                    extra={"failures": failures},
+                )
                 _append_event(
                     conn, task_id, outcome,
-                    {"error": error[:500], "failures": failures},
+                    failure_payload,
                     run_id=run_id,
                 )
             # Timeout/crash path's caller already emitted its own event.
@@ -3763,7 +4392,7 @@ def dispatch_once(
         )
 
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT * FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -3789,6 +4418,27 @@ def dispatch_once(
         except Exception:
             profile_exists = None  # type: ignore[assignment]
         if profile_exists is not None and not profile_exists(row["assignee"]):
+            # Distinguish autonomous-task-mistake from human-pulled lane:
+            # tasks that carry a scope_contract are autonomous-spawned
+            # workloads (planner output etc.). If the planner produced an
+            # unknown assignee, the task must fail closed instead of
+            # looping forever in the ready queue. Tasks WITHOUT a scope
+            # contract are typically human-pulled lanes (e.g. orion-cc
+            # Claude Code terminals) where skipping is intentional.
+            if _task_requires_dispatcher_scope_preflight(row["body"]):
+                reason = (
+                    "dispatch preflight blocked task: assignee "
+                    f"'{row['assignee']}' is not a known Hermes "
+                    "profile (scope_contract v2 task)"
+                )
+                if _block_dispatch_preflight(
+                    conn,
+                    row["id"],
+                    reason,
+                    kind="dispatch_preflight_invalid_assignee",
+                ):
+                    result.preflight_blocked.append(row["id"])
+                continue
             # Bucket separately from skipped_unassigned: the operator
             # cannot fix this by assigning a profile (the assignee IS the
             # intended owner — a terminal lane). Health telemetry uses
@@ -3797,6 +4447,60 @@ def dispatch_once(
             # of human-pulled work.
             result.skipped_nonspawnable.append(row["id"])
             continue
+        task_for_preflight = Task.from_row(row)
+        missing_skills = _validate_task_extra_skills(task_for_preflight.skills) if not dry_run else []
+        if missing_skills:
+            reason = (
+                "dispatch preflight blocked task: unknown force-loaded skill(s): "
+                + ", ".join(missing_skills)
+            )
+            if _block_dispatch_preflight(
+                conn, row["id"], reason, kind="dispatch_preflight_unknown_skills"
+            ):
+                result.preflight_blocked.append(row["id"])
+            continue
+        if not dry_run and _task_requires_dispatcher_scope_preflight(row["body"]):
+            if not _task_has_scope_contract_v2(row["body"]):
+                reason = (
+                    "dispatch preflight blocked task: scope_contract version 2 "
+                    "is required for worker tasks with scope/completion policy"
+                )
+                if _block_dispatch_preflight(
+                    conn, row["id"], reason, kind="dispatch_preflight_missing_scope_contract"
+                ):
+                    result.preflight_blocked.append(row["id"])
+                continue
+            effective_toolsets, allowed_tool_errors = _validate_scope_allowed_tools(row["body"])
+            if allowed_tool_errors:
+                reason = (
+                    "dispatch preflight blocked task: invalid scope_contract.allowed_tools: "
+                    + "; ".join(allowed_tool_errors)
+                )
+                if _block_dispatch_preflight(
+                    conn, row["id"], reason, kind="dispatch_preflight_invalid_allowed_tools"
+                ):
+                    result.preflight_blocked.append(row["id"])
+                continue
+            forbidden_system_errors = _validate_scope_forbidden_systems(row["body"])
+            if forbidden_system_errors:
+                reason = (
+                    "dispatch preflight blocked task: invalid scope_contract.forbidden_systems: "
+                    + "; ".join(forbidden_system_errors)
+                )
+                if _block_dispatch_preflight(
+                    conn,
+                    row["id"],
+                    reason,
+                    kind="dispatch_preflight_missing_forbidden_systems",
+                ):
+                    result.preflight_blocked.append(row["id"])
+                continue
+            _append_event(
+                conn,
+                row["id"],
+                "dispatch_preflight_passed",
+                {"effective_toolsets": effective_toolsets},
+            )
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             continue
@@ -3953,6 +4657,7 @@ def _default_spawn(
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    env["HERMES_KANBAN_WORKSPACE_KIND"] = task.workspace_kind or "scratch"
     if task.current_run_id is not None:
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
     if task.claim_lock:
@@ -3975,6 +4680,9 @@ def _default_spawn(
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
+    effective_toolsets, allowed_tool_errors = _validate_scope_allowed_tools(task.body)
+    if not allowed_tool_errors and effective_toolsets:
+        env["HERMES_KANBAN_EFFECTIVE_TOOLSETS"] = json.dumps(effective_toolsets)
 
     cmd = [
         *_resolve_hermes_argv(),
