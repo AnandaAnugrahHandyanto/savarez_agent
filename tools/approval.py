@@ -12,6 +12,7 @@ import contextvars
 import logging
 import os
 import re
+import shlex
 import sys
 import threading
 import time
@@ -255,17 +256,313 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     return (False, None)
 
 
+# =========================================================================
+# Wrapper-aware payload extraction (bash/sh/zsh/ksh/dash + interpreter -c)
+# =========================================================================
+#
+# Plain raw-regex scanning misses catastrophic commands smuggled inside a
+# shell or interpreter ``-c`` argument because the dangerous keyword is
+# followed by a closing quote rather than whitespace/end-of-string:
+#
+#     bash -lc 'rm -rf /'          # `/` followed by `'` — `\bemxx ...(\s|$)` fails
+#     zsh -ic 'shutdown -h now'    # `shutdown` preceded by `'` — `_CMDPOS` fails
+#     python3 -c 'os.system("rm -rf /")'  # same quote-bypass issue
+#
+# To close this hardline-bypass we parse the wrapper command with
+# ``shlex.split``, extract the payload, and run the hardline scan against
+# the payload instead. For Python interpreters we additionally restrict
+# the match to *real* ``os.system`` / ``__import__('os').system`` calls so
+# that harmless ``print('rm -rf /')`` literals stay unmatched.
+
+_SHELL_WRAPPER_NAMES = frozenset({"bash", "sh", "zsh", "ksh", "dash"})
+_PY_WRAPPER_NAMES = frozenset({"python", "python2", "python3"})
+_OTHER_INTERPRETER_NAMES = frozenset({"perl", "ruby", "node"})
+
+# Leading words that may precede the actual wrapper command. We skip past
+# them so ``sudo bash -c 'rm -rf /'`` / ``env FOO=1 python3 -c '...'`` /
+# ``nohup bash -c '...'`` all still reach the wrapper-aware path.
+_WRAPPER_PREFIX_NAMES = frozenset({"exec", "nohup", "setsid", "time"})
+
+
+def _parse_wrapper(command: str):
+    """Parse a shell/interpreter wrapper command via :func:`shlex.split`.
+
+    Returns ``(payload, kind)`` when the command is recognized as a wrapper,
+    otherwise ``None``. ``kind`` is one of:
+
+    * ``"shell"``       — bash/sh/zsh/ksh/dash with a flag containing ``c``
+                          (``-c``, ``-lc``, ``-ic``, ``-lic``, …).
+    * ``"python"``      — python/python2/python3 with ``-c`` or ``-e``.
+    * ``"interpreter"`` — perl/ruby/node with ``-c`` or ``-e``.
+
+    Raises :class:`ValueError` when ``shlex.split`` cannot tokenize the
+    command (mismatched quotes, dangling backslash, …). Callers that want a
+    pure ``str | None`` API should use :func:`_extract_wrapped_payload`,
+    which swallows the exception.
+    """
+    tokens = shlex.split(command)  # may raise ValueError
+    if not tokens:
+        return None
+
+    # Skip leading prefix wrappers (sudo / env / exec / nohup / setsid /
+    # time) so the next loop sees the actual interpreter command name.
+    idx = 0
+    while idx < len(tokens):
+        tok = tokens[idx]
+        if tok == "sudo":
+            idx += 1
+            while idx < len(tokens) and tokens[idx].startswith("-"):
+                idx += 1
+            continue
+        if tok == "env":
+            idx += 1
+            while (
+                idx < len(tokens)
+                and "=" in tokens[idx]
+                and not tokens[idx].startswith("-")
+            ):
+                idx += 1
+            continue
+        if tok in _WRAPPER_PREFIX_NAMES:
+            idx += 1
+            continue
+        break
+
+    if idx >= len(tokens):
+        return None
+
+    # Strip path prefix: /bin/bash -> bash, /usr/bin/python3 -> python3.
+    cmd_base = tokens[idx].rsplit("/", 1)[-1]
+
+    if cmd_base in _SHELL_WRAPPER_NAMES:
+        kind = "shell"
+    elif cmd_base in _PY_WRAPPER_NAMES:
+        kind = "python"
+    elif cmd_base in _OTHER_INTERPRETER_NAMES:
+        kind = "interpreter"
+    else:
+        return None
+
+    # Locate the -c/-e flag (or shell combined flag like -lc) and its payload.
+    i = idx + 1
+    while i < len(tokens):
+        arg = tokens[i]
+        if not arg.startswith("-"):
+            # Positional arg before any -c/-e — not a script invocation.
+            return None
+        if kind == "shell":
+            # bash/sh/zsh/ksh/dash treat -c as the script flag. Combined
+            # short-flags like -lc, -ic, -lic, -ci all still take the next
+            # positional as the script body.
+            if "c" in arg.lstrip("-").lower():
+                if i + 1 < len(tokens):
+                    return (tokens[i + 1], kind)
+                return None
+        else:
+            # python/perl/ruby/node accept -c or -e for an inline script.
+            if arg in {"-c", "-e"}:
+                if i + 1 < len(tokens):
+                    return (tokens[i + 1], kind)
+                return None
+        i += 1
+
+    return None
+
+
+def _extract_wrapped_payload(command: str) -> Optional[str]:
+    """Return the inner payload of a shell/interpreter ``-c``/``-e`` wrapper.
+
+    Recognizes bash/sh/zsh/ksh/dash with a flag containing ``c`` (``-c``,
+    ``-lc``, ``-ic``, ``-lic``, …) and python/python2/python3/perl/ruby/node
+    with ``-c`` or ``-e``. Returns ``None`` when the command is not a
+    recognized wrapper or when :func:`shlex.split` cannot tokenize it.
+
+    Used by :func:`detect_hardline_command` to look inside the ``-c``
+    argument for catastrophic commands that the raw-regex floor misses
+    because the dangerous keyword is followed by a closing quote rather
+    than whitespace/end-of-string.
+    """
+    try:
+        info = _parse_wrapper(command)
+    except ValueError:
+        return None
+    if info is None:
+        return None
+    return info[0]
+
+
+# Real Python system-call invocations. Captures the first string-literal
+# argument so we can apply HARDLINE_PATTERNS_COMPILED to it. Harmless
+# ``print('rm -rf /')`` is *not* matched because ``print`` isn't in the
+# call-target alternation.
+_PY_SYSTEM_CALL_RE = re.compile(
+    r"""
+    (?:
+        __import__\s*\(\s*['"]os['"]\s*\)\s*\.\s*system
+      | \bos\s*\.\s*system
+    )
+    \s*\(\s*
+    (?:r|b|rb|br|u)?          # optional Python string prefix
+    (['"])                    # opening quote (\1)
+    ([^'"]*)                  # captured string content (group 2)
+    \1                        # matching closing quote
+    """,
+    re.VERBOSE | re.DOTALL,
+)
+
+
+def _payload_matches_hardline_pattern(text: str):
+    """Run HARDLINE_PATTERNS_COMPILED against an already-normalized payload.
+
+    Returns ``(True, description)`` on the first match, otherwise
+    ``(False, None)``. ``text`` should already be lowercased and
+    normalized by :func:`_normalize_command_for_detection`.
+    """
+    for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
+        if pattern_re.search(text):
+            return (True, description)
+    return (False, None)
+
+
+def _check_wrapper_payload_hardline(payload: str, kind: str):
+    """Apply hardline detection to a wrapper payload.
+
+    For shell wrappers (``kind == "shell"``) the payload is itself a shell
+    command — apply HARDLINE_PATTERNS_COMPILED directly. ``bash -c 'echo
+    reboot'`` stays unmatched because the existing ``_CMDPOS`` anchor in
+    the shutdown/reboot pattern still requires command position; ``echo
+    reboot`` has ``reboot`` as an argument to ``echo``, not a command.
+
+    For python wrappers we only flag *real* invocations of ``os.system``
+    or ``__import__('os').system`` whose string argument matches a
+    hardline pattern. Harmless ``python -c "print('rm -rf / as text')"``
+    stays unmatched because ``print`` is not in the call-target alternation.
+
+    For other interpreter wrappers (perl/ruby/node) we apply the
+    shell-style direct scan to the payload. The public test surface only
+    covers python; treating these as shell is intentionally conservative.
+    """
+    payload_norm = _normalize_command_for_detection(payload).lower()
+
+    if kind == "python":
+        for match in _PY_SYSTEM_CALL_RE.finditer(payload):
+            inner = match.group(2)
+            if not inner:
+                continue
+            inner_norm = _normalize_command_for_detection(inner).lower()
+            matched, description = _payload_matches_hardline_pattern(inner_norm)
+            if matched:
+                return (True, f"{description} (via python -c)")
+        return (False, None)
+
+    matched, description = _payload_matches_hardline_pattern(payload_norm)
+    if not matched:
+        return (False, None)
+    suffix = "shell -c" if kind == "shell" else "interpreter -c"
+    return (True, f"{description} (via {suffix})")
+
+
+# Wrapper-token regex used by the conservative shlex-fallback path.
+_WRAPPER_TOKEN_RE = re.compile(
+    r"\b(?:bash|sh|zsh|ksh|dash|python[23]?|perl|ruby|node)\b"
+)
+
+# Keywords for the conservative fallback when shlex parsing fails. Each
+# entry is (lowercase substring, human-readable description). Tracks the
+# catastrophic-command floor in HARDLINE_PATTERNS — keep them in sync if
+# either side changes.
+_FALLBACK_HARDLINE_KEYWORDS = (
+    ("rm -rf /", "recursive delete of root filesystem"),
+    ("mkfs", "format filesystem (mkfs)"),
+    ("dd of=/dev/", "dd to raw block device"),
+    (":(){:|:&};:", "fork bomb"),
+    ("kill -1", "kill all processes"),
+    ("shutdown", "system shutdown"),
+    ("reboot", "system reboot"),
+    ("halt", "system halt"),
+    ("poweroff", "system poweroff"),
+    ("init 0", "init 0 (shutdown)"),
+    ("init 6", "init 6 (reboot)"),
+    ("systemctl poweroff", "systemctl poweroff"),
+    ("systemctl reboot", "systemctl reboot"),
+    ("systemctl halt", "systemctl halt"),
+    ("telinit 0", "telinit 0 (shutdown)"),
+    ("telinit 6", "telinit 6 (reboot)"),
+)
+
+
+def _fallback_hardline_match(normalized_lower: str):
+    """Conservative fallback when shlex parsing fails.
+
+    If the normalized command contains both a wrapper token (bash, sh,
+    zsh, ksh, dash, python, python2, python3, perl, ruby, node) *and* at
+    least one hardline keyword, return ``(True, description)``. Otherwise
+    return ``(False, None)``. This guards against quote-confusion bypass
+    attempts where the raw command is unparseable but obviously catastrophic.
+    """
+    if not _WRAPPER_TOKEN_RE.search(normalized_lower):
+        return (False, None)
+    for keyword, description in _FALLBACK_HARDLINE_KEYWORDS:
+        if keyword in normalized_lower:
+            return (True, f"{description} (wrapper smuggled, shlex parse failed)")
+    return (False, None)
+
+
 def detect_hardline_command(command: str) -> tuple:
     """Check if a command matches the unconditional hardline blocklist.
+
+    Wrapper-aware: when the command is a bash/sh/zsh/ksh/dash invocation
+    with a ``-c``-style flag, or a python/perl/ruby/node invocation with
+    ``-c``/``-e``, the inner payload is extracted via :func:`shlex.split`
+    and inspected directly. This catches catastrophic commands smuggled
+    inside quoted ``-c`` arguments (e.g. ``bash -lc 'rm -rf /'`` or
+    ``python -c "import os; os.system('rm -rf /')"``) that the raw-regex
+    floor would otherwise miss because the dangerous keyword is followed
+    by a closing quote rather than whitespace/end-of-string.
+
+    Benign ``-c`` payloads that merely *mention* the dangerous words as
+    string literals — ``python -c "print('rm -rf / as text')"``, ``bash
+    -c 'echo reboot'`` — remain unblocked.
 
     Returns:
         (is_hardline, description) or (False, None)
     """
     normalized = _normalize_command_for_detection(command).lower()
-    for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
-        if pattern_re.search(normalized):
+
+    # Wrapper-aware path
+    try:
+        wrapper_info = _parse_wrapper(command)
+    except ValueError:
+        # Conservative fallback: a malformed wrapper command (mismatched
+        # quotes, etc.) that still mentions a hardline keyword is treated
+        # as smuggling — block to be safe.
+        fallback_match, fallback_desc = _fallback_hardline_match(normalized)
+        if fallback_match:
+            return (True, fallback_desc)
+        wrapper_info = None
+
+    if wrapper_info is not None:
+        payload, kind = wrapper_info
+        matched, description = _check_wrapper_payload_hardline(payload, kind)
+        if matched:
             return (True, description)
-    return (False, None)
+        # Wrapper payload was benign on its own. Still scan the rest of
+        # the raw command (with the payload redacted) so chained forms
+        # like ``bash -c 'echo hi' && rm -rf /`` cannot smuggle a
+        # catastrophic command past the floor by hiding it after a safe
+        # wrapper. Redacting the payload first prevents false-positives
+        # on dangerous keywords that only appear inside the wrapper's
+        # quoted string literal.
+        normalized_outside = normalized.replace(payload.lower(), "", 1)
+        outside_match, outside_desc = _payload_matches_hardline_pattern(
+            normalized_outside
+        )
+        if outside_match:
+            return (True, outside_desc)
+        return (False, None)
+
+    # Not a wrapper: standard raw-command hardline scan.
+    return _payload_matches_hardline_pattern(normalized)
 
 
 def _hardline_block_result(description: str) -> dict:
