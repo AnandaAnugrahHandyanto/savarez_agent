@@ -88,6 +88,58 @@ class TestKimiProfile:
         assert tl["reasoning_effort"] == "medium"
 
 
+class TestDeepSeekProfile:
+    """DeepSeek native API — V4 thinking + reasoning_effort plumbing.
+
+    Reference: https://api-docs.deepseek.com/guides/thinking_mode
+    """
+
+    def test_registered(self):
+        p = get_provider_profile("deepseek")
+        assert p is not None
+        assert p.name == "deepseek"
+        assert "deepseek.com" in p.base_url
+
+    def test_fallback_models_include_v4(self):
+        p = get_provider_profile("deepseek")
+        assert "deepseek-v4-pro" in p.fallback_models
+        assert "deepseek-v4-flash" in p.fallback_models
+        # Legacy aliases retained until DeepSeek removes them server-side
+        assert "deepseek-chat" in p.fallback_models
+        assert "deepseek-reasoner" in p.fallback_models
+
+    def test_no_config_defaults(self):
+        p = get_provider_profile("deepseek")
+        eb, tl = p.build_api_kwargs_extras(reasoning_config=None)
+        assert eb["thinking"] == {"type": "enabled"}
+        assert tl["reasoning_effort"] == "high"
+
+    def test_thinking_disabled(self):
+        p = get_provider_profile("deepseek")
+        eb, tl = p.build_api_kwargs_extras(reasoning_config={"enabled": False})
+        assert eb["thinking"] == {"type": "disabled"}
+        assert "reasoning_effort" not in tl
+
+    @pytest.mark.parametrize("input_effort,expected", [
+        ("low", "high"),
+        ("medium", "high"),
+        ("high", "high"),
+        ("xhigh", "max"),
+        ("max", "max"),
+        ("MEDIUM", "high"),       # case insensitive
+        ("  high  ", "high"),     # whitespace tolerant
+        ("banana", "high"),       # unknown → safe fallback
+        ("", "high"),             # empty → default
+    ])
+    def test_effort_mapping(self, input_effort, expected):
+        p = get_provider_profile("deepseek")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": input_effort}
+        )
+        assert eb["thinking"] == {"type": "enabled"}
+        assert tl["reasoning_effort"] == expected
+
+
 class TestOpenRouterProfile:
     def test_extra_body_with_prefs(self):
         p = get_provider_profile("openrouter")
