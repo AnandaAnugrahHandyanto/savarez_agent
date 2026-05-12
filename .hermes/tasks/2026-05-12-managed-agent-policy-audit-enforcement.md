@@ -50,7 +50,7 @@ Multica review gate: JEF-227 / 7d68a1c1-acfd-4101-a85b-9649f66d629d
 
 ### phase3-review
 
-- Status: pending
+- Status: in_progress
 - Owner: Multica review lane
 - Acceptance:
   - Reviewer inspects diff for safety, honesty of claims, and test coverage.
