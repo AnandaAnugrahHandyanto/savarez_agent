@@ -19,7 +19,7 @@ Multica review gate: JEF-227 / 7d68a1c1-acfd-4101-a85b-9649f66d629d
 
 ### phase3-plan-ledger
 
-- Status: review
+- Status: done
 - Owner: Hermes main
 - Acceptance:
   - Phase 3 plan and task ledger written under `.hermes/`.
@@ -39,13 +39,14 @@ Multica review gate: JEF-227 / 7d68a1c1-acfd-4101-a85b-9649f66d629d
 
 ### phase3-implementation
 
-- Status: pending
+- Status: in_progress
 - Owner: Multica Codex worker
 - Acceptance:
   - Add bounded policy audit comparison for no-edit policies.
   - Persist audit outcome in task run metadata and task events.
   - Ensure no OS/container sandbox claims are introduced.
   - Add or update focused tests.
+- Evidence: JEF-226 moved to in_progress after ledger commit `2f622fb33` was pushed to fork branch.
 
 ### phase3-review
 
