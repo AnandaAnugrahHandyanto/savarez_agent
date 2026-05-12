@@ -538,29 +538,43 @@ def _copy_dist_payload(
     """
     target.mkdir(parents=True, exist_ok=True)
 
-    for entry in staged.iterdir():
-        name = entry.name
-
-        if name in USER_OWNED_EXCLUDE:
+    for rel_str in manifest.owned_paths():
+        rel = Path(rel_str)
+        if rel.is_absolute() or ".." in rel.parts or not rel.parts:
             continue
-        if name == ENV_TEMPLATE_FILENAME:
-            shutil.copy2(entry, target / ENV_EXAMPLE_FILENAME)
+        if rel.parts[0] in USER_OWNED_EXCLUDE:
             continue
-        if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():
+        if rel_str == ENV_TEMPLATE_FILENAME:
+            # Handled below as .env.EXAMPLE.
+            continue
+        if rel_str == "config.yaml" and preserve_config and (target / "config.yaml").exists():
             # Leave user's config.yaml alone on update
             continue
 
-        dest = target / name
+        entry = staged / rel
+        if not entry.exists():
+            continue
+
+        dest = target / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
         if entry.is_dir():
-            if dest.exists():
+            if dest.is_dir():
                 shutil.rmtree(dest)
+            elif dest.exists():
+                dest.unlink()
             shutil.copytree(
                 entry,
                 dest,
                 ignore=lambda d, names: [n for n in names if n in USER_OWNED_EXCLUDE],
             )
         else:
+            if dest.is_dir():
+                shutil.rmtree(dest)
             shutil.copy2(entry, dest)
+
+    env_template = staged / ENV_TEMPLATE_FILENAME
+    if env_template.is_file():
+        shutil.copy2(env_template, target / ENV_EXAMPLE_FILENAME)
 
     # Emit .env.EXAMPLE from manifest if the staged tree didn't ship one
     if manifest.env_requires and not (target / ENV_EXAMPLE_FILENAME).exists():

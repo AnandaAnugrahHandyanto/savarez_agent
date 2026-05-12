@@ -405,6 +405,56 @@ class TestUpdate:
         assert "claude" in (plan.target_dir / "config.yaml").read_text()
         assert "gpt-5" not in (plan.target_dir / "config.yaml").read_text()
 
+    def test_update_explicit_nested_owned_paths_preserves_sibling_runtime_state(self, profile_env):
+        staged = profile_env / "nested_distribution"
+        staged.mkdir()
+        (staged / "SOUL.md").write_text("I am Source.\n")
+        (staged / "skills" / "demo").mkdir(parents=True)
+        (staged / "skills" / "demo" / "SKILL.md").write_text("# Demo skill v1\n")
+        (staged / "cron" / "templates").mkdir(parents=True)
+        (staged / "cron" / "templates" / "daily.json").write_text(
+            '{"schedule": "0 9 * * *"}\n'
+        )
+        write_manifest(
+            staged,
+            DistributionManifest(
+                name="nested",
+                version="0.1.0",
+                distribution_owned=[
+                    "SOUL.md",
+                    "skills/demo",
+                    "cron/templates/daily.json",
+                    MANIFEST_FILENAME,
+                ],
+            ),
+        )
+
+        plan = install_distribution(str(staged), name="nested")
+        (plan.target_dir / "cron" / "jobs.json").write_text('{"jobs": []}\n')
+        (plan.target_dir / "cron" / "output").mkdir()
+        (plan.target_dir / "cron" / "output" / "keep.txt").write_text("runtime output\n")
+        (plan.target_dir / "skills" / "custom").mkdir()
+        (plan.target_dir / "skills" / "custom" / "SKILL.md").write_text("# Custom skill\n")
+
+        (staged / "cron" / "templates" / "daily.json").write_text(
+            '{"schedule": "0 10 * * *"}\n'
+        )
+        (staged / "skills" / "demo" / "SKILL.md").write_text("# Demo skill v2\n")
+
+        update_distribution("nested", force_config=False)
+
+        assert (
+            plan.target_dir / "cron" / "templates" / "daily.json"
+        ).read_text() == '{"schedule": "0 10 * * *"}\n'
+        assert (plan.target_dir / "skills" / "demo" / "SKILL.md").read_text() == "# Demo skill v2\n"
+        assert (plan.target_dir / "cron" / "jobs.json").read_text() == '{"jobs": []}\n'
+        assert (
+            plan.target_dir / "cron" / "output" / "keep.txt"
+        ).read_text() == "runtime output\n"
+        assert (
+            plan.target_dir / "skills" / "custom" / "SKILL.md"
+        ).read_text() == "# Custom skill\n"
+
     def test_update_missing_manifest_errors(self, profile_env):
         # Make a profile without a manifest; update must refuse
         from hermes_cli.profiles import create_profile
@@ -581,4 +631,3 @@ class TestErrorSurfaces:
         staged = _make_staging_dir(profile_env, "bad", manifest=mf)
         with pytest.raises((ValueError, DistributionError)):
             plan_install(str(staged), tmp_path / "work")
-
