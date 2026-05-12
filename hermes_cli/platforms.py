@@ -39,6 +39,8 @@ PLATFORMS: OrderedDict[str, PlatformInfo] = OrderedDict([
     ("yuanbao",        PlatformInfo(label="🤖 Yuanbao",         default_toolset="hermes-yuanbao")),
     ("webhook",        PlatformInfo(label="🔗 Webhook",         default_toolset="hermes-webhook")),
     ("api_server",     PlatformInfo(label="🌐 API Server",      default_toolset="hermes-api-server")),
+    ("web",            PlatformInfo(label="🌐 Web API Client",  default_toolset="hermes-web")),
+    ("mobile_chat",    PlatformInfo(label="📱 Mobile Chat",     default_toolset="hermes-mobile-chat")),
     ("cron",           PlatformInfo(label="⏰ Cron",            default_toolset="hermes-cron")),
 ])
 

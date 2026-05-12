@@ -397,6 +397,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
             # Try /proc first (works in Docker without procps installed),
             # fall back to ps -A eww.
             _found_via_proc = False
+            _proc_read_error = False
             if os.path.isdir("/proc"):
                 try:
                     my_pid = os.getpid()
@@ -414,12 +415,13 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                             ):
                                 _append_unique_pid(pids, pid, exclude_pids)
                         except (OSError, PermissionError):
+                            _proc_read_error = True
                             continue
                     _found_via_proc = True
                 except Exception:
                     pass
 
-            if not _found_via_proc:
+            if not _found_via_proc or (not pids and not _proc_read_error):
                 result = subprocess.run(
                     ["ps", "-A", "eww", "-o", "pid=,command="],
                     capture_output=True,
