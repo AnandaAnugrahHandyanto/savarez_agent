@@ -525,31 +525,40 @@ export const sessionCommands: SlashCommand[] = [
         const f = (v: number | undefined) => (v ?? 0).toLocaleString()
         const cost = r.cost_usd != null ? `${r.cost_status === 'estimated' ? '~' : ''}$${r.cost_usd.toFixed(4)}` : null
 
+        const t = (key: TranslationKey, vars?: Record<string, string | number>) =>
+          translate(ctx.ui.locale, key, vars)
+
         const rows: [string, string][] = [
-          ['Model', r.model ?? ''],
-          ['Input tokens', f(r.input)],
-          ['Cache read tokens', f(r.cache_read)],
-          ['Cache write tokens', f(r.cache_write)],
-          ['Output tokens', f(r.output)],
-          ['Total tokens', f(r.total)],
-          ['API calls', f(r.calls)]
+          [t('usage.model'), r.model ?? ''],
+          [t('usage.inputTokens'), f(r.input)],
+          [t('usage.cacheReadTokens'), f(r.cache_read)],
+          [t('usage.cacheWriteTokens'), f(r.cache_write)],
+          [t('usage.outputTokens'), f(r.output)],
+          [t('usage.totalTokens'), f(r.total)],
+          [t('usage.apiCalls'), f(r.calls)]
         ]
 
         if (cost) {
-          rows.push(['Cost', cost])
+          rows.push([t('usage.cost'), cost])
         }
 
         const sections: PanelSection[] = [{ rows }]
 
         if (r.context_max) {
-          sections.push({ text: `Context: ${f(r.context_used)} / ${f(r.context_max)} (${r.context_percent}%)` })
+          sections.push({
+            text: t('usage.context', {
+              max: f(r.context_max),
+              percent: String(r.context_percent),
+              used: f(r.context_used)
+            })
+          })
         }
 
         if (r.compressions) {
-          sections.push({ text: `Compressions: ${r.compressions}` })
+          sections.push({ text: t('usage.compressions', { count: String(r.compressions) }) })
         }
 
-        ctx.transcript.panel('Usage', sections)
+        ctx.transcript.panel(t('usage.panelTitle'), sections)
       })
     }
   }
