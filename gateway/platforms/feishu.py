@@ -134,6 +134,7 @@ from gateway.platforms.base import (
     ProcessingOutcome,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
+    _ssrf_redirect_guard,
     cache_document_from_bytes,
     cache_image_from_url,
     cache_audio_from_bytes,
@@ -3088,7 +3089,11 @@ class FeishuAdapter(BasePlatformAdapter):
 
         import httpx
 
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=30.0,
+            follow_redirects=True,
+            event_hooks={"response": [_ssrf_redirect_guard]},
+        ) as client:
             response = await client.get(
                 file_url,
                 headers={
