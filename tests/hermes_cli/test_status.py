@@ -14,6 +14,50 @@ def test_show_status_includes_tavily_key(monkeypatch, capsys, tmp_path):
     assert "tvly...cdef" in output
 
 
+def test_show_status_all_redacts_api_keys(monkeypatch, capsys, tmp_path):
+    from hermes_cli import status as status_mod
+    import hermes_cli.auth as auth_mod
+    import hermes_cli.gateway as gateway_mod
+
+    openrouter_key = "sk-or-super-secret-value"
+    xai_key = "xai-super-secret-value"
+    anthropic_key = "sk-ant-super-secret-value"
+
+    monkeypatch.setattr(status_mod, "get_env_path", lambda: tmp_path / ".env", raising=False)
+    monkeypatch.setattr(status_mod, "get_hermes_home", lambda: tmp_path, raising=False)
+    monkeypatch.setattr(status_mod, "load_config", lambda: {"model": "gpt-5.4"}, raising=False)
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "openrouter", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "openrouter", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "OpenRouter", raising=False)
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
+    monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_qwen_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_minimax_oauth_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_anthropic_key", lambda: anthropic_key, raising=False)
+
+    def fake_get_env_value(name):
+        return {
+            "OPENROUTER_API_KEY": openrouter_key,
+            "XAI_API_KEY": xai_key,
+        }.get(name, "")
+
+    monkeypatch.setattr(status_mod, "get_env_value", fake_get_env_value, raising=False)
+
+    status_mod.show_status(SimpleNamespace(all=True, deep=False))
+
+    output = capsys.readouterr().out
+    assert "OpenRouter" in output
+    assert "xAI / Grok" in output
+    assert "Anthropic" in output
+    assert openrouter_key not in output
+    assert xai_key not in output
+    assert anthropic_key not in output
+    assert "sk-o...alue" in output
+    assert "xai-...alue" in output
+    assert "sk-a...alue" in output
+
+
 def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys, tmp_path):
     from hermes_cli import status as status_mod
     import hermes_cli.auth as auth_mod
